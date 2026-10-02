@@ -109,6 +109,25 @@
           done < <(find "$out" -name '*.md' -print0)
         '';
 
+        # CGO toolchain shared by the CUE bridge's build and check phases
+        cgoToolchainSetup = ''
+          export CGO_ENABLED=1
+          export GOOS=${pkgs.stdenv.hostPlatform.parsed.kernel.name}
+          export GOARCH=${
+            let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+            in if cpu == "x86_64" then "amd64"
+            else if cpu == "aarch64" then "arm64"
+            else cpu
+          }
+          export CC=${zigCCWrapper}/bin/zig-cc
+          export CXX=${zigCXXWrapper}/bin/zig-cxx
+          export AR=${zigARWrapper}/bin/zig-ar
+
+          # Zig needs writable cache directories in Nix sandbox
+          export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+          export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+        '';
+
         # CUE bridge builder
         cue-bridge = pkgs.buildGoModule {
           pname = "libcue-bridge";
@@ -119,24 +138,14 @@
           nativeBuildInputs = [ pkgs.zig zigCCWrapper zigCXXWrapper zigARWrapper ]
             ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
 
+          # buildGoModule's default checkPhase calls `getGoDirs`, which only its own
+          # buildPhase defines. Overriding buildPhase therefore made the inherited
+          # checkPhase fail silently and skip every Go test, so the check phase is
+          # explicit and shares the CGO toolchain setup with the build.
           buildPhase = ''
             runHook preBuild
 
-            export CGO_ENABLED=1
-            export GOOS=${pkgs.stdenv.hostPlatform.parsed.kernel.name}
-            export GOARCH=${
-              let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
-              in if cpu == "x86_64" then "amd64"
-              else if cpu == "aarch64" then "arm64"
-              else cpu
-            }
-            export CC=${zigCCWrapper}/bin/zig-cc
-            export CXX=${zigCXXWrapper}/bin/zig-cxx
-            export AR=${zigARWrapper}/bin/zig-ar
-
-            # Zig needs writable cache directories in Nix sandbox
-            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
-            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+            ${cgoToolchainSetup}
 
             mkdir -p $out/debug $out/release
             go_sources=$(find . -maxdepth 1 -name '*.go' ! -name '*_test.go' -print | sort)
@@ -148,6 +157,26 @@
             cp libcue_bridge.h $out/release/
 
             runHook postBuild
+          '';
+
+          doCheck = true;
+          # Tests use the stdenv compiler wrapper rather than zig: the test
+          # binaries run here, and zig links them against a dynamic loader
+          # path that does not exist inside the Nix sandbox. Zig is only
+          # needed for the portable archives the build phase produces.
+          checkPhase = ''
+            runHook preCheck
+
+            # buildPhase exported the zig wrappers into this shell; replace them.
+            export CGO_ENABLED=1
+            export CC=${pkgs.stdenv.cc}/bin/cc
+            export CXX=${pkgs.stdenv.cc}/bin/c++
+            unset AR
+
+            go vet ./...
+            go test ./...
+
+            runHook postCheck
           '';
 
           installPhase = ''

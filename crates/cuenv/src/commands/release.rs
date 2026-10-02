@@ -14,6 +14,7 @@ pub use binaries::{ReleaseBinariesOptions, ReleaseBinariesPhase, execute_release
 pub use prepare::{PackageBumpInfo, ReleasePrepareOptions, execute_release_prepare};
 
 use cuengine::ModuleEvalOptions;
+use cuenv_core::module::TASK_FIELD;
 use cuenv_release::{
     BumpType, CargoManifest, ChangelogGenerator, Changeset, ChangesetManager, CommitAnalyzer,
     CommitParser, CratesBackendConfig, CueBackendConfig, PackageChange, PublishPackage,
@@ -59,6 +60,7 @@ fn load_release_config(root: &Path) -> cuenv_core::Result<ReleaseConfig> {
     let options = ModuleEvalOptions {
         recursive: false,
         target_dir: Some(config_dir.to_string_lossy().to_string()),
+        task_field: Some(TASK_FIELD.to_string()),
         ..Default::default()
     };
     let raw = cuengine::evaluate_module(&module_root, DEFAULT_RELEASE_PACKAGE, Some(&options))

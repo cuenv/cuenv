@@ -1,5 +1,3 @@
-//go:build cgo
-
 package main
 
 import (
@@ -9,585 +7,998 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"unsafe"
 )
 
-/*
-#include <stdlib.h>
-*/
-import "C"
+// Tests call the Go-string implementations behind the exported cgo symbols
+// (evaluateModuleResponse, moduleDependencyVersionResponse) because Go does
+// not allow cgo in test files. cue_free_string is exercised from the Rust
+// side, which owns every string the bridge returns.
 
-// Test data structure for validation
-type TestCueData struct {
-	Env map[string]interface{} `json:"env"`
+const (
+	testModulePath  = "example.com/bridge"
+	testPackageName = "app"
+)
+
+// writeCueModule creates a CUE module in a temporary directory. files maps a
+// slash-separated path relative to the module root to its contents.
+func writeCueModule(t *testing.T, files map[string]string) string {
+	t.Helper()
+	return writeCueModuleAt(t, t.TempDir(), files)
 }
 
-// Helper function to create a temporary directory with CUE files
-func createTestCueDir(t *testing.T, packageName string, content string) (string, func()) {
-	// Validate package name to prevent path traversal
-	if strings.Contains(packageName, "..") || strings.Contains(packageName, "/") || strings.Contains(packageName, "\\") {
-		t.Fatalf("Invalid package name: %s (contains path traversal characters)", packageName)
+// writeCueModuleAt creates a CUE module rooted at moduleRoot.
+func writeCueModuleAt(t *testing.T, moduleRoot string, files map[string]string) string {
+	t.Helper()
+	allFiles := map[string]string{
+		"cue.mod/module.cue": fmt.Sprintf("module: %q\nlanguage: version: \"v0.14.1\"\n", testModulePath+"@v0"),
 	}
-
-	// Validate content size to prevent resource exhaustion
-	if len(content) > 1024*1024 { // 1MB limit
-		t.Fatalf("Content too large: %d bytes (max 1MB)", len(content))
+	for name, contents := range files {
+		allFiles[name] = contents
 	}
+	for name, contents := range allFiles {
+		filename := filepath.Join(moduleRoot, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+			t.Fatalf("create directory for %s: %v", name, err)
+		}
+		if err := os.WriteFile(filename, []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return moduleRoot
+}
 
-	tempDir, err := os.MkdirTemp("", "cuenv-test-*")
+// writePackage creates a module whose root holds a single file of the test
+// package with the given body.
+func writePackage(t *testing.T, contents string) string {
+	t.Helper()
+	return writeCueModule(t, map[string]string{"values.cue": packageSource(contents)})
+}
+
+func packageSource(contents string) string {
+	return "package " + testPackageName + "\n\n" + contents
+}
+
+// testEnvelope mirrors BridgeResponse with the success payload decoded.
+type testEnvelope struct {
+	Version string          `json:"version"`
+	Ok      json.RawMessage `json:"ok"`
+	Error   *BridgeError    `json:"error"`
+}
+
+// evaluation describes one call to evaluateModuleResponse.
+type evaluation struct {
+	moduleRoot string
+	// targetDirectory is relative to moduleRoot; empty means the root.
+	targetDirectory    string
+	packageName        *string
+	recursive          bool
+	withMeta           bool
+	concretePaths      []string
+	instanceFailures   string
+	packageScope       string
+	exportPaths        []string
+	presencePaths      []string
+	skippedDirectories string
+}
+
+func packageNamed(name string) *string {
+	return &name
+}
+
+func (e evaluation) optionsJSON(t *testing.T) string {
+	t.Helper()
+	options := map[string]interface{}{
+		"recursive":          e.recursive,
+		"withMeta":           e.withMeta,
+		"concretePaths":      e.concretePaths,
+		"instanceFailures":   e.instanceFailures,
+		"packageScope":       e.packageScope,
+		"exportPaths":        e.exportPaths,
+		"presencePaths":      e.presencePaths,
+		"skippedDirectories": e.skippedDirectories,
+	}
+	if e.packageName != nil {
+		options["packageName"] = *e.packageName
+	}
+	if !e.recursive {
+		options["targetDir"] = filepath.Join(e.moduleRoot, filepath.FromSlash(e.targetDirectory))
+	}
+	encoded, err := json.Marshal(options)
 	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+		t.Fatalf("marshal options: %v", err)
 	}
-
-	// Create env.cue file with safe filename
-	cueFile := filepath.Join(tempDir, "env.cue")
-
-	// Validate final path is within temp directory
-	if !strings.HasPrefix(cueFile, tempDir) {
-		os.RemoveAll(tempDir)
-		t.Fatalf("Path traversal detected in file path")
-	}
-
-	fullContent := "package " + packageName + "\n\n" + content
-	if err := os.WriteFile(cueFile, []byte(fullContent), 0644); err != nil {
-		os.RemoveAll(tempDir)
-		t.Fatalf("Failed to write CUE file: %v", err)
-	}
-
-	cleanup := func() {
-		os.RemoveAll(tempDir)
-	}
-
-	return tempDir, cleanup
+	return string(encoded)
 }
 
-// Helper to call FFI function safely
-func callCueEvalPackage(dirPath, packageName string) string {
-	cDirPath := C.CString(dirPath)
-	cPackageName := C.CString(packageName)
-	defer C.free(unsafe.Pointer(cDirPath))
-	defer C.free(unsafe.Pointer(cPackageName))
-
-	result := cue_eval_package(cDirPath, cPackageName)
-	defer cue_free_string(result)
-
-	return C.GoString(result)
+// run evaluates and decodes the bridge envelope.
+func (e evaluation) run(t *testing.T) testEnvelope {
+	t.Helper()
+	return decodeEnvelope(t, evaluateModuleResponse(e.moduleRoot, "", e.optionsJSON(t)))
 }
 
-func TestCueFreeString(t *testing.T) {
-	// Test that cue_free_string doesn't crash
-	testStr := C.CString("test string")
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("cue_free_string panicked: %v", r)
-		}
-	}()
-	cue_free_string(testStr)
+// result evaluates and decodes the module result, failing on a bridge error.
+func (e evaluation) result(t *testing.T) ModuleResult {
+	t.Helper()
+	envelope := e.run(t)
+	if envelope.Error != nil {
+		t.Fatalf("unexpected bridge error: %+v (hint: %s)", envelope.Error, errorHint(envelope.Error))
+	}
+	var result ModuleResult
+	if err := json.Unmarshal(envelope.Ok, &result); err != nil {
+		t.Fatalf("parse module result: %v\nresult: %s", err, envelope.Ok)
+	}
+	return result
 }
 
-func TestCueEvalPackage_ValidInput(t *testing.T) {
-	cueContent := `
-env: {
-	DATABASE_URL: "postgres://localhost/mydb"
-	API_KEY: "test-key"
-	PORT: 3000
-	DEBUG: true
-}`
-
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Parse result
-	var data TestCueData
-	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		t.Fatalf("Failed to parse JSON result: %v\nResult: %s", err, result)
+// failure evaluates and returns the bridge error, failing on success.
+func (e evaluation) failure(t *testing.T) *BridgeError {
+	t.Helper()
+	envelope := e.run(t)
+	if envelope.Error == nil {
+		t.Fatalf("expected a bridge error, got: %s", envelope.Ok)
 	}
-
-	// Verify expected values
-	if data.Env["DATABASE_URL"] != "postgres://localhost/mydb" {
-		t.Errorf("Expected DATABASE_URL to be 'postgres://localhost/mydb', got %v", data.Env["DATABASE_URL"])
-	}
-
-	if data.Env["API_KEY"] != "test-key" {
-		t.Errorf("Expected API_KEY to be 'test-key', got %v", data.Env["API_KEY"])
-	}
-
-	// PORT should be parsed as number
-	if port, ok := data.Env["PORT"].(float64); !ok || port != 3000 {
-		t.Errorf("Expected PORT to be 3000 (number), got %v (%T)", data.Env["PORT"], data.Env["PORT"])
-	}
-
-	// DEBUG should be parsed as boolean
-	if debug, ok := data.Env["DEBUG"].(bool); !ok || debug != true {
-		t.Errorf("Expected DEBUG to be true (boolean), got %v (%T)", data.Env["DEBUG"], data.Env["DEBUG"])
-	}
+	t.Logf("bridge error: %s\nhint: %s", envelope.Error.Message, errorHint(envelope.Error))
+	return envelope.Error
 }
 
-func TestCueEvalPackage_EmptyDirectory(t *testing.T) {
-	result := callCueEvalPackage("", "cuenv")
-
-	// Should return error JSON
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
-	}
-
-	if errorResponse["error"] != "Directory path cannot be empty" {
-		t.Errorf("Expected specific error message, got: %s", errorResponse["error"])
-	}
+// failureText is the error message and hint joined, for fragment checks.
+func (e evaluation) failureText(t *testing.T) string {
+	t.Helper()
+	bridgeError := e.failure(t)
+	return bridgeError.Message + "\n" + errorHint(bridgeError)
 }
 
-func TestCueEvalPackage_EmptyPackageName(t *testing.T) {
-	tempDir, cleanup := createTestCueDir(t, "cuenv", "env: {}")
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "")
-
-	// Should return error JSON
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
+// instance evaluates and returns the decoded value of the instance at
+// instancePath (as keyed in the module result).
+func (e evaluation) instance(t *testing.T, instancePath string) map[string]interface{} {
+	t.Helper()
+	raw := e.rawInstance(t, instancePath)
+	var value map[string]interface{}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatalf("parse instance: %v\ninstance: %s", err, raw)
 	}
-
-	if errorResponse["error"] != "Package name cannot be empty" {
-		t.Errorf("Expected specific error message, got: %s", errorResponse["error"])
-	}
+	return value
 }
 
-func TestCueEvalPackage_NonexistentDirectory(t *testing.T) {
-	result := callCueEvalPackage("/nonexistent/path", "cuenv")
-
-	// Should return error JSON
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
-	}
-
-	// When loading from a nonexistent directory, CUE fails to load the instance
-	if !strings.Contains(errorResponse["error"], "Failed to load CUE instance") {
-		t.Errorf("Expected CUE load error for nonexistent directory, got: %s", errorResponse["error"])
-	}
-}
-
-func TestCueEvalPackage_InvalidCueSyntax(t *testing.T) {
-	invalidCueContent := `
-env: {
-	INVALID_SYNTAX: "missing closing brace"
-`
-	tempDir, cleanup := createTestCueDir(t, "cuenv", invalidCueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Should return error JSON
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
-	}
-
-	// Should contain some indication of CUE error
-	if !strings.Contains(errorResponse["error"], "Failed to") {
-		t.Errorf("Expected CUE parsing error, got: %s", errorResponse["error"])
-	}
-}
-
-func TestCueEvalPackage_WrongPackageName(t *testing.T) {
-	cueContent := `env: { TEST_VAR: "value" }`
-	tempDir, cleanup := createTestCueDir(t, "wrongpackage", cueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Should return error JSON since package name doesn't match
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
-	}
-
-	// Should indicate that no instances were found or there was a loading error
-	errorMsg := errorResponse["error"]
-	if !strings.Contains(errorMsg, "No CUE instances found") && !strings.Contains(errorMsg, "Failed to load CUE instance") {
-		t.Errorf("Expected package loading error, got: %s", errorMsg)
-	}
-}
-
-func TestCueEvalPackage_ComplexNestedStructure(t *testing.T) {
-	cueContent := `
-env: {
-	DATABASE: {
-		HOST: "localhost"
-		PORT: 5432
-		NAME: "myapp"
-	}
-	FEATURES: {
-		CACHE_ENABLED: true
-		MAX_CONNECTIONS: 100
-	}
-	TAGS: ["production", "web", "api"]
-}`
-
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Parse result
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		t.Fatalf("Failed to parse JSON result: %v\nResult: %s", err, result)
-	}
-
-	// Verify nested structure exists
-	env, ok := data["env"].(map[string]interface{})
+func (e evaluation) rawInstance(t *testing.T, instancePath string) json.RawMessage {
+	t.Helper()
+	result := e.result(t)
+	raw, ok := result.Instances[instancePath]
 	if !ok {
-		t.Fatalf("Expected env to be an object, got %T", data["env"])
+		t.Fatalf("instance %q missing from result: %v", instancePath, instanceNames(result))
+	}
+	return raw
+}
+
+// exactPackage is a non-recursive evaluation of the test package at the
+// module root.
+func exactPackage(moduleRoot string) evaluation {
+	return evaluation{moduleRoot: moduleRoot, packageName: packageNamed(testPackageName)}
+}
+
+func decodeEnvelope(t *testing.T, response string) testEnvelope {
+	t.Helper()
+	var envelope testEnvelope
+	if err := json.Unmarshal([]byte(response), &envelope); err != nil {
+		t.Fatalf("parse bridge response: %v\nresponse: %s", err, response)
+	}
+	if envelope.Version != BridgeVersion {
+		t.Fatalf("expected bridge version %q, got %q", BridgeVersion, envelope.Version)
+	}
+	return envelope
+}
+
+func instanceNames(result ModuleResult) []string {
+	names := make([]string, 0, len(result.Instances))
+	for name := range result.Instances {
+		names = append(names, name)
+	}
+	return names
+}
+
+func errorHint(bridgeError *BridgeError) string {
+	if bridgeError.Hint == nil {
+		return ""
+	}
+	return *bridgeError.Hint
+}
+
+func assertContains(t *testing.T, text string, fragments ...string) {
+	t.Helper()
+	for _, fragment := range fragments {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("expected %q in:\n%s", fragment, text)
+		}
+	}
+}
+
+func assertErrorCode(t *testing.T, bridgeError *BridgeError, code string) {
+	t.Helper()
+	if bridgeError.Code != code {
+		t.Errorf("expected error code %s, got %s (%s)", code, bridgeError.Code, bridgeError.Message)
+	}
+}
+
+// Input validation -----------------------------------------------------------
+
+func TestEvaluateModule_EmptyModuleRoot(t *testing.T) {
+	envelope := decodeEnvelope(t, evaluateModuleResponse("", testPackageName, ""))
+	if envelope.Error == nil {
+		t.Fatalf("expected an error, got: %s", envelope.Ok)
+	}
+	assertErrorCode(t, envelope.Error, ErrorCodeInvalidInput)
+	assertContains(t, envelope.Error.Message, "Module root path cannot be empty")
+}
+
+func TestEvaluateModule_InvalidOptions(t *testing.T) {
+	envelope := decodeEnvelope(t, evaluateModuleResponse(t.TempDir(), testPackageName, "{"))
+	if envelope.Error == nil {
+		t.Fatalf("expected an error, got: %s", envelope.Ok)
+	}
+	assertErrorCode(t, envelope.Error, ErrorCodeInvalidInput)
+}
+
+func TestEvaluateModule_NonexistentDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does", "not", "exist")
+
+	// With a package filter the exact target directory cannot be inspected.
+	filtered := exactPackage(missing).failure(t)
+	assertErrorCode(t, filtered, ErrorCodeLoadInstance)
+
+	// Without one the loader reports the missing directory; either way the
+	// caller receives an error, never an empty success.
+	unfiltered := evaluation{moduleRoot: missing}.failure(t)
+	if unfiltered.Code != ErrorCodeLoadInstance && unfiltered.Code != ErrorCodeBuildValue {
+		t.Errorf("expected a load or build error, got %s (%s)", unfiltered.Code, unfiltered.Message)
 	}
 
-	// Check DATABASE nested object
-	database, ok := env["DATABASE"].(map[string]interface{})
+	// A missing target directory inside an existing module fails the same way.
+	moduleRoot := writePackage(t, `value: 1`)
+	target := exactPackage(moduleRoot)
+	target.targetDirectory = "missing"
+	assertErrorCode(t, target.failure(t), ErrorCodeLoadInstance)
+}
+
+func TestEvaluateModule_EmptyPackageNameEvaluatesTheDirectoryPackage(t *testing.T) {
+	// An empty package name is not a filter: the directory's only package is
+	// evaluated, whatever it is called.
+	moduleRoot := writeCueModule(t, map[string]string{
+		"values.cue": "package other\n\nvalue: \"from other\"\n",
+	})
+	value := evaluation{moduleRoot: moduleRoot, packageName: packageNamed("")}.instance(t, ".")
+	if value["value"] != "from other" {
+		t.Errorf("unexpected value: %v", value)
+	}
+
+	// The legacy positional package parameter behaves the same when empty.
+	envelope := decodeEnvelope(t, evaluateModuleResponse(moduleRoot, "", ""))
+	if envelope.Error != nil {
+		t.Fatalf("unexpected error: %+v", envelope.Error)
+	}
+	assertContains(t, string(envelope.Ok), `"value":"from other"`)
+}
+
+// Evaluation -----------------------------------------------------------------
+
+func TestEvaluateModule_ValidInput(t *testing.T) {
+	moduleRoot := writePackage(t, `
+settings: {
+	url:     "postgres://localhost/mydb"
+	port:    3000
+	debug:   true
+	ratio:   0.5
+	nothing: null
+}`)
+	settings := exactPackage(moduleRoot).instance(t, ".")["settings"].(map[string]interface{})
+	if settings["url"] != "postgres://localhost/mydb" {
+		t.Errorf("unexpected url: %v", settings["url"])
+	}
+	if port, ok := settings["port"].(float64); !ok || port != 3000 {
+		t.Errorf("expected port 3000, got %v (%T)", settings["port"], settings["port"])
+	}
+	if debug, ok := settings["debug"].(bool); !ok || !debug {
+		t.Errorf("expected debug true, got %v (%T)", settings["debug"], settings["debug"])
+	}
+	if ratio, ok := settings["ratio"].(float64); !ok || ratio != 0.5 {
+		t.Errorf("expected ratio 0.5, got %v (%T)", settings["ratio"], settings["ratio"])
+	}
+	if nothing, present := settings["nothing"]; !present || nothing != nil {
+		t.Errorf("expected nothing to export as null, got %v (present: %t)", nothing, present)
+	}
+}
+
+func TestEvaluateModule_ComplexNestedStructure(t *testing.T) {
+	moduleRoot := writePackage(t, `
+settings: {
+	database: {
+		host: "localhost"
+		port: 5432
+	}
+	tags: ["production", "web", "api"]
+	empty: []
+	matrix: [[1, 2], [3]]
+}`)
+	settings := exactPackage(moduleRoot).instance(t, ".")["settings"].(map[string]interface{})
+	database, ok := settings["database"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("Expected DATABASE to be an object, got %T", env["DATABASE"])
+		t.Fatalf("expected database object, got %T", settings["database"])
 	}
-
-	if database["HOST"] != "localhost" {
-		t.Errorf("Expected DATABASE.HOST to be 'localhost', got %v", database["HOST"])
+	if database["host"] != "localhost" {
+		t.Errorf("unexpected database.host: %v", database["host"])
 	}
-
-	if port, ok := database["PORT"].(float64); !ok || port != 5432 {
-		t.Errorf("Expected DATABASE.PORT to be 5432, got %v (%T)", database["PORT"], database["PORT"])
+	tags, ok := settings["tags"].([]interface{})
+	if !ok || len(tags) != 3 || tags[0] != "production" || tags[2] != "api" {
+		t.Errorf("unexpected tags: %v", settings["tags"])
 	}
-
-	// Check TAGS array
-	tags, ok := env["TAGS"].([]interface{})
-	if !ok {
-		t.Fatalf("Expected TAGS to be an array, got %T", env["TAGS"])
+	if empty, ok := settings["empty"].([]interface{}); !ok || len(empty) != 0 {
+		t.Errorf("expected empty to export as [], got %v (%T)", settings["empty"], settings["empty"])
 	}
-
-	if len(tags) != 3 {
-		t.Errorf("Expected 3 tags, got %d", len(tags))
+	matrix, ok := settings["matrix"].([]interface{})
+	if !ok || len(matrix) != 2 {
+		t.Fatalf("unexpected matrix: %v", settings["matrix"])
 	}
-
-	if tags[0] != "production" {
-		t.Errorf("Expected first tag to be 'production', got %v", tags[0])
+	if first, ok := matrix[0].([]interface{}); !ok || len(first) != 2 {
+		t.Errorf("unexpected matrix[0]: %v", matrix[0])
 	}
 }
 
-func TestCueEvalPackage_MemoryManagement(t *testing.T) {
-	// Test that multiple calls don't leak memory or cause crashes
-	cueContent := `env: { TEST_VAR: "value" }`
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
+func TestEvaluateModule_InvalidCueSyntax(t *testing.T) {
+	moduleRoot := writePackage(t, `
+settings: {
+	unclosed: "missing closing brace"
+`)
+	exactPackage(moduleRoot).failure(t)
+}
 
-	// Make multiple calls to ensure no memory leaks
-	for i := 0; i < 10; i++ {
-		result := callCueEvalPackage(tempDir, "cuenv")
-
-		// Basic validation that it returns valid JSON
-		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(result), &data); err != nil {
-			t.Fatalf("Call %d failed to parse JSON: %v", i, err)
-		}
-
-		// Verify expected structure
-		if env, ok := data["env"].(map[string]interface{}); !ok {
-			t.Fatalf("Call %d: expected env object", i)
-		} else if env["TEST_VAR"] != "value" {
-			t.Errorf("Call %d: expected TEST_VAR='value', got %v", i, env["TEST_VAR"])
-		}
+func TestEvaluateModule_WrongPackageNameIsAbsent(t *testing.T) {
+	// A package filter is a presence query: another package in the target
+	// directory is an empty success, not an error.
+	moduleRoot := writeCueModule(t, map[string]string{
+		"values.cue": "package other\n\nvalue: \"value\"\n",
+	})
+	result := exactPackage(moduleRoot).result(t)
+	if len(result.Instances) != 0 {
+		t.Errorf("expected no instances, got %v", instanceNames(result))
 	}
 }
 
-func TestCueEvalPackage_ConcurrentAccess(t *testing.T) {
-	// Test concurrent calls to ensure thread safety
-	cueContent := `env: { CONCURRENT_VAR: "test" }`
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
+// Field ordering and determinism -----------------------------------------------
 
-	const numGoroutines = 5
-	results := make(chan string, numGoroutines)
-	errors := make(chan error, numGoroutines)
+func TestFieldOrderingIsSortedAndStable(t *testing.T) {
+	// The bridge exports struct fields through Go maps, which encoding/json
+	// writes in sorted key order, and the Rust side decodes into
+	// serde_json::Value without preserve_order. Declaration order is
+	// therefore not part of the contract; sorted, byte-stable output is.
+	moduleRoot := writePackage(t, `
+ordered: {
+	zebra:  {value: "zebra"}
+	alpha:  {value: "alpha"}
+	omega:  {value: "omega"}
+	beta:   {value: "beta"}
+	nested: {third: 3, first: 1, second: 2}
+}`)
+	raw := string(exactPackage(moduleRoot).rawInstance(t, "."))
+	assertKeyOrder(t, raw, `"alpha":`, `"beta":`, `"nested":`, `"omega":`, `"zebra":`)
+	assertKeyOrder(t, raw, `"first":`, `"second":`, `"third":`)
+}
 
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer func() {
-				if r := recover(); r != nil {
-					errors <- fmt.Errorf("goroutine %d panicked: %v", id, r)
-					return
-				}
-			}()
-
-			result := callCueEvalPackage(tempDir, "cuenv")
-			results <- result
-		}(i)
+func assertKeyOrder(t *testing.T, raw string, keys ...string) {
+	t.Helper()
+	previous := -1
+	for _, key := range keys {
+		position := strings.Index(raw, key)
+		if position == -1 {
+			t.Fatalf("key %s not found in %s", key, raw)
+		}
+		if position <= previous {
+			t.Errorf("key %s is out of order in %s", key, raw)
+		}
+		previous = position
 	}
+}
 
-	// Collect results
-	for i := 0; i < numGoroutines; i++ {
-		select {
-		case result := <-results:
-			var data map[string]interface{}
-			if err := json.Unmarshal([]byte(result), &data); err != nil {
-				t.Errorf("Concurrent call %d failed to parse JSON: %v", i, err)
-				continue
-			}
-
-			env, ok := data["env"].(map[string]interface{})
-			if !ok {
-				t.Errorf("Concurrent call %d: expected env object", i)
-				continue
-			}
-
-			if env["CONCURRENT_VAR"] != "test" {
-				t.Errorf("Concurrent call %d: expected CONCURRENT_VAR='test', got %v", i, env["CONCURRENT_VAR"])
-			}
-
-		case err := <-errors:
-			t.Errorf("Concurrent access error: %v", err)
+func TestEvaluateModule_RepeatedCallsAreConsistent(t *testing.T) {
+	moduleRoot := writePackage(t, `
+ordered: {
+	zebra: {value: "zebra"}
+	alpha: {value: "alpha"}
+	omega: {value: "omega"}
+}
+settings: value: "value"`)
+	options := exactPackage(moduleRoot).optionsJSON(t)
+	first := evaluateModuleResponse(moduleRoot, "", options)
+	decodeEnvelope(t, first)
+	for iteration := 0; iteration < 10; iteration++ {
+		if next := evaluateModuleResponse(moduleRoot, "", options); next != first {
+			t.Fatalf("iteration %d differs:\nfirst: %s\nnext:  %s", iteration, first, next)
 		}
 	}
 }
 
-func TestFieldOrderingPreservation(t *testing.T) {
-	// Create a CUE file with tasks in a specific order
-	cueContent := `
-tasks: {
-	ordered_group: {
-		description: "Test field ordering"
-		mode: "sequential"
-		
-		// These should appear in this exact order in JSON
-		first: {
-			command: "echo first"
-		}
-		second: {
-			command: "echo second"
-		}
-		third: {
-			command: "echo third"
-		}
-		fourth: {
-			command: "echo fourth"
-		}
+func TestEvaluateModule_ConcurrentAccess(t *testing.T) {
+	moduleRoot := writePackage(t, `settings: concurrent: "test"`)
+	options := exactPackage(moduleRoot).optionsJSON(t)
+	const goroutineCount = 5
+	responses := make(chan string, goroutineCount)
+	for index := 0; index < goroutineCount; index++ {
+		go func() {
+			responses <- evaluateModuleResponse(moduleRoot, "", options)
+		}()
 	}
-}`
-
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Parse the JSON to check for errors
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		if strings.Contains(result, "error") {
-			t.Fatalf("CUE evaluation failed: %s", result)
-		}
-		t.Fatalf("Failed to parse JSON result: %v", err)
-	}
-
-	// Navigate to tasks.ordered_group
-	tasks, ok := data["tasks"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected tasks to be a map, got: %T", data["tasks"])
-	}
-
-	orderedGroup, ok := tasks["ordered_group"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected ordered_group to be a map, got: %T", tasks["ordered_group"])
-	}
-
-	// The critical test: check if the JSON string contains the fields in the right order
-	// Since Go maps are unordered, we need to check the JSON string directly
-	expectedOrder := []string{"first", "second", "third", "fourth"}
-
-	// Find the positions of each field name in the JSON string
-	positions := make(map[string]int)
-	for _, field := range expectedOrder {
-		// Look for the field as a JSON key (with quotes and colon)
-		searchStr := `"` + field + `":`
-		pos := strings.Index(result, searchStr)
-		if pos == -1 {
-			t.Fatalf("Field %s not found in JSON", field)
-		}
-		positions[field] = pos
-	}
-
-	// Verify the positions are in ascending order (matching CUE definition order)
-	for i := 1; i < len(expectedOrder); i++ {
-		prevField := expectedOrder[i-1]
-		currField := expectedOrder[i]
-
-		if positions[prevField] >= positions[currField] {
-			t.Errorf("Field ordering incorrect: %s (pos %d) should come before %s (pos %d)",
-				prevField, positions[prevField], currField, positions[currField])
-			t.Logf("Full JSON result: %s", result)
-		}
-	}
-
-	// Also verify all expected fields are present in the ordered_group
-	for _, field := range expectedOrder {
-		if _, exists := orderedGroup[field]; !exists {
-			t.Errorf("Expected field %s not found in ordered_group", field)
-		}
-	}
-
-	if t.Failed() {
-		t.Logf("Field ordering test failed. JSON positions: %v", positions)
-	} else {
-		t.Logf("✓ Field ordering test passed. JSON positions: %v", positions)
+	for index := 0; index < goroutineCount; index++ {
+		response := <-responses
+		assertContains(t, response, `"concurrent":"test"`)
 	}
 }
 
-func TestConsistentOrdering(t *testing.T) {
-	cueContent := `
-tasks: {
-	consistency_test: {
-		mode: "sequential"
-		zebra: { command: "echo zebra" }
-		alpha: { command: "echo alpha" }
-		omega: { command: "echo omega" }
-		beta: { command: "echo beta" }
-	}
-}`
+// Source metadata --------------------------------------------------------------
 
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	// Parse the same content multiple times and ensure consistent ordering
-	var allResults []string
-
-	for i := 0; i < 5; i++ {
-		result := callCueEvalPackage(tempDir, "cuenv")
-		allResults = append(allResults, result)
-	}
-
-	// All results should be identical (same field ordering)
-	for i := 1; i < len(allResults); i++ {
-		if allResults[i] != allResults[0] {
-			t.Errorf("Inconsistent result on iteration %d", i+1)
-			t.Logf("First result: %s", allResults[0])
-			t.Logf("Different result: %s", allResults[i])
-
-			// Show where they differ
-			if len(allResults[0]) == len(allResults[i]) {
-				for j := 0; j < len(allResults[0]); j++ {
-					if allResults[0][j] != allResults[i][j] {
-						t.Logf("First difference at position %d: %c vs %c", j, allResults[0][j], allResults[i][j])
-						break
-					}
-				}
-			}
-		}
-	}
-
-	if !t.Failed() {
-		t.Logf("✓ Consistency test passed across %d iterations", len(allResults))
-	}
-}
-
-func TestTaskSourceMetadata(t *testing.T) {
-	// Create a CUE file with tasks to verify _source metadata is injected
-	cueContent := `
-tasks: {
+func TestSourceMetadata(t *testing.T) {
+	// withMeta reports where every field is declared, including nested
+	// fields, keyed as "<instance>/<field path>".
+	moduleRoot := writeCueModule(t, map[string]string{
+		"values.cue": packageSource(`
+groups: {
 	build: {
 		command: "cargo"
-		args: ["build"]
-	}
-	test: {
-		command: "cargo"
-		args: ["test"]
 	}
 	nested: {
-		tasks: {
-			child1: {
-				command: "echo"
-				args: ["child1"]
-			}
-			child2: {
-				command: "echo"
-				args: ["child2"]
-			}
+		children: {
+			first: {command: "echo"}
 		}
 	}
-}`
+}`),
+		"child/values.cue": packageSource(`child: "value"`),
+	})
 
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Parse the JSON to check for _source fields
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		if strings.Contains(result, "error") {
-			t.Fatalf("CUE evaluation failed: %s", result)
+	rootEvaluation := exactPackage(moduleRoot)
+	rootEvaluation.withMeta = true
+	meta := rootEvaluation.result(t).Meta
+	expectations := map[string]int{
+		"./groups":                       4,
+		"./groups.build":                 5,
+		"./groups.build.command":         6,
+		"./groups.nested.children.first": 10,
+	}
+	for key, line := range expectations {
+		entry, ok := meta[key]
+		if !ok {
+			t.Errorf("meta entry %s missing", key)
+			continue
 		}
-		t.Fatalf("Failed to parse JSON result: %v", err)
+		if entry.Filename != "values.cue" || entry.Directory != "." || entry.Line != line {
+			t.Errorf("meta entry %s = %+v, want values.cue:%d in .", key, entry, line)
+		}
 	}
 
-	tasks, ok := data["tasks"].(map[string]interface{})
+	childEvaluation := exactPackage(moduleRoot)
+	childEvaluation.targetDirectory = "child"
+	childEvaluation.withMeta = true
+	childMeta := childEvaluation.result(t).Meta
+	entry, ok := childMeta["child/child"]
 	if !ok {
-		t.Fatalf("Expected tasks to be a map, got: %T", data["tasks"])
+		t.Fatalf("meta entry child/child missing: %v", childMeta)
+	}
+	if entry.Filename != "child/values.cue" || entry.Directory != "child" || entry.Line != 3 {
+		t.Errorf("unexpected child meta: %+v", entry)
 	}
 
-	// Check that each task has _source metadata
-	for taskName, taskDef := range tasks {
-		taskMap, ok := taskDef.(map[string]interface{})
-		if !ok {
-			t.Errorf("Task %s is not a map: %T", taskName, taskDef)
-			continue
-		}
+	// Without withMeta no metadata is returned.
+	if withoutMeta := exactPackage(moduleRoot).result(t).Meta; len(withoutMeta) != 0 {
+		t.Errorf("expected no meta without withMeta, got %d entries", len(withoutMeta))
+	}
+}
 
-		source, hasSource := taskMap["_source"]
-		if !hasSource {
-			t.Errorf("Task %s is missing _source metadata", taskName)
-			continue
-		}
+// Module dependencies ----------------------------------------------------------
 
-		sourceMap, ok := source.(map[string]interface{})
-		if !ok {
-			t.Errorf("Task %s _source is not a map: %T", taskName, source)
-			continue
-		}
+func TestModuleDependencyVersion(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"cue.mod/module.cue": "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.14.1\"\n" +
+			"deps: \"example.com/dependency@v0\": v: \"v0.53.1\"\n",
+	})
+	response := moduleDependencyVersionResponse(moduleRoot, "example.com/dependency")
+	assertContains(t, response, `"ok":{"version":"v0.53.1"}`)
 
-		// Verify _source has expected fields
-		file, hasFile := sourceMap["file"]
-		if !hasFile {
-			t.Errorf("Task %s _source is missing 'file' field", taskName)
-		} else {
-			t.Logf("Task %s: file=%v", taskName, file)
-		}
+	absent := moduleDependencyVersionResponse(moduleRoot, "example.com/absent")
+	assertContains(t, absent, `"ok":{"version":null}`)
 
-		line, hasLine := sourceMap["line"]
-		if !hasLine {
-			t.Errorf("Task %s _source is missing 'line' field", taskName)
-		} else {
-			t.Logf("Task %s: line=%v", taskName, line)
-		}
+	missing := moduleDependencyVersionResponse(t.TempDir(), "example.com/dependency")
+	assertContains(t, missing, ErrorCodeInvalidInput)
+}
 
-		column, hasColumn := sourceMap["column"]
-		if !hasColumn {
-			t.Errorf("Task %s _source is missing 'column' field", taskName)
-		} else {
-			t.Logf("Task %s: column=%v", taskName, column)
-		}
+// Concrete paths ---------------------------------------------------------------
 
-		// For nested tasks, check that children also have _source
-		if nestedTasks, hasNested := taskMap["tasks"].(map[string]interface{}); hasNested {
-			for childName, childDef := range nestedTasks {
-				childMap, ok := childDef.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				childSource, hasChildSource := childMap["_source"]
-				if !hasChildSource {
-					t.Errorf("Nested task %s.%s is missing _source metadata", taskName, childName)
-				} else {
-					t.Logf("Nested task %s.%s has _source: %v", taskName, childName, childSource)
-				}
-			}
+// schemaPackage is a module-local package with a closed definition, standing
+// in for any imported schema.
+const schemaPackage = `package schema
+
+#Empty: close({})
+
+#Settings: close({
+	size!:    int
+	enabled?: bool
+	labels?:  [string]: string
+})
+`
+
+// importingPackage returns a package importing the local schema package as
+// importName, with the given body.
+func importingPackage(importName string, body string) string {
+	return fmt.Sprintf("package %s\n\nimport %s \"%s/schema\"\n\n%s\n", testPackageName, importName, testModulePath, body)
+}
+
+// writeImportingModule writes the schema package and an importing package in
+// the "consumer" directory.
+func writeImportingModule(t *testing.T, importName string, body string) string {
+	t.Helper()
+	return writeCueModule(t, map[string]string{
+		"schema/schema.cue":   schemaPackage,
+		"consumer/values.cue": importingPackage(importName, body),
+	})
+}
+
+// consumer evaluates the "consumer" directory with the given concrete paths.
+func consumer(moduleRoot string, concretePaths ...string) evaluation {
+	return evaluation{
+		moduleRoot:      moduleRoot,
+		targetDirectory: "consumer",
+		packageName:     packageNamed(testPackageName),
+		concretePaths:   concretePaths,
+	}
+}
+
+func TestConcretePaths_ShadowedImportIsReported(t *testing.T) {
+	// `schema` inside `items: schema: {...}` resolves to that field, not the
+	// imported package, so `schema.#Empty` is undefined.
+	moduleRoot := writeImportingModule(t, "schema", `
+config: {
+	primary: schema.#Settings & {size: 1}
+	items: schema: {
+		kind:     "first"
+		settings: schema.#Empty
+	}
+}`)
+	failure := consumer(moduleRoot, "config").failureText(t)
+	assertContains(t, failure,
+		"consumer: config:",
+		"config.items.schema.settings",
+		"undefined field: #Empty",
+		"values.cue:",
+	)
+}
+
+func TestConcretePaths_MissingRequiredFieldIsReported(t *testing.T) {
+	moduleRoot := writeImportingModule(t, "schemaPackage", `
+config: primary: schemaPackage.#Settings & {enabled: false}`)
+	failure := consumer(moduleRoot, "config").failureText(t)
+	assertContains(t, failure,
+		"consumer: config:",
+		"config.primary.size",
+		"field is required but not present",
+	)
+}
+
+func TestConcretePaths_NonConcreteValueIsReported(t *testing.T) {
+	moduleRoot := writeImportingModule(t, "schemaPackage", `
+config: primary: schemaPackage.#Settings & {
+	size:    16
+	enabled: bool
+}`)
+	failure := consumer(moduleRoot, "config").failureText(t)
+	assertContains(t, failure,
+		"consumer: config:",
+		"config.primary.enabled",
+		"incomplete value bool",
+	)
+}
+
+func TestConcretePaths_ConcreteValueIsExportedUnchanged(t *testing.T) {
+	moduleRoot := writeImportingModule(t, "schemaPackage", `
+config: {
+	name:  string | *"default"
+	empty: schemaPackage.#Empty
+	primary: schemaPackage.#Settings & {
+		size:    16
+		enabled: false
+		labels: team: "platform"
+	}
+	order: []
+}`)
+	value := consumer(moduleRoot, "config").instance(t, "consumer")
+	exported, err := json.Marshal(value["config"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := `{"empty":{},"name":"default","order":[],` +
+		`"primary":{"enabled":false,"labels":{"team":"platform"},"size":16}}`
+	if string(exported) != expected {
+		t.Errorf("unexpected export:\n got: %s\nwant: %s", exported, expected)
+	}
+}
+
+func TestConcretePaths_OnlyNamedPathsAreValidated(t *testing.T) {
+	// Validation is scoped to the named paths: elsewhere a non-concrete
+	// value and a missing required field still export as null.
+	moduleRoot := writeImportingModule(t, "schemaPackage", `
+config: size: 1
+loose: {
+	port: int
+	host: "localhost"
+}
+settings: schemaPackage.#Settings & {enabled: true}`)
+	value := consumer(moduleRoot, "config").instance(t, "consumer")
+	loose := value["loose"].(map[string]interface{})
+	if port, present := loose["port"]; !present || port != nil {
+		t.Errorf("expected port to export as null, got %v (present: %t)", port, present)
+	}
+	if loose["host"] != "localhost" {
+		t.Errorf("unexpected host: %v", loose["host"])
+	}
+	settings := value["settings"].(map[string]interface{})
+	if size, present := settings["size"]; !present || size != nil {
+		t.Errorf("expected missing required field to export as null, got %v", settings)
+	}
+}
+
+func TestConcretePaths_AreOptIn(t *testing.T) {
+	// Without concretePaths the bridge keeps its lenient export.
+	moduleRoot := writeImportingModule(t, "schemaPackage", `
+config: primary: schemaPackage.#Settings & {enabled: false}`)
+	value := consumer(moduleRoot).instance(t, "consumer")
+	primary := value["config"].(map[string]interface{})["primary"].(map[string]interface{})
+	if size, present := primary["size"]; !present || size != nil {
+		t.Errorf("expected lenient null export, got %v", primary)
+	}
+}
+
+func TestConcretePaths_NestedPathValidatesOnlyThatSubtree(t *testing.T) {
+	moduleRoot := writeImportingModule(t, "schemaPackage", `
+config: {
+	strict: primary: schemaPackage.#Settings & {size: int}
+	lenient: port: int
+}`)
+	failure := consumer(moduleRoot, "config.strict").failureText(t)
+	assertContains(t, failure, "consumer: config.strict:", "config.strict.primary.size", "incomplete value int")
+
+	// The non-concrete sibling outside the named subtree does not fail.
+	valid := writeImportingModule(t, "schemaPackage", `
+config: {
+	strict: primary: schemaPackage.#Settings & {size: 1}
+	lenient: port: int
+}`)
+	value := consumer(valid, "config.strict").instance(t, "consumer")
+	lenient := value["config"].(map[string]interface{})["lenient"].(map[string]interface{})
+	if port, present := lenient["port"]; !present || port != nil {
+		t.Errorf("expected lenient sibling to export as null, got %v", lenient)
+	}
+}
+
+func TestConcretePaths_QuotedAndIndexedPaths(t *testing.T) {
+	moduleRoot := writeImportingModule(t, "schemaPackage", `
+"my-config": items: [
+	{size: 1},
+	schemaPackage.#Settings & {enabled: true},
+]`)
+	consumer(moduleRoot, `"my-config".items[0]`).instance(t, "consumer")
+	failure := consumer(moduleRoot, `"my-config".items[1]`).failureText(t)
+	assertContains(t, failure, `"my-config".items[1]`, "field is required but not present")
+}
+
+func TestConcretePaths_MissingPathFailsClosed(t *testing.T) {
+	moduleRoot := writeImportingModule(t, "schemaPackage", `config: schemaPackage.#Settings & {size: 1}`)
+	for _, path := range []string{"absent", "config.absent", "config.size.deeper"} {
+		failure := consumer(moduleRoot, path).failureText(t)
+		assertContains(t, failure, "consumer: "+path+": concrete path does not exist")
+	}
+}
+
+func TestConcretePaths_MalformedPathIsInvalidInput(t *testing.T) {
+	moduleRoot := writeImportingModule(t, "schemaPackage", `config: schemaPackage.#Settings & {size: 1}`)
+	for _, path := range []string{"", "   ", "config..size", "config[", "config.", "1config"} {
+		bridgeError := consumer(moduleRoot, path).failure(t)
+		assertErrorCode(t, bridgeError, ErrorCodeInvalidInput)
+		assertContains(t, bridgeError.Message, "concrete path")
+	}
+}
+
+// Instance failures ------------------------------------------------------------
+
+// writeMixedModule writes a module with two instances of the test package:
+// "valid" evaluates and "broken" fails to build.
+func writeMixedModule(t *testing.T) string {
+	t.Helper()
+	return writeCueModule(t, map[string]string{
+		"valid/values.cue":  packageSource(`config: size: 1`),
+		"broken/values.cue": packageSource(`config: size: 1 & 2`),
+		"other/values.cue":  "package other\n\nconfig: size: \"ignored\"\n",
+	})
+}
+
+func TestInstanceFailures_AreSkippedByDefault(t *testing.T) {
+	// With the default skip policy an instance that fails to build is left
+	// out of a recursive result as long as another instance succeeds.
+	moduleRoot := writeMixedModule(t)
+	result := evaluation{moduleRoot: moduleRoot, recursive: true, packageName: packageNamed(testPackageName)}.result(t)
+	if _, ok := result.Instances["valid"]; !ok || len(result.Instances) != 1 {
+		t.Errorf("expected only the valid instance, got %v", instanceNames(result))
+	}
+}
+
+func TestInstanceFailures_FailPolicyNamesEveryFailure(t *testing.T) {
+	moduleRoot := writeMixedModule(t)
+	bridgeError := evaluation{
+		moduleRoot:       moduleRoot,
+		recursive:        true,
+		packageName:      packageNamed(testPackageName),
+		instanceFailures: InstanceFailuresFail,
+	}.failure(t)
+	assertErrorCode(t, bridgeError, ErrorCodeBuildValue)
+	assertContains(t, bridgeError.Message, "1 instance(s) could not be evaluated", "broken: config.size: conflicting values")
+	if strings.Contains(bridgeError.Message, "valid:") || strings.Contains(bridgeError.Message, "other:") {
+		t.Errorf("only failed instances should be named: %s", bridgeError.Message)
+	}
+}
+
+func TestInstanceFailures_FailPolicyIncludesConcretePathFailures(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"complete/values.cue":   packageSource(`config: size: 1`),
+		"incomplete/values.cue": packageSource(`config: size: int`),
+		"missing/values.cue":    packageSource(`other: 1`),
+	})
+	base := evaluation{
+		moduleRoot:    moduleRoot,
+		recursive:     true,
+		packageName:   packageNamed(testPackageName),
+		concretePaths: []string{"config"},
+	}
+	result := base.result(t)
+	if _, ok := result.Instances["complete"]; !ok || len(result.Instances) != 1 {
+		t.Errorf("expected only the complete instance, got %v", instanceNames(result))
+	}
+
+	strict := base
+	strict.instanceFailures = InstanceFailuresFail
+	bridgeError := strict.failure(t)
+	assertContains(t, bridgeError.Message,
+		"2 instance(s) could not be evaluated",
+		"incomplete: config: config.size: incomplete value int",
+		"missing: config: concrete path does not exist",
+	)
+	if strings.Index(bridgeError.Message, "incomplete:") > strings.Index(bridgeError.Message, "missing:") {
+		t.Errorf("failures should be sorted by instance: %s", bridgeError.Message)
+	}
+}
+
+func TestInstanceFailures_FailPolicyAcceptsCleanModule(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"first/values.cue":  packageSource(`config: size: 1`),
+		"second/values.cue": packageSource(`config: size: 2`),
+	})
+	result := evaluation{
+		moduleRoot:       moduleRoot,
+		recursive:        true,
+		packageName:      packageNamed(testPackageName),
+		instanceFailures: InstanceFailuresFail,
+	}.result(t)
+	if len(result.Instances) != 2 {
+		t.Errorf("expected two instances, got %v", instanceNames(result))
+	}
+}
+
+func TestInstanceFailures_ExplicitSkipPolicyMatchesDefault(t *testing.T) {
+	moduleRoot := writeMixedModule(t)
+	result := evaluation{
+		moduleRoot:       moduleRoot,
+		recursive:        true,
+		packageName:      packageNamed(testPackageName),
+		instanceFailures: InstanceFailuresSkip,
+	}.result(t)
+	if _, ok := result.Instances["valid"]; !ok || len(result.Instances) != 1 {
+		t.Errorf("expected only the valid instance, got %v", instanceNames(result))
+	}
+}
+
+func TestInstanceFailures_UnknownPolicyIsInvalidInput(t *testing.T) {
+	moduleRoot := writeMixedModule(t)
+	bridgeError := evaluation{
+		moduleRoot:       moduleRoot,
+		recursive:        true,
+		packageName:      packageNamed(testPackageName),
+		instanceFailures: "ignore",
+	}.failure(t)
+	assertErrorCode(t, bridgeError, ErrorCodeInvalidInput)
+	assertContains(t, bridgeError.Message, `Unknown instanceFailures value "ignore"`)
+}
+
+func TestUnfilteredRecursiveEvaluation(t *testing.T) {
+	// Without a package filter a recursive load evaluates the single package
+	// of every directory, whatever it is called.
+	moduleRoot := writeCueModule(t, map[string]string{
+		"first/values.cue":  "package first\n\nname: \"one\"\n",
+		"second/values.cue": "package second\n\nname: \"two\"\n",
+	})
+	result := evaluation{moduleRoot: moduleRoot, recursive: true, instanceFailures: InstanceFailuresFail}.result(t)
+	if len(result.Instances) != 2 {
+		t.Errorf("expected both packages, got %v", instanceNames(result))
+	}
+
+	// A directory holding two packages is a loader-level failure with no
+	// instance directory; it is named by the load pattern.
+	mixed := writeCueModule(t, map[string]string{
+		"first/values.cue": "package first\n\nname: \"one\"\n",
+		"mixed/a.cue":      "package alpha\n\nname: \"alpha\"\n",
+		"mixed/b.cue":      "package beta\n\nname: \"beta\"\n",
+	})
+	bridgeError := evaluation{moduleRoot: mixed, recursive: true, instanceFailures: InstanceFailuresFail}.failure(t)
+	assertContains(t, bridgeError.Message, `./...: found packages "alpha"`)
+}
+
+// Every package ------------------------------------------------------------------
+
+// writeMultiplePackageModule writes a module with the test package at the
+// root and in a subdirectory, a directory holding two packages, and a file
+// without a package clause.
+func writeMultiplePackageModule(t *testing.T, extraFiles map[string]string) string {
+	t.Helper()
+	files := map[string]string{
+		"values.cue":        packageSource(`name: "root"`),
+		"child/values.cue":  packageSource(`child: true`),
+		"mixed/alpha.cue":   "package alpha\n\nname: \"alpha\"\n",
+		"mixed/beta.cue":    "package beta\n\nname: \"beta\"\n",
+		"unnamed/data.cue":  "value: 1\n",
+		"single/values.cue": "package single\n\nname: \"single\"\n",
+	}
+	for name, contents := range extraFiles {
+		files[name] = contents
+	}
+	return writeCueModule(t, files)
+}
+
+func allPackages(moduleRoot string) evaluation {
+	return evaluation{moduleRoot: moduleRoot, recursive: true, packageScope: PackageScopeAll}
+}
+
+func assertInstanceKeys(t *testing.T, result ModuleResult, expected ...string) {
+	t.Helper()
+	if len(result.Instances) != len(expected) {
+		t.Errorf("expected instances %v, got %v", expected, instanceNames(result))
+	}
+	for _, key := range expected {
+		if _, ok := result.Instances[key]; !ok {
+			t.Errorf("instance %q missing from %v", key, instanceNames(result))
 		}
+	}
+}
+
+func TestPackageScopeAll_KeysEveryPackageByDirectoryAndPackage(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	result := allPackages(moduleRoot).result(t)
+	assertInstanceKeys(t, result,
+		".:app", "child:app", "mixed:alpha", "mixed:beta", "single:single", "unnamed:_")
+
+	// Both packages of the shared directory are evaluated on their own.
+	var alpha, beta map[string]interface{}
+	if err := json.Unmarshal(result.Instances["mixed:alpha"], &alpha); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(result.Instances["mixed:beta"], &beta); err != nil {
+		t.Fatal(err)
+	}
+	if alpha["name"] != "alpha" || beta["name"] != "beta" {
+		t.Errorf("unexpected package values: alpha=%v beta=%v", alpha, beta)
+	}
+
+	// Package instances in subdirectories include the same package's files
+	// from ancestor directories, as in any CUE load.
+	var child map[string]interface{}
+	if err := json.Unmarshal(result.Instances["child:app"], &child); err != nil {
+		t.Fatal(err)
+	}
+	if child["name"] != "root" || child["child"] != true {
+		t.Errorf("unexpected child instance: %v", child)
+	}
+
+	// Projects use the same keys.
+	projects := strings.Join(result.Projects, ",")
+	assertContains(t, projects, ".:app", "mixed:alpha", "mixed:beta")
+}
+
+func TestPackageScopeAll_ExactDirectory(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	exact := evaluation{moduleRoot: moduleRoot, targetDirectory: "mixed", packageScope: PackageScopeAll}
+	assertInstanceKeys(t, exact.result(t), "mixed:alpha", "mixed:beta")
+
+	root := evaluation{moduleRoot: moduleRoot, packageScope: PackageScopeAll}
+	assertInstanceKeys(t, root.result(t), ".:app")
+}
+
+func TestPackageScopeAll_MetadataUsesInstanceKeys(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	withMeta := allPackages(moduleRoot)
+	withMeta.withMeta = true
+	meta := withMeta.result(t).Meta
+	entry, ok := meta["mixed:beta/name"]
+	if !ok {
+		t.Fatalf("meta entry mixed:beta/name missing")
+	}
+	if entry.Directory != "mixed" || entry.Filename != "mixed/beta.cue" || entry.Line != 3 {
+		t.Errorf("unexpected meta entry: %+v", entry)
+	}
+	if rootEntry, ok := meta[".:app/name"]; !ok || rootEntry.Directory != "." {
+		t.Errorf("unexpected root meta entry: %+v (present: %t)", rootEntry, ok)
+	}
+}
+
+func TestPackageScopeAll_FailPolicyNamesFailedPackages(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, map[string]string{
+		"mixed/broken.cue": "package broken\n\nname: 1 & 2\n",
+	})
+
+	// With the default policy the broken package is left out.
+	assertInstanceKeys(t, allPackages(moduleRoot).result(t),
+		".:app", "child:app", "mixed:alpha", "mixed:beta", "single:single", "unnamed:_")
+
+	strict := allPackages(moduleRoot)
+	strict.instanceFailures = InstanceFailuresFail
+	bridgeError := strict.failure(t)
+	assertErrorCode(t, bridgeError, ErrorCodeBuildValue)
+	assertContains(t, bridgeError.Message,
+		"1 instance(s) could not be evaluated",
+		"mixed:broken: name: conflicting values",
+	)
+}
+
+func TestPackageScopeAll_ComposesWithConcretePaths(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"mixed/alpha.cue": "package alpha\n\nname: \"alpha\"\n",
+		"mixed/beta.cue":  "package beta\n\nname: string\n",
+	})
+	strict := allPackages(moduleRoot)
+	strict.concretePaths = []string{"name"}
+	strict.instanceFailures = InstanceFailuresFail
+	bridgeError := strict.failure(t)
+	assertContains(t, bridgeError.Message, "mixed:beta: name: name: incomplete value string")
+	if strings.Contains(bridgeError.Message, "mixed:alpha") {
+		t.Errorf("only the failed package should be named: %s", bridgeError.Message)
+	}
+}
+
+func TestPackageScopeAll_RejectsPackageName(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	withName := allPackages(moduleRoot)
+	withName.packageName = packageNamed(testPackageName)
+	bridgeError := withName.failure(t)
+	assertErrorCode(t, bridgeError, ErrorCodeInvalidInput)
+	assertContains(t, bridgeError.Message, "cannot be combined with package")
+
+	// The legacy positional package parameter is rejected the same way.
+	options := allPackages(moduleRoot).optionsJSON(t)
+	envelope := decodeEnvelope(t, evaluateModuleResponse(moduleRoot, testPackageName, options))
+	if envelope.Error == nil {
+		t.Fatalf("expected an error, got: %s", envelope.Ok)
+	}
+	assertErrorCode(t, envelope.Error, ErrorCodeInvalidInput)
+}
+
+func TestPackageScope_UnknownValueIsInvalidInput(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	unknown := allPackages(moduleRoot)
+	unknown.packageScope = "every"
+	bridgeError := unknown.failure(t)
+	assertErrorCode(t, bridgeError, ErrorCodeInvalidInput)
+	assertContains(t, bridgeError.Message, `Unknown packageScope value "every"`)
+}
+
+func TestPackageScope_NamedKeepsDirectoryKeys(t *testing.T) {
+	// The default and the explicit "named" scope keep plain directory keys.
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	for _, scope := range []string{"", PackageScopeNamed} {
+		named := evaluation{
+			moduleRoot:   moduleRoot,
+			recursive:    true,
+			packageName:  packageNamed(testPackageName),
+			packageScope: scope,
+		}
+		assertInstanceKeys(t, named.result(t), ".", "child")
 	}
 }

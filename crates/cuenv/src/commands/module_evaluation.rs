@@ -2,81 +2,120 @@ use super::{CommandExecutor, convert_engine_error, env_file, schema_compat};
 use crate::commands::module_utils::EvaluationMetadataBuilder;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
+use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, ModuleEvaluationInput, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// A path-local evaluation of the instance in one directory.
+pub(super) struct PathEvaluation<'request> {
+    /// Canonical directory of the instance.
+    pub(super) target_path: &'request Path,
+    /// CUE package to evaluate.
+    pub(super) package: &'request str,
+    /// Top-level fields that must evaluate to concrete values. Ordinary
+    /// commands name none; a command whose fields drive external side
+    /// effects names them, so an undefined reference or a missing required
+    /// argument there fails evaluation instead of becoming null.
+    pub(super) concrete_paths: Vec<String>,
+    /// Export only these paths after building the CUE instance.
+    pub(super) export_paths: Vec<String>,
+}
+
+/// Evaluate the instance in one directory of its CUE module.
+///
+/// # Errors
+///
+/// Returns an error when no CUE module contains the directory, evaluation
+/// fails, or the directory has no instance of the package.
+pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluation> {
+    let PathEvaluation {
+        target_path,
+        package,
+        concrete_paths,
+        export_paths,
+    } = request;
+    let module_root = env_file::find_cue_module_root(target_path).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "No CUE module found (looking for cue.mod/) starting from: {}",
+            target_path.display()
+        ))
+    })?;
+    schema_compat::warn_for_module(&module_root)?;
+
+    let target_rel_path = compute_relative_path(target_path, &module_root);
+    let options = ModuleEvalOptions {
+        recursive: false,
+        with_meta: true,
+        with_references: true,
+        target_dir: Some(target_path.to_string_lossy().to_string()),
+        concrete_paths,
+        export_paths,
+        task_field: Some(TASK_FIELD.to_string()),
+        ..Default::default()
+    };
+
+    let raw = cuengine::evaluate_module(&module_root, package, Some(&options))
+        .map_err(convert_engine_error)?;
+
+    // The engine deliberately represents an absent package as an empty
+    // successful result so presentation-only integrations (such as
+    // Cuetty) can distinguish absence from a malformed CUE file. The
+    // cuenv CLI, however, requires its selected package to exist before
+    // any command can operate on the module.
+    if raw.instances.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "No env.cue files declaring package '{package}' found in module: {}",
+            module_root.display(),
+        )));
+    }
+
+    let mut instances = HashMap::new();
+    let mut projects = Vec::new();
+    let mut metadata = EvaluationMetadataBuilder::default();
+
+    for (path_str, value) in raw.instances {
+        let rel_path = if path_str == "." {
+            target_rel_path.clone()
+        } else {
+            path_str
+        };
+        instances.insert(rel_path, value);
+    }
+
+    for project_path in raw.projects {
+        let rel_project_path = if project_path == "." {
+            target_rel_path.clone()
+        } else {
+            project_path
+        };
+        if !projects.contains(&rel_project_path) {
+            projects.push(rel_project_path);
+        }
+    }
+
+    for (meta_key, meta_value) in raw.meta {
+        let adjusted_key = adjust_meta_key_path(&meta_key, &target_rel_path);
+        metadata.insert(adjusted_key, meta_value);
+    }
+
+    Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+        root: module_root,
+        raw_instances: instances,
+        project_paths: projects,
+        metadata: metadata.finish(),
+    }))
+}
+
 impl CommandExecutor {
     pub(super) fn evaluate_path_module(&self, target_path: &Path) -> Result<ModuleEvaluation> {
-        let module_root = env_file::find_cue_module_root(target_path).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "No CUE module found (looking for cue.mod/) starting from: {}",
-                target_path.display()
-            ))
-        })?;
-        schema_compat::warn_for_module(&module_root)?;
-
-        let target_rel_path = compute_relative_path(target_path, &module_root);
-        let options = ModuleEvalOptions {
-            recursive: false,
-            with_meta: true,
-            with_references: true,
-            target_dir: Some(target_path.to_string_lossy().to_string()),
-            ..Default::default()
-        };
-
-        let raw = cuengine::evaluate_module(&module_root, &self.package, Some(&options))
-            .map_err(convert_engine_error)?;
-
-        // The engine deliberately represents an absent package as an empty
-        // successful result so presentation-only integrations (such as
-        // Cuetty) can distinguish absence from a malformed CUE file. The
-        // cuenv CLI, however, requires its selected package to exist before
-        // any command can operate on the module.
-        if raw.instances.is_empty() {
-            return Err(cuenv_core::Error::configuration(format!(
-                "No env.cue files declaring package '{}' found in module: {}",
-                self.package,
-                module_root.display(),
-            )));
-        }
-
-        let mut instances = HashMap::new();
-        let mut projects = Vec::new();
-        let mut metadata = EvaluationMetadataBuilder::default();
-
-        for (path_str, value) in raw.instances {
-            let rel_path = if path_str == "." {
-                target_rel_path.clone()
-            } else {
-                path_str
-            };
-            instances.insert(rel_path, value);
-        }
-
-        for project_path in raw.projects {
-            let rel_project_path = if project_path == "." {
-                target_rel_path.clone()
-            } else {
-                project_path
-            };
-            if !projects.contains(&rel_project_path) {
-                projects.push(rel_project_path);
-            }
-        }
-
-        for (meta_key, meta_value) in raw.meta {
-            let adjusted_key = adjust_meta_key_path(&meta_key, &target_rel_path);
-            metadata.insert(adjusted_key, meta_value);
-        }
-
-        Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
-            root: module_root,
-            raw_instances: instances,
-            project_paths: projects,
-            metadata: metadata.finish(),
-        }))
+        evaluate_path(PathEvaluation {
+            target_path,
+            package: &self.package,
+            concrete_paths: Vec::new(),
+            export_paths: Vec::new(),
+        })
     }
 
     pub(super) fn evaluate_workspace_module(&self, module_root: &Path) -> Result<ModuleEvaluation> {
@@ -108,6 +147,7 @@ impl CommandExecutor {
             recursive: true,
             with_meta: true,
             with_references: true,
+            task_field: Some(TASK_FIELD.to_string()),
             ..Default::default()
         };
 
@@ -167,6 +207,7 @@ impl CommandExecutor {
                     with_meta: true,
                     with_references: true,
                     target_dir: Some(dir.to_string_lossy().to_string()),
+                    task_field: Some(TASK_FIELD.to_string()),
                     ..Default::default()
                 };
                 let dir_rel_path = compute_relative_path(dir, module_root);

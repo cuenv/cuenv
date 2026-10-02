@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -144,7 +145,7 @@ func invalidInstanceDeclaresPackage(inst *build.Instance, packageName string) bo
 	return false
 }
 
-func createErrorResponse(code, message string, hint *string) *C.char {
+func createErrorResponse(code, message string, hint *string) string {
 	error := &BridgeError{
 		Code:    code,
 		Message: message,
@@ -157,14 +158,13 @@ func createErrorResponse(code, message string, hint *string) *C.char {
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
 		// Fallback error response if JSON marshaling fails
-		fallbackResponse := fmt.Sprintf(`{"version":"%s","error":{"code":"%s","message":"Failed to marshal error response: %s"}}`, BridgeVersion, ErrorCodeJSONMarshal, err.Error())
-		return C.CString(fallbackResponse)
+		return fmt.Sprintf(`{"version":"%s","error":{"code":"%s","message":"Failed to marshal error response: %s"}}`, BridgeVersion, ErrorCodeJSONMarshal, err.Error())
 	}
-	return C.CString(string(responseBytes))
+	return string(responseBytes)
 }
 
 // Helper function to create success response
-func createSuccessResponse(data string) *C.char {
+func createSuccessResponse(data string) string {
 	// Convert string to RawMessage to preserve field ordering
 	rawData := json.RawMessage(data)
 	response := &BridgeResponse{
@@ -177,7 +177,7 @@ func createSuccessResponse(data string) *C.char {
 		msg := fmt.Sprintf("Failed to marshal success response: %s", err.Error())
 		return createErrorResponse(ErrorCodeJSONMarshal, msg, nil)
 	}
-	return C.CString(string(responseBytes))
+	return string(responseBytes)
 }
 
 type moduleDependencyVersion struct {
@@ -210,7 +210,12 @@ func parseModuleFile(moduleRoot string) (*modfile.File, string, error) {
 
 //export cue_module_dependency_version
 func cue_module_dependency_version(moduleRootPath *C.char, dependencyPath *C.char) *C.char {
-	var result *C.char
+	return C.CString(moduleDependencyVersionResponse(C.GoString(moduleRootPath), C.GoString(dependencyPath)))
+}
+
+// moduleDependencyVersionResponse implements cue_module_dependency_version
+// on Go strings so it can be exercised without cgo.
+func moduleDependencyVersionResponse(moduleRoot string, dependencyBasePath string) (result string) {
 	defer func() {
 		if r := recover(); r != nil {
 			panicMsg := fmt.Sprintf("Internal panic: %v", r)
@@ -218,8 +223,6 @@ func cue_module_dependency_version(moduleRootPath *C.char, dependencyPath *C.cha
 		}
 	}()
 
-	moduleRoot := C.GoString(moduleRootPath)
-	dependencyBasePath := C.GoString(dependencyPath)
 	file, moduleFile, err := parseModuleFile(moduleRoot)
 	if err != nil {
 		hint := "Ensure path contains a valid cue.mod/module.cue file"
@@ -267,6 +270,13 @@ type ModuleResult struct {
 	Instances map[string]json.RawMessage `json:"instances"`
 	Projects  []string                   `json:"projects"`       // paths that conform to schema.#Project
 	Meta      map[string]ValueMeta       `json:"meta,omitempty"` // "path/field" -> source location
+	// Present maps each exported instance key to the presencePaths that
+	// exist in it (only when presencePaths is set).
+	Present map[string][]string `json:"present,omitempty"`
+	// SkippedDirectories lists the directories a recursive evaluation left
+	// out although they hold CUE files (only with skippedDirectories
+	// "report").
+	SkippedDirectories []SkippedDirectory `json:"skippedDirectories,omitempty"`
 }
 
 // ModuleEvalOptions controls how module evaluation behaves
@@ -276,22 +286,83 @@ type ModuleEvalOptions struct {
 	Recursive      bool    `json:"recursive"`      // true: cue eval ./..., false: cue eval .
 	PackageName    *string `json:"packageName"`    // Filter to specific package, nil = all packages
 	TargetDir      *string `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
+	// ConcretePaths lists CUE paths (cue.ParsePath syntax, nested selectors
+	// allowed) that must exist and be fully concrete in every evaluated
+	// instance. A malformed path is an input error; a missing or
+	// non-concrete path fails that instance.
+	ConcretePaths []string `json:"concretePaths"`
+	// InstanceFailures decides what happens to a loaded instance that fails
+	// to load, build, validate or export. InstanceFailuresSkip (the default,
+	// also selected by an empty value) leaves it out of the result as long as
+	// another instance succeeds. InstanceFailuresFail fails the whole
+	// evaluation with an error naming every failed instance. Instances
+	// excluded by the package filter are not failures.
+	InstanceFailures string `json:"instanceFailures"`
+	// PackageScope selects which packages are evaluated. PackageScopeNamed
+	// (the default, also selected by an empty value) evaluates the package
+	// named by PackageName or the legacy parameter, or the single package of
+	// each directory when no name is given; instances are keyed by their
+	// directory relative to the module root. PackageScopeAll evaluates every
+	// package in every loaded directory, including directories holding
+	// several packages, and keys each instance as "<directory>:<package>"
+	// (for example ".:app" or "services/api:worker"); no package name may be
+	// given with it. Meta and projects entries use the same keys.
+	PackageScope string `json:"packageScope"`
+	// ExportPaths, when not empty, limits each exported instance to these
+	// regular-field paths (CUE path syntax), nested as in the instance; a
+	// path an instance lacks is left out. Loading, building, concretePaths
+	// and instanceFailures are unchanged: only the export is smaller.
+	ExportPaths []string `json:"exportPaths"`
+	// PresencePaths lists regular-field paths whose existence is reported
+	// per instance in ModuleResult.Present, without exporting their values.
+	PresencePaths []string `json:"presencePaths"`
+	// TaskField names the top-level field that holds the task graph. Sequence
+	// items inside it get their hidden `_name` field injected before export
+	// (see injectTaskNames), and a projection that exports nothing below this
+	// field skips the injection. nil selects defaultTaskField, the behaviour
+	// of callers that predate this option; an empty string turns the
+	// injection off.
+	TaskField *string `json:"taskField"`
+	// SkippedDirectories decides whether a recursive evaluation reports the
+	// directories it leaves out (SkippedDirectoriesReport) or not
+	// (SkippedDirectoriesIgnore, the default, also selected by an empty
+	// value). The rules follow CUE's "./..." walk: below the walk root,
+	// directories whose name starts with "." or "_", directories named
+	// "testdata", and directories holding their own cue.mod are not loaded.
+	SkippedDirectories string `json:"skippedDirectories"`
 }
+
+// Values accepted by ModuleEvalOptions.PackageScope.
+const (
+	PackageScopeNamed = "named"
+	PackageScopeAll   = "all"
+)
+
+// Values accepted by ModuleEvalOptions.InstanceFailures.
+const (
+	InstanceFailuresSkip = "skip"
+	InstanceFailuresFail = "fail"
+)
 
 //export cue_eval_module
 func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C.char) *C.char {
-	// Add recover to catch any panics
-	var result *C.char
+	return C.CString(evaluateModuleResponse(C.GoString(moduleRootPath), C.GoString(packageName), C.GoString(optionsJSON)))
+}
+
+// evaluateModuleResponse implements cue_eval_module on Go strings and returns
+// the JSON bridge envelope. Keeping the C boundary in the exported wrapper
+// lets Go tests exercise evaluation without cgo in test files.
+//
+// goPackageName is the legacy package parameter kept for backwards
+// compatibility; options.packageName takes precedence over it.
+func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptionsJSON string) (result string) {
+	// Recover from panics so the caller always receives a bridge envelope.
 	defer func() {
 		if r := recover(); r != nil {
-			panic_msg := fmt.Sprintf("Internal panic: %v", r)
-			result = createErrorResponse(ErrorCodePanicRecover, panic_msg, nil)
+			panicMessage := fmt.Sprintf("Internal panic: %v", r)
+			result = createErrorResponse(ErrorCodePanicRecover, panicMessage, nil)
 		}
 	}()
-
-	goModuleRoot := C.GoString(moduleRootPath)
-	goPackageName := C.GoString(packageName) // Legacy parameter for backwards compatibility
-	goOptionsJSON := C.GoString(optionsJSON)
 
 	// Parse options (with defaults)
 	options := ModuleEvalOptions{
@@ -306,10 +377,66 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		}
 	}
 
+	switch options.InstanceFailures {
+	case "", InstanceFailuresSkip, InstanceFailuresFail:
+	default:
+		hint := fmt.Sprintf("instanceFailures must be %q or %q", InstanceFailuresSkip, InstanceFailuresFail)
+		result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Unknown instanceFailures value %q", options.InstanceFailures), &hint)
+		return result
+	}
+
+	concretePaths, err := parseConcretePaths(options.ConcretePaths)
+	if err != nil {
+		hint := "concretePaths entries use CUE path syntax, for example \"config\" or \"config.database\""
+		result = createErrorResponse(ErrorCodeInvalidInput, err.Error(), &hint)
+		return result
+	}
+	projectionHint := "exportPaths and presencePaths entries use CUE path syntax with regular fields, for example \"name\" or \"config.database\""
+	exportPaths, err := parseProjectionPaths("exportPaths", options.ExportPaths)
+	if err != nil {
+		result = createErrorResponse(ErrorCodeInvalidInput, err.Error(), &projectionHint)
+		return result
+	}
+	presencePaths, err := parseProjectionPaths("presencePaths", options.PresencePaths)
+	if err != nil {
+		result = createErrorResponse(ErrorCodeInvalidInput, err.Error(), &projectionHint)
+		return result
+	}
+
+	taskField := defaultTaskField
+	if options.TaskField != nil {
+		taskField = *options.TaskField
+	}
+
+	switch options.SkippedDirectories {
+	case "", SkippedDirectoriesIgnore, SkippedDirectoriesReport:
+	default:
+		hint := fmt.Sprintf("skippedDirectories must be %q or %q", SkippedDirectoriesIgnore, SkippedDirectoriesReport)
+		result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Unknown skippedDirectories value %q", options.SkippedDirectories), &hint)
+		return result
+	}
+
 	// PackageName from options takes precedence over legacy parameter
 	effectivePackageName := goPackageName
 	if options.PackageName != nil {
 		effectivePackageName = *options.PackageName
+	}
+
+	allPackages := false
+	switch options.PackageScope {
+	case "", PackageScopeNamed:
+	case PackageScopeAll:
+		if effectivePackageName != "" {
+			hint := fmt.Sprintf("Pass an empty package name with packageScope %q", PackageScopeAll)
+			result = createErrorResponse(ErrorCodeInvalidInput,
+				fmt.Sprintf("packageScope %q evaluates every package and cannot be combined with package %q", PackageScopeAll, effectivePackageName), &hint)
+			return result
+		}
+		allPackages = true
+	default:
+		hint := fmt.Sprintf("packageScope must be %q or %q", PackageScopeNamed, PackageScopeAll)
+		result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Unknown packageScope value %q", options.PackageScope), &hint)
+		return result
 	}
 
 	// Validate inputs
@@ -373,7 +500,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// keeps a malformed unrelated file from poisoning a valid requested package
 	// while preserving syntax/build errors in matching files.
 	loaderPackage := effectivePackageName
-	if effectivePackageName != "" && options.Recursive {
+	if (effectivePackageName != "" && options.Recursive) || allPackages {
 		loaderPackage = "*"
 	}
 	packageOverlay, packageMatched, err := packageFilterOverlay(evalDir, effectivePackageName, options.Recursive)
@@ -395,11 +522,16 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		Overlay:    packageOverlay,
 	}
 
-	var loadPattern string
+	// A recursive load walks the directories itself (with CUE's "./..." rules,
+	// see recursiveDirectories) and hands the loader the explicit list, so a
+	// root directory named ".x" or "_x" loads like any other root. loadPattern
+	// names the request in errors.
+	loadPattern := "."
+	loadPatterns := []string{loadPattern}
+	var skippedDirectories []SkippedDirectory
 	if options.Recursive {
 		loadPattern = "./..."
-	} else {
-		loadPattern = "."
+		loadPatterns, skippedDirectories = recursiveDirectories(evalDir, goModuleRoot, options.SkippedDirectories)
 	}
 
 	// NOTE: We intentionally do NOT append ":packageName" to the load pattern.
@@ -409,18 +541,29 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// unifying ancestor package files, not just directories with .cue files.
 
 	// Load CUE instances using native CUE loader
-	loadedInstances := load.Instances([]string{loadPattern}, cfg)
+	var loadedInstances []*build.Instance
+	if len(loadPatterns) > 0 {
+		loadedInstances = load.Instances(loadPatterns, cfg)
+	}
+	if options.Recursive || allPackages {
+		// Instances without files of their own (see withoutEmptyInstances)
+		// are not packages anyone wrote.
+		loadedInstances = withoutEmptyInstances(loadedInstances)
+	}
 	if len(loadedInstances) == 0 {
 		// A package-filtered query is also a presence query for callers such as
 		// Cuetty. No files in the exact target directory means the requested
 		// package is absent, not that CUE evaluation itself failed. Returning an
 		// empty result keeps absence distinct from syntax/build errors below.
 		if effectivePackageName != "" {
-			result = createSuccessResponse(`{"instances":{},"projects":[]}`)
+			result = emptyResultResponse(skippedDirectories)
 			return result
 		}
-		hint := "No CUE files found matching the load pattern"
-		result = createErrorResponse(ErrorCodeLoadInstance, "No CUE instances found", &hint)
+		message := fmt.Sprintf("No CUE instances found in %s", evalDir)
+		for _, skipped := range skippedDirectories {
+			message += fmt.Sprintf("\nnot loaded: %s (%s)", skipped.Path, skipped.Reason)
+		}
+		result = createErrorResponse(ErrorCodeLoadInstance, message, nil)
 		return result
 	}
 
@@ -447,7 +590,14 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 				packageMismatches = append(packageMismatches, fmt.Sprintf("%s has no package '%s'", inst.Dir, effectivePackageName))
 				continue
 			}
-			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", inst.Dir, inst.Err))
+			// A loader-level failure (for example two packages in one
+			// directory of an unfiltered recursive load) has no instance
+			// directory; name the load pattern instead.
+			failedInstance := loadPattern
+			if inst.Dir != "" {
+				failedInstance = instanceKey(goModuleRoot, inst, allPackages)
+			}
+			loadErrors = append(loadErrors, instanceFailure(failedInstance, inst.Err, goModuleRoot))
 			continue
 		}
 		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
@@ -461,71 +611,43 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	instances := make(map[string]json.RawMessage)
 	projects := []string{} // Use empty slice, not nil, so JSON serializes as [] instead of null
 	allMeta := make(map[string]ValueMeta)
+	present := make(map[string][]string)
 	var buildErrors []string
 
-	// Build CUE values SEQUENTIALLY to avoid race conditions.
-	// CUE's build.Instance objects share internal state (file caches, parsed ASTs),
-	// so concurrent BuildInstance calls on different instances can race.
+	// Build and export CUE values SEQUENTIALLY to avoid race conditions.
+	// CUE's build.Instance objects share internal state (file caches, parsed
+	// ASTs), so concurrent BuildInstance calls on different instances can
+	// race; read-looking APIs such as Fields, Decode, and ReferencePath can
+	// mutate evaluator state. Each instance is built in its own context and
+	// exported right after it is built, then dropped, so the evaluated values
+	// of a large module are not all held in memory at once.
 	type builtInstance struct {
 		relPath   string
 		value     cue.Value
 		isProject bool
 		inst      *build.Instance // Needed for meta extraction
 	}
-	var builtInstances []builtInstance
-
-	ctx := cuecontext.New()
-	for _, inst := range validInstances {
-		// Calculate relative path from module root
-		relPath, err := filepath.Rel(goModuleRoot, inst.Dir)
-		if err != nil {
-			relPath = inst.Dir
-		}
-		if relPath == "" {
-			relPath = "."
-		}
-
-		// Build the CUE value (must be sequential)
-		v := ctx.BuildInstance(inst)
-		if v.Err() != nil {
-			// Collect build errors so they can be reported if no instances succeed
-			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", relPath, v.Err()))
-			continue
-		}
-
-		// Inject sequence item _name fields so that computed output ref fields
-		// (stdout, stderr, exitCode) resolve to concrete values everywhere.
-		v = injectTaskNames(v)
-
-		// Check if this is a Project (has required "name" field) vs Base (no name)
-		isProject := false
-		nameField := v.LookupPath(cue.ParsePath("name"))
-		if nameField.Exists() && nameField.Err() == nil {
-			isProject = true
-		}
-
-		builtInstances = append(builtInstances, builtInstance{
-			relPath:   relPath,
-			value:     v,
-			isProject: isProject,
-			inst:      inst,
-		})
-	}
 
 	moduleRoot := goModuleRoot
 	withMeta := options.WithMeta
 	withReferences := options.WithReferences
 
-	// Walk built CUE values sequentially. Values from one cue.Context share
-	// evaluator caches; read-looking APIs such as Fields, Decode, and
-	// ReferencePath can mutate that state and must not run concurrently.
-	for _, built := range builtInstances {
-		jsonBytes, err := buildJSONClean(built.value)
-		if err != nil {
-			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", built.relPath, err))
-			continue // Skip failed instances
+	exportInstance := func(built builtInstance) {
+		var jsonBytes []byte
+		var exportErr error
+		if len(exportPaths) > 0 {
+			jsonBytes, exportErr = buildProjectedJSON(built.value, exportPaths)
+		} else {
+			jsonBytes, exportErr = buildJSONClean(built.value)
+		}
+		if exportErr != nil {
+			buildErrors = append(buildErrors, instanceFailure(built.relPath, exportErr, goModuleRoot))
+			return // Skip failed instances
 		}
 		instances[built.relPath] = json.RawMessage(jsonBytes)
+		if len(presencePaths) > 0 {
+			present[built.relPath] = presentPaths(built.value, presencePaths)
+		}
 		if built.isProject {
 			projects = append(projects, built.relPath)
 		}
@@ -571,25 +693,87 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		}
 	}
 
+	for _, inst := range validInstances {
+		relPath := instanceKey(goModuleRoot, inst, allPackages)
+
+		// Build the CUE value (must be sequential). Each instance gets its
+		// own context: a context keeps every instance built with it alive,
+		// so one shared context grows with the whole module (about 200 MB
+		// per instance of 200 schema-checked tasks), while imported
+		// packages are cheap to rebuild. Values of different instances are
+		// never combined.
+		ctx := cuecontext.New()
+		v := ctx.BuildInstance(inst)
+		if v.Err() != nil {
+			// Collect build errors so they can be reported if no instances succeed
+			buildErrors = append(buildErrors, instanceFailure(relPath, allErrors(v), goModuleRoot))
+			continue
+		}
+
+		// Caller-named fields must be concrete; see validateConcretePaths.
+		if err := validateConcretePaths(v, concretePaths, goModuleRoot); err != nil {
+			buildErrors = append(buildErrors, instanceFailure(relPath, err, goModuleRoot))
+			continue
+		}
+
+		// Inject sequence item _name fields so that computed output ref fields
+		// (stdout, stderr, exitCode) resolve to concrete values everywhere.
+		// A projection that exports no tasks does not need them.
+		if exportsField(exportPaths, taskField) {
+			v = injectTaskNames(v, taskField)
+		}
+
+		// Check if this is a Project (has required "name" field) vs Base (no name)
+		isProject := false
+		nameField := v.LookupPath(cue.ParsePath("name"))
+		if nameField.Exists() && nameField.Err() == nil {
+			isProject = true
+		}
+
+		exportInstance(builtInstance{
+			relPath:   relPath,
+			value:     v,
+			isProject: isProject,
+			inst:      inst,
+		})
+	}
+
+	if options.InstanceFailures == InstanceFailuresFail && (len(loadErrors) > 0 || len(buildErrors) > 0) {
+		failures := append(append([]string{}, loadErrors...), buildErrors...)
+		sort.Strings(failures)
+		message := fmt.Sprintf("%d instance(s) could not be evaluated:\n%s", len(failures), strings.Join(failures, "\n"))
+		result = createErrorResponse(ErrorCodeBuildValue, message, nil)
+		return result
+	}
+
 	if len(instances) == 0 {
 		// A package filter can legitimately match no instance when the target
 		// directory contains only another package (or no package declaration).
 		// Preserve that as an empty success; load/build errors remain failures.
 		if effectivePackageName != "" && len(loadErrors) == 0 && len(buildErrors) == 0 {
-			result = createSuccessResponse(`{"instances":{},"projects":[]}`)
+			result = emptyResultResponse(skippedDirectories)
 			return result
 		}
-		allErrors := append(loadErrors, buildErrors...)
-		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, package=%s, loadedInstances=%d, validInstances=%d, builtInstances=%d, errors=%v, packageMismatches=%v",
-			evalDir, goModuleRoot, loadPattern, effectivePackageName, len(loadedInstances), len(validInstances), len(builtInstances), allErrors, packageMismatches)
-		result = createErrorResponse(ErrorCodeBuildValue, "No instances could be evaluated", &hint)
+		failures := append(append([]string{}, loadErrors...), buildErrors...)
+		sort.Strings(failures)
+		message := "No instances could be evaluated"
+		if len(failures) > 0 {
+			message = fmt.Sprintf("No instances could be evaluated:\n%s", strings.Join(failures, "\n"))
+		} else if len(packageMismatches) > 0 {
+			message = fmt.Sprintf("No instances could be evaluated: %s", strings.Join(packageMismatches, "; "))
+		}
+		result = createErrorResponse(ErrorCodeBuildValue, message, nil)
 		return result
 	}
 
 	// Marshal the result
 	moduleResult := ModuleResult{
-		Instances: instances,
-		Projects:  projects,
+		Instances:          instances,
+		Projects:           projects,
+		SkippedDirectories: skippedDirectories,
+	}
+	if len(presencePaths) > 0 {
+		moduleResult.Present = present
 	}
 	if (options.WithMeta || options.WithReferences) && len(allMeta) > 0 {
 		moduleResult.Meta = allMeta
@@ -605,28 +789,58 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	return result
 }
 
-// injectTaskNames walks the "tasks" struct in a CUE value and fills the hidden
+// relativeInstancePath names an instance by its directory relative to the
+// module root ("." for the root itself), falling back to the absolute
+// directory when it is not below the root.
+func relativeInstancePath(moduleRoot string, directory string) string {
+	relPath, err := filepath.Rel(moduleRoot, directory)
+	if err != nil {
+		return directory
+	}
+	if relPath == "" {
+		return "."
+	}
+	return relPath
+}
+
+// instanceKey is the result key of an instance: its directory relative to
+// the module root, qualified as "<directory>:<package>" when every package is
+// evaluated (a directory can then hold several instances). CUE package names
+// are identifiers, so the key splits unambiguously at its last colon.
+func instanceKey(moduleRoot string, inst *build.Instance, allPackages bool) string {
+	directory := relativeInstancePath(moduleRoot, inst.Dir)
+	if !allPackages || inst.PkgName == "" {
+		// A load failure may not know its package; name the directory.
+		return directory
+	}
+	return directory + ":" + inst.PkgName
+}
+
+// injectTaskNames walks the struct at the given top-level field in a CUE value and fills the hidden
 // _name field on task nodes that live inside sequences. Named tasks and group
 // children derive _name directly in schema via label aliases; sequence items
 // still need bridge-side injection because CUE does not yet support aliases on
 // list elements.
-func injectTaskNames(v cue.Value) cue.Value {
-	tasksVal := v.LookupPath(cue.ParsePath("tasks"))
+func injectTaskNames(v cue.Value, field string) cue.Value {
+	if field == "" {
+		return v
+	}
+	tasksVal := v.LookupPath(cue.MakePath(cue.Str(field)))
 	if !tasksVal.Exists() || tasksVal.Err() != nil {
 		return v
 	}
 
-	return injectTaskNamesRecursive(v, tasksVal, "")
+	return injectTaskNamesRecursive(v, field, tasksVal, "")
 }
 
 // injectTaskNamesRecursive walks task nodes and fills _name for sequence items.
-func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string) cue.Value {
+func injectTaskNamesRecursive(root cue.Value, field string, node cue.Value, prefix string) cue.Value {
 	switch node.Kind() {
 	case cue.StructKind:
 		// Check if this struct looks like a Task (has "command" or "script" field)
 		if isTaskShaped(node) {
 			if strings.Contains(prefix, "[") {
-				root = fillTaskName(root, prefix)
+				root = fillTaskName(root, field, prefix)
 			}
 			return root
 		}
@@ -646,7 +860,7 @@ func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string) cue
 					if prefix != "" {
 						childPrefix = prefix + "." + label
 					}
-					root = injectTaskNamesRecursive(root, iter.Value(), childPrefix)
+					root = injectTaskNamesRecursive(root, field, iter.Value(), childPrefix)
 				}
 				return root
 			}
@@ -660,7 +874,7 @@ func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string) cue
 			if prefix != "" {
 				childPrefix = prefix + "." + label
 			}
-			root = injectTaskNamesRecursive(root, iter.Value(), childPrefix)
+			root = injectTaskNamesRecursive(root, field, iter.Value(), childPrefix)
 		}
 
 	case cue.ListKind:
@@ -668,7 +882,7 @@ func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string) cue
 		list, _ := node.List()
 		for i := 0; list.Next(); i++ {
 			childPrefix := fmt.Sprintf("%s[%d]", prefix, i)
-			root = injectTaskNamesRecursive(root, list.Value(), childPrefix)
+			root = injectTaskNamesRecursive(root, field, list.Value(), childPrefix)
 		}
 	}
 
@@ -687,12 +901,12 @@ func isTaskShaped(v cue.Value) bool {
 }
 
 // fillTaskName fills the _name hidden field on a sequence task at the given path.
-func fillTaskName(root cue.Value, taskName string) cue.Value {
+func fillTaskName(root cue.Value, field string, taskName string) cue.Value {
 	if taskName == "" {
 		return root
 	}
 
-	namePath, ok := taskFillPath(taskName)
+	namePath, ok := taskFillPath(field, taskName)
 	if !ok {
 		return root
 	}
@@ -701,9 +915,10 @@ func fillTaskName(root cue.Value, taskName string) cue.Value {
 }
 
 // taskFillPath converts a task path like "pipeline[0]" or
-// "release-check[0].verify" into a CUE FillPath that targets tasks.<path>._name.
-func taskFillPath(taskName string) (cue.Path, bool) {
-	selectors := []cue.Selector{cue.Str("tasks")}
+// "release-check[0].verify" into a CUE FillPath that targets
+// <field>.<path>._name.
+func taskFillPath(field string, taskName string) (cue.Path, bool) {
+	selectors := []cue.Selector{cue.Str(field)}
 
 	for i := 0; i < len(taskName); {
 		labelStart := i
@@ -747,6 +962,10 @@ func taskFillPath(taskName string) (cue.Path, bool) {
 	selectors = append(selectors, cue.Hid("_name", schemaPackagePath))
 	return cue.MakePath(selectors...), true
 }
+
+// defaultTaskField is the task graph field used when ModuleEvalOptions.TaskField
+// is not set. It keeps the behaviour of callers that do not pass the option.
+const defaultTaskField = "tasks"
 
 // schemaPackagePath is the CUE import path for the schema package.
 // Hidden fields (_name) are scoped to their defining package, so FillPath

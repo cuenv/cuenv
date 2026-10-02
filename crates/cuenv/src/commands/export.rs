@@ -13,6 +13,7 @@ use super::env_file::{self, EnvFileStatus, find_cue_module_root};
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::Project;
+use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, Result, shell::Shell};
 use cuenv_hooks::{
     ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, HookExecutionState,
@@ -80,6 +81,7 @@ fn evaluate_project(
     let options = ModuleEvalOptions {
         recursive: false,
         target_dir: Some(target_path.to_string_lossy().to_string()),
+        task_field: Some(TASK_FIELD.to_string()),
         ..Default::default()
     };
     let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
