@@ -84,7 +84,7 @@ fn create_node_tool_repo(version: &str) -> TestResult<(TempDir, PathBuf, PathBuf
     fs::create_dir_all(root.join("cue.mod"))?;
     fs::write(
         root.join("cue.mod/module.cue"),
-        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}\n",
+        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n",
     )?;
 
     let repo_root = repo_root()?;

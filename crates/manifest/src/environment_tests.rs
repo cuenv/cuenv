@@ -11,19 +11,73 @@ fn error_of(value: serde_json::Value) -> String {
 fn misspelled_policy_field_is_rejected() {
     let error = error_of(json!({
         "value": "x",
-        "policies": [{"allowTaks": ["plan"]}],
+        "policies": [{"allowInfrastucture": ["plan"]}],
     }));
-    assert!(error.contains("unknown field `allowTaks`"), "{error}");
+    assert!(
+        error.contains("unknown field `allowInfrastucture`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn policy_accepts_every_documented_field() {
+    let policy: Policy = serde_json::from_value(json!({
+        "allowTasks": ["build"],
+        "allowExec": ["make"],
+        "allowInfrastructure": ["plan", "state-list", "unlock"],
+    }))
+    .unwrap();
+    assert_eq!(
+        policy.allow_infrastructure,
+        Some(vec![
+            InfrastructurePolicyAction::Plan,
+            InfrastructurePolicyAction::StateList,
+            InfrastructurePolicyAction::Unlock,
+        ])
+    );
+}
+
+#[test]
+fn invalid_infrastructure_action_names_are_rejected() {
+    for name in ["deploy", "Plan", "state_list", "state", ""] {
+        let error = serde_json::from_value::<Policy>(json!({"allowInfrastructure": [name]}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown variant"), "{name}: {error}");
+        assert!(error.contains("state-adopt"), "{name}: {error}");
+    }
+}
+
+#[test]
+fn every_action_round_trips_through_its_schema_name() {
+    let names = [
+        "plan",
+        "apply",
+        "destroy",
+        "state-list",
+        "state-remove",
+        "state-recover",
+        "state-adopt",
+        "unlock",
+    ];
+    for name in names {
+        let action: InfrastructurePolicyAction = serde_json::from_value(json!(name)).unwrap();
+        assert_eq!(action.as_str(), name);
+        assert_eq!(action.to_string(), name);
+        assert_eq!(serde_json::to_value(action).unwrap(), json!(name));
+    }
 }
 
 #[test]
 fn value_with_policies_deserializes_next_to_secrets() {
     let plain: EnvValue = serde_json::from_value(json!({
         "value": "x",
-        "policies": [{"allowTasks": ["plan"]}],
+        "policies": [{"allowInfrastructure": ["plan"]}],
     }))
     .unwrap();
     assert!(matches!(plain, EnvValue::WithPolicies(_)));
+    assert!(plain.is_accessible_by_infrastructure(InfrastructurePolicyAction::Plan));
+    assert!(!plain.is_accessible_by_infrastructure(InfrastructurePolicyAction::Apply));
 
     let secret: EnvValue =
         serde_json::from_value(json!({"resolver": "exec", "command": "echo", "args": ["hi"]}))
@@ -131,4 +185,5 @@ fn shell_receives_only_unrestricted_values() {
     );
     assert!(!restricted(&json!([{"allowTasks": ["build"]}])).is_accessible_by_shell());
     assert!(!restricted(&json!([{"allowExec": ["make"]}])).is_accessible_by_shell());
+    assert!(!restricted(&json!([{"allowInfrastructure": ["plan"]}])).is_accessible_by_shell());
 }

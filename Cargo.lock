@@ -1268,6 +1268,7 @@ dependencies = [
  "cuenv-hooks",
  "cuenv-ignore",
  "cuenv-infisical",
+ "cuenv-infrastructure",
  "cuenv-manifest",
  "cuenv-release",
  "cuenv-secrets",
