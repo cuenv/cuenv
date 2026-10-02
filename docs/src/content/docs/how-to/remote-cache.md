@@ -84,6 +84,12 @@ cache: remote: {
 }
 ```
 
+Set exactly one of `bearerTokenEnv` and `header`; setting both is a CUE
+evaluation error. Before 0.56.8, a project that embedded `schema.#Project`
+(a bare `schema.#Project` line rather than `schema.#Project & {…}`) lost its
+`auth` value during evaluation, so the remote cache ran without credentials;
+upgrade if your remote cache rejected authenticated reads.
+
 If the named variable is unset, cuenv warns and may continue with anonymous
 reads, but configured authentication never silently becomes an anonymous
 writer. A missing token degrades the cache; it does not fail the build.
