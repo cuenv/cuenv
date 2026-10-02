@@ -652,15 +652,12 @@ fn preflight(
 }
 
 /// Parse and validate the Turso URL before any secret is resolved: nothing
-/// is sent, so a mistake in the URL never costs a call to a secret provider.
-/// (A configured URL is validated again when the store is created.)
+/// is sent and no client is built, so a mistake in the URL never costs a call
+/// to a secret provider. (A configured URL is validated again when the store
+/// is created.)
 fn validate_state_url(infrastructure: &Infrastructure) -> Result<(), CliError> {
-    TursoStateStore::new(TursoConfiguration {
-        url: infrastructure.state.turso.url.clone(),
-        authentication_token: None,
-    })
-    .map(drop)
-    .map_err(|error| failure(&error, &Invocation::default()))
+    TursoStateStore::validate_url(&infrastructure.state.turso.url)
+        .map_err(|error| failure(&error, &Invocation::default()))
 }
 
 /// What running the command needs from the environment and the state store.

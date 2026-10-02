@@ -237,6 +237,35 @@ fn pipeline_url_normalizes_schemes() {
     assert!(configuration_error("db.turso.io").contains("expected libsql://"));
 }
 
+/// URL validation builds no store and no HTTP client, so it also works where
+/// the platform has no root certificates (a build sandbox), and it refuses
+/// what creating a store refuses.
+#[test]
+fn a_url_is_validated_without_creating_a_store() {
+    for url in [
+        "libsql://db-acme.turso.io",
+        "https://db.turso.io/prefix/",
+        "http://127.0.0.1:8080/",
+        "ws://localhost:8080",
+    ] {
+        assert!(TursoStateStore::validate_url(url).is_ok(), "{url}");
+    }
+    for url in [
+        "http://db.turso.io",
+        "https://user:secret@db.turso.io",
+        "postgres://nope",
+        "db.turso.io",
+        "libsql:// db.turso.io",
+    ] {
+        let error = TursoStateStore::validate_url(url).unwrap_err();
+        assert!(
+            matches!(error, InfrastructureError::Configuration(_)),
+            "{url}: {error}"
+        );
+        assert!(!error.to_string().contains("secret"), "{url}: {error}");
+    }
+}
+
 /// The runtime URL contract. The CUE schema checks field shape and type;
 /// this parser enforces the URL and transport rules.
 #[test]

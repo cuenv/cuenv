@@ -329,6 +329,18 @@ impl TursoStateStore {
         Self::with_timeout(configuration, REQUEST_TIMEOUT)
     }
 
+    /// Check a database URL against the same rules as [`Self::new`] without
+    /// creating a store: nothing is sent, and no HTTP client is built, so the
+    /// check works where the platform has no root certificates to load.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Configuration`] for the URLs
+    /// [`Self::new`] refuses.
+    pub fn validate_url(url: &str) -> Result<()> {
+        pipeline_url(url).map(drop)
+    }
+
     fn with_timeout(configuration: TursoConfiguration, timeout: Duration) -> Result<Self> {
         let pipeline_url = pipeline_url(&configuration.url)?;
         crate::ensure_rustls_cryptography_provider();
