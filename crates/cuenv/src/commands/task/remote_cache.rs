@@ -109,6 +109,9 @@ fn credentials(remote: &RemoteCache) -> CredentialResolution {
     if let Some(name) = &auth.bearer_token_env {
         return match std::env::var(name) {
             Ok(token) if !token.is_empty() => {
+                // The project's configuration names this variable, so cuenv
+                // cannot know at startup that its value is a secret.
+                cuenv_events::register_secret(token.clone());
                 CredentialResolution::Ready(Credentials::Bearer(token))
             }
             _ => {
@@ -120,10 +123,13 @@ fn credentials(remote: &RemoteCache) -> CredentialResolution {
 
     if let Some(header) = &auth.header {
         return match std::env::var(&header.value_env) {
-            Ok(value) if !value.is_empty() => CredentialResolution::Ready(Credentials::Header {
-                name: header.name.clone(),
-                value,
-            }),
+            Ok(value) if !value.is_empty() => {
+                cuenv_events::register_secret(value.clone());
+                CredentialResolution::Ready(Credentials::Header {
+                    name: header.name.clone(),
+                    value,
+                })
+            }
             _ => {
                 tracing::warn!(
                     variable = header.value_env,

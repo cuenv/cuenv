@@ -53,10 +53,21 @@ impl ExecSecretResolver {
             })?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            // The command's error output is deliberately not quoted: a failing
+            // secret command (a vault CLI, a token helper) may print the
+            // secret, or the credentials it was given, on standard error, and
+            // nothing is registered for redaction yet, because the secret was
+            // never resolved. Run the command yourself to see its output.
+            let exit = output.status.code().map_or_else(
+                || "was terminated by a signal".to_string(),
+                |code| format!("exited with status {code}"),
+            );
             return Err(SecretError::ResolutionFailed {
                 name: name.to_string(),
-                message: format!("Command '{command}' failed: {stderr}"),
+                message: format!(
+                    "Command '{command}' {exit}; its error output is not shown because it can \
+                     contain secret material (run the command yourself to see it)"
+                ),
             });
         }
 
@@ -112,6 +123,16 @@ mod tests {
         let result = resolver.resolve("test", &spec).await;
 
         assert_eq!(result.unwrap(), "json_value");
+    }
+
+    #[tokio::test]
+    async fn a_failing_command_never_echoes_its_error_output() {
+        let resolver = ExecSecretResolver::new();
+        let spec = SecretSpec::new("echo token=TOPSECRET-VALUE-9 >&2; exit 3");
+        let error = resolver.resolve("test", &spec).await.unwrap_err();
+        let message = error.to_string();
+        assert!(!message.contains("TOPSECRET"), "{message}");
+        assert!(message.contains("exited with status 3"), "{message}");
     }
 
     #[tokio::test]

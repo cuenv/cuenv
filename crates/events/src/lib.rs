@@ -39,9 +39,11 @@
 
 pub mod bus;
 pub mod event;
+mod event_redaction;
 pub mod layer;
 mod macros;
 pub mod metadata;
+pub mod redacting_writer;
 pub mod redaction;
 pub mod renderers;
 
@@ -57,7 +59,11 @@ pub use event::{
 };
 pub use layer::CuenvEventLayer;
 pub use metadata::{MetadataContext, correlation_id, set_correlation_id};
-pub use redaction::{REDACTED_PLACEHOLDER, redact, register_secret, register_secrets};
+pub use redacting_writer::{LogFormat, RedactingStderr, RedactingWriter};
+pub use redaction::{
+    REDACTED_PLACEHOLDER, redact, redact_cow, redact_free_form_json_text, redact_json_text,
+    redact_json_value, redact_json_value_and_keys, register_secret, register_secrets,
+};
 #[cfg(feature = "spinner")]
 pub use renderers::SpinnerRenderer;
 pub use renderers::{CliRenderer, JsonRenderer};
@@ -271,14 +277,16 @@ mod tests {
 
     #[test]
     fn redacted_writers_apply_redaction() {
-        register_secret("writer-secret-token");
+        redaction::test_support::with_clean_registry(|| {
+            register_secret("writer-secret-token");
 
-        let mut line_output = Vec::new();
-        writeln_redacted_to(&mut line_output, "value=writer-secret-token");
-        assert_eq!(line_output, b"value=*_*\n");
+            let mut line_output = Vec::new();
+            writeln_redacted_to(&mut line_output, "value=writer-secret-token");
+            assert_eq!(line_output, b"value=*_*\n");
 
-        let mut output = Vec::new();
-        write_redacted_to(&mut output, "value=writer-secret-token");
-        assert_eq!(output, b"value=*_*");
+            let mut output = Vec::new();
+            write_redacted_to(&mut output, "value=writer-secret-token");
+            assert_eq!(output, b"value=*_*");
+        });
     }
 }

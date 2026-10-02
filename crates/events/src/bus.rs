@@ -79,7 +79,10 @@ pub fn emit_with_source(source: EventSource, category: EventCategory) -> Result<
         source,
         category,
     };
-    sender.send(event)
+    // Every subscriber (CLI, JSON, TUI) gets the redacted event: macros such
+    // as `emit_stdout!` build their text outside the tracing layer's own
+    // redaction.
+    sender.send(event.redacted().into_owned())
 }
 
 /// Publish an [`EventCategory`] to the global event bus, using a default

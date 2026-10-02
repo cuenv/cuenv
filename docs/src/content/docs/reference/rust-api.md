@@ -575,6 +575,24 @@ if let Some(entry) = lookup(&key, None) {
 
 Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` are available when integrating custom executors with cuenv's cache layout.
 
+### Redaction (`cuenv-events`)
+
+`register_secret` and `register_secrets` take the values to hide. A multi-line
+secret is also registered line by line, and a secret with characters that are
+escaped when quoted is also registered in its debug-quoted, JSON-quoted and Go
+JSON (`\u0026` for `&`) forms. `redact` (and `redact_cow`, which does not copy
+text without a secret) replaces them in text in one pass over a matcher that is
+compiled when the registry changes; where secrets overlap the whole stretch is
+replaced. `redact_json_value` and `redact_json_text` replace them inside the
+string values of a JSON value and keep the keys, so a secret that JSON escapes
+is still found and no secret renames a field; `redact_json_value_and_keys` and
+`redact_free_form_json_text` also redact keys, for free-form JSON such as a
+provider's log. `CuenvEvent::redacted` rewrites each event by type, so no
+secret can rename a tag or withhold an event. `emit_with_source` redacts every
+event before any subscriber sees it, the CLI and JSON renderers redact again,
+and `RedactingStderr` (with `RedactingWriter` and `LogFormat`) redacts tracing's
+formatting layers. Values shorter than `MIN_SECRET_LENGTH` (4) are ignored.
+
 ## CLI Exit Codes
 
 The cuenv CLI uses structured exit codes:

@@ -415,13 +415,17 @@ case "$cmd" in
       printf "not signed in\n" >&2
       exit 1
     fi
+    if [ "x$OP_TEST_FAIL_WHOAMI" = "x2" ]; then
+      printf "whoami broke: token=LEAKED-STDERR-VALUE\n" >&2
+      exit 5
+    fi
     printf "test-user@example.com\n"
     exit 0
     ;;
   read)
     printf "read:%s\n" "$1" >> "$OP_TEST_LOG"
     if [ "x$OP_TEST_FAIL_READ" = "x1" ]; then
-      printf "read failed\n" >&2
+      printf "read failed: token=LEAKED-STDERR-VALUE\n" >&2
       exit 1
     fi
     printf "secret-for-%s\n" "$1"
@@ -771,6 +775,9 @@ esac
                     "unexpected error: {err}"
                 );
                 assert!(err.contains("op signin"), "unexpected error: {err}");
+                assert!(err.contains("exited with status 1"), "{err}");
+                assert!(!err.contains("LEAKED-STDERR-VALUE"), "{err}");
+                assert!(!err.contains("read failed: token"), "{err}");
             },
         )
         .await;
@@ -789,6 +796,59 @@ esac
             1,
             "expected a single bootstrap read attempt before fail-fast, got log lines: {lines:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_cli_failures_report_the_exit_status_and_never_the_error_output() {
+        let temp = tempfile::tempdir().unwrap();
+        write_fake_op_shim(temp.path());
+        let log_path = temp.path().join("op.log");
+        let path = prepend_path(temp.path());
+        let log_path_str = log_path.to_string_lossy().into_owned();
+
+        // `op whoami` fails for a reason other than being signed out.
+        let error = temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_str())),
+                ("OP_TEST_LOG", Some(log_path_str.as_str())),
+                ("OP_TEST_FAIL_WHOAMI", Some("2")),
+                ("OP_SERVICE_ACCOUNT_TOKEN", None),
+            ],
+            async {
+                let resolver = OnePasswordResolver::new().unwrap();
+                let secrets =
+                    HashMap::from([("A".to_string(), SecretSpec::new("op://vault/item/a"))]);
+                resolver
+                    .resolve_batch(&secrets)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+            },
+        )
+        .await;
+        assert!(error.contains("exited with status 5"), "{error}");
+        assert!(!error.contains("LEAKED-STDERR-VALUE"), "{error}");
+        assert!(!error.contains("whoami broke"), "{error}");
+
+        // A single read fails.
+        let error = temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_str())),
+                ("OP_TEST_LOG", Some(log_path_str.as_str())),
+                ("OP_TEST_FAIL_READ", Some("1")),
+                ("OP_SERVICE_ACCOUNT_TOKEN", None),
+            ],
+            async {
+                let resolver = OnePasswordResolver::new().unwrap();
+                let spec = SecretSpec::new("op://vault/item/a");
+                resolver.resolve("A", &spec).await.unwrap_err().to_string()
+            },
+        )
+        .await;
+        assert!(error.contains("exited with status 1"), "{error}");
+        assert!(!error.contains("LEAKED-STDERR-VALUE"), "{error}");
+        assert!(!error.contains("read failed: token"), "{error}");
     }
 
     #[cfg(unix)]
