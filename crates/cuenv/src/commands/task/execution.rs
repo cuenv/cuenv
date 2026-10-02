@@ -9,7 +9,7 @@ use super::{
 };
 use crate::commands::CommandExecutor;
 use crate::commands::env_file::find_cue_module_root;
-use crate::commands::export::extract_static_env_vars;
+use crate::commands::export::{StaticEnvConsumer, extract_static_env_vars};
 use crate::commands::git_hooks::find_git_root;
 use crate::commands::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use cuenv_core::environment::{EnvValue, Environment};
@@ -573,7 +573,10 @@ async fn prepare_task_runtime(
     context: &TaskExecutionContext,
     resolution: &TaskResolution,
 ) -> Result<PreparedTaskRuntime> {
-    let base_env_vars = extract_static_env_vars(&context.manifest);
+    let base_env_vars = extract_static_env_vars(
+        &context.manifest,
+        StaticEnvConsumer::Task(resolution.display_name.as_str()),
+    );
 
     let mut runtime_env = base_runtime_environment(context).await?;
     apply_task_environment(TaskEnvironmentApplication {

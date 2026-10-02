@@ -1,7 +1,7 @@
 //! Hook-backed environment resolution for export, exec, and task commands.
 
 use super::{
-    collect_all_env_vars, evaluate_project, extract_hooks_with_resolved_dirs,
+    StaticEnvConsumer, collect_all_env_vars, evaluate_project, extract_hooks_with_resolved_dirs,
     extract_static_env_vars,
 };
 use crate::commands::{CommandExecutor, env_file};
@@ -218,7 +218,7 @@ pub async fn get_environment_with_hooks(
     } = request;
 
     // Start with static environment from CUE manifest
-    let static_env = extract_static_env_vars(config);
+    let static_env = extract_static_env_vars(config, StaticEnvConsumer::Shell);
 
     // Collect hooks from all ancestors with resolved dirs
     let all_hooks = collect_hooks_from_ancestors(directory, package, executor)?;
