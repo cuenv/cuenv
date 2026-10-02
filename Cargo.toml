@@ -105,6 +105,7 @@ serde_json = { version = "1.0", features = ["raw_value"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 libc = "0.2"
+rustix = { version = "1.1", default-features = false, features = ["std"] }
 tokio = { version = "1.52", features = ["full"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 ratatui = "0.30"
@@ -114,6 +115,7 @@ uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 petgraph = "0.8.3"
 regex = "1"
+aho-corasick = "1"
 rustls = { version = "0.23.40", default-features = false, features = ["std", "ring"] }
 reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls-no-provider"] }
 # New dependencies for hook execution system

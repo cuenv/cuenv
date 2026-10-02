@@ -3,9 +3,13 @@
 //! This module defines the core event types that flow through the cuenv event system.
 //! Events are categorized by domain (Task, CI, Command, etc.) and include rich metadata.
 
+use std::borrow::Cow;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::redaction::has_secrets;
 
 /// A structured cuenv event with full metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +37,33 @@ impl CuenvEvent {
             source,
             category,
         }
+    }
+
+    /// This event with every registered secret replaced by the redaction
+    /// placeholder, in every text its category carries.
+    ///
+    /// Renderers and subscribers call this before they show an event, so
+    /// content that was built after (or without) the tracing layer's own
+    /// redaction, such as the text of [`OutputEvent`]s, never carries a
+    /// secret out. Only the category is rewritten, and it is rewritten by
+    /// type, field by field: the identifiers and the timestamp stay as they
+    /// were, and no secret, whatever it equals (`data`, `type`, `content`),
+    /// can change a variant, rename a key or withhold the event. When no
+    /// secret is registered the event is borrowed unchanged.
+    #[must_use]
+    pub fn redacted(&self) -> Cow<'_, Self> {
+        if !has_secrets() {
+            return Cow::Borrowed(self);
+        }
+        let mut category = self.category.clone();
+        category.redact_in_place();
+        Cow::Owned(Self {
+            id: self.id,
+            correlation_id: self.correlation_id,
+            timestamp: self.timestamp,
+            source: self.source.clone(),
+            category,
+        })
     }
 }
 

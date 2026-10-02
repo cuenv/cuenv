@@ -54,6 +54,10 @@ impl JsonRenderer {
     ///
     /// Returns an error if JSON serialization or writing to the target fails.
     pub fn render_to_writer(&self, event: &CuenvEvent, mut writer: impl Write) -> io::Result<()> {
+        // Redact the event itself, never the serialized text: a secret with a
+        // quote or a backslash is written escaped and would not be found.
+        let event = event.redacted();
+        let event = event.as_ref();
         if self.pretty {
             serde_json::to_writer_pretty(&mut writer, event).map_err(json_error_to_io)?;
         } else {
@@ -65,6 +69,8 @@ impl JsonRenderer {
     /// Render a single event to a string (for testing).
     #[must_use]
     pub fn render_to_string(&self, event: &CuenvEvent) -> Option<String> {
+        let event = event.redacted();
+        let event = event.as_ref();
         if self.pretty {
             serde_json::to_string_pretty(event).ok()
         } else {
@@ -209,6 +215,38 @@ mod tests {
         assert!(parsed.get("timestamp").is_some());
         assert!(parsed.get("source").is_some());
         assert!(parsed.get("category").is_some());
+    }
+
+    #[test]
+    fn output_events_with_secrets_are_written_without_them_even_when_json_escapes_them() {
+        use crate::redaction::{register_secret, test_support::with_clean_registry};
+        with_clean_registry(|| {
+            register_secret("plain-secret-VVVV");
+            register_secret("quo\"te\\back-QQQQ");
+            let renderer = JsonRenderer::new();
+            let event = CuenvEvent::new(
+                Uuid::nil(),
+                EventSource::new("test::target"),
+                EventCategory::Output(OutputEvent::Stdout {
+                    content: "a plain-secret-VVVV b quo\"te\\back-QQQQ c".to_string(),
+                }),
+            );
+            let mut output = Vec::new();
+            renderer.render_to_writer(&event, &mut output).unwrap();
+            let json = String::from_utf8(output).unwrap();
+            assert!(!json.contains("VVVV"), "{json}");
+            assert!(!json.contains("QQQQ"), "{json}");
+            let parsed: serde_json::Value = serde_json::from_str(json.trim_end()).unwrap();
+            assert_eq!(
+                parsed["category"]["data"]["data"]["content"],
+                "a *_* b *_* c"
+            );
+            let pretty = JsonRenderer::pretty().render_to_string(&event).unwrap();
+            assert!(
+                !pretty.contains("VVVV") && !pretty.contains("QQQQ"),
+                "{pretty}"
+            );
+        });
     }
 
     #[test]
