@@ -36,7 +36,7 @@ fn main() {
     // First of all, before anything reads a secret or starts a process: keep
     // processes of the same user (the providers and task commands cuenv
     // starts) from reading this process's environment and memory.
-    if let Err(error) = process_hardening::restrict_process_inspection() {
+    if let Some(error) = process_hardening::restrict_process_inspection() {
         cuenv_events::eprintln_redacted(&format!("cuenv: warning: {error}"));
     }
 
