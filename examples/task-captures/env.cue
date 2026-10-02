@@ -6,7 +6,7 @@ schema.#Project
 
 name: "task-captures"
 
-tasks: {
+ProjectTasks=tasks: {
 	// A build task that emits structured output.
 	// Two named captures pull specific values from stdout.
 	build: schema.#Task & {
@@ -40,7 +40,9 @@ ci: {
 
 	pipelines: {
 		default: {
-			tasks: [tasks.build, tasks.report]
+			// `tasks` here is the pipeline's own field, so refer to the project's
+			// tasks through the `ProjectTasks` alias.
+			tasks: [ProjectTasks.build, ProjectTasks.report]
 
 			// Captures from tasks can be surfaced as CI step annotations.
 			// The resolved values appear in the GitHub job summary table.

@@ -36,11 +36,11 @@ fn test_cue_parse_error() {
     let error = Error::cue_parse(path, "syntax error at line 5");
     assert_eq!(
         error.to_string(),
-        "CUE parsing failed: syntax error at line 5"
+        "CUE evaluation failed: syntax error at line 5"
     );
 
     let error = Error::cue_parse(path, String::from("unexpected token"));
-    assert_eq!(error.to_string(), "CUE parsing failed: unexpected token");
+    assert_eq!(error.to_string(), "CUE evaluation failed: unexpected token");
 }
 
 #[test]

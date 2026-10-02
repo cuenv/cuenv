@@ -11,6 +11,7 @@ use crate::commands::sync::{
 use crate::commands::{convert_engine_error, relative_path_from_root};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::{Base, Formatters};
+use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, Result};
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
@@ -139,6 +140,7 @@ fn load_base_config(path: &str, package: &str) -> Result<Base> {
     let options = ModuleEvalOptions {
         recursive: false,
         target_dir: Some(target_path.to_string_lossy().to_string()),
+        task_field: Some(TASK_FIELD.to_string()),
         ..Default::default()
     };
     let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))

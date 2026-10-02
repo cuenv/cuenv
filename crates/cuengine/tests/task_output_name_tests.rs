@@ -23,9 +23,17 @@ fn new_fixture_dir() -> TestResult<TempDir> {
 }
 
 fn evaluate_fixture(target_dir: &Path) -> TestResult<cuengine::ModuleResult> {
+    evaluate_fixture_with_task_field(target_dir, None)
+}
+
+fn evaluate_fixture_with_task_field(
+    target_dir: &Path,
+    task_field: Option<&str>,
+) -> TestResult<cuengine::ModuleResult> {
     let options = ModuleEvalOptions {
         recursive: false,
         target_dir: Some(target_dir.display().to_string()),
+        task_field: task_field.map(str::to_owned),
         ..Default::default()
     };
 
@@ -173,5 +181,61 @@ tasks: {
         Some("release-check[0]")
     );
 
+    Ok(())
+}
+
+const SEQUENCE_FIXTURE: &str = r#"package fixture
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "task-field-test"
+
+tasks: {
+    "release-check": schema.#TaskSequence & [
+        schema.#Task & {
+            command: "echo"
+            args: ["-n", "first"]
+        },
+        schema.#Task & {
+            command: "echo"
+            args: ["received:", tasks."release-check"[0].stdout]
+        },
+    ]
+}
+"#;
+
+fn sequence_item_name(task_field: Option<&str>) -> TestResult<Option<String>> {
+    let temp = new_fixture_dir()?;
+    fs::write(temp.path().join("env.cue"), SEQUENCE_FIXTURE)?;
+    let result = evaluate_fixture_with_task_field(temp.path(), task_field)?;
+    let instance = result
+        .instances
+        .values()
+        .next()
+        .ok_or_else(|| std::io::Error::other("fixture instance missing"))?;
+    Ok(
+        instance["tasks"]["release-check"][1]["args"][1]["cuenvTask"]
+            .as_str()
+            .map(str::to_owned),
+    )
+}
+
+#[test]
+fn task_field_defaults_to_the_field_callers_always_used() -> TestResult {
+    let expected = Some("release-check[0]".to_string());
+    assert_eq!(sequence_item_name(None)?, expected);
+    assert_eq!(sequence_item_name(Some("tasks"))?, expected);
+    Ok(())
+}
+
+#[test]
+fn task_field_names_the_field_whose_sequence_items_are_named() -> TestResult {
+    // The injection follows the caller-supplied field: naming another field,
+    // or none, leaves the sequence items of `tasks` unnamed.
+    let named = Some("release-check[0]".to_string());
+    assert_ne!(sequence_item_name(Some("pipeline"))?, named);
+    assert_ne!(sequence_item_name(Some(""))?, named);
     Ok(())
 }

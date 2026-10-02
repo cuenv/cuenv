@@ -11,6 +11,7 @@ use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::cue::discovery::compute_relative_path;
+use cuenv_core::module::TASK_FIELD;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -62,6 +63,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
         let options = ModuleEvalOptions {
             recursive: false,
             target_dir: Some(dir.to_string_lossy().to_string()),
+            task_field: Some(TASK_FIELD.to_string()),
             ..Default::default()
         };
 

@@ -552,6 +552,10 @@ as a preview URL).
 
 ```cue
 // Captures are defined on the task; refs go on the CI pipeline.
+// Inside a pipeline, `tasks` names the pipeline's own list, so the pipeline
+// reaches the project's tasks through a file-level alias.
+let _t = tasks
+
 tasks: {
     deploy: schema.#Task & {
         command: "deploy"
@@ -565,7 +569,7 @@ ci: {
     providers: ["github"]
     pipelines: {
         default: {
-            tasks: [tasks.deploy]
+            tasks: [_t.deploy]
             annotations: {
                 "Preview URL": schema.#TaskCaptureRef & {
                     cuenvTask:    "deploy"
