@@ -27,28 +27,25 @@ pub struct HardeningError(#[from] std::io::Error);
 /// Stop other processes of the same user from reading this process's
 /// environment and memory. Call it first thing at startup.
 ///
-/// A no-op on platforms other than Linux, which have no equivalent switch
-/// (macOS protects other processes' memory behind entitlements, and offers no
-/// way to hide the environment block of a same-user process).
-///
-/// # Errors
-///
-/// Returns the operating system's error if the kernel refuses; the process
-/// then keeps running unprotected.
+/// Returns the operating system's error when the kernel refuses, and the
+/// process then keeps running unprotected; `None` means there is nothing to
+/// report. The protection exists only on Linux: other platforms have no
+/// equivalent switch (macOS protects other processes' memory behind
+/// entitlements, and offers no way to hide the environment block of a
+/// same-user process), so there this does nothing and returns `None`.
 #[cfg(target_os = "linux")]
-pub fn restrict_process_inspection() -> Result<(), HardeningError> {
+#[must_use]
+pub fn restrict_process_inspection() -> Option<HardeningError> {
     rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
-        .map_err(|error| HardeningError(error.into()))
+        .err()
+        .map(|error| HardeningError(error.into()))
 }
 
-/// See the Linux version.
-///
-/// # Errors
-///
-/// Never.
+/// See the Linux version: there is no protection to apply here.
 #[cfg(not(target_os = "linux"))]
-pub fn restrict_process_inspection() -> Result<(), HardeningError> {
-    Ok(())
+#[must_use]
+pub fn restrict_process_inspection() -> Option<HardeningError> {
+    None
 }
 
 #[cfg(test)]
@@ -81,8 +78,10 @@ mod tests {
     /// The probe: runs in a process of its own (see `probe`), optionally
     /// hardens itself, and reports whether a child can read its environment.
     fn run_probe(mode: ProbeMode) -> ! {
-        if matches!(mode, ProbeMode::Hardened) {
-            restrict_process_inspection().expect("hardening");
+        if matches!(mode, ProbeMode::Hardened)
+            && let Some(error) = restrict_process_inspection()
+        {
+            panic!("hardening: {error}");
         }
         let read = |file: &str| {
             Command::new("sh")
