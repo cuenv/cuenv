@@ -99,6 +99,8 @@ Full root flake check is required before marking a PR ready for review, merging,
 
 If a change does not match one of those full-flake triggers, keep the check focused and record the focused validation in the PR.
 
+Continuous integration runs the flake checks on `x86_64-linux` for every pull request and push to `main`, and also builds the `cuenv-clippy` and `cuenv-nextest` checks for `aarch64-darwin` on a macOS runner (the `darwin` tasks in `env.cue`), so code that differs by platform is compiled and tested on macOS before it merges, not only when a release is built.
+
 For performance changes, make the claim measurable. Add or update Criterion
 coverage next to the hot path, keep a behavior regression test for the
 optimized code path, and run the narrow benchmark slice before and after the
