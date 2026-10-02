@@ -9,6 +9,15 @@ use std::collections::HashMap;
 /// Placeholder for redacted secrets; mirrors `cuenv_events::REDACTED_PLACEHOLDER`.
 const REDACTED_PLACEHOLDER: &str = "*_*";
 
+/// Why a null environment variable value is rejected.
+const NULL_VALUE: &str = "environment variable value is null; an incomplete CUE value (for example \
+                          `string` with no value) is exported as null";
+
+/// Why `#EnvPassthrough` is rejected in the project `env`.
+const PASSTHROUGH_UNSUPPORTED: &str = "environment variable `#EnvPassthrough` is supported only in a task's `env`, \
+     where it forwards a variable of the process running cuenv; the project `env` \
+     takes a value, a secret, an interpolated array or `{ value, policies }`";
+
 /// A part of an interpolated environment variable value.
 /// Can be a literal string or a secret that needs runtime resolution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -29,7 +38,11 @@ impl EnvPart {
 }
 
 /// Policy for controlling environment variable access
+///
+/// Unknown fields are rejected so a misspelled allowlist (`allowTaks`)
+/// fails instead of silently granting nothing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Policy {
     /// Allowlist of task names that can access this variable
     #[serde(skip_serializing_if = "Option::is_none", rename = "allowTasks")]
@@ -42,6 +55,7 @@ pub struct Policy {
 
 /// Environment variable with optional access policies
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct EnvVarWithPolicies {
     /// The actual value
     pub value: EnvValueSimple,
@@ -70,17 +84,18 @@ pub enum EnvValueSimple {
 /// Environment variable values can be strings, integers, booleans, secrets,
 /// interpolated arrays, or values with policies.
 /// When exported to actual environment, these will always be strings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// Deserialization chooses the variant from the JSON shape and reports why a
+/// value does not fit: a misspelled policy field, or an incomplete CUE value
+/// (exported as `null`), is named instead of "did not match any variant".
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum EnvValue {
-    /// Value with access policies. Must come first for serde untagged to try
-    /// it first (it's an object with a specific "value" + "policies" shape).
+    /// Value with access policies: an object with a `value` field.
     WithPolicies(EnvVarWithPolicies),
-    /// A secret that needs runtime resolution. Must come before `String` to
-    /// parse `{"resolver": ...}` correctly.
+    /// A secret that needs runtime resolution: an object with a `resolver`.
     Secret(crate::secrets::Secret),
-    /// An interpolated value composed of literals and secrets. Must come
-    /// before the simple types.
+    /// An interpolated value composed of literals and secrets: a list.
     Interpolated(Vec<EnvPart>),
     /// A simple string value
     String(String),
@@ -88,6 +103,56 @@ pub enum EnvValue {
     Int(i64),
     /// A boolean value
     Bool(bool),
+}
+
+impl EnvValue {
+    fn from_json(value: serde_json::Value) -> Result<Self, String> {
+        use serde_json::Value;
+        match value {
+            Value::String(text) => Ok(Self::String(text)),
+            Value::Bool(flag) => Ok(Self::Bool(flag)),
+            Value::Number(number) => number.as_i64().map(Self::Int).ok_or_else(|| {
+                format!("environment variable value {number} must be an integer, string or boolean")
+            }),
+            Value::Array(_) => serde_json::from_value(value)
+                .map(Self::Interpolated)
+                .map_err(|error| {
+                    format!("invalid interpolated environment variable value: {error}")
+                }),
+            Value::Object(fields) => {
+                if fields.contains_key("cuenvPassthrough") {
+                    return Err(PASSTHROUGH_UNSUPPORTED.to_string());
+                }
+                if fields.get("value").is_some_and(Value::is_null) {
+                    return Err(NULL_VALUE.to_string());
+                }
+                let policies_form = fields.contains_key("value") || fields.contains_key("policies");
+                let value = Value::Object(fields);
+                if policies_form {
+                    serde_json::from_value(value)
+                        .map(Self::WithPolicies)
+                        .map_err(|error| {
+                            format!("invalid environment variable with policies: {error}")
+                        })
+                } else {
+                    serde_json::from_value(value)
+                        .map(Self::Secret)
+                        .map_err(|error| format!("invalid environment variable secret: {error}"))
+                }
+            }
+            Value::Null => Err(NULL_VALUE.to_string()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EnvValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Self::from_json(value).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Environment configuration with environment-specific overrides
@@ -174,6 +239,19 @@ impl EnvValue {
                     })
                 }
             },
+        }
+    }
+
+    /// Check if the interactive shell integration (`cuenv export`) may receive
+    /// this environment variable.
+    ///
+    /// Policies name tasks and exec commands; none of them names the shell. A value with a non-empty policy list is therefore
+    /// restricted to its listed consumers and never exported to the shell.
+    #[must_use]
+    pub fn is_accessible_by_shell(&self) -> bool {
+        match self {
+            Self::WithPolicies(var) => var.policies.as_ref().is_none_or(Vec::is_empty),
+            _ => true,
         }
     }
 
@@ -309,3 +387,7 @@ impl EnvValue {
         (result, secrets)
     }
 }
+
+#[cfg(test)]
+#[path = "environment_tests.rs"]
+mod tests;

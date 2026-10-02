@@ -370,7 +370,7 @@ schema.#Project & {
 If the host variable has a different name, set `name`:
 
 ```cue
-env: {
+tasks: publish: env: {
     GH_TOKEN: schema.#EnvPassthrough & {name: "GITHUB_TOKEN"}
 }
 ```

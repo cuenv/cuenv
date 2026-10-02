@@ -122,10 +122,6 @@ env: {
     // Boolean value as a string
     DEBUG: "true"
 
-    // Host environment passthrough for task execution
-    GITHUB_ACTOR: schema.#EnvPassthrough
-    TAG: schema.#EnvPassthrough & { name: "GITHUB_REF_NAME" }
-
     // Secret reference (named resolver)
     API_KEY: schema.#OnePasswordRef & {
         ref: "op://vault/item/field"
@@ -157,9 +153,21 @@ not meant to be the user-facing shape. Always reach for a concrete secret type:
 the [schema-first workflow](/agents/schema-first/) for the full rationale.
 :::
 
-`#EnvPassthrough` forwards a variable from the process running cuenv into the task environment.
-Use it for CI-provided context such as GitHub Actions actor and ref values. When `name` is omitted,
-cuenv reads the host variable with the same name as the env key.
+`#EnvPassthrough` forwards a variable from the process running cuenv into a task's environment, so
+it is valid only in a task's `env` (`tasks: build: env: GITHUB_ACTOR: schema.#EnvPassthrough`); the
+project-level `env` rejects it with an error that says so. Use it for CI-provided context such as
+GitHub Actions actor and ref values. When `name` is omitted, cuenv reads the host variable with the
+same name as the env key:
+
+```cue
+tasks: release: schema.#Task & {
+    command: "release"
+    env: {
+        GITHUB_ACTOR: schema.#EnvPassthrough
+        TAG: schema.#EnvPassthrough & { name: "GITHUB_REF_NAME" }
+    }
+}
+```
 
 Task-level `env` accepts the same value forms, including secret refs. For GitHub Actions tasks that
 need to write outside the current repository, prefer a task-local `GH_TOKEN` secret because the
@@ -1094,9 +1102,16 @@ instead: [`#OnePasswordRef`](#onepasswordref), [`#GcpSecret`](#gcpsecret),
 ```cue
 #Secret: {
     resolver: "aws" | "gcp" | "onepassword" | "vault" | "infisical" | "exec"
+    value?:    _|_
+    policies?: _|_
     ...
 }
 ```
+
+`value` and `policies` are forbidden in a secret: they belong to the
+`{value: …, policies: […]}` form of an environment variable. Without that, the
+documented form `{value: "x", policies: [...]}` also matched the open
+`#Secret` and the variable did not resolve to a single alternative.
 
 The resolution mode (CLI vs. HTTP) is auto-negotiated from the environment
 (for example, `OP_SERVICE_ACCOUNT_TOKEN` selects 1Password HTTP mode,
@@ -1219,6 +1234,24 @@ env: {
 | ------------ | ------------- | ----------------------------------- |
 | `allowTasks` | `[...string]` | Tasks that can access this variable |
 | `allowExec`  | `[...string]` | Exec commands that can access       |
+
+`#Policy` is closed: a misspelled field such as `allowTaks` fails
+evaluation, and so does deserialization in cuenv's Rust types.
+
+A variable that has policies is available to a consumer only when some policy
+lists it. `allowTasks` grants tasks and `allowExec` grants `cuenv exec`
+commands; one does not grant the other. A variable with no policies (or an empty `policies: []`)
+is available everywhere.
+
+Policies apply to every value, secret or not. A plain value that carries a
+policy list, such as `{value: "y", policies: [{allowTasks: ["other"]}]}`, is
+left out of the environment of a task that no policy lists, left out of the
+environment of a `cuenv exec` command that no policy lists, and never exported
+to the interactive shell by `cuenv export` (no policy names the shell, so a
+variable with a non-empty policy list is not exported there). Before this
+rule, plain values with policies still reached tasks, `cuenv exec` and the
+shell regardless of the list, and only secrets honoured it. A project that
+relied on that must add the consumer to the policy or drop the policy.
 
 ## Workspaces
 

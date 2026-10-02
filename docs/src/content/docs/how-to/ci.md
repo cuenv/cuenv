@@ -329,7 +329,7 @@ tasks: {
 Use `schema.#EnvPassthrough` when the CI provider already exposes the value:
 
 ```cue
-env: {
+tasks: publish: env: {
 	GH_TOKEN: schema.#EnvPassthrough & {name: "GITHUB_TOKEN"}
 }
 ```

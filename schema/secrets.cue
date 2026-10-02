@@ -7,8 +7,15 @@ package schema
 // - 1Password: OP_SERVICE_ACCOUNT_TOKEN → HTTP, otherwise CLI
 // - Vault: VAULT_TOKEN + VAULT_ADDR → HTTP, otherwise CLI
 // - Infisical: Universal Auth env vars or INFISICAL_TOKEN → HTTP
+//
+// `value` and `policies` are reserved for #EnvironmentVariableWithPolicies.
+// Forbidding them here keeps `{value: ..., policies: [...]}` from also
+// matching this open type, which would make the #EnvironmentVariable
+// disjunction ambiguous and leave the variable unresolved.
 #Secret: {
 	resolver: "aws" | "gcp" | "onepassword" | "vault" | "infisical" | "exec"
+	value?:    _|_
+	policies?: _|_
 	...
 }
 

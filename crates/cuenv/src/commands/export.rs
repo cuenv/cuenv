@@ -12,6 +12,7 @@ pub use hooks::{HookEnvironmentRequest, get_environment_with_hooks};
 use super::env_file::{self, EnvFileStatus, find_cue_module_root};
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use cuengine::ModuleEvalOptions;
+use cuenv_core::environment::EnvValue;
 use cuenv_core::manifest::Project;
 use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, Result, shell::Shell};
@@ -262,7 +263,7 @@ pub async fn execute_export(
     }
 
     // Still not ready - return partial environment (just static vars from CUE)
-    let static_env = extract_static_env_vars(context.config);
+    let static_env = extract_static_env_vars(context.config, StaticEnvConsumer::Shell);
     if !static_env.is_empty() {
         debug!(
             "Returning partial environment ({} vars) while hooks run",
@@ -445,24 +446,49 @@ fn extract_hooks_with_resolved_dirs(
     hooks
 }
 
-/// Extract static environment variables from CUE config.
+/// The consumer of a set of static environment variables.
 ///
-/// Secrets (including interpolated values containing secrets) are excluded from the returned map.
-#[must_use]
-pub fn extract_static_env_vars(config: &Project) -> HashMap<String, String> {
-    let mut env_vars = HashMap::new();
+/// A value declared with `policies` is restricted to the consumers its
+/// policies list, the same rule that applies to secrets: `allowTasks` for
+/// tasks and `allowExec` for `cuenv exec`. No policy names the interactive
+/// shell, so the shell receives only values without a policy list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticEnvConsumer<'a> {
+    /// The interactive shell integration (`cuenv export`).
+    Shell,
+    /// A task, by its fully qualified name.
+    Task(&'a str),
+    /// A `cuenv exec` command.
+    Exec(&'a str),
+}
 
-    if let Some(env) = &config.env {
-        for (key, value) in &env.base {
-            // Skip any value that contains secrets
-            if value.is_secret() {
-                continue;
-            }
-            env_vars.insert(key.clone(), value.to_string_value());
+impl StaticEnvConsumer<'_> {
+    fn may_receive(self, value: &EnvValue) -> bool {
+        match self {
+            Self::Shell => value.is_accessible_by_shell(),
+            Self::Task(name) => value.is_accessible_by_task(name),
+            Self::Exec(command) => value.is_accessible_by_exec(command),
         }
     }
+}
 
-    env_vars
+/// Extract static environment variables from CUE config for one consumer.
+///
+/// Secrets (including interpolated values containing secrets) are excluded
+/// from the returned map, and so are values whose policies do not allow the
+/// consumer.
+#[must_use]
+pub fn extract_static_env_vars(
+    config: &Project,
+    consumer: StaticEnvConsumer<'_>,
+) -> HashMap<String, String> {
+    config
+        .env
+        .iter()
+        .flat_map(|env| &env.base)
+        .filter(|(_, value)| !value.is_secret() && consumer.may_receive(value))
+        .map(|(key, value)| (key.clone(), value.to_string_value()))
+        .collect()
 }
 
 /// Collect all environment variables (static + hook-generated)
@@ -470,7 +496,7 @@ fn collect_all_env_vars(
     config: &Project,
     hook_env: &HashMap<String, String>,
 ) -> HashMap<String, String> {
-    let mut all_vars = extract_static_env_vars(config);
+    let mut all_vars = extract_static_env_vars(config, StaticEnvConsumer::Shell);
 
     // Hook environment variables override static ones
     for (key, value) in hook_env {
