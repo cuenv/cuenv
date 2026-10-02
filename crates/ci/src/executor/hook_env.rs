@@ -114,17 +114,17 @@ fn resolve_hook_dir(hook: &mut cuenv_hooks::Hook, env_cue_dir: &Path) {
 }
 
 /// Extract static (non-secret) environment variables from config.
+/// Static values shared by every task of the project. A value with a policy
+/// list is left out: each task resolves its own environment with policies
+/// applied, so a restricted value reaches only the consumers its policies name.
 fn extract_static_env_vars(config: &Project) -> BTreeMap<String, String> {
-    let mut env_vars = BTreeMap::new();
-    if let Some(env) = &config.env {
-        for (key, value) in &env.base {
-            if value.is_secret() {
-                continue;
-            }
-            env_vars.insert(key.clone(), value.to_string_value());
-        }
-    }
-    env_vars
+    config
+        .env
+        .iter()
+        .flat_map(|env| &env.base)
+        .filter(|(_, value)| !value.is_secret() && value.is_accessible_by_shell())
+        .map(|(key, value)| (key.clone(), value.to_string_value()))
+        .collect()
 }
 
 /// Merge static config env vars with hook-generated values (hooks win).
@@ -137,4 +137,28 @@ fn collect_all_env_vars(
         merged.insert(key.clone(), value.clone());
     }
     merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_environment_leaves_out_values_restricted_by_policies() -> serde_json::Result<()> {
+        let config: Project = serde_json::from_value(serde_json::json!({
+            "name": "app",
+            "env": {
+                "PLAIN": "shared",
+                "RESTRICTED": {"value": "only-for-deploy", "policies": [{"allowTasks": ["deploy"]}]},
+                "OPEN": {"value": "open", "policies": []}
+            }
+        }))?;
+
+        let environment = extract_static_env_vars(&config);
+
+        assert_eq!(environment.get("PLAIN").map(String::as_str), Some("shared"));
+        assert_eq!(environment.get("OPEN").map(String::as_str), Some("open"));
+        assert!(!environment.contains_key("RESTRICTED"));
+        Ok(())
+    }
 }
