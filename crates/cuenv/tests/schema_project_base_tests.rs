@@ -481,3 +481,56 @@ schema.#Base & {
     );
     Ok(())
 }
+
+/// Evaluate a project that sets the given `cache.remote.auth` through the
+/// real schema, and decode it the way every command does.
+fn project_with_remote_cache_auth(auth: &str) -> TestResult<Project> {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+    fs::write(
+        root.join("env.cue"),
+        format!(
+            r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "cached"
+
+cache: remote: {{
+  endpoint: "grpcs://cache.example.com"
+  auth: {auth}
+}}
+"#
+        ),
+    )?;
+    Ok(evaluate_cue_package_typed::<Project>(root, "cuenv")?)
+}
+
+#[test]
+fn remote_cache_auth_evaluates_to_the_alternative_the_project_sets() -> TestResult {
+    let bearer = project_with_remote_cache_auth(r#"bearerTokenEnv: "CACHE_TOKEN""#)?;
+    let auth = bearer
+        .cache
+        .and_then(|cache| cache.remote)
+        .and_then(|remote| remote.auth)
+        .ok_or("the bearer token alternative was not exported")?;
+    assert_eq!(auth.bearer_token_env.as_deref(), Some("CACHE_TOKEN"));
+    assert!(auth.header.is_none());
+
+    let header =
+        project_with_remote_cache_auth(r#"header: {name: "x-key", valueEnv: "CACHE_KEY"}"#)?;
+    let auth = header
+        .cache
+        .and_then(|cache| cache.remote)
+        .and_then(|remote| remote.auth)
+        .ok_or("the header alternative was not exported")?;
+    assert_eq!(
+        auth.header.map(|header| header.value_env),
+        Some("CACHE_KEY".to_string())
+    );
+    assert!(auth.bearer_token_env.is_none());
+    Ok(())
+}
