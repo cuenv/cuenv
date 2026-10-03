@@ -577,6 +577,68 @@ Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` a
 
 ## cuenv-infrastructure
 
+`cuenv infrastructure` is a thin command over the `cuenv-infrastructure` crate,
+which other tools can drive the same way. The lock is released and the
+providers are stopped whatever the outcome, so no `?` may leave them behind:
+
+```rust
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use cuenv_infrastructure::{
+    ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine,
+    InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, PlanMode, ProjectInstance,
+    StateLock,
+};
+
+let cancellation = Cancellation::default(); // shared with signal handling
+let instance = ProjectInstance::new("services/api", "cuenv")?; // directory and package
+store.migrate().await?; // writes need current tables; reads never create them
+// Choose the identifier first and register it with signal handling, so a
+// forced exit during acquisition can name the lock it may hold.
+let lock = StateLock::generate();
+store
+    .acquire_lock(&tenant, &LockRequest { lock: &lock, holder: "my tool" })
+    .await?;
+let mut engine = InfrastructureEngine::new(EngineSetup {
+    tenant: tenant.clone(), // TenantKey: module path, project name, optional environment
+    store: Arc::clone(&store), // Arc<dyn StateStore>, such as TursoStateStore
+    infrastructure,            // the selected configuration, see `Infrastructure::select`
+    options: EngineOptions {
+        project_directory,
+        plugin_cache_directory: None,
+        // Names providers must not inherit, applied after the overlay below.
+        withheld_environment_variables: vec!["TURSO_AUTH_TOKEN".into()],
+        // Resolved, policy-authorized project values added to each provider's environment.
+        provider_environment_variables: BTreeMap::new(),
+        unrecorded_directory: None, // the user state directory
+        cancellation: cancellation.clone(),
+    },
+});
+let outcome = async {
+    // The first lock records the owning instance; another instance is refused.
+    store
+        .claim_owner(&tenant, &lock, &OwnerClaim { instance: &instance, mode: OwnerClaimMode::IfUnowned })
+        .await?
+        .require(&tenant, &instance)?;
+    let plan = engine.plan(PlanMode::Apply).await?;
+    // Show the plan and ask for confirmation here, still holding the lock.
+    if plan.has_work() {
+        engine.apply(&plan, ApplyContext { lock: &lock }, &mut |_event| {}).await?;
+    }
+    Ok::<_, InfrastructureError>(plan)
+}
+.await;
+let released = store.unlock(&tenant, &lock).await;
+engine.shutdown().await;
+let plan = outcome?;
+released?;
+```
+
+`StateStore::unlock()` returns `Ok(true)` when the lock was still held and is
+now released, and `Ok(false)` when it was already gone (another actor released
+it or took it over); report the second case rather than claiming a release.
+
 - **Identities.** `TenantKey::new(module_path, project)` is the identity of a
   run without `--env`; `TenantKey::with_environment(module_path, project,
 environment)` is a separate identity for a named environment (including
@@ -597,6 +659,17 @@ environment)` is a separate identity for a named environment (including
   migration) and `StateStore::addresses()` reads a tenant's record addresses without decoding
   them. A row that cannot be decoded is `InfrastructureError::UndecodableRecord`
   naming the address.
+- **Configuration.** `cuenv_manifest::manifest::Infrastructure::select(value,
+environment)` strictly decodes the raw `infrastructure` value of a project
+  for the selected environment (`None` for the top level) and returns an
+  `InfrastructureSelectionError` that names the declared environments when
+  the requested one is missing. `cuenv_infrastructure::validate_configuration(&infrastructure,
+environment)` repeats the schema's semantic checks and reports **every**
+  problem, each with its full field path
+  (`infrastructure.environments.dev.resources.pet.dependsOn[0]`).
+  `InfrastructureConfiguration` is the exported type of one configuration, and
+  `ProviderEnvironment` (`Inherit`, `Isolated`) is the manifest form of
+  `providerEnvironment`.
 - **Provider environment.** `cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES`
   is the table of variables only cuenv's secret machinery uses, each an exact
   name or a prefix (`NamePattern`) and a `ValueKind` (a `Credential` is
@@ -619,6 +692,25 @@ environment)` is a separate identity for a named environment (including
   `wait_for_recordings(bound)` lets a record being written finish before the
   lock is released. The command calls them from its SIGINT, SIGTERM, SIGHUP
   and SIGQUIT handling, which it installs before evaluating anything.
+- `Plan::has_work()` is true when applying would change infrastructure or
+  rewrite stored records (`PlanSummary::refresh`). `engine.plan()` orders the
+  changes as one dependency graph and refuses cycles and changes no order can
+  apply, so the plan lists its changes in apply order and refusals happen
+  before any confirmation. `engine.apply()` refuses a plan whose stored records
+  changed since it was made (`InfrastructureError::PlanOutdated`);
+  `Plan::digest()` identifies everything a plan would do, including the
+  provider environment it was made with. The command plans and confirms while holding
+  the lock, as Terraform does, so it applies exactly the plan shown.
+- **Failed applies.** A provider failure skips the operations that depend on
+  it and lets the rest run; `apply` then returns
+  `InfrastructureError::ApplyIncomplete(Box<IncompleteApply>)` with the failures,
+  the skipped changes and the replacements deleted but not recreated.
+  `ApplyEvent::DeletedNotRecreated` reports each such replacement on every way
+  an apply can end early, and `ApplyEvent::Failed` and `ApplyEvent::Skipped`
+  report the others. A replacement whose new object was created but could not
+  be recorded is not "deleted and not recreated": it exists, an
+  `ApplyEvent::Warning` says so, and the error names the file its record was
+  saved to.
 - `StateStore::owner()` names the CUE instance (`ProjectInstance`,
   `<directory>:<package>`) that owns a tenant's state; `claim_owner()` with
   `OwnerClaimMode::IfUnowned` records it under the first lock, and

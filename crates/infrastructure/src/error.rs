@@ -1,8 +1,10 @@
 //! Error type for the infrastructure engine.
 
+use std::fmt;
+
 use thiserror::Error;
 
-use crate::state::TenantLock;
+use crate::state::{ResourceAddress, TenantLock};
 
 /// Result alias for this crate.
 pub type Result<Success> = std::result::Result<Success, InfrastructureError>;
@@ -29,6 +31,15 @@ pub enum InfrastructureError {
         method: String,
         /// gRPC status returned by the provider.
         status: Box<tonic::Status>,
+    },
+
+    /// A provider returned error diagnostics.
+    #[error("{context}:\n{}", .errors.join("\n"))]
+    Diagnostics {
+        /// What cuenv was doing when the provider failed.
+        context: String,
+        /// Rendered error diagnostics.
+        errors: Vec<String>,
     },
 
     /// Failure downloading or installing a provider from a registry.
@@ -65,6 +76,36 @@ pub enum InfrastructureError {
         tenant: String,
         /// The lock identifier this run held.
         lock_identifier: String,
+    },
+
+    /// A provider changed a resource but its new state could not be recorded.
+    #[error(
+        "{address} was changed by its provider, but recording its state failed: {reason}. \
+         The record was saved to {saved_to}; recover the saved changes before \
+         planning again, or the resource will be created a second time"
+    )]
+    UnrecordedChange {
+        /// Resource address.
+        address: String,
+        /// Why recording failed.
+        reason: String,
+        /// Local file holding the unrecorded record.
+        saved_to: String,
+    },
+
+    /// A provider changed a resource, and neither the state store nor the
+    /// local unrecorded-change directory could keep its record. Deliberately
+    /// names nothing but the address and the category of the local failure.
+    #[error(
+        "{address} was changed by its provider, but its state could not be recorded or saved \
+         locally ({save_failure}); the resource exists and cuenv no longer tracks it"
+    )]
+    UnrecordedChangeLost {
+        /// Resource address.
+        address: String,
+        /// Why saving locally failed, as a category such as `permission
+        /// denied`; never a path or a value.
+        save_failure: String,
     },
 
     /// A file (or directory) of unrecorded changes cannot be used: it is
@@ -173,6 +214,17 @@ pub enum InfrastructureError {
         file: Option<String>,
     },
 
+    /// A plan's view of stored state no longer matches the store, so
+    /// applying it could act on stale records.
+    #[error(
+        "the plan is out of date: the stored record of {address} changed after the plan was \
+         made; plan again"
+    )]
+    PlanOutdated {
+        /// First resource address whose stored record differs.
+        address: String,
+    },
+
     /// Another CUE instance owns the tenant's state.
     #[error(
         "{tenant} is owned by the CUE instance {owner}, not {instance}; refusing to act on its \
@@ -187,6 +239,71 @@ pub enum InfrastructureError {
         instance: String,
     },
 
+    /// A stored record was written with a schema version newer than the
+    /// provider now in use knows; handing it over would silently downgrade
+    /// it.
+    #[error(
+        "{address} was recorded with resource schema version {stored_version}, but the \
+         configured provider only knows version {provider_version}; use the newer provider \
+         version that wrote it"
+    )]
+    StateFromNewerProvider {
+        /// Resource address.
+        address: String,
+        /// Schema version of the stored record.
+        stored_version: i64,
+        /// Newest schema version the provider knows.
+        provider_version: i64,
+    },
+
+    /// Earlier runs left changes that are not yet in the state store.
+    #[error(
+        "{tenant} has {count} unrecorded change(s) from an earlier run, saved in {directory}; \
+         recover them before planning"
+    )]
+    UnrecordedChangesPending {
+        /// Tenant with unrecorded changes.
+        tenant: String,
+        /// Number of unrecorded records.
+        count: usize,
+        /// Directory holding them.
+        directory: String,
+    },
+
+    /// The run was interrupted between resources.
+    #[error(
+        "interrupted after applying {completed} of {total} changes; every applied change is recorded"
+    )]
+    Interrupted {
+        /// Changes applied and recorded before stopping.
+        completed: usize,
+        /// Changes the plan contained.
+        total: usize,
+    },
+
+    /// The provider's apply response was lost during interruption. The
+    /// operation may have changed infrastructure without a recorded result.
+    #[error(
+        "interrupted after recording {completed} of {total} changes; the outcome for {address} is unknown because the provider response was lost; inspect the provider before retrying"
+    )]
+    InterruptedUnknownOutcome {
+        /// Resource whose remote outcome could not be observed.
+        address: String,
+        /// Changes known to have completed and been recorded.
+        completed: usize,
+        /// Changes the plan contained.
+        total: usize,
+    },
+
+    /// Planning was interrupted; nothing was changed or recorded.
+    #[error("interrupted while planning; nothing was changed")]
+    InterruptedWhilePlanning,
+
+    /// An apply could not finish every change. Changes that do not depend
+    /// on a failed change were still applied.
+    #[error("{0}")]
+    ApplyIncomplete(Box<IncompleteApply>),
+
     /// Input or output failure.
     #[error("{context}: {source}")]
     InputOutput {
@@ -196,6 +313,77 @@ pub enum InfrastructureError {
         #[source]
         source: std::io::Error,
     },
+}
+
+/// A change whose operation failed during an apply.
+#[derive(Debug)]
+pub struct ChangeFailure {
+    /// The resource.
+    pub address: ResourceAddress,
+    /// How it failed.
+    pub error: InfrastructureError,
+}
+
+/// What an apply that could not finish every change leaves behind.
+#[derive(Debug)]
+pub struct IncompleteApply {
+    /// The failed changes, in the order they failed; never empty.
+    pub failures: Vec<ChangeFailure>,
+    /// Changes not attempted because a change they depend on failed.
+    pub skipped: Vec<ResourceAddress>,
+    /// Replacements whose old object was deleted but whose new object was
+    /// not created. The next apply creates them.
+    pub deleted_not_recreated: Vec<ResourceAddress>,
+    /// Changes applied and recorded.
+    pub completed: usize,
+    /// Changes to real infrastructure the plan contained.
+    pub total: usize,
+}
+
+impl fmt::Display for IncompleteApply {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut failures = self.failures.iter();
+        if let Some(first) = failures.next() {
+            write!(formatter, "{}", first.error)?;
+        }
+        let further: Vec<&ChangeFailure> = failures.collect();
+        if !further.is_empty() {
+            write!(formatter, "\n{} more change(s) failed:", further.len())?;
+            for failure in further {
+                write!(formatter, "\n  {}: {}", failure.address, failure.error)?;
+            }
+        }
+        if !self.skipped.is_empty() {
+            write!(
+                formatter,
+                "\n{} change(s) were not attempted because a change they depend on failed: {}",
+                self.skipped.len(),
+                join_addresses(&self.skipped)
+            )?;
+        }
+        if !self.deleted_not_recreated.is_empty() {
+            write!(
+                formatter,
+                "\n{} replacement(s) were deleted but not recreated; the next apply creates \
+                 them: {}",
+                self.deleted_not_recreated.len(),
+                join_addresses(&self.deleted_not_recreated)
+            )?;
+        }
+        write!(
+            formatter,
+            "\napplied and recorded {} of {} changes",
+            self.completed, self.total
+        )
+    }
+}
+
+fn join_addresses(addresses: &[ResourceAddress]) -> String {
+    addresses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Prefix naming the unrecorded change file an error is about.
@@ -318,6 +506,21 @@ pub(crate) fn describe_json_error(error: &serde_json::Error) -> String {
     )
 }
 
+/// Name the category of an error without any path or value in it, for
+/// reports that must not reveal more than what kind of failure happened.
+#[must_use]
+pub fn failure_category(error: &InfrastructureError) -> String {
+    match error {
+        InfrastructureError::InputOutput { source, .. } => source.kind().to_string(),
+        InfrastructureError::UnrecordedFile { .. } => {
+            "the unrecorded change directory is not usable".to_string()
+        }
+        InfrastructureError::Codec(_) => "the record could not be serialized".to_string(),
+        InfrastructureError::Configuration(_) => "no user state directory is available".to_string(),
+        _ => "unexpected failure".to_string(),
+    }
+}
+
 /// Remove control characters (C0, DEL and C1) from text to display.
 ///
 /// Text from a provider or the state store must not move the cursor,
@@ -351,6 +554,17 @@ mod tests {
             "ok[2J31mend\nnext"
         );
         assert_eq!(strip_control_characters("plain text é"), "plain text é");
+    }
+
+    #[test]
+    fn failure_categories_carry_no_detail() {
+        let error = InfrastructureError::input_output(
+            "write /home/secret/path",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        let category = failure_category(&error);
+        assert_eq!(category, "permission denied");
+        assert!(!category.contains("secret"));
     }
 
     #[test]
@@ -407,6 +621,11 @@ mod tests {
                 holder: "holder".into(),
                 acquired_at: "now".into(),
             },
+            InfrastructureError::UnrecordedChange {
+                address: "random_pet.name".into(),
+                reason: "store unreachable".into(),
+                saved_to: "/state/file".into(),
+            },
             InfrastructureError::StateMigrationBlocked {
                 version: 2,
                 locks: vec![TenantLock {
@@ -431,6 +650,11 @@ mod tests {
                 tenant: "tenant".into(),
                 owner: "a".into(),
                 instance: "b".into(),
+            },
+            InfrastructureError::UnrecordedChangesPending {
+                tenant: "tenant".into(),
+                count: 1,
+                directory: "/state".into(),
             },
         ];
         for error in errors {

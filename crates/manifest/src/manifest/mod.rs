@@ -6,6 +6,7 @@ mod cache;
 mod codegen;
 mod formatters;
 mod hooks;
+mod infrastructure;
 mod project;
 mod rules;
 mod runtime;
@@ -23,6 +24,11 @@ pub use cache::{Cache, CacheAuth, CacheAuthHeader, RemoteCache};
 pub use codegen::*;
 pub use formatters::*;
 pub use hooks::*;
+pub use infrastructure::{
+    Infrastructure, InfrastructureConfiguration, InfrastructurePolicyAction,
+    InfrastructureProvider, InfrastructureSelectionError, InfrastructureState,
+    ManagedResourceDeclaration, ProviderEnvironment, TursoState,
+};
 pub use project::Project;
 pub use rules::*;
 pub use runtime::*;
