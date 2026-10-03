@@ -39,6 +39,7 @@ tasks: {...}
 | `codegen`    | `#Codegen`                    | No       | Code generation configuration        |
 | `release`    | `#Release`                    | No       | Release management configuration     |
 | `vcs`        | `{[#VcsDependencyName]: #VcsDependency}` | No       | Cuenv-managed Git dependencies       |
+| `infrastructure`      | `#Infrastructure`                      | No       | Managed infrastructure (Terraform providers) |
 
 ### #Base
 
@@ -858,6 +859,281 @@ Log handling configuration for services.
 When persistence is enabled, `cuenv logs --follow` tails appended session log
 lines while the matching `cuenv up` controller is alive.
 
+## Infrastructure
+
+:::caution[Experimental]
+`cuenv infrastructure` is experimental: the schema, the command line and the
+state format can change between releases. See
+[Manage infrastructure](/how-to/infrastructure/) for the limitations.
+:::
+
+### #Infrastructure
+
+Managed resources driven through Terraform provider plugins, with state in
+Turso. Every managed resource is one record keyed by the CUE module path, the
+project name and the selected environment (see
+[State identity](#state-identity)).
+
+Provider schemas are published as CUE modules at
+`github.com/cuenv/terraform/terraform/<namespace>/<type>@v<major>`. Unify
+`configuration` with their `#ProviderConfig` and `#Resource_<type>`
+definitions for typed, closed configuration.
+
+`#Infrastructure` is the common `state` backend, an optional map of named
+`environments`, and, embedded at the top level, one
+[`#InfrastructureConfiguration`](#infrastructureconfiguration) that is used
+when no `--env` is given.
+
+```cue
+infrastructure: {
+    state: turso: url: "libsql://platform-acme.turso.io"
+
+    // Top-level configuration: used without --env.
+    providers: random: {source: "hashicorp/random", version: "3.9.1"}
+    resources: pet: {
+        type: "random_pet"
+        configuration: length: 2
+    }
+
+    // Named environments: used with --env Dev or --env Staging.
+    environments: {
+        Dev: {
+            providers: random: {source: "hashicorp/random", version: "3.9.1"}
+            resources: pet: type: "random_pet"
+        }
+        Staging: {
+            providerEnvironment: "isolated"
+            providers: random: {source: "hashicorp/random", version: "3.9.1"}
+            resources: pet: type: "random_pet"
+        }
+    }
+}
+```
+
+| Field          | Type                                                     | Required | Description                                                         |
+| -------------- | -------------------------------------------------------- | -------- | ------------------------------------------------------------------- |
+| `state`        | `#InfrastructureState`                                   | Yes      | State backend (`turso`), shared by the top level and every environment |
+| `environments` | `{[#InfrastructureName]: #InfrastructureConfiguration}`  | No       | Complete configurations selected with `--env NAME`                  |
+| `providers`, `resources`, `providerEnvironment` | see [`#InfrastructureConfiguration`](#infrastructureconfiguration) | No | The top-level configuration, used without `--env` |
+
+- **Import alias.** CUE resolves a name to the nearest enclosing field before
+  an import, so use an alias that matches no field name on the path to where
+  you use it: not a provider or resource key, and not `infrastructure`,
+  `state`, `providers`, `resources`, `environments` or `name` (for example
+  `randomProvider`). A shadowed alias fails evaluation with
+  `undefined field: #ProviderConfig`, or with `imported and not used` when
+  every use of the import is shadowed.
+- **Package qualifier.** A provider type that is not a valid CUE identifier
+  needs an explicit package qualifier in the import path, for example
+  `"github.com/cuenv/terraform/terraform/hashicorp/google-beta@v<major>:google_beta"`
+  (see [Manage infrastructure](/how-to/infrastructure/) for the naming rule).
+- **Closed at every level.** Every infrastructure definition is closed, also
+  when the project embeds `schema.#Project` at file level: a misspelled field
+  such as `resource:`, `sourcee:`, `environment:` or `authTokenEnv:` fails
+  with `field not allowed` and the position of the typo. cuenv's Rust types
+  reject unknown fields as well.
+- **Errors.** Evaluation fails before any provider starts, and every error is
+  listed, each with its field path
+  (`infrastructure.environments.Dev.resources.pet.configuration.length`) and
+  file positions relative to the module root. Errors raised by the schema's
+  own checks (see [Checks](#checks)) point at `schema/infrastructure.cue`
+  rather than your file; the message and the field path name the problem, so
+  search for those.
+
+#### State identity
+
+State is keyed by the CUE module path, the project name and the selected
+environment:
+
+| `--env`  | State namespace                              |
+| -------- | -------------------------------------------- |
+| absent   | the legacy namespace of the top-level configuration (environment `""`) |
+| `NAME`   | one namespace per environment name, separate from the legacy namespace and from every other name; `--env default` is a named environment like any other |
+
+Each namespace has its own resources, lock, owner and recovery records, so
+`Dev` and `Staging` never plan or delete one another's resources. All of them
+live in **one state database**: `state` is declared once, above `environments`,
+and an environment cannot override it. Per-environment state backends are not
+supported.
+
+Moving a project between namespaces is not automatic. Switching from the
+top-level configuration to `--env NAME` (or renaming an environment) starts
+from empty state, so cuenv refuses to plan, apply or destroy when the named
+namespace is empty and the same module and project still have state in the
+legacy namespace. Destroy an environment's resources before removing or
+renaming it in CUE: once it is no longer declared, `--env NAME` cannot select
+it.
+
+#### Checks
+
+The schema reports these mistakes with `error()` while the project is
+evaluated, so every cuenv command that evaluates the project (including
+`cuenv fmt` and the shell hook, `cuenv export --shell`) fails on them before it
+touches state or starts a provider. Each check applies to the top-level
+configuration and, separately, to every `environments.NAME` configuration,
+whether or not `--env` selects it:
+
+| Mistake | Error key | Message |
+| ------- | --------- | ------- |
+| a provider sets neither `version` nor `path` | `…_unresolved."providers.NAME"` | ``set `version` (an exact registry release) or `path` (a local provider binary)`` |
+| a provider sets both | `…_unresolved."providers.NAME"` | ``set exactly one of `version` and `path`, not both`` |
+| `version` is not an exact version, or `path` is empty | `…providers.NAME.version`, `…providers.NAME.path` | CUE's own constraint failure (the only error for that value) |
+| a `dependsOn` entry names no resource of the same configuration | `…_unresolved."resources.NAME.dependsOn[INDEX]"` | ``no resource named "…" in `resources` of this configuration`` |
+| a resource's `provider` names no provider of the same configuration | `…_unresolved."resources.NAME.provider"` | ``no provider named "…" in `providers` of this configuration`` |
+| a resource without `provider` whose type prefix (`aws` of `aws_instance`) is not a provider of the same configuration | `…_unresolved."resources.NAME.type"` | ``no provider named "aws" (the prefix of type "aws_instance") in `providers` of this configuration; declare it or set `provider` `` |
+| the database URL is not valid | `infrastructure.state.turso._invalidUrl` | ``` `url` must be libsql://, https:// or wss:// with a host name or address, or http:// or ws:// … ``` |
+
+The key starts with the path of the configuration: `infrastructure` for the
+top level, `infrastructure.environments.NAME` for an environment. A
+configuration is checked against its own `providers` and `resources` only: a
+top-level provider does not satisfy a resource inside an environment.
+
+Each check reads only the part of the configuration it needs and runs only when
+that part has no error of its own. A provider, a resource or a nested
+`configuration` that CUE already rejects (a conflicting value, a version that is
+not exact, an empty `path`) is reported by CUE alone: the checks that read
+`providers` or `resources` wait until it is fixed, so one mistake never
+produces a stream of "no provider named" or "no resource named" errors, and the
+error you see is the original one. Fixing it can reveal further errors in the
+checks that were waiting. A value that is still open (`version: string`, to be
+filled in by another file or an overlay) counts as present: it is not a missing
+`version`, and an environment that no command selects can carry it without
+breaking the other commands.
+
+The checks compare names only and take time linear in the number of resources.
+The database URL is never repeated in its error, because it may carry a token.
+Dependency cycles pass the schema and are reported by `cuenv infrastructure`
+itself. The Rust engine repeats these checks before it starts a provider, which
+also covers projects that do not unify with this schema.
+
+:::note[CUE language version]
+`error()` needs CUE language `v0.14.0` or later **in the module that holds
+`schema/infrastructure.cue`**. A project that imports
+`github.com/cuenv/cuenv` from a registry is unaffected by its own
+`language.version`: it can stay on `v0.9.0`. Only a module that carries its own
+copy of the `schema` directory (a vendored copy or a test fixture) must declare
+`language: version: "v0.14.1"` or later; with an older version CUE reports
+``builtin "error" is not available in version v0.9.0``.
+:::
+
+#### Environment names
+
+`--env NAME` selects an entry of `infrastructure.environments` and, when
+present, the entry of the same name in `env.environment`. The two maps do not
+share a key rule:
+
+- `infrastructure.environments` keys are `#InfrastructureName`: a letter, then
+  letters, digits, `_` or `-`.
+- `env.environment` keys are any string.
+
+A name that is not a valid `#InfrastructureName` (one that starts with a digit
+or contains a dot, for example) can be an `env.environment` overlay for other
+commands but cannot be an infrastructure environment. Names are
+case-sensitive. An unknown name fails before the state backend is contacted
+and the error lists the declared environments.
+
+### #InfrastructureConfiguration
+
+The complete provider and resource set of one configuration: the top level of
+`infrastructure`, or one entry of `infrastructure.environments`. A selected
+environment **replaces** the top-level configuration entirely. Nothing is
+inherited from the top-level `providers`, `resources` or `providerEnvironment`,
+and an incomplete environment (a resource that needs a provider the
+environment does not declare) is an error, not a merge.
+
+| Field                 | Type                                               | Required | Description                                                      |
+| --------------------- | -------------------------------------------------- | -------- | ---------------------------------------------------------------- |
+| `providers`           | `{[#InfrastructureName]: #InfrastructureProvider}` | No       | Provider plugins keyed by local name. Always present in the evaluated project (an empty struct when none is declared) so the schema checks can tell "no providers" from "providers that failed to evaluate" |
+| `resources`           | `{[#InfrastructureName]: #ManagedResource}`        | No       | Managed resources keyed by name                                  |
+| `providerEnvironment` | `"inherit" \| "isolated"`                          | No       | What provider processes inherit from the cuenv process. Default `"inherit"` |
+
+`providerEnvironment` controls the environment of every provider process; the
+project's own `env` variables that the running action's policy allows (see
+[`allowInfrastructure`](#policy)) are added in both modes:
+
+- `"inherit"` (default): the ambient environment of the cuenv process, minus
+  the credentials of cuenv's own secret resolvers (for example
+  `OP_SERVICE_ACCOUNT_TOKEN`, every `OP_SESSION_*`, `INFISICAL_TOKEN`,
+  `VAULT_TOKEN`, `CUENV_SECRET_SALT`), unless the project passes them
+  explicitly in `env`.
+- `"isolated"`: an empty environment except `PATH`, `HOME`, proxy and TLS
+  variables (proxy URLs are passed without their `user:password@`).
+
+When the top level sets `providerEnvironment: "isolated"`, a selected
+environment must set it too: `--env` is refused otherwise, because an
+environment replaces the whole top-level configuration and would silently fall
+back to `"inherit"`. A top level that says `"inherit"` needs no refusal: an
+environment without the field inherits as well.
+Neither mode is a sandbox: `HOME` is passed even when isolated, and every
+provider receives every project variable the action's policy allows.
+
+Both modes still expose whatever else the cuenv process holds that is not a
+resolver credential. In CI, for example, an OIDC token or `GITHUB_TOKEN` is
+visible to providers in `inherit` mode; use `isolated` and pass only what each
+provider needs.
+
+### #InfrastructureState
+
+| Field   | Type          | Required | Description              |
+| ------- | ------------- | -------- | ------------------------ |
+| `turso` | `#TursoState` | Yes      | Remote Turso database    |
+
+### #TursoState
+
+| Field          | Type     | Required | Description                                                  |
+| -------------- | -------- | -------- | ------------------------------------------------------------ |
+| `url`          | `string` | Yes      | `libsql://`, `https://` or `wss://` with a host name or address; `http://`/`ws://` only for a loopback host (local `sqld`). Optional port and path; no credentials, query, fragment or whitespace. See the URL contract below |
+| `authenticationTokenEnvironmentVariable` | `string` | No       | Environment variable holding the authentication token (a valid variable name). Default `TURSO_AUTH_TOKEN` |
+
+URL contract, shared with the Rust state store. The schema accepts a subset of
+what the store accepts and never a URL the store rejects, so a project that
+evaluates cannot fail later on its database address:
+
+- Scheme `libsql`, `https`, `wss`, `http` or `ws`, in any letter case.
+- Encrypted schemes (`libsql`, `https`, `wss`): a DNS name (labels of letters,
+  digits and `-`, each starting and ending with a letter or digit, separated
+  by single `.`, whose last label starts with a letter), a dotted decimal IPv4
+  address (four octets from 0 to 255, no leading zeros), or a bracketed IPv6
+  address in its standard text form (at most one `::`, at most eight groups,
+  an optional dotted IPv4 tail after `::`; no zone identifier).
+- Plaintext schemes (`http`, `ws`): only a loopback host — `localhost` (any
+  case), a dotted IPv4 address in `127.0.0.0/8` with four decimal octets,
+  `[::1]`, or `[::ffff:127.x.y.z]` — so the token never crosses the network
+  unencrypted.
+- An optional port from 1 to 65535, then an optional path of URL path
+  characters. No user information, query, fragment or whitespace anywhere.
+
+The schema refuses spellings that the URL parser reads as another address or
+rejects outright: an octet above 255 (`999.1.1.1`), five parts (`1.2.3.4.5`),
+zero-padded, octal, hexadecimal, shorthand and single-number IPv4 hosts
+(`010.0.0.1`, `0177.0.0.1`, `0x7f.1`, `127.1`, `2130706433`), a host name whose
+last label starts with a digit, empty labels, and malformed IPv6 (`[1:2:3]`,
+`[:::]`, two `::`).
+
+An invalid URL fails with ``infrastructure.state.turso._invalidUrl: `url`
+must be …`` and the URL itself is not repeated, because it may carry a token.
+
+### #InfrastructureProvider
+
+| Field     | Type     | Required | Description                                                        |
+| --------- | -------- | -------- | ------------------------------------------------------------------ |
+| `source`  | `string` | Yes      | `namespace/type` or `hostname[:port]/namespace/type`               |
+| `version` | `string` | No*      | Exact version to install from the registry                         |
+| `path`    | `string` | No*      | Local provider binary (absolute or relative to the project); not empty |
+| `configuration` | `{...}` | No | Provider block arguments, validated by the provider schema |
+
+\* Exactly one of `version` (strict semantic version) or `path` must be set;
+see [Checks](#checks) for the errors.
+
+### #ManagedResource
+
+| Field       | Type              | Required | Description                                            |
+| ----------- | ----------------- | -------- | ------------------------------------------------------ |
+| `type`      | `string`          | Yes      | Managed resource type such as `random_pet` (`<provider>_<name>`) |
+| `provider`  | `#InfrastructureName`      | No       | Local provider name. Defaults to the type prefix; either way it must be a key of the same configuration's `providers` |
+| `dependsOn` | `[...#InfrastructureName]` | No       | Resources applied before (and destroyed after) this one; each must be a key of the same configuration's `resources` |
+| `configuration` | `{...}` | No | Resource arguments, validated by the provider schema |
+
 ## Container Images
 
 ### #ContainerImage
@@ -1230,17 +1506,19 @@ env: {
 
 **Fields:**
 
-| Field        | Type          | Description                         |
-| ------------ | ------------- | ----------------------------------- |
-| `allowTasks` | `[...string]` | Tasks that can access this variable |
-| `allowExec`  | `[...string]` | Exec commands that can access       |
+| Field                 | Type                       | Description                                      |
+| --------------------- | -------------------------- | ------------------------------------------------ |
+| `allowTasks`          | `[...string]`              | Tasks that can access this variable              |
+| `allowExec`           | `[...string]`              | Exec commands that can access                    |
+| `allowInfrastructure` | `[...#InfrastructureAction]` | `cuenv infrastructure` actions that can access it |
 
-`#Policy` is closed: a misspelled field such as `allowTaks` fails
+`#Policy` is closed: a misspelled field such as `allowInfrastucture` fails
 evaluation, and so does deserialization in cuenv's Rust types.
 
 A variable that has policies is available to a consumer only when some policy
-lists it. `allowTasks` grants tasks and `allowExec` grants `cuenv exec`
-commands; one does not grant the other. A variable with no policies (or an empty `policies: []`)
+lists it. `allowTasks` grants tasks, `allowExec` grants `cuenv exec`
+commands, and `allowInfrastructure` grants `cuenv infrastructure` actions; one
+does not grant another. A variable with no policies (or an empty `policies: []`)
 is available everywhere.
 
 Policies apply to every value, secret or not. A plain value that carries a
@@ -1252,6 +1530,38 @@ variable with a non-empty policy list is not exported there). Before this
 rule, plain values with policies still reached tasks, `cuenv exec` and the
 shell regardless of the list, and only secrets honoured it. A project that
 relied on that must add the consumer to the policy or drop the policy.
+
+### #InfrastructureAction
+
+The names accepted by `allowInfrastructure`, one per `cuenv infrastructure`
+command:
+
+```cue
+#InfrastructureAction: "plan" | "apply" | "destroy" | "state-list" |
+    "state-remove" | "state-recover" | "state-adopt" | "unlock"
+```
+
+`state-list`, `state-remove`, `state-recover` and `state-adopt` are the
+`state` subcommands. Any other name fails evaluation
+(`allowInfrastructure: ["deploy"]`) and deserialization (`unknown variant`).
+Plan, apply and destroy resolve the project's variables and pass the allowed
+ones to provider processes; a denied variable is also removed from the
+inherited environment, so a same-named host variable cannot bypass the policy.
+The state commands resolve only the state backend token, so for them the policy
+decides whether that token variable may be used.
+
+```cue
+env: {
+    CLOUDFLARE_API_TOKEN: {
+        value: schema.#OnePasswordRef & {ref: "op://vault/cloudflare/token"}
+        policies: [{allowInfrastructure: ["plan", "apply", "destroy"]}]
+    }
+    TURSO_AUTH_TOKEN: {
+        value: schema.#OnePasswordRef & {ref: "op://vault/turso/token"}
+        policies: [{allowInfrastructure: ["plan", "apply", "destroy", "state-list", "state-remove", "state-recover", "state-adopt", "unlock"]}]
+    }
+}
+```
 
 ## Workspaces
 

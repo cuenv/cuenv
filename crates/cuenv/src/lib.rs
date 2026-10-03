@@ -27,9 +27,6 @@ pub mod tui;
 
 pub use cuenv_core::Result;
 
-/// Exit code for SIGINT (128 + signal number 2)
-pub const EXIT_SIGINT: i32 = 130;
-
 /// LLM context content (llms.txt + CUE schemas concatenated at build time)
 pub const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full.txt"));
 
@@ -38,9 +35,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_exit_sigint_constant() {
-        // SIGINT exit code is 128 + 2 = 130
-        assert_eq!(EXIT_SIGINT, 130);
+    fn test_interrupted_exit_code_is_the_sigint_convention() {
+        // 128 + SIGINT (2): one constant for every interrupted command.
+        assert_eq!(cli::EXIT_INTERRUPTED, 130);
     }
 
     #[test]

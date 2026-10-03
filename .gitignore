@@ -3,6 +3,7 @@
 
 _tests
 .cache
+.claude/worktrees
 .cargo
 .cuenv
 .test

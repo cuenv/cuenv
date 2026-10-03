@@ -97,7 +97,7 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
 
 fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<ReleasePreparePlan> {
     let root = Path::new(&opts.path).canonicalize().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to resolve path '{}': {e}", &opts.path))
+        cuenv_core::Error::configuration(format!("Failed to resolve path '{}': {e}", opts.path))
     })?;
     let release_config = super::load_release_config(&root)?;
 

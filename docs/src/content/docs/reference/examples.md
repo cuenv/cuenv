@@ -342,6 +342,20 @@ Service-to-service dependencies and task `dependsOn` are honored. Image
 dependencies are recognized but image execution backends are still being wired
 in. See [status](/reference/schema/status/).
 
+## Infrastructure
+
+[`examples/infrastructure-random`](https://github.com/cuenv/cuenv/tree/main/examples/infrastructure-random)
+manages `hashicorp/random` resources with state in a Turso/libSQL database.
+
+```bash
+sqld --http-listen-addr 127.0.0.1:8080
+cuenv infrastructure plan  --path examples/infrastructure-random --package examples
+cuenv infrastructure apply --path examples/infrastructure-random --package examples
+```
+
+Resources are ordered with `dependsOn`; attribute references between
+resources are not supported yet. See [Manage infrastructure](/how-to/infrastructure/).
+
 ## Container images
 
 [`examples/container-image`](https://github.com/cuenv/cuenv/tree/main/examples/container-image)

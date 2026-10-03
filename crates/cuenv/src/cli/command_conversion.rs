@@ -1,6 +1,6 @@
 use super::{
-    ChangesetCommands, Commands, EnvCommands, OciCommands, ReleaseCommands, RuntimeCommands,
-    SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
+    ChangesetCommands, Commands, EnvCommands, InfrastructureCommands, OciCommands, ReleaseCommands,
+    RuntimeCommands, SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
 };
 use crate::commands::Command;
 use crate::commands::sync::{SyncMode, SyncScope};
@@ -29,6 +29,7 @@ impl Commands {
             | Self::Release { .. }
             | Self::Sync { .. }
             | Self::Secrets { .. }
+            | Self::Infrastructure { .. }
             | Self::Runtime { .. }
             | Self::Tools { .. }) => command.into_nested_command(environment),
             command @ (Self::Build { .. }
@@ -171,6 +172,7 @@ impl Commands {
                 },
             }),
             Self::Secrets { subcommand } => secrets_command(subcommand),
+            Self::Infrastructure { subcommand } => infrastructure_command(subcommand, environment),
             Self::Runtime { subcommand } => runtime_command(subcommand),
             Self::Tools { subcommand } => tools_command(&subcommand),
             _ => unreachable!("nested command conversion called for another command family"),
@@ -575,6 +577,110 @@ fn sync_provider_resolution(input: SyncProviderInput) -> SyncResolution {
 
 fn filter_update_tools(names: Vec<String>) -> Vec<String> {
     names.into_iter().filter(|name| !name.is_empty()).collect()
+}
+
+fn infrastructure_command(
+    subcommand: InfrastructureCommands,
+    environment: Option<String>,
+) -> Command {
+    use super::InfrastructureStateCommands;
+    use crate::commands::infrastructure::{
+        ConfirmationPolicy, InfrastructureAction, SeparateState, StateAction, UnlockScope,
+    };
+    use cuenv_infrastructure::{BackendMismatch, ChangedRecord, RecoverOverrides};
+    let (path, package, action) = match subcommand {
+        InfrastructureCommands::Plan { path, package } => {
+            (path, package, InfrastructureAction::Plan)
+        }
+        InfrastructureCommands::Apply {
+            path,
+            package,
+            yes,
+            allow_separate_state,
+        } => (
+            path,
+            package,
+            InfrastructureAction::Apply {
+                confirmation: if yes {
+                    ConfirmationPolicy::AssumeYes
+                } else {
+                    ConfirmationPolicy::Prompt
+                },
+                separate_state: if allow_separate_state {
+                    SeparateState::Allow
+                } else {
+                    SeparateState::Refuse
+                },
+            },
+        ),
+        InfrastructureCommands::Destroy { path, package, yes } => (
+            path,
+            package,
+            InfrastructureAction::Destroy {
+                confirmation: if yes {
+                    ConfirmationPolicy::AssumeYes
+                } else {
+                    ConfirmationPolicy::Prompt
+                },
+            },
+        ),
+        InfrastructureCommands::State {
+            subcommand,
+            path,
+            package,
+        } => (
+            path,
+            package,
+            InfrastructureAction::State(match subcommand {
+                None | Some(InfrastructureStateCommands::List) => StateAction::List,
+                Some(InfrastructureStateCommands::Locks) => StateAction::Locks,
+                Some(InfrastructureStateCommands::Remove { address }) => {
+                    StateAction::Remove { address }
+                }
+                Some(InfrastructureStateCommands::Recover {
+                    force,
+                    accept_backend,
+                }) => StateAction::Recover {
+                    overrides: RecoverOverrides {
+                        changed_record: if force {
+                            ChangedRecord::Overwrite
+                        } else {
+                            ChangedRecord::Refuse
+                        },
+                        backend: if accept_backend {
+                            BackendMismatch::Accept
+                        } else {
+                            BackendMismatch::Refuse
+                        },
+                    },
+                },
+                Some(InfrastructureStateCommands::Adopt) => StateAction::Adopt,
+            }),
+        ),
+        InfrastructureCommands::Unlock {
+            path,
+            package,
+            lock_identifier,
+            module,
+            project,
+        } => (
+            path,
+            package,
+            InfrastructureAction::Unlock {
+                lock_identifier,
+                scope: UnlockScope {
+                    module_path: module,
+                    project,
+                },
+            },
+        ),
+    };
+    Command::Infrastructure {
+        path,
+        package,
+        action,
+        environment,
+    }
 }
 
 fn secrets_command(subcommand: SecretsCommands) -> Command {

@@ -44,6 +44,8 @@ package schema
 		_cuenvSelf:   imageName
 	}
 	codegen?: #Codegen
+	// Infrastructure managed through Terraform provider plugins.
+	infrastructure?: {#Infrastructure}
 })
 
 // Match tasks across projects by metadata for discovery-based execution.

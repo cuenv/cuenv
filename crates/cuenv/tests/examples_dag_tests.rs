@@ -225,6 +225,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
+            name: "infrastructure-random",
+            min_task_count: 0, // Managed resources only
+            has_hooks: false,
+            has_env: false,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
             name: "ci-cachix",
             min_task_count: 1, // build
             has_hooks: false,

@@ -94,7 +94,7 @@ field skips the injection. `None` keeps the behaviour every existing caller
 relies on (the field is `tasks`); `Some("")` turns the injection off, so a
 caller that evaluates something other than a cuenv project does not depend on
 cuenv's task shape. The injection itself (and the project detection) is still
-cuenv-specific code in the bridge.
+cuenv-specific code in the bridge; see the design specification's next steps.
 
 **Instance keys.** With `PackageScope::Named`, `ModuleResult::instances` is
 keyed by the directory relative to the module root (`"."`,
@@ -288,11 +288,11 @@ let deploy = TaskNode::Sequence(vec![
 
 **TaskNode variants:**
 
-| Variant                  | Description                                      |
-| ------------------------ | ------------------------------------------------ |
-| `TaskNode::Task(Task)`   | Single executable command or script              |
-| `TaskNode::Group(TaskGroup)` | Parallel execution - all children run concurrently |
-| `TaskNode::Sequence(Vec<TaskNode>)` | Sequential execution - runs in order |
+| Variant                             | Description                                        |
+| ----------------------------------- | -------------------------------------------------- |
+| `TaskNode::Task(Task)`              | Single executable command or script                |
+| `TaskNode::Group(TaskGroup)`        | Parallel execution - all children run concurrently |
+| `TaskNode::Sequence(Vec<TaskNode>)` | Sequential execution - runs in order               |
 
 #### Task
 
@@ -300,21 +300,21 @@ Represents a single executable command.
 
 **Fields:**
 
-| Field             | Type                                 | Description                                         |
-| ----------------- | ------------------------------------ | --------------------------------------------------- |
-| `command`         | `Option<String>`                     | Command to execute                                  |
-| `args`            | `Vec<String>`                        | Command arguments                                   |
-| `script`          | `Option<String>`                     | Multi-line script (alternative to command)          |
-| `script_shell`    | `Option<ScriptShell>`                | Shell for script execution (default: bash)          |
-| `shell_options`   | `Option<ShellOptions>`               | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
-| `env`             | `HashMap<String, serde_json::Value>` | Task-specific environment additions                 |
-| `depends_on`      | `Vec<TaskDependency>`                | Task dependencies (resolved from CUE references)    |
-| `inputs`          | `Vec<Input>`                         | Files/globs or task output references               |
-| `outputs`         | `Vec<String>`                        | Declared outputs that become cacheable artifacts    |
-| `description`     | `Option<String>`                     | Human-friendly summary                              |
-| `hermetic`        | `Option<bool>`                       | Isolated execution (default: true)                  |
-| `timeout`         | `Option<String>`                     | Execution timeout (e.g., "30m")                     |
-| `continue_on_error` | `Option<bool>`                     | Continue on failure (default: false)                |
+| Field               | Type                                 | Description                                                          |
+| ------------------- | ------------------------------------ | -------------------------------------------------------------------- |
+| `command`           | `Option<String>`                     | Command to execute                                                   |
+| `args`              | `Vec<String>`                        | Command arguments                                                    |
+| `script`            | `Option<String>`                     | Multi-line script (alternative to command)                           |
+| `script_shell`      | `Option<ScriptShell>`                | Shell for script execution (default: bash)                           |
+| `shell_options`     | `Option<ShellOptions>`               | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
+| `env`               | `HashMap<String, serde_json::Value>` | Task-specific environment additions                                  |
+| `depends_on`        | `Vec<TaskDependency>`                | Task dependencies (resolved from CUE references)                     |
+| `inputs`            | `Vec<Input>`                         | Files/globs or task output references                                |
+| `outputs`           | `Vec<String>`                        | Declared outputs that become cacheable artifacts                     |
+| `description`       | `Option<String>`                     | Human-friendly summary                                               |
+| `hermetic`          | `Option<bool>`                       | Isolated execution (default: true)                                   |
+| `timeout`           | `Option<String>`                     | Execution timeout (e.g., "30m")                                      |
+| `continue_on_error` | `Option<bool>`                       | Continue on failure (default: false)                                 |
 
 #### TaskDependency
 
@@ -336,13 +336,13 @@ Parallel execution group - all child tasks run concurrently.
 
 **Fields:**
 
-| Field            | Type                           | Description                              |
-| ---------------- | ------------------------------ | ---------------------------------------- |
-| `type_`          | `String`                       | Type discriminator (always "group")      |
-| `children`       | `HashMap<String, TaskNode>`    | Named child tasks (run in parallel)      |
-| `depends_on`     | `Vec<TaskDependency>`          | Dependencies on other tasks              |
-| `max_concurrency`| `Option<i32>`                  | Limit concurrent executions (0 = unlimited) |
-| `description`    | `Option<String>`               | Human-readable description               |
+| Field             | Type                        | Description                                 |
+| ----------------- | --------------------------- | ------------------------------------------- |
+| `type_`           | `String`                    | Type discriminator (always "group")         |
+| `children`        | `HashMap<String, TaskNode>` | Named child tasks (run in parallel)         |
+| `depends_on`      | `Vec<TaskDependency>`       | Dependencies on other tasks                 |
+| `max_concurrency` | `Option<i32>`               | Limit concurrent executions (0 = unlimited) |
+| `description`     | `Option<String>`            | Human-readable description                  |
 
 ### Environment
 
@@ -374,10 +374,10 @@ use cuenv_hooks::{Hook, Hooks};
 
 **Fields:**
 
-| Field      | Type                    | Description                     |
-| ---------- | ----------------------- | ------------------------------- |
-| `on_enter` | `Option<Vec<Hook>>`     | Hooks to run on directory entry |
-| `on_exit`  | `Option<Vec<Hook>>`     | Hooks to run on directory exit  |
+| Field      | Type                | Description                     |
+| ---------- | ------------------- | ------------------------------- |
+| `on_enter` | `Option<Vec<Hook>>` | Hooks to run on directory entry |
+| `on_exit`  | `Option<Vec<Hook>>` | Hooks to run on directory exit  |
 
 ### Hook
 
@@ -754,11 +754,35 @@ formatting layers. Values shorter than `MIN_SECRET_LENGTH` (4) are ignored.
 
 The cuenv CLI uses structured exit codes:
 
-| Code | Name        | Description                                                                     |
-| ---- | ----------- | ------------------------------------------------------------------------------- |
-| 0    | Success     | Command completed successfully                                                  |
-| 2    | ConfigError | CLI/configuration error (`CliError::Config`)                                    |
-| 3    | EvalError   | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`) |
+| Code | Constant              | Description                                                                                                                                            | JSON `code`                  |
+| ---- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------- |
+| 0    | `EXIT_OK`             | Command completed successfully                                                                                                                         | (success envelope)           |
+| 1    | `EXIT_CANCELLED`      | Infrastructure change not confirmed at the prompt; nothing was applied (`CliError::Infrastructure` with `Cancelled` kind)                              | `infrastructure_cancelled`   |
+| 2    | `EXIT_CLI`            | CLI/configuration error (`CliError::Config`)                                                                                                           | `config`                     |
+| 3    | `EXIT_EVAL`           | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`)                                                                        | `eval` / `other`             |
+| 4    | `EXIT_LOCKED`         | Infrastructure run collided with concurrent activity; retrying later can succeed (`CliError::Infrastructure` with `Locked` kind)                       | `infrastructure_locked`      |
+| 5    | `EXIT_INFRASTRUCTURE` | Any other infrastructure failure: provider, state store, apply, ownership or unrecorded changes (`CliError::Infrastructure` with `Failed` kind)        | `infrastructure`             |
+| 130  | `EXIT_INTERRUPTED`    | Interrupted: Ctrl-C for every command; for `cuenv infrastructure` also SIGTERM, SIGHUP or SIGQUIT (`CliError::Infrastructure` with `Interrupted` kind) | `infrastructure_interrupted` |
+
+`exit_code_for` and `error_code_for` in `cuenv::cli` map a `CliError` to its
+exit code and to the `code` field of the JSON error envelope, which
+`error_envelope` builds:
+`{"status":"error","error":{"code":…,"message":…,"help":…,"lockIdentifier":…,"lockReleased":…,"deletedNotRecreated":…}}`.
+`help` is present when the error has help text; `lockIdentifier` and
+`lockReleased` are present when an infrastructure error concerns a state lock
+(`CliError::with_lock` and `LockStatus`), and `lockReleased` is `false`
+whenever the release failed or is unknown; `deletedNotRecreated` lists the
+replacements a failed or interrupted apply deleted without recreating
+(`CliError::with_deleted_not_recreated`). Every `CliError` constructor redacts
+its message and help from the raw strings, `error_report_text` redacts the
+terminal report before it is wrapped, and `error_envelope` redacts each string
+of the envelope. Codes 1, 4, 5 and 130 with an
+envelope are only produced by `cuenv infrastructure`; they extend the taxonomy
+of ADR-0005. `InfrastructureFailureKind` (`Locked`, `Cancelled`,
+`Interrupted`, `Failed`) selects between them. `cuenv infrastructure` itself
+exits with 3 only for CUE evaluation errors (`eval`). `EXIT_INTERRUPTED` is
+the single constant for 130: other commands interrupted by Ctrl-C exit with
+it too, without an envelope.
 
 ## See Also
 

@@ -3,6 +3,7 @@
 //! Async secret resolution for these values lives in `cuenv-core`
 //! (`EnvValueExt`); this module holds only the serde types and pure helpers.
 
+use crate::manifest::InfrastructurePolicyAction;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -39,7 +40,7 @@ impl EnvPart {
 
 /// Policy for controlling environment variable access
 ///
-/// Unknown fields are rejected so a misspelled allowlist (`allowTaks`)
+/// Unknown fields are rejected so a misspelled allowlist (`allowInfrastucture`)
 /// fails instead of silently granting nothing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +52,13 @@ pub struct Policy {
     /// Allowlist of exec commands that can access this variable
     #[serde(skip_serializing_if = "Option::is_none", rename = "allowExec")]
     pub allow_exec: Option<Vec<String>>,
+
+    /// Allowlist of infrastructure actions that can access this variable
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "allowInfrastructure"
+    )]
+    pub allow_infrastructure: Option<Vec<InfrastructurePolicyAction>>,
 }
 
 /// Environment variable with optional access policies
@@ -242,10 +250,29 @@ impl EnvValue {
         }
     }
 
+    /// Check if an infrastructure action has access to this environment variable.
+    #[must_use]
+    pub fn is_accessible_by_infrastructure(&self, action: InfrastructurePolicyAction) -> bool {
+        match self {
+            Self::WithPolicies(var) => match &var.policies {
+                None => true,
+                Some(policies) if policies.is_empty() => true,
+                Some(policies) => policies.iter().any(|policy| {
+                    policy
+                        .allow_infrastructure
+                        .as_ref()
+                        .is_some_and(|actions| actions.contains(&action))
+                }),
+            },
+            _ => true,
+        }
+    }
+
     /// Check if the interactive shell integration (`cuenv export`) may receive
     /// this environment variable.
     ///
-    /// Policies name tasks and exec commands; none of them names the shell. A value with a non-empty policy list is therefore
+    /// Policies name tasks, exec commands and infrastructure actions; none of
+    /// them names the shell. A value with a non-empty policy list is therefore
     /// restricted to its listed consumers and never exported to the shell.
     #[must_use]
     pub fn is_accessible_by_shell(&self) -> bool {

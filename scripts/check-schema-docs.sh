@@ -82,6 +82,7 @@ if [[ -f "$matrix" ]]; then
 fi
 
 required_skills=(
+	cuenv-infrastructure
 	cuenv-schema-first
 	cuenv-project-env-secrets-hooks
 	cuenv-tasks-graph-cache
