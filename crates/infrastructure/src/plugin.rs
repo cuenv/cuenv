@@ -1329,7 +1329,9 @@ mod tests {
 
     /// The real condition: the executable is still open for writing when the
     /// first spawn is attempted (Linux refuses it with `ETXTBSY`), and the
-    /// writer closes it shortly after.
+    /// writer closes it before the retry. The writer is closed by the first
+    /// attempt itself, not by a timer, so no scheduling delay can let the
+    /// first spawn see a closed file.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_executable_still_open_for_writing_is_spawned_once_closed() {
@@ -1342,24 +1344,22 @@ mod tests {
         writer.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
         writer.flush().unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            drop(writer);
-        });
 
+        let mut writer = Some(writer);
         let mut attempts = 0;
         let mut child = retry_while_executable_is_busy(|| {
             attempts += 1;
-            Command::new(&path).spawn()
+            let spawned = Command::new(&path).spawn();
+            drop(writer.take());
+            spawned
         })
         .await
         .unwrap();
         assert!(child.wait().await.unwrap().success());
-        release.join().unwrap();
         #[cfg(target_os = "linux")]
-        assert!(
-            attempts > 1,
-            "the first spawn should have found the file busy"
+        assert_eq!(
+            attempts, 2,
+            "the first spawn should have found the file busy and the second succeeded"
         );
     }
 
