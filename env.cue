@@ -221,7 +221,7 @@ schema.#Project & {
 			"sync-check": schema.#Task & {
 				command: "cuenv"
 				args: ["sync", "--check"]
-				inputs: ["env.cue", "schema/**", "contrib/**", "cuenv.lock"]
+				inputs: ["env.cue", "schema/**", "contrib/**", "cuenv.lock", "cue.mod/**"]
 			}
 
 			"schema-docs-check": schema.#Task & {

@@ -166,6 +166,7 @@ fn engine_options(project_directory: &Path, cancellation: &Cancellation) -> Engi
         provider_environment_variables: BTreeMap::new(),
         unrecorded_directory: Some(project_directory.join("unrecorded")),
         cancellation: cancellation.clone(),
+        locked_providers: BTreeMap::new(),
     }
 }
 
@@ -356,6 +357,114 @@ async fn protocol_6_provider_schema() -> TestResult {
         .ok_or("tfe_organization missing")?;
     assert!(organization.block.attributes.contains_key("email"));
     client.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires Terraform provider binaries; see module documentation"]
+async fn generated_types_describe_real_provider_schemas() -> TestResult {
+    use cuenv_infrastructure::cue_types::{self, ProviderRelease};
+    use cuenv_infrastructure::registry::ProviderSource;
+    let cancellation = Cancellation::default();
+    for (variable, source, resource) in [
+        (
+            "CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER",
+            "hashicorp/random",
+            "random_pet",
+        ),
+        (
+            "CUENV_INFRASTRUCTURE_TEST_TFE_PROVIDER",
+            "hashicorp/tfe",
+            "tfe_organization",
+        ),
+        (
+            "CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER",
+            "cuenv/fake",
+            "fake_nested",
+        ),
+    ] {
+        let binary = environment_path(variable)?;
+        let (schema, _) = cue_types::load_schema(Path::new(&binary), &cancellation).await?;
+        let source = ProviderSource::parse(source)?;
+        let types = cue_types::render(
+            &schema,
+            ProviderRelease {
+                source: &source,
+                version: "1.0.0",
+            },
+        )?;
+        assert_eq!(types.schema_digest, cue_types::schema_digest(&schema));
+        assert!(
+            types.resource_types.iter().any(|name| name == resource),
+            "{source}: {:?}",
+            types.resource_types
+        );
+        let package = types
+            .files
+            .get(&Path::new("resources").join(resource).join("resource.cue"))
+            .ok_or_else(|| format!("{source}: no package for {resource}"))?;
+        assert!(package.contains("#Configuration: {"), "{package}");
+        assert!(
+            package.contains(&format!("type: \"{resource}\"")),
+            "{package}"
+        );
+    }
+    let binary = environment_path("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?;
+    let (schema, _) = cue_types::load_schema(Path::new(&binary), &cancellation).await?;
+    let source = ProviderSource::parse("hashicorp/random")?;
+    let types = cue_types::render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "1.0.0",
+        },
+    )?;
+    let pet = types
+        .files
+        .get(Path::new("resources/random_pet/resource.cue"))
+        .ok_or("no random_pet package")?;
+    // Computed-only `id` is not configuration.
+    assert!(pet.contains("\tlength?: number\n"), "{pet}");
+    assert!(!pet.contains("\tid?:"), "{pet}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires Terraform provider binaries; see module documentation"]
+async fn a_provider_whose_schema_differs_from_its_generated_types_is_refused() -> TestResult {
+    let binary = environment_path("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?;
+    let cancellation = Cancellation::default();
+    let (schema, _) =
+        cuenv_infrastructure::cue_types::load_schema(Path::new(&binary), &cancellation).await?;
+    let live = cuenv_infrastructure::cue_types::schema_digest(&schema);
+    let stale = format!("sha256:{}", "0".repeat(64));
+    let project = tempfile::tempdir()?;
+    let tenant = TenantKey::new("example.com/schema-digest@v0", "web")?;
+    for (digest, accepted) in [(live.as_str(), true), (stale.as_str(), false)] {
+        let infrastructure: Infrastructure = serde_json::from_value(json!({
+            "state": {"turso": {"url": "http://unused"}},
+            "providers": {
+                "random": {"source": "hashicorp/random", "path": binary, "schemaDigest": digest},
+            },
+            "resources": {"pet": {"type": "random_pet", "configuration": {"length": 2}}},
+        }))?;
+        let mut engine = InfrastructureEngine::new(EngineSetup {
+            tenant: tenant.clone(),
+            store: Arc::new(MemoryStateStore::new()),
+            infrastructure,
+            options: engine_options(project.path(), &cancellation),
+        });
+        let result = engine.plan(PlanMode::Apply).await;
+        engine.shutdown().await;
+        match (result, accepted) {
+            (Ok(_), true) => {}
+            (Err(error), false) => assert!(
+                error.to_string().contains("were generated from schema"),
+                "{error}"
+            ),
+            (outcome, _) => return Err(format!("{digest}: unexpected {outcome:?}").into()),
+        }
+    }
     Ok(())
 }
 

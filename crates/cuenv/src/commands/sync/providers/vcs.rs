@@ -5,7 +5,7 @@ mod materialization;
 mod paths;
 
 use async_trait::async_trait;
-use cuenv_core::lockfile::{LOCKFILE_NAME, LOCKFILE_VERSION, LockedVcsDependency, Lockfile};
+use cuenv_core::lockfile::{LOCKFILE_NAME, LockedVcsDependency, Lockfile};
 use cuenv_core::manifest::{Base, Project, VcsDependency};
 use cuenv_core::{Error, Result};
 use cuenv_ignore::{FileStatus, IgnoreFiles, IgnoreSection};
@@ -148,7 +148,7 @@ fn sync_vcs_dependencies(request: VcsSyncRequest<'_>) -> Result<String> {
         return Ok("No VCS dependencies configured.".to_string());
     }
     let mut next_lockfile = existing_lockfile.clone().unwrap_or_default();
-    next_lockfile.version = LOCKFILE_VERSION;
+    next_lockfile.version = next_lockfile.required_version();
     let mut outputs = Vec::new();
     let VcsPlanOutput { next_vcs, plans } = plan_vcs_dependencies(VcsPlanRequest {
         git_root: &git_root,

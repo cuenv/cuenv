@@ -769,6 +769,7 @@ impl Harness {
     /// resources, saving unrecorded changes in the harness's directory.
     fn inputs(&self) -> EngineInputs {
         EngineInputs {
+            locked_providers: std::collections::BTreeMap::new(),
             infrastructure: serde_json::from_value(serde_json::json!({
                 "state": {"turso": {"url": "http://127.0.0.1:1"}}
             }))

@@ -356,6 +356,18 @@ cuenv infrastructure apply --path examples/infrastructure-random --package examp
 Resources are ordered with `dependsOn`; attribute references between
 resources are not supported yet. See [Manage infrastructure](/how-to/infrastructure/).
 
+[`examples/infrastructure-typed`](https://github.com/cuenv/cuenv/tree/main/examples/infrastructure-typed)
+is the same stack with CUE types generated from the provider's schema, so a
+misspelled or mistyped argument fails evaluation before any provider starts:
+
+```bash
+# Generated once; the result is committed in cue.mod/gen and cuenv.lock
+cuenv infrastructure provider add hashicorp/random@3.9.1
+cuenv infrastructure plan --path examples/infrastructure-typed --package examples
+# Regenerate, or check in CI, from cuenv.lock
+cuenv sync infrastructure --check
+```
+
 ## Container images
 
 [`examples/container-image`](https://github.com/cuenv/cuenv/tree/main/examples/container-image)
