@@ -101,6 +101,7 @@ schema.#Project & {
 		providers: ["github"]
 
 		contributors: [
+			xContributors.#NamespaceCache,
 			xContributors.#Nix,
 			xContributors.#Hestia,
 			xContributors.#CuenvNix,
@@ -117,6 +118,14 @@ schema.#Project & {
 				"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
 				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
 			}
+
+			// Each Linux runner mounts a Namespace cache volume at /nix, so a
+			// job finds the store a previous job on that volume left behind
+			// and asks Hestia (the GitHub Actions cache, which is rate limited
+			// under parallel load) only for what is missing. Hestia stays the
+			// cache parallel jobs share. The runner profiles need a cache
+			// volume; macOS jobs skip the volume.
+			namespaceCache: {}
 
 			hestia: {}
 
