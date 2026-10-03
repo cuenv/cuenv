@@ -13,6 +13,7 @@ rules.#DirectoryRules & {
             ".claude/worktrees",
             ".cargo",
             ".cuenv",
+            ".e2e",
             ".test",
             ".worktrees",
             "*.vsix",

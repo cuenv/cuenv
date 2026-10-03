@@ -9,6 +9,14 @@
   "scripts": {
     "docs:build": "cd docs && bun run build",
     "docs:preview": "cd docs && bun run preview",
-    "docs:dev": "cd docs && bun run dev"
+    "docs:dev": "cd docs && bun run dev",
+    "test:e2e": "e2e run",
+    "test:e2e:list": "e2e list --reporter json",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
+  },
+  "devDependencies": {
+    "@types/node": "18.19.130",
+    "e2e": "0.16.0",
+    "typescript": "5.9.3"
   }
 }
