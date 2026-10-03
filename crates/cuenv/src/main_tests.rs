@@ -73,6 +73,22 @@ fn test_build_command_uses_async_dispatch() {
 }
 
 #[test]
+fn test_infrastructure_owns_interrupts_and_sends_json_events_to_stderr() {
+    use clap::Parser;
+
+    let infrastructure = cli::Cli::try_parse_from(["cuenv", "--json", "i", "plan"]).unwrap();
+    assert_eq!(interrupt_policy(&infrastructure), InterruptPolicy::Command);
+    assert_eq!(
+        json_event_stream(&infrastructure),
+        JsonEventStream::StandardError
+    );
+
+    let task = cli::Cli::try_parse_from(["cuenv", "--json", "task", "build"]).unwrap();
+    assert_eq!(interrupt_policy(&task), InterruptPolicy::Process);
+    assert_eq!(json_event_stream(&task), JsonEventStream::StandardOutput);
+}
+
+#[test]
 fn test_log_level_parsing() {
     let test_cases = vec![
         (Some("trace"), Level::TRACE),

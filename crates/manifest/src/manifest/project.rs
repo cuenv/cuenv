@@ -74,6 +74,12 @@ pub struct Project {
     /// Formatters configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatters: Option<Formatters>,
+
+    /// Raw infrastructure configuration. Ordinary commands do not consume it
+    /// and must tolerate unselected environments with incomplete CUE values.
+    /// Infrastructure commands decode the selected configuration strictly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infrastructure: Option<serde_json::Value>,
 }
 
 impl Project {

@@ -52,6 +52,7 @@ fn test_extract_hooks_from_config() {
         services: std::collections::HashMap::new(),
         images: std::collections::HashMap::new(),
         vcs: std::collections::HashMap::new(),
+        infrastructure: None,
     };
 
     let hooks = extract_hooks_from_config(&config);
@@ -99,6 +100,7 @@ fn test_extract_hooks_single_hook() {
         services: std::collections::HashMap::new(),
         images: std::collections::HashMap::new(),
         vcs: std::collections::HashMap::new(),
+        infrastructure: None,
     };
 
     let hooks = extract_hooks_from_config(&config);
@@ -125,6 +127,7 @@ fn test_extract_hooks_empty_config() {
         services: std::collections::HashMap::new(),
         images: std::collections::HashMap::new(),
         vcs: std::collections::HashMap::new(),
+        infrastructure: None,
     };
 
     let hooks = extract_hooks_from_config(&config);

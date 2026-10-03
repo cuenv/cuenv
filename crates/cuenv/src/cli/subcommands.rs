@@ -187,6 +187,206 @@ pub enum SecretsCommands {
     },
 }
 
+/// Infrastructure subcommands (Terraform provider plugins + Turso state).
+#[derive(Subcommand, Debug, Clone)]
+pub enum InfrastructureCommands {
+    /// Show the changes `apply` would make.
+    #[command(about = "Show the changes `apply` would make")]
+    Plan {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
+    /// Create, update, replace and delete resources to match the configuration.
+    #[command(about = "Converge managed resources on the configuration")]
+    Apply {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Apply without an interactive confirmation.
+        #[arg(
+            long,
+            short = 'y',
+            alias = "auto-approve",
+            help = "Apply without an interactive confirmation"
+        )]
+        yes: bool,
+        /// Create resources of the selected environment even though the same
+        /// addresses are recorded for the project without `--env`.
+        #[arg(
+            long,
+            help = "With --env: create resources whose addresses are also recorded without --env, as separate objects"
+        )]
+        allow_separate_state: bool,
+    },
+    /// Delete every managed resource the project owns.
+    #[command(about = "Delete every managed resource the project owns")]
+    Destroy {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Destroy without an interactive confirmation.
+        #[arg(
+            long,
+            short = 'y',
+            alias = "auto-approve",
+            help = "Destroy without an interactive confirmation"
+        )]
+        yes: bool,
+    },
+    /// Inspect and repair recorded state (`list` when no subcommand is given).
+    #[command(about = "Inspect and repair recorded state (`list` when no subcommand is given)")]
+    State {
+        /// State subcommand; `list` when omitted.
+        #[command(subcommand)]
+        subcommand: Option<InfrastructureStateCommands>,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = ".",
+            global = true
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv",
+            global = true
+        )]
+        package: String,
+    },
+    /// Show the project's state lock, or release it by identifier.
+    #[command(about = "Show the project's state lock, or release it by identifier")]
+    Unlock {
+        /// Identifier of the lock to release; omit it to see who holds the lock.
+        #[arg(help = "Identifier of the lock to release; omit it to see who holds the lock")]
+        lock_identifier: Option<String>,
+        /// Act on the lock of the project with this CUE module path instead of
+        /// the evaluated project's (see `state locks`).
+        #[arg(
+            long,
+            help = "CUE module path of the project whose lock to show or release, instead of the evaluated project's"
+        )]
+        module: Option<String>,
+        /// Act on the lock of the project with this name instead of the
+        /// evaluated project's (see `state locks`).
+        #[arg(
+            long,
+            help = "Name of the project whose lock to show or release, instead of the evaluated project's"
+        )]
+        project: Option<String>,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
+}
+
+/// `cuenv infrastructure state` subcommands.
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum InfrastructureStateCommands {
+    /// List managed resources recorded in state (the default).
+    #[command(about = "List managed resources recorded in state (the default)")]
+    List,
+    /// List every lock held in the state database, for every project.
+    #[command(about = "List every lock held in the state database, for every project")]
+    Locks,
+    /// Forget one managed resource without touching the real object.
+    #[command(about = "Forget one managed resource without touching the real object")]
+    Remove {
+        /// Address of the resource, such as `random_pet.pet`.
+        #[arg(help = "Address of the resource, such as `random_pet.pet`")]
+        address: String,
+    },
+    /// Record changes an earlier run could not record and saved locally.
+    #[command(about = "Record changes an earlier run could not record and saved locally")]
+    Recover {
+        /// Write a saved record even when the stored record changed since it
+        /// was saved, overwriting the newer record.
+        #[arg(
+            long,
+            help = "Write a saved record even when the stored record changed since it was saved, overwriting the newer record"
+        )]
+        force: bool,
+        /// Accept a saved record that was saved for a different state backend
+        /// (or without a backend binding) than the one in use.
+        #[arg(
+            long,
+            help = "Accept a saved record that was saved for a different state backend than the one in use"
+        )]
+        accept_backend: bool,
+    },
+    /// Make this project's CUE instance the owner of its state.
+    #[command(
+        about = "Make this project's CUE instance (directory and package) the owner of its state"
+    )]
+    Adopt,
+}
+
+impl InfrastructureCommands {
+    /// CUE package the subcommand evaluates.
+    #[must_use]
+    pub fn package(&self) -> &str {
+        match self {
+            Self::Plan { package, .. }
+            | Self::Apply { package, .. }
+            | Self::Destroy { package, .. }
+            | Self::State { package, .. }
+            | Self::Unlock { package, .. } => package,
+        }
+    }
+}
+
 /// Supported secret providers that require setup.
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum SecretsProvider {

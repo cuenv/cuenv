@@ -132,6 +132,34 @@ pub fn correlation_id() -> Uuid {
     *CORRELATION_ID.get_or_init(Uuid::new_v4)
 }
 
+/// Crates besides `cuenv` whose logs follow the chosen level.
+const LEVELLED_CRATES: [&str; 4] = [
+    "cuenv_cli",
+    "cuenv_core",
+    "cuengine",
+    "cuenv_infrastructure",
+];
+
+const fn level_name(level: Level) -> &'static str {
+    match level {
+        Level::TRACE => "trace",
+        Level::DEBUG => "debug",
+        Level::INFO => "info",
+        Level::WARN => "warn",
+        Level::ERROR => "error",
+    }
+}
+
+/// The filter used when neither a custom filter nor `RUST_LOG` is given:
+/// the `cuenv` crate at `cuenv_level`, [`LEVELLED_CRATES`] at `level`.
+fn default_filter(cuenv_level: Level, level: Level) -> String {
+    let level = level_name(level);
+    std::iter::once(format!("cuenv={}", level_name(cuenv_level)))
+        .chain(LEVELLED_CRATES.iter().map(|name| format!("{name}={level}")))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Initialize tracing with the given configuration.
 ///
 /// Sets up the tracing subscriber with the specified format, level, and filters.
@@ -146,18 +174,8 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
     let env_filter = if let Some(filter) = config.filter {
         EnvFilter::try_new(filter)
     } else {
-        EnvFilter::try_from_default_env().or_else(|_| {
-            let level_str = match config.level {
-                Level::TRACE => "trace",
-                Level::DEBUG => "debug",
-                Level::INFO => "info",
-                Level::WARN => "warn",
-                Level::ERROR => "error",
-            };
-            EnvFilter::try_new(format!(
-                "cuenv={level_str},cuenv_cli={level_str},cuenv_core={level_str},cuengine={level_str}"
-            ))
-        })
+        EnvFilter::try_from_default_env()
+            .or_else(|_| EnvFilter::try_new(default_filter(config.level, config.level)))
     }
     .map_err(|e| miette::miette!("Failed to create tracing filter: {e}"))?;
 
@@ -265,17 +283,8 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
         EnvFilter::try_new(filter)
     } else {
         EnvFilter::try_from_default_env().or_else(|_| {
-            let level_str = match level {
-                Level::TRACE => "trace",
-                Level::DEBUG => "debug",
-                Level::INFO => "info",
-                Level::WARN => "warn",
-                Level::ERROR => "error",
-            };
             // Always capture cuenv events at info level for the event system
-            EnvFilter::try_new(format!(
-                "cuenv=info,cuenv_cli={level_str},cuenv_core={level_str},cuengine={level_str}"
-            ))
+            EnvFilter::try_new(default_filter(Level::INFO, level))
         })
     }
     .map_err(|e| miette::miette!("Failed to create tracing filter: {e}"))?;
@@ -453,6 +462,16 @@ mod tests {
         assert_eq!(Level::from(LogLevel::Info), Level::INFO);
         assert_eq!(Level::from(LogLevel::Warn), Level::WARN);
         assert_eq!(Level::from(LogLevel::Error), Level::ERROR);
+    }
+
+    #[test]
+    fn default_filter_covers_the_infrastructure_crate() {
+        let filter = default_filter(Level::INFO, Level::WARN);
+        assert_eq!(
+            filter,
+            "cuenv=info,cuenv_cli=warn,cuenv_core=warn,cuengine=warn,cuenv_infrastructure=warn"
+        );
+        assert!(EnvFilter::try_new(&filter).is_ok());
     }
 
     #[test]

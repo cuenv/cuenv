@@ -155,6 +155,7 @@ fn test_policy_task_access() {
         policies: Some(vec![Policy {
             allow_tasks: Some(vec!["deploy".to_string(), "release".to_string()]),
             allow_exec: None,
+            allow_infrastructure: None,
         }]),
     });
     assert!(restricted_var.is_accessible_by_task("deploy"));
@@ -175,6 +176,7 @@ fn test_policy_exec_access() {
         policies: Some(vec![Policy {
             allow_tasks: None,
             allow_exec: Some(vec!["kubectl".to_string(), "terraform".to_string()]),
+            allow_infrastructure: None,
         }]),
     });
     assert!(restricted_var.is_accessible_by_exec("kubectl"));
@@ -192,10 +194,12 @@ fn test_multiple_policies() {
             Policy {
                 allow_tasks: Some(vec!["task1".to_string()]),
                 allow_exec: None,
+                allow_infrastructure: None,
             },
             Policy {
                 allow_tasks: Some(vec!["task2".to_string()]),
                 allow_exec: Some(vec!["kubectl".to_string()]),
+                allow_infrastructure: None,
             },
         ]),
     });
@@ -208,6 +212,98 @@ fn test_multiple_policies() {
     // Exec access - only second policy has exec rules
     assert!(multi_policy_var.is_accessible_by_exec("kubectl"));
     assert!(!multi_policy_var.is_accessible_by_exec("bash"));
+}
+
+#[test]
+fn infrastructure_policies_are_independent_of_task_and_exec_access() {
+    let unrestricted = EnvValue::String("visible".into());
+    let no_policies = EnvValue::WithPolicies(EnvVarWithPolicies {
+        value: EnvValueSimple::String("visible".into()),
+        policies: None,
+    });
+    let empty_policies = EnvValue::WithPolicies(EnvVarWithPolicies {
+        value: EnvValueSimple::String("visible".into()),
+        policies: Some(vec![]),
+    });
+    for value in [&unrestricted, &no_policies, &empty_policies] {
+        assert!(value.is_accessible_by_infrastructure(InfrastructurePolicyAction::Plan));
+    }
+
+    let restricted = EnvValue::WithPolicies(EnvVarWithPolicies {
+        value: EnvValueSimple::String("credential".into()),
+        policies: Some(vec![
+            Policy {
+                allow_tasks: Some(vec!["plan".into()]),
+                allow_exec: Some(vec!["plan".into()]),
+                allow_infrastructure: None,
+            },
+            Policy {
+                allow_tasks: None,
+                allow_exec: None,
+                allow_infrastructure: Some(vec![InfrastructurePolicyAction::Apply]),
+            },
+        ]),
+    });
+    assert!(!restricted.is_accessible_by_infrastructure(InfrastructurePolicyAction::Plan));
+    assert!(restricted.is_accessible_by_infrastructure(InfrastructurePolicyAction::Apply));
+    assert!(!restricted.is_accessible_by_infrastructure(InfrastructurePolicyAction::Destroy));
+}
+
+#[test]
+fn infrastructure_policy_uses_schema_field_name() {
+    let policy: Policy =
+        serde_json::from_str(r#"{"allowInfrastructure":["plan","apply"]}"#).unwrap();
+    assert_eq!(
+        policy.allow_infrastructure,
+        Some(vec![
+            InfrastructurePolicyAction::Plan,
+            InfrastructurePolicyAction::Apply
+        ])
+    );
+    assert_eq!(
+        serde_json::to_value(&policy).unwrap(),
+        serde_json::json!({"allowInfrastructure":["plan","apply"]})
+    );
+}
+
+#[tokio::test]
+async fn infrastructure_filters_before_resolving_and_returns_secret_parts() {
+    let secret = crate::secrets::Secret::new("/usr/bin/printf".into(), vec!["credential".into()]);
+    let forbidden = crate::secrets::Secret::new("/this/command/must/never/run".into(), vec![]);
+    let variables = HashMap::from([
+        (
+            "ENDPOINT".into(),
+            EnvValue::Interpolated(vec![
+                EnvPart::Literal("prefix-".into()),
+                EnvPart::Secret(secret),
+                EnvPart::Literal("-suffix".into()),
+            ]),
+        ),
+        (
+            "FORBIDDEN".into(),
+            EnvValue::WithPolicies(EnvVarWithPolicies {
+                value: EnvValueSimple::Secret(forbidden),
+                policies: Some(vec![Policy {
+                    allow_tasks: Some(vec!["plan".into()]),
+                    allow_exec: Some(vec!["plan".into()]),
+                    allow_infrastructure: None,
+                }]),
+            }),
+        ),
+    ]);
+
+    let (resolved, parts) = Environment::resolve_for_infrastructure_with_secrets(
+        InfrastructurePolicyAction::Plan,
+        &variables,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        resolved.get("ENDPOINT").map(String::as_str),
+        Some("prefix-credential-suffix")
+    );
+    assert!(!resolved.contains_key("FORBIDDEN"));
+    assert_eq!(parts, vec!["credential"]);
 }
 
 #[test]
@@ -245,6 +341,7 @@ fn test_build_for_task() {
             policies: Some(vec![Policy {
                 allow_tasks: Some(vec!["deploy".to_string()]),
                 allow_exec: None,
+                allow_infrastructure: None,
             }]),
         }),
     );
@@ -280,6 +377,7 @@ fn test_build_for_exec() {
             policies: Some(vec![Policy {
                 allow_tasks: None,
                 allow_exec: Some(vec!["kubectl".to_string()]),
+                allow_infrastructure: None,
             }]),
         }),
     );
@@ -521,6 +619,7 @@ fn test_interpolated_with_policies_is_secret() {
         policies: Some(vec![Policy {
             allow_tasks: Some(vec!["deploy".to_string()]),
             allow_exec: None,
+            allow_infrastructure: None,
         }]),
     });
 

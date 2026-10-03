@@ -36,7 +36,7 @@ fn write_local_cuenv_module(root: &Path) -> TestResult {
     fs::create_dir_all(root.join("cue.mod"))?;
     fs::write(
         root.join("cue.mod/module.cue"),
-        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}\n",
+        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n",
     )?;
 
     // Copy the real schema package into the temporary module so imports work.
@@ -58,6 +58,55 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> TestResult {
             fs::copy(&path, &dst_path)?;
         }
     }
+    Ok(())
+}
+
+#[test]
+fn ordinary_task_discovery_ignores_incomplete_infrastructure_environments() -> TestResult {
+    let directory = create_test_dir()?;
+    write_local_cuenv_module(directory.path())?;
+    fs::write(
+        directory.path().join("env.cue"),
+        r#"package cuenv
+import "github.com/cuenv/cuenv/schema"
+schema.#Project
+name: "ordinary-task"
+tasks: check: {
+    command: "sh"
+    args: ["-c", "printf 'task ran' > result.txt"]
+    hermetic: false
+}
+infrastructure: {
+    state: turso: url: "http://127.0.0.1:1"
+    environments: {
+        Dev: {
+            providers: random: {source: "hashicorp/random", version: "3.9.1"}
+            resources: pet: {type: "random_pet", configuration: length: 2}
+        }
+        Staging: {
+            providers: random: {source: string, version: string}
+        }
+    }
+}
+"#,
+    )?;
+    let project = evaluate_cue_package_typed::<Project>(directory.path(), "cuenv")?;
+    assert!(project.tasks.contains_key("check"));
+    let infrastructure = project.infrastructure.ok_or("missing raw infrastructure")?;
+    assert!(infrastructure["environments"]["Staging"]["providers"]["random"]["source"].is_null());
+    let output = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
+        .current_dir(directory.path())
+        .args(["task", "--package", "cuenv", "check"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "task discovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("result.txt"))?,
+        "task ran"
+    );
     Ok(())
 }
 
@@ -107,6 +156,48 @@ schema.#Project & {
     Ok(())
 }
 
+#[test]
+fn named_infrastructure_environments_evaluate_and_decode() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "api"
+  infrastructure: {
+    state: {turso: {url: "http://localhost:8080"}}
+    environments: {
+      dev: {
+        providers: random: {source: "hashicorp/random", version: "3.7.2"}
+        resources: {}
+      }
+      staging: {
+        providers: random: {source: "hashicorp/random", path: "bin/provider"}
+        resources: {}
+      }
+    }
+  }
+}
+"#,
+    )?;
+
+    let project = evaluate_cue_package_typed::<Project>(root, "cuenv")?;
+    let infrastructure: cuenv_core::manifest::Infrastructure = serde_json::from_value(
+        project
+            .infrastructure
+            .ok_or("infrastructure config missing")?,
+    )?;
+    assert!(infrastructure.environments.contains_key("dev"));
+    assert!(infrastructure.environments.contains_key("staging"));
+    Ok(())
+}
+
 /// A fake 1Password CLI (`whoami` succeeds, `read` prints a fixed secret) so
 /// the test resolves a 1Password reference without the real tool.
 #[cfg(unix)]
@@ -124,11 +215,11 @@ fn write_fake_op(directory: &Path) -> TestResult {
 
 const POLICY_ENV: &str = r#"
   PLAIN: "visible-value"
-  GUARDED_PLAIN: {value: "guarded-value", policies: [{allowTasks: ["build"]}]}
+  GUARDED_PLAIN: {value: "guarded-value", policies: [{allowInfrastructure: ["plan"], allowTasks: ["build"]}]}
   EXEC: {resolver: "exec", command: "echo", args: ["exec-secret"]}
-  GUARDED_EXEC: {value: {resolver: "exec", command: "echo", args: ["guarded-exec-secret"]}, policies: [{allowTasks: ["build"]}]}
+  GUARDED_EXEC: {value: {resolver: "exec", command: "echo", args: ["guarded-exec-secret"]}, policies: [{allowInfrastructure: ["apply"]}]}
   OP: {resolver: "onepassword", ref: "op://vault/item/field"}
-  GUARDED_OP: {value: {resolver: "onepassword", ref: "op://vault/item/guarded"}, policies: [{allowExec: ["env"]}]}
+  GUARDED_OP: {value: {resolver: "onepassword", ref: "op://vault/item/guarded"}, policies: [{allowExec: ["env"], allowInfrastructure: ["plan"]}]}
 "#;
 
 #[cfg(unix)]
@@ -209,7 +300,7 @@ schema.#Project
 
 name: "typo"
 
-env: TOKEN: {value: "x", policies: [{allowTaks: ["plan"]}]}
+env: TOKEN: {value: "x", policies: [{allowInfrastucture: ["plan"]}]}
 "#,
     )?;
     let output = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
@@ -219,7 +310,60 @@ env: TOKEN: {value: "x", policies: [{allowTaks: ["plan"]}]}
         .output()?;
     assert!(!output.status.success(), "the typo must be rejected");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("allowTaks"), "{stderr}");
+    assert!(stderr.contains("allowInfrastucture"), "{stderr}");
+    Ok(())
+}
+
+#[test]
+fn schema_checks_fail_every_command_in_every_environment() -> TestResult {
+    // A mistake in an environment that no command selects, and one at the top
+    // level, are both reported together by a command that has nothing to do
+    // with infrastructure.
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "checks"
+
+env: PLAIN: "value"
+
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:1"
+  providers: random: {source: "hashicorp/random", version: "3.7.2"}
+  resources: pet: {type: "random_pet", dependsOn: ["nosuch"]}
+  environments: staging: {
+    providers: random: {source: "hashicorp/random", version: "3.7.2", path: "bin/provider"}
+    resources: pet: {type: "random_pet", provider: "missing"}
+  }
+}
+"#,
+    )?;
+    let output = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
+        .args(["env", "print", "--path"])
+        .arg(root)
+        .args(["--package", "cuenv"])
+        .output()?;
+    assert!(!output.status.success(), "the mistakes must be rejected");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let flattened = stderr.replace(['│', '\n'], " ");
+    let flattened = flattened.split_whitespace().collect::<Vec<_>>().join(" ");
+    for fragment in [
+        "infrastructure._unresolved",
+        "no resource named \"nosuch\"",
+        "infrastructure.environments.staging._unresolved",
+        "no provider named \"missing\"",
+        "infrastructure.environments.staging._unresolved.\"providers.random\"",
+        "set exactly one of `version` and `path`, not both",
+    ] {
+        assert!(flattened.contains(fragment), "{fragment} missing: {stderr}");
+    }
     Ok(())
 }
 

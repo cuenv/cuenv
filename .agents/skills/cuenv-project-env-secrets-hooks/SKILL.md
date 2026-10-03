@@ -38,7 +38,7 @@ Generation rules:
 
 Policy rules:
 
-- A variable with a non-empty `policies` list is available only to the consumers some policy lists: `allowTasks` for tasks, `allowExec` for `cuenv exec`. This holds for plain values as well as secrets. The shell integration (`cuenv export`) is named by no policy, so such a variable is never exported to the shell. No policy list (or an empty one) means available everywhere. `extract_static_env_vars` in `crates/cuenv/src/commands/export.rs` takes the consumer (`StaticEnvConsumer`) for this reason.
+- A variable with a non-empty `policies` list is available only to the consumers some policy lists: `allowTasks` for tasks, `allowExec` for `cuenv exec`, `allowInfrastructure` for `cuenv infrastructure`. This holds for plain values as well as secrets. The shell integration (`cuenv export`) is named by no policy, so such a variable is never exported to the shell. No policy list (or an empty one) means available everywhere. `extract_static_env_vars` in `crates/cuenv/src/commands/export.rs` takes the consumer (`StaticEnvConsumer`) for this reason.
 - `schema.#EnvPassthrough` is valid only inside a task's `env`; the project `env` rejects it with an explicit message.
 
 Adversarial prompts:

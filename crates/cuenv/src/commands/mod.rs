@@ -25,6 +25,8 @@ pub mod handler;
 pub mod hooks;
 /// Project information and metadata display.
 pub mod info;
+/// Infrastructure as code through Terraform provider plugins.
+pub mod infrastructure;
 /// View service logs.
 pub mod logs;
 mod module_evaluation;
@@ -434,6 +436,17 @@ pub enum Command {
         package: String,
         /// Service names to restart.
         services: Vec<String>,
+    },
+    /// Plan, apply or inspect infrastructure managed through provider plugins.
+    Infrastructure {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// What to do.
+        action: infrastructure::InfrastructureAction,
+        /// Complete named infrastructure configuration to select.
+        environment: Option<String>,
     },
 }
 

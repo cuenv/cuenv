@@ -84,6 +84,7 @@ cuenv-events = { workspace = true }
 cuenv-ignore = { workspace = true }
 cuenv-release = { workspace = true }
 cuenv-services = { workspace = true }
+cuenv-infrastructure = { workspace = true }
 cuengine = { workspace = true }
 gix = { workspace = true }
 glob = { workspace = true }
