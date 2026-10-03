@@ -376,6 +376,10 @@ bypasses the registry.
 
 ### Typed configuration from the CUE registry
 
+Superseded by `2026-10-03-infrastructure-provider-types.md`: cuenv now
+generates the types itself (`cuenv infrastructure provider add`) and nothing
+is published. The original approach is kept below for history.
+
 https://github.com/cuenv/terraform generates CUE from each provider release's
 schema and publishes it to the CUE registry as
 `github.com/cuenv/terraform/terraform/<namespace>/<type>@v<major>` (package
@@ -790,10 +794,11 @@ experimental.
 11. A `validate`-style command or `state recover --dry-run` / `state show`, to
     inspect a saved recovery file and an environment's configuration without
     changing anything (operator N8).
-12. A typed provider binding from github.com/cuenv/terraform (for example a
-    generated `#Provider` carrying `source`, `version` and a resource-type to
-    definition map) so `type`, `version` and `configuration` cannot disagree.
-    Needs a decision across both repositories.
+12. ~~A typed provider binding from github.com/cuenv/terraform~~ Done
+    differently: `cuenv infrastructure provider add` generates `#Provider`
+    (source, version, schema digest) and per-resource `#Resource` bindings
+    locally, and the engine verifies the digest (see
+    `2026-10-03-infrastructure-provider-types.md`).
 13. Data sources (`ReadDataSource`) and imports (`ImportResourceState`),
     `--target`.
 14. Parallel apply across independent resources (the dependency graph already
@@ -814,8 +819,8 @@ experimental.
     currently abandons the evaluation thread rather than stopping it.
 19. A fenced "pending" record written before each create, so a run killed
     outright (SIGKILL, host loss) leaves evidence of what may exist.
-20. In github.com/cuenv/terraform, `#ProviderConfig` abbreviates
-    "configuration"; renaming it to `#ProviderConfiguration` would bring the
-    generated modules in line with the no-abbreviation rule.
+20. ~~In github.com/cuenv/terraform, `#ProviderConfig` abbreviates
+    "configuration".~~ Obsolete: cuenv's own generated packages use
+    `#Configuration`.
 21. Secrets are resolved before the owner check, so a run owned by another
     instance still resolves its secrets before being refused (security S7).

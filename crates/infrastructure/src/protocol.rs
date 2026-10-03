@@ -12,10 +12,15 @@
 //! nested attribute type in protocol 6, so schema messages exist once per
 //! protocol.
 //!
-//! `required` and `write_only` attribute flags are not decoded: required is
-//! implied by neither optional nor computed, and cuenv advertises no
-//! write-only support. Of the provider's `ServerCapabilities` only
-//! `plan_destroy` is decoded; it makes cuenv plan every destroy.
+//! The `required` attribute flag is not decoded: required is implied by
+//! neither optional nor computed. The attribute flags added after
+//! `sensitive` (`deprecated`, `write_only`) are decoded as `Option<bool>`:
+//! absent and `false` mean the same. `write_only`, descriptions, deprecation and
+//! nested block item bounds are decoded for the generated CUE types (see
+//! [`crate::cue_types`]); cuenv advertises no write-only support. Data source,
+//! function and ephemeral resource schemas are not decoded. Of the provider's
+//! `ServerCapabilities` only `plan_destroy` is decoded; it makes cuenv plan
+//! every destroy.
 
 use std::collections::HashMap;
 
@@ -320,7 +325,13 @@ pub mod version6 {
         #[prost(message, repeated, tag = "2")]
         pub attributes: Vec<Attribute>,
         #[prost(message, repeated, tag = "3")]
-        pub block_types: Vec<NestedBlock>,
+        pub nested_blocks: Vec<NestedBlock>,
+        #[prost(string, tag = "4")]
+        pub description: String,
+        #[prost(bool, tag = "6")]
+        pub deprecated: bool,
+        #[prost(string, tag = "7")]
+        pub deprecation_message: String,
     }
 
     /// `Schema.Attribute`.
@@ -338,6 +349,14 @@ pub mod version6 {
         pub computed: bool,
         #[prost(bool, tag = "7")]
         pub sensitive: bool,
+        #[prost(string, tag = "3")]
+        pub description: String,
+        #[prost(bool, optional, tag = "9")]
+        pub deprecated: Option<bool>,
+        #[prost(bool, optional, tag = "11")]
+        pub write_only: Option<bool>,
+        #[prost(string, tag = "12")]
+        pub deprecation_message: String,
     }
 
     /// `Schema.NestedBlock`.
@@ -349,6 +368,10 @@ pub mod version6 {
         pub block: Option<Block>,
         #[prost(enumeration = "NestingMode", tag = "3")]
         pub nesting: i32,
+        #[prost(int64, tag = "4")]
+        pub min_items: i64,
+        #[prost(int64, tag = "5")]
+        pub max_items: i64,
     }
 
     /// `Schema.Object` (nested attribute type).
@@ -394,7 +417,13 @@ pub mod version5 {
         #[prost(message, repeated, tag = "2")]
         pub attributes: Vec<Attribute>,
         #[prost(message, repeated, tag = "3")]
-        pub block_types: Vec<NestedBlock>,
+        pub nested_blocks: Vec<NestedBlock>,
+        #[prost(string, tag = "4")]
+        pub description: String,
+        #[prost(bool, tag = "6")]
+        pub deprecated: bool,
+        #[prost(string, tag = "7")]
+        pub deprecation_message: String,
     }
 
     /// `Schema.Attribute`.
@@ -410,6 +439,14 @@ pub mod version5 {
         pub computed: bool,
         #[prost(bool, tag = "7")]
         pub sensitive: bool,
+        #[prost(string, tag = "3")]
+        pub description: String,
+        #[prost(bool, optional, tag = "9")]
+        pub deprecated: Option<bool>,
+        #[prost(bool, optional, tag = "10")]
+        pub write_only: Option<bool>,
+        #[prost(string, tag = "11")]
+        pub deprecation_message: String,
     }
 
     /// `Schema.NestedBlock`.
@@ -421,5 +458,9 @@ pub mod version5 {
         pub block: Option<Block>,
         #[prost(enumeration = "NestingMode", tag = "3")]
         pub nesting: i32,
+        #[prost(int64, tag = "4")]
+        pub min_items: i64,
+        #[prost(int64, tag = "5")]
+        pub max_items: i64,
     }
 }

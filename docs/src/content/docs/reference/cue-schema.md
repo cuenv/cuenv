@@ -874,10 +874,12 @@ Turso. Every managed resource is one record keyed by the CUE module path, the
 project name and the selected environment (see
 [State identity](#state-identity)).
 
-Provider schemas are published as CUE modules at
-`github.com/cuenv/terraform/terraform/<namespace>/<type>@v<major>`. Unify
-`configuration` with their `#ProviderConfig` and `#Resource_<type>`
-definitions for typed, closed configuration.
+For typed, closed configuration, `cuenv infrastructure provider add
+<source>@<version>` generates CUE packages from the provider's own schema into
+`cue.mod/gen/<hostname>/<namespace>/<type>` and pins the release in
+`cuenv.lock`. Use the provider package's `#Provider` as the provider
+declaration and each `resources/<type>` package's `#Resource` as a resource
+declaration (see [Generated provider types](#generated-provider-types)).
 
 `#Infrastructure` is the common `state` backend, an optional map of named
 `environments`, and, embedded at the top level, one
@@ -916,17 +918,12 @@ infrastructure: {
 | `environments` | `{[#InfrastructureName]: #InfrastructureConfiguration}`  | No       | Complete configurations selected with `--env NAME`                  |
 | `providers`, `resources`, `providerEnvironment` | see [`#InfrastructureConfiguration`](#infrastructureconfiguration) | No | The top-level configuration, used without `--env` |
 
-- **Import alias.** CUE resolves a name to the nearest enclosing field before
-  an import, so use an alias that matches no field name on the path to where
-  you use it: not a provider or resource key, and not `infrastructure`,
-  `state`, `providers`, `resources`, `environments` or `name` (for example
-  `randomProvider`). A shadowed alias fails evaluation with
-  `undefined field: #ProviderConfig`, or with `imported and not used` when
-  every use of the import is shadowed.
-- **Package qualifier.** A provider type that is not a valid CUE identifier
-  needs an explicit package qualifier in the import path, for example
-  `"github.com/cuenv/terraform/terraform/hashicorp/google-beta@v<major>:google_beta"`
-  (see [Manage infrastructure](/how-to/infrastructure/) for the naming rule).
+- **Import names.** CUE resolves a name to the nearest enclosing field before
+  an import. Generated provider packages are named `<type>_provider` so that
+  `providers: random: random_provider.#Provider` works; do not give a
+  resource the same key as a resource package you refer to inside
+  `resources`. A shadowed import fails evaluation with `imported and not used`
+  or `undefined field: #Resource`.
 - **Closed at every level.** Every infrastructure definition is closed, also
   when the project embeds `schema.#Project` at file level: a misspelled field
   such as `resource:`, `sourcee:`, `environment:` or `authTokenEnv:` fails
@@ -1120,6 +1117,7 @@ must be …`` and the URL itself is not repeated, because it may carry a token.
 | `source`  | `string` | Yes      | `namespace/type` or `hostname[:port]/namespace/type`               |
 | `version` | `string` | No*      | Exact version to install from the registry                         |
 | `path`    | `string` | No*      | Local provider binary (absolute or relative to the project); not empty |
+| `schemaDigest` | `string` | No | `sha256:<64 hex>` digest of the provider schema the project's generated types were made from; set by a generated `#Provider`. Plans refuse a provider whose schema has another digest |
 | `configuration` | `{...}` | No | Provider block arguments, validated by the provider schema |
 
 \* Exactly one of `version` (strict semantic version) or `path` must be set;
@@ -1133,6 +1131,49 @@ see [Checks](#checks) for the errors.
 | `provider`  | `#InfrastructureName`      | No       | Local provider name. Defaults to the type prefix; either way it must be a key of the same configuration's `providers` |
 | `dependsOn` | `[...#InfrastructureName]` | No       | Resources applied before (and destroyed after) this one; each must be a key of the same configuration's `resources` |
 | `configuration` | `{...}` | No | Resource arguments, validated by the provider schema |
+
+### Generated provider types
+
+Not part of cuenv's schema module: `cuenv infrastructure provider add
+<source>@<version>` writes these packages into the project's own
+`cue.mod/gen`, and `cuenv sync infrastructure` regenerates them from
+`cuenv.lock`.
+
+| Import path | Package | Definitions |
+| ----------- | ------- | ----------- |
+| `<hostname>/<namespace>/<type>` | `<type>_provider` (`-` becomes `_`), imported as `"registry.terraform.io/hashicorp/random:random_provider"` | `#Provider: {source, version, schemaDigest, configuration: #Configuration}` (closed); `#Configuration` (the provider block, closed) |
+| `<hostname>/<namespace>/<type>/resources/<resource type>` | `<resource type>` | `#Resource: {type, configuration: #Configuration, ...}`; `#Configuration` (closed) |
+
+```cue
+import (
+	"registry.terraform.io/hashicorp/random:random_provider"
+	"registry.terraform.io/hashicorp/random/resources/random_pet"
+)
+
+infrastructure: {
+	providers: random: random_provider.#Provider
+	resources: pet: random_pet.#Resource & {configuration: length: 2}
+}
+```
+
+Field rules in `#Configuration`:
+
+| Provider schema | CUE |
+| --------------- | --- |
+| required attribute | `name!: T` |
+| optional, or optional and computed | `name?: T` (no `\| null`) |
+| computed only, write-only | left out |
+| `string`, `number`, `bool`, `dynamic` | `string`, `number`, `bool`, `_` |
+| `list(T)`, `set(T)` / `map(T)` / `object({...})` / `tuple([...])` | `[...T]` / `{[string]: T}` / `{a!: T, ...}` / `[A, B]` |
+| nested block, single or group | `name?: {...}` (`name!:` when the provider requires at least one) |
+| nested block, list or set | `name?: [...{...}]` with `list.MinItems`/`list.MaxItems` bounds |
+| nested block, map | `name?: {[string]: {...}}` |
+
+Labels are Terraform's attribute names; names that are CUE keywords or
+predeclared identifiers (`number`, `string`, `bool`, `list`, …) are quoted.
+Descriptions, deprecation, sensitivity and "the provider chooses a value"
+become comments. See
+[Manage infrastructure](/how-to/infrastructure/#typed-configuration).
 
 ## Container Images
 

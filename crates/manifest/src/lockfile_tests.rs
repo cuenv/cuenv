@@ -875,3 +875,147 @@ fn test_children_rejected_without_overlay() {
         .expect_err("children without overlay are rejected");
     assert!(err.to_string().contains("only be set when overlay"));
 }
+
+/// A lockfile path in a fresh directory of its own, removed on drop.
+struct ScratchLockfile(std::path::PathBuf);
+
+impl ScratchLockfile {
+    fn new(name: &str) -> Self {
+        let directory =
+            std::env::temp_dir().join(format!("cuenv-lockfile-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        Self(directory)
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        self.0.join(LOCKFILE_NAME)
+    }
+}
+
+impl Drop for ScratchLockfile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn locked_random() -> LockedInfrastructureProvider {
+    LockedInfrastructureProvider {
+        version: "3.9.1".to_string(),
+        schema_digest: format!("sha256:{}", "a".repeat(64)),
+        platforms: BTreeMap::from([
+            (
+                "darwin_arm64".to_string(),
+                format!("sha256:{}", "b".repeat(64)),
+            ),
+            (
+                "linux_amd64".to_string(),
+                format!("sha256:{}", "c".repeat(64)),
+            ),
+        ]),
+    }
+}
+
+#[test]
+fn infrastructure_providers_raise_the_version_only_while_present() {
+    let mut lockfile = Lockfile::new();
+    assert_eq!(lockfile.version, LOCKFILE_VERSION);
+    lockfile
+        .upsert_infrastructure_provider(
+            "registry.terraform.io/hashicorp/random".to_string(),
+            locked_random(),
+        )
+        .unwrap();
+    assert_eq!(lockfile.version, INFRASTRUCTURE_PROVIDERS_LOCKFILE_VERSION);
+
+    let directory = ScratchLockfile::new("raise-version");
+    let path = directory.path();
+    lockfile.save(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("version = 5"), "{text}");
+    assert!(
+        text.contains("[infrastructure_providers.\"registry.terraform.io/hashicorp/random\"]"),
+        "{text}"
+    );
+    let loaded = Lockfile::load(&path).unwrap().unwrap();
+    assert_eq!(loaded, lockfile);
+    let pinned = loaded
+        .find_infrastructure_provider("registry.terraform.io/hashicorp/random")
+        .unwrap();
+    assert_eq!(
+        pinned.archive_sha256("linux_amd64"),
+        Some("c".repeat(64).as_str())
+    );
+    assert_eq!(pinned.archive_sha256("windows_amd64"), None);
+
+    assert!(
+        lockfile
+            .remove_infrastructure_provider("registry.terraform.io/hashicorp/random")
+            .is_some()
+    );
+    assert_eq!(lockfile.version, LOCKFILE_VERSION);
+}
+
+#[test]
+fn a_version_four_lockfile_cannot_hold_infrastructure_providers() {
+    let directory = ScratchLockfile::new("version-four");
+    let path = directory.path();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    std::fs::write(
+        &path,
+        format!(
+            "version = 4\n\n[infrastructure_providers.\"registry.terraform.io/hashicorp/random\"]\nversion = \"3.9.1\"\nschema_digest = \"{digest}\"\n\n[infrastructure_providers.\"registry.terraform.io/hashicorp/random\".platforms]\nlinux_amd64 = \"{digest}\"\n"
+        ),
+    )
+    .unwrap();
+    let error = Lockfile::load(&path).unwrap_err().to_string();
+    assert!(error.contains("version 5"), "{error}");
+}
+
+#[test]
+fn older_lockfiles_without_infrastructure_providers_still_load() {
+    let directory = ScratchLockfile::new("older-version");
+    let path = directory.path();
+    std::fs::write(&path, "version = 3\n").unwrap();
+    let lockfile = Lockfile::load(&path).unwrap().unwrap();
+    assert_eq!(lockfile.version, 3);
+}
+
+#[test]
+fn a_newer_lockfile_version_is_refused() {
+    let directory = ScratchLockfile::new("newer-version");
+    let path = directory.path();
+    std::fs::write(&path, "version = 6\n").unwrap();
+    let error = Lockfile::load(&path).unwrap_err().to_string();
+    assert!(error.contains("newer than supported"), "{error}");
+}
+
+#[test]
+fn infrastructure_provider_pins_are_validated() {
+    let mut lockfile = Lockfile::new();
+    let mut bad_digest = locked_random();
+    bad_digest.schema_digest = "sha256:ABC".to_string();
+    assert!(
+        lockfile
+            .upsert_infrastructure_provider("hashicorp/random".to_string(), bad_digest)
+            .is_err()
+    );
+    let mut bad_platform = locked_random();
+    bad_platform.platforms.insert(
+        "linux-x86_64".to_string(),
+        format!("sha256:{}", "d".repeat(64)),
+    );
+    assert!(
+        lockfile
+            .upsert_infrastructure_provider("hashicorp/random".to_string(), bad_platform)
+            .is_err()
+    );
+    let mut no_platforms = locked_random();
+    no_platforms.platforms.clear();
+    assert!(
+        lockfile
+            .upsert_infrastructure_provider("hashicorp/random".to_string(), no_platforms)
+            .is_err()
+    );
+    assert_eq!(lockfile.version, LOCKFILE_VERSION);
+}

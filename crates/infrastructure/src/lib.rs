@@ -17,6 +17,7 @@
 //! ```
 
 pub mod cancellation;
+pub mod cue_types;
 pub mod engine;
 pub mod error;
 pub mod object_change;

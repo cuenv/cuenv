@@ -1084,3 +1084,60 @@ fn test_changeset_add_package_parsing() {
         panic!("Expected ChangesetAdd command");
     }
 }
+
+#[test]
+fn test_infrastructure_provider_command_conversion() {
+    use crate::commands::infrastructure::ProviderAction;
+
+    let convert = |arguments: &[&str]| {
+        let cli = Cli::try_parse_from(arguments).unwrap();
+        let Command::InfrastructureProvider { path, action } =
+            cli.command.unwrap().into_command(None)
+        else {
+            panic!("Expected Command::InfrastructureProvider");
+        };
+        (path, action)
+    };
+    assert_eq!(
+        convert(&["cuenv", "i", "provider", "add", "hashicorp/random@3.9.1"]),
+        (
+            ".".to_string(),
+            ProviderAction::Add {
+                release: "hashicorp/random@3.9.1".to_string()
+            }
+        )
+    );
+    assert_eq!(
+        convert(&[
+            "cuenv",
+            "infrastructure",
+            "provider",
+            "remove",
+            "hashicorp/random",
+            "-p",
+            "infra"
+        ]),
+        (
+            "infra".to_string(),
+            ProviderAction::Remove {
+                source: "hashicorp/random".to_string()
+            }
+        )
+    );
+    assert!(Cli::try_parse_from(["cuenv", "i", "provider", "add"]).is_err());
+}
+
+#[test]
+fn test_sync_infrastructure_command_conversion() {
+    use crate::commands::sync::SyncMode;
+
+    let cli = Cli::try_parse_from(["cuenv", "sync", "infrastructure", "--check"]).unwrap();
+    let Command::Sync {
+        subcommand, mode, ..
+    } = cli.command.unwrap().into_command(None)
+    else {
+        panic!("Expected Command::Sync");
+    };
+    assert_eq!(subcommand.as_deref(), Some("infrastructure"));
+    assert_eq!(mode, SyncMode::Check);
+}

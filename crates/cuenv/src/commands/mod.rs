@@ -448,6 +448,13 @@ pub enum Command {
         /// Complete named infrastructure configuration to select.
         environment: Option<String>,
     },
+    /// Generate provider CUE types and pin providers in cuenv.lock.
+    InfrastructureProvider {
+        /// Directory inside the CUE module that receives the types.
+        path: String,
+        /// What to do.
+        action: infrastructure::ProviderAction,
+    },
 }
 
 /// Executes CLI commands with centralized module evaluation and event handling.

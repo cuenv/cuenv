@@ -54,6 +54,20 @@ pub struct Block {
     pub attributes: BTreeMap<String, Attribute>,
     /// Nested block types by name.
     pub blocks: BTreeMap<String, NestedBlock>,
+    /// What the provider documents about the block.
+    pub documentation: Documentation,
+}
+
+/// What a provider documents about an attribute or block. Only the generated
+/// CUE types read it (see [`crate::cue_types`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Documentation {
+    /// Description, as the provider wrote it (plain text or Markdown).
+    pub description: String,
+    /// The provider marks it deprecated.
+    pub deprecated: bool,
+    /// Why it is deprecated and what to use instead, when the provider says.
+    pub deprecation_message: String,
 }
 
 /// A block attribute.
@@ -67,6 +81,11 @@ pub struct Attribute {
     pub presence: Presence,
     /// Value is sensitive and must not be displayed.
     pub sensitive: bool,
+    /// Configuration may set it, but the provider never stores it. cuenv
+    /// does not send write-only values.
+    pub write_only: bool,
+    /// What the provider documents about the attribute.
+    pub documentation: Documentation,
 }
 
 /// Optional and computed flags as reported by a provider schema.
@@ -147,6 +166,10 @@ pub struct NestedBlock {
     pub block: Block,
     /// How nested blocks are collected.
     pub nesting: Nesting,
+    /// Fewest blocks the configuration must give; 0 when unbounded.
+    pub minimum_items: u64,
+    /// Most blocks the configuration may give; 0 when unbounded.
+    pub maximum_items: u64,
 }
 
 impl NestedBlock {
@@ -393,7 +416,7 @@ fn version6_block(block: protocol::version6::Block) -> Result<Block> {
     Ok(Block {
         attributes: version6_attributes(block.attributes)?,
         blocks: block
-            .block_types
+            .nested_blocks
             .into_iter()
             .map(|nested_block| {
                 Ok((
@@ -403,11 +426,23 @@ fn version6_block(block: protocol::version6::Block) -> Result<Block> {
                             .block
                             .map_or_else(|| Ok(Block::default()), version6_block)?,
                         nesting: Nesting::from_protocol(nested_block.nesting),
+                        minimum_items: item_bound(nested_block.min_items),
+                        maximum_items: item_bound(nested_block.max_items),
                     },
                 ))
             })
             .collect::<Result<_>>()?,
+        documentation: Documentation {
+            description: block.description,
+            deprecated: block.deprecated,
+            deprecation_message: block.deprecation_message,
+        },
     })
+}
+
+/// A protocol item bound; negative values mean unbounded, like zero.
+fn item_bound(bound: i64) -> u64 {
+    u64::try_from(bound).unwrap_or(0)
 }
 
 fn version6_attributes(
@@ -441,6 +476,12 @@ fn version6_attributes(
                         computed: attribute.computed,
                     }),
                     sensitive: attribute.sensitive,
+                    write_only: attribute.write_only.unwrap_or_default(),
+                    documentation: Documentation {
+                        description: attribute.description,
+                        deprecated: attribute.deprecated.unwrap_or_default(),
+                        deprecation_message: attribute.deprecation_message,
+                    },
                 },
             ))
         })
@@ -472,12 +513,18 @@ fn version5_block(block: protocol::version5::Block) -> Result<Block> {
                             computed: attribute.computed,
                         }),
                         sensitive: attribute.sensitive,
+                        write_only: attribute.write_only.unwrap_or_default(),
+                        documentation: Documentation {
+                            description: attribute.description,
+                            deprecated: attribute.deprecated.unwrap_or_default(),
+                            deprecation_message: attribute.deprecation_message,
+                        },
                     },
                 ))
             })
             .collect::<Result<_>>()?,
         blocks: block
-            .block_types
+            .nested_blocks
             .into_iter()
             .map(|nested_block| {
                 Ok((
@@ -487,10 +534,17 @@ fn version5_block(block: protocol::version5::Block) -> Result<Block> {
                             .block
                             .map_or_else(|| Ok(Block::default()), version5_block)?,
                         nesting: Nesting::from_protocol(nested_block.nesting),
+                        minimum_items: item_bound(nested_block.min_items),
+                        maximum_items: item_bound(nested_block.max_items),
                     },
                 ))
             })
             .collect::<Result<_>>()?,
+        documentation: Documentation {
+            description: block.description,
+            deprecated: block.deprecated,
+            deprecation_message: block.deprecation_message,
+        },
     })
 }
 
@@ -501,6 +555,8 @@ mod tests {
 
     fn attribute(value_type: Type, presence: Presence) -> Attribute {
         Attribute {
+            write_only: false,
+            documentation: Documentation::default(),
             value_type,
             nested: None,
             presence,
@@ -523,6 +579,8 @@ mod tests {
         block.blocks.insert(
             "rule".into(),
             NestedBlock {
+                minimum_items: 0,
+                maximum_items: 0,
                 block: inner,
                 nesting: Nesting::List,
             },
@@ -593,6 +651,8 @@ mod tests {
         block.blocks.insert(
             "master_auth".into(),
             NestedBlock {
+                minimum_items: 0,
+                maximum_items: 0,
                 block: credentials,
                 nesting: Nesting::List,
             },
@@ -627,6 +687,8 @@ mod tests {
         inner.blocks.insert(
             "source".into(),
             NestedBlock {
+                minimum_items: 0,
+                maximum_items: 0,
                 block: sample_block(),
                 nesting: Nesting::List,
             },
@@ -635,6 +697,8 @@ mod tests {
         block.blocks.insert(
             "ingress".into(),
             NestedBlock {
+                minimum_items: 0,
+                maximum_items: 0,
                 block: inner,
                 nesting: Nesting::Set,
             },

@@ -2,6 +2,8 @@ use super::*;
 
 fn attribute(value_type: Type, presence: Presence) -> Attribute {
     Attribute {
+        write_only: false,
+        documentation: crate::schema::Documentation::default(),
         value_type,
         nested: None,
         presence,
@@ -22,6 +24,8 @@ fn nested_attribute(
         Nesting::Map => Type::Map(Box::new(object)),
     };
     Attribute {
+        write_only: false,
+        documentation: crate::schema::Documentation::default(),
         value_type,
         nested: Some(NestedAttributes {
             attributes,
@@ -73,6 +77,7 @@ fn rule_attributes() -> BTreeMap<String, Attribute> {
 
 fn resource_with_rules(nesting: Nesting) -> Block {
     Block {
+        documentation: crate::schema::Documentation::default(),
         attributes: BTreeMap::from([
             (
                 "id".to_string(),
@@ -166,6 +171,7 @@ fn nested_attribute_sets_allow_coalescing_unknown_elements() {
 
 fn resource_with_rule_blocks() -> Block {
     Block {
+        documentation: crate::schema::Documentation::default(),
         attributes: BTreeMap::from([(
             "name".to_string(),
             attribute(Type::String, Presence::Required),
@@ -173,7 +179,10 @@ fn resource_with_rule_blocks() -> Block {
         blocks: BTreeMap::from([(
             "rule".to_string(),
             NestedBlock {
+                minimum_items: 0,
+                maximum_items: 0,
                 block: Block {
+                    documentation: crate::schema::Documentation::default(),
                     attributes: rule_attributes(),
                     blocks: BTreeMap::new(),
                 },
@@ -217,6 +226,7 @@ fn nested_blocks_with_computed_children_are_valid_plans() {
 
 fn named_block(presence: Presence) -> Block {
     Block {
+        documentation: crate::schema::Documentation::default(),
         attributes: BTreeMap::from([("name".to_string(), attribute(Type::String, presence))]),
         blocks: BTreeMap::new(),
     }
@@ -276,6 +286,7 @@ fn optional_nested_attributes_holding_only_computed_values_were_not_configured()
         nested_attribute(Nesting::Single, inner, Presence::Optional),
     )]);
     let block = Block {
+        documentation: crate::schema::Documentation::default(),
         attributes: BTreeMap::from([(
             "settings".to_string(),
             nested_attribute(Nesting::Single, settings, Presence::OptionalComputed),
@@ -408,6 +419,7 @@ fn sensitive_attributes_report_only_that_they_are_inconsistent() {
 #[test]
 fn dynamic_apply_results_keep_their_planned_type() {
     let block = Block {
+        documentation: crate::schema::Documentation::default(),
         attributes: BTreeMap::from([(
             "data".to_string(),
             attribute(Type::Dynamic, Presence::Computed),
@@ -518,6 +530,7 @@ fn removed_optional_nested_values_are_not_kept_from_prior_state() {
         ),
     ]);
     let block = Block {
+        documentation: crate::schema::Documentation::default(),
         attributes: BTreeMap::from([(
             "settings".to_string(),
             nested_attribute(Nesting::Single, settings, Presence::OptionalComputed),
@@ -554,6 +567,8 @@ fn empty_values_follow_nesting_modes() {
     block.blocks.insert(
         "single".to_string(),
         NestedBlock {
+            minimum_items: 0,
+            maximum_items: 0,
             block: Block::default(),
             nesting: Nesting::Single,
         },
@@ -561,6 +576,8 @@ fn empty_values_follow_nesting_modes() {
     block.blocks.insert(
         "labels".to_string(),
         NestedBlock {
+            minimum_items: 0,
+            maximum_items: 0,
             block: Block::default(),
             nesting: Nesting::Map,
         },
