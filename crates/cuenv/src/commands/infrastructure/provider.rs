@@ -17,6 +17,7 @@ use cuenv_infrastructure::registry::{
 
 use super::types::{self, Generation, Module, infrastructure_error};
 use crate::cli::CliError;
+use crate::commands::sync::SyncMode;
 
 /// What `cuenv infrastructure provider` should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +100,11 @@ async fn add(module: &Module, release: &str) -> Result<(), CliError> {
     lockfile
         .save(&module.lockfile_path())
         .map_err(|error| CliError::config(error.to_string()))?;
+    types::sync_gitignore(
+        module,
+        &types::gitignore_patterns(&lockfile)?,
+        &SyncMode::Write,
+    )?;
     emit_stdout!(added_message(&types, &version));
     Ok(())
 }
@@ -131,6 +137,11 @@ fn remove(module: &Module, source: &str) -> Result<(), CliError> {
                 .map_err(|error| CliError::config(error.to_string()))?;
         }
     }
+    types::sync_gitignore(
+        module,
+        &types::gitignore_patterns(&lockfile)?,
+        &SyncMode::Write,
+    )?;
     emit_stdout!(format!(
         "Removed {source}: {}{}{}. Remove its imports and `providers` entry from your CUE.",
         if removed { "generated types" } else { "" },
@@ -168,7 +179,8 @@ fn added_message(types: &GeneratedTypes, version: &str) -> String {
          \t}}\n\
          }}\n\
          \n\
-         Commit {directory} and cuenv.lock. Regenerate with `cuenv sync infrastructure`.",
+         Commit cuenv.lock. {directory} is generated and listed in .gitignore:\n\
+         `cuenv sync` (or `cuenv sync infrastructure`) recreates it from cuenv.lock.",
         import = types.import_path,
         count = types.resource_types.len(),
         directory = types.directory.display(),

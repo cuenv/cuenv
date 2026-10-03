@@ -52,14 +52,23 @@ $ cuenv infrastructure provider add hashicorp/random@3.9.1
 `cuenv infrastructure provider remove <source>` deletes the generated package
 and the lock entry.
 
-The cuenv repository itself pins `hashicorp/random` 3.9.1 at its root for
-`examples/infrastructure-typed`, and its `sync-check` CI task runs plain
-`cuenv sync --check`, which includes `sync infrastructure --check`, so a
-renderer change that alters the committed files fails CI.
+The generated files are not committed. As with managed codegen files, each
+provider directory is listed in a `cuenv infrastructure` section of the
+module root's `.gitignore` (maintained by `provider add`, `provider remove`
+and `sync infrastructure`), and `cuenv sync` recreates them from
+`cuenv.lock`, the only committed artifact. Until it has run after a clone,
+anything that evaluates the project fails with `cannot find package`; that
+is the same contract codegen has, and `cuenv sync` is already the required
+step after a clone. Generating on demand inside every evaluation was
+rejected: it would make the shell hook and unrelated commands download
+providers.
 
-The generated files are meant to be committed, like `cue get go` output, so
-that evaluation, the shell hook, CI and the CUE language server work without
-running cuenv first.
+The typed path is covered end to end by
+`generated_provider_types_type_the_project` in
+`crates/cuenv/tests/infrastructure_lifecycle.rs` (the `cuenv-infrastructure-e2e`
+flake check): it renders types from the test provider binary into a temporary
+module, runs a typed plan, and checks that a misspelled argument fails
+evaluation and a stale `schemaDigest` is refused.
 
 cuenv/terraform is no longer part of the typing story. It can be archived.
 

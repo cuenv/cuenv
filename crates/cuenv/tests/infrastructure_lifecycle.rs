@@ -726,3 +726,105 @@ infrastructure: {{
     lifecycle.run(&["destroy", "--yes"])?;
     Ok(())
 }
+
+/// Typed configuration end to end: CUE types generated from the provider
+/// binary into the module's `cue.mod/gen` type the project and a typed plan
+/// runs; a misspelled argument fails evaluation before any provider starts,
+/// and a `schemaDigest` that is not the provider's is refused.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real Random provider and Turso/sqld; see module documentation"]
+async fn generated_provider_types_type_the_project() -> TestResult {
+    use cuenv_infrastructure::Cancellation;
+    use cuenv_infrastructure::cue_types::{self, ProviderRelease};
+    use cuenv_infrastructure::registry::ProviderSource;
+
+    let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
+        .canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let directory = prepare_directory()?;
+    let (schema, _) = cue_types::load_schema(&provider, &Cancellation::default()).await?;
+    let source = ProviderSource::parse("hashicorp/random")?;
+    let types = cue_types::render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "0.0.0",
+        },
+    )?;
+    for (relative, content) in &types.files {
+        let path = directory.path().join(&types.directory).join(relative);
+        fs::create_dir_all(path.parent().ok_or("generated file has no parent")?)?;
+        fs::write(path, content)?;
+    }
+
+    // A local provider `path` keeps the run offline, so the provider block
+    // is typed with `#Configuration` rather than declared by `#Provider`
+    // (which pins a registry version).
+    let configuration = |pet: &str, digest: &str| -> TestResult<String> {
+        Ok(format!(
+            r#"package examples
+
+import (
+	"github.com/cuenv/cuenv/schema"
+	"registry.terraform.io/hashicorp/random:random_provider"
+	"registry.terraform.io/hashicorp/random/resources/random_password"
+	"registry.terraform.io/hashicorp/random/resources/random_pet"
+)
+
+schema.#Project
+
+name: {project}
+
+infrastructure: {{
+	state: turso: url: {url}
+	providers: random: {{
+		source:        "hashicorp/random"
+		path:          {provider}
+		schemaDigest:  {digest}
+		configuration: random_provider.#Configuration
+	}}
+	resources: {{
+		pet: random_pet.#Resource & {{configuration: {{{pet}, separator: "-"}}}}
+		password: random_password.#Resource & {{
+			dependsOn: ["pet"]
+			configuration: {{length: 16, special: false}}
+		}}
+	}}
+}}
+"#,
+            project = serde_json::to_string(&format!("typed-{}", uuid::Uuid::new_v4()))?,
+            url = serde_json::to_string(&backend.url)?,
+            provider = serde_json::to_string(&provider)?,
+            digest = serde_json::to_string(digest)?,
+        ))
+    };
+
+    let lifecycle = Lifecycle::from_configuration(
+        directory,
+        configuration("length: 2", &types.schema_digest)?,
+        &backend,
+    )?;
+    let plan = lifecycle.run(&["plan"])?;
+    assert_eq!(plan["summary"]["create"], 2);
+
+    let env_cue = lifecycle.directory.path().join("env.cue");
+    fs::write(&env_cue, configuration("lenght: 2", &types.schema_digest)?)?;
+    let output = lifecycle.execute(&["plan"], &[])?;
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.status.code(), Some(3), "{printed}");
+    assert!(printed.contains("lenght"), "{printed}");
+    assert!(printed.contains("field not allowed"), "{printed}");
+
+    let stale = format!("sha256:{}", "0".repeat(64));
+    fs::write(&env_cue, configuration("length: 2", &stale)?)?;
+    let refused = lifecycle.refused(&["plan"])?;
+    assert!(refused.contains("were generated from schema"), "{refused}");
+    Ok(())
+}

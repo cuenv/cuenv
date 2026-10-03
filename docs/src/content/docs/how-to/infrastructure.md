@@ -201,7 +201,9 @@ cue.mod/gen/registry.terraform.io/hashicorp/random/
     └── ...
 ```
 
-Nothing is published or fetched from a CUE registry, and `cue.mod/module.cue` is untouched: CUE resolves imports from `cue.mod/gen` on its own. Your CUE files are not changed either; the command prints the imports to add. Commit `cue.mod/gen` and `cuenv.lock` so evaluation, the shell hook, CI and the CUE language server work in a fresh checkout without running cuenv first.
+Nothing is published or fetched from a CUE registry, and `cue.mod/module.cue` is untouched: CUE resolves imports from `cue.mod/gen` on its own. Your CUE files are not changed either; the command prints the imports to add.
+
+Commit `cuenv.lock`, not the generated types. Like managed [codegen](/how-to/codegen/) files, the provider directories are listed in a `cuenv infrastructure` section of the module's `.gitignore`, and `cuenv sync` recreates them from `cuenv.lock`. Run it after cloning and after pulling a lock change, as you would for codegen: until it has run, every command that evaluates the project — `cuenv task`, `cuenv env`, the shell hook, `cue` and the CUE language server — fails with `cannot find package "registry.terraform.io/..."`. The first `cuenv sync` downloads each pinned provider (or takes it from the plugin cache) to read its schema.
 
 `<source>` is `namespace/type` or `hostname/namespace/type` (a hostname with a port cannot be an import path and is refused); `<version>` is an exact version. `--path` selects a directory inside the CUE module when you are not in it.
 
@@ -257,15 +259,14 @@ The generated files, the lock and the provider binary are tied together by the s
 
 - `cuenv i plan`, `apply` and `destroy` compute the digest of the provider they launch and refuse it when it differs from `schemaDigest` (set by `#Provider`) or from the digest `cuenv.lock` pins.
 - When `cuenv.lock` pins a provider, its `version` must match the configuration, and installation and cache reuse require the archive SHA-256 the lock records for the current platform. `provider add` records every platform the release is published for, so a lock made on Linux works on macOS.
-- `cuenv sync infrastructure` regenerates every pinned provider's types from `cuenv.lock`; `--check` fails when files are missing or differ (run it in CI), and `--dry-run` reports what would change. It reads only `cuenv.lock`, never your CUE, so it can restore packages your project imports but that are missing. Plain `cuenv sync` includes it.
+- `cuenv sync infrastructure` regenerates every pinned provider's types and the `.gitignore` section from `cuenv.lock`; `--check` fails when files are missing or differ, and `--dry-run` reports what would change. It reads only `cuenv.lock`, never your CUE, so it can restore packages your project imports but that are missing. Plain `cuenv sync` includes it; in CI, run `cuenv sync` before anything that evaluates the project.
 - To upgrade, run `provider add` with the new version: the types are regenerated and the pin moves. Fix whatever CUE now reports.
-- `cuenv infrastructure provider remove hashicorp/random` deletes the generated directory and the pin.
+- `cuenv infrastructure provider remove hashicorp/random` deletes the generated directory, its `.gitignore` entry and the pin.
 
 cuenv only replaces or removes a `cue.mod/gen` directory whose `provider.cue` starts with its generated-code header, and refuses otherwise. A `cuenv.lock` that pins infrastructure providers is lockfile format version 5; cuenv versions that do not know the section refuse such a lockfile rather than drop it. Lockfiles without the section stay at version 4.
 
-What is not generated yet: data sources, computed attributes for references between resources (see [Current limitations](#current-limitations)), provider functions and ephemeral resources; write-only arguments are left out because cuenv does not send them. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource type (`hashicorp/aws` has about 1700), so evaluation only pays for the resources you import, but the generated directory is large.
+What is not generated yet: data sources, computed attributes for references between resources (see [Current limitations](#current-limitations)), provider functions and ephemeral resources; write-only arguments are left out because cuenv does not send them. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource type (`hashicorp/aws` has about 1700), so evaluation only pays for the resources you import, but the generated directory is large and `cuenv sync` writes all of it.
 
-[`examples/infrastructure-typed`](https://github.com/cuenv/cuenv/tree/main/examples/infrastructure-typed) is the typed version of the example below; its types live in the cuenv repository's own `cue.mod/gen` and `cuenv.lock`.
 
 ## A minimal example without typed configuration
 

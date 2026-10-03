@@ -503,14 +503,14 @@ cuenv infrastructure provider remove <SOURCE> [-p <PATH>]
 
 - `provider add`: install the provider release, generate CUE types from its
   schema into the CUE module's `cue.mod/gen/<hostname>/<namespace>/<type>`
-  (one package for the provider, one per resource type), and pin version,
+  (one package for the provider, one per resource type, listed in `.gitignore`), and pin version,
   schema digest and every platform's archive SHA-256 in the module's
   `cuenv.lock`. Prints the imports and the `providers` entry to add; it does
   not evaluate or edit your CUE. `<SOURCE>` is `namespace/type` or
   `hostname/namespace/type` (no port); `<VERSION>` is exact. Running it again
   with another version moves the pin and regenerates the types. See
   [Typed configuration](/how-to/infrastructure/#typed-configuration).
-- `provider remove`: delete the provider's generated directory and its pin.
+- `provider remove`: delete the provider's generated directory, its `.gitignore` entry and its pin.
   Only directories cuenv generated are removed.
 - `plan`, `apply` and `destroy` refuse a provider whose schema digest differs
   from the `schemaDigest` its generated `#Provider` sets or from its
@@ -932,7 +932,7 @@ recorded in `cue.mod/module.cue`.
 - `codegen`: Sync files from CUE codegen configurations. Adds `--diff` to show changed files.
 - `ci`: Sync CI workflow files from CUE configuration. Adds `--provider <github|buildkite>` to filter.
 - `vcs`: Sync cuenv-managed Git dependencies. Supports `-u/--update [NAMES...]` to refresh locked refs.
-- `infrastructure`: Regenerate the CUE types of every infrastructure provider `cuenv.lock` pins (see `cuenv infrastructure provider add`). Reads only `cuenv.lock`, not your CUE, installs each pinned release (requiring the pinned archive), and refuses one whose schema no longer has the pinned digest. Supports `--dry-run` and `--check`.
+- `infrastructure`: Regenerate the CUE types of every infrastructure provider `cuenv.lock` pins (see `cuenv infrastructure provider add`), and their `.gitignore` section; like managed codegen files they are not committed, so run it after a clone. Reads only `cuenv.lock`, not your CUE, installs each pinned release (requiring the pinned archive), and refuses one whose schema no longer has the pinned digest. Supports `--dry-run` and `--check`.
 
 **Example:**
 
@@ -970,7 +970,7 @@ cuenv sync vcs --update
 # Regenerate infrastructure provider types from cuenv.lock
 cuenv sync infrastructure
 
-# Fail when generated provider types are missing or stale (CI)
+# Fail when generated provider types are missing or stale
 cuenv sync infrastructure --check
 
 # Sync all projects in the workspace

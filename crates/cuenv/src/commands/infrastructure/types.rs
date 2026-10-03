@@ -6,6 +6,10 @@
 //! `cue.mod/gen/<hostname>/<namespace>/<type>` of the project's CUE module.
 //! A provider directory is only ever replaced or removed when its
 //! `provider.cue` carries cuenv's generated-code header.
+//!
+//! Like managed codegen files, the generated directories are not committed:
+//! they are listed in a `cuenv infrastructure` section of the module root's
+//! `.gitignore`, and `cuenv sync` recreates them from `cuenv.lock`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,8 +23,14 @@ use cuenv_infrastructure::registry::{
     ProviderInstaller, ProviderSource, current_platform, default_cache_directory,
 };
 
+use cuenv_ignore::{FileStatus, IgnoreFiles, IgnoreSection};
+
 use crate::cli::CliError;
 use crate::commands::env_file::find_cue_module_root;
+use crate::commands::sync::SyncMode;
+
+/// Name of the `.gitignore` section listing generated provider directories.
+const GITIGNORE_SECTION_NAME: &str = "cuenv infrastructure";
 
 /// The CUE module the types and the lock entry belong to.
 #[derive(Debug, Clone)]
@@ -190,6 +200,63 @@ pub fn remove(module: &Module, source: &ProviderSource) -> Result<bool, CliError
 
 /// Remove directories left empty above a removed provider directory, up to
 /// and including `cue.mod/gen`.
+/// `.gitignore` patterns, anchored at the module root, for the generated
+/// directory of every provider `lockfile` pins.
+pub fn gitignore_patterns(lockfile: &Lockfile) -> Result<Vec<String>, CliError> {
+    lockfile
+        .infrastructure_providers
+        .keys()
+        .map(|source| {
+            let source =
+                ProviderSource::parse(source).map_err(|error| infrastructure_error(&error))?;
+            let import_path =
+                cue_types::import_path(&source).map_err(|error| infrastructure_error(&error))?;
+            Ok(format!("/cue.mod/gen/{import_path}/"))
+        })
+        .collect()
+}
+
+/// Bring the module root's `cuenv infrastructure` `.gitignore` section in
+/// line with `patterns`. Writes only in [`SyncMode::Write`]; returns whether
+/// the section differed. A `.gitignore` without the section is left alone
+/// when there is nothing to list.
+pub fn sync_gitignore(
+    module: &Module,
+    patterns: &[String],
+    mode: &SyncMode,
+) -> Result<bool, CliError> {
+    if patterns.is_empty() && !gitignore_has_section(module)? {
+        return Ok(false);
+    }
+    let result = IgnoreFiles::builder()
+        .directory(&module.root)
+        .require_git_repo(false)
+        .dry_run(mode != &SyncMode::Write)
+        .section(IgnoreSection::new(GITIGNORE_SECTION_NAME).patterns(patterns.iter().cloned()))
+        .generate()
+        .map_err(|error| CliError::config(format!("cannot update .gitignore: {error}")))?;
+    Ok(result.files.iter().any(|file| {
+        matches!(
+            file.status,
+            FileStatus::Created
+                | FileStatus::Updated
+                | FileStatus::WouldCreate
+                | FileStatus::WouldUpdate
+        )
+    }))
+}
+
+fn gitignore_has_section(module: &Module) -> Result<bool, CliError> {
+    let path = module.root.join(".gitignore");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Ok(content
+            .lines()
+            .any(|line| line == format!("# BEGIN {GITIGNORE_SECTION_NAME}"))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error("read", &path, &error)),
+    }
+}
+
 fn remove_empty_parents(module: &Module, directory: &Path) {
     let generated = module.root.join("cue.mod");
     let mut current = directory.parent();
@@ -360,6 +427,77 @@ mod tests {
             std::fs::read_to_string(directory.join("provider.cue")).unwrap(),
             "package mine\n"
         );
+    }
+
+    fn pinned(sources: &[&str]) -> Lockfile {
+        let mut lockfile = Lockfile::default();
+        for source in sources {
+            lockfile
+                .upsert_infrastructure_provider(
+                    (*source).to_string(),
+                    LockedInfrastructureProvider {
+                        version: "1.0.0".to_string(),
+                        schema_digest: format!("sha256:{}", "0".repeat(64)),
+                        platforms: BTreeMap::from([(
+                            "linux_amd64".to_string(),
+                            format!("sha256:{}", "1".repeat(64)),
+                        )]),
+                    },
+                )
+                .unwrap();
+        }
+        lockfile
+    }
+
+    #[test]
+    fn generated_directories_are_listed_in_gitignore_like_codegen_files() {
+        let root = tempfile::tempdir().unwrap();
+        let module = Module {
+            root: root.path().to_path_buf(),
+        };
+        std::fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
+        let patterns = gitignore_patterns(&pinned(&[
+            "registry.terraform.io/hashicorp/random",
+            "registry.opentofu.org/acme/example",
+        ]))
+        .unwrap();
+        assert_eq!(
+            patterns,
+            [
+                "/cue.mod/gen/registry.opentofu.org/acme/example/",
+                "/cue.mod/gen/registry.terraform.io/hashicorp/random/",
+            ]
+        );
+
+        assert!(sync_gitignore(&module, &patterns, &SyncMode::Check).unwrap());
+        assert!(sync_gitignore(&module, &patterns, &SyncMode::Write).unwrap());
+        assert!(!sync_gitignore(&module, &patterns, &SyncMode::Check).unwrap());
+        let gitignore = std::fs::read_to_string(root.path().join(".gitignore")).unwrap();
+        assert!(gitignore.starts_with("target/\n"), "{gitignore}");
+        assert!(
+            gitignore.contains("# BEGIN cuenv infrastructure"),
+            "{gitignore}"
+        );
+        assert!(
+            gitignore.contains("/cue.mod/gen/registry.terraform.io/hashicorp/random/"),
+            "{gitignore}"
+        );
+
+        // The last pin gone, the section goes too; other entries stay.
+        assert!(sync_gitignore(&module, &[], &SyncMode::Write).unwrap());
+        let gitignore = std::fs::read_to_string(root.path().join(".gitignore")).unwrap();
+        assert!(!gitignore.contains("cuenv infrastructure"), "{gitignore}");
+        assert!(gitignore.contains("target/"), "{gitignore}");
+    }
+
+    #[test]
+    fn nothing_to_list_creates_no_gitignore() {
+        let root = tempfile::tempdir().unwrap();
+        let module = Module {
+            root: root.path().to_path_buf(),
+        };
+        assert!(!sync_gitignore(&module, &[], &SyncMode::Write).unwrap());
+        assert!(!root.path().join(".gitignore").exists());
     }
 
     #[test]

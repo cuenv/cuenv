@@ -42,13 +42,21 @@ fn cli_error(error: &CliError) -> cuenv_core::Error {
 async fn sync_module(request: SyncRequest<'_>) -> std::result::Result<SyncResult, CliError> {
     let module = Module::containing(request.path)?;
     let lockfile = module.lockfile()?;
-    if lockfile.infrastructure_providers.is_empty() {
-        return Ok(SyncResult::success(
-            "No infrastructure providers are pinned in cuenv.lock.",
-        ));
-    }
     let mut lines = Vec::new();
     let mut out_of_date = Vec::new();
+    let patterns = types::gitignore_patterns(&lockfile)?;
+    if types::sync_gitignore(&module, &patterns, &request.options.mode)? {
+        match request.options.mode {
+            SyncMode::Write => lines.push(".gitignore: updated".to_string()),
+            SyncMode::DryRun => lines.push("Would update .gitignore".to_string()),
+            SyncMode::Check => {
+                out_of_date.push(".gitignore section `cuenv infrastructure`".to_string());
+            }
+        }
+    }
+    if lockfile.infrastructure_providers.is_empty() {
+        lines.push("No infrastructure providers are pinned in cuenv.lock.".to_string());
+    }
     for (source_text, pin) in &lockfile.infrastructure_providers {
         let source = ProviderSource::parse(source_text)
             .map_err(|error| types::infrastructure_error(&error))?;
@@ -115,7 +123,7 @@ async fn sync_module(request: SyncRequest<'_>) -> std::result::Result<SyncResult
                 "Generated infrastructure provider types are out of date:\n{}",
                 out_of_date.join("\n")
             ),
-            "Run `cuenv sync infrastructure` and commit the result.",
+            "Run `cuenv sync infrastructure` (or `cuenv sync`) to regenerate them from cuenv.lock.",
         ));
     }
     Ok(SyncResult::success(lines.join("\n")))
