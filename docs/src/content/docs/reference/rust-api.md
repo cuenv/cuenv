@@ -577,6 +577,26 @@ Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` a
 
 ## cuenv-infrastructure
 
+- **Identities.** `TenantKey::new(module_path, project)` is the identity of a
+  run without `--env`; `TenantKey::with_environment(module_path, project,
+environment)` is a separate identity for a named environment (including
+  `default`), and its `Display` form is `<module>#<project>@<environment>`.
+  Every store method takes a `TenantKey`, and nothing falls back from one
+  identity to another. The Turso store keeps one table family keyed by
+  `(module_path, project, environment, …)`, with an empty environment for the
+  no-flag identity, at schema version 1; `migrate()` fails with
+  `InfrastructureError::StateSchemaNewer` for a newer schema and, for any later
+  migration, with `InfrastructureError::StateMigrationBlocked` (listing the
+  blocking `TenantLock`s) while a lock row exists, after waiting a bounded time
+  while `StateMigrationPending` holds new locks off. A database holding tables
+  of an unreleased development build is `StateUnreleasedLayout`, and tables
+  with cuenv's names but no migration record are `StateSchemaConflict`.
+  `StateStore::locks()` lists every lock of every tenant (a required method:
+  every store, including a test double, must enumerate its locks, because a
+  store that answered "none" without looking would hide the locks that block a
+  migration) and `StateStore::addresses()` reads a tenant's record addresses without decoding
+  them. A row that cannot be decoded is `InfrastructureError::UndecodableRecord`
+  naming the address.
 - **Provider environment.** `cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES`
   is the table of variables only cuenv's secret machinery uses, each an exact
   name or a prefix (`NamePattern`) and a `ValueKind` (a `Credential` is
@@ -599,6 +619,26 @@ Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` a
   `wait_for_recordings(bound)` lets a record being written finish before the
   lock is released. The command calls them from its SIGINT, SIGTERM, SIGHUP
   and SIGQUIT handling, which it installs before evaluating anything.
+- `StateStore::owner()` names the CUE instance (`ProjectInstance`,
+  `<directory>:<package>`) that owns a tenant's state; `claim_owner()` with
+  `OwnerClaimMode::IfUnowned` records it under the first lock, and
+  `OwnerClaimMode::Transfer` is an explicit adoption
+  (`cuenv infrastructure state adopt`). `TenantOwner::require()` refuses any
+  other instance (`InfrastructureError::OwnedByAnotherInstance`).
+- A change the store could not record is saved by `UnrecordedStore` in the
+  user state directory in one file format (`formatVersion` 1: tenant with its
+  environment, generation, serial and backend binding); `engine.plan()` refuses
+  to run until `UnrecordedStore::recover` has recorded it under the lock
+  (`cuenv infrastructure state recover`). `has_pending()` checks without a
+  lock. `RecoverOverrides` holds two independent, per-file overrides:
+  `changed_record: ChangedRecord::Overwrite` writes over a stored record that
+  changed since the change was saved (otherwise
+  `InfrastructureError::StateChanged`, which names the file), and
+  `backend: BackendMismatch::Accept` accepts a file saved for another state
+  backend or without a binding. They are the CLI's `--force` and
+  `--accept-backend`; neither implies the other, and the default
+  (`RecoverOverrides::default()`) overrides nothing. `localhost`, `127.0.0.1`
+  and `[::1]` are one backend.
 
 ### Redaction (`cuenv-events`)
 
