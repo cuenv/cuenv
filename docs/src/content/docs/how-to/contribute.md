@@ -101,6 +101,8 @@ If a change does not match one of those full-flake triggers, keep the check focu
 
 Continuous integration runs the flake checks on `x86_64-linux` for every pull request and push to `main`, and also builds the `cuenv-clippy` and `cuenv-nextest` checks for `aarch64-darwin` on a macOS runner (the `darwin` tasks in `env.cue`), so code that differs by platform is compiled and tested on macOS before it merges, not only when a release is built.
 
+CI jobs get Nix store paths from two caches. Each Linux runner mounts a Namespace cache volume at `/nix`, so a job starts with whatever an earlier job on that volume built; Hestia, kept in the GitHub Actions cache, supplies the rest and is the cache parallel jobs share. The GitHub Actions cache is scoped per ref, capped per repository and rate limited, so under parallel load Hestia can log `resource_exhausted: rate limit exceeded` or evicted packs and serve nothing. A job that rebuilds the Rust dependency tree from source (`cuenv-deps>    Compiling ...` for every crate) found neither cache warm: check the Namespace cache step for the space the volume reports as used, and the `hestia substituter` lines.
+
 For performance changes, make the claim measurable. Add or update Criterion
 coverage next to the hot path, keep a behavior regression test for the
 optimized code path, and run the narrow benchmark slice before and after the

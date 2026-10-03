@@ -81,10 +81,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -113,10 +122,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -139,10 +157,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -165,10 +192,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -191,10 +227,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -217,10 +262,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -243,10 +297,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -269,10 +332,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -295,10 +367,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -321,10 +402,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -350,10 +440,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
@@ -396,10 +495,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
       uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
       with:
