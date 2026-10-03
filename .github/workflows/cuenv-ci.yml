@@ -95,7 +95,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -136,7 +136,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -171,7 +171,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -206,7 +206,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -241,7 +241,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -276,7 +276,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -311,7 +311,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -346,7 +346,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -381,7 +381,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -416,7 +416,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -454,7 +454,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'
@@ -509,7 +509,7 @@ jobs:
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Hestia Nix Cache
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         drain-timeout: '900'
         upstream-cache-filter: 'true'

@@ -28,7 +28,7 @@ jobs:
       with:
         extra-conf: accept-flake-config = true
     - name: Install Hestia
-      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025
       with:
         version: v2.0.0
     - name: Run garbage collection
