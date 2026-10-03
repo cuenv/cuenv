@@ -23,11 +23,25 @@ pub mod plugin;
 mod protocol;
 pub mod registry;
 pub mod schema;
+pub mod state;
+pub mod tenant;
 pub mod type_system;
+pub mod unrecorded;
 
 pub use cancellation::{Cancellation, RecordingGuard};
 pub use error::{
-    InfrastructureError, Result, strip_control_characters, strip_control_characters_except_newlines,
+    InfrastructureError, Result, UnrecordedFileProblem, strip_control_characters,
+    strip_control_characters_except_newlines,
+};
+pub use state::{
+    ConditionalPut, LockInformation, LockRequest, ManagedResource, MemoryStateStore, OwnerClaim,
+    OwnerClaimMode, RecordVersion, ResourceAddress, StateLock, StateStore, TenantLock, TenantOwner,
+    TursoConfiguration, TursoStateStore,
+};
+pub use tenant::{ProjectInstance, TenantKey, read_module_path};
+pub use unrecorded::{
+    BackendMismatch, ChangedRecord, RecoverOptions, RecoverOverrides, UnrecordedRecord,
+    UnrecordedStore,
 };
 
 /// Install the process-wide rustls cryptography provider reqwest needs.

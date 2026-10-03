@@ -1673,6 +1673,9 @@ dependencies = [
 name = "cuenv-infrastructure"
 version = "0.56.8"
 dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
  "dirs 6.0.0",
  "hex",
  "hyper-util",

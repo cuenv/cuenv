@@ -15,6 +15,9 @@ description = "Infrastructure as code for cuenv: drives Terraform provider plugi
 exclude = ["tests/fake_provider"]
 
 [dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
 dirs = { workspace = true }
 hex = { workspace = true }
 hyper-util = { workspace = true }
