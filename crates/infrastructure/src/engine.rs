@@ -43,6 +43,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use cuenv_manifest::lockfile::LockedInfrastructureProvider;
 use cuenv_manifest::manifest::{
     Infrastructure, InfrastructureProvider, ManagedResourceDeclaration,
 };
@@ -58,7 +59,9 @@ use crate::plugin::{
     ApplyRequest, LaunchOptions, PlanRequest, ProviderClient, redact_provider_text,
 };
 use crate::protocol::{self, Diagnostic, Severity};
-use crate::registry::{ProviderInstaller, ProviderSource, default_cache_directory};
+use crate::registry::{
+    ProviderInstaller, ProviderSource, current_platform, default_cache_directory,
+};
 use crate::schema::{Block, ProviderSchema, Schema};
 use crate::state::{
     ConditionalPut, ManagedResource, RecordVersion, ResourceAddress, StateLock, StateStore,
@@ -502,6 +505,10 @@ pub struct EngineOptions {
     /// provider the engine launches, while planning or applying, is
     /// registered with it.
     pub cancellation: Cancellation,
+    /// Provider releases `cuenv.lock` pins, keyed by fully qualified source
+    /// address. A registry provider with a pin must match its version,
+    /// archive SHA-256 and schema digest.
+    pub locked_providers: BTreeMap<String, LockedInfrastructureProvider>,
 }
 
 impl fmt::Debug for EngineOptions {
@@ -520,6 +527,7 @@ impl fmt::Debug for EngineOptions {
             )
             .field("unrecorded_directory", &self.unrecorded_directory)
             .field("cancellation", &self.cancellation)
+            .field("locked_providers", &self.locked_providers)
             .finish()
     }
 }
@@ -1488,6 +1496,14 @@ impl InfrastructureEngine {
             &diagnostics,
             warnings,
         )?;
+        self.check_schema_digest(
+            &DeclaredProvider {
+                name,
+                declaration: &declaration,
+                source: &source,
+            },
+            &schema,
+        )?;
 
         let value_type = schema.provider.block.implied_type();
         let configuration = schema.provider.block.normalize_configuration(
@@ -1562,8 +1578,84 @@ impl InfrastructureEngine {
             .plugin_cache_directory
             .clone()
             .unwrap_or_else(default_cache_directory);
-        ProviderInstaller::new(cache)?.ensure(source, version).await
+        let installer = ProviderInstaller::new(cache)?;
+        let Some(locked) = self.options.locked_providers.get(&source.to_string()) else {
+            return installer.ensure(source, version).await;
+        };
+        if locked.version != version {
+            return Err(InfrastructureError::configuration(format!(
+                "{declared_at}: provider '{name}' asks for {source} {version}, but cuenv.lock pins \
+                 {}; run `cuenv infrastructure provider add {source}@{version}` to move the pin \
+                 and regenerate its CUE types",
+                locked.version
+            )));
+        }
+        let platform = current_platform()?.to_string();
+        let archive_sha256 = locked.archive_sha256(&platform).ok_or_else(|| {
+            InfrastructureError::install(format!(
+                "cuenv.lock pins {source} {version} but records no archive for {platform}; the \
+                 release is not published for this platform, or the pin was made before it was"
+            ))
+        })?;
+        installer
+            .ensure_pinned(source, version, archive_sha256)
+            .await
     }
+
+    /// Refuse a provider whose live schema is not the one the project's
+    /// generated CUE types (`schemaDigest`) or `cuenv.lock` were made from.
+    fn check_schema_digest(
+        &self,
+        provider: &DeclaredProvider<'_>,
+        schema: &crate::schema::ProviderSchema,
+    ) -> Result<()> {
+        let DeclaredProvider {
+            name,
+            declaration,
+            source,
+        } = provider;
+        let live = crate::cue_types::schema_digest(schema);
+        let declared_at = format!("{}.{name}", self.scope().providers());
+        let release = declaration.version.as_deref().map_or_else(
+            || {
+                format!(
+                    "{source} at {}",
+                    declaration.path.as_deref().unwrap_or_default()
+                )
+            },
+            |version| format!("{source} {version}"),
+        );
+        if let Some(version) = &declaration.version
+            && let Some(locked) = self.options.locked_providers.get(&source.to_string())
+            && locked.schema_digest != live
+        {
+            return Err(InfrastructureError::configuration(format!(
+                "{declared_at}: cuenv.lock pins {source} {version} with schema {}, but the \
+                 installed provider reports {live}; the binary is not the release that was \
+                 pinned. Run `cuenv infrastructure provider add {source}@{version}` to pin it \
+                 again",
+                locked.schema_digest
+            )));
+        }
+        if let Some(declared) = &declaration.schema_digest
+            && *declared != live
+        {
+            return Err(InfrastructureError::configuration(format!(
+                "{declared_at}: the CUE types for provider '{name}' were generated from schema \
+                 {declared}, but {release} reports {live}. Run `cuenv sync infrastructure` to \
+                 regenerate them from cuenv.lock, or `cuenv infrastructure provider add` for \
+                 another version"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// A provider declaration with its local name and parsed source.
+struct DeclaredProvider<'declaration> {
+    name: &'declaration str,
+    declaration: &'declaration InfrastructureProvider,
+    source: &'declaration ProviderSource,
 }
 
 /// Stored state must only ever be handed back to the provider that wrote it.
@@ -2179,7 +2271,7 @@ fn render_diagnostic_with(diagnostic: &Diagnostic, redact: fn(&str) -> String) -
 }
 
 /// Fail on error diagnostics; collect warnings.
-fn check_diagnostics(
+pub(crate) fn check_diagnostics(
     context: &str,
     diagnostics: &[Diagnostic],
     warnings: &mut Vec<String>,

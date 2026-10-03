@@ -18,7 +18,9 @@ mod holder;
 mod interrupts;
 mod invocation;
 mod output;
+mod provider;
 mod provider_environment;
+pub(crate) mod types;
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -37,6 +39,7 @@ use cuenv_infrastructure::{
     strip_control_characters, strip_control_characters_except_newlines, validate_configuration,
 };
 use cuenv_manifest::environment::EnvValue;
+use cuenv_manifest::lockfile::LockedInfrastructureProvider;
 use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, ProviderEnvironment};
 
 use self::evaluation::{EnvironmentSelection, NameCheck, Needs, Target, TargetRequest, TopLevel};
@@ -47,6 +50,8 @@ use self::output::{
 };
 use self::provider_environment::ProviderEnvironmentInputs;
 use crate::cli::{CliError, InfrastructureFailureKind, LockStatus, OutputFormat};
+
+pub use self::provider::{ProviderAction, execute_provider};
 
 /// Whether an operator must confirm before changes are applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -589,8 +594,14 @@ async fn run(
         interrupts,
         answers: &answers,
     };
+    let locked_providers = if options.action.uses_provider_environment() {
+        locked_providers(&project_directory)?
+    } else {
+        BTreeMap::new()
+    };
     let inputs = EngineInputs {
         infrastructure,
+        locked_providers,
         project_directory,
         provider_environment_variables: resolved.provider_environment_variables,
         withheld_environment_variables: resolved.withheld_environment_variables,
@@ -1477,6 +1488,8 @@ struct CommandContext<'context> {
 /// What an engine is built from, besides the context.
 struct EngineInputs {
     infrastructure: Infrastructure,
+    /// Provider releases the CUE module's `cuenv.lock` pins.
+    locked_providers: BTreeMap<String, LockedInfrastructureProvider>,
     project_directory: PathBuf,
     /// Resolved project variables overlaid on the provider's host environment.
     provider_environment_variables: BTreeMap<String, String>,
@@ -1556,6 +1569,17 @@ async fn dispatch(
     }
 }
 
+/// The provider releases the `cuenv.lock` of the CUE module holding
+/// `project_directory` pins; none outside a CUE module or without a lockfile.
+fn locked_providers(
+    project_directory: &std::path::Path,
+) -> Result<BTreeMap<String, LockedInfrastructureProvider>, CliError> {
+    match types::Module::containing(project_directory) {
+        Ok(module) => Ok(module.lockfile()?.infrastructure_providers),
+        Err(_) => Ok(BTreeMap::new()),
+    }
+}
+
 fn engine_setup(context: &CommandContext<'_>, inputs: EngineInputs) -> EngineSetup {
     let mut withheld_environment_variables = vec![
         inputs
@@ -1581,6 +1605,7 @@ fn engine_setup(context: &CommandContext<'_>, inputs: EngineInputs) -> EngineSet
             // Every provider the engine launches is registered with the
             // command's interrupt handling.
             cancellation: context.interrupts.cancellation().clone(),
+            locked_providers: inputs.locked_providers,
         },
     }
 }

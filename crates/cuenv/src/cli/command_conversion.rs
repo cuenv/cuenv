@@ -525,6 +525,23 @@ fn resolve_sync_command(input: SyncCommandInput) -> SyncResolution {
             ci_provider: None,
             update_tools: update.map(filter_update_tools),
         }),
+        Some(SyncCommands::Infrastructure {
+            path,
+            dry_run,
+            check,
+        }) => sync_provider_resolution(SyncProviderInput {
+            provider_name: "infrastructure",
+            path: effective_path(&base_path, path),
+            package: base_package,
+            flags: flags.combined(SyncFlags {
+                dry_run,
+                check,
+                all: false,
+            }),
+            show_diff: false,
+            ci_provider: None,
+            update_tools: None,
+        }),
         None => SyncResolution {
             provider_name: None,
             path: base_path,
@@ -583,12 +600,26 @@ fn infrastructure_command(
     subcommand: InfrastructureCommands,
     environment: Option<String>,
 ) -> Command {
-    use super::InfrastructureStateCommands;
+    use super::{InfrastructureProviderCommands, InfrastructureStateCommands};
     use crate::commands::infrastructure::{
-        ConfirmationPolicy, InfrastructureAction, SeparateState, StateAction, UnlockScope,
+        ConfirmationPolicy, InfrastructureAction, ProviderAction, SeparateState, StateAction,
+        UnlockScope,
     };
     use cuenv_infrastructure::{BackendMismatch, ChangedRecord, RecoverOverrides};
     let (path, package, action) = match subcommand {
+        InfrastructureCommands::Provider { subcommand, path } => {
+            return Command::InfrastructureProvider {
+                path,
+                action: match subcommand {
+                    InfrastructureProviderCommands::Add { release } => {
+                        ProviderAction::Add { release }
+                    }
+                    InfrastructureProviderCommands::Remove { source } => {
+                        ProviderAction::Remove { source }
+                    }
+                },
+            };
+        }
         InfrastructureCommands::Plan { path, package } => {
             (path, package, InfrastructureAction::Plan)
         }

@@ -1,6 +1,6 @@
 ---
 title: Manage infrastructure
-description: Declare managed resources in CUE and let cuenv drive Terraform provider plugins directly, with typed provider schemas from the CUE registry and multi-tenant state in Turso.
+description: Declare managed resources in CUE and let cuenv drive Terraform provider plugins directly, with CUE types generated from each provider's own schema and multi-tenant state in Turso.
 ---
 
 cuenv can manage real infrastructure with the provider ecosystem you already know from Terraform and OpenTofu — without either command line tool. `cuenv infrastructure` (short form: `cuenv i`) launches unmodified `terraform-provider-*` binaries, speaks their gRPC plugin protocol (versions 5 and 6), and stores every managed resource as its own record in a remote [Turso](https://turso.tech) (libSQL) database. Use `--env Dev` or `--env Staging` to select a complete infrastructure configuration and its project environment values.
@@ -24,6 +24,9 @@ There is no migration path from databases written by earlier development builds 
 | `cuenv infrastructure state recover`          | `cuenv i state recover` | Record changes that could not be recorded earlier                       |
 | `cuenv infrastructure state adopt`            | `cuenv i state adopt`   | Make this instance the owner of the project's state                     |
 | `cuenv infrastructure unlock`                 | `cuenv i unlock`        | Show who holds the lock, or release it by identifier                    |
+| `cuenv infrastructure provider add <source>@<version>` | `cuenv i provider add` | Generate CUE types for a provider release and pin it in `cuenv.lock` |
+| `cuenv infrastructure provider remove <source>` | `cuenv i provider remove` | Delete a provider's generated types and its pin                    |
+| `cuenv sync infrastructure`                   |                         | Regenerate every pinned provider's types (`--check` fails on drift)     |
 
 `apply` also takes `--allow-separate-state` (see [Moving between identities](#moving-between-identities)), and `unlock` takes `--module` and `--project` to act on the lock of a project that is not the one being evaluated (see [Stale locks](#when-things-go-wrong)).
 
@@ -176,34 +179,45 @@ The state database also records which instance (`<directory>:<package>`) owns ea
 The module path is declared by the project itself. Anyone holding a database token can read or write every tenant in that database, including every named environment of a project. For isolation between teams or customers, give each tenant its own Turso database and token.
 :::
 
-## Typed provider schemas from the CUE registry
+## Typed configuration
 
-Every provider listed in [cuenv/terraform](https://github.com/cuenv/terraform) is published to the CUE registry as a module generated from the provider's own schema:
+`configuration` is untyped by default: CUE accepts anything, and mistakes surface at plan time from the provider, without file positions. Generate types from the provider's own schema to have CUE reject them first.
 
-```text
-github.com/cuenv/terraform/terraform/<namespace>/<type>@v<provider major version>
-```
-
-Each module exposes closed definitions: `#ProviderConfig` for the provider block and `#Resource_<type>` for every managed resource (plus `#DataSource_<type>` and others for future use). Unify them with `configuration` and evaluation fails — naming the field, and usually its file position — on unknown arguments, wrong types, missing required arguments and values that are not concrete, before any provider is started.
-
-Pin the exact provider release in `cue.mod/module.cue`:
+### Add a provider
 
 ```bash
-cue mod get github.com/cuenv/terraform/terraform/hashicorp/random@v3.9.1
+cuenv infrastructure provider add hashicorp/random@3.9.1
 ```
 
-```cue
-deps: "github.com/cuenv/terraform/terraform/hashicorp/random@v3": v: "v3.9.1"
+This installs the release exactly as `plan` would, reads its schema over gRPC, writes CUE packages into your CUE module's `cue.mod/gen`, and pins the release in the module's `cuenv.lock`:
+
+```text
+cue.mod/gen/registry.terraform.io/hashicorp/random/
+├── provider.cue                        package random_provider: #Provider, #Configuration
+└── resources/
+    ├── random_integer/resource.cue     package random_integer: #Resource, #Configuration
+    ├── random_password/resource.cue    package random_password
+    ├── random_pet/resource.cue         package random_pet
+    └── ...
 ```
 
-Then import it under an alias that matches **no** field name in scope — not a provider key, not a resource key, not `state`, `providers`, `resources` or `name`:
+Nothing is published or fetched from a CUE registry, and `cue.mod/module.cue` is untouched: CUE resolves imports from `cue.mod/gen` on its own. Your CUE files are not changed either; the command prints the imports to add.
+
+Commit `cuenv.lock`, not the generated types. Like managed [codegen](/how-to/codegen/) files, the provider directories are listed in a `cuenv infrastructure` section of the module's `.gitignore`, and `cuenv sync` recreates them from `cuenv.lock`. Run it after cloning and after pulling a lock change, as you would for codegen: until it has run, every command that evaluates the project — `cuenv task`, `cuenv env`, the shell hook, `cue` and the CUE language server — fails with `cannot find package "registry.terraform.io/..."`. The first `cuenv sync` downloads each pinned provider (or takes it from the plugin cache) to read its schema.
+
+`<source>` is `namespace/type` or `hostname/namespace/type` (a hostname with a port cannot be an import path and is refused); `<version>` is an exact version. `--path` selects a directory inside the CUE module when you are not in it.
+
+### Use the types
 
 ```cue
 package cuenv
 
 import (
 	"github.com/cuenv/cuenv/schema"
-	randomProvider "github.com/cuenv/terraform/terraform/hashicorp/random@v3"
+
+	"registry.terraform.io/hashicorp/random:random_provider"
+	"registry.terraform.io/hashicorp/random/resources/random_pet"
+	"registry.terraform.io/hashicorp/random/resources/random_password"
 )
 
 schema.#Project
@@ -213,32 +227,50 @@ name: "web"
 infrastructure: {
 	state: turso: url: "libsql://platform-acme.turso.io"
 
-	providers: random: {
-		source:        "hashicorp/random"
-		version:       "3.9.1" // same release as the pinned module
-		configuration: randomProvider.#ProviderConfig
-	}
+	providers: random: random_provider.#Provider
 
-	resources: pet: {
-		type: "random_pet"
-		configuration: randomProvider.#Resource_random_pet & {
-			length:    3
-			separator: "_"
+	resources: {
+		pet: random_pet.#Resource & {
+			configuration: {length: 3, separator: "-"}
+		}
+		database_password: random_password.#Resource & {
+			dependsOn: ["pet"]
+			configuration: {length: 24, special: false}
 		}
 	}
 }
 ```
 
-CUE resolves an identifier to the nearest enclosing field of that name before an import, so `random.#ProviderConfig` written inside `providers: random: {...}` refers to the field. cuenv reports that as `infrastructure.providers.random.configuration: undefined field: #ProviderConfig` with its position; an alias ending in `Provider` avoids it.
+- **`#Provider`** sets `source`, `version` and `schemaDigest` to the release the types describe, and types `configuration` with the provider block. It is closed: writing `version: "3.9.0"` next to it, or adding a `path`, is a CUE conflict.
+- **`#Resource`** sets `type` and types `configuration`. It stays open for `provider` and `dependsOn`.
+- **`#Configuration`** in each package is the closed definition behind them, if you want to type a value on its own.
 
-Two more rules:
+Evaluation now fails — with the field and its file position — on a misspelled argument (`field not allowed`), a wrong type (`conflicting values "three" and number`), a missing required argument (`field is required but not present`) and a computed-only attribute set by hand. Provider-side rules (ranges, mutually exclusive arguments) are not in the schema, so the provider still checks them at plan time.
 
-- **Package names.** The module's package is the provider type with characters that are not letters, digits or `_` replaced by `_`, and the result prefixed with `provider_` when it is a reserved CUE word or does not start with a letter. `hashicorp/google-beta` is package `google_beta`, which differs from the last path element, so the import needs the qualifier: `googleBetaProvider "github.com/cuenv/terraform/terraform/hashicorp/google-beta@v8:google_beta"`; `hashicorp/null` is package `provider_null`, so import it with an explicit qualifier: `nullProvider "github.com/cuenv/terraform/terraform/hashicorp/null@v3:provider_null"`.
-- **Versions.** Keep `version` equal to the release pinned in `deps`. Nothing enforces this yet; a mismatch means the schema you typed against is not the one the provider uses.
+Field names are Terraform's attribute names (`min_lower`, `override_special`). Each field carries the provider's description as a comment, and comments say when the provider chooses a value when the field is not set, when a value is sensitive, and when an argument is deprecated. Optional arguments are `name?: T` without `| null`: Terraform treats an explicit `null` like an absent argument, so leave it out instead. Nested blocks become structs, lists of structs or maps of structs, with `list.MinItems`/`list.MaxItems` where the provider sets bounds.
 
-## A minimal example without typed schemas
+:::note[Names that cannot be shadowed]
+CUE resolves an identifier to the nearest enclosing field of that name before an import. That is why the provider package is `random_provider` (imported with the `:random_provider` qualifier) rather than `random`: inside `providers: random: ...` the field `random` would hide it. The same applies to resource packages: do not give a resource the key `random_pet` if you also refer to the `random_pet` package inside `resources`, or import it under another name (`randomPet "registry.terraform.io/hashicorp/random/resources/random_pet"`). Attributes named after CUE's types (`number`, `string`, `bool`, `list`) are written with quoted labels (`"number"?: bool`) so they cannot shadow the types either; set them as usual.
+:::
 
-[`examples/infrastructure-random`](https://github.com/cuenv/cuenv/tree/main/examples/infrastructure-random) uses untyped `configuration` so it evaluates without network access. The provider still validates every argument at plan time.
+### Keep types and providers in step
+
+The generated files, the lock and the provider binary are tied together by the schema digest, a SHA-256 of everything the types encode:
+
+- `cuenv i plan`, `apply` and `destroy` compute the digest of the provider they launch and refuse it when it differs from `schemaDigest` (set by `#Provider`) or from the digest `cuenv.lock` pins.
+- When `cuenv.lock` pins a provider, its `version` must match the configuration, and installation and cache reuse require the archive SHA-256 the lock records for the current platform. `provider add` records every platform the release is published for, so a lock made on Linux works on macOS.
+- `cuenv sync infrastructure` regenerates every pinned provider's types and the `.gitignore` section from `cuenv.lock`; `--check` fails when files are missing or differ, and `--dry-run` reports what would change. It reads only `cuenv.lock`, never your CUE, so it can restore packages your project imports but that are missing. Plain `cuenv sync` includes it; in CI, run `cuenv sync` before anything that evaluates the project.
+- To upgrade, run `provider add` with the new version: the types are regenerated and the pin moves. Fix whatever CUE now reports.
+- `cuenv infrastructure provider remove hashicorp/random` deletes the generated directory, its `.gitignore` entry and the pin.
+
+cuenv only replaces or removes a `cue.mod/gen` directory whose `provider.cue` starts with its generated-code header, and refuses otherwise. A `cuenv.lock` that pins infrastructure providers is lockfile format version 5; cuenv versions that do not know the section refuse such a lockfile rather than drop it. Lockfiles without the section stay at version 4.
+
+What is not generated yet: data sources, computed attributes for references between resources (see [Current limitations](#current-limitations)), provider functions and ephemeral resources; write-only arguments are left out because cuenv does not send them. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource type (`hashicorp/aws` has about 1700), so evaluation only pays for the resources you import, but the generated directory is large and `cuenv sync` writes all of it.
+
+
+## A minimal example without typed configuration
+
+[`examples/infrastructure-random`](https://github.com/cuenv/cuenv/tree/main/examples/infrastructure-random) uses untyped `configuration`; the provider still validates every argument at plan time. The end-to-end tests use it because they swap in a local provider `path`.
 
 ```cue
 infrastructure: {
@@ -342,7 +374,8 @@ infrastructure: providers: {
 - `source` is `namespace/type` or `hostname/namespace/type`.
 - Every resource's provider — its explicit `provider`, or the prefix of its `type` — must be declared here. `dependsOn` entries must name declared resources. Planning checks all provider references, dependency edges and cycles up front, before reading state or starting any provider.
 - Set exactly one of `version` (an exact semantic version; constraints such as `~> 3.7` are not supported) or `path`. The engine validates every provider source and install choice up front, including unused declarations, before reading state or starting any provider.
-- Downloads must be HTTPS, are verified against the registry's SHA-256 checksum, and are cached using Terraform's layout in `$TF_PLUGIN_CACHE_DIR` when set, otherwise in your platform's cache directory under `cuenv/infrastructure/providers` (`~/.cache` on Linux, `~/Library/Caches` on macOS). cuenv records a manifest with the binary's SHA-256 and re-verifies it on every use; a cache populated by Terraform is reinstalled once. That manifest only detects accidental corruption: anyone who can write to the cache can replace a binary and its manifest together, so never share a writable plugin cache between trust boundaries. The registry's GPG signature and lockfile hashes are not verified yet.
+- Downloads must be HTTPS, are verified against the registry's SHA-256 checksum (and, for a provider pinned in `cuenv.lock`, against the pinned checksum — see [Typed configuration](#keep-types-and-providers-in-step)), and are cached using Terraform's layout in `$TF_PLUGIN_CACHE_DIR` when set, otherwise in your platform's cache directory under `cuenv/infrastructure/providers` (`~/.cache` on Linux, `~/Library/Caches` on macOS). cuenv records a manifest with the binary's SHA-256 and re-verifies it on every use; a cache populated by Terraform is reinstalled once. That manifest only detects accidental corruption: anyone who can write to the cache can replace a binary and its manifest together, so never share a writable plugin cache between trust boundaries. The registry's GPG signature is not verified yet.
+- With generated types, `providers: random: random_provider.#Provider` sets `source`, `version` and `schemaDigest` for you (see [Typed configuration](#typed-configuration)).
 - `configuration` is the provider block. Keep credentials out of it: providers read their usual environment variables (`CLOUDFLARE_API_TOKEN`, `AWS_PROFILE`, …) from the caller's environment as limited by `providerEnvironment` (see [Provider environment](#provider-environment)), with authorized cuenv project values overlaid. Secret-typed resource arguments are not supported yet.
 
 ## Declare resources
@@ -351,7 +384,7 @@ infrastructure: providers: {
 infrastructure: resources: {
 	zone_settings: {
 		type: "cloudflare_zone_setting"
-		configuration: cloudflareProvider.#Resource_cloudflare_zone_setting & {
+		configuration: {
 			zone_id:    "..."
 			setting_id: "always_use_https"
 			value:      "on"
@@ -361,7 +394,7 @@ infrastructure: resources: {
 		type:      "cloudflare_dns_record"
 		provider:  "cloudflare"     // defaults to the type prefix
 		dependsOn: ["zone_settings"] // must be declared; apply after, destroy before
-		configuration: cloudflareProvider.#Resource_cloudflare_dns_record & {
+		configuration: {
 			zone_id: "..."
 			name:    "www"
 			type:    "CNAME"
@@ -372,7 +405,9 @@ infrastructure: resources: {
 }
 ```
 
-With or without a registry definition, `configuration` is also validated by the provider's own schema at plan time, including nested blocks.
+With generated types, write `web_dns: cloudflare_dns_record.#Resource & {dependsOn: ["zone_settings"], configuration: {...}}` instead; `#Resource` sets `type` and types `configuration` (see [Typed configuration](#typed-configuration)).
+
+With or without generated types, `configuration` is also validated by the provider's own schema at plan time, including nested blocks.
 
 The `infrastructure` block is closed at every level: a misspelled field such as `resource:` or `sourcee:` fails evaluation with `field not allowed` and its position, instead of being ignored (which would otherwise plan the deletion of everything under the real field). The schema also checks the references and the provider install choice with CUE's `error()`: a provider must set exactly one of `version` and `path`, every `dependsOn` entry must name a resource of the same configuration, every resource's provider (explicit, or the prefix of its `type`) must be declared in the same configuration, and the state `url` must be valid. The checks apply to the top level and to every `environments.NAME` configuration, **selected or not**, so a mistake in an environment you are not using is still found, and each error carries its field path (for example `infrastructure.environments.dev._unresolved."resources.pet.dependsOn[0]"`). A provider, resource or `configuration` that CUE itself rejects (a conflicting value, a `version` that is not exact) is reported by CUE alone, and the checks that read it wait until it is fixed, so one mistake does not bury the real error under false "no provider named" messages. They need no network and no provider. See [the schema reference](/reference/cue-schema/#checks).
 
@@ -456,4 +491,5 @@ A replacement whose old object was destroyed but whose new object was not create
 - **No `state move`.** Records cannot be moved between the no-flag identity and a named environment, or between environment names; see [Moving between identities](#moving-between-identities).
 - **One state database for all environments.** `state` cannot be overridden per environment.
 - **Semantic errors are fail-closed.** A mistake the schema's checks report (see [the schema reference](/reference/cue-schema/#checks)) in _any_ environment, selected or not, is a CUE evaluation error (exit code `3`) and fails every command that evaluates the project, including ordinary `cuenv env`, `cuenv task`, `cuenv sync` and `cuenv fmt` runs and the shell hook (`cuenv export --shell`, which runs on every prompt). State-only commands (`state list`, `unlock` and the others) fail too, even though they need only the state backend: fix the configuration first.
-- Provider version constraints, lockfile pinning and GPG signature verification are not implemented.
+- Provider version constraints and GPG signature verification are not implemented. Lockfile pinning needs `cuenv infrastructure provider add`; providers without a pin are verified against the registry's own checksum only.
+- **Typed configuration** covers managed resources and provider blocks only; local `path` providers cannot be typed yet.

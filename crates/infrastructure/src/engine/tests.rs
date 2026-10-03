@@ -107,6 +107,7 @@ async fn provider_install_source_is_validated_before_provider_launch() {
         source: "hashicorp/random".into(),
         version: Some("3.7.2".into()),
         path: Some("provider".into()),
+        schema_digest: None,
         configuration: serde_json::Map::new(),
     };
     let error = engine
@@ -119,6 +120,7 @@ async fn provider_install_source_is_validated_before_provider_launch() {
         source: "hashicorp/random".into(),
         version: None,
         path: None,
+        schema_digest: None,
         configuration: serde_json::Map::new(),
     };
     let error = engine
@@ -152,6 +154,7 @@ fn provider(version: Option<&str>, path: Option<&str>) -> InfrastructureProvider
         source: "hashicorp/unused".into(),
         version: version.map(str::to_owned),
         path: path.map(str::to_owned),
+        schema_digest: None,
         configuration: serde_json::Map::new(),
     }
 }
@@ -350,6 +353,7 @@ async fn invalid_unused_provider_fails_before_any_declared_provider_launches() {
             source: "hashicorp/random".into(),
             version: None,
             path: Some(binary.display().to_string()),
+            schema_digest: None,
             configuration: serde_json::Map::new(),
         },
     );
@@ -359,6 +363,7 @@ async fn invalid_unused_provider_fails_before_any_declared_provider_launches() {
             source: "hashicorp/unused".into(),
             version: None,
             path: None,
+            schema_digest: None,
             configuration: serde_json::Map::new(),
         },
     );
@@ -2157,9 +2162,12 @@ fn provider_values_keep_message_pack_verbatim_and_convert_json() {
 
 fn name_block() -> Block {
     Block {
+        documentation: crate::schema::Documentation::default(),
         attributes: BTreeMap::from([(
             "name".to_string(),
             crate::schema::Attribute {
+                write_only: false,
+                documentation: crate::schema::Documentation::default(),
                 value_type: Type::String,
                 nested: None,
                 presence: crate::schema::Presence::Required,
@@ -2226,6 +2234,7 @@ fn engine(store: Arc<dyn StateStore>, unrecorded_directory: &Path) -> Infrastruc
             provider_environment_variables: BTreeMap::new(),
             unrecorded_directory: Some(unrecorded_directory.join("unrecorded")),
             cancellation: Cancellation::default(),
+            locked_providers: std::collections::BTreeMap::new(),
         },
     })
 }
@@ -2707,6 +2716,7 @@ fn engine_setup_debug_omits_the_store_and_configuration_values() {
             )]),
             unrecorded_directory: None,
             cancellation: Cancellation::default(),
+            locked_providers: std::collections::BTreeMap::new(),
         },
     };
     let rendered = format!("{setup:?}");

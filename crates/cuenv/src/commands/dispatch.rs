@@ -52,7 +52,8 @@ impl CommandExecutor {
             | Command::Logs { .. }
             | Command::Ps { .. }
             | Command::Restart { .. }
-            | Command::Infrastructure { .. } => Ok(()),
+            | Command::Infrastructure { .. }
+            | Command::InfrastructureProvider { .. } => Ok(()),
         }
     }
 

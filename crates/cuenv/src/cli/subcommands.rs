@@ -166,6 +166,24 @@ pub enum SyncCommands {
         )]
         update: Option<Vec<String>>,
     },
+    /// Regenerate infrastructure provider CUE types from cuenv.lock.
+    #[command(about = "Regenerate infrastructure provider CUE types from cuenv.lock")]
+    Infrastructure {
+        /// Directory inside the CUE module whose cuenv.lock to read.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Directory inside the CUE module whose cuenv.lock to read",
+            default_value = "."
+        )]
+        path: String,
+        /// Show what would change without writing files.
+        #[arg(long, help = "Show what would change without writing files")]
+        dry_run: bool,
+        /// Fail when generated types are missing or differ.
+        #[arg(long, help = "Fail when generated types are missing or differ")]
+        check: bool,
+    },
 }
 
 /// Secrets subcommands for managing secret providers.
@@ -294,6 +312,22 @@ pub enum InfrastructureCommands {
         )]
         package: String,
     },
+    /// Generate typed CUE for providers and pin them in cuenv.lock.
+    #[command(about = "Generate typed CUE for providers and pin them in cuenv.lock")]
+    Provider {
+        /// Provider subcommand.
+        #[command(subcommand)]
+        subcommand: InfrastructureProviderCommands,
+        /// Directory inside the CUE module that receives the types.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Directory inside the CUE module that receives the types",
+            default_value = ".",
+            global = true
+        )]
+        path: String,
+    },
     /// Show the project's state lock, or release it by identifier.
     #[command(about = "Show the project's state lock, or release it by identifier")]
     Unlock {
@@ -329,6 +363,31 @@ pub enum InfrastructureCommands {
             default_value = "cuenv"
         )]
         package: String,
+    },
+}
+
+/// `cuenv infrastructure provider` subcommands.
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum InfrastructureProviderCommands {
+    /// Generate CUE types for a provider release and pin it in cuenv.lock.
+    #[command(
+        about = "Generate CUE types for a provider release and pin it in cuenv.lock",
+        long_about = "Install a provider release, generate CUE types from its schema into the CUE \
+                      module's cue.mod/gen, and pin its version, schema digest and archive \
+                      checksums in cuenv.lock. Prints the imports and the `providers` entry to \
+                      use. Your CUE files are not changed."
+    )]
+    Add {
+        /// Provider source and exact version, such as `hashicorp/random@3.9.1`.
+        #[arg(help = "Provider source and exact version, such as hashicorp/random@3.9.1")]
+        release: String,
+    },
+    /// Delete a provider's generated CUE types and its cuenv.lock pin.
+    #[command(about = "Delete a provider's generated CUE types and its cuenv.lock pin")]
+    Remove {
+        /// Provider source address, such as `hashicorp/random`.
+        #[arg(help = "Provider source address, such as hashicorp/random")]
+        source: String,
     },
 }
 
@@ -383,6 +442,8 @@ impl InfrastructureCommands {
             | Self::Destroy { package, .. }
             | Self::State { package, .. }
             | Self::Unlock { package, .. } => package,
+            // Provider types are generated without evaluating CUE.
+            Self::Provider { .. } => "cuenv",
         }
     }
 }

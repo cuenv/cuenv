@@ -576,6 +576,12 @@ fn seed_lockfile(existing: Option<&Lockfile>, mode: LockfileSeedMode) -> Lockfil
                     .tools_activation
                     .clone_from(&existing.tools_activation);
                 lockfile.vcs.clone_from(&existing.vcs);
+                // Written by `cuenv infrastructure provider add`, not by
+                // this provider.
+                lockfile
+                    .infrastructure_providers
+                    .clone_from(&existing.infrastructure_providers);
+                lockfile.version = lockfile.required_version();
             }
             lockfile
         }
@@ -586,6 +592,7 @@ fn lockfile_has_entries(lockfile: &Lockfile) -> bool {
     !lockfile.runtimes.is_empty()
         || !lockfile.tools.is_empty()
         || !lockfile.vcs.is_empty()
+        || !lockfile.infrastructure_providers.is_empty()
         || !lockfile.artifacts.is_empty()
 }
 

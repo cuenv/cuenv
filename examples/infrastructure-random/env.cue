@@ -13,12 +13,12 @@ name: "infrastructure-random"
 //   cuenv i plan  -p examples/infrastructure-random --package examples
 //   cuenv i apply -p examples/infrastructure-random --package examples
 //
-// This example keeps `configuration` untyped so it evaluates without network
-// access. In a real project, import the provider's schema module from the CUE
-// registry and unify it, for example:
-//
-//   import randomProvider "github.com/cuenv/terraform/terraform/hashicorp/random@v3"
-//   configuration: randomProvider.#Resource_random_pet & {length: 2}
+// This example keeps `configuration` untyped: the provider still validates
+// every argument at plan time, and the end-to-end tests swap in a local
+// provider `path`. To type it, run
+// `cuenv infrastructure provider add hashicorp/random@3.9.1` and use the
+// generated `#Provider` and `#Resource` definitions (see the infrastructure
+// how-to guide).
 infrastructure: {
 	state: turso: url: "http://127.0.0.1:8080"
 

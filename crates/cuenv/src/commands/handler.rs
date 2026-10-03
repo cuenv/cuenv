@@ -536,7 +536,15 @@ impl CommandHandler for SyncHandler {
 
         let provider_output = registry
             .sync_selected(
-                &["rules", "vcs", "lock", "codegen", "ci", "git-hooks"],
+                &[
+                    "rules",
+                    "vcs",
+                    "lock",
+                    "infrastructure",
+                    "codegen",
+                    "ci",
+                    "git-hooks",
+                ],
                 sync::SyncRequest {
                     path,
                     package: &self.package,

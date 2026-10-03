@@ -348,6 +348,7 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
         | Command::Ps { .. }
         | Command::Restart { .. }
         | Command::Infrastructure { .. }
+        | Command::InfrastructureProvider { .. }
         | Command::Ci { .. }
         | Command::ShellInit { .. }
         | Command::Web { .. }

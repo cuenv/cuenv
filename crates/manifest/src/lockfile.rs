@@ -44,6 +44,16 @@
 //! separator = ":"
 //! from = { type = "allBinDirs" }
 //!
+//! # Infrastructure providers (v5+), written by
+//! # `cuenv infrastructure provider add`
+//! [infrastructure_providers."registry.terraform.io/hashicorp/random"]
+//! version = "3.9.1"
+//! schema_digest = "sha256:..."
+//!
+//!   [infrastructure_providers."registry.terraform.io/hashicorp/random".platforms]
+//!   darwin_arm64 = "sha256:..."
+//!   linux_amd64 = "sha256:..."
+//!
 //! # Legacy artifacts section (for OCI images)
 //! [[artifacts]]
 //! kind = "image"
@@ -72,8 +82,19 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Component, Path};
 
-/// Current lockfile format version.
+/// Lockfile format version written when nothing needs a newer one.
 pub const LOCKFILE_VERSION: u32 = 4;
+
+/// Lockfile format version that introduced `infrastructure_providers`.
+///
+/// A lockfile is only written at this version when it pins infrastructure
+/// providers, so cuenv versions that do not know the section refuse the file
+/// instead of dropping the section, and other lockfiles are left at
+/// [`LOCKFILE_VERSION`].
+pub const INFRASTRUCTURE_PROVIDERS_LOCKFILE_VERSION: u32 = 5;
+
+/// Newest lockfile format version this cuenv reads.
+pub const MAXIMUM_LOCKFILE_VERSION: u32 = INFRASTRUCTURE_PROVIDERS_LOCKFILE_VERSION;
 
 /// Filename for the lockfile.
 pub const LOCKFILE_NAME: &str = "cuenv.lock";
@@ -95,6 +116,10 @@ pub struct Lockfile {
     /// Locked VCS dependencies (v4+).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vcs: BTreeMap<String, LockedVcsDependency>,
+    /// Pinned infrastructure provider releases keyed by fully qualified
+    /// source address, such as `registry.terraform.io/hashicorp/random` (v5+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub infrastructure_providers: BTreeMap<String, LockedInfrastructureProvider>,
     /// Legacy OCI artifacts (for backward compatibility with v1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<LockedArtifact>,
@@ -108,6 +133,7 @@ impl Default for Lockfile {
             tools: BTreeMap::new(),
             tools_activation: Vec::new(),
             vcs: BTreeMap::new(),
+            infrastructure_providers: BTreeMap::new(),
             artifacts: Vec::new(),
         }
     }
@@ -159,10 +185,10 @@ impl Lockfile {
         })?;
 
         // Version check for future migrations
-        if lockfile.version > LOCKFILE_VERSION {
+        if lockfile.version > MAXIMUM_LOCKFILE_VERSION {
             return Err(LockfileError::new(format!(
                 "Lockfile version {} is newer than supported version {}. Please upgrade cuenv.",
-                lockfile.version, LOCKFILE_VERSION
+                lockfile.version, MAXIMUM_LOCKFILE_VERSION
             )));
         }
         lockfile.validate().map_err(|msg| {
@@ -252,6 +278,63 @@ impl Lockfile {
     #[must_use]
     pub fn find_vcs(&self, name: &str) -> Option<&LockedVcsDependency> {
         self.vcs.get(name)
+    }
+
+    /// Find a pinned infrastructure provider by fully qualified source.
+    #[must_use]
+    pub fn find_infrastructure_provider(
+        &self,
+        source: &str,
+    ) -> Option<&LockedInfrastructureProvider> {
+        self.infrastructure_providers.get(source)
+    }
+
+    /// The format version this lockfile's content needs: at least
+    /// [`LOCKFILE_VERSION`], and [`INFRASTRUCTURE_PROVIDERS_LOCKFILE_VERSION`]
+    /// when it pins infrastructure providers.
+    #[must_use]
+    pub fn required_version(&self) -> u32 {
+        if self.infrastructure_providers.is_empty() {
+            LOCKFILE_VERSION
+        } else {
+            INFRASTRUCTURE_PROVIDERS_LOCKFILE_VERSION
+        }
+    }
+
+    /// Pin an infrastructure provider release, replacing any earlier pin of
+    /// the same source, and raise the format version to one that holds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry fails validation.
+    pub fn upsert_infrastructure_provider(
+        &mut self,
+        source: String,
+        provider: LockedInfrastructureProvider,
+    ) -> Result<(), LockfileError> {
+        provider.validate().map_err(|msg| {
+            LockfileError::new(format!(
+                "Invalid infrastructure provider '{}': {}",
+                source, msg
+            ))
+        })?;
+        self.infrastructure_providers.insert(source, provider);
+        self.version = self.version.max(self.required_version());
+        Ok(())
+    }
+
+    /// Remove an infrastructure provider pin. The format version drops back
+    /// to [`LOCKFILE_VERSION`] when the last pin goes and nothing else needs
+    /// a newer one.
+    pub fn remove_infrastructure_provider(
+        &mut self,
+        source: &str,
+    ) -> Option<LockedInfrastructureProvider> {
+        let removed = self.infrastructure_providers.remove(source);
+        if removed.is_some() && self.version == INFRASTRUCTURE_PROVIDERS_LOCKFILE_VERSION {
+            self.version = self.required_version();
+        }
+        removed
     }
 
     /// Get all tool names.
@@ -391,8 +474,99 @@ impl Lockfile {
                 .validate()
                 .map_err(|msg| format!("invalid VCS dependency '{}': {}", name, msg))?;
         }
+        for (source, provider) in &self.infrastructure_providers {
+            provider
+                .validate()
+                .map_err(|msg| format!("invalid infrastructure provider '{}': {}", source, msg))?;
+        }
+        if !self.infrastructure_providers.is_empty()
+            && self.version < INFRASTRUCTURE_PROVIDERS_LOCKFILE_VERSION
+        {
+            return Err(format!(
+                "infrastructure_providers needs lockfile version {} or later, but the lockfile is version {}",
+                INFRASTRUCTURE_PROVIDERS_LOCKFILE_VERSION, self.version
+            ));
+        }
         Ok(())
     }
+}
+
+/// A pinned infrastructure provider release (Terraform provider plugin).
+///
+/// Written by `cuenv infrastructure provider add`; `cuenv infrastructure`
+/// refuses a provider whose version, schema or archive differs from its pin.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LockedInfrastructureProvider {
+    /// Exact provider version.
+    pub version: String,
+    /// Digest of the provider schema the generated CUE types describe
+    /// (`sha256:<hex>`).
+    pub schema_digest: String,
+    /// Archive SHA-256 (`sha256:<hex>`) the registry reports for each
+    /// platform the release is published for, keyed by Terraform platform
+    /// name such as `linux_amd64`.
+    pub platforms: BTreeMap<String, String>,
+}
+
+impl LockedInfrastructureProvider {
+    /// The hex archive SHA-256 pinned for `platform` (such as
+    /// `linux_amd64`), without the `sha256:` prefix.
+    #[must_use]
+    pub fn archive_sha256(&self, platform: &str) -> Option<&str> {
+        self.platforms
+            .get(platform)
+            .and_then(|digest| digest.strip_prefix("sha256:"))
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.version.trim().is_empty() {
+            return Err("version must not be empty".to_string());
+        }
+        if !is_sha256_digest(&self.schema_digest) {
+            return Err(
+                "schema_digest must be sha256: followed by 64 lowercase hex digits".to_string(),
+            );
+        }
+        if self.platforms.is_empty() {
+            return Err("platforms must not be empty".to_string());
+        }
+        for (platform, digest) in &self.platforms {
+            let is_platform_part = |part: &str| {
+                !part.is_empty()
+                    && part
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            };
+            let valid_name = platform
+                .split_once('_')
+                .is_some_and(|(system, architecture)| {
+                    is_platform_part(system) && is_platform_part(architecture)
+                });
+            if !valid_name {
+                return Err(format!(
+                    "platform '{}' must be a Terraform platform name such as linux_amd64",
+                    platform
+                ));
+            }
+            if !is_sha256_digest(digest) {
+                return Err(format!(
+                    "platform '{}' digest must be sha256: followed by 64 lowercase hex digits",
+                    platform
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
+    })
 }
 
 /// A locked OCI artifact with platform-specific digests.

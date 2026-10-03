@@ -13,12 +13,13 @@ import "strings"
 // selected named environment. Legacy no-flag configuration has a distinct
 // state namespace.
 //
-// Typed configuration: every provider's schema is published as a CUE module
-// by https://github.com/cuenv/terraform at
-// "github.com/cuenv/terraform/terraform/<namespace>/<type>@v<major>". Unify
-// `configuration` with its `#ProviderConfig` and `#Resource_<type>`
-// definitions to have CUE reject unknown and mistyped arguments before any
-// provider runs.
+// Typed configuration: `cuenv infrastructure provider add <source>@<version>`
+// generates CUE types from the provider binary's own schema into
+// `cue.mod/gen/<hostname>/<namespace>/<type>` and pins the release in
+// `cuenv.lock`. Use the generated `#Provider` as the provider declaration and
+// each `resources/<type>` package's `#Resource` as a resource declaration to
+// have CUE reject unknown and mistyped arguments before any provider runs.
+// `cuenv sync infrastructure` regenerates them from `cuenv.lock`.
 //
 // Semantic checks: this file reports a provider that sets both or neither of
 // `version` and `path`, a `dependsOn` entry or `provider` that names nothing
@@ -200,16 +201,20 @@ _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)
 	source!: string & =~"^([a-zA-Z0-9.-]+(:[0-9]{1,5})?/)?[a-zA-Z0-9-]+/[a-zA-Z0-9-]+$"
 
 	// Exact version to install from the registry. Exactly one of `version`
-	// and `path` must be set; version constraints are not supported. When
-	// `configuration` uses a github.com/cuenv/terraform module, its
-	// `@v<major>` must match.
+	// and `path` must be set; version constraints are not supported. A
+	// generated `#Provider` sets it to the version its types describe.
 	version?: string & =~"^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
 
 	// Local provider binary, absolute or relative to the project directory.
 	path?: string & !=""
 
-	// Provider configuration block, validated by the provider's schema.
-	// Unify with the provider module's `#ProviderConfig` for typing.
+	// Digest of the provider schema the project's generated CUE types were
+	// made from. Set by a generated `#Provider`; the engine refuses a
+	// provider whose schema has a different digest.
+	schemaDigest?: string & =~"^sha256:[0-9a-f]{64}$"
+
+	// Provider configuration block, validated by the provider's schema. A
+	// generated `#Provider` types it with its `#Configuration`.
 	configuration?: {...}
 })
 
@@ -223,7 +228,7 @@ _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)
 	// Resources that must be applied before this one (and destroyed after).
 	dependsOn?: [...#InfrastructureName]
 
-	// Resource arguments, validated by the provider's schema. Unify with the
-	// provider module's `#Resource_<type>` for typing.
+	// Resource arguments, validated by the provider's schema. A generated
+	// `#Resource` types them with its `#Configuration`.
 	configuration?: {...}
 })

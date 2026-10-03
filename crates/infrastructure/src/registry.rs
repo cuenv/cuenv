@@ -13,9 +13,12 @@
 //!
 //! Integrity: the archive's SHA-256 is checked against the checksum the
 //! registry reports in the same response that names the download, so a
-//! registry (or anyone able to answer as it) vouches for itself. The
-//! registry's GPG signature over `SHA256SUMS` is not verified yet, and
-//! provider hashes are not yet pinned in `cuenv.lock`; both are planned.
+//! registry (or anyone able to answer as it) vouches for itself. When
+//! `cuenv.lock` pins the provider (`cuenv infrastructure provider add`),
+//! [`ProviderInstaller::ensure_pinned`] also requires the pinned archive
+//! SHA-256, both for a download and for a cached install, so the registry
+//! cannot change the release after it was pinned. The registry's GPG
+//! signature over `SHA256SUMS` is not verified yet.
 //!
 //! On install cuenv writes a sidecar manifest (`.cuenv-provider.json`) into
 //! the install directory recording the exact provider executable name, its
@@ -26,8 +29,8 @@
 //! `TF_PLUGIN_CACHE_DIR`) carry no manifest, so cuenv reinstalls them once,
 //! after which Terraform and cuenv share the result.
 //!
-//! Known limitations of the cache check, until hashes are pinned in the lock
-//! file:
+//! Known limitations of the cache check for providers `cuenv.lock` does not
+//! pin:
 //!
 //! - The manifest vouches for itself. It lives beside the executable, so
 //!   anyone who can write the cache directory can replace both and have the
@@ -46,6 +49,7 @@
 //! never keep special permission bits: the provider executable is `0o755` and
 //! every other file is `0o644`.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
@@ -356,6 +360,24 @@ struct ServiceDiscovery {
 }
 
 #[derive(Debug, Deserialize)]
+struct ProviderVersions {
+    versions: Vec<ProviderVersion>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderVersion {
+    version: String,
+    #[serde(default)]
+    platforms: Vec<PublishedPlatform>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishedPlatform {
+    os: String,
+    arch: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct DownloadInformation {
     download_url: String,
     shasum: String,
@@ -557,12 +579,70 @@ impl ProviderInstaller {
     /// Returns [`InfrastructureError::Configuration`] for an invalid source or
     /// version, and [`InfrastructureError::Install`] if the registry lookup,
     /// download, checksum verification or extraction fails.
-    #[tracing::instrument(skip(self, source), fields(source = %source))]
     pub async fn ensure(&self, source: &ProviderSource, version: &str) -> Result<PathBuf> {
+        self.ensure_release(
+            &ProviderRelease {
+                source: source.clone(),
+                version: version.to_string(),
+            },
+            None,
+        )
+        .await
+    }
+
+    /// Return the provider executable, installing it if not cached, and
+    /// require the archive it came from to have the hex SHA-256
+    /// `archive_sha256` (the pin `cuenv.lock` records for this platform). A
+    /// cached install of a different archive is replaced; a registry that
+    /// now serves a different archive is refused.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ensure`], and [`InfrastructureError::Install`] when the
+    /// archive does not match the pin.
+    pub async fn ensure_pinned(
+        &self,
+        source: &ProviderSource,
+        version: &str,
+        archive_sha256: &str,
+    ) -> Result<PathBuf> {
+        self.ensure_release(
+            &ProviderRelease {
+                source: source.clone(),
+                version: version.to_string(),
+            },
+            Some(archive_sha256),
+        )
+        .await
+    }
+
+    #[tracing::instrument(skip(self, release), fields(source = %release.source))]
+    async fn ensure_release(
+        &self,
+        release: &ProviderRelease,
+        pinned_archive_sha256: Option<&str>,
+    ) -> Result<PathBuf> {
+        let ProviderRelease { source, version } = release;
         let directory = self.install_directory(source, version)?;
-        if let Some(binary) = self.cached_binary(&directory, source, version).await? {
-            return Ok(binary);
+        if let Some(installation) = self.cached_installation(&directory, release).await? {
+            match pinned_archive_sha256 {
+                Some(pin) if !installation.archive_sha256.eq_ignore_ascii_case(pin) => {
+                    tracing::info!(
+                        directory = %directory.display(),
+                        cached = %installation.archive_sha256,
+                        pinned = %pin,
+                        "cached provider came from a different archive than cuenv.lock pins; reinstalling"
+                    );
+                }
+                _ => return Ok(installation.binary),
+            }
         }
+        let pin_mismatch = |actual: &str, pin: &str| {
+            InfrastructureError::install(format!(
+                "{source} {version}: the registry's archive for this platform has SHA-256 {actual}, \
+                 but cuenv.lock pins {pin}; the release changed after it was pinned"
+            ))
+        };
 
         let platform = current_platform()?;
         let base = self.providers_base_url(&source.hostname).await?;
@@ -573,6 +653,11 @@ impl ProviderInstaller {
         let download: DownloadInformation = self
             .get_document(&download_metadata_url, "download metadata")
             .await?;
+        if let Some(pin) = pinned_archive_sha256
+            && !download.shasum.trim().eq_ignore_ascii_case(pin)
+        {
+            return Err(pin_mismatch(download.shasum.trim(), pin));
+        }
 
         if !download.download_url.starts_with("https://") {
             return Err(InfrastructureError::install(format!(
@@ -593,11 +678,14 @@ impl ProviderInstaller {
             )));
         }
 
+        if let Some(pin) = pinned_archive_sha256
+            && !archive_sha256.eq_ignore_ascii_case(pin)
+        {
+            return Err(pin_mismatch(&archive_sha256, pin));
+        }
+
         let request = InstallationRequest {
-            release: ProviderRelease {
-                source: source.clone(),
-                version: version.to_string(),
-            },
+            release: release.clone(),
             cache_directory: self.cache_directory.clone(),
             install_directory: directory,
             archive_path,
@@ -605,34 +693,98 @@ impl ProviderInstaller {
             archive_sha256,
             limits: ExtractionLimits::default(),
         };
-        let binary = tokio::task::spawn_blocking(move || install_from_archive(&request))
+        let installation = tokio::task::spawn_blocking(move || install_from_archive(&request))
             .await
             .map_err(|error| {
                 InfrastructureError::install(format!("installation task failed: {error}"))
             })??;
         drop(staging);
-        Ok(binary)
+        // A concurrent install may have won the race with another archive.
+        if let Some(pin) = pinned_archive_sha256
+            && !installation.archive_sha256.eq_ignore_ascii_case(pin)
+        {
+            return Err(pin_mismatch(&installation.archive_sha256, pin));
+        }
+        Ok(installation.binary)
     }
 
-    /// Return the cached executable if `directory` holds a verified install.
-    async fn cached_binary(
+    /// The hex archive SHA-256 the registry reports for every platform
+    /// `version` is published for, keyed by Terraform platform name (such as
+    /// `linux_amd64`). Nothing is downloaded but the registry's metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Configuration`] for an invalid source
+    /// or version, and [`InfrastructureError::Install`] when the registry
+    /// does not list the version or a request fails.
+    pub async fn archive_checksums(
         &self,
-        directory: &Path,
         source: &ProviderSource,
         version: &str,
-    ) -> Result<Option<PathBuf>> {
+    ) -> Result<BTreeMap<String, String>> {
+        source.validate()?;
+        validate_version(version)?;
+        let base = self.providers_base_url(&source.hostname).await?;
+        let versions_url = format!("{base}{}/{}/versions", source.namespace, source.type_name);
+        let versions: ProviderVersions = self
+            .get_document(&versions_url, "provider version list")
+            .await?;
+        let published = versions
+            .versions
+            .into_iter()
+            .find(|candidate| candidate.version == version)
+            .ok_or_else(|| {
+                InfrastructureError::install(format!(
+                    "{source} has no version {version} in its registry"
+                ))
+            })?;
+        let mut checksums = BTreeMap::new();
+        for platform in published.platforms {
+            if !is_valid_registry_name(&platform.os) || !is_valid_registry_name(&platform.arch) {
+                return Err(InfrastructureError::install(format!(
+                    "{source} {version}: the registry lists an invalid platform '{}_{}'",
+                    platform.os, platform.arch
+                )));
+            }
+            let download_metadata_url = format!(
+                "{base}{}/{}/{version}/download/{}/{}",
+                source.namespace, source.type_name, platform.os, platform.arch
+            );
+            let download: DownloadInformation = self
+                .get_document(&download_metadata_url, "download metadata")
+                .await?;
+            let shasum = download.shasum.trim().to_ascii_lowercase();
+            if shasum.len() != 64 || !shasum.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(InfrastructureError::install(format!(
+                    "{source} {version}: the registry reports an invalid SHA-256 for {}_{}",
+                    platform.os, platform.arch
+                )));
+            }
+            checksums.insert(format!("{}_{}", platform.os, platform.arch), shasum);
+        }
+        if checksums.is_empty() {
+            return Err(InfrastructureError::install(format!(
+                "{source} {version} is not published for any platform"
+            )));
+        }
+        Ok(checksums)
+    }
+
+    /// Return the cached install if `directory` holds a verified one.
+    async fn cached_installation(
+        &self,
+        directory: &Path,
+        release: &ProviderRelease,
+    ) -> Result<Option<VerifiedInstallation>> {
         let cache_directory = self.cache_directory.clone();
         let directory = directory.to_path_buf();
-        let release = ProviderRelease {
-            source: source.clone(),
-            version: version.to_string(),
-        };
+        let release = release.clone();
         tokio::task::spawn_blocking(move || {
             if std::fs::symlink_metadata(&directory).is_err() {
                 return None;
             }
-            match verify_installation(&cache_directory, &directory, &release) {
-                Ok(binary) => Some(binary),
+            match verified_installation(&cache_directory, &directory, &release) {
+                Ok(installation) => Some(installation),
                 Err(error) => {
                     tracing::info!(
                         directory = %directory.display(),
@@ -840,13 +992,34 @@ fn is_provider_file_name(filename: &str, type_name: &str) -> bool {
     ) && filename.starts_with(&format!("terraform-provider-{type_name}"))
 }
 
+/// A cached install whose executable matches its sidecar manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedInstallation {
+    /// The provider executable.
+    binary: PathBuf,
+    /// Hex SHA-256 of the archive it was extracted from.
+    archive_sha256: String,
+}
+
 /// Verify `directory` holds a cuenv install of `release` whose executable
 /// still matches the sidecar manifest; return that executable.
+#[cfg(test)]
 fn verify_installation(
     cache_directory: &Path,
     directory: &Path,
     release: &ProviderRelease,
 ) -> Result<PathBuf> {
+    verified_installation(cache_directory, directory, release)
+        .map(|installation| installation.binary)
+}
+
+/// Verify `directory` holds a cuenv install of `release` whose executable
+/// still matches the sidecar manifest.
+fn verified_installation(
+    cache_directory: &Path,
+    directory: &Path,
+    release: &ProviderRelease,
+) -> Result<VerifiedInstallation> {
     let ProviderRelease { source, version } = release;
     ensure_within(cache_directory, directory)?;
     let manifest_path = directory.join(MANIFEST_FILE_NAME);
@@ -883,7 +1056,10 @@ fn verify_installation(
             manifest.sha256
         )));
     }
-    Ok(binary)
+    Ok(VerifiedInstallation {
+        binary,
+        archive_sha256: manifest.archive_sha256,
+    })
 }
 
 /// Write the sidecar manifest into `directory`.
@@ -896,7 +1072,7 @@ fn write_manifest(directory: &Path, manifest: &InstallationManifest) -> Result<(
 }
 
 /// Extract a verified archive, record its manifest and move it into place.
-fn install_from_archive(request: &InstallationRequest) -> Result<PathBuf> {
+fn install_from_archive(request: &InstallationRequest) -> Result<VerifiedInstallation> {
     let cache_directory = &request.cache_directory;
     ensure_within(cache_directory, &request.extraction_directory)?;
     ensure_within(cache_directory, &request.install_directory)?;
@@ -936,10 +1112,10 @@ fn install_from_archive(request: &InstallationRequest) -> Result<PathBuf> {
     if let Err(error) = std::fs::rename(&request.extraction_directory, install_directory) {
         // A concurrent install may have won the race; accept its result only
         // if it verifies.
-        return verify_installation(cache_directory, install_directory, &request.release)
+        return verified_installation(cache_directory, install_directory, &request.release)
             .map_err(|_| InfrastructureError::input_output("install provider", error));
     }
-    verify_installation(cache_directory, install_directory, &request.release)
+    verified_installation(cache_directory, install_directory, &request.release)
 }
 
 /// Extract `archive` into `request.destination`, enforcing size limits and
@@ -1140,6 +1316,54 @@ mod tests {
             source: random_source(),
             version: version.to_string(),
         }
+    }
+
+    /// A verified install of `source` 3.7.2 from an archive with hex
+    /// SHA-256 `"00" * 32`, placed where `installer` looks for it.
+    fn cached_install(installer: &ProviderInstaller, source: &ProviderSource) -> PathBuf {
+        let directory = installer.install_directory(source, "3.7.2").unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        let binary = directory.join(PROVIDER_FILE);
+        std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+        write_manifest(
+            &directory,
+            &InstallationManifest {
+                filename: PROVIDER_FILE.to_string(),
+                sha256: hash_file(&binary).unwrap(),
+                archive_sha256: "00".repeat(32),
+                source: source.to_string(),
+                version: "3.7.2".to_string(),
+            },
+        )
+        .unwrap();
+        binary
+    }
+
+    #[tokio::test]
+    async fn a_cached_install_of_the_pinned_archive_is_reused() {
+        let cache = tempfile::tempdir().unwrap();
+        let installer = ProviderInstaller::new(cache.path().to_path_buf()).unwrap();
+        let binary = cached_install(&installer, &random_source());
+        let pinned = installer
+            .ensure_pinned(&random_source(), "3.7.2", &"00".repeat(32))
+            .await
+            .unwrap();
+        assert_eq!(pinned, binary);
+    }
+
+    #[tokio::test]
+    async fn a_cached_install_of_another_archive_is_not_reused_when_pinned() {
+        let cache = tempfile::tempdir().unwrap();
+        let installer = ProviderInstaller::new(cache.path().to_path_buf()).unwrap();
+        // Port 1 refuses connections: reinstalling fails without the network.
+        let source = ProviderSource::parse("localhost:1/hashicorp/random").unwrap();
+        cached_install(&installer, &source);
+        assert!(installer.ensure(&source, "3.7.2").await.is_ok());
+        let error = installer
+            .ensure_pinned(&source, "3.7.2", &"11".repeat(32))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("localhost:1"), "{error}");
     }
 
     #[test]
@@ -1515,7 +1739,9 @@ mod tests {
             archive_sha256: hash_file(&archive_path).unwrap(),
             limits: ExtractionLimits::default(),
         };
-        let binary = install_from_archive(&request).unwrap();
+        let installation = install_from_archive(&request).unwrap();
+        assert_eq!(installation.archive_sha256, request.archive_sha256);
+        let binary = installation.binary;
         assert_eq!(binary, install_directory.join(PROVIDER_FILE));
         assert!(
             !install_directory

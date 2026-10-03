@@ -82,6 +82,9 @@ async fn execute_direct_command(command: &Command) -> Option<Result<(), CliError
         Command::ToolsDownload => Some(commands::tools::execute_tools_download().await),
         Command::ToolsActivate => Some(commands::tools::execute_tools_activate()),
         Command::ToolsList => Some(commands::tools::execute_tools_list()),
+        Command::InfrastructureProvider { path, action } => {
+            Some(commands::infrastructure::execute_provider(path, action).await)
+        }
         _ => None,
     }
 }

@@ -330,6 +330,16 @@ pub struct InfrastructureProvider {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 
+    /// Digest of the provider schema the project's generated CUE types were
+    /// made from (`sha256:<hex>`), set by a generated `#Provider`. The engine
+    /// refuses a provider whose schema has a different digest.
+    #[serde(
+        default,
+        rename = "schemaDigest",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub schema_digest: Option<String>,
+
     /// Provider configuration block.
     #[serde(default, deserialize_with = "deserialize_configuration")]
     pub configuration: serde_json::Map<String, serde_json::Value>,
