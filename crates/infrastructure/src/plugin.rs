@@ -603,6 +603,42 @@ impl Drop for SocketDirectory {
     }
 }
 
+/// How many times a provider spawn is attempted while its executable is busy.
+const EXECUTABLE_BUSY_ATTEMPTS: u32 = 10;
+
+/// Delay before the second attempt; it doubles up to
+/// [`EXECUTABLE_BUSY_MAXIMUM_DELAY`], about a second in all.
+const EXECUTABLE_BUSY_FIRST_DELAY: Duration = Duration::from_millis(10);
+const EXECUTABLE_BUSY_MAXIMUM_DELAY: Duration = Duration::from_millis(200);
+
+/// Run `attempt` (a spawn) again while it fails with `ETXTBSY`.
+///
+/// A provider binary just written by this process can still be open for
+/// writing in a child that another thread forked before the file was closed
+/// (installing one provider while launching another, or a test thread). The
+/// kernel refuses to execute a file open for writing, and the child closes
+/// its copy when it calls `exec` or exits, so the condition clears within
+/// moments. Any other error is returned at once.
+async fn retry_while_executable_is_busy<T>(
+    mut attempt: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut delay = EXECUTABLE_BUSY_FIRST_DELAY;
+    let mut remaining = EXECUTABLE_BUSY_ATTEMPTS;
+    loop {
+        remaining -= 1;
+        match attempt() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && remaining > 0 =>
+            {
+                tracing::debug!(?delay, "provider executable is busy; retrying the spawn");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(EXECUTABLE_BUSY_MAXIMUM_DELAY);
+            }
+            result => return result,
+        }
+    }
+}
+
 /// A running provider plugin and a gRPC client connected to it.
 ///
 /// Dropping the client kills the provider process.
@@ -636,12 +672,13 @@ impl ProviderClient {
         command.process_group(0);
         #[cfg(target_os = "linux")]
         kill_with_parent(&mut command);
-        let mut child = command
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
+            .kill_on_drop(true);
+        let mut child = retry_while_executable_is_busy(|| command.spawn())
+            .await
             .map_err(|error| {
                 InfrastructureError::plugin(format!(
                     "failed to start {}: {error}",
@@ -1247,6 +1284,84 @@ async fn connect_unix(address: &str) -> Result<Channel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn busy() -> std::io::Error {
+        std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy)
+    }
+
+    #[tokio::test]
+    async fn a_busy_executable_is_spawned_once_it_is_released() {
+        let mut calls = 0;
+        let result = retry_while_executable_is_busy(|| {
+            calls += 1;
+            if calls < 4 { Err(busy()) } else { Ok(calls) }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_busy_executable_is_given_up_after_the_last_attempt() {
+        let mut calls = 0;
+        let result: std::io::Result<()> = retry_while_executable_is_busy(|| {
+            calls += 1;
+            Err(busy())
+        })
+        .await;
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::ExecutableFileBusy
+        );
+        assert_eq!(calls, EXECUTABLE_BUSY_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn other_spawn_errors_are_returned_without_retrying() {
+        let mut calls = 0;
+        let result: std::io::Result<()> = retry_while_executable_is_busy(|| {
+            calls += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+        .await;
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(calls, 1);
+    }
+
+    /// The real condition: the executable is still open for writing when the
+    /// first spawn is attempted (Linux refuses it with `ETXTBSY`), and the
+    /// writer closes it before the retry. The writer is closed by the first
+    /// attempt itself, not by a timer, so no scheduling delay can let the
+    /// first spawn see a closed file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_executable_still_open_for_writing_is_spawned_once_closed() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("provider");
+        let mut writer = std::fs::File::create(&path).unwrap();
+        writer.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+        writer.flush().unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut writer = Some(writer);
+        let mut attempts = 0;
+        let mut child = retry_while_executable_is_busy(|| {
+            attempts += 1;
+            let spawned = Command::new(&path).spawn();
+            drop(writer.take());
+            spawned
+        })
+        .await
+        .unwrap();
+        assert!(child.wait().await.unwrap().success());
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            attempts, 2,
+            "the first spawn should have found the file busy and the second succeeded"
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]

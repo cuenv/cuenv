@@ -103,7 +103,6 @@ schema.#Project & {
 		contributors: [
 			xContributors.#NamespaceCache,
 			xContributors.#Nix,
-			xContributors.#Hestia,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xCodecov.#Codecov,
@@ -120,14 +119,15 @@ schema.#Project & {
 			}
 
 			// Each Linux runner mounts a Namespace cache volume at /nix, so a
-			// job finds the store a previous job on that volume left behind
-			// and asks Hestia (the GitHub Actions cache, which is rate limited
-			// under parallel load) only for what is missing. Hestia stays the
-			// cache parallel jobs share. The runner profiles need a cache
-			// volume; macOS jobs skip the volume.
+			// job finds the store a previous job on that volume left behind;
+			// anything missing comes from cache.nixos.org or is built. The
+			// runner profiles need a cache volume; macOS jobs skip it.
+			//
+			// No Hestia: it kept its packs in the GitHub Actions cache, which
+			// is scoped per ref, capped per repository and rate limited, and
+			// once the volume was warm it served no path to any job (Linux or
+			// macOS) while still uploading over a GiB per job.
 			namespaceCache: {}
-
-			hestia: {}
 
 			trustedPublishing: cueRegistry: true
 

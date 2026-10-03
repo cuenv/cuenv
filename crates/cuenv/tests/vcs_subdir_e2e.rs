@@ -94,8 +94,15 @@ fn create_example_target_repo(source: &Path) -> TestResult<TempDir> {
     init_git_repo(target.path())?;
     write_local_cuenv_module(target.path())?;
 
-    let example = fs::read_to_string(repo_root()?.join("examples/vcs-subdir/env.cue"))?
+    let mut example = fs::read_to_string(repo_root()?.join("examples/vcs-subdir/env.cue"))?
         .replace(PUBLIC_CUENV_URL, &cue_string(&source.display().to_string()));
+    // The example's task runs `find | sort | sed`. A hermetic task that
+    // declares no PATH gets the fixed /usr/local/bin:/usr/bin:/bin, which
+    // holds no tools inside a strict Nix build sandbox, so the project
+    // declares the test's own PATH, as the docs tell a project to do.
+    example.push_str("\nenv: PATH: \"");
+    example.push_str(&cue_string(&std::env::var("PATH").unwrap_or_default()));
+    example.push_str("\"\n");
     fs::write(target.path().join("env.cue"), example)?;
     Ok(target)
 }
