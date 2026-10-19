@@ -22,6 +22,21 @@ package schema
 	release?: [...string]                          // release event types e.g. ["published"]
 })
 
+// Token requirements are unioned per job. Pipeline maps only cap named scopes.
+#GitHubPermissions: {
+	["contents" | "checks" | "pull-requests" | "issues" | "packages" | "actions"]: "none" | "read" | "write"
+	"id-token"?: "none" | "write"
+}
+
+// Task and contributor-step token requirements.
+#TaskCI: close({
+	github?: close({
+		permissions?: #GitHubPermissions
+		// Contributor steps only: restrict emission to these task IDs.
+		tasks?: [...string]
+	})
+})
+
 // GitHub Actions provider configuration
 #GitHubConfig: close({
 	runner?: string | [...string]
@@ -47,7 +62,9 @@ package schema
 		cratesIo?:    bool // Enable trusted publishing for crates.io
 		cueRegistry?: bool // Enable trusted publishing for the CUE Registry
 	})
-	permissions?: [string]: string
+	// Ceiling for named scopes: omitted scopes are unrestricted; none forbids.
+	// This never grants a permission. Per-pipeline maps replace global maps.
+	permissions?: #GitHubPermissions
 })
 
 // Buildkite provider configuration
@@ -133,6 +150,8 @@ package schema
 // Contributor task definition
 // Tasks injected into the DAG by contributors
 #ContributorTask: close({
+	// Requirements apply only where this contributor task is emitted.
+	ci?: #TaskCI
 	// Task identifier (will be prefixed with cuenv:contributor:)
 	id!: string
 	// Shell command to execute

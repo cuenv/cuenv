@@ -539,10 +539,32 @@ pub struct AutoAssociate {
     pub inject_dependency: Option<String>,
 }
 
+/// Token requirements for a task or contributor step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct TaskCI {
+    /// GitHub-specific requirements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<TaskGitHubConfig>,
+}
+
+/// GitHub token requirements, unioned with the job's other requirements.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct TaskGitHubConfig {
+    /// Contributor steps only: emit in jobs executing these task IDs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<String>,
+    /// Required token scopes and access levels.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub permissions: BTreeMap<String, String>,
+}
+
 /// A task contributed to the DAG by a contributor (CUE-defined)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ContributorTask {
+    /// Token requirements of this injected step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci: Option<TaskCI>,
     /// Task identifier (e.g., "bun.workspace.install")
     /// Will be prefixed with "cuenv:contributor:" when injected
     pub id: String,

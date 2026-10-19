@@ -35,7 +35,7 @@ fn test_build_matrix_jobs() {
     for job in jobs.values() {
         let document = serde_yaml::to_value(job).unwrap();
         assert_eq!(document["permissions"]["contents"].as_str(), Some("read"));
-        assert_eq!(document["permissions"]["checks"].as_str(), Some("write"));
+        assert_eq!(document["permissions"]["checks"].as_str(), None);
     }
     assert!(jobs.contains_key("release-build-linux-x64"));
     assert!(jobs.contains_key("release-build-darwin-arm64"));

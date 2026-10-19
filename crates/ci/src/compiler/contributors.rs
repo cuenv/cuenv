@@ -503,6 +503,18 @@ impl Compiler {
             priority: Some(contributor_task.priority),
             contributor: Some(contributor_id.to_string()),
             condition,
+            github_task_filter: contributor_task
+                .ci
+                .as_ref()
+                .and_then(|ci| ci.github.as_ref())
+                .map(|gh| gh.tasks.clone())
+                .unwrap_or_default(),
+            github_permissions: contributor_task
+                .ci
+                .as_ref()
+                .and_then(|ci| ci.github.as_ref())
+                .map(|gh| gh.permissions.clone())
+                .unwrap_or_default(),
             provider_hints,
         }
     }

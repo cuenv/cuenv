@@ -276,6 +276,8 @@ mod tests {
             priority: None,
             contributor: None,
             condition: None,
+            github_task_filter: Vec::new(),
+            github_permissions: std::collections::BTreeMap::new(),
             provider_hints: None,
         }
     }

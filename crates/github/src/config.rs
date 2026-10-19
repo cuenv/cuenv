@@ -27,7 +27,7 @@ pub struct GitHubConfig {
     pub artifacts: Option<ArtifactsConfig>,
     /// Trusted publishing configuration (OIDC-based, no secrets needed)
     pub trusted_publishing: Option<TrustedPublishingConfig>,
-    /// Permission overrides applied to each generated job
+    /// Ceilings for explicitly named token scopes; never grants access
     pub permissions: Option<HashMap<String, String>>,
 }
 

@@ -109,8 +109,6 @@ jobs:
   checks-audit:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: checks.audit
     runs-on: namespace-profile-cuenv-linux-x86
@@ -143,8 +141,6 @@ jobs:
   checks-bdd:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: checks.bdd
     runs-on: namespace-profile-cuenv-linux-x86
@@ -177,8 +173,6 @@ jobs:
   checks-clippy:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: checks.clippy
     runs-on: namespace-profile-cuenv-linux-x86
@@ -211,8 +205,6 @@ jobs:
   checks-cuenv:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: checks.cuenv
     runs-on: namespace-profile-cuenv-linux-x86
@@ -245,8 +237,6 @@ jobs:
   checks-deny:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: checks.deny
     runs-on: namespace-profile-cuenv-linux-x86
@@ -279,8 +269,6 @@ jobs:
   checks-doctest:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: checks.doctest
     runs-on: namespace-profile-cuenv-linux-x86
@@ -313,8 +301,6 @@ jobs:
   checks-fmt:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: checks.fmt
     runs-on: namespace-profile-cuenv-linux-x86
@@ -347,8 +333,6 @@ jobs:
   checks-infrastructure-e2e:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: checks.infrastructure-e2e
     runs-on: namespace-profile-cuenv-linux-x86
@@ -381,8 +365,6 @@ jobs:
   checks-nextest:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: checks.nextest
     runs-on: namespace-profile-cuenv-linux-x86
@@ -415,8 +397,6 @@ jobs:
   darwin-clippy-darwin-arm64:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: darwin.clippy (darwin-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
@@ -469,8 +449,6 @@ jobs:
   darwin-nextest-darwin-arm64:
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
       id-token: write
     name: darwin.nextest (darwin-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64

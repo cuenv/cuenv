@@ -49,6 +49,8 @@ fn make_phase_task(id: &str, command: &[&str], phase: BuildStage, priority: i32)
         priority: Some(priority),
         contributor: None,
         condition: None,
+        github_task_filter: Vec::new(),
+        github_permissions: std::collections::BTreeMap::new(),
         provider_hints: None,
     }
 }
@@ -77,6 +79,8 @@ fn make_task(id: &str, command: &[&str]) -> Task {
         priority: None,
         contributor: None,
         condition: None,
+        github_task_filter: Vec::new(),
+        github_permissions: std::collections::BTreeMap::new(),
         provider_hints: None,
     }
 }
@@ -104,6 +108,8 @@ fn assert_github_context_env(step: &Step) {
 mod jobs;
 #[path = "emitter_tests/matrix.rs"]
 mod matrix;
+#[path = "emitter_tests/permissions.rs"]
+mod permissions;
 #[path = "emitter_tests/phases.rs"]
 mod phases;
 #[path = "emitter_tests/triggers.rs"]

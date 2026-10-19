@@ -224,6 +224,12 @@ pub enum PurityMode {
 /// Task definition in the IR
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
+    /// Optional task IDs whose GitHub jobs receive this contributor step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub github_task_filter: Vec<String>,
+    /// GitHub token requirements of this task or injected step.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub github_permissions: BTreeMap<String, String>,
     /// Unique task identifier
     pub id: String,
 
@@ -385,6 +391,8 @@ impl Task {
             priority: None,
             contributor: None,
             condition: None,
+            github_task_filter: Vec::new(),
+            github_permissions: std::collections::BTreeMap::new(),
             provider_hints: None,
         }
     }
@@ -419,6 +427,8 @@ impl Task {
             priority: None,
             contributor: None,
             condition: None,
+            github_task_filter: Vec::new(),
+            github_permissions: std::collections::BTreeMap::new(),
             provider_hints: None,
         }
     }

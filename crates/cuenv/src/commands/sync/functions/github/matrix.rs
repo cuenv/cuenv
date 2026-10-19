@@ -172,7 +172,15 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                     }
                     combined_needs.sort();
 
-                    let synthetic_task = create_synthetic_aggregation_task(task_name, matrix_task);
+                    let mut synthetic_task =
+                        create_synthetic_aggregation_task(task_name, matrix_task);
+                    if let Some(original) = ir_task {
+                        synthetic_task
+                            .github_permissions
+                            .clone_from(&original.github_permissions);
+                        synthetic_task.deployment = original.deployment;
+                        synthetic_task.outputs.clone_from(&original.outputs);
+                    }
                     let job = request.emitter.build_artifact_aggregation_job(
                         &synthetic_task,
                         request.ir,
@@ -190,8 +198,14 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                 } else {
                     let ir_task = request.ctx.tasks.iter().find(|t| t.id == task_name);
                     let outputs = ir_task.map(|t| t.outputs.clone()).unwrap_or_default();
-                    let synthetic_task =
+                    let mut synthetic_task =
                         create_synthetic_matrix_task(task_name, matrix_task, outputs);
+                    if let Some(original) = ir_task {
+                        synthetic_task
+                            .github_permissions
+                            .clone_from(&original.github_permissions);
+                        synthetic_task.deployment = original.deployment;
+                    }
                     let arch_runners = request
                         .ctx
                         .github_config
@@ -423,6 +437,8 @@ fn synthetic_task_base(task_name: &str) -> cuenv_ci::ir::Task {
         priority: None,
         contributor: None,
         condition: None,
+        github_task_filter: Vec::new(),
+        github_permissions: std::collections::BTreeMap::new(),
         provider_hints: None,
     }
 }

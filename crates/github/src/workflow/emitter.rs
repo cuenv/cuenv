@@ -136,36 +136,43 @@ impl GitHubActionsEmitter {
         RunsOn::Label(self.runner.clone())
     }
 
-    /// Apply configured permissions to a base Permissions struct
+    /// Clamp only explicitly configured scopes; a ceiling never adds a grant.
     #[must_use]
     pub fn apply_configured_permissions(&self, mut permissions: Permissions) -> Permissions {
-        // Helper to parse permission level from string
-        let parse_level = |s: &str| -> Option<PermissionLevel> {
-            match s.to_lowercase().as_str() {
-                "write" => Some(PermissionLevel::Write),
-                "read" => Some(PermissionLevel::Read),
-                "none" => Some(PermissionLevel::None),
-                _ => None,
-            }
-        };
-
-        // Apply configured permissions (override calculated)
         for (key, value) in &self.configured_permissions {
-            if let Some(level) = parse_level(value) {
-                match key.as_str() {
-                    "contents" => permissions.contents = Some(level),
-                    "checks" => permissions.checks = Some(level),
-                    "pull-requests" => permissions.pull_requests = Some(level),
-                    "issues" => permissions.issues = Some(level),
-                    "packages" => permissions.packages = Some(level),
-                    "id-token" => permissions.id_token = Some(level),
-                    "actions" => permissions.actions = Some(level),
-                    _ => {}
-                }
+            if let (Some(Some(required)), Some(ceiling)) = (
+                Self::permission_slot(&mut permissions, key),
+                Self::permission_level(value),
+            ) {
+                *required = (*required).min(ceiling);
             }
         }
-
         permissions
+    }
+
+    fn permission_level(value: &str) -> Option<PermissionLevel> {
+        match value {
+            "none" => Some(PermissionLevel::None),
+            "read" => Some(PermissionLevel::Read),
+            "write" => Some(PermissionLevel::Write),
+            _ => None,
+        }
+    }
+
+    fn permission_slot<'a>(
+        permissions: &'a mut Permissions,
+        key: &str,
+    ) -> Option<&'a mut Option<PermissionLevel>> {
+        match key {
+            "contents" => Some(&mut permissions.contents),
+            "checks" => Some(&mut permissions.checks),
+            "pull-requests" => Some(&mut permissions.pull_requests),
+            "issues" => Some(&mut permissions.issues),
+            "packages" => Some(&mut permissions.packages),
+            "id-token" => Some(&mut permissions.id_token),
+            "actions" => Some(&mut permissions.actions),
+            _ => None,
+        }
     }
 
     /// Set the default runner for jobs
@@ -433,48 +440,68 @@ impl GitHubActionsEmitter {
         })
     }
 
-    /// Build permissions based on task requirements and configured permissions
+    /// Thin-job requirements, including the cuenv CI reporter
     #[must_use]
     pub fn build_permissions(&self, ir: &IntermediateRepresentation) -> Permissions {
-        self.permissions_for_tasks(ir.tasks.iter())
+        let mut permissions = Self::required_permissions(ir.tasks.iter());
+        // `cuenv ci` reports a check run; `cuenv task` in expanded jobs does not.
+        permissions.checks = Some(PermissionLevel::Write);
+        if ir
+            .pipeline
+            .trigger
+            .as_ref()
+            .is_some_and(|trigger| trigger.pull_request == Some(true))
+        {
+            permissions.pull_requests = Some(PermissionLevel::Write);
+        }
+        self.apply_configured_permissions(permissions)
     }
 
-    /// Calculate permissions for one expanded job and its shared phase tasks.
+    /// Calculate permissions for the task and the phase steps actually emitted.
     #[must_use]
     pub fn build_job_permissions(
         &self,
         task: &cuenv_ci::ir::Task,
-        ir: &IntermediateRepresentation,
+        phases: &[&cuenv_ci::ir::Task],
     ) -> Permissions {
-        self.permissions_for_tasks(
-            std::iter::once(task).chain(ir.tasks.iter().filter(|t| t.phase.is_some())),
-        )
+        self.permissions_for_tasks(std::iter::once(task).chain(phases.iter().copied()))
     }
 
-    fn permissions_for_tasks<'a>(
+    pub(super) fn permissions_for_tasks<'a>(
         &self,
         tasks: impl Iterator<Item = &'a cuenv_ci::ir::Task>,
     ) -> Permissions {
-        let mut has_deployments = false;
-        let mut has_outputs = false;
+        self.apply_configured_permissions(Self::required_permissions(tasks))
+    }
+
+    pub(super) fn required_permissions<'a>(
+        tasks: impl Iterator<Item = &'a cuenv_ci::ir::Task>,
+    ) -> Permissions {
+        let mut permissions = Permissions {
+            contents: Some(PermissionLevel::Read),
+            ..Default::default()
+        };
         for task in tasks {
-            has_deployments |= task.deployment;
-            has_outputs |= task
+            if task.deployment {
+                permissions.contents = Some(PermissionLevel::Write);
+            }
+            if task
                 .outputs
                 .iter()
-                .any(|o| o.output_type == OutputType::Orchestrator);
+                .any(|o| o.output_type == OutputType::Orchestrator)
+            {
+                permissions.packages = Some(PermissionLevel::Write);
+            }
+            for (key, value) in &task.github_permissions {
+                if let (Some(slot), Some(level)) = (
+                    Self::permission_slot(&mut permissions, key),
+                    Self::permission_level(value),
+                ) {
+                    *slot = Some(slot.unwrap_or(PermissionLevel::None).max(level));
+                }
+            }
         }
-        self.apply_configured_permissions(Permissions {
-            contents: Some(if has_deployments {
-                PermissionLevel::Write
-            } else {
-                PermissionLevel::Read
-            }),
-            checks: Some(PermissionLevel::Write),
-            pull_requests: Some(PermissionLevel::Write),
-            packages: has_outputs.then_some(PermissionLevel::Write),
-            ..Default::default()
-        })
+        permissions
     }
 
     /// Build jobs from IR tasks
@@ -550,6 +577,16 @@ impl Emitter for GitHubActionsEmitter {
     fn emit_thin(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
         use crate::workflow::stage_renderer::GitHubStageRenderer;
 
+        let mut scoped_ir = ir.clone();
+        scoped_ir.tasks.retain(|step| {
+            step.phase.is_none()
+                || step.github_task_filter.is_empty()
+                || ir
+                    .tasks
+                    .iter()
+                    .any(|task| task.phase.is_none() && step.github_task_filter.contains(&task.id))
+        });
+        let ir = &scoped_ir;
         let workflow_name = Self::build_workflow_name(ir);
         let workflow_filename = format!("{}.yml", sanitize_filename(&workflow_name));
         let triggers = self.build_triggers(ir, &workflow_filename);
