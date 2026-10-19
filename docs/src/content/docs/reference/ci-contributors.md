@@ -478,7 +478,8 @@ Every generated job starts with `contents: read`. cuenv does not grant checks or
 pull-request write access to expanded jobs automatically. Thin mode's `cuenv ci`
 step reports a check run (`checks: write`) and posts a PR comment when a PR trigger
 is enabled (`pull-requests: write`); those grants are still capped by pipeline
-ceilings. Declare a task's requirements on the task:
+ceilings. The repository's thin `sync-check` pipeline is an example of this
+reporter requirement. Declare a task's requirements on the task:
 
 ```cue
 publishContainerImage: schema.#Task & {

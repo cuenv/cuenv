@@ -80,6 +80,8 @@ jobs:
   cuenv-sync-check:
     permissions:
       contents: read
+      checks: write
+      pull-requests: write
       id-token: write
     name: cuenv-sync-check
     runs-on: namespace-profile-cuenv-linux-x86
