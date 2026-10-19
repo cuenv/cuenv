@@ -634,7 +634,7 @@ fn emit_standard_workflow(
             group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
             cancel_in_progress: Some(true),
         }),
-        permissions: Some(emitter.build_permissions(&ir)),
+        permissions: None,
         env: IndexMap::new(),
         jobs,
     };
@@ -788,6 +788,7 @@ mod tests {
 
     fn make_job(runs_on: RunsOn) -> Job {
         Job {
+            permissions: None,
             name: Some("job".to_string()),
             runs_on,
             needs: Vec::new(),
@@ -899,6 +900,16 @@ mod tests {
 
         assert_eq!(workflows.len(), 1);
         let workflow = &workflows[0].1;
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(workflow).expect("valid workflow YAML");
+        assert!(document.get("permissions").is_none());
+        for job in document["jobs"]
+            .as_mapping()
+            .expect("workflow jobs")
+            .values()
+        {
+            assert_eq!(job["permissions"]["contents"].as_str(), Some("read"));
+        }
         assert!(workflow.contains("build.cuenv"), "{workflow}");
         assert!(workflow.contains("result/bin/cuenv"), "{workflow}");
         assert!(

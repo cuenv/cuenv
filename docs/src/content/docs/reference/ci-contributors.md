@@ -472,6 +472,20 @@ configuration; the task then runs `cue mod publish` without a long-lived
 If a provider without GitHub Actions support emits this contributor, its
 fallback command fails explicitly instead of attempting an empty action task.
 
+## GitHub job permissions
+
+Generated GitHub Actions workflows grant token permissions on each job, including
+thin, expanded, matrix, release, and cache-maintenance jobs. No workflow-wide
+write permissions are emitted. Existing global and per-pipeline GitHub
+`permissions` maps remain supported as overrides applied to each job in that
+pipeline. In expanded workflows, inferred deployment and package permissions are
+calculated from the job's task and shared phase tasks, rather than unrelated
+pipeline tasks. The shared cuenv bootstrap job defaults to `contents: read`.
+
+After upgrading cuenv, run `cuenv sync ci` and commit the regenerated workflows;
+`cuenv sync ci --check` verifies them. This fixes workflow-scope security findings
+at the generator without hand-editing generated files or adding Sonar exclusions.
+
 ## Activation conditions
 
 A contributor's `when` is a [`#ActivationCondition`](https://github.com/cuenv/cuenv/blob/main/schema/ci.cue).

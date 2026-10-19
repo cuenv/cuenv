@@ -244,6 +244,10 @@ pub struct Matrix {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Job {
+    /// Permissions granted only to this job.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Permissions>,
+
     /// Job display name (shown in GitHub UI)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -477,6 +481,7 @@ mod tests {
     #[test]
     fn test_job_with_needs() {
         let job = Job {
+            permissions: None,
             name: Some("Test".to_string()),
             runs_on: RunsOn::Label("ubuntu-latest".to_string()),
             needs: vec!["build".to_string()],
