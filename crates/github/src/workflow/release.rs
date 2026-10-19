@@ -115,11 +115,7 @@ impl ReleaseWorkflowBuilder {
                 group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
                 cancel_in_progress: Some(true),
             }),
-            permissions: Some(Permissions {
-                contents: Some(PermissionLevel::Write),
-                id_token: Some(PermissionLevel::Write),
-                ..Default::default()
-            }),
+            permissions: None,
             env: IndexMap::new(),
             jobs,
         }
@@ -202,6 +198,11 @@ impl ReleaseWorkflowBuilder {
         steps.push(upload_step);
 
         Job {
+            permissions: Some(self.emitter.apply_configured_permissions(Permissions {
+                contents: Some(PermissionLevel::Read),
+                id_token: Some(PermissionLevel::Write),
+                ..Default::default()
+            })),
             name: Some("Build ${{ matrix.target }}".to_string()),
             runs_on: RunsOn::Label("${{ matrix.runs-on }}".to_string()),
             needs: Vec::new(),
@@ -287,6 +288,11 @@ impl ReleaseWorkflowBuilder {
         steps.push(publish_step);
 
         Job {
+            permissions: Some(self.emitter.apply_configured_permissions(Permissions {
+                contents: Some(PermissionLevel::Write),
+                id_token: Some(PermissionLevel::Write),
+                ..Default::default()
+            })),
             name: Some("Publish Release".to_string()),
             runs_on: RunsOn::Label(self.emitter.runner.clone()),
             needs: vec!["build".to_string()],
@@ -314,6 +320,27 @@ mod tests {
     use cuenv_ci::ir::{CachePolicy, PipelineMetadata, Task};
     use cuenv_core::ci::PipelineMode;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn release_permissions_are_job_scoped() {
+        let emitter = GitHubActionsEmitter::new();
+        let builder = ReleaseWorkflowBuilder::new(emitter);
+        let workflow = builder.build(&release_ir());
+        let document = serde_yaml::to_value(workflow).unwrap();
+        assert!(document.get("permissions").is_none());
+        assert_eq!(
+            document["jobs"]["build"]["permissions"]["contents"].as_str(),
+            Some("read")
+        );
+        assert_eq!(
+            document["jobs"]["publish"]["permissions"]["contents"].as_str(),
+            Some("write")
+        );
+        assert_eq!(
+            document["jobs"]["publish"]["permissions"]["id-token"].as_str(),
+            Some("write")
+        );
+    }
 
     struct ActionTaskFixture<'a> {
         id: &'a str,

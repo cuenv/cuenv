@@ -51,6 +51,11 @@ pub fn build_hestia_gc_workflow() -> Workflow {
     .with_env("GITHUB_TOKEN", "${{ github.token }}");
 
     let gc_job = Job {
+        permissions: Some(Permissions {
+            actions: Some(PermissionLevel::Write),
+            contents: Some(PermissionLevel::Read),
+            ..Default::default()
+        }),
         name: Some("Hestia Cache GC".to_string()),
         runs_on: RunsOn::Label("ubuntu-latest".to_string()),
         needs: Vec::new(),
@@ -82,11 +87,7 @@ pub fn build_hestia_gc_workflow() -> Workflow {
             group: "hestia-gc".to_string(),
             cancel_in_progress: Some(false),
         }),
-        permissions: Some(Permissions {
-            actions: Some(PermissionLevel::Write),
-            contents: Some(PermissionLevel::Read),
-            ..Default::default()
-        }),
+        permissions: None,
         env: IndexMap::new(),
         jobs: IndexMap::from([("gc".to_string(), gc_job)]),
     }
@@ -101,6 +102,12 @@ mod tests {
     -> Result<(), serde_yaml::Error> {
         let workflow = build_hestia_gc_workflow();
         let yaml = workflow.to_yaml()?;
+        let document: serde_yaml::Value = serde_yaml::from_str(&yaml)?;
+        assert!(document.get("permissions").is_none());
+        assert_eq!(
+            document["jobs"]["gc"]["permissions"]["actions"].as_str(),
+            Some("write")
+        );
 
         assert!(yaml.contains("cron: 23 3 * * *"));
         assert!(yaml.contains("group: hestia-gc"));

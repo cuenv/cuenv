@@ -1,7 +1,7 @@
 //! GitHub Actions job construction helpers.
 
 use crate::workflow::emitter::GitHubActionsEmitter;
-use crate::workflow::schema::{Job, RunsOn, Step};
+use crate::workflow::schema::{Job, PermissionLevel, Permissions, RunsOn, Step};
 use crate::workflow::stage_renderer::transform_secret_ref;
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task};
 use indexmap::IndexMap;
@@ -275,6 +275,10 @@ impl GitHubActionsEmitter {
         steps.push(upload_step);
 
         Some(Job {
+            permissions: Some(self.apply_configured_permissions(Permissions {
+                contents: Some(PermissionLevel::Read),
+                ..Default::default()
+            })),
             name: Some(options.name.to_string()),
             runs_on: options.runs_on,
             needs: Vec::new(),
@@ -436,6 +440,7 @@ impl GitHubActionsEmitter {
         }
 
         Job {
+            permissions: Some(self.build_job_permissions(task, ir)),
             name: Some(task.id.clone()),
             runs_on: RunsOn::Label(self.runner.clone()),
             needs: Vec::new(),
@@ -538,6 +543,7 @@ impl GitHubActionsEmitter {
         steps.push(task_step);
 
         Job {
+            permissions: Some(self.build_job_permissions(task, ir)),
             name: Some(task.id.clone()),
             runs_on: RunsOn::Label(self.runner.clone()),
             needs: options.previous_jobs.to_vec(),
@@ -665,6 +671,7 @@ impl GitHubActionsEmitter {
                 jobs.insert(
                     job_id,
                     Job {
+                        permissions: Some(self.build_job_permissions(task, ir)),
                         name: Some(format!("{} ({arch})", task.id)),
                         runs_on: RunsOn::Label(runner),
                         needs: options.previous_jobs.to_vec(),

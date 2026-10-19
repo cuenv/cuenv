@@ -15,14 +15,11 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
-permissions:
-  contents: write
-  checks: write
-  pull-requests: write
-  packages: write
-  id-token: write
 jobs:
   build-cuenv-namespace-profile-cuenv-macos-arm64:
+    permissions:
+      contents: write
+      id-token: write
     name: build.cuenv (namespace-profile-cuenv-macos-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
     timeout-minutes: 30
@@ -62,6 +59,9 @@ jobs:
         path: result/bin/cuenv
         if-no-files-found: error
   build-cuenv-namespace-profile-cuenv-linux-arm64:
+    permissions:
+      contents: write
+      id-token: write
     name: build.cuenv (namespace-profile-cuenv-linux-arm64)
     runs-on: namespace-profile-cuenv-linux-arm64
     timeout-minutes: 30
@@ -101,6 +101,9 @@ jobs:
         path: result/bin/cuenv
         if-no-files-found: error
   build-cuenv-namespace-profile-cuenv-linux-x86:
+    permissions:
+      contents: write
+      id-token: write
     name: build.cuenv (namespace-profile-cuenv-linux-x86)
     runs-on: namespace-profile-cuenv-linux-x86
     timeout-minutes: 30
@@ -140,6 +143,12 @@ jobs:
         path: result/bin/cuenv
         if-no-files-found: error
   cargo-build-darwin-arm64:
+    permissions:
+      contents: write
+      checks: write
+      pull-requests: write
+      packages: write
+      id-token: write
     name: cargo.build (darwin-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
     needs:
@@ -197,6 +206,12 @@ jobs:
         if-no-files-found: ignore
         include-hidden-files: true
   cargo-build-linux-arm64:
+    permissions:
+      contents: write
+      checks: write
+      pull-requests: write
+      packages: write
+      id-token: write
     name: cargo.build (linux-arm64)
     runs-on: namespace-profile-cuenv-linux-arm64
     needs:
@@ -254,6 +269,12 @@ jobs:
         if-no-files-found: ignore
         include-hidden-files: true
   cargo-build-linux-x64:
+    permissions:
+      contents: write
+      checks: write
+      pull-requests: write
+      packages: write
+      id-token: write
     name: cargo.build (linux-x64)
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -311,6 +332,11 @@ jobs:
         if-no-files-found: ignore
         include-hidden-files: true
   publish-github:
+    permissions:
+      contents: write
+      checks: write
+      pull-requests: write
+      id-token: write
     name: publish.github
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -380,6 +406,11 @@ jobs:
         TAG: ${{ github.ref_name }}
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-cue:
+    permissions:
+      contents: write
+      checks: write
+      pull-requests: write
+      id-token: write
     name: publish.cue
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -429,6 +460,11 @@ jobs:
         TAG: cuenv:passthrough:GITHUB_REF_NAME
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-homebrew:
+    permissions:
+      contents: write
+      checks: write
+      pull-requests: write
+      id-token: write
     name: publish.homebrew
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -479,6 +515,11 @@ jobs:
         TAG: cuenv:passthrough:GITHUB_REF_NAME
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
+    permissions:
+      contents: write
+      checks: write
+      pull-requests: write
+      id-token: write
     name: docs.deploy
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -533,6 +574,12 @@ jobs:
         GITHUB_REF_NAME: ${{ github.ref_name }}
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-build:
+    permissions:
+      contents: write
+      checks: write
+      pull-requests: write
+      packages: write
+      id-token: write
     name: docs.build
     runs-on: namespace-profile-cuenv-linux-x86
     needs:

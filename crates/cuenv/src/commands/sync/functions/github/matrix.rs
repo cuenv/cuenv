@@ -83,7 +83,7 @@ pub(super) fn emit_matrix_workflow(
             group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
             cancel_in_progress: Some(true),
         }),
-        permissions: Some(emitter.build_permissions(&ir)),
+        permissions: None,
         env: indexmap::IndexMap::new(),
         jobs,
     };
