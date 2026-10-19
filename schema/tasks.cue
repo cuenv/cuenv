@@ -141,6 +141,8 @@ package schema
 // still rely on the Go bridge because CUE does not yet support aliases on list
 // elements.
 #Task: {
+	// GitHub token requirements for the job executing this task.
+	ci?: #TaskCI
 	_cuenvPrefix: string | *""
 	_cuenvSelf:   string | *""
 

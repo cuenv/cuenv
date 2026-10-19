@@ -25,9 +25,10 @@ import "github.com/cuenv/cuenv/schema"
 	tasks: [{
 		id:       "trusted-publishing.auth"
 		label:    "Authenticate with crates.io"
-		priority: 50
+		priority: 25
 		command:  "sh"
 		args:     ["-c", "echo 'Trusted publishing is only available on GitHub Actions'; exit 1"]
+		ci: github: {permissions: "id-token": "write", tasks: ["publish.crates"]}
 		provider: github: uses: "rust-lang/crates-io-auth-action@v1"
 	}]
 }
@@ -53,6 +54,7 @@ import "github.com/cuenv/cuenv/schema"
 		priority: 25
 		command:  "sh"
 		args:     ["-c", "echo 'Trusted publishing is only available on GitHub Actions'; exit 1"]
+		ci: github: {permissions: "id-token": "write", tasks: ["publish.cue"]}
 		provider: github: {
 			uses: "cue-labs/registry-login-action@v1"
 			if:   "github.job == 'publish-cue'"

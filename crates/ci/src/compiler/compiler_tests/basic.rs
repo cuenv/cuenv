@@ -142,3 +142,24 @@ fn test_compile_script_task() {
     assert_eq!(ir.tasks[0].command[0], "/bin/sh");
     assert_eq!(ir.tasks[0].command[1], "-c");
 }
+
+#[test]
+fn task_ci_permissions_survive_deserialization_and_compilation() {
+    let task: Task = serde_json::from_value(serde_json::json!({
+        "command": "publish",
+        "ci": {"github": {"permissions": {"packages": "write"}}}
+    }))
+    .unwrap();
+    let mut project = Project::new("permissions");
+    project
+        .tasks
+        .insert("publish".into(), TaskNode::Task(Box::new(task)));
+    let ir = Compiler::new(project).compile().unwrap();
+    assert_eq!(
+        ir.tasks[0]
+            .github_permissions
+            .get("packages")
+            .map(String::as_str),
+        Some("write")
+    );
+}

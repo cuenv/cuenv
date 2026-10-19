@@ -474,17 +474,59 @@ fallback command fails explicitly instead of attempting an empty action task.
 
 ## GitHub job permissions
 
-Generated GitHub Actions workflows grant token permissions on each job, including
-thin, expanded, matrix, release, and cache-maintenance jobs. No workflow-wide
-write permissions are emitted. Existing global and per-pipeline GitHub
-`permissions` maps remain supported as overrides applied to each job in that
-pipeline. In expanded workflows, inferred deployment and package permissions are
-calculated from the job's task and shared phase tasks, rather than unrelated
-pipeline tasks. The shared cuenv bootstrap job defaults to `contents: read`.
+Every generated job starts with `contents: read`. cuenv does not grant checks or
+pull-request write access to expanded jobs automatically. Thin mode's `cuenv ci`
+step reports a check run (`checks: write`) and posts a PR comment when a PR trigger
+is enabled (`pull-requests: write`); those grants are still capped by pipeline
+ceilings. The repository's thin `sync-check` pipeline is an example of this
+reporter requirement. Declare a task's requirements on the task:
 
-After upgrading cuenv, run `cuenv sync ci` and commit the regenerated workflows;
-`cuenv sync ci --check` verifies them. This fixes workflow-scope security findings
-at the generator without hand-editing generated files or adding Sonar exclusions.
+```cue
+publishContainerImage: schema.#Task & {
+    command: "docker"
+    args: ["push", "ghcr.io/example/image:latest"]
+    ci: github: permissions: packages: "write"
+}
+```
+
+Contributor tasks use the same `ci.github.permissions` map. Their requirements
+are unioned only into jobs that emit their steps, including conditional steps
+that might execute. Optional `ci.github.tasks: ["publish.cue"]` restricts a
+contributor step to jobs running those task IDs. An omitted or empty list means
+all applicable jobs. The dedicated binary-release builder uses the synthetic
+task IDs `build` and `publish`. In thin mode, a filtered step is included when any
+task in the single job matches. Built-in trusted-publishing steps target `publish.crates`
+and `publish.cue`; custom task names must override this list in the contributor.
+
+Expanded and matrix jobs combine their own task's declarations and inference
+with the bootstrap/setup steps they actually emit. Success/failure contributors
+are emitted only in thin mode. Deployment tasks infer `contents: write` and
+Orchestrator outputs infer `packages: write`; these inferences never spread from
+an unrelated task. Artifact uploads use the Actions runtime token and do not
+require `actions: write` on `GITHUB_TOKEN`.
+
+**Breaking change:** global and per-pipeline `provider.github.permissions` maps
+are ceilings, not grants. Each named scope caps computed access at `none`, `read`,
+or `write`; omitted scopes remain unrestricted. An empty map imposes no caps.
+A per-pipeline map replaces the global map. For example, `packages: "write"`
+allows a publisher's declared write grant but gives a lint job no package access;
+`packages: "none"` forbids package access even when requested. A ceiling below a
+step's requirement intentionally prevents that operation and can make CI fail.
+Move grants previously supplied only by the pipeline map onto the relevant task
+or contributor before regenerating workflows.
+
+The cuenv bootstrap job ignores pipeline maps and uses only its own injected
+steps' requirements. Checkout and artifact upload alone need `contents: read`;
+Determinate/FlakeHub cache authentication adds `id-token: write` when its
+contributor step is present. Namespace cache volumes use the runner's existing
+credentials; their cache action does not request OIDC. Hestia's ordinary cache
+action uses the Actions runtime cache token, not OIDC. Its separate GC job needs `actions: write`
+for cache maintenance. Release asset publishing needs `contents: write`; OIDC is
+added only by authentication steps present in the job. No workflow-level
+`permissions` block is emitted by any path.
+
+After upgrading, run `cuenv sync ci` and commit the generated workflows, then
+verify with `cuenv sync ci --check`.
 
 ## Activation conditions
 

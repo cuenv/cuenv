@@ -81,6 +81,9 @@ fn passthrough_home_source<'a>(env_name: &'a str, value: &'a serde_json::Value) 
 /// between Task, TaskGroup, and TaskList during deserialization.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Task {
+    /// CI token requirements for this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci: Option<crate::ci::TaskCI>,
     /// Shell configuration for command execution (legacy, for backwards compatibility)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<Shell>,
@@ -224,6 +227,8 @@ impl<'de> serde::Deserialize<'de> for Task {
         #[derive(serde::Deserialize)]
         struct TaskHelper {
             #[serde(default)]
+            ci: Option<crate::ci::TaskCI>,
+            #[serde(default)]
             shell: Option<Shell>,
             #[serde(default)]
             command: Option<String>,
@@ -299,6 +304,7 @@ impl<'de> serde::Deserialize<'de> for Task {
         }
 
         Ok(Self {
+            ci: helper.ci,
             shell: helper.shell,
             command: helper.command.unwrap_or_default(),
             script: helper.script,
@@ -332,6 +338,7 @@ impl<'de> serde::Deserialize<'de> for Task {
 impl Default for Task {
     fn default() -> Self {
         Self {
+            ci: None,
             shell: None,
             command: String::new(),
             script: None,

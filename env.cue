@@ -532,6 +532,7 @@ schema.#Project & {
 			type: "group"
 
 			github: schema.#Task & {
+				ci: github: permissions: contents: "write"
 				// Stage CI-downloaded binaries and explicitly pass release context.
 				hermetic: {passthrough: ["PATH"]}
 				env: {

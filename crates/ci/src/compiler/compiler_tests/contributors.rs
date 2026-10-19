@@ -154,6 +154,7 @@ fn cuenv_version_script_for_config(configured_version: Option<&str>) -> Vec<Stri
     }
 
     let contributor_task = ContributorTask {
+        ci: None,
         id: "cuenv.setup".to_string(),
         label: None,
         description: None,
@@ -239,6 +240,7 @@ fn test_contributor_multiple_conditions_and_logic() {
 #[test]
 fn test_contributor_task_to_ir_command() {
     let contributor_task = ContributorTask {
+        ci: None,
         id: "test-task".to_string(),
         label: Some("Test Task".to_string()),
         description: None,
@@ -273,6 +275,7 @@ fn test_contributor_task_to_ir_command() {
 #[test]
 fn test_contributor_task_to_ir_script() {
     let contributor_task = ContributorTask {
+        ci: None,
         id: "script-task".to_string(),
         label: None,
         description: None,
@@ -312,6 +315,12 @@ fn test_contributor_task_to_ir_github_action() {
     );
 
     let contributor_task = ContributorTask {
+        ci: Some(
+            serde_json::from_value(serde_json::json!({"github": {
+                "permissions": {"id-token": "write"}, "tasks": ["publish.cue"]
+            }}))
+            .unwrap(),
+        ),
         id: "nix.install".to_string(),
         label: Some("Install Nix".to_string()),
         description: None,
@@ -338,6 +347,14 @@ fn test_contributor_task_to_ir_github_action() {
 
     let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "nix");
 
+    assert_eq!(
+        ir_task
+            .github_permissions
+            .get("id-token")
+            .map(String::as_str),
+        Some("write")
+    );
+    assert_eq!(ir_task.github_task_filter, vec!["publish.cue"]);
     assert_eq!(ir_task.id, "cuenv:contributor:nix.install");
     assert!(ir_task.command.is_empty()); // No command, uses action
     assert!(ir_task.provider_hints.is_some());
@@ -374,6 +391,7 @@ fn test_contributor_task_to_ir_secrets() {
     );
 
     let contributor_task = ContributorTask {
+        ci: None,
         id: "secrets-task".to_string(),
         label: None,
         description: None,
@@ -415,6 +433,7 @@ fn test_contributor_task_to_ir_env_vars() {
     env.insert("VAR2".to_string(), "value2".to_string());
 
     let contributor_task = ContributorTask {
+        ci: None,
         id: "env-task".to_string(),
         label: None,
         description: None,
@@ -444,6 +463,7 @@ fn test_contributor_task_to_ir_env_vars() {
 #[test]
 fn test_contributor_task_to_ir_command_with_args() {
     let contributor_task = ContributorTask {
+        ci: None,
         id: "bun.workspace.install".to_string(),
         label: Some("Install Bun Dependencies".to_string()),
         description: None,
@@ -480,6 +500,7 @@ fn test_contributor_task_to_ir_cuenv_contributor_not_wrapped() {
     // Tasks from the cuenv contributor should NOT be wrapped with cuenv exec
     // because they are setting up cuenv itself
     let contributor_task = ContributorTask {
+        ci: None,
         id: "cuenv.setup".to_string(),
         label: Some("Setup cuenv".to_string()),
         description: None,
@@ -511,6 +532,7 @@ fn test_contributor_task_to_ir_cuenv_contributor_not_wrapped() {
 #[test]
 fn test_contributor_task_to_ir_cuenv_command_with_args_not_wrapped() {
     let contributor_task = ContributorTask {
+        ci: None,
         id: "1password.setup".to_string(),
         label: Some("Setup 1Password".to_string()),
         description: None,
@@ -548,6 +570,7 @@ fn test_contributor_task_to_ir_bootstrap_not_wrapped() {
     // Bootstrap phase tasks (priority < 10) should NOT be wrapped with cuenv exec
     // because they run before cuenv is built
     let contributor_task = ContributorTask {
+        ci: None,
         id: "setup.rust".to_string(),
         label: Some("Setup Rust".to_string()),
         description: None,

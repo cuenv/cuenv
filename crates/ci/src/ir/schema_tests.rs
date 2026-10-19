@@ -76,6 +76,8 @@ fn test_task_minimal() {
         priority: None,
         contributor: None,
         condition: None,
+        github_task_filter: Vec::new(),
+        github_permissions: std::collections::BTreeMap::new(),
         provider_hints: None,
     };
 
@@ -110,6 +112,8 @@ fn test_task_with_deployment() {
         priority: None,
         contributor: None,
         condition: None,
+        github_task_filter: Vec::new(),
+        github_permissions: std::collections::BTreeMap::new(),
         provider_hints: None,
     };
 
@@ -153,6 +157,8 @@ fn test_task_with_matrix() {
         priority: None,
         contributor: None,
         condition: None,
+        github_task_filter: Vec::new(),
+        github_permissions: std::collections::BTreeMap::new(),
         provider_hints: None,
     };
 
@@ -252,6 +258,8 @@ fn test_full_ir_serialization() {
         priority: None,
         contributor: None,
         condition: None,
+        github_task_filter: Vec::new(),
+        github_permissions: std::collections::BTreeMap::new(),
         provider_hints: None,
     });
 
@@ -314,6 +322,8 @@ fn make_test_task(id: &str) -> Task {
         priority: None,
         contributor: None,
         condition: None,
+        github_task_filter: Vec::new(),
+        github_permissions: std::collections::BTreeMap::new(),
         provider_hints: None,
     }
 }
