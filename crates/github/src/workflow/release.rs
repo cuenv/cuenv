@@ -2,8 +2,8 @@
 
 use crate::workflow::emitter::GitHubActionsEmitter;
 use crate::workflow::schema::{
-    Concurrency, Environment, Job, Matrix, PermissionLevel, Permissions, ReleaseTrigger, RunsOn,
-    Step, Strategy, Workflow, WorkflowDispatchTrigger, WorkflowInput, WorkflowTriggers,
+    Concurrency, Environment, Job, Matrix, PermissionLevel, ReleaseTrigger, RunsOn, Step, Strategy,
+    Workflow, WorkflowDispatchTrigger, WorkflowInput, WorkflowTriggers,
 };
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation};
 use indexmap::IndexMap;
@@ -123,6 +123,8 @@ impl ReleaseWorkflowBuilder {
 
     /// Build the matrix build job.
     fn build_matrix_job(&self, ir: &IntermediateRepresentation) -> Job {
+        let scoped_ir = GitHubActionsEmitter::ir_for_job(ir, "build");
+        let ir = &scoped_ir;
         let matrix_include: Vec<IndexMap<String, serde_yaml::Value>> = self
             .targets
             .iter()
@@ -198,11 +200,12 @@ impl ReleaseWorkflowBuilder {
         steps.push(upload_step);
 
         Job {
-            permissions: Some(self.emitter.apply_configured_permissions(Permissions {
-                contents: Some(PermissionLevel::Read),
-                id_token: Some(PermissionLevel::Write),
-                ..Default::default()
-            })),
+            permissions: Some(
+                self.emitter
+                    .permissions_for_tasks(ir.tasks.iter().filter(|task| {
+                        task.phase == Some(BuildStage::Bootstrap) || task.id == "setup-cuenv"
+                    })),
+            ),
             name: Some("Build ${{ matrix.target }}".to_string()),
             runs_on: RunsOn::Label("${{ matrix.runs-on }}".to_string()),
             needs: Vec::new(),
@@ -225,6 +228,8 @@ impl ReleaseWorkflowBuilder {
 
     /// Build the publish job that runs after all builds complete.
     fn build_publish_job(&self, ir: &IntermediateRepresentation) -> Job {
+        let scoped_ir = GitHubActionsEmitter::ir_for_job(ir, "publish");
+        let ir = &scoped_ir;
         let mut steps = Vec::new();
 
         steps.push(
@@ -288,11 +293,17 @@ impl ReleaseWorkflowBuilder {
         steps.push(publish_step);
 
         Job {
-            permissions: Some(self.emitter.apply_configured_permissions(Permissions {
-                contents: Some(PermissionLevel::Write),
-                id_token: Some(PermissionLevel::Write),
-                ..Default::default()
-            })),
+            permissions: Some({
+                let mut required =
+                    GitHubActionsEmitter::required_permissions(ir.tasks.iter().filter(|task| {
+                        task.phase == Some(BuildStage::Bootstrap)
+                            || task.id == "setup-cuenv"
+                            || task.id == "setup-1password"
+                    }));
+                // Uploading GitHub release assets uses GITHUB_TOKEN.
+                required.contents = Some(PermissionLevel::Write);
+                self.emitter.apply_configured_permissions(required)
+            }),
             name: Some("Publish Release".to_string()),
             runs_on: RunsOn::Label(self.emitter.runner.clone()),
             needs: vec!["build".to_string()],
@@ -338,7 +349,7 @@ mod tests {
         );
         assert_eq!(
             document["jobs"]["publish"]["permissions"]["id-token"].as_str(),
-            Some("write")
+            None
         );
     }
 
@@ -373,6 +384,8 @@ mod tests {
             priority: Some(fixture.priority),
             contributor: Some("test".to_string()),
             condition: None,
+            github_task_filter: Vec::new(),
+            github_permissions: std::collections::BTreeMap::new(),
             provider_hints: Some(serde_json::json!({
                 "github_action": {
                     "uses": fixture.uses,

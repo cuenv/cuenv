@@ -266,15 +266,15 @@ fn permissions_are_scoped_to_jobs_in_both_modes() {
     let mut deploy = make_task("deploy", &["deploy"]);
     deploy.deployment = true;
     let ir = make_ir(vec![make_task("check", &["cargo", "check"]), deploy]);
-    for yaml in [
-        emitter.emit_expanded(&ir).unwrap(),
-        emitter.emit_thin(&ir).unwrap(),
+    for (yaml, expected_checks) in [
+        (emitter.emit_expanded(&ir).unwrap(), None),
+        (emitter.emit_thin(&ir).unwrap(), Some("none")),
     ] {
         let workflow: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
         assert!(workflow.get("permissions").is_none());
         for job in workflow["jobs"].as_mapping().unwrap().values() {
-            assert_eq!(job["permissions"]["id-token"].as_str(), Some("write"));
-            assert_eq!(job["permissions"]["checks"].as_str(), Some("none"));
+            assert_eq!(job["permissions"]["id-token"].as_str(), None);
+            assert_eq!(job["permissions"]["checks"].as_str(), expected_checks);
         }
         if let Some(check) = workflow["jobs"].get("check") {
             assert_eq!(check["permissions"]["contents"].as_str(), Some("read"));

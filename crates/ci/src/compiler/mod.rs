@@ -623,6 +623,13 @@ impl Compiler {
             priority: None,
             contributor: None,
             condition: None,
+            github_task_filter: Vec::new(),
+            github_permissions: task
+                .ci
+                .as_ref()
+                .and_then(|ci| ci.github.as_ref())
+                .map(|gh| gh.permissions.clone())
+                .unwrap_or_default(),
             provider_hints: None,
         })
     }

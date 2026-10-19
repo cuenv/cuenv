@@ -203,15 +203,15 @@ pub struct Permissions {
 }
 
 /// Permission level for `GITHUB_TOKEN` scopes.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionLevel {
+    /// No access
+    None,
     /// Read-only access
     Read,
     /// Read and write access
     Write,
-    /// No access
-    None,
 }
 
 /// Matrix strategy for running jobs with different configurations.

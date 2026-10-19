@@ -1,7 +1,7 @@
 //! GitHub Actions job construction helpers.
 
 use crate::workflow::emitter::GitHubActionsEmitter;
-use crate::workflow::schema::{Job, PermissionLevel, Permissions, RunsOn, Step};
+use crate::workflow::schema::{Job, RunsOn, Step};
 use crate::workflow::stage_renderer::transform_secret_ref;
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task};
 use indexmap::IndexMap;
@@ -227,6 +227,8 @@ impl GitHubActionsEmitter {
             return None;
         }
 
+        let scoped_ir = Self::ir_for_job(ir, "");
+        let ir = &scoped_ir;
         let cuenv_setup_task_ids = Self::cuenv_setup_task_ids(ir);
         if cuenv_setup_task_ids.is_empty() {
             return None;
@@ -275,10 +277,21 @@ impl GitHubActionsEmitter {
         steps.push(upload_step);
 
         Some(Job {
-            permissions: Some(self.apply_configured_permissions(Permissions {
-                contents: Some(PermissionLevel::Read),
-                ..Default::default()
-            })),
+            permissions: Some(Self::required_permissions(
+                ir.sorted_phase_tasks(BuildStage::Bootstrap)
+                    .into_iter()
+                    .chain(
+                        ir.sorted_phase_tasks(BuildStage::Setup)
+                            .into_iter()
+                            .filter(|task| {
+                                Self::should_include_in_cuenv_bootstrap(
+                                    task,
+                                    &skipped_setup_task_ids,
+                                    &cuenv_setup_task_ids,
+                                )
+                            }),
+                    ),
+            )),
             name: Some(options.name.to_string()),
             runs_on: options.runs_on,
             needs: Vec::new(),
@@ -311,28 +324,53 @@ impl GitHubActionsEmitter {
         let renderer = self.stage_renderer();
         let mut steps = Vec::new();
         let mut secret_env_vars = IndexMap::new();
-        let skipped_setup_task_ids = Self::skipped_setup_task_ids(ir, execution, cuenv_setup);
-
-        let bootstrap_steps = renderer.render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap));
-        steps.extend(bootstrap_steps);
-
-        if let CuenvSetup::DownloadArtifact { artifact_name } = cuenv_setup {
-            steps.extend(Self::cuenv_artifact_steps(artifact_name));
+        for task in Self::emitted_phase_tasks(ir, execution, cuenv_setup) {
+            steps.push(renderer.render_task(task));
+            if task.phase == Some(BuildStage::Setup) {
+                for (key, value) in &task.env {
+                    secret_env_vars.insert(key.clone(), value.clone());
+                }
+            }
         }
-
-        for task in ir.sorted_phase_tasks(BuildStage::Setup) {
-            if skipped_setup_task_ids.contains(&task.id) {
-                continue;
-            }
-            let step = renderer.render_task(task);
-            steps.push(step);
-
-            for (key, value) in &task.env {
-                secret_env_vars.insert(key.clone(), value.clone());
-            }
+        if let CuenvSetup::DownloadArtifact { artifact_name } = cuenv_setup {
+            let bootstrap_count = ir.sorted_phase_tasks(BuildStage::Bootstrap).len();
+            steps.splice(
+                bootstrap_count..bootstrap_count,
+                Self::cuenv_artifact_steps(artifact_name),
+            );
         }
 
         (steps, secret_env_vars)
+    }
+
+    pub(super) fn ir_for_job(
+        ir: &IntermediateRepresentation,
+        task_id: &str,
+    ) -> IntermediateRepresentation {
+        let mut scoped = ir.clone();
+        scoped.tasks.retain(|task| {
+            task.phase.is_none()
+                || task.github_task_filter.is_empty()
+                || task.github_task_filter.iter().any(|id| id == task_id)
+        });
+        scoped
+    }
+
+    /// Shared selection for rendering and permission calculation.
+    pub(super) fn emitted_phase_tasks<'a>(
+        ir: &'a IntermediateRepresentation,
+        execution: TaskExecution,
+        cuenv_setup: &CuenvSetup,
+    ) -> Vec<&'a Task> {
+        let skipped = Self::skipped_setup_task_ids(ir, execution, cuenv_setup);
+        ir.sorted_phase_tasks(BuildStage::Bootstrap)
+            .into_iter()
+            .chain(
+                ir.sorted_phase_tasks(BuildStage::Setup)
+                    .into_iter()
+                    .filter(|task| !skipped.contains(&task.id)),
+            )
+            .collect()
     }
 
     /// Build a simple job from an IR task (no matrix expansion).
@@ -356,6 +394,8 @@ impl GitHubActionsEmitter {
         ir: &IntermediateRepresentation,
         options: &SimpleJobOptions<'_>,
     ) -> Job {
+        let scoped_ir = Self::ir_for_job(ir, &task.id);
+        let ir = &scoped_ir;
         let mut steps = Vec::new();
 
         steps.push(
@@ -440,7 +480,10 @@ impl GitHubActionsEmitter {
         }
 
         Job {
-            permissions: Some(self.build_job_permissions(task, ir)),
+            permissions: Some(self.build_job_permissions(
+                task,
+                &Self::emitted_phase_tasks(ir, options.execution, &options.cuenv_setup),
+            )),
             name: Some(task.id.clone()),
             runs_on: RunsOn::Label(self.runner.clone()),
             needs: Vec::new(),
@@ -477,6 +520,8 @@ impl GitHubActionsEmitter {
         ir: &IntermediateRepresentation,
         options: &ArtifactAggregationJobOptions<'_>,
     ) -> Job {
+        let scoped_ir = Self::ir_for_job(ir, &task.id);
+        let ir = &scoped_ir;
         let mut steps = Vec::new();
 
         steps.push(
@@ -543,7 +588,10 @@ impl GitHubActionsEmitter {
         steps.push(task_step);
 
         Job {
-            permissions: Some(self.build_job_permissions(task, ir)),
+            permissions: Some(self.build_job_permissions(
+                task,
+                &Self::emitted_phase_tasks(ir, TaskExecution::Orchestrated, &options.cuenv_setup),
+            )),
             name: Some(task.id.clone()),
             runs_on: RunsOn::Label(self.runner.clone()),
             needs: options.previous_jobs.to_vec(),
@@ -577,6 +625,8 @@ impl GitHubActionsEmitter {
         ir: &IntermediateRepresentation,
         options: &MatrixJobOptions<'_>,
     ) -> IndexMap<String, Job> {
+        let scoped_ir = Self::ir_for_job(ir, &task.id);
+        let ir = &scoped_ir;
         let mut jobs = IndexMap::new();
         let base_job_id = task.id.replace(['.', ' '], "-");
 
@@ -671,7 +721,14 @@ impl GitHubActionsEmitter {
                 jobs.insert(
                     job_id,
                     Job {
-                        permissions: Some(self.build_job_permissions(task, ir)),
+                        permissions: Some(self.build_job_permissions(
+                            task,
+                            &Self::emitted_phase_tasks(
+                                ir,
+                                TaskExecution::Orchestrated,
+                                &cuenv_setup,
+                            ),
+                        )),
                         name: Some(format!("{} ({arch})", task.id)),
                         runs_on: RunsOn::Label(runner),
                         needs: options.previous_jobs.to_vec(),
