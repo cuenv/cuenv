@@ -260,6 +260,12 @@ the depth of the dependency chain, and a chain of plain tasks only two edges
 deep could exceed the default 60-second evaluation timeout. With untyped
 entries a twenty-edge chain evaluates in about a second.
 
+cuenv 0.57.3 builds with a patched CUE fork at commit `4cee740`, based on
+CUE 0.16.1, on Go 1.26.
+The fork backports structure sharing for references unified with recursive
+definitions. The untyped dependency schema remains in place; restoring typed
+entries is a separate change.
+
 Two mistakes are still rejected during evaluation:
 
 - a string or other scalar, such as `dependsOn: ["build"]`, fails with

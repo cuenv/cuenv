@@ -625,6 +625,153 @@ schema.#Project & {{
     Ok(())
 }
 
+fn evaluate_dependency_graph(fields: &str) -> TestResult<Project> {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+    fs::write(
+        root.join("env.cue"),
+        format!(
+            "package cuenv\nimport \"github.com/cuenv/cuenv/schema\"\nschema.#Project & {{\nname: \"app\"\n{fields}\n}}\n"
+        ),
+    )?;
+
+    let start = std::time::Instant::now();
+    let project = evaluate_project_with_references(root)?;
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed.as_secs() < DEPENDS_ON_CHAIN_MAX_SECONDS,
+        "PERFORMANCE REGRESSION: dependency graph took {elapsed:?}"
+    );
+    Ok(project)
+}
+
+#[test]
+fn deep_group_depends_on_chain_evaluates_within_time_bound() -> TestResult {
+    let mut fields = String::from("tasks: {\nn0: {type: \"group\", unit: {command: \"echo\"}}\n");
+    for index in 1..=DEPENDS_ON_CHAIN_DEPTH {
+        writeln!(
+            fields,
+            "n{index}: {{type: \"group\", dependsOn: [n{}], unit: {{command: \"echo\"}}}}",
+            index - 1
+        )?;
+    }
+    fields.push_str("}\n");
+
+    let project = evaluate_dependency_graph(&fields)?;
+    for index in 1..=DEPENDS_ON_CHAIN_DEPTH {
+        let group = project
+            .tasks
+            .get(&format!("n{index}"))
+            .and_then(|node| node.as_group())
+            .ok_or_else(|| std::io::Error::other(format!("expected group n{index}")))?;
+        assert_eq!(
+            group
+                .depends_on
+                .iter()
+                .map(|dependency| dependency.task_name())
+                .collect::<Vec<_>>(),
+            [format!("n{}", index - 1)]
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn deep_image_depends_on_chain_evaluates_within_time_bound() -> TestResult {
+    let mut fields = String::from("images: {\nn0: {context: \".\"}\n");
+    for index in 1..=DEPENDS_ON_CHAIN_DEPTH {
+        writeln!(
+            fields,
+            "n{index}: {{context: \".\", dependsOn: [images.n{}]}}",
+            index - 1
+        )?;
+    }
+    fields.push_str("}\n");
+
+    let project = evaluate_dependency_graph(&fields)?;
+    for index in 1..=DEPENDS_ON_CHAIN_DEPTH {
+        let image = project
+            .images
+            .get(&format!("n{index}"))
+            .ok_or_else(|| std::io::Error::other(format!("expected image n{index}")))?;
+        assert_eq!(
+            image
+                .depends_on
+                .iter()
+                .map(|dependency| dependency.task_name())
+                .collect::<Vec<_>>(),
+            [format!("n{}", index - 1)]
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn deep_service_depends_on_chain_evaluates_within_time_bound() -> TestResult {
+    let mut fields =
+        String::from("services: {\nn0: {entrypoint: schema.#Command & {command: \"echo\"}}\n");
+    for index in 1..=DEPENDS_ON_CHAIN_DEPTH {
+        writeln!(
+            fields,
+            "n{index}: {{entrypoint: schema.#Command & {{command: \"echo\"}}, dependsOn: [services.n{}]}}",
+            index - 1
+        )?;
+    }
+    fields.push_str("}\n");
+
+    let project = evaluate_dependency_graph(&fields)?;
+    for index in 1..=DEPENDS_ON_CHAIN_DEPTH {
+        let service = project
+            .services
+            .get(&format!("n{index}"))
+            .ok_or_else(|| std::io::Error::other(format!("expected service n{index}")))?;
+        assert_eq!(
+            service
+                .depends_on
+                .iter()
+                .map(|dependency| dependency.task_name())
+                .collect::<Vec<_>>(),
+            [format!("n{}", index - 1)]
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn diamond_depends_on_graph_evaluates_within_time_bound() -> TestResult {
+    // Evaluation shares structure, but export still expands each dependency's
+    // full subtree. Keep this depth small enough to include CLI-style export.
+    const DIAMOND_DEPTH: usize = 6;
+    let mut fields = String::from("tasks: {\na0: {command: \"echo\"}\nb0: {command: \"echo\"}\n");
+    for index in 1..=DIAMOND_DEPTH {
+        for side in ["a", "b"] {
+            writeln!(
+                fields,
+                "{side}{index}: {{command: \"echo\", dependsOn: [a{previous}, b{previous}]}}",
+                previous = index - 1
+            )?;
+        }
+    }
+    fields.push_str("}\n");
+
+    let project = evaluate_dependency_graph(&fields)?;
+    for index in 1..=DIAMOND_DEPTH {
+        for side in ["a", "b"] {
+            let task = project
+                .tasks
+                .get(&format!("{side}{index}"))
+                .and_then(|node| node.as_task())
+                .ok_or_else(|| std::io::Error::other(format!("expected task {side}{index}")))?;
+            assert_eq!(
+                task.dependency_names().collect::<Vec<_>>(),
+                [format!("a{}", index - 1), format!("b{}", index - 1)]
+            );
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn depends_on_accepts_sequence_references() -> TestResult {
     let tmp = create_test_dir()?;

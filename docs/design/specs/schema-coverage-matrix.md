@@ -31,6 +31,17 @@ CLI-only note: module evaluation waits `CUENV_EVAL_TIMEOUT` seconds (default
 variable. Invalid values are configuration errors; the variable has no schema
 definition.
 
+Evaluation note: cuenv 0.57.3 pins the patched CUE fork at
+`4cee740431d059398b71ce4c22906300c196b212`, based on CUE 0.16.1,
+and builds the bridge with Go 1.26. The fork backports recursive-definition
+reference sharing from CUE master. `#Task`, `#TaskGroup`, `#ContainerImage` and `#Service`
+retain the untyped `dependsOn` workaround and scalar/output-reference checks;
+this dependency upgrade does not restore the typed unions. Regression coverage
+in `schema_project_base_tests.rs` includes deep chains for each node kind and a
+dependency diamond, including decoded dependency names. Export still expands
+full dependency subtrees, so heavy fan-in is a separate performance limit. See
+[the evaluation measurements](cue-recursive-sharing.md).
+
 Infrastructure note: `cuenv infrastructure` (short form `cuenv i`) is
 **experimental** (`--help` and the documentation say so). It evaluates the
 project's selected `infrastructure` configuration, which must be fully concrete
