@@ -197,8 +197,28 @@ package schema
 	// the action may depend on. See #Hermetic.
 	hermetic?: bool | #Hermetic | *true
 
-	// Dependencies - reference other tasks or images for compile-time validation
-	dependsOn?: [...(#TaskNode | #ContainerImage)]
+	// Dependencies - references to other tasks, task groups or images.
+	//
+	// Entries are deliberately untyped. Each entry is the referenced value
+	// itself, already validated where it is declared. Constraining the entries,
+	// with `[...(#TaskNode | #ContainerImage)]` or even `[...{...}]`, makes CUE
+	// re-evaluate every referenced task, including its own `dependsOn`, at each
+	// reference, so evaluation time grows exponentially with chain depth. An
+	// unconstrained entry is shared with its declaration instead.
+	//
+	// The checks below keep the two rejections that matter without unifying
+	// the entry with a task type: scalars such as `"build"` (dependencies are
+	// references, not names) and output references such as `build.stdout`.
+	// Keep each check a flat comprehension: nesting both conditions in one
+	// `for` body made task groups fail closedness when a pipeline re-unifies
+	// them with #TaskNode.
+	dependsOn?: [...]
+	if dependsOn != _|_ for index, dependency in dependsOn if (dependency & (null | bool | number | string | bytes)) != _|_ {
+		_invalidDependsOn: "dependsOn[\(index)]": error("must be a reference to a task, task group or container image, not a string or other value")
+	}
+	if dependsOn != _|_ for index, dependency in dependsOn if dependency.cuenvOutputRef != _|_ {
+		_invalidDependsOn: "dependsOn[\(index)]": error("must reference the task or image itself, not one of its output references")
+	}
 
 	// Labels for task discovery via #TaskMatcher
 	labels?: [...string]
@@ -250,8 +270,14 @@ package schema
 	// Type discriminator - must be "group"
 	type: "group"
 
-	// Dependencies on other tasks
-	dependsOn?: [...#TaskNode]
+	// Dependencies on other tasks. Untyped for the reason given on #Task.dependsOn.
+	dependsOn?: [...]
+	if dependsOn != _|_ for index, dependency in dependsOn if (dependency & (null | bool | number | string | bytes)) != _|_ {
+		_invalidDependsOn: "dependsOn[\(index)]": error("must be a reference to a task or task group, not a string or other value")
+	}
+	if dependsOn != _|_ for index, dependency in dependsOn if dependency.cuenvOutputRef != _|_ {
+		_invalidDependsOn: "dependsOn[\(index)]": error("must reference the task or image itself, not one of its output references")
+	}
 
 	// Limit concurrent executions (0 = unlimited)
 	maxConcurrency?: int
