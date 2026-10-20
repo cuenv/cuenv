@@ -1,10 +1,12 @@
 #![allow(missing_docs)]
 
-use cuengine::evaluate_cue_package_typed;
+use cuengine::{ModuleEvalOptions, evaluate_cue_package_typed};
+use cuenv_core::ModuleEvaluation;
 use cuenv_core::manifest::{Base, Project};
 use cuenv_core::tasks::TaskDirectoryBase;
 use std::error::Error;
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -500,6 +502,200 @@ schema.#Project & {
         res.is_err(),
         "schema should reject a non-task child in a task group"
     );
+    Ok(())
+}
+
+/// Evaluate the root project the way the CLI does. Dependency names come from
+/// CUE reference paths, which `ModuleEvaluation` writes into each entry.
+fn evaluate_project_with_references(root: &Path) -> TestResult<Project> {
+    let options = ModuleEvalOptions {
+        with_references: true,
+        ..Default::default()
+    };
+    let raw = cuengine::evaluate_module(root, "cuenv", Some(&options))?;
+    let references = raw
+        .meta
+        .into_iter()
+        .filter_map(|(key, meta)| meta.reference.map(|reference| (key, reference)))
+        .collect();
+    let module = ModuleEvaluation::from_raw(
+        root.to_path_buf(),
+        raw.instances,
+        raw.projects,
+        Some(references),
+    );
+    Ok(module
+        .root_instance()
+        .ok_or_else(|| std::io::Error::other("expected root instance"))?
+        .to_project()?)
+}
+
+/// Depth of the `dependsOn` chain in the evaluation-time regression test.
+/// With the entries typed as `#TaskNode`, CUE re-evaluated every referenced
+/// task at each reference, so a chain this deep did not finish evaluating.
+const DEPENDS_ON_CHAIN_DEPTH: usize = 12;
+
+/// Generous bound for CI and coverage overhead; the chain evaluates in about
+/// a second.
+const DEPENDS_ON_CHAIN_MAX_SECONDS: u64 = 30;
+
+#[test]
+fn deep_depends_on_chain_evaluates_in_linear_time() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+
+    let mut chain = String::new();
+    for index in 1..=DEPENDS_ON_CHAIN_DEPTH {
+        writeln!(
+            chain,
+            "    t{index}: {{command: \"echo\", args: [\"{index}\"], dependsOn: [t{}]}}",
+            index - 1
+        )?;
+    }
+    let last = format!("t{DEPENDS_ON_CHAIN_DEPTH}");
+    let env = format!(
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {{
+  name: "app"
+  tasks: {{
+    t0: {{command: "echo", args: ["0"]}}
+{chain}    checks: {{
+      type: "group"
+      dependsOn: [{last}]
+      unit: {{command: "echo", args: ["unit"], dependsOn: [{last}]}}
+    }}
+  }}
+  images: api: {{
+    context: "."
+    dependsOn: [tasks.checks, tasks.{last}]
+  }}
+  // `tasks` inside the pipeline would name the pipeline's own field.
+  let projectTasks = tasks
+  ci: pipelines: main: tasks: [projectTasks.checks]
+}}
+"#
+    );
+    fs::write(root.join("env.cue"), env)?;
+
+    let start = std::time::Instant::now();
+    let project = evaluate_project_with_references(root)?;
+    let elapsed = start.elapsed();
+
+    for index in 1..=DEPENDS_ON_CHAIN_DEPTH {
+        let task = project
+            .tasks
+            .get(&format!("t{index}"))
+            .and_then(|node| node.as_task())
+            .ok_or_else(|| std::io::Error::other(format!("expected task t{index}")))?;
+        let previous = format!("t{}", index - 1);
+        assert_eq!(task.dependency_names().collect::<Vec<_>>(), [previous]);
+    }
+
+    let checks = project
+        .tasks
+        .get("checks")
+        .and_then(|node| node.as_group())
+        .ok_or_else(|| std::io::Error::other("expected checks group"))?;
+    let group_dependencies: Vec<_> = checks
+        .depends_on
+        .iter()
+        .map(|dependency| dependency.task_name())
+        .collect();
+    assert_eq!(group_dependencies, [last.as_str()]);
+
+    let image = project
+        .images
+        .get("api")
+        .ok_or_else(|| std::io::Error::other("expected api image"))?;
+    let image_dependencies: Vec<_> = image
+        .depends_on
+        .iter()
+        .map(|dependency| dependency.task_name())
+        .collect();
+    assert_eq!(image_dependencies, ["checks", last.as_str()]);
+
+    assert!(
+        elapsed.as_secs() < DEPENDS_ON_CHAIN_MAX_SECONDS,
+        "PERFORMANCE REGRESSION: a {DEPENDS_ON_CHAIN_DEPTH}-edge dependsOn chain took {elapsed:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn depends_on_accepts_sequence_references() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "app"
+  tasks: {
+    release: [{command: "echo", args: ["tag"]}, {command: "echo", args: ["push"]}]
+    announce: {command: "echo", dependsOn: [release]}
+  }
+}
+"#,
+    )?;
+
+    let project = evaluate_project_with_references(root)?;
+    let names: Vec<_> = project
+        .tasks
+        .get("announce")
+        .and_then(|node| node.as_task())
+        .ok_or_else(|| std::io::Error::other("expected announce task"))?
+        .dependency_names()
+        .collect();
+    assert_eq!(names, ["release"]);
+    Ok(())
+}
+
+#[test]
+fn depends_on_rejects_names_and_output_references() -> TestResult {
+    for (entry, message) in [
+        ("\"build\"", "must be a reference to a task"),
+        ("42", "must be a reference to a task"),
+        ("build.stdout", "not one of its output references"),
+        ("images.base.ref", "not one of its output references"),
+    ] {
+        let tmp = create_test_dir()?;
+        let root = tmp.path();
+        write_local_cuenv_module(root)?;
+
+        let env = r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "app"
+  tasks: {
+    build: {command: "echo"}
+    deploy: {command: "echo", dependsOn: [ENTRY]}
+  }
+  images: base: {context: "."}
+}
+"#
+        .replace("ENTRY", entry);
+        fs::write(root.join("env.cue"), env)?;
+
+        let error = evaluate_cue_package_typed::<Project>(root, "cuenv")
+            .err()
+            .ok_or_else(|| std::io::Error::other(format!("expected {entry} to be rejected")))?;
+        assert!(
+            error.to_string().contains(message),
+            "expected {message:?} for {entry}, got: {error}"
+        );
+    }
+
     Ok(())
 }
 

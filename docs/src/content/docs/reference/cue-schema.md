@@ -245,6 +245,32 @@ tasks: {
 }
 ```
 
+### Dependency references
+
+`dependsOn` on `#Task`, `#TaskGroup`, `#ContainerImage` and `#Service` takes
+CUE references to values declared elsewhere in the project, such as
+`dependsOn: [build, images.base]`. A reference to a name that does not exist
+is a CUE error.
+
+The entries are deliberately not typed as `#TaskNode` or a union with it. The
+referenced value was already validated where it is declared, and typing the
+entry made CUE re-evaluate the whole referenced task, including its own
+`dependsOn`, at every reference. Evaluation time then grew exponentially with
+the depth of the dependency chain, and a chain of plain tasks only two edges
+deep could exceed the default 60-second evaluation timeout. With untyped
+entries a twenty-edge chain evaluates in about a second.
+
+Two mistakes are still rejected during evaluation:
+
+- a string or other scalar, such as `dependsOn: ["build"]`, fails with
+  `dependsOn[N]: must be a reference to a task, ...`;
+- an output reference, such as `dependsOn: [build.stdout]` or
+  `dependsOn: [images.base.ref]`, fails with
+  `dependsOn[N]: must reference the task or image itself, ...`.
+
+References to sequences (`dependsOn: [release]` where `release` is a list of
+tasks) keep working; cuenv resolves the name from the reference path.
+
 ### #TaskNode
 
 Union of all task types - this is what gets validated:
@@ -343,7 +369,7 @@ schema.#Project & {
 | `shellOptions`   | `#ShellOptions`                                   | No       | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
 | `env`            | `{[string]: #EnvironmentVariable \| #TaskOutputRef}` | No   | Task-specific environment                |
 | `dir`            | `#TaskDir`                                       | No       | Working directory override; defaults to `{from: "definition", path: "."}` |
-| `dependsOn`      | `[...#TaskNode]`                                  | No       | Task dependencies (CUE references)       |
+| `dependsOn`      | `[...]` (references, see [Dependency references](#dependency-references)) | No | References to tasks, task groups or container images |
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
 | `description`    | `string`                                          | No       | Human-readable description               |
@@ -495,7 +521,7 @@ tasks: {
 | Field            | Type             | Required | Description                        |
 | ---------------- | ---------------- | -------- | ---------------------------------- |
 | `type`           | `"group"`        | Yes      | Type discriminator                 |
-| `dependsOn`      | `[...#TaskNode]` | No       | Dependencies (CUE references)      |
+| `dependsOn`      | `[...]` (references, see [Dependency references](#dependency-references)) | No | References to tasks or task groups |
 | `maxConcurrency` | `int`            | No       | **Schema-only.** The executor honors global parallelism (`cuenv task -j <n>`); per-group caps are not yet enforced. |
 | `description`    | `string`         | No       | Human-readable description         |
 | `{children}`     | `#TaskNode`      | No       | Named child tasks (any other field)|
@@ -684,7 +710,7 @@ services: {
 | `entrypoint`  | `#Task \| #Script \| #Command`    | Yes      | What the service runs (task, script, or command) |
 | `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
 | `dir`         | `string`                          | No       | Working directory override                    |
-| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service deps wait for readiness; task deps run before startup; image deps fail fast until image build backends exist |
+| `dependsOn`   | `[...]` (references, see [Dependency references](#dependency-references)) | No | References to tasks, task groups, services or images. Service deps wait for readiness; task deps run before startup; image deps fail fast until image build backends exist |
 | `labels`      | `[...string]`                     | No       | Labels for discovery                          |
 | `description` | `string`                          | No       | Human-readable description                    |
 | `runtime`     | `#Runtime`                        | No       | Runtime override                              |
@@ -1207,7 +1233,7 @@ images: {
 | `registry`    | `string`                               | No       | -              | Registry to push to (omit for local)     |
 | `repository`  | `string`                               | No       | -              | Repository name (defaults to image name) |
 | `platform`    | `[...string]`                          | No       | -              | Target platforms for multi-arch builds   |
-| `dependsOn`   | `[...#TaskNode \| #ContainerImage]`     | No       | -              | Dependencies on tasks or other images    |
+| `dependsOn`   | `[...]` (references, see [Dependency references](#dependency-references)) | No | - | References to tasks, task groups or other images |
 | `labels`      | `[...string]`                          | No       | -              | Labels for discovery                     |
 | `inputs`      | `[...#Input]`                          | No       | -              | Input files for cache key derivation     |
 | `description` | `string`                               | No       | -              | Human-readable description               |

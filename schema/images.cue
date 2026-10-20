@@ -71,8 +71,14 @@ package schema
 	// Multi-platform
 	platform?: [...string] // e.g., ["linux/amd64", "linux/arm64"]
 
-	// DAG integration
-	dependsOn?: [...(#TaskNode | #ContainerImage)]
+	// DAG integration. Untyped for the reason given on #Task.dependsOn.
+	dependsOn?: [...]
+	if dependsOn != _|_ for index, dependency in dependsOn if (dependency & (null | bool | number | string | bytes)) != _|_ {
+		_invalidDependsOn: "dependsOn[\(index)]": error("must be a reference to a task, task group or container image, not a string or other value")
+	}
+	if dependsOn != _|_ for index, dependency in dependsOn if dependency.cuenvOutputRef != _|_ {
+		_invalidDependsOn: "dependsOn[\(index)]": error("must reference the task or image itself, not one of its output references")
+	}
 	labels?: [...string]
 
 	// Cache / inputs
