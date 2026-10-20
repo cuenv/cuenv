@@ -193,13 +193,16 @@ impl TaskRef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MatrixTask {
-    /// Type discriminator (always "matrix" for MatrixTask)
-    /// Used by CUE to distinguish from #TaskNode in the #PipelineTask disjunction
+    /// Type discriminator: "matrix" when the entry spells it out. Pipeline
+    /// entries are untyped in the schema, so entries that omit it export
+    /// without it.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub task_type: Option<String>,
     /// Task reference (CUE ref enriched with _name)
     pub task: TaskRef,
-    /// Matrix dimensions (e.g., `arch: ["linux-x64", "darwin-arm64"]`)
+    /// Matrix dimensions (e.g., `arch: ["linux-x64", "darwin-arm64"]`).
+    /// Empty when the entry only adds artifacts or params to a task.
+    #[serde(default)]
     pub matrix: BTreeMap<String, Vec<String>>,
     /// Artifacts to download before running
     #[serde(default)]

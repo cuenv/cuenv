@@ -260,11 +260,16 @@ the depth of the dependency chain, and a chain of plain tasks only two edges
 deep could exceed the default 60-second evaluation timeout. With untyped
 entries a twenty-edge chain evaluates in about a second.
 
-cuenv 0.57.3 builds with a patched CUE fork at commit `4cee740`, based on
+cuenv 0.57.3 builds with a patched CUE fork at commit `183f265`, based on
 CUE 0.16.1, on Go 1.26.
-The fork backports structure sharing for references unified with recursive
-definitions. The untyped dependency schema remains in place; restoring typed
-entries is a separate change.
+The fork shares references regardless of declaration order, so a reference
+to a task declared later, or a pipeline declared before `tasks`, no longer
+copies the referenced task. The untyped dependency schema remains in place;
+restoring typed entries is a separate change.
+
+Pipeline `tasks` entries, `#MatrixTask.task` and service `watch.rebuild`
+entries are untyped references for the same reason, with the same scalar and
+output-reference checks.
 
 Two mistakes are still rejected during evaluation:
 
@@ -858,7 +863,7 @@ watch: {
 | `ignore`   | `[...string]`   | -         | Patterns to ignore (gitignore syntax)        |
 | `debounce` | `string`        | `200ms`   | Debounce window for batched changes          |
 | `on`       | `string`        | `restart` | Action on change (`restart`)                 |
-| `rebuild`  | `[...#TaskNode]`| -         | Tasks to re-run before restart               |
+| `rebuild`  | `[...]`         | -         | Task references to re-run before restart     |
 
 Watch events are debounced, then the supervisor restarts the service. The
 schema exposes `rebuild`, but restart-on-change is the supported behavior in
@@ -2021,10 +2026,20 @@ pipelines: {
 | `mode`            | `#PipelineMode`      | No       | Generation mode: "thin" (default) or "expanded"                          |
 | `environment`     | `string`             | No       | Environment for secret resolution                                        |
 | `when`            | `#PipelineCondition` | No       | Trigger conditions                                                       |
-| `tasks`           | `[...#PipelineTask]` | No       | Tasks to run                                                             |
+| `tasks`           | `[...]`              | No       | Task references or `#MatrixTask` entries to run (see below)              |
 | `continueOnError` | `bool`               | No       | Keep running siblings after a task fails (default `false`; see below)    |
 | `derivePaths`     | `bool`               | No       | Derive provider path filters from task inputs                            |
 | `provider`        | `#ProviderConfig`    | No       | Provider-specific overrides                                              |
+
+**`tasks` entries:** Each entry is a reference to a task, task group or
+sequence, or a `#MatrixTask` object. Entries are not unified with
+`#PipelineTask`, because that re-evaluates the referenced task and its
+dependency closure at every entry. Strings, other scalars and output references
+such as `tasks.build.stdout` are rejected. An entry with `type: "matrix"`, or
+without `type` but with a `task` field, is validated against `#MatrixTask`.
+Inside a pipeline, write the field as `"tasks"`, or bind the project's tasks to
+a `let`, so that `tasks.build` names the project's tasks rather than the
+pipeline's own field.
 
 **Provider Override Behavior:** Per-pipeline `providers` **completely replaces** the global `ci.providers` - there is no merging.
 

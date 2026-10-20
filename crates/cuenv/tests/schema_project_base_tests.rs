@@ -846,6 +846,176 @@ schema.#Project & {
     Ok(())
 }
 
+/// Depth of the chain referenced by pipelines declared before their tasks.
+/// Typed pipeline entries re-evaluated the referenced task's dependency
+/// closure at every entry, and CUE 0.16.1 copied each forward reference.
+const PIPELINE_CHAIN_DEPTH: usize = 20;
+
+/// Generous bound for CI and coverage overhead; the project evaluates in well
+/// under a second.
+const PIPELINE_CHAIN_MAX_SECONDS: u64 = 30;
+
+#[test]
+fn pipelines_declared_before_their_tasks_evaluate_in_linear_time() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+
+    let mut chain = String::new();
+    for index in 1..=PIPELINE_CHAIN_DEPTH {
+        writeln!(
+            chain,
+            "    t{index}: schema.#Task & {{command: \"echo\", args: [\"{index}\"], dependsOn: [t{}]}}",
+            index - 1
+        )?;
+    }
+    let last = format!("t{PIPELINE_CHAIN_DEPTH}");
+    // The pipelines precede the tasks, as in projects that put `ci` first.
+    // Quoted `"tasks"` labels do not shadow the project's `tasks` field.
+    let env = format!(
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {{
+  name: "app"
+  ci: pipelines: {{
+    main: "tasks": [tasks.{last}, tasks.checks]
+    pr: "tasks": [{{type: "matrix", task: tasks.{last}, matrix: arch: ["x64"]}}, {{task: tasks.checks, matrix: arch: ["x64", "arm64"]}}]
+  }}
+  tasks: {{
+    t0: schema.#Task & {{command: "echo", args: ["0"]}}
+{chain}    checks: {{
+      type: "group"
+      dependsOn: [{last}]
+      unit: {{command: "echo", args: ["unit"], dependsOn: [{last}]}}
+    }}
+  }}
+}}
+"#
+    );
+    fs::write(root.join("env.cue"), env)?;
+
+    let start = std::time::Instant::now();
+    let project = evaluate_project_with_references(root)?;
+    let elapsed = start.elapsed();
+
+    let pipelines = &project
+        .ci
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("expected ci configuration"))?
+        .pipelines;
+    for (pipeline, expected) in [
+        ("main", [last.as_str(), "checks"]),
+        ("pr", [last.as_str(), "checks"]),
+    ] {
+        let names: Vec<_> = pipelines
+            .get(pipeline)
+            .ok_or_else(|| std::io::Error::other(format!("expected pipeline {pipeline}")))?
+            .tasks
+            .iter()
+            .map(|task| task.task_name())
+            .collect();
+        assert_eq!(names, expected, "pipeline {pipeline}");
+    }
+
+    assert!(
+        elapsed.as_secs() < PIPELINE_CHAIN_MAX_SECONDS,
+        "PERFORMANCE REGRESSION: pipelines over a {PIPELINE_CHAIN_DEPTH}-edge chain took {elapsed:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn pipeline_tasks_reject_names_output_references_and_invalid_matrices() -> TestResult {
+    for (entry, message) in [
+        ("\"build\"", "must be a reference to a task"),
+        ("42", "must be a reference to a task"),
+        ("tasks.build.stdout", "not one of its output references"),
+        (
+            "{type: \"matrix\", task: \"build\", matrix: arch: [\"x64\"]}",
+            "task must be a reference to a task",
+        ),
+        (
+            "{type: \"matrix\", task: tasks.build.stdout, matrix: arch: [\"x64\"]}",
+            "not one of its output references",
+        ),
+        (
+            "{type: \"matrix\", task: tasks.build, matrix: arch: [\"x64\"], extra: 1}",
+            "field not allowed",
+        ),
+        (
+            "{task: \"build\", matrix: arch: [\"x64\"]}",
+            "task must be a reference to a task",
+        ),
+    ] {
+        let tmp = create_test_dir()?;
+        let root = tmp.path();
+        write_local_cuenv_module(root)?;
+
+        let env = r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "app"
+  tasks: build: {command: "echo"}
+  ci: pipelines: main: "tasks": [ENTRY]
+}
+"#
+        .replace("ENTRY", entry);
+        fs::write(root.join("env.cue"), env)?;
+
+        let error = evaluate_cue_package_typed::<Project>(root, "cuenv")
+            .err()
+            .ok_or_else(|| std::io::Error::other(format!("expected {entry} to be rejected")))?;
+        assert!(
+            error.to_string().contains(message),
+            "expected {message:?} for {entry}, got: {error}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn service_rebuild_rejects_names_and_output_references() -> TestResult {
+    for (entry, message) in [
+        ("\"build\"", "must be a reference to a task"),
+        ("tasks.build.stdout", "not one of its output references"),
+    ] {
+        let tmp = create_test_dir()?;
+        let root = tmp.path();
+        write_local_cuenv_module(root)?;
+
+        let env = r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "app"
+  tasks: build: {command: "echo"}
+  services: api: {
+    entrypoint: schema.#Command & {command: "echo"}
+    watch: {paths: ["src/**"], rebuild: [ENTRY]}
+  }
+}
+"#
+        .replace("ENTRY", entry);
+        fs::write(root.join("env.cue"), env)?;
+
+        let error = evaluate_cue_package_typed::<Project>(root, "cuenv")
+            .err()
+            .ok_or_else(|| std::io::Error::other(format!("expected {entry} to be rejected")))?;
+        assert!(
+            error.to_string().contains(message),
+            "expected {message:?} for {entry}, got: {error}"
+        );
+    }
+
+    Ok(())
+}
+
 #[test]
 fn vcs_dependency_name_accepts_safe_names() -> TestResult {
     let tmp = create_test_dir()?;

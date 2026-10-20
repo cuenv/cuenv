@@ -163,6 +163,24 @@ fn test_pipeline_task_matrix_with_artifacts() {
 }
 
 #[test]
+fn test_pipeline_task_matrix_without_discriminator_or_dimensions() {
+    // Untyped pipeline entries export only the fields the project wrote.
+    let json = r#"{
+            "task": {"_name": "publish.github"},
+            "artifacts": [{"from": "cargo.build", "to": "dist", "filter": ""}]
+        }"#;
+    let task: PipelineTask = serde_json::from_str(json).unwrap();
+
+    let PipelineTask::Matrix(m) = task else {
+        panic!("Expected Matrix variant");
+    };
+    assert_eq!(m.task_type, None);
+    assert_eq!(m.task.task_name(), "publish.github");
+    assert!(m.matrix.is_empty());
+    assert_eq!(m.artifacts.map(|artifacts| artifacts.len()), Some(1));
+}
+
+#[test]
 fn test_pipeline_mixed_tasks() {
     // Mix of matrix and simple tasks (CUE ref format only)
     let json = r#"{
