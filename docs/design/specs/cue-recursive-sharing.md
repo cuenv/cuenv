@@ -73,6 +73,61 @@ shutdown. Successful evaluation times cover loading, building and validation,
 without JSON export. These results support retaining #515's untyped `dependsOn`
 schema for 0.57.3.
 
+### Four-way comparison and root cause
+
+The typed timeouts do not come from a gap in the backport or from a benchmark
+problem. The same fixtures and counter helper were compiled with Go 1.26.3
+against four CUE revisions and run with `GOMAXPROCS=2` and a 30-second bound:
+
+- stock CUE 0.16.1: `6d609d768`
+- the 0.16.1 backport: `4cee74043`
+- fork master without the fix: `4627d40b6`, which is upstream `06f65aeaf` plus
+  two `tools/flow` commits
+- fork master with the original fix: `304ad24c7`
+
+| Typed fixture | Stock 0.16.1 | Backport | Master | Master + fix |
+| --- | ---: | ---: | ---: | ---: |
+| task, 1    | 68,645    | 68,645    | 67,111    | 67,111    |
+| task, 2    | timeout   | timeout   | 469,012   | 469,012   |
+| group, 2   | 176,459   | 176,459   | 172,447   | 172,447   |
+| group, 4   | 1,163,403 | 1,163,403 | 1,136,667 | 1,136,667 |
+| image, 5   | 20,870    | 20,870    | 20,356    | 20,356    |
+| service, 5 | 153,444   | 153,444   | 147,990   | 147,990   |
+| diamond, 1 | 272,262   | 272,262   | 266,044   | 266,044   |
+
+The table lists unifications. The backport's counts equal stock's exactly, and the
+original fix's counts equal the master baseline's. Neither changes cuenv's
+typed schema. Every other typed fixture times out on all four revisions. On the
+current untyped schema, all seven fixtures checked (task at depths 5 and 20,
+group, image and service at depth 20, and the diamond at depths 5 and 20) give
+identical unification and disjunct counts on stock and on the backport. The
+fork therefore has no measured effect on either cuenv schema.
+
+The fix proves containment only when the referenced value's declaration names
+the same definition that the reference is unified with. A reduced model shows
+the boundary. It uses `#N: #A | #B | #Seq`, with `dependsOn?: [...#N]` on `#A`,
+and a chain of `#A` tasks:
+
+| `tasks` declaration | Depth 12, stock | Depth 12, backport |
+| --- | ---: | ---: |
+| `[string]: #N` | 171,987 | 261 |
+| `[string]: #A` | 57,443 | 57,443 |
+| `[string]: #A & {_p: ""}` through a named definition | 57,443 | 57,443 |
+| `[n=string]: ((#A \| #B) & {_p: "", _s: n}) \| #Seq` | timeout at depth 8 | timeout at depth 8 |
+
+The pre-#515 schema never matches exactly. Tasks are declared as
+`((#Task | #TaskGroup) & {_cuenvPrefix, _cuenvSelf}) | #TaskSequence`, and
+references are unified with `#TaskNode | #ContainerImage`. To make the typed
+schema linear, the evaluator would have to prove containment for each
+disjunct of a definition disjunction, inside disjunction overlays. The current
+fix explicitly refuses to share in those overlays. That is new evaluator work, not a backport
+correction.
+
+Fork master also rejects these fixtures, and cuenv's own root `env.cue`, with
+`field not allowed` errors that stock 0.16.1 does not raise. Root evaluation
+reports `ci.contributors: field not allowed`. A future CUE upgrade must
+resolve this before it can ship.
+
 ### Reproduction
 
 Run from the repository root in the Nix development shell with Go 1.26.3.
