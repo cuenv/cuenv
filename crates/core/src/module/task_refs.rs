@@ -162,13 +162,7 @@ fn is_ci_matrix_task_object(field_path: &str, obj: &Map<String, Value>) -> bool 
         return false;
     }
 
-    // Mirrors `#Pipeline.tasks`: an entry without `type` that names a `task` is
-    // a matrix entry, even when it only adds artifacts or params. Tasks have no
-    // `task` field, and task groups always carry `type: "group"`.
-    match obj.get("type") {
-        Some(task_type) => task_type.as_str() == Some("matrix"),
-        None => obj.contains_key("matrix") || obj.contains_key("task"),
-    }
+    obj.contains_key("matrix") || obj.get("type").and_then(Value::as_str) == Some("matrix")
 }
 
 #[cfg(test)]
@@ -515,53 +509,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn test_ci_matrix_entry_without_type_or_dimensions_is_canonicalized() {
-        let instance = json!({
-            "name": "shape-contract",
-            "tasks": {
-                "publish": TaskNodeShape::Task.as_value(),
-            },
-            "ci": {
-                "pipelines": {
-                    "release": {
-                        "tasks": [
-                            {
-                                "task": TaskNodeShape::Task.as_value(),
-                                "artifacts": [{"from": "build", "to": "dist", "filter": ""}],
-                            },
-                        ],
-                    },
-                },
-            },
-        });
-
-        let mut references = ReferenceMap::new();
-        references.insert(
-            "./ci.pipelines.release.tasks[0].task".to_string(),
-            "tasks.publish".to_string(),
-        );
-
-        let project = deserialize_project_with_references(instance, references);
-        let pipeline_task = project
-            .ci
-            .as_ref()
-            .expect("ci should exist")
-            .pipelines
-            .get("release")
-            .expect("release pipeline should exist")
-            .tasks
-            .first()
-            .expect("pipeline task should exist");
-
-        let PipelineTask::Matrix(matrix_task) = pipeline_task else {
-            panic!("expected matrix task, got {pipeline_task:?}");
-        };
-        assert_eq!(matrix_task.task.task_name(), "publish");
-        assert!(matrix_task.matrix.is_empty());
-        assert_eq!(matrix_task.task_type, None);
     }
 
     #[test]

@@ -103,23 +103,14 @@ package schema
 
 // Matrix task configuration for pipeline
 #MatrixTask: close({
-	type: "matrix" // Discriminator that distinguishes matrix entries from task references
-	// Task reference. Untyped for the reason given on #Task.dependsOn: a
-	// #TaskNode constraint re-evaluates the referenced task at every reference.
-	task!: _
-	if (task & (null | bool | number | string | bytes)) != _|_ {
-		_invalidTask: error("task must be a reference to a task or task group, not a string or other value")
-	}
-	if task.cuenvOutputRef != _|_ {
-		_invalidTask: error("task must reference the task itself, not one of its output references")
-	}
+	type:   "matrix"                          // Discriminator for CUE disjunction (distinguishes from #TaskNode)
+	task!:  #TaskNode                         // Task reference (CUE ref for compile-time validation)
 	matrix: [string]: [...string]             // Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
 	artifacts?: [...#ArtifactDownload]        // Artifacts to download before running
 	params?: [string]: string                 // Parameters to pass to the task
 })
 
-// Pipeline task reference - either a direct task reference or a matrix task.
-// #Pipeline.tasks does not apply this type to its entries; see the comment there.
+// Pipeline task reference - either a direct task reference or a matrix task
 #PipelineTask: #TaskNode | #MatrixTask
 
 // GitHub Action configuration for contributor tasks
@@ -273,28 +264,8 @@ package schema
 	environment?: string // environment for secret resolution (e.g., "production")
 	when?:        #PipelineCondition
 
-	// Tasks to run: task references or #MatrixTask objects.
-	//
-	// Entries are untyped for the reason given on #Task.dependsOn. Unifying a
-	// reference with #PipelineTask re-evaluates the whole referenced task, and
-	// its dependency closure, at every pipeline entry. The checks below keep
-	// the rejections that matter: scalars, output references and malformed
-	// matrix entries. A matrix entry is recognised by `type: "matrix"` or, when
-	// it omits the discriminator, by its `task` field: tasks are closed
-	// without one, and task groups always carry `type: "group"`.
-	tasks?: [...]
-	if tasks != _|_ for index, task in tasks if (task & (null | bool | number | string | bytes)) != _|_ {
-		_invalidTasks: "tasks[\(index)]": error("must be a reference to a task or task group, or a matrix task, not a string or other value")
-	}
-	if tasks != _|_ for index, task in tasks if task.cuenvOutputRef != _|_ {
-		_invalidTasks: "tasks[\(index)]": error("must reference the task itself, not one of its output references")
-	}
-	if tasks != _|_ for index, task in tasks if task.type != _|_ if task.type == "matrix" {
-		_matrixTasks: "\(index)": #MatrixTask & task
-	}
-	if tasks != _|_ for index, task in tasks if task.type == _|_ if task.task != _|_ {
-		_matrixTasks: "\(index)": #MatrixTask & task
-	}
+	// Tasks to run - can be simple task names or matrix task objects
+	tasks?: [...#PipelineTask]
 
 	// Key-value annotations surfaced in CI reports and job summaries.
 	// Values can be literal strings or #TaskCaptureRef (resolved after execution).

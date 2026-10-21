@@ -1,22 +1,14 @@
 from pathlib import Path
-import io
 import shutil
-import subprocess
 import sys
-import tarfile
 
 repo = Path(sys.argv[1]).resolve()
 out = Path(sys.argv[2]).resolve()
-old = out / 'pre515'
-old.mkdir(parents=True, exist_ok=True)
-archive = subprocess.check_output(['git', 'archive', '092d0c9665079cd7945ad3205b10952d91b8a72b', 'schema'], cwd=repo)
-tarfile.open(fileobj=io.BytesIO(archive)).extractall(old, filter='data')
-for schema in ['typed', 'untyped']:
-    source = old / 'schema' if schema == 'typed' else repo / 'schema'
+for order in ['ascending', 'reverse']:
     for kind in ['task', 'group', 'image', 'service', 'diamond']:
         for depth in [5, 12, 20]:
-            root = out / schema / f'{kind}-{depth}'
-            shutil.copytree(source, root / 'schema', dirs_exist_ok=True)
+            root = out / order / f'{kind}-{depth}'
+            shutil.copytree(repo / 'schema', root / 'schema', dirs_exist_ok=True)
             (root / 'cue.mod').mkdir(exist_ok=True)
             (root / 'cue.mod/module.cue').write_text('module: "github.com/cuenv/cuenv"\nlanguage: version: "v0.14.1"\n')
             nodes = []
@@ -27,8 +19,12 @@ for schema in ['typed', 'untyped']:
                 if kind == 'image': nodes.append(f'n{i}: {{context:"."{deps}}}')
                 if kind == 'service': nodes.append(f'n{i}: {{entrypoint: schema.#Command & {{command:"echo"}}{deps}}}')
                 if kind == 'diamond':
+                    layer = []
                     for name in ['a', 'b']:
                         previous = '' if i == 0 else f', dependsOn: [a{i-1},b{i-1}]'
-                        nodes.append(f'{name}{i}: {{command:"echo"{previous}}}')
+                        layer.append(f'{name}{i}: {{command:"echo"{previous}}}')
+                    nodes.append('\n'.join(layer))
+            if order == 'reverse':
+                nodes.reverse()
             field = {'image':'images', 'service':'services'}.get(kind, 'tasks')
             (root / 'env.cue').write_text('package cuenv\nimport "github.com/cuenv/cuenv/schema"\nschema.#Project & {\nname:"bench"\n' + field + ': {\n' + '\n'.join(nodes) + '\n}\n}\n')
