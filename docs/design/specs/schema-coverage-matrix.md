@@ -41,6 +41,9 @@ in `schema_project_base_tests.rs` includes deep chains for each node kind and a
 dependency diamond, including decoded dependency names. Export still expands
 full dependency subtrees, so heavy fan-in is a separate performance limit. See
 [the evaluation measurements](cue-recursive-sharing.md).
+Release qualification remains blocked: the full pre-#515 typed schema times out
+on both the untouched master fix and its backport. Generic sharing tests and
+green CI with the workaround do not establish that this typed case is fixed.
 
 Infrastructure note: `cuenv infrastructure` (short form `cuenv i`) is
 **experimental** (`--help` and the documentation say so). It evaluates the

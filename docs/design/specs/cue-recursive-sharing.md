@@ -4,6 +4,11 @@ cuenv pins [fork commit 4cee740](https://github.com/rawkode/cue/commit/4cee74043
 which backports recursive-definition sharing onto CUE 0.16.1. The bridge uses
 Go 1.26. The fork preserves stable CUE semantics rather than adopting CUE master.
 
+**Release qualification is blocked.** The generic regression below establishes
+the narrower direct-definition optimization. It does not establish that the
+full typed cuenv schema is fixed. The release PR remains draft while that gap is
+investigated; green CI exercises the current untyped workaround schema.
+
 ## Generic recursive graphs
 
 The fork's `TestRecursiveSharingComplexity` evaluates typed fan-in and disjunction
@@ -131,6 +136,62 @@ envelopes to stock CUE 0.16.1, including metadata and dependency references.
 The fork's full Go suite, full ADT race suite, repeated concurrent-read tests and
 `go vet ./...` pass. New semantic regression tests also pass on the stock
 baseline; the complexity test fails there as intended.
+
+## Original master versus backport
+
+A fresh comparison uses untouched source archives for original master commit
+`304ad24c7bcc1d48fa47c2e65e98cb25d21955e0` and backport commit
+`4cee740431d059398b71ce4c22906300c196b212`. Both receive identical complete
+pre-#515 schemas and task fixtures, with module language `v0.14.1`, Go 1.26.3
+and `GOMAXPROCS=2`. Independently compiled CLI `cue vet .` and the evaluation
+helper agree on the following outcomes:
+
+| Plain task chain depth | Original master | Stable backport |
+| --- | --- | --- |
+| 1 | Invalid: `name: field not allowed` and task-field errors | Pass, 68,645 unifications |
+| 3 | Timeout | Timeout |
+| 5 | Timeout | Timeout |
+
+The helper's Go test guard is 18 seconds; each process has a separate 20-second
+bound. Timeout stacks are inside `BuildInstance`, before validation finishes and
+without JSON export. These results do not establish that the backport introduced
+the full-schema slowdown: original master also exhibits it, alongside its
+compatibility failures.
+
+Adding explicit `schema.#Task &` to every node improves the depth-3 case but
+does not establish linear growth. Independent CLI counts are:
+
+| Explicit task chain depth | Original master | Stable backport |
+| --- | --- | --- |
+| 3 | Invalid, 30,394 unifications | Pass, 32,216 unifications |
+| 5 | Invalid, 812,504 unifications | Pass, 863,898 unifications |
+
+The original regression uses a single definition in the task pattern and
+dependency list. The actual schema combines task/image unions, naming fields,
+and computed defaults. Passing the former does not prove the latter is fixed.
+Tracing the full-schema depth-1 case shows the dependency disjunction calling
+`unshare()` before the referenced task arrives. The surviving branch also lacks
+the exact direct-definition evidence required by the optimization: the source
+task comes from an embedded task alternative. None of the new repeated-definition
+sharing checks succeed in that case. This identifies an uncovered union path;
+it does not establish a safe optimization for it.
+
+The [standalone reproducer](cue-recursive-sharing/recursive-union-computed-default.cue)
+contains no imports, comprehensions or group child pattern. On the backport,
+with module language `v0.14.1`, keeping only node `n0` takes 105 unifications;
+keeping `n0` and `n1` takes 132; the complete three-node fixture hits the
+18-second test timeout. In separate one-change controls on the larger
+standalone precursor, removing the computed naming default, using a task-only
+root constraint, or using a task-only dependency constraint allows depth 2 to
+finish quickly. This is a diagnostic counterexample, not a proposed schema change.
+
+The next performance gate must include a minimized regression for this shape
+and the full typed-schema matrix. Any further optimization must preserve
+defaults and closedness; satisfying one union alternative alone is insufficient
+to skip the others, because another alternative can contribute defaults and
+observable fields.
+
+## Baseline regression fixtures and remaining limits
 
 The four new Rust regression shapes also have baseline CLI fixture evidence.
 With stock CUE 0.16.1, `cue export .` hits a 30-second bound using the pre-#515
