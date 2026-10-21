@@ -63,6 +63,8 @@ nix profile install github:cuenv/cuenv
 nix run github:cuenv/cuenv -- --help
 ```
 
+When adding cuenv to a NixOS, nix-darwin, or home-manager configuration, use `packages.<system>.default` (also exposed as `cuenv-nix`). On Linux, `packages.<system>.cuenv` is the portable glibc 2.17 release binary for generic distributions; it expects `/lib64/ld-linux-*.so.2` and will not start on NixOS without `nix-ld`.
+
 For project development environments, cuenv loads your `flake.nix` dev shell automatically through its Nix runtime and `#NixFlake` hook. See [Nix Integration](/how-to/nix/) for the full workflow.
 
 ## From source

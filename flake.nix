@@ -617,6 +617,26 @@
           '';
         }));
 
+        # Nix-native cuenv for flake consumers (profiles, NixOS, home-manager).
+        # On Linux, `cuenv` is a portable glibc 2.17 binary that loads
+        # /lib64/ld-linux-*.so.2, which NixOS does not provide. CI and releases
+        # ship `result/bin/cuenv` to generic distros, so `cuenv` stays portable
+        # and this copy is pointed at the Nix glibc loader instead.
+        cuenv-nix =
+          if pkgs.stdenv.isLinux then
+            pkgs.runCommand "cuenv-${version}" {
+              nativeBuildInputs = [ pkgs.patchelf ];
+              meta.mainProgram = "cuenv";
+            } ''
+              mkdir -p $out/bin
+              cp ${cuenv}/bin/cuenv $out/bin/cuenv
+              chmod u+w $out/bin/cuenv
+              patchelf --set-interpreter ${pkgs.stdenv.cc.bintools.dynamicLinker} $out/bin/cuenv
+              $out/bin/cuenv --version
+            ''
+          else
+            cuenv;
+
         # Development tools configuration
         devTools = with pkgs; [
           go_1_26
@@ -665,8 +685,8 @@
         };
 
         packages = {
-          default = cuenv;
-          inherit cuenv cue-bridge;
+          default = cuenv-nix;
+          inherit cuenv cuenv-nix cue-bridge;
         };
 
         devShells.default = craneLib.devShell ({
@@ -719,7 +739,7 @@
         apps = {
           default = {
             type = "app";
-            program = "${cuenv}/bin/cuenv";
+            program = "${cuenv-nix}/bin/cuenv";
             meta = {
               description = "cuenv CLI app";
             };
