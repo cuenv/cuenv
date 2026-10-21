@@ -365,6 +365,7 @@ async fn a_task_outside_its_project_sees_inputs_where_the_checkout_has_them() {
     let executor = TaskExecutor::new(ExecutorConfig {
         project_root: project_root.clone(),
         cue_module_root: Some(module_root.clone()),
+        environment: host_path_environment(),
         ..ExecutorConfig::default()
     });
     let task = Task {

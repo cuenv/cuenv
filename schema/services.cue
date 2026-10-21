@@ -35,14 +35,7 @@ package schema
 	// Task references run to completion before service startup. Image references
 	// are resolved in the dependency plan, but selected image builds still fail
 	// fast until image execution backends exist.
-	// Untyped for the reason given on #Task.dependsOn.
-	dependsOn?: [...]
-	if dependsOn != _|_ for index, dependency in dependsOn if (dependency & (null | bool | number | string | bytes)) != _|_ {
-		_invalidDependsOn: "dependsOn[\(index)]": error("must be a reference to a task, task group, service or container image, not a string or other value")
-	}
-	if dependsOn != _|_ for index, dependency in dependsOn if dependency.cuenvOutputRef != _|_ {
-		_invalidDependsOn: "dependsOn[\(index)]": error("must reference the task or image itself, not one of its output references")
-	}
+	dependsOn?: [...(#TaskNode | #Service | #ContainerImage)]
 
 	// Labels for discovery via #ServiceMatcher (mirrors #TaskMatcher)
 	labels?: [...string]

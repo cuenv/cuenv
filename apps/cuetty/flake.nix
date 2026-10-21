@@ -57,12 +57,11 @@
         zigARWrapper = pkgs.writeShellScriptBin "zig-ar" ''
           exec ${pkgs.zig}/bin/zig ar "$@"
         '';
-        cue-bridge = pkgs.buildGoModule {
+        cue-bridge = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
           pname = "libcue-bridge";
           inherit version;
           src = ../../crates/cuengine;
-          vendorHash = "sha256-p8gfl2H0lThSmqIRQZWDYoQ3antrIslpCwRCNKQ1cKs=";
-          go = pkgs.go_1_24;
+          vendorHash = "sha256-r+RlVL3o3BaDjD3nLHRbRc7r139EiqEy04cdYuUd3Io=";
           nativeBuildInputs = [ pkgs.zig zigCCWrapper zigCXXWrapper zigARWrapper ]
             ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
           buildPhase = ''
@@ -87,6 +86,18 @@
             CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a $go_sources
             cp libcue_bridge.h $out/release/
             runHook postBuild
+          '';
+          doCheck = true;
+          # The custom buildPhase omits buildGoModule's default test helpers.
+          checkPhase = ''
+            runHook preCheck
+            export CGO_ENABLED=1
+            export CC=${pkgs.stdenv.cc}/bin/cc
+            export CXX=${pkgs.stdenv.cc}/bin/c++
+            unset AR
+            go vet ./...
+            go test ./...
+            runHook postCheck
           '';
           installPhase = ''
             runHook preInstall

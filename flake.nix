@@ -129,12 +129,11 @@
         '';
 
         # CUE bridge builder
-        cue-bridge = pkgs.buildGoModule {
+        cue-bridge = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
           pname = "libcue-bridge";
           inherit version;
           src = ./crates/cuengine;
-          vendorHash = "sha256-p8gfl2H0lThSmqIRQZWDYoQ3antrIslpCwRCNKQ1cKs=";
-          go = pkgs.go_1_24;
+          vendorHash = "sha256-r+RlVL3o3BaDjD3nLHRbRc7r139EiqEy04cdYuUd3Io=";
           nativeBuildInputs = [ pkgs.zig zigCCWrapper zigCXXWrapper zigARWrapper ]
             ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
 
@@ -348,6 +347,8 @@
           cargoArtifacts = workspaceCiCargoArtifacts;
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
           CARGO_PROFILE = "ci";
+          # HTTP client construction loads native roots, including in mock tests.
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         });
 
         # Fake Terraform provider used by the infrastructure end-to-end suites. It
@@ -618,7 +619,7 @@
 
         # Development tools configuration
         devTools = with pkgs; [
-          go_1_24
+          go_1_26
           cue
           antora
           cargo-nextest
