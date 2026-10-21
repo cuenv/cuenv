@@ -252,21 +252,24 @@ CUE references to values declared elsewhere in the project, such as
 `dependsOn: [build, images.base]`. A reference to a name that does not exist
 is a CUE error.
 
-The entries are deliberately not typed as `#TaskNode` or a union with it. The
-referenced value was already validated where it is declared, and typing the
-entry made CUE re-evaluate the whole referenced task, including its own
-`dependsOn`, at every reference. Evaluation time then grew exponentially with
-the depth of the dependency chain, and a chain of plain tasks only two edges
-deep could exceed the default 60-second evaluation timeout. With untyped
-entries a twenty-edge chain evaluates in about a second.
+The entries are typed: `#Task` and `#ContainerImage` accept
+`#TaskNode | #ContainerImage`, `#TaskGroup` accepts `#TaskNode`, and
+`#Service` accepts `#TaskNode | #Service | #ContainerImage`. A string or other
+scalar, such as `dependsOn: ["build"]`, and an output reference, such as
+`dependsOn: [build.stdout]` or `dependsOn: [images.base.ref]`, match none of
+these and fail evaluation at the entry, for example at
+`tasks.deploy.dependsOn.0`. Pipeline `tasks` entries (`#PipelineTask`),
+`#MatrixTask.task` and service `watch.rebuild` entries (`#TaskNode`) are typed
+the same way.
 
-Two mistakes are still rejected during evaluation:
-
-- a string or other scalar, such as `dependsOn: ["build"]`, fails with
-  `dependsOn[N]: must be a reference to a task, ...`;
-- an output reference, such as `dependsOn: [build.stdout]` or
-  `dependsOn: [images.base.ref]`, fails with
-  `dependsOn[N]: must reference the task or image itself, ...`.
+Stock CUE re-evaluates a referenced task, including its own typed
+`dependsOn`, at every typed reference, so evaluation time grows exponentially
+with the depth of a dependency graph. cuenv 0.57.3 builds with a CUE fork at
+commit `5a1f958`, based on CUE 0.16.1, on Go 1.26. The fork shares a typed
+reference with the referenced value when the value was declared with one of
+the definitions of the type and the type's other definitions cannot be unified
+with it. Dependency graphs then evaluate in time linear in their size,
+regardless of declaration order.
 
 References to sequences (`dependsOn: [release]` where `release` is a list of
 tasks) keep working; cuenv resolves the name from the reference path.
@@ -369,7 +372,7 @@ schema.#Project & {
 | `shellOptions`   | `#ShellOptions`                                   | No       | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
 | `env`            | `{[string]: #EnvironmentVariable \| #TaskOutputRef}` | No   | Task-specific environment                |
 | `dir`            | `#TaskDir`                                       | No       | Working directory override; defaults to `{from: "definition", path: "."}` |
-| `dependsOn`      | `[...]` (references, see [Dependency references](#dependency-references)) | No | References to tasks, task groups or container images |
+| `dependsOn`      | `[...(#TaskNode \| #ContainerImage)]`             | No       | Task dependencies (CUE references, see [Dependency references](#dependency-references)) |
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
 | `description`    | `string`                                          | No       | Human-readable description               |
@@ -521,7 +524,7 @@ tasks: {
 | Field            | Type             | Required | Description                        |
 | ---------------- | ---------------- | -------- | ---------------------------------- |
 | `type`           | `"group"`        | Yes      | Type discriminator                 |
-| `dependsOn`      | `[...]` (references, see [Dependency references](#dependency-references)) | No | References to tasks or task groups |
+| `dependsOn`      | `[...#TaskNode]` | No       | Dependencies (CUE references)      |
 | `maxConcurrency` | `int`            | No       | **Schema-only.** The executor honors global parallelism (`cuenv task -j <n>`); per-group caps are not yet enforced. |
 | `description`    | `string`         | No       | Human-readable description         |
 | `{children}`     | `#TaskNode`      | No       | Named child tasks (any other field)|
@@ -710,7 +713,7 @@ services: {
 | `entrypoint`  | `#Task \| #Script \| #Command`    | Yes      | What the service runs (task, script, or command) |
 | `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
 | `dir`         | `string`                          | No       | Working directory override                    |
-| `dependsOn`   | `[...]` (references, see [Dependency references](#dependency-references)) | No | References to tasks, task groups, services or images. Service deps wait for readiness; task deps run before startup; image deps fail fast until image build backends exist |
+| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service deps wait for readiness; task deps run before startup; image deps fail fast until image build backends exist |
 | `labels`      | `[...string]`                     | No       | Labels for discovery                          |
 | `description` | `string`                          | No       | Human-readable description                    |
 | `runtime`     | `#Runtime`                        | No       | Runtime override                              |
@@ -1233,7 +1236,7 @@ images: {
 | `registry`    | `string`                               | No       | -              | Registry to push to (omit for local)     |
 | `repository`  | `string`                               | No       | -              | Repository name (defaults to image name) |
 | `platform`    | `[...string]`                          | No       | -              | Target platforms for multi-arch builds   |
-| `dependsOn`   | `[...]` (references, see [Dependency references](#dependency-references)) | No | - | References to tasks, task groups or other images |
+| `dependsOn`   | `[...(#TaskNode \| #ContainerImage)]`   | No       | -              | Dependencies on tasks or other images    |
 | `labels`      | `[...string]`                          | No       | -              | Labels for discovery                     |
 | `inputs`      | `[...#Input]`                          | No       | -              | Input files for cache key derivation     |
 | `description` | `string`                               | No       | -              | Human-readable description               |
@@ -2015,10 +2018,15 @@ pipelines: {
 | `mode`            | `#PipelineMode`      | No       | Generation mode: "thin" (default) or "expanded"                          |
 | `environment`     | `string`             | No       | Environment for secret resolution                                        |
 | `when`            | `#PipelineCondition` | No       | Trigger conditions                                                       |
-| `tasks`           | `[...#PipelineTask]` | No       | Tasks to run                                                             |
+| `tasks`           | `[...#PipelineTask]` | No       | Tasks to run (see below)                                                 |
 | `continueOnError` | `bool`               | No       | Keep running siblings after a task fails (default `false`; see below)    |
 | `derivePaths`     | `bool`               | No       | Derive provider path filters from task inputs                            |
 | `provider`        | `#ProviderConfig`    | No       | Provider-specific overrides                                              |
+
+**`tasks` entries:** Each entry is a reference to a task, task group or
+sequence, or a `#MatrixTask` object. Inside a pipeline, write the field as
+`"tasks"`, or bind the project's tasks to a `let`, so that `tasks.build` names
+the project's tasks rather than the pipeline's own field.
 
 **Provider Override Behavior:** Per-pipeline `providers` **completely replaces** the global `ci.providers` - there is no merging.
 

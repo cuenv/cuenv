@@ -268,7 +268,7 @@ fn infrastructure_policy_uses_schema_field_name() {
 
 #[tokio::test]
 async fn infrastructure_filters_before_resolving_and_returns_secret_parts() {
-    let secret = crate::secrets::Secret::new("/usr/bin/printf".into(), vec!["credential".into()]);
+    let secret = crate::secrets::Secret::new("printf".into(), vec!["credential".into()]);
     let forbidden = crate::secrets::Secret::new("/this/command/must/never/run".into(), vec![]);
     let variables = HashMap::from([
         (

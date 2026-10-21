@@ -1,6 +1,6 @@
 module github.com/cuenv/cuenv/libcue-bridge
 
-go 1.25.0
+go 1.26.0
 
 require cuelang.org/go v0.16.1
 
@@ -22,3 +22,5 @@ require (
 	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 )
+
+replace cuelang.org/go => github.com/rawkode/cue v0.16.0-0.dev.0.20261021002650-5a1f958250d6
