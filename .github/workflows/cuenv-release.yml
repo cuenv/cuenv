@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 30
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Setup Namespace Nix Cache
@@ -64,7 +64,7 @@ jobs:
     timeout-minutes: 30
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Setup Namespace Nix Cache
@@ -103,7 +103,7 @@ jobs:
     timeout-minutes: 30
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Setup Namespace Nix Cache
@@ -145,7 +145,7 @@ jobs:
     timeout-minutes: 60
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
     - name: Setup Namespace Nix Cache
@@ -203,7 +203,7 @@ jobs:
     timeout-minutes: 60
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
     - name: Setup Namespace Nix Cache
@@ -261,7 +261,7 @@ jobs:
     timeout-minutes: 60
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
     - name: Setup Namespace Nix Cache
@@ -322,7 +322,7 @@ jobs:
     timeout-minutes: 30
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
     - name: Setup Namespace Nix Cache
@@ -387,7 +387,7 @@ jobs:
     - build-cuenv-namespace-profile-cuenv-linux-x86
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Setup Namespace Nix Cache
@@ -440,7 +440,7 @@ jobs:
     - publish-github
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Setup Namespace Nix Cache
@@ -490,7 +490,7 @@ jobs:
     - docs-build
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Setup Namespace Nix Cache
@@ -544,7 +544,7 @@ jobs:
     - build-cuenv-namespace-profile-cuenv-linux-x86
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Setup Namespace Nix Cache
