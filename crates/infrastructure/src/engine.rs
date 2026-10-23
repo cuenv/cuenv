@@ -204,7 +204,9 @@ pub struct ResourceChange {
     dependencies: Vec<String>,
     /// Resource outputs used by its configuration.
     references: ConfigurationReferences,
-    /// Configuration with typed unknown values at reference destinations.
+    /// For a resource with references: the planned configuration. Outputs
+    /// known while planning are filled in; the rest are typed unknowns that
+    /// apply resolves once their producers have been applied.
     reference_configuration: Option<Value>,
     steps: Vec<ApplyStep>,
     /// For [`Action::Refresh`]: the refreshed record apply writes.
@@ -226,6 +228,15 @@ impl ResourceChange {
     #[must_use]
     pub const fn has_work(&self) -> bool {
         !matches!(self.action, Action::NoOp)
+    }
+
+    /// Whether apply must resolve output references and ask the provider
+    /// for a final plan: only when an output was unknown while planning.
+    /// Known outputs are already in the confirmed plan.
+    fn needs_final_plan(&self) -> bool {
+        self.reference_configuration
+            .as_ref()
+            .is_some_and(|configuration| self.references.has_unknown_destination(configuration))
     }
 }
 
@@ -652,6 +663,17 @@ struct OperationRunContext<'run> {
     on_event: &'run mut (dyn FnMut(ApplyEvent) + Send),
 }
 
+/// The declaration at `address`: declared under its name and with its type.
+#[must_use]
+pub fn declared_resource<'declared>(
+    declared: &'declared BTreeMap<String, ManagedResourceDeclaration>,
+    address: &ResourceAddress,
+) -> Option<&'declared ManagedResourceDeclaration> {
+    declared
+        .get(&address.name)
+        .filter(|declaration| declaration.resource_type == address.resource_type)
+}
+
 /// The addresses of the resources a declaration depends on.
 fn full_dependencies(
     declared: &BTreeMap<String, ManagedResourceDeclaration>,
@@ -670,13 +692,7 @@ fn full_dependencies(
         }
     }
     for reference in references.references() {
-        let Some(dependency) = declared.get(&reference.source.name) else {
-            return Err(InfrastructureError::configuration(format!(
-                "reference to unknown resource '{}'",
-                reference.source
-            )));
-        };
-        if dependency.resource_type != reference.source.resource_type {
+        if declared_resource(declared, &reference.source).is_none() {
             return Err(InfrastructureError::configuration(format!(
                 "reference to unknown resource '{}'",
                 reference.source
@@ -821,11 +837,7 @@ impl InfrastructureEngine {
             ));
         }
         validate_configuration(&self.infrastructure, self.tenant.environment())?;
-        let declaration = self
-            .infrastructure
-            .resources
-            .get(&address.name)
-            .filter(|declaration| declaration.resource_type == address.resource_type)
+        let declaration = declared_resource(&self.infrastructure.resources, address)
             .cloned()
             .ok_or_else(|| {
                 InfrastructureError::configuration(format!(
@@ -861,11 +873,7 @@ impl InfrastructureEngine {
         let provider_name = declaration.provider_name().to_string();
         self.ensure_provider(&provider_name, &mut warnings).await?;
         for reference in references.references() {
-            let source = self
-                .infrastructure
-                .resources
-                .get(&reference.source.name)
-                .filter(|source| source.resource_type == reference.source.resource_type)
+            let source = declared_resource(&self.infrastructure.resources, &reference.source)
                 .ok_or_else(|| {
                     InfrastructureError::configuration(format!(
                         "reference from {address} names undeclared resource {}",
@@ -1368,34 +1376,45 @@ impl InfrastructureEngine {
         // store cannot take.
         let version = operation.expected;
 
+        let final_plan = change.needs_final_plan();
         for planned_step in operation.steps {
-            let step = if change.references.references().is_empty()
-                || planned_step.kind == StepKind::Delete
-            {
+            let step = if !final_plan || planned_step.kind == StepKind::Delete {
                 planned_step.clone()
-            } else if let Some(step) = self
-                .replan_referenced_step(ReferencedReplan {
-                    change,
-                    step: planned_step,
-                    schema,
-                    lock,
-                    rows,
-                    on_event,
-                })
-                .await
-                .map_err(OperationFailure::from_reference_replan)?
-            {
-                step
             } else {
-                // A concrete output can make an update unnecessary. The
-                // final plan has refreshed and recorded its state.
-                continue;
+                let replanned = self
+                    .replan_referenced_step(ReferencedReplan {
+                        change,
+                        step: planned_step,
+                        schema,
+                        lock,
+                        rows,
+                        on_event,
+                    })
+                    .await;
+                match replanned {
+                    Ok(Some(step)) => step,
+                    // A concrete output can make an update unnecessary. The
+                    // final plan has refreshed and recorded its state.
+                    Ok(None) => continue,
+                    Err(error) => {
+                        if operation.kind == OperationKind::ReplaceCreate {
+                            // Its delete has already run and been recorded.
+                            on_event(ApplyEvent::Warning(format!(
+                                "{} was destroyed for its replacement but could not be \
+                                 recreated once its output references were resolved; it is no \
+                                 longer in state and the next apply will create it",
+                                change.address
+                            )));
+                        }
+                        return Err(OperationFailure::from_reference_replan(error));
+                    }
+                }
             };
-            // Once a non-referenced operation has emitted `Started`, it is
-            // already in flight and must be allowed to finish and record its
-            // result. Reference resolution performs extra provider calls,
-            // so stop requests must still be checked before its final apply.
-            if !change.references.references().is_empty() {
+            // Once an operation without a final plan has emitted `Started`, it
+            // is already in flight and must be allowed to finish and record
+            // its result. A final plan performs extra provider calls, so stop
+            // requests must still be checked before its apply.
+            if final_plan {
                 self.ensure_not_stopped()
                     .map_err(OperationFailure::Continue)?;
             }
@@ -1549,13 +1568,21 @@ impl InfrastructureEngine {
                 change.address
             ))
         })?;
-        let configuration =
-            self.resolve_reference_configuration(ResolveReferenceConfiguration {
-                change,
-                destination_block: &schema.block,
-                prepared,
-                rows,
-            })?;
+        let mut warnings = Vec::new();
+        let configuration = self
+            .resolve_reference_configuration(
+                ResolveReferenceConfiguration {
+                    change,
+                    destination_block: &schema.block,
+                    prepared,
+                    rows,
+                },
+                &mut warnings,
+            )
+            .await?;
+        for warning in warnings {
+            on_event(ApplyEvent::Warning(warning));
+        }
         let configuration = schema.block.normalize_configuration(configuration);
         let value_type = schema.block.implied_type();
         let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
@@ -1675,14 +1702,10 @@ impl InfrastructureEngine {
                     return Ok(None);
                 }
             }
-            StepKind::Create => {
-                if !response.requires_replace.is_empty() {
-                    return Err(InfrastructureError::plugin(format!(
-                        "final plan for {} requires a replacement; run plan again",
-                        change.address
-                    )));
-                }
-            }
+            // As in Terraform, `requires_replace` is meaningless without a
+            // prior object: SDKv2 providers report every `ForceNew`
+            // attribute on creates too.
+            StepKind::Create => {}
             StepKind::Delete => {
                 return Err(InfrastructureError::configuration(
                     "output references cannot be resolved for a delete",
@@ -1701,9 +1724,12 @@ impl InfrastructureEngine {
         }))
     }
 
-    fn resolve_reference_configuration(
+    /// Resolve every reference of a consumer from the recorded state of its
+    /// sources. Warnings from upgrading source state are added to `warnings`.
+    async fn resolve_reference_configuration(
         &self,
         input: ResolveReferenceConfiguration<'_>,
+        warnings: &mut Vec<String>,
     ) -> Result<Value> {
         let ResolveReferenceConfiguration {
             change,
@@ -1712,16 +1738,32 @@ impl InfrastructureEngine {
             rows,
         } = input;
         self.validate_output_references(&change.address, &change.references, destination_block)?;
+        let mut outputs = BTreeMap::new();
+        for reference in change.references.references() {
+            let value = self
+                .reference_output_value(&change.address, reference, rows, warnings)
+                .await?;
+            outputs.insert(reference.destination_attribute.as_str(), value);
+        }
         change.references.resolve(prepared, |reference| {
-            self.reference_output_value(&change.address, reference, rows)
+            outputs
+                .remove(reference.destination_attribute.as_str())
+                .ok_or_else(|| {
+                    reference_error(&change.address, reference, "was not resolved")
+                })
         })
     }
 
-    fn reference_output_value(
+    /// The recorded value of one source output, upgraded to the provider's
+    /// current schema version first, as a refresh would. Schema
+    /// compatibility and sensitivity are checked by
+    /// [`Self::validate_output_references`].
+    async fn reference_output_value(
         &self,
         destination: &ResourceAddress,
         reference: &ResourceOutputReference,
         rows: &BTreeMap<ResourceAddress, ManagedResource>,
+        warnings: &mut Vec<String>,
     ) -> Result<Value> {
         let row = rows.get(&reference.source).ok_or_else(|| {
             reference_error(
@@ -1737,14 +1779,10 @@ impl InfrastructureEngine {
                 "cannot read tainted source state",
             ));
         }
-        let source_declaration = self
-            .infrastructure
-            .resources
-            .get(&reference.source.name)
-            .filter(|declaration| declaration.resource_type == reference.source.resource_type)
-            .ok_or_else(|| {
-                reference_error(destination, reference, "source resource is not declared")
-            })?;
+        let source_declaration =
+            declared_resource(&self.infrastructure.resources, &reference.source).ok_or_else(
+                || reference_error(destination, reference, "source resource is not declared"),
+            )?;
         let source_provider = self.loaded(source_declaration.provider_name())?;
         require_same_source(row, source_provider)?;
         let source_schema = resource_schema(
@@ -1752,60 +1790,17 @@ impl InfrastructureEngine {
             source_declaration.provider_name(),
             &reference.source.resource_type,
         )?;
-        let source_attribute = source_schema
-            .block
-            .attributes
-            .get(&reference.attribute)
-            .filter(|attribute| {
-                attribute.nested.is_none()
-                    && !attribute.write_only
-                    && is_scalar(&attribute.value_type)
-            })
-            .ok_or_else(|| {
-                reference_error(
-                    destination,
-                    reference,
-                    "source must be a top-level scalar attribute",
-                )
-            })?;
-        let state_json = serde_json::to_vec(&row.state)
-            .map_err(|error| InfrastructureError::state(json_error_category(&error)))?;
-        let source_state =
-            type_system::from_json_bytes(&state_json, &source_schema.block.implied_type())?;
-        if source_state.contains_unknown() {
-            return Err(reference_error(
-                destination,
-                reference,
-                "has unknown source state",
-            ));
-        }
-        let value = source_state
+        let source_state = upgraded_state(source_provider, row, source_schema, warnings).await?;
+        source_state
             .attribute(&reference.attribute)
+            .cloned()
             .ok_or_else(|| {
                 reference_error(
                     destination,
                     reference,
                     "source attribute is absent from state",
                 )
-            })?;
-        if !matches!(
-            value.untyped(),
-            Value::Boolean(_) | Value::Number(_) | Value::String(_)
-        ) {
-            return Err(reference_error(
-                destination,
-                reference,
-                "source output is not a concrete scalar",
-            ));
-        }
-        if source_attribute.sensitive {
-            return Err(reference_error(
-                destination,
-                reference,
-                "sensitive source attributes cannot be referenced yet",
-            ));
-        }
-        Ok(value.clone())
+            })
     }
 
     /// Write a record the provider's change produced. If the write fails,
@@ -1882,6 +1877,9 @@ impl InfrastructureEngine {
                 .prepare(&declaration.configuration, &value_type)
         }
         .map_err(|error| InfrastructureError::configuration(format!("{address}: {error}")))?;
+        // Check schema compatibility and sensitivity before any source
+        // output is copied into this configuration.
+        self.validate_output_references(&address, &input.references, block)?;
         let configuration = if input.references.references().is_empty() {
             configuration
         } else {
@@ -1904,7 +1902,6 @@ impl InfrastructureEngine {
         };
         let configuration = block.normalize_configuration(configuration);
         let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
-        self.validate_output_references(&address, &input.references, block)?;
         let diagnostics = provider
             .client
             .validate_resource_configuration(
@@ -1992,11 +1989,7 @@ impl InfrastructureEngine {
         }
         .check()?;
 
-        let reference_output_unknown = input.references.references().iter().any(|reference| {
-            configuration
-                .attribute(&reference.destination_attribute)
-                .is_some_and(Value::is_unknown)
-        });
+        let reference_output_unknown = input.references.has_unknown_destination(&configuration);
 
         if !reference_output_unknown
             && type_system::semantically_equal(&planned, &prior.value, &value_type)
@@ -2138,14 +2131,10 @@ impl InfrastructureEngine {
                         "destination must be a settable top-level scalar argument",
                     )
                 })?;
-            let source_declaration = self
-                .infrastructure
-                .resources
-                .get(&reference.source.name)
-                .filter(|declaration| declaration.resource_type == reference.source.resource_type)
-                .ok_or_else(|| {
-                    reference_error(destination, reference, "source resource is not declared")
-                })?;
+            let source_declaration =
+                declared_resource(&self.infrastructure.resources, &reference.source).ok_or_else(
+                    || reference_error(destination, reference, "source resource is not declared"),
+                )?;
             let source_provider = self.loaded(source_declaration.provider_name())?;
             let source_schema = resource_schema(
                 source_provider,
@@ -2756,34 +2745,8 @@ async fn refresh(
 ) -> Result<Option<Refreshed>> {
     let type_name = &row.address.resource_type;
     let schema = resource_schema(provider, &row.provider, type_name)?;
-    // Handing newer state to an older provider would silently drop what
-    // it does not know; Terraform refuses too.
-    if row.schema_version > schema.version {
-        return Err(InfrastructureError::StateFromNewerProvider {
-            address: row.address.to_string(),
-            stored_version: row.schema_version,
-            provider_version: schema.version,
-        });
-    }
     let value_type = schema.block.implied_type();
-    let state_json = serde_json::to_vec(&row.state).map_err(|error| {
-        InfrastructureError::state(format!(
-            "serialize stored state of {} ({})",
-            row.address,
-            json_error_category(&error)
-        ))
-    })?;
-    let upgrade = provider
-        .client
-        .upgrade_resource_state(type_name, row.schema_version, state_json)
-        .await?;
-    check_diagnostics(
-        &format!("upgrade state of {}", row.address),
-        &upgrade.diagnostics,
-        warnings,
-    )?;
-    let (upgraded, upgraded_bytes) = provider_value(upgrade.upgraded_state.as_ref(), &value_type)?;
-    check_upgraded(&row.address, &upgraded)?;
+    let (_, upgraded_bytes) = upgrade_state(provider, row, schema, warnings).await?;
 
     let response = provider
         .client
@@ -2810,6 +2773,62 @@ async fn refresh(
         bytes,
         private: response.private,
     }))
+}
+
+/// Ask the provider to upgrade a stored record to its current schema
+/// version. Returns the upgraded state and its MessagePack encoding.
+async fn upgrade_state(
+    provider: &LoadedProvider,
+    row: &ManagedResource,
+    schema: &Schema,
+    warnings: &mut Vec<String>,
+) -> Result<(Value, Vec<u8>)> {
+    // Handing newer state to an older provider would silently drop what
+    // it does not know; Terraform refuses too.
+    if row.schema_version > schema.version {
+        return Err(InfrastructureError::StateFromNewerProvider {
+            address: row.address.to_string(),
+            stored_version: row.schema_version,
+            provider_version: schema.version,
+        });
+    }
+    let value_type = schema.block.implied_type();
+    let state_json = serde_json::to_vec(&row.state).map_err(|error| {
+        InfrastructureError::state(format!(
+            "serialize stored state of {} ({})",
+            row.address,
+            json_error_category(&error)
+        ))
+    })?;
+    let upgrade = provider
+        .client
+        .upgrade_resource_state(&row.address.resource_type, row.schema_version, state_json)
+        .await?;
+    check_diagnostics(
+        &format!("upgrade state of {}", row.address),
+        &upgrade.diagnostics,
+        warnings,
+    )?;
+    let (upgraded, upgraded_bytes) = provider_value(upgrade.upgraded_state.as_ref(), &value_type)?;
+    check_upgraded(&row.address, &upgraded)?;
+    Ok((upgraded, upgraded_bytes))
+}
+
+/// A stored record's state in the provider's current schema: decoded
+/// directly when it was written with that schema version, and otherwise
+/// upgraded by the provider first.
+async fn upgraded_state(
+    provider: &LoadedProvider,
+    row: &ManagedResource,
+    schema: &Schema,
+    warnings: &mut Vec<String>,
+) -> Result<Value> {
+    if row.schema_version != schema.version {
+        return Ok(upgrade_state(provider, row, schema, warnings).await?.0);
+    }
+    let state_json = serde_json::to_vec(&row.state)
+        .map_err(|error| InfrastructureError::state(json_error_category(&error)))?;
+    type_system::from_json_bytes(&state_json, &schema.block.implied_type())
 }
 
 /// Inputs for planning a create.
@@ -3094,12 +3113,7 @@ fn dependency_graph(
                 .into_iter()
                 .flat_map(ConfigurationReferences::references)
             {
-                if !resources
-                    .get(&reference.source.name)
-                    .is_some_and(|declaration| {
-                        declaration.resource_type == reference.source.resource_type
-                    })
-                {
+                if declared_resource(resources, &reference.source).is_none() {
                     return Err(InfrastructureError::configuration(format!(
                         "resource '{name}' references unknown resource '{}'",
                         reference.source

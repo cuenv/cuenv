@@ -16,6 +16,8 @@
 //	upgrade-json  fake_plain upgraded states are sent as JSON
 //	protect       fake_protect refuses destroy plans
 //	slow-delete   fake_repl deletes take four seconds
+//	create-requires-replace  fake_repl create plans report name in requires_replace,
+//	              as SDKv2 providers do for every ForceNew attribute
 //
 // Importing fake_plain returns the identifier as id and name, with arn null.
 // ReadResource fills arn so import tests can establish that refresh happened.
@@ -555,6 +557,11 @@ func (w *wrap) PlanResourceChange(ctx context.Context, request *tfprotov6.PlanRe
 		var converted bool
 		response.PlannedState, converted = toJSON(response.PlannedState)
 		journal("jsonplan: PlanResourceChange planned_state sent as JSON=%v", converted)
+	}
+	if err == nil && request.TypeName == "fake_repl" && flag("create-requires-replace") {
+		if priorNull, _ := request.PriorState.IsNull(); priorNull {
+			response.RequiresReplace = append(response.RequiresReplace, tftypes.NewAttributePath().WithAttributeName("name"))
+		}
 	}
 	return response, err
 }

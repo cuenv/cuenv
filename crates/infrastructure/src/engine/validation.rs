@@ -8,6 +8,7 @@ use cuenv_manifest::manifest::{Infrastructure, ManagedResourceDeclaration};
 use crate::error::{InfrastructureError, Result};
 use crate::references::ConfigurationReferences;
 use crate::registry::{ProviderSource, validate_version};
+use super::declared_resource;
 
 /// Where in the `infrastructure` block a configuration lives: the top level,
 /// or one named environment, which does not inherit anything from the top
@@ -167,13 +168,7 @@ fn check_resources(
         match ConfigurationReferences::extract(&declaration.configuration) {
             Ok(resource_references) => {
                 for reference in resource_references.references() {
-                    if !infrastructure
-                        .resources
-                        .get(&reference.source.name)
-                        .is_some_and(|source| {
-                            source.resource_type == reference.source.resource_type
-                        })
-                    {
+                    if declared_resource(&infrastructure.resources, &reference.source).is_none() {
                         problems.push(format!(
                             "{path}.configuration.{}.fromResource: resource '{}' is not declared in {resources}",
                             reference.destination_attribute, reference.source
@@ -266,9 +261,7 @@ fn check_cycles(
                     .flat_map(ConfigurationReferences::references)
                     .filter(|reference| {
                         members.contains(&reference.source.name.as_str())
-                            && resources.get(&reference.source.name).is_some_and(|source| {
-                                source.resource_type == reference.source.resource_type
-                            })
+                            && declared_resource(resources, &reference.source).is_some()
                     })
                     .map(move |reference| {
                         format!(

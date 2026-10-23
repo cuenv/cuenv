@@ -125,7 +125,18 @@ the provider's initial plan remains a replacement even when the referenced
 value is unknown, so the confirmed action and dependency schedule include its
 delete and create. If only the final plan changes an initially confirmed
 update into a replacement, cuenv stops before changing the consumer; run
-`plan` again after the producer has been recorded. Generated provider resource
+`plan` again after the producer has been recorded. A final plan runs only when
+a reference was unknown at plan time; references whose outputs were known are
+applied exactly as confirmed, without extra provider calls. As in Terraform,
+`requires_replace` from a final plan with no prior object (a create, or the
+create half of a replacement) is ignored, because SDKv2 providers report every
+`ForceNew` attribute on creates. Source state is read in the provider's
+current schema: a record written with an older schema version is upgraded
+through `UpgradeResourceState` first, as refresh does. Because a consumer's
+replacement deletes before its producers change, a final plan that fails after
+that delete leaves the consumer absent and recorded as deleted; apply warns
+that the object was destroyed and not recreated, and the next apply creates
+it. Generated provider resource
 types import the shared descriptor definition from `schema/infrastructure.cue`.
 
 ## State, policy, and identity behavior
@@ -192,7 +203,14 @@ command contract, shared interfaces, and final diff across these scopes:
    environment's plan command and occupied-address guidance needed to match
    commands that exist; both were corrected. Checks were added between
    provider initialization RPCs so an interrupt prevents subsequent validation
-   and configuration calls.
+   and configuration calls. A later review found that final plans for creates
+   rejected SDKv2 `requires_replace` paths, that final plans ran even when
+   every reference was already known, that source state was not upgraded
+   across schema versions, and that reference compatibility was checked only
+   after outputs were copied into the consumer configuration; all four were
+   corrected, and a failed final plan after a replacement's delete now warns
+   that the consumer was destroyed and not recreated. The CLI import address
+   uses the same `type.name` parser as references.
 
 ## Verification plan
 

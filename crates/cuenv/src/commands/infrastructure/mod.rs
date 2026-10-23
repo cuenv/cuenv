@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    ApplyContext, ApplyEvent, BackendMismatch, EngineOptions, EngineSetup, InfrastructureEngine,
+    ApplyContext, ApplyEvent, BackendMismatch, EngineOptions, declared_resource, EngineSetup, InfrastructureEngine,
     InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, Plan, PlanMode, ProjectInstance,
     RecoverOptions, RecoverOverrides, ResourceAddress, StateLock, StateStore, TenantKey,
     TenantLock, TursoConfiguration, TursoStateStore, UnrecordedFileProblem, UnrecordedStore,
@@ -684,13 +684,11 @@ fn preflight(
             .map_err(|error| failure(&error, invocation))?;
     }
     if let InfrastructureAction::Import { address, .. } = action
-        && !target
-            .infrastructure
-            .resources
-            .iter()
-            .any(|(name, declaration)| {
-                ResourceAddress::new(&declaration.resource_type, name).to_string() == *address
-            })
+        && declared_resource(
+            &target.infrastructure.resources,
+            &parse_resource_address(address)?,
+        )
+        .is_none()
     {
         return Err(CliError::config(format!(
             "cannot import {}: declare that resource in the selected infrastructure configuration first",
@@ -698,6 +696,16 @@ fn preflight(
         )));
     }
     Ok(())
+}
+
+/// Parse a `type.name` address with the same rules as output references.
+fn parse_resource_address(address: &str) -> Result<ResourceAddress, CliError> {
+    ResourceAddress::parse(address).ok_or_else(|| {
+        CliError::config(format!(
+            "invalid resource address {}; expected type.name",
+            strip_control_characters(address)
+        ))
+    })
 }
 
 /// Parse and validate the Turso URL before any secret is resolved: nothing
@@ -2264,13 +2272,7 @@ async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliError> {
         address,
         identifier,
     } = request;
-    let (resource_type, name) = address.split_once('.').ok_or_else(|| {
-        CliError::config(format!(
-            "invalid resource address {}; expected type.name",
-            strip_control_characters(address)
-        ))
-    })?;
-    let target = ResourceAddress::new(resource_type, name);
+    let target = parse_resource_address(address)?;
     let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
     let importing = &mut engine;
     let result = under_lock(context, "import", |lock| async move {

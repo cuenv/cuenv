@@ -43,10 +43,7 @@ impl ConfigurationReferences {
     pub fn extract(configuration: &Map<String, Json>) -> Result<Self> {
         let mut references = Vec::new();
         for (destination_attribute, value) in configuration {
-            let Some(descriptor) = value
-                .as_object()
-                .filter(|object| object.contains_key("fromResource"))
-            else {
+            let Some(descriptor) = value.as_object().filter(|_| is_descriptor(value)) else {
                 continue;
             };
             if descriptor.len() != 2 || !descriptor.contains_key("attribute") {
@@ -62,7 +59,7 @@ impl ConfigurationReferences {
                     "a reference must contain exactly `fromResource` and `attribute`, both strings",
                 )
             })?;
-            let source = parse_address(&descriptor.from_resource).ok_or_else(|| {
+            let source = ResourceAddress::parse(&descriptor.from_resource).ok_or_else(|| {
                 problem(
                     destination_attribute,
                     "`fromResource` must be a valid resource address `type.name`",
@@ -101,7 +98,17 @@ impl ConfigurationReferences {
     /// a destination is not a declared scalar attribute, or ordinary arguments
     /// do not conform to the supplied configuration type.
     pub fn prepare(&self, configuration: &Map<String, Json>, value_type: &Type) -> Result<Value> {
-        if Self::extract(configuration)? != *self {
+        let descriptors = configuration
+            .values()
+            .filter(|value| is_descriptor(value))
+            .count();
+        if descriptors != self.references.len()
+            || self.references.iter().any(|reference| {
+                !configuration
+                    .get(&reference.destination_attribute)
+                    .is_some_and(is_descriptor)
+            })
+        {
             return Err(InfrastructureError::configuration(
                 "resource output references changed after extraction",
             ));
@@ -149,6 +156,40 @@ impl ConfigurationReferences {
     pub fn resolve(
         &self,
         prepared: &Value,
+        resolver: impl FnMut(&ResourceOutputReference) -> Result<Value>,
+    ) -> Result<Value> {
+        self.fill(prepared, UnknownOutputs::Reject, resolver)
+    }
+
+    /// Fill references whose outputs are already known during planning.
+    /// Unknown outputs stay unknown until their producer has been applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error for a missing destination, a known null
+    /// or nonscalar output, or propagates an error from the resolver.
+    pub fn resolve_planned(
+        &self,
+        prepared: &Value,
+        resolver: impl FnMut(&ResourceOutputReference) -> Result<Value>,
+    ) -> Result<Value> {
+        self.fill(prepared, UnknownOutputs::Keep, resolver)
+    }
+
+    /// Whether any reference destination of `configuration` is unknown.
+    #[must_use]
+    pub fn has_unknown_destination(&self, configuration: &Value) -> bool {
+        self.references.iter().any(|reference| {
+            configuration
+                .attribute(&reference.destination_attribute)
+                .is_some_and(Value::is_unknown)
+        })
+    }
+
+    fn fill(
+        &self,
+        prepared: &Value,
+        unknown_outputs: UnknownOutputs,
         mut resolver: impl FnMut(&ResourceOutputReference) -> Result<Value>,
     ) -> Result<Value> {
         let mut configuration = prepared.clone();
@@ -167,6 +208,9 @@ impl ConfigurationReferences {
                     )
                 })?;
             let value = resolver(reference)?;
+            if unknown_outputs == UnknownOutputs::Keep && value.is_unknown() {
+                continue;
+            }
             if !matches!(
                 value.untyped(),
                 Value::Boolean(_) | Value::Number(_) | Value::String(_)
@@ -180,72 +224,22 @@ impl ConfigurationReferences {
         }
         Ok(configuration)
     }
-
-    /// Fill references whose outputs are already known during planning.
-    /// Unknown outputs stay unknown until their producer has been applied.
-    ///
-    /// # Errors
-    ///
-    /// Returns a configuration error for a missing destination, a known null
-    /// or nonscalar output, or propagates an error from the resolver.
-    pub fn resolve_planned(
-        &self,
-        prepared: &Value,
-        mut resolver: impl FnMut(&ResourceOutputReference) -> Result<Value>,
-    ) -> Result<Value> {
-        let mut configuration = prepared.clone();
-        let Value::Object(arguments) = &mut configuration else {
-            return Err(InfrastructureError::configuration(
-                "resource configuration must be an object before resolving references",
-            ));
-        };
-        for reference in &self.references {
-            let destination = arguments
-                .get_mut(&reference.destination_attribute)
-                .ok_or_else(|| {
-                    problem(
-                        &reference.destination_attribute,
-                        "reference destination is missing from configuration",
-                    )
-                })?;
-            let value = resolver(reference)?;
-            if matches!(value.untyped(), Value::Unknown) {
-                continue;
-            }
-            if !matches!(
-                value.untyped(),
-                Value::Boolean(_) | Value::Number(_) | Value::String(_)
-            ) {
-                return Err(problem(
-                    &reference.destination_attribute,
-                    "known resource output must be a non-null scalar value",
-                ));
-            }
-            *destination = value;
-        }
-        Ok(configuration)
-    }
 }
 
-fn parse_address(address: &str) -> Option<ResourceAddress> {
-    let (resource_type, name) = address.split_once('.')?;
-    let (prefix, _) = resource_type.split_once('_')?;
-    if prefix.is_empty()
-        || !resource_type.starts_with(|character: char| character.is_ascii_lowercase())
-        || resource_type.split('_').any(|part| {
-            part.is_empty()
-                || !part
-                    .chars()
-                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
-        })
-        || !name.starts_with(|character: char| character.is_ascii_alphabetic())
-        || !name
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        return None;
-    }
-    Some(ResourceAddress::new(resource_type, name))
+/// Whether filling references accepts outputs that are not yet known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnknownOutputs {
+    /// Every output must be concrete.
+    Reject,
+    /// Unknown outputs leave the destination unknown.
+    Keep,
+}
+
+/// Whether a configuration value is a reserved reference descriptor.
+fn is_descriptor(value: &Json) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| object.contains_key("fromResource"))
 }
 
 fn is_identifier(value: &str) -> bool {
@@ -421,6 +415,11 @@ mod tests {
             Some(&Value::String("zone-123".to_string()))
         );
         assert_eq!(planned.attribute("account_id"), Some(&Value::Unknown));
+        assert!(references.has_unknown_destination(&planned));
+        let known = references.resolve_planned(&prepared, |_| {
+            Ok(Value::String("known".to_string()))
+        })?;
+        assert!(!references.has_unknown_destination(&known));
         Ok(())
     }
 
@@ -471,6 +470,12 @@ mod tests {
             attributes.insert("zone_id".to_string(), Type::List(Box::new(Type::String)));
         }
         assert!(references.prepare(&configuration, &value_type).is_err());
+        let mut added = configuration.clone();
+        added.insert(
+            "name".to_string(),
+            json!({"fromResource": "cloudflare_zone.primary", "attribute": "name"}),
+        );
+        assert!(references.prepare(&added, &configuration_type()).is_err());
         configuration.remove("zone_id");
         assert!(
             references

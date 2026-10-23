@@ -1404,6 +1404,29 @@ async fn fake_unknown_reference_keeps_the_provider_replacement_plan() -> TestRes
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_referenced_create_ignores_requires_replace_without_prior_state() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.set_flag("create-requires-replace")?;
+    let desired = json!({
+        "primary": {"type": "fake_plain", "configuration": {"name": "zone"}},
+        "record": {
+            "type": "fake_repl",
+            "configuration": {
+                "name": {
+                    "fromResource": "fake_plain.primary",
+                    "attribute": "id",
+                },
+            },
+        },
+    });
+    let run = fake.converge(&desired, PlanMode::Apply).await?;
+    run.applied?;
+    assert_eq!(fake.record("record").await?.state["name"], "plain-1");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
 async fn referenced_replacement_orders_consumer_and_producer_in_one_apply() -> TestResult {
     let fake = Fake::new().await?;
     let reference = json!({
