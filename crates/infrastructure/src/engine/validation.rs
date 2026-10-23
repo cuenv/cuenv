@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cuenv_manifest::manifest::{Infrastructure, ManagedResourceDeclaration};
 
+use super::declared_resource;
 use crate::error::{InfrastructureError, Result};
 use crate::references::ConfigurationReferences;
 use crate::registry::{ProviderSource, validate_version};
-use super::declared_resource;
 
 /// Where in the `infrastructure` block a configuration lives: the top level,
 /// or one named environment, which does not inherit anything from the top

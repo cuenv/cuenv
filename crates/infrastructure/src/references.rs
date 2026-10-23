@@ -416,9 +416,8 @@ mod tests {
         );
         assert_eq!(planned.attribute("account_id"), Some(&Value::Unknown));
         assert!(references.has_unknown_destination(&planned));
-        let known = references.resolve_planned(&prepared, |_| {
-            Ok(Value::String("known".to_string()))
-        })?;
+        let known =
+            references.resolve_planned(&prepared, |_| Ok(Value::String("known".to_string())))?;
         assert!(!references.has_unknown_destination(&known));
         Ok(())
     }

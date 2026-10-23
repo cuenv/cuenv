@@ -33,11 +33,12 @@ use std::time::Duration;
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    ApplyContext, ApplyEvent, BackendMismatch, EngineOptions, declared_resource, EngineSetup, InfrastructureEngine,
+    ApplyContext, ApplyEvent, BackendMismatch, EngineOptions, EngineSetup, InfrastructureEngine,
     InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, Plan, PlanMode, ProjectInstance,
     RecoverOptions, RecoverOverrides, ResourceAddress, StateLock, StateStore, TenantKey,
     TenantLock, TursoConfiguration, TursoStateStore, UnrecordedFileProblem, UnrecordedStore,
-    strip_control_characters, strip_control_characters_except_newlines, validate_configuration,
+    declared_resource, strip_control_characters, strip_control_characters_except_newlines,
+    validate_configuration,
 };
 use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;

@@ -1748,9 +1748,7 @@ impl InfrastructureEngine {
         change.references.resolve(prepared, |reference| {
             outputs
                 .remove(reference.destination_attribute.as_str())
-                .ok_or_else(|| {
-                    reference_error(&change.address, reference, "was not resolved")
-                })
+                .ok_or_else(|| reference_error(&change.address, reference, "was not resolved"))
         })
     }
 
