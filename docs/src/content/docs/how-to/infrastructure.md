@@ -6,7 +6,7 @@ description: Declare managed resources in CUE and let cuenv drive Terraform prov
 cuenv can manage real infrastructure with the provider ecosystem you already know from Terraform and OpenTofu — without either command line tool. `cuenv infrastructure` (short form: `cuenv i`) launches unmodified `terraform-provider-*` binaries, speaks their gRPC plugin protocol (versions 5 and 6), and stores every managed resource as its own record in a remote [Turso](https://turso.tech) (libSQL) database. Use `--env Dev` or `--env Staging` to select a complete infrastructure configuration and its project environment values.
 
 :::caution[Experimental]
-`cuenv infrastructure` is **experimental**, and `cuenv infrastructure --help` says so. Its behavior, command line flags, schema and state layout can still change between releases, and it is not covered by the stability promises of the other commands. `#Infrastructure` is **partial**: create, update, replace, delete, refresh, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. Read [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, Plugin Framework resources that declare a resource identity are not handled yet, and records cannot be moved between state identities yet.
+`cuenv infrastructure` is **experimental**, and `cuenv infrastructure --help` says so. Its behavior, command line flags, schema and state layout can still change between releases, and it is not covered by the stability promises of the other commands. `#Infrastructure` is **partial**: create, update, replace, delete, refresh, import, top-level scalar output references, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. Read [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, Plugin Framework resources that declare a resource identity are not handled yet, sensitive outputs cannot be passed between resources, and records cannot be moved between state identities yet.
 
 There is no migration path from databases written by earlier development builds of this command; see [Configure the state database](#configure-the-state-database).
 :::
@@ -18,6 +18,7 @@ There is no migration path from databases written by earlier development builds 
 | `cuenv infrastructure plan`                   | `cuenv i plan`          | Refresh recorded resources and show what `apply` would change           |
 | `cuenv infrastructure apply`                  | `cuenv i apply`         | Lock, plan, confirm, apply                                              |
 | `cuenv infrastructure destroy`                | `cuenv i destroy`       | Delete every managed resource the project owns                          |
+| `cuenv infrastructure import <address> <id>`  | `cuenv i import`        | Refresh and record one existing provider resource                       |
 | `cuenv infrastructure state list`             | `cuenv i state`         | List managed resources recorded for the project (`list` is the default) |
 | `cuenv infrastructure state locks`            | `cuenv i state locks`   | List every lock in the state database, for every project                |
 | `cuenv infrastructure state remove <address>` | `cuenv i state remove`  | Forget one managed resource without deleting it                         |
@@ -31,6 +32,42 @@ There is no migration path from databases written by earlier development builds 
 `apply` also takes `--allow-separate-state` (see [Moving between identities](#moving-between-identities)), and `unlock` takes `--module` and `--project` to act on the lock of a project that is not the one being evaluated (see [Stale locks](#when-things-go-wrong)).
 
 `i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. Every subcommand honours the global `--json` flag and then prints exactly one JSON document on standard output (events go to standard error); `apply` and `destroy` require `--yes` with `--json`.
+
+`import` takes the provider's opaque import identifier. Declare the resource first, select the desired environment with `--env` when needed, then run for example `cuenv i import cloudflare_record.www <provider-specific-id>`. cuenv asks the provider to import one object, refreshes it, and records the refreshed state without calling the provider's apply operation. Review the suggested `plan` command afterward; it includes the same environment, path and package selection. The provider defines the identifier format. Sensitive import identifiers are registered for output redaction and are not included in cuenv's own output or trace fields.
+
+## Import and connect resources
+
+Import an existing object after declaring its resource type, provider and desired configuration:
+
+```bash
+cuenv i import cloudflare_record.www '<provider-specific-id>'
+cuenv i plan
+```
+
+An import identifier is interpreted by the provider. cuenv supports one returned resource of the declared type per import. It reads the imported object before storing it, so the following plan compares live state with the configuration. Import does not call `ApplyResourceChange`; it does not create or update the remote object. Use the matching `--env`, `-p` and `--package` on import and follow-up commands. The command's success output includes a plan command that preserves those selectors.
+
+A resource configuration can use a top-level scalar output from another declared resource:
+
+```cue
+resources: {
+	primary: {
+		type: "cloudflare_zone"
+		configuration: {name: "example.com"}
+	}
+	www: {
+		type: "cloudflare_record"
+		configuration: {
+			zone_id: {
+				fromResource: "cloudflare_zone.primary"
+				attribute: "id"
+			}
+			// Other provider-required record arguments go here.
+		}
+	}
+}
+```
+
+`fromResource` is the full `type.name` address and `attribute` is a top-level provider attribute. cuenv infers an apply and destroy dependency from the reference, and stores it with the consuming resource. The provider schema must declare both the source output and destination argument as the same primitive type (`string`, `number` or `boolean`); nested attributes, collections, write-only fields and sensitive source attributes are not supported. Generated provider CUE types accept the reference descriptor for top-level primitive resource arguments. If a source value is unknown until its create finishes, cuenv resolves it and asks the consumer provider for a final plan before applying that consumer. If this reveals a replacement that the confirmed plan did not include, cuenv stops before changing the consumer; run `plan` again after its source is recorded.
 
 ## Dev and Staging environments
 
@@ -117,7 +154,7 @@ DEPLOY_TOKEN: {
 }
 ```
 
-- The names are `plan`, `apply`, `destroy`, `state-list`, `state-remove`, `state-recover`, `state-adopt` and `unlock` (`#InfrastructureAction`). Any other name fails evaluation, and so does a misspelled field such as `allowInfrastucture`.
+- The names are `plan`, `apply`, `import`, `destroy`, `state-list`, `state-remove`, `state-recover`, `state-adopt` and `unlock` (`#InfrastructureAction`). Any other name fails evaluation, and so does a misspelled field such as `allowInfrastucture`.
 - A variable that has policies is available to an infrastructure action only when some policy lists that action. `allowTasks` and `allowExec` do not grant it: a variable that was reachable from infrastructure commands before it carried only `allowTasks` is now withheld from them.
 - Policy filtering happens before any secret is retrieved. A variable the policy denies is also removed from the environment the provider inherits, so a same-named host variable cannot bypass the policy.
 - A secret that cannot be resolved fails the command with an error that names the variable. The error never quotes the secret command's own error output, because a failing command can print the secret or the credentials it was given.
@@ -265,7 +302,7 @@ The generated files, the lock and the provider binary are tied together by the s
 
 cuenv only replaces or removes a `cue.mod/gen` directory whose `provider.cue` starts with its generated-code header, and refuses otherwise. A `cuenv.lock` that pins infrastructure providers is lockfile format version 5; cuenv versions that do not know the section refuse such a lockfile rather than drop it. Lockfiles without the section stay at version 4.
 
-What is not generated yet: data sources, computed attributes for references between resources (see [Current limitations](#current-limitations)), provider functions and ephemeral resources; write-only arguments are left out because cuenv does not send them. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource type (`hashicorp/aws` has about 1700), so evaluation only pays for the resources you import, but the generated directory is large and `cuenv sync` writes all of it.
+Generated resource configuration accepts a top-level scalar argument as either its normal value or an output reference. Data sources, provider functions and ephemeral resources are not generated; write-only arguments are left out because cuenv does not send them. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource type (`hashicorp/aws` has about 1700), so evaluation only pays for the resources you import, but the generated directory is large and `cuenv sync` writes all of it.
 
 
 ## A minimal example without typed configuration
@@ -483,10 +520,10 @@ A replacement whose old object was destroyed but whose new object was not create
 
 ## Current limitations
 
-- **No references between resources.** A resource cannot consume another's computed attributes; use `dependsOn` for ordering only.
+- **Output reference boundaries.** Only top-level scalar provider attributes can be connected, and source/destination types must match. Sensitive outputs, nested values, collections, write-only fields and data source outputs cannot be referenced. If a value was unknown at plan time and its final value makes an existing consumer require replacement, apply stops before deleting or updating that consumer; plan again after the source is recorded.
 - **Resource identity is not supported.** Plugin Framework resources that declare an identity (recent AWS, Google and Azure resources) fail on update with "Missing Resource Identity After Update".
 - **Dynamic-typed attributes** round-trip as tuples and objects rather than their original list, set or map types.
-- No data sources, imports, `moved` blocks, saved plan files or `--target`.
+- No data sources, `moved` blocks, saved plan files or `--target`. Import accepts only one string identifier and one returned resource; structured provider identities and multi-resource import are not supported.
 - Replacement is always destroy-then-create; operations run one at a time.
 - **No `state move`.** Records cannot be moved between the no-flag identity and a named environment, or between environment names; see [Moving between identities](#moving-between-identities).
 - **One state database for all environments.** `state` cannot be overridden per environment.
