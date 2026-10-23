@@ -293,12 +293,28 @@ const fn json_type_name(value: &serde_json::Value) -> &'static str {
     }
 }
 
-/// State backend configuration.
+/// State backend configuration: exactly one backend.
+///
+/// Based on `#InfrastructureState` in schema/infrastructure.cue.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct InfrastructureState {
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
+pub enum InfrastructureState {
     /// Remote Turso (libSQL) database.
-    pub turso: TursoState,
+    Turso(TursoState),
+    /// Cloudflare D1 database, reached through the Cloudflare API.
+    D1(D1State),
+}
+
+impl InfrastructureState {
+    /// The environment variable holding the backend's credential. cuenv
+    /// resolves it for the state store and withholds it from providers.
+    #[must_use]
+    pub fn authentication_token_environment_variable(&self) -> &str {
+        match self {
+            Self::Turso(turso) => &turso.authentication_token_environment_variable,
+            Self::D1(d1) => &d1.authentication_token_environment_variable,
+        }
+    }
 }
 
 /// Turso database connection settings.
@@ -316,6 +332,27 @@ pub struct TursoState {
 
 fn default_turso_authentication_token_environment_variable() -> String {
     "TURSO_AUTH_TOKEN".to_string()
+}
+
+/// Cloudflare D1 database connection settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct D1State {
+    /// Cloudflare account ID: 32 lowercase hexadecimal digits.
+    pub account_id: String,
+
+    /// D1 database ID: a lowercase UUID.
+    pub database_id: String,
+
+    /// Environment variable holding the Cloudflare API token. Its default
+    /// differs from `CLOUDFLARE_API_TOKEN` on purpose: the state token is
+    /// withheld from providers, and the Cloudflare provider reads that name.
+    #[serde(default = "default_d1_authentication_token_environment_variable")]
+    pub authentication_token_environment_variable: String,
+}
+
+fn default_d1_authentication_token_environment_variable() -> String {
+    "CLOUDFLARE_D1_API_TOKEN".to_string()
 }
 
 /// A Terraform provider plugin.
@@ -483,8 +520,7 @@ mod tests {
         assert_eq!(
             infrastructure
                 .state
-                .turso
-                .authentication_token_environment_variable,
+                .authentication_token_environment_variable(),
             "TURSO_AUTH_TOKEN"
         );
         assert_eq!(infrastructure.resources["pet"].provider_name(), "random");
@@ -564,9 +600,8 @@ mod tests {
         });
         serde_json::from_value::<Infrastructure>(valid.clone()).unwrap();
 
-        let typos: [(&[&str], &str); 6] = [
+        let typos: [(&[&str], &str); 5] = [
             (&[], "resource"),
-            (&["state"], "tursoo"),
             (&["state", "turso"], "authTokenEnv"),
             (&["providers", "random"], "sourcee"),
             (&["providers", "random"], "versions"),
@@ -585,6 +620,55 @@ mod tests {
                 error.contains(&format!("unknown field `{field}`")),
                 "{field}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn state_names_exactly_one_known_backend() {
+        let decode = |state: serde_json::Value| {
+            serde_json::from_value::<Infrastructure>(serde_json::json!({"state": state}))
+                .map(|infrastructure| infrastructure.state)
+        };
+        let d1 = decode(serde_json::json!({"d1": {
+            "accountId": "0123456789abcdef0123456789abcdef",
+            "databaseId": "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
+        }}))
+        .unwrap();
+        let InfrastructureState::D1(settings) = &d1 else {
+            panic!("{d1:?}");
+        };
+        assert_eq!(settings.account_id, "0123456789abcdef0123456789abcdef");
+        // Not `CLOUDFLARE_API_TOKEN`: the state token is withheld from
+        // providers, and the Cloudflare provider reads that name.
+        assert_eq!(
+            d1.authentication_token_environment_variable(),
+            "CLOUDFLARE_D1_API_TOKEN"
+        );
+
+        for (state, expected) in [
+            (serde_json::json!({}), "expected"),
+            (
+                serde_json::json!({
+                    "turso": {"url": "libsql://db.turso.io"},
+                    "d1": {"accountId": "a", "databaseId": "b"},
+                }),
+                "map with a single key",
+            ),
+            (
+                serde_json::json!({"tursoo": {}}),
+                "unknown variant `tursoo`",
+            ),
+            (
+                serde_json::json!({"d1": {"accountId": "a", "databaseId": "b", "token": "x"}}),
+                "unknown field `token`",
+            ),
+            (
+                serde_json::json!({"d1": {"accountId": "a"}}),
+                "missing field `databaseId`",
+            ),
+        ] {
+            let error = decode(state.clone()).unwrap_err().to_string();
+            assert!(error.contains(expected), "{state}: {error}");
         }
     }
 
@@ -656,7 +740,9 @@ mod tests {
         );
         assert_eq!(selected.providers["random"].path.as_deref(), Some("/bin/p"));
         assert_eq!(selected.provider_environment, ProviderEnvironment::Inherit);
-        assert_eq!(selected.state.turso.url, "libsql://db.turso.io");
+        assert!(
+            matches!(&selected.state, InfrastructureState::Turso(turso) if turso.url == "libsql://db.turso.io")
+        );
     }
 
     #[test]

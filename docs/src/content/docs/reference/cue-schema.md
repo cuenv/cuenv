@@ -899,7 +899,7 @@ state format can change between releases. See
 ### #Infrastructure
 
 Managed resources driven through Terraform provider plugins, with state in
-Turso. Every managed resource is one record keyed by the CUE module path, the
+Turso or Cloudflare D1. Every managed resource is one record keyed by the CUE module path, the
 project name and the selected environment (see
 [State identity](#state-identity)).
 
@@ -943,7 +943,7 @@ infrastructure: {
 
 | Field          | Type                                                     | Required | Description                                                         |
 | -------------- | -------------------------------------------------------- | -------- | ------------------------------------------------------------------- |
-| `state`        | `#InfrastructureState`                                   | Yes      | State backend (`turso`), shared by the top level and every environment |
+| `state`        | `#InfrastructureState`                                   | Yes      | State backend (`turso` or `d1`), shared by the top level and every environment |
 | `environments` | `{[#InfrastructureName]: #InfrastructureConfiguration}`  | No       | Complete configurations selected with `--env NAME`                  |
 | `providers`, `resources`, `providerEnvironment` | see [`#InfrastructureConfiguration`](#infrastructureconfiguration) | No | The top-level configuration, used without `--env` |
 
@@ -1008,6 +1008,8 @@ whether or not `--env` selects it:
 | a resource's `provider` names no provider of the same configuration | `…_unresolved."resources.NAME.provider"` | ``no provider named "…" in `providers` of this configuration`` |
 | a resource without `provider` whose type prefix (`aws` of `aws_instance`) is not a provider of the same configuration | `…_unresolved."resources.NAME.type"` | ``no provider named "aws" (the prefix of type "aws_instance") in `providers` of this configuration; declare it or set `provider` `` |
 | the database URL is not valid | `infrastructure.state.turso._invalidUrl` | ``` `url` must be libsql://, https:// or wss:// with a host name or address, or http:// or ws:// … ``` |
+| `state` names no backend | `infrastructure._unresolved.state` | ``set one state backend: `turso` or `d1` `` |
+| `state` names both backends | `infrastructure._unresolved.state` | ``set exactly one state backend, `turso` or `d1`, not both`` |
 
 The key starts with the path of the configuration: `infrastructure` for the
 top level, `infrastructure.environments.NAME` for an environment. A
@@ -1100,9 +1102,27 @@ provider needs.
 
 ### #InfrastructureState
 
-| Field   | Type          | Required | Description              |
-| ------- | ------------- | -------- | ------------------------ |
-| `turso` | `#TursoState` | Yes      | Remote Turso database    |
+Exactly one field must be set.
+
+| Field   | Type          | Required | Description                                       |
+| ------- | ------------- | -------- | ------------------------------------------------- |
+| `turso` | `#TursoState` | One of   | Remote Turso (libSQL) database, or a local `sqld` |
+| `d1`    | `#D1State`    | One of   | Cloudflare D1 database, through the Cloudflare API |
+
+### #D1State
+
+```cue
+infrastructure: state: d1: {
+    accountId:  "0123456789abcdef0123456789abcdef"
+    databaseId: "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9"
+}
+```
+
+| Field        | Type     | Required | Description                                                       |
+| ------------ | -------- | -------- | ----------------------------------------------------------------- |
+| `accountId`  | `string` | Yes      | Cloudflare account ID: 32 lowercase hexadecimal digits            |
+| `databaseId` | `string` | Yes      | D1 database ID (not its name): a lowercase UUID, as `wrangler d1 list` prints it |
+| `authenticationTokenEnvironmentVariable` | `string` | No | Environment variable holding a Cloudflare API token with D1 Edit access. Default `CLOUDFLARE_D1_API_TOKEN`, not `CLOUDFLARE_API_TOKEN`, because the state token is withheld from providers and the Cloudflare provider reads that name. The token is required |
 
 ### #TursoState
 

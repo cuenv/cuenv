@@ -205,7 +205,7 @@ pub enum SecretsCommands {
     },
 }
 
-/// Infrastructure subcommands (Terraform provider plugins + Turso state).
+/// Infrastructure subcommands (Terraform provider plugins + Turso or D1 state).
 #[derive(Subcommand, Debug, Clone)]
 pub enum InfrastructureCommands {
     /// Show the changes `apply` would make.

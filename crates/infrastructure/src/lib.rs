@@ -4,7 +4,7 @@
 //! over their gRPC plugin protocol (tfplugin5 and tfplugin6) — no Terraform
 //! or OpenTofu CLI involved. Resources are declared in CUE under a
 //! project's `infrastructure` block and every managed resource is stored as its own
-//! record in a remote Turso (libSQL) database.
+//! record in a remote SQLite database: Turso (libSQL) or Cloudflare D1.
 //!
 //! State is multi-tenant: records are always keyed by the CUE module path
 //! (the tenant) and the cuenv project name (the discriminator), so many
@@ -13,7 +13,7 @@
 //! ```text
 //! CUE `infrastructure` ──► InfrastructureEngine ──► ProviderClient ──gRPC──► terraform-provider-*
 //!                     │
-//!                     └──► StateStore (Turso) ── one row per managed resource
+//!                     └──► StateStore (Turso or D1) ── one row per managed resource
 //! ```
 
 pub mod cancellation;
@@ -42,9 +42,9 @@ pub use error::{
     strip_control_characters_except_newlines,
 };
 pub use state::{
-    ConditionalPut, LockInformation, LockRequest, ManagedResource, MemoryStateStore, OwnerClaim,
-    OwnerClaimMode, RecordVersion, ResourceAddress, StateLock, StateStore, TenantLock, TenantOwner,
-    TursoConfiguration, TursoStateStore,
+    ConditionalPut, D1Configuration, D1StateStore, LockInformation, LockRequest, ManagedResource,
+    MemoryStateStore, OwnerClaim, OwnerClaimMode, RecordVersion, ResourceAddress, StateLock,
+    StateStore, TenantLock, TenantOwner, TursoConfiguration, TursoStateStore,
 };
 pub use tenant::{ProjectInstance, TenantKey, read_module_path};
 pub use unrecorded::{

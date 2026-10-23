@@ -430,7 +430,10 @@
             "--status-level pass"
             "--hide-progress-bar"
             "-E"
-            "'(package(cuenv-infrastructure) | (package(cuenv) & binary(infrastructure_lifecycle))) & not test(installs_provider_from_registry)'"
+            # Tests that need the network are left out: a registry download, and
+            # a real Cloudflare D1 database (the D1 backend runs here against a
+            # SQLite-backed stand-in in the default suite instead).
+            "'(package(cuenv-infrastructure) | (package(cuenv) & binary(infrastructure_lifecycle))) & not test(installs_provider_from_registry) & not test(lifecycle_against_d1)'"
           ];
           preCheck = ''
             export HOME="$TMPDIR/home"

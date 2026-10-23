@@ -162,10 +162,7 @@ fn valid_infrastructure_evaluates_and_deserializes() -> TestResult {
         serde_json::from_value(project.infrastructure.ok_or("infrastructure missing")?)?;
     assert_eq!(declared.resources["id"].depends_on, vec!["pet".to_string()]);
     assert_eq!(
-        declared
-            .state
-            .turso
-            .authentication_token_environment_variable,
+        declared.state.authentication_token_environment_variable(),
         "TURSO_AUTH_TOKEN"
     );
     Ok(())
@@ -534,6 +531,73 @@ fn an_incomplete_value_in_an_unused_environment_does_not_fail_evaluation() -> Te
     ]))?;
     let project = fixture.project()?;
     assert!(project.infrastructure.is_some());
+    Ok(())
+}
+
+const D1_STATE: &str = "state: d1: {accountId: \"0123456789abcdef0123456789abcdef\", \
+                        databaseId: \"0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9\"}";
+
+#[test]
+fn d1_state_evaluates_with_its_own_token_variable() -> TestResult {
+    let fixture = SchemaFixture::new(&infrastructure(&[D1_STATE, PROVIDER]))?;
+    let result = fixture.evaluate()?;
+    let instance = result.instances.get("app").ok_or("app instance missing")?;
+    let project: Project = serde_json::from_value(instance.clone())?;
+    let declared: cuenv_core::manifest::Infrastructure =
+        serde_json::from_value(project.infrastructure.ok_or("infrastructure missing")?)?;
+    assert!(matches!(
+        declared.state,
+        cuenv_core::manifest::InfrastructureState::D1(_)
+    ));
+    assert_eq!(
+        declared.state.authentication_token_environment_variable(),
+        "CLOUDFLARE_D1_API_TOKEN"
+    );
+    Ok(())
+}
+
+#[test]
+fn state_names_exactly_one_backend() -> TestResult {
+    for (state, expected) in [
+        ("state: {}", "set one state backend: `turso` or `d1`"),
+        (
+            "state: {turso: url: \"libsql://db.turso.io\", d1: {accountId: \"0123456789abcdef0123456789abcdef\", databaseId: \"0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9\"}}",
+            "set exactly one state backend, `turso` or `d1`, not both",
+        ),
+    ] {
+        let message = SchemaFixture::new(&infrastructure(&[state, PROVIDER]))?.error()?;
+        assert!(message.contains(expected), "{state}: {message}");
+    }
+    // A backend with an error of its own reports only that error.
+    let message = SchemaFixture::new(&infrastructure(&[
+        "state: turso: url: \"postgres://db\"",
+        PROVIDER,
+    ]))?
+    .error()?;
+    assert!(message.contains("`url` must be libsql://"), "{message}");
+    assert!(!message.contains("state backend"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn d1_identifiers_must_have_cloudflare_forms() -> TestResult {
+    for (field, state) in [
+        (
+            "accountId",
+            "state: d1: {accountId: \"0123456789ABCDEF0123456789ABCDEF\", databaseId: \"0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9\"}",
+        ),
+        (
+            "databaseId",
+            "state: d1: {accountId: \"0123456789abcdef0123456789abcdef\", databaseId: \"my-database\"}",
+        ),
+        (
+            "token",
+            "state: d1: {accountId: \"0123456789abcdef0123456789abcdef\", databaseId: \"0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9\", token: \"x\"}",
+        ),
+    ] {
+        let message = SchemaFixture::new(&infrastructure(&[state, PROVIDER]))?.error()?;
+        assert!(message.contains(field), "{field}: {message}");
+    }
     Ok(())
 }
 

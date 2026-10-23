@@ -164,6 +164,7 @@ glob = "0.3"
 proptest = "1.11"
 criterion = "0.8"
 tempfile = "3.27"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 temp-env = { version = "0.3", features = ["async_closure"] }
 
 # BDD testing dependencies

@@ -11,7 +11,7 @@ use cuenv_infrastructure::{
     UnrecordedStore,
 };
 use cuenv_manifest::environment::EnvValue;
-use cuenv_manifest::manifest::InfrastructurePolicyAction;
+use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, InfrastructureState};
 use tokio::sync::mpsc;
 
 use super::evaluation::{self, EnvironmentSelection, NameCheck, Needs, TargetRequest, TopLevel};
@@ -21,8 +21,8 @@ use super::output::{Finish, Output};
 use super::{
     AnswerFuture, Answers, CommandContext, ConfirmationPolicy, EngineInputs, GuardRequest,
     InfrastructureAction, InfrastructureOptions, SelectionFacts, SeparateState, Siblings,
-    StateAction, UnlockScope, confirm, dispatch, environment_variables_for_action, guard_selection,
-    release, run, under_lock,
+    StateAction, UnlockScope, confirm, connect, dispatch, environment_variables_for_action,
+    guard_selection, release, run, under_lock, validate_state_url,
 };
 use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
@@ -76,6 +76,47 @@ fn state_only_actions_resolve_only_the_backend_token() {
         "TURSO_AUTH_TOKEN",
     );
     assert_eq!(provider_environment, environment);
+}
+
+/// A D1 state block whose token variable nothing sets.
+fn d1_infrastructure(database_id: &str) -> Infrastructure {
+    serde_json::from_value(serde_json::json!({"state": {"d1": {
+        "accountId": "0123456789abcdef0123456789abcdef",
+        "databaseId": database_id,
+        "authenticationTokenEnvironmentVariable": "CUENV_TEST_D1_TOKEN_NEVER_SET",
+    }}}))
+    .unwrap()
+}
+
+#[test]
+fn d1_state_is_validated_before_any_secret_and_needs_its_token() {
+    let infrastructure = d1_infrastructure("0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9");
+    validate_state_url(&infrastructure).unwrap();
+    let invalid = validate_state_url(&d1_infrastructure("my-database"))
+        .unwrap_err()
+        .to_string();
+    assert!(invalid.contains("D1 database identifier"), "{invalid}");
+
+    // Unlike Turso (a local `sqld` may need none), D1 refuses to connect
+    // without a token.
+    let Err(missing) = connect(&infrastructure, &HashMap::new(), &HashMap::new()) else {
+        panic!("connected to D1 without a token");
+    };
+    let missing = missing.to_string();
+    assert!(
+        missing.contains("CUENV_TEST_D1_TOKEN_NEVER_SET is not set"),
+        "{missing}"
+    );
+
+    // A token the project resolves is used.
+    let variable = "CUENV_TEST_D1_TOKEN_NEVER_SET".to_string();
+    let project = HashMap::from([(
+        variable.clone(),
+        EnvValue::String("resolved-d1-token".to_string()),
+    )]);
+    let resolved = HashMap::from([(variable, "resolved-d1-token".to_string())]);
+    let store = connect(&infrastructure, &project, &resolved).unwrap();
+    assert!(store.recovery_identity().is_some());
 }
 
 #[test]
@@ -2361,10 +2402,10 @@ infrastructure: {
     assert!(evaluate_at_environment(&project, NameCheck::TargetOnly, Some("dev")).is_err());
     // ... and a state-only command does not.
     let target = evaluate_state_only(&project, None);
-    assert_eq!(
-        target.infrastructure.state.turso.url,
-        "http://127.0.0.1:8080"
-    );
+    assert!(matches!(
+        &target.infrastructure.state,
+        InfrastructureState::Turso(turso) if turso.url == "http://127.0.0.1:8080"
+    ));
     assert!(target.infrastructure.providers.is_empty());
     assert!(target.warnings.is_empty());
     let target = evaluate_state_only(&project, Some("dev"));
