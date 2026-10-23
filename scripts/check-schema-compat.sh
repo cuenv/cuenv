@@ -38,6 +38,8 @@ cleanup() {
 		kill "$registry_pid" 2>/dev/null || true
 		wait "$registry_pid" 2>/dev/null || true
 	fi
+	# CUE extracts fetched modules read-only, like Go's module cache.
+	chmod -R u+w "$work" 2>/dev/null || true
 	rm -rf "$work"
 }
 trap cleanup EXIT
