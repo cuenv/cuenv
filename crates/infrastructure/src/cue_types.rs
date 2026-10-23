@@ -312,7 +312,11 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
     let mut files = BTreeMap::new();
 
     let description = format!("{} {}", release.source, release.version);
-    let mut provider = Package::new(&description, "the provider's configuration block");
+    let mut provider = Package::new(
+        &description,
+        "the provider's configuration block",
+        ConfigurationKind::Provider,
+    );
     provider.line(
         0,
         "// #Provider declares the provider at exactly the version and schema",
@@ -337,7 +341,11 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         let Some(resource) = schema.resources.get(resource_type) else {
             continue;
         };
-        let mut package = Package::new(&description, &format!("the {resource_type} resource"));
+        let mut package = Package::new(
+            &description,
+            &format!("the {resource_type} resource"),
+            ConfigurationKind::Resource,
+        );
         package.line(
             0,
             &format!("// #Resource declares a managed resource of type {resource_type}."),
@@ -377,10 +385,18 @@ struct Package {
     header: String,
     body: String,
     uses_list: bool,
+    configuration_kind: ConfigurationKind,
+    uses_output_reference: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigurationKind {
+    Provider,
+    Resource,
 }
 
 impl Package {
-    fn new(release: &str, subject: &str) -> Self {
+    fn new(release: &str, subject: &str, configuration_kind: ConfigurationKind) -> Self {
         let header = [
             GENERATED_HEADER.to_string(),
             "//".to_string(),
@@ -393,6 +409,8 @@ impl Package {
             header,
             body: String::new(),
             uses_list: false,
+            configuration_kind,
+            uses_output_reference: false,
         }
     }
 
@@ -436,6 +454,17 @@ impl Package {
     fn configuration(&mut self, block: &Block) {
         let value = self.block_struct(block, 0);
         self.line(0, &format!("#Configuration: {value}"));
+        if self.uses_output_reference {
+            self.blank();
+            self.line(
+                0,
+                "// A primitive argument supplied by another managed resource.",
+            );
+            self.line(0, "#InfrastructureOutputReference: close({");
+            self.line(1, r#"fromResource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$""#);
+            self.line(1, r#"attribute!: string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$""#);
+            self.line(0, "})");
+        }
     }
 
     /// The struct a block's configuration is written as, opening at the
@@ -470,10 +499,21 @@ impl Package {
         if attribute.sensitive {
             notes.push("Sensitive: plans show it as (sensitive).");
         }
-        let value = match &attribute.nested {
+        let mut value = match &attribute.nested {
             Some(nested) => self.nested_attributes(nested, depth),
             None => type_expression(&attribute.value_type, depth),
         };
+        if self.configuration_kind == ConfigurationKind::Resource
+            && depth == 1
+            && attribute.nested.is_none()
+            && matches!(
+                attribute.value_type,
+                Type::String | Type::Number | Type::Boolean
+            )
+        {
+            value.push_str(" | #InfrastructureOutputReference");
+            self.uses_output_reference = true;
+        }
         Some(Field {
             comments: documentation_lines(&attribute.documentation, &notes),
             label: label(name),

@@ -465,6 +465,8 @@ fn change(address: ResourceAddress, action: Action) -> ResourceChange {
         sensitive: Vec::new(),
         requires_replace: Vec::new(),
         dependencies: Vec::new(),
+        references: crate::references::ConfigurationReferences::default(),
+        reference_configuration: None,
         steps: Vec::new(),
         refreshed_record: None,
         stored: None,
@@ -491,6 +493,7 @@ fn replacement_step(kind: StepKind) -> ApplyStep {
         planned: Vec::new(),
         configuration: Vec::new(),
         planned_private: Vec::new(),
+        prior_private: Vec::new(),
         planned_value: Value::Null,
     }
 }
@@ -1923,6 +1926,22 @@ fn interrupted_apply_without_a_provider_response_reports_the_unknown_resource() 
 }
 
 #[test]
+fn referenced_replan_continues_for_provider_failures_but_aborts_storage_and_interrupt_errors() {
+    let provider_error = OperationFailure::from_reference_replan(InfrastructureError::plugin(
+        "provider rejected the resolved configuration",
+    ));
+    assert!(provider_error.continues());
+
+    let store_error =
+        OperationFailure::from_reference_replan(InfrastructureError::state("state listing failed"));
+    assert!(!store_error.continues());
+
+    let interrupt =
+        OperationFailure::from_reference_replan(InfrastructureError::InterruptedWhilePlanning);
+    assert!(!interrupt.continues());
+}
+
+#[test]
 fn render_plan_masks_sensitive_values() {
     let mut after = BTreeMap::new();
     after.insert("id".to_string(), Value::Unknown);
@@ -2523,6 +2542,7 @@ fn inconsistent_create_and_update_results_are_provider_errors() {
         planned: Vec::new(),
         configuration: Vec::new(),
         planned_private: Vec::new(),
+        prior_private: Vec::new(),
         planned_value: named("planned"),
     };
     let check = |step: &ApplyStep, returned: &Value| {

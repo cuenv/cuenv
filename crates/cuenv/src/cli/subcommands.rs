@@ -261,6 +261,31 @@ pub enum InfrastructureCommands {
         )]
         allow_separate_state: bool,
     },
+    /// Record an existing provider resource in managed state.
+    #[command(about = "Import an existing provider resource into managed state")]
+    Import {
+        /// Configured resource address, such as `cloudflare_zone.primary`.
+        #[arg(help = "Configured resource address, such as cloudflare_zone.primary")]
+        address: String,
+        /// Opaque identifier accepted by the provider's import implementation.
+        #[arg(help = "Provider-specific identifier of the existing resource")]
+        identifier: String,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
     /// Delete every managed resource the project owns.
     #[command(about = "Delete every managed resource the project owns")]
     Destroy {
@@ -439,6 +464,7 @@ impl InfrastructureCommands {
         match self {
             Self::Plan { package, .. }
             | Self::Apply { package, .. }
+            | Self::Import { package, .. }
             | Self::Destroy { package, .. }
             | Self::State { package, .. }
             | Self::Unlock { package, .. } => package,

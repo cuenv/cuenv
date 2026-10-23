@@ -17,6 +17,10 @@
 //	protect       fake_protect refuses destroy plans
 //	slow-delete   fake_repl deletes take four seconds
 //
+// Importing fake_plain returns the identifier as id and name, with arn null.
+// ReadResource fills arn so import tests can establish that refresh happened.
+// Optional import-response.json overrides type_name, state and private (base64).
+//
 // Resource types:
 //
 //	fake_nested    nested attributes and nested blocks with computed children
@@ -24,6 +28,7 @@
 //	fake_taintdel  creates that fail part way; deletes that can fail
 //	fake_jsonplan  planned states sent as JSON instead of MessagePack
 //	fake_plain     upgraded states optionally sent as JSON
+//	fake_secret    computed sensitive output for reference rejection tests
 //	fake_undead    deletes that return the object instead of null, without errors
 //	fake_slow      creates that wait until the provider is asked to stop
 //	fake_protect   destroy plans that can be refused and carry private data
@@ -138,6 +143,7 @@ func (p *fakeProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &simple{kind: "taintdel"} },
 		func() resource.Resource { return &simple{kind: "jsonplan"} },
 		func() resource.Resource { return &simple{kind: "plain"} },
+		func() resource.Resource { return &simple{kind: "secret"} },
 		func() resource.Resource { return &simple{kind: "undead"} },
 		func() resource.Resource { return &simple{kind: "slow"} },
 		func() resource.Resource { return &basic{kind: "protect"} },
@@ -262,6 +268,7 @@ func (r *simple) Schema(_ context.Context, _ resource.SchemaRequest, response *r
 		"name": schema.StringAttribute{Required: true},
 		"arn": schema.StringAttribute{
 			Computed:      true,
+			Sensitive:     r.kind == "secret",
 			PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 		},
 	}}
@@ -552,6 +559,9 @@ func (w *wrap) PlanResourceChange(ctx context.Context, request *tfprotov6.PlanRe
 }
 
 func (w *wrap) ApplyResourceChange(ctx context.Context, request *tfprotov6.ApplyResourceChangeRequest) (*tfprotov6.ApplyResourceChangeResponse, error) {
+	if request.TypeName == "fake_plain" {
+		journal("plain: ApplyResourceChange")
+	}
 	if request.TypeName == "fake_jsonplan" {
 		isNull, _ := request.PlannedState.IsNull()
 		journal("jsonplan: ApplyResourceChange received planned_state null=%v", isNull)
@@ -590,8 +600,55 @@ func (w *wrap) ReadResource(ctx context.Context, request *tfprotov6.ReadResource
 	if request.TypeName == "fake_plain" {
 		isNull, err := request.CurrentState.IsNull()
 		journal("plain: ReadResource current_state null=%v error=%v", isNull, err)
+		if string(request.Private) == "{}" {
+			decoded, err := request.CurrentState.Unmarshal(simpleType)
+			if err != nil {
+				return nil, err
+			}
+			var attributes map[string]tftypes.Value
+			if err := decoded.As(&attributes); err != nil {
+				return nil, err
+			}
+			attributes["arn"] = tftypes.NewValue(tftypes.String, "arn:plain")
+			state, err := tfprotov6.NewDynamicValue(simpleType, tftypes.NewValue(simpleType, attributes))
+			if err != nil {
+				return nil, err
+			}
+			journal("plain: ReadResource imported private=%s", string(request.Private))
+			return &tfprotov6.ReadResourceResponse{NewState: &state, Private: request.Private}, nil
+		}
 	}
 	return w.ProviderServer.ReadResource(ctx, request)
+}
+
+func (w *wrap) ImportResourceState(ctx context.Context, request *tfprotov6.ImportResourceStateRequest) (*tfprotov6.ImportResourceStateResponse, error) {
+	if request.TypeName != "fake_plain" {
+		return w.ProviderServer.ImportResourceState(ctx, request)
+	}
+	journal("plain: ImportResourceState identifier=%s", request.ID)
+	state, err := json.Marshal(map[string]any{"id": request.ID, "name": request.ID, "arn": nil})
+	if err != nil {
+		return nil, err
+	}
+	result := struct {
+		TypeName string          `json:"type_name"`
+		State    json.RawMessage `json:"state"`
+		Private  []byte          `json:"private"`
+	}{TypeName: request.TypeName, State: state, Private: []byte("{}")}
+	if override, err := os.ReadFile(filepath.Join(currentDirectory(), "import-response.json")); err == nil {
+		if err := json.Unmarshal(override, &result); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	return &tfprotov6.ImportResourceStateResponse{
+		ImportedResources: []*tfprotov6.ImportedResource{{
+			TypeName: result.TypeName,
+			State:    &tfprotov6.DynamicValue{JSON: result.State},
+			Private:  result.Private,
+		}},
+	}, nil
 }
 
 func main() {

@@ -424,7 +424,10 @@ async fn generated_types_describe_real_provider_schemas() -> TestResult {
         .get(Path::new("resources/random_pet/resource.cue"))
         .ok_or("no random_pet package")?;
     // Computed-only `id` is not configuration.
-    assert!(pet.contains("\tlength?: number\n"), "{pet}");
+    assert!(
+        pet.contains("\tlength?: number | #InfrastructureOutputReference\n"),
+        "{pet}"
+    );
     assert!(!pet.contains("\tid?:"), "{pet}");
     Ok(())
 }
@@ -1211,6 +1214,131 @@ async fn fake_nested_attributes_and_blocks_with_computed_children_converge() -> 
     assert_eq!(updated.plan.changes[0].action, Action::Update);
     let record = fake.record("thing").await?;
     assert_eq!(record.state["rules"][1]["rule_id"], "attribute-b");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_import_refreshes_and_records_one_resource_without_applying() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({
+        "thing": {"type": "fake_plain", "configuration": {"name": "outside-id"}}
+    });
+    let mut engine = fake.engine(&resources, &Cancellation::default())?;
+    let lock = fake.store.lock(&fake.tenant, "fake-import").await?;
+    let address = cuenv_infrastructure::ResourceAddress::new("fake_plain", "thing");
+    engine.import(&address, "outside-id", &lock).await?;
+    let rows = fake.store.list(&fake.tenant).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state["id"], "outside-id");
+    assert_eq!(rows[0].state["arn"], "arn:plain");
+    let journal = fake.journal();
+    assert!(journal.contains("ImportResourceState identifier=outside-id"));
+    assert!(journal.contains("ReadResource imported private={}"));
+    assert!(!journal.contains("plain: ApplyResourceChange"), "{journal}");
+
+    let plan = engine.plan(PlanMode::Apply).await?;
+    assert!(!plan.has_work(), "{:?}", actions(&plan));
+    fake.store.unlock(&fake.tenant, &lock).await?;
+    engine.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_output_references_infer_dependencies_and_stay_noop() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({
+        "primary": {"type": "fake_plain", "configuration": {"name": "zone"}},
+        "record": {
+            "type": "fake_repl",
+            "configuration": {
+                "name": {
+                    "fromResource": "fake_plain.primary",
+                    "attribute": "id",
+                },
+            },
+        },
+    });
+    let created = fake.converge(&resources, PlanMode::Apply).await?;
+    created.applied?;
+    let record = fake.record("record").await?;
+    assert_eq!(record.state["name"], "plain-1");
+    assert_eq!(record.dependencies, ["fake_plain.primary"]);
+
+    let unchanged = fake.plan(&resources).await?;
+    assert!(!unchanged.has_work(), "{:?}", actions(&unchanged));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_unknown_reference_replacement_waits_for_a_fresh_plan() -> TestResult {
+    let fake = Fake::new().await?;
+    let existing = json!({
+        "record": {"type": "fake_repl", "configuration": {"name": "old"}}
+    });
+    fake.converge(&existing, PlanMode::Apply).await?.applied?;
+
+    let desired = json!({
+        "primary": {"type": "fake_plain", "configuration": {"name": "zone"}},
+        "record": {
+            "type": "fake_repl",
+            "configuration": {
+                "name": {
+                    "fromResource": "fake_plain.primary",
+                    "attribute": "id",
+                },
+            },
+        },
+    });
+    let first = fake.converge(&desired, PlanMode::Apply).await?;
+    assert!(first.plan.warnings.iter().any(|warning| {
+        warning.contains("may require replacement after a referenced output becomes known")
+    }));
+    assert!(first.applied.is_err());
+    assert_eq!(fake.record("record").await?.state["name"], "old");
+    assert!(!fake.journal().contains("repl: Delete id="));
+
+    let next = fake.plan(&desired).await?;
+    assert_eq!(
+        actions(&next)
+            .into_iter()
+            .find(|(address, _)| address == "fake_repl.record")
+            .map(|(_, action)| action),
+        Some(Action::Replace),
+        "{next:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_sensitive_outputs_cannot_flow_through_references() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({
+        "secret": {"type": "fake_secret", "configuration": {"name": "private"}},
+        "consumer": {
+            "type": "fake_plain",
+            "configuration": {
+                "name": {
+                    "fromResource": "fake_secret.secret",
+                    "attribute": "arn",
+                },
+            },
+        },
+    });
+    let error = fake
+        .plan(&resources)
+        .await
+        .expect_err("sensitive output must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("sensitive source attributes cannot be referenced yet"),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("arn:secret"));
     Ok(())
 }
 

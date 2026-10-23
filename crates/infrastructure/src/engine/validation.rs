@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use cuenv_manifest::manifest::{Infrastructure, ManagedResourceDeclaration};
 
 use crate::error::{InfrastructureError, Result};
+use crate::references::ConfigurationReferences;
 use crate::registry::{ProviderSource, validate_version};
 
 /// Where in the `infrastructure` block a configuration lives: the top level,
@@ -136,6 +137,7 @@ fn check_resources(
     let resources = scope.resources();
     let providers = scope.providers();
     let declared: BTreeSet<&String> = infrastructure.resources.keys().collect();
+    let mut references = BTreeMap::new();
     for (name, declaration) in &infrastructure.resources {
         let path = format!("{resources}.{name}");
         let provider_name = declaration.provider_name();
@@ -162,8 +164,28 @@ fn check_resources(
                 ));
             }
         }
+        match ConfigurationReferences::extract(&declaration.configuration) {
+            Ok(resource_references) => {
+                for reference in resource_references.references() {
+                    if !infrastructure
+                        .resources
+                        .get(&reference.source.name)
+                        .is_some_and(|source| {
+                            source.resource_type == reference.source.resource_type
+                        })
+                    {
+                        problems.push(format!(
+                            "{path}.configuration.{}.fromResource: resource '{}' is not declared in {resources}",
+                            reference.destination_attribute, reference.source
+                        ));
+                    }
+                }
+                references.insert(name.clone(), resource_references);
+            }
+            Err(error) => problems.push(format!("{path}.configuration: {}", detail(error))),
+        }
     }
-    check_cycles(&infrastructure.resources, &resources, problems);
+    check_cycles(&infrastructure.resources, &references, &resources, problems);
 }
 
 /// Report every dependency cycle among the declared resources: a resource
@@ -173,6 +195,7 @@ fn check_resources(
 /// and ignored here.
 fn check_cycles(
     resources: &BTreeMap<String, ManagedResourceDeclaration>,
+    references: &BTreeMap<String, ConfigurationReferences>,
     path: &str,
     problems: &mut Vec<String>,
 ) {
@@ -197,6 +220,26 @@ fn check_cycles(
                 graph[from].push(to);
             }
         }
+        for reference in references
+            .get(name)
+            .into_iter()
+            .flat_map(ConfigurationReferences::references)
+        {
+            let Some(&to) = position.get(reference.source.name.as_str()) else {
+                continue;
+            };
+            if resources[names[to]].resource_type != reference.source.resource_type {
+                continue;
+            }
+            if to == from {
+                problems.push(format!(
+                    "{path}.{name}.configuration.{}: resource '{name}' references itself",
+                    reference.destination_attribute
+                ));
+            } else if !graph[from].contains(&to) {
+                graph[from].push(to);
+            }
+        }
     }
     for mut component in strongly_connected_components(&graph) {
         if component.len() < 2 {
@@ -207,7 +250,7 @@ fn check_cycles(
         let entries: Vec<String> = members
             .iter()
             .flat_map(|name| {
-                resources[*name]
+                let explicit = resources[*name]
                     .depends_on
                     .iter()
                     .enumerate()
@@ -216,7 +259,24 @@ fn check_cycles(
                     })
                     .map(move |(index, dependency)| {
                         format!("{path}.{name}.dependsOn[{index}] -> {dependency}")
+                    });
+                let references = references
+                    .get(*name)
+                    .into_iter()
+                    .flat_map(ConfigurationReferences::references)
+                    .filter(|reference| {
+                        members.contains(&reference.source.name.as_str())
+                            && resources.get(&reference.source.name).is_some_and(|source| {
+                                source.resource_type == reference.source.resource_type
+                            })
                     })
+                    .map(move |reference| {
+                        format!(
+                            "{path}.{name}.configuration.{}.fromResource -> {}",
+                            reference.destination_attribute, reference.source
+                        )
+                    });
+                explicit.chain(references)
             })
             .collect();
         problems.push(format!(

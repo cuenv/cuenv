@@ -228,6 +228,51 @@ pub struct ReadResourceResponse {
     pub private: Vec<u8>,
     #[prost(message, optional, tag = "4")]
     pub deferred: Option<Deferred>,
+    #[prost(message, optional, tag = "5")]
+    pub new_identity: Option<ResourceIdentityData>,
+}
+
+/// Identity returned by a provider, encoded against its separate identity
+/// schema. Decoded so unsupported identity data cannot be silently discarded.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ResourceIdentityData {
+    #[prost(message, optional, tag = "1")]
+    pub identity_data: Option<DynamicValue>,
+}
+
+/// String-identifier `ImportResourceState.Request`, shared by protocols 5 and 6.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ImportResourceStateRequest {
+    #[prost(string, tag = "1")]
+    pub type_name: String,
+    #[prost(string, tag = "2")]
+    pub identifier: String,
+    #[prost(message, optional, tag = "3")]
+    pub client_capabilities: Option<ClientCapabilities>,
+}
+
+/// One provider result from `ImportResourceState`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ImportedResource {
+    #[prost(string, tag = "1")]
+    pub type_name: String,
+    #[prost(message, optional, tag = "2")]
+    pub state: Option<DynamicValue>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub private: Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub identity: Option<ResourceIdentityData>,
+}
+
+/// `ImportResourceState.Response`, shared by protocols 5 and 6.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ImportResourceStateResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub imported_resources: Vec<ImportedResource>,
+    #[prost(message, repeated, tag = "2")]
+    pub diagnostics: Vec<Diagnostic>,
+    #[prost(message, optional, tag = "3")]
+    pub deferred: Option<Deferred>,
 }
 
 /// `PlanResourceChange.Request`.
@@ -462,5 +507,48 @@ pub mod version5 {
         pub min_items: i64,
         #[prost(int64, tag = "5")]
         pub max_items: i64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+
+    #[test]
+    fn import_response_decodes_provider_data_and_unsupported_features()
+    -> Result<(), prost::DecodeError> {
+        // Wire fixture shared by protocols 5 and 6, built from the upstream
+        // field numbers rather than round-tripping our own message definitions.
+        let bytes = b"\x0a\x14\x0a\x01t\x12\x04\x12\x02{}\x1a\x01p\x22\x06\x0a\x04\x12\x02{}\x12\x05\x08\x02\x12\x01w\x1a\x02\x08\x01";
+        let response = ImportResourceStateResponse::decode(bytes.as_slice())?;
+        assert_eq!(response.imported_resources.len(), 1);
+        let imported = &response.imported_resources[0];
+        assert_eq!(imported.type_name, "t");
+        assert_eq!(imported.private, b"p");
+        assert_eq!(
+            imported.state.as_ref().map(|state| state.json.as_slice()),
+            Some(b"{}".as_slice())
+        );
+        assert_eq!(
+            imported
+                .identity
+                .as_ref()
+                .and_then(|identity| identity.identity_data.as_ref())
+                .map(|data| data.json.as_slice()),
+            Some(b"{}".as_slice())
+        );
+        assert_eq!(response.diagnostics.len(), 1);
+        assert_eq!(response.diagnostics[0].severity, Severity::Warning as i32);
+        assert_eq!(response.diagnostics[0].summary, "w");
+        assert_eq!(response.deferred.map(|deferred| deferred.reason), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_identity_is_not_silently_discarded() -> Result<(), prost::DecodeError> {
+        let response = ReadResourceResponse::decode(b"\x2a\x06\x0a\x04\x12\x02{}".as_slice())?;
+        assert!(response.new_identity.is_some());
+        Ok(())
     }
 }

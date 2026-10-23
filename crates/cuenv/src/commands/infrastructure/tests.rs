@@ -78,6 +78,20 @@ fn state_only_actions_resolve_only_the_backend_token() {
     assert_eq!(provider_environment, environment);
 }
 
+#[test]
+fn import_uses_the_provider_configuration_and_import_policy() {
+    let action = InfrastructureAction::Import {
+        address: "cloudflare_record.www".to_string(),
+        identifier: "provider-secret-id".to_string(),
+    };
+    assert_eq!(action.policy_name(), InfrastructurePolicyAction::Import);
+    assert!(action.uses_provider_environment());
+    assert_eq!(action.name_check(), NameCheck::WholeModule);
+    assert_eq!(action.needs(), Needs::Configuration);
+    assert_eq!(action.confirmation(), ConfirmationPolicy::AssumeYes);
+    assert_eq!(action.trace_name(), "import");
+}
+
 fn write(root: &Path, relative: &str, contents: &str) {
     let path = root.join(relative);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();

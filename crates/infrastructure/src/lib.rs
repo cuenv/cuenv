@@ -23,6 +23,7 @@ pub mod error;
 pub mod object_change;
 pub mod plugin;
 mod protocol;
+pub mod references;
 pub mod registry;
 pub mod schema;
 pub mod state;

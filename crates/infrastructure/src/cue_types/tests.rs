@@ -188,9 +188,9 @@ import "list"
 #Configuration: {
 	keepers?: {[string]: string}
 	// The length (in words) of the pet name.
-	length?: number
+	length?: number | #InfrastructureOutputReference
 	// Deprecated: Use `separator`.
-	prefix?: string
+	prefix?: string | #InfrastructureOutputReference
 	rule!: [...{
 		"for"?: {
 			cidr!: string
@@ -199,8 +199,14 @@ import "list"
 		port!: number
 	}] & list.MinItems(1) & list.MaxItems(3)
 	// The provider chooses a value when this is not set.
-	separator?: string
+	separator?: string | #InfrastructureOutputReference
 }
+
+// A primitive argument supplied by another managed resource.
+#InfrastructureOutputReference: close({
+	fromResource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
+	attribute!: string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
+})
 "#;
     assert_eq!(pet, expected);
     let empty = types
@@ -339,10 +345,136 @@ fn protocol_six_nested_attributes_are_rendered_recursively() {
             ..attribute(Type::Dynamic, Presence::Optional)
         },
     );
-    let mut package = Package::new("x 1.0.0", "a test");
+    let mut package = Package::new("x 1.0.0", "a test", ConfigurationKind::Resource);
     package.configuration(&block);
     assert_eq!(
         package.body,
         "#Configuration: {\n\ttags?: {[string]: {\n\t\tname!: string\n\t}}\n}\n"
     );
+}
+
+type TestResult<Success = ()> = std::result::Result<Success, Box<dyn std::error::Error>>;
+
+fn cue_export(directory: &Path) -> TestResult<std::process::Output> {
+    Ok(std::process::Command::new("cue")
+        .args(["export", ".", "-e", "value"])
+        .current_dir(directory)
+        .output()?)
+}
+
+fn initialize_cue_module(directory: &Path) -> TestResult {
+    std::fs::create_dir_all(directory.join("cue.mod"))?;
+    std::fs::write(
+        directory.join("cue.mod/module.cue"),
+        "module: \"example.com/output-reference-tests\"\nlanguage: version: \"v0.14.1\"\n",
+    )?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the CUE command"]
+fn output_reference_schema_is_closed_and_requires_an_address_and_attribute() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    initialize_cue_module(directory.path())?;
+    std::fs::write(
+        directory.path().join("infrastructure.cue"),
+        include_str!("../../../../schema/infrastructure.cue"),
+    )?;
+    for (value, expected) in [
+        (
+            r#"{fromResource: "cloudflare_zone.primary", attribute: "id"}"#,
+            true,
+        ),
+        (
+            r#"{fromResource: "cloudflare_zone.primary", attribute: "id", extra: true}"#,
+            false,
+        ),
+        (r#"{fromResource: "cloudflare_zone.primary"}"#, false),
+        (r#"{fromResource: "primary", attribute: "id"}"#, false),
+        (
+            r#"{fromResource: "cloudflare_zone.primary", attribute: "nested.id"}"#,
+            false,
+        ),
+        (
+            r#"{fromResource: "cloudflare_zone.primary", attribute: ""}"#,
+            false,
+        ),
+        (r#"{fromResource: 4, attribute: "id"}"#, false),
+    ] {
+        std::fs::write(
+            directory.path().join("test.cue"),
+            format!("package schema\nvalue: #InfrastructureOutputReference & {value}\n"),
+        )?;
+        let output = cue_export(directory.path())?;
+        assert_eq!(
+            output.status.success(),
+            expected,
+            "{value}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the CUE command"]
+fn generated_references_are_limited_to_top_level_primitive_resource_arguments() -> TestResult {
+    let mut schema = provider_schema();
+    let resource = schema
+        .resources
+        .get_mut("example_pet")
+        .ok_or("missing pet schema")?;
+    resource.block.attributes.insert(
+        "enabled".into(),
+        attribute(Type::Boolean, Presence::Optional),
+    );
+    resource.block.attributes.insert(
+        "labels".into(),
+        attribute(Type::List(Box::new(Type::String)), Presence::Optional),
+    );
+    let source = source();
+    let types = render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "1.2.3",
+        },
+    )?;
+    let directory = tempfile::tempdir()?;
+    initialize_cue_module(directory.path())?;
+    for (path, contents) in &types.files {
+        let path = directory.path().join(&types.directory).join(path);
+        std::fs::create_dir_all(path.parent().ok_or("generated path has no parent")?)?;
+        std::fs::write(path, contents)?;
+    }
+    let reference = r#"{fromResource: "cloudflare_zone.primary", attribute: "id"}"#;
+    for (kind, configuration, expected) in [
+        (ConfigurationKind::Provider, r#"{api_key: "token"}"#.to_string(), true),
+        (ConfigurationKind::Provider, format!("{{api_key: {reference}}}"), false),
+        (ConfigurationKind::Resource, r#"{rule: [{port: 80}], length: 2, separator: "-", enabled: true}"#.to_string(), true),
+        (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], separator: {reference}, length: {reference}, enabled: {reference}}}"), true),
+        (ConfigurationKind::Resource, format!("{{rule: [{{port: {reference}}}]}}"), false),
+        (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], labels: {reference}}}"), false),
+        (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], id: {reference}}}"), false),
+        (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], token: {reference}}}"), false),
+        (ConfigurationKind::Resource, r#"{rule: [{port: 80}], separator: {fromResource: "cloudflare_zone.primary", attribute: "id", extra: true}}"#.to_string(), false),
+        (ConfigurationKind::Resource, r#"{rule: [{port: 80}], separator: {fromResource: "cloudflare_zone.primary"}}"#.to_string(), false),
+    ] {
+        let (import_path, package) = match kind {
+            ConfigurationKind::Provider => (types.provider_import(), types.package_name.as_str()),
+            ConfigurationKind::Resource => (types.resource_import("example_pet"), "example_pet"),
+        };
+        std::fs::write(
+            directory.path().join("test.cue"),
+            format!("package test\nimport {import_path}\nvalue: {package}.#Configuration & {configuration}\n"),
+        )?;
+        let output = cue_export(directory.path())?;
+        assert_eq!(
+            output.status.success(),
+            expected,
+            "{configuration}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
 }
