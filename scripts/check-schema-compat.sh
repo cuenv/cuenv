@@ -82,6 +82,8 @@ supports_language() {
 
 # --- Publish the working tree to an in-memory registry ----------------------
 
+# Create the log first: the background job opens it asynchronously.
+: >"$work/registry.log"
 "${cue[$newest]}" mod registry 127.0.0.1:0 >"$work/registry.log" 2>&1 &
 registry_pid=$!
 address=""

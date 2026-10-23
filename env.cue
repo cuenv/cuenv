@@ -239,7 +239,7 @@ schema.#Project & {
 				args: ["scripts/check-schema-compat.sh"]
 				inputs: [
 					"scripts/check-schema-compat.sh",
-					"cue.mod/module.cue",
+					"cue.mod/**",
 					"schema/**",
 					"contrib/**",
 					"examples/**",
