@@ -355,7 +355,6 @@ mod tests {
             backend_type: "dagger".to_string(),
             options: Some(BackendOptions {
                 image: Some("rust:latest".to_string()),
-                platform: None,
             }),
         };
         let backend = create_dagger_backend(Some(&config), "/project".into());
@@ -373,19 +372,6 @@ mod tests {
         let config = BackendConfig {
             backend_type: "dagger".to_string(),
             options: None,
-        };
-        let backend = create_dagger_backend(Some(&config), "/project".into());
-        assert_eq!(backend.name(), "dagger");
-    }
-
-    #[test]
-    fn test_create_dagger_backend_with_platform() {
-        let config = BackendConfig {
-            backend_type: "dagger".to_string(),
-            options: Some(BackendOptions {
-                image: Some("alpine:latest".to_string()),
-                platform: Some("linux/amd64".to_string()),
-            }),
         };
         let backend = create_dagger_backend(Some(&config), "/project".into());
         assert_eq!(backend.name(), "dagger");
@@ -449,7 +435,6 @@ mod tests {
             backend_type: "dagger".to_string(),
             options: Some(BackendOptions {
                 image: Some("custom/image:tag".to_string()),
-                platform: None,
             }),
         };
 
@@ -477,7 +462,6 @@ mod tests {
             backend_type: "dagger".to_string(),
             options: Some(BackendOptions {
                 image: None,
-                platform: Some("linux/arm64".to_string()),
             }),
         };
 
@@ -511,15 +495,5 @@ mod tests {
             options: None,
         };
         assert_eq!(config.backend_type, "dagger");
-    }
-
-    #[test]
-    fn test_backend_options_both_fields() {
-        let options = BackendOptions {
-            image: Some("node:latest".to_string()),
-            platform: Some("linux/amd64".to_string()),
-        };
-        assert_eq!(options.image, Some("node:latest".to_string()));
-        assert_eq!(options.platform, Some("linux/amd64".to_string()));
     }
 }

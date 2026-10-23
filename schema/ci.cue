@@ -1,124 +1,124 @@
 package schema
 
 // Workflow dispatch input definition for manual triggers
-#WorkflowDispatchInput: close({
+#WorkflowDispatchInput: {
 	description!: string
 	required?:    bool
 	default?:     string
 	type?:        "string" | "boolean" | "choice" | "environment"
 	options?: [...string] // only valid when type is "choice"
-})
+}
 
 // Workflow dispatch inputs map
 #WorkflowDispatchInputs: [string]: #WorkflowDispatchInput
 
-#PipelineCondition: close({
-	pullRequest?:   bool
-	branch?:        string | [...string]
-	tag?:           string | [...string]
-	defaultBranch?: bool
-	scheduled?:     string | [...string]           // cron expression(s)
-	manual?:        bool | #WorkflowDispatchInputs // simple bool OR with inputs
-	release?: [...string]                          // release event types e.g. ["published"]
-})
+#PipelineCondition: {
+	pullRequest?: bool
+	branch?: string | [...string]
+	tag?: string | [...string]
+	defaultBranch?:                  bool
+	scheduled?: string | [...string] // cron expression(s)
+	manual?:                         bool | #WorkflowDispatchInputs // simple bool OR with inputs
+	release?: [...string] // release event types e.g. ["published"]
+}
 
 // Token requirements are unioned per job. Pipeline maps only cap named scopes.
 #GitHubPermissions: {
 	["contents" | "checks" | "pull-requests" | "issues" | "packages" | "actions"]: "none" | "read" | "write"
-	"id-token"?: "none" | "write"
+	"id-token"?:                                                                   "none" | "write"
 }
 
 // Task and contributor-step token requirements.
-#TaskCI: close({
-	github?: close({
+#TaskCI: {
+	github?: {
 		permissions?: #GitHubPermissions
 		// Contributor steps only: restrict emission to these task IDs.
 		tasks?: [...string]
-	})
-})
+	}
+}
 
 // GitHub Actions provider configuration
-#GitHubConfig: close({
+#GitHubConfig: {
 	runner?: string | [...string]
 	// Runner mapping for matrix dimensions (e.g., arch -> runner name)
-	runners?: close({
+	runners?: {
 		arch?: [string]: string
-	})
-	cachix?: close({
+	}
+	cachix?: {
 		name!:       string
 		authToken?:  string
 		pushFilter?: string
-	})
+	}
 	// Hestia Nix binary cache backed by the GitHub Actions cache API.
 	// cuenv emits a pinned setup step and a repository-wide daily GC workflow.
-	hestia?: close({})
-	namespaceCache?: close({})
-	artifacts?: close({
-		paths?:          [...string]
+	hestia?: {}
+	namespaceCache?: {}
+	artifacts?: {
+		paths?: [...string]
 		ifNoFilesFound?: "warn" | "error" | "ignore"
-	})
+	}
 	// Trusted publishing via OIDC (no secrets needed)
-	trustedPublishing?: close({
+	trustedPublishing?: {
 		cratesIo?:    bool // Enable trusted publishing for crates.io
 		cueRegistry?: bool // Enable trusted publishing for the CUE Registry
-	})
+	}
 	// Ceiling for named scopes: omitted scopes are unrestricted; none forbids.
 	// This never grants a permission. Per-pipeline maps replace global maps.
 	permissions?: #GitHubPermissions
-})
+}
 
 // Buildkite provider configuration
-#BuildkiteConfig: close({
+#BuildkiteConfig: {
 	queue?:     string
 	useEmojis?: bool
-	plugins?: [...close({
+	plugins?: [...{
 		name!:   string
-		config?: _
-	})]
-})
+		config?: {...}
+	}]
+}
 
 // GitLab CI provider configuration
-#GitLabConfig: close({
+#GitLabConfig: {
 	image?: string
 	tags?: [...string]
-	cache?: close({
-		key?:   string
+	cache?: {
+		key?: string
 		paths?: [...string]
-	})
-})
+	}
+}
 
 // Provider-specific configuration
-#ProviderConfig: close({
+#ProviderConfig: {
 	github?:    #GitHubConfig
 	buildkite?: #BuildkiteConfig
 	gitlab?:    #GitLabConfig
-})
+}
 
 // Artifact download configuration for pipeline tasks
-#ArtifactDownload: close({
+#ArtifactDownload: {
 	from!:   string       // Source task name (must have outputs)
 	to!:     string       // Base directory to download artifacts into
 	filter?: string | *"" // Glob pattern to filter matrix variants (e.g., "*stable")
-})
+}
 
 // Matrix task configuration for pipeline
-#MatrixTask: close({
-	type:   "matrix"                          // Discriminator for CUE disjunction (distinguishes from #TaskNode)
-	task!:  #TaskNode                         // Task reference (CUE ref for compile-time validation)
-	matrix: [string]: [...string]             // Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
-	artifacts?: [...#ArtifactDownload]        // Artifacts to download before running
-	params?: [string]: string                 // Parameters to pass to the task
-})
+#MatrixTask: {
+	type:  "matrix"  // Discriminator for CUE disjunction (distinguishes from #TaskNode)
+	task!: #TaskNode // Task reference (CUE ref for compile-time validation)
+	matrix: [string]: [...string] // Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
+	artifacts?: [...#ArtifactDownload] // Artifacts to download before running
+	params?: [string]: string // Parameters to pass to the task
+}
 
 // Pipeline task reference - either a direct task reference or a matrix task
 #PipelineTask: #TaskNode | #MatrixTask
 
 // GitHub Action configuration for contributor tasks
-#GitHubActionConfig: close({
-	uses!: string        // Action reference (e.g., "Mozilla-Actions/sccache-action@v0.2")
-	with?: [string]: _   // Action inputs
-	if?:   string        // GitHub Actions step condition (e.g., "runner.os == 'Linux'")
-})
+#GitHubActionConfig: {
+	uses!: string // Action reference (e.g., "Mozilla-Actions/sccache-action@v0.2")
+	with?: [string]: string | number | bool // Action inputs (GitHub accepts scalars only)
+	if?: string // GitHub Actions step condition (e.g., "runner.os == 'Linux'")
+}
 
 // =============================================================================
 // Contributors
@@ -126,30 +126,30 @@ package schema
 
 // Auto-association rules for contributors
 // Defines how user tasks are automatically connected to contributor tasks
-#AutoAssociate: close({
+#AutoAssociate: {
 	// Commands that trigger auto-association (e.g., ["bun", "bunx"])
 	command?: [...string]
 	// Task to inject as dependency (e.g., "cuenv:contributor:bun.workspace.setup")
 	injectDependency?: string
-})
+}
 
 // Secret reference for contributor tasks
-#SecretRef: close({
-	source!:   string            // CI secret name (e.g., "CACHIX_AUTH_TOKEN")
-	cacheKey?: bool | *false     // Include in cache key via salted HMAC
-})
+#SecretRef: {
+	source!:   string        // CI secret name (e.g., "CACHIX_AUTH_TOKEN")
+	cacheKey?: bool | *false // Include in cache key via salted HMAC
+}
 
 // Execution condition for contributor tasks
 #TaskCondition: "on_success" | "on_failure" | "always"
 
 // Provider-specific task configuration
-#TaskProviderConfig: close({
+#TaskProviderConfig: {
 	github?: #GitHubActionConfig
-})
+}
 
 // Contributor task definition
 // Tasks injected into the DAG by contributors
-#ContributorTask: close({
+#ContributorTask: {
 	// Requirements apply only where this contributor task is emitted.
 	ci?: #TaskCI
 	// Task identifier (will be prefixed with cuenv:contributor:)
@@ -184,11 +184,11 @@ package schema
 	condition?: #TaskCondition
 	// Provider-specific overrides (e.g., GitHub Actions)
 	provider?: #TaskProviderConfig
-})
+}
 
 // Contributor activation condition
 // All specified conditions must be true (AND logic)
-#ActivationCondition: close({
+#ActivationCondition: {
 	// Always active (no conditions)
 	always?: bool
 
@@ -227,11 +227,11 @@ package schema
 
 	// Service presence (active if project has any services defined)
 	hasService?: bool
-})
+}
 
 // Contributor definition
 // Contributors inject tasks into the DAG based on activation conditions
-#Contributor: close({
+#Contributor: {
 	// Contributor identifier (e.g., "bun.workspace", "nix", "1password")
 	id!: string
 	// Activation condition (defaults to always active)
@@ -240,7 +240,7 @@ package schema
 	tasks!: [...#ContributorTask]
 	// Auto-association rules for user tasks
 	autoAssociate?: #AutoAssociate
-})
+}
 
 // Pipeline generation mode
 // - "thin": Generate minimal workflow with cuenv ci orchestration (default)
@@ -253,7 +253,7 @@ package schema
 // Used to specify which CI providers should emit workflow manifests
 #CIProvider: "github" | "buildkite" | "gitlab"
 
-#Pipeline: close({
+#Pipeline: {
 	// Generation mode for this pipeline (default: "thin")
 	mode?: #PipelineMode | *"thin"
 
@@ -280,17 +280,17 @@ package schema
 
 	derivePaths?: bool // whether to derive trigger paths from task inputs
 	provider?:    #ProviderConfig
-})
+}
 
-#CI: close({
+#CI: {
 	// CI providers to emit workflows for (e.g., ["github", "buildkite"])
 	// If not specified, no workflows are emitted (explicit configuration required)
 	// Per-pipeline providers can override this global setting
 	providers?: [...#CIProvider]
 
 	pipelines?: [string]: #Pipeline
-	provider?:  #ProviderConfig
+	provider?: #ProviderConfig
 
 	// Contributors that inject tasks into the DAG
 	contributors?: [...#Contributor]
-})
+}

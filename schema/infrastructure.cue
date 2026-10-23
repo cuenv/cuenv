@@ -45,7 +45,7 @@ import "strings"
 // there too, so a misspelled field (`resource:`, `sourcee:`) is an error
 // instead of an ignored extra field.
 
-#Infrastructure: close({
+#Infrastructure: {
 	// Where managed resource state lives. One state database serves the
 	// top-level configuration and every named environment; each has its own
 	// identity inside it (module path, project name and environment).
@@ -59,13 +59,13 @@ import "strings"
 
 	// Top-level configuration, used when no `--env` is given.
 	#InfrastructureConfiguration
-})
+}
 
 // The complete provider and resource set of one configuration: the top level
 // of `infrastructure`, or one entry of `infrastructure.environments`. Every
 // semantic check below reads only this configuration's own maps, so each
 // configuration is checked on its own.
-#InfrastructureConfiguration: close({
+#InfrastructureConfiguration: {
 	// Provider plugins keyed by local name. Resource types default to the
 	// provider named by their prefix (`random_pet` → `random`). The field is
 	// always present (an empty struct when no provider is declared), so the
@@ -141,15 +141,15 @@ import "strings"
 			}
 		}
 	}
-})
+}
 
 #InfrastructureName: string & =~"^[a-zA-Z][a-zA-Z0-9_-]*$"
 
-#InfrastructureState: close({
+#InfrastructureState: {
 	turso!: {#TursoState}
-})
+}
 
-#TursoState: close({
+#TursoState: {
 	// Database URL. Accepted forms (scheme and `localhost` in any case):
 	//
 	//   libsql://, https:// or wss:// followed by a DNS name (whose last
@@ -172,7 +172,7 @@ import "strings"
 	// Environment variable holding the database authentication token. The
 	// default matches the name the Turso command line tool documents.
 	authenticationTokenEnvironmentVariable: *"TURSO_AUTH_TOKEN" | (string & =~"^[A-Za-z_][A-Za-z0-9_]*$")
-})
+}
 
 // Building blocks of the Turso URL contract. The Rust state store parses the
 // URL independently. The schema accepts a subset of what the store accepts and
@@ -195,7 +195,7 @@ _tursoLoopback:     "((?i:localhost)|\(_tursoLoopback4)|\\[::1\\]|\\[(?i:::ffff:
 _tursoEncryptedUrl: "^(?i:libsql|https|wss)://\(_tursoHost)\(_tursoPort)\(_tursoPath)$"
 _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)$"
 
-#InfrastructureProvider: close({
+#InfrastructureProvider: {
 	// Registry source address: "namespace/type" or
 	// "hostname[:port]/namespace/type".
 	source!: string & =~"^([a-zA-Z0-9.-]+(:[0-9]{1,5})?/)?[a-zA-Z0-9-]+/[a-zA-Z0-9-]+$"
@@ -216,9 +216,9 @@ _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)
 	// Provider configuration block, validated by the provider's schema. A
 	// generated `#Provider` types it with its `#Configuration`.
 	configuration?: {...}
-})
+}
 
-#ManagedResource: close({
+#ManagedResource: {
 	// Managed resource type, for example "random_pet".
 	type!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+$"
 
@@ -231,4 +231,4 @@ _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)
 	// Resource arguments, validated by the provider's schema. A generated
 	// `#Resource` types them with its `#Configuration`.
 	configuration?: {...}
-})
+}

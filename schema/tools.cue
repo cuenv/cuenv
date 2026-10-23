@@ -111,30 +111,30 @@ package schema
 #GitHubExtract: #BinExtract | #LibExtract | #IncludeExtract | #PkgConfigExtract | #FileExtract
 
 #BinExtract: {
-	kind: "bin"
+	kind:  "bin"
 	path!: string
-	as?:  string
+	as?:   string
 }
 
 #LibExtract: {
-	kind: "lib"
+	kind:  "lib"
 	path!: string
 	// Optional env var to export this exact file path (for example FDB_CLIENT_LIB)
 	env?: string
 }
 
 #IncludeExtract: {
-	kind: "include"
+	kind:  "include"
 	path!: string
 }
 
 #PkgConfigExtract: {
-	kind: "pkgconfig"
+	kind:  "pkgconfig"
 	path!: string
 }
 
 #FileExtract: {
-	kind: "file"
+	kind:  "file"
 	path!: string
 	// Optional env var to export this exact file path.
 	env?: string

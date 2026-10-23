@@ -147,6 +147,7 @@ schema.#Project & {
 				tasks: [
 					_t.ci."sync-check",
 					_t.ci."schema-docs-check",
+					_t.ci."schema-compat",
 				]
 			}
 
@@ -228,6 +229,23 @@ schema.#Project & {
 				command: "bash"
 				args: ["scripts/check-schema-docs.sh"]
 				inputs: _schemaDocsInputs
+			}
+
+			// Evaluates every example and tests/schema-compat fixture as a
+			// consumer module under each supported CUE release and language
+			// version. Installs the CUE releases with `go install`.
+			"schema-compat": schema.#Task & {
+				command: "bash"
+				args: ["scripts/check-schema-compat.sh"]
+				inputs: [
+					"scripts/check-schema-compat.sh",
+					"cue.mod/module.cue",
+					"schema/**",
+					"contrib/**",
+					"examples/**",
+					"tests/schema-compat/**",
+				]
+				hermetic: {passthrough: ["PATH"]}
 			}
 		}
 

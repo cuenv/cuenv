@@ -14,14 +14,19 @@ The root configuration type that validates your entire `env.cue` file.
 ```cue
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Project & {
-  name: "my-project"
-}
+schema.#Project
+
+name: "my-project"
 
 // Your configuration here
 env: {...}
 tasks: {...}
 ```
+
+Every field the table lists is checked, including misspelled fields inside
+them. A misspelled top-level field is rejected only when your module's
+`language.version` is `v0.18.0` or later; see
+[CUE releases and language versions](/how-to/configure-a-project/#cue-releases-and-language-versions).
 
 **Fields:**
 
@@ -29,6 +34,7 @@ tasks: {...}
 | ------------ | ----------------------------- | -------- | ------------------------------------ |
 | `config`     | `#Config`                     | No       | Global configuration options         |
 | `env`        | `#Env`                        | No       | Environment variable definitions     |
+| `formatters` | `#Formatters`                 | No       | Formatters run by `cuenv fmt`        |
 | `hooks`      | `#Hooks`                      | No       | Shell hooks for onEnter/onExit       |
 | `name`       | `string`                      | Yes      | Project name (used by `#TaskRef`)    |
 | `tasks`      | `{[string]: #Task}`           | No       | Task definitions                     |
@@ -48,10 +54,10 @@ Composable “base” configuration (no project-specific fields). This is useful
 ```cue
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Base & {
-  env: {...}
-  workspaces: {...}
-}
+schema.#Base
+
+env: {...}
+hooks: {...}
 ```
 
 ## Configuration
@@ -68,9 +74,12 @@ config: {
 
 **Fields:**
 
-| Field          | Type     | Default | Description        |
-| -------------- | -------- | ------- | ------------------ |
-| `outputFormat` | `string` | -       | Task output format |
+| Field          | Type             | Default | Description                                   |
+| -------------- | ---------------- | ------- | --------------------------------------------- |
+| `outputFormat` | `string`         | -       | Task output format                            |
+| `commands`     | `#CommandsConfig`| -       | Per-command defaults (`task.list.format`)     |
+| `backend`      | `#BackendConfig` | -       | Legacy task backend: `type` (`"host"` or `"dagger"`) and `options.image`; see [Dagger](/explanation/dagger-backend/) |
+| `ci`           | `#CIConfig`      | -       | CI settings such as how CI installs cuenv     |
 
 **Output Formats:**
 

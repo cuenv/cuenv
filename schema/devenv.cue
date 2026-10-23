@@ -1,6 +1,6 @@
 package schema
 
-#Devenv: close({
+#Devenv: {
 	#ExecHook
 	order:     10
 	propagate: false
@@ -8,4 +8,4 @@ package schema
 	args: ["print-dev-env"]
 	source: true
 	inputs: ["devenv.nix", "devenv.lock", "devenv.yaml"]
-})
+}

@@ -16,32 +16,8 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commands: Option<CommandsConfig>,
 
-    /// Cache configuration
-    /// Cache mode override for task execution
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_mode: Option<CacheMode>,
-
-    /// Whether task caching is enabled
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_enabled: Option<bool>,
-
-    /// Security and debugging
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audit_mode: Option<bool>,
-
-    /// Chrome trace generation
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trace_output: Option<bool>,
-
-    /// Default environment settings
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_environment: Option<String>,
-
-    /// Default capability set granted to tasks
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_capabilities: Option<Vec<String>>,
-
-    /// Task backend configuration
+    /// Task backend configuration. Legacy: selects the Dagger backend and its
+    /// default image; see `docs/src/content/docs/explanation/dagger-backend.md`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendConfig>,
 
@@ -206,20 +182,6 @@ impl TaskListFormat {
     }
 }
 
-/// Cache mode options
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum CacheMode {
-    /// Disable the task cache entirely
-    Off,
-    /// Read cached results but do not write new entries
-    Read,
-    /// Read and write cache entries (default)
-    ReadWrite,
-    /// Write new entries but do not read existing ones
-    Write,
-}
-
 fn default_backend_type() -> String {
     "host".to_string()
 }
@@ -243,7 +205,4 @@ pub struct BackendOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
 
-    /// Optional platform hint for the Dagger backend
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform: Option<String>,
 }

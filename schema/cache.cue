@@ -8,17 +8,17 @@ package schema
 //
 // Task-level `cache` (#TaskCachePolicy) decides *whether* a given task is
 // cached. This decides *where* the cache lives.
-#Cache: close({
+#Cache: {
 	// Remote cache to read through to. Omit for a local-only cache.
 	remote?: #RemoteCache
-})
+}
 
 // A cache server speaking the Bazel Remote Execution API v2.
 //
 // The endpoint must expose REAPI v2 ActionCache, CAS, Capabilities and
 // ByteStream services with SHA-256 digests. Compatibility is verified during
 // connection; provider-specific behavior may still vary.
-#RemoteCache: close({
+#RemoteCache: {
 	// Endpoint URL. `grpcs://` is TLS, `grpc://` is plaintext. A bare
 	// host:port is rejected rather than guessed, because guessing wrong
 	// would send credentials in the clear.
@@ -44,23 +44,23 @@ package schema
 	// Credentials. Values are never written in CUE — only the name of the
 	// environment variable holding them.
 	auth?: #CacheAuth
-})
+}
 
 // How to authenticate to a remote cache: exactly one of a bearer token or a
 // named header. Each alternative forbids the other's field, so a project that
 // sets one resolves to it; without that the two alternatives stay ambiguous
 // and the whole `auth` value cannot be exported.
-#CacheAuth: close({
+#CacheAuth: {
 	// Environment variable holding a bearer token. Sent as
 	// `authorization: Bearer <token>`, which is what the hosted providers
 	// issue.
 	bearerTokenEnv!: string
 	header?:         _|_
-}) | close({
+} | {
 	// An arbitrary header, for a provider that names its own.
-	header!: close({
+	header!: {
 		name!:     string
 		valueEnv!: string
-	})
+	}
 	bearerTokenEnv?: _|_
-})
+}

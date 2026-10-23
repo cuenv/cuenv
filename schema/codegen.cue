@@ -31,5 +31,5 @@ import "github.com/cuenv/cuenv/schema/codegen"
 
 	// Optional context data for templating
 	// Use this to pass configuration to your codegen
-	context?: _
+	context?: {...}
 }
