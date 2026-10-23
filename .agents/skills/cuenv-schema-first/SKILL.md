@@ -22,7 +22,7 @@ Schema authoring rules, enforced by `cuenv task ci.schema-compat` across CUE v0.
 - Reference a definition from `#Base`/`#Project` fields inside a struct literal (`config?: {#Config}`), and wrap each definition in a disjunction the same way. A bare reference is left open when a consumer embeds `schema.#Project` at file level before language `v0.18.0`.
 - Exception: keep `tasks`, `services` and `images` entries as direct references (`#Task`, `#Service`, `#ContainerImage`). The CUE fork shares typed `dependsOn` references only for directly referenced definitions; wrapping them makes deep dependency chains exponential (`deep_depends_on_chain_evaluates_in_linear_time` in `schema_project_base_tests.rs` catches it). Examples should write entries as `schema.#Task & {...}`.
 - Use `{...}` instead of `_` for free-form object fields; CUE v0.17 closes `_` under file-level embedding.
-- Add a `tests/schema-compat/reject/<name>/env.cue` fixture when a change adds a closedness guarantee.
+- Add a `tests/schema-compat/testdata/reject/<name>/env.cue` fixture when a change adds a closedness guarantee.
 
 Use `cuenv task ci.schema-docs-check` after changing schema, docs, examples, prompts, or skills.
 

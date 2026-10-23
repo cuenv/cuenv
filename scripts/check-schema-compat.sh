@@ -7,13 +7,16 @@
 # then evaluated with each configured CUE release and each module language
 # version that release supports:
 #
-# - examples/**                      must evaluate, and must export the same
-#                                    value under every (CUE, language) pair.
-# - tests/schema-compat/accept/NAME/ same contract, for focused fixtures.
-# - tests/schema-compat/reject/NAME/ must fail. A `// want: TEXT` line names
-#                                    the expected error text. A
-#                                    `// min-language: vX.Y.Z` line skips
-#                                    language versions that cannot reject it.
+# - examples/**  must evaluate, and must export the same value under every
+#   (CUE, language) pair.
+# - tests/schema-compat/testdata/accept/NAME/  same contract, for focused
+#   fixtures.
+# - tests/schema-compat/testdata/reject/NAME/  must fail. A `// want: TEXT`
+#   line names the expected error text. A `// min-language: vX.Y.Z` line
+#   skips language versions that cannot reject it.
+#
+# Fixtures live under `testdata` so that CUE and cuenv's module-wide
+# evaluation skip them; the reject fixtures are invalid on purpose.
 #
 # CUE releases come from CUENV_SCHEMA_COMPAT_CUE (space separated). Missing
 # binaries are installed with `go install` into CUENV_SCHEMA_COMPAT_CACHE.
@@ -122,7 +125,7 @@ done < <(find examples -name '*.cue' -not -name '.*' -exec dirname {} \; | sort 
 while IFS= read -r file; do
 	fixtures+=("$file|$(dirname "$file")|$(basename "$file")")
 done < <(find examples -name '.rules.cue' | sort)
-for dir in tests/schema-compat/accept/*/; do
+for dir in tests/schema-compat/testdata/accept/*/; do
 	[[ -d "$dir" ]] && fixtures+=("${dir%/}|${dir%/}|")
 done
 
@@ -148,7 +151,7 @@ consumer() {
 	# upgrading consumer would: run the fix under v0.17, then move to v0.18.
 	# Never apply explicitopen here: its `schema.#Project...` rewrite turns
 	# validation off, and consumers are told not to accept it.
-	if ! version_lt "$language" v0.18.0 && compgen -G "$dest/*.cue" >/dev/null; then
+	if ! version_lt "$language" v0.18.0 && [[ -n "$(find "$dest" -maxdepth 1 -name '*.cue' -print -quit)" ]]; then
 		write_module "$dest" v0.17.0
 		if ! (cd "$dest" && "${cue[$newest]}" fix --exp=aliasv2 . >"$dest/fix.log" 2>&1); then
 			record_failure "$src: cue fix --exp=aliasv2 failed: $(head -n2 "$dest/fix.log" | tr '\n' ' ')"
@@ -221,7 +224,7 @@ for entry in "${fixtures[@]}"; do
 done
 
 rejected=0
-for dir in tests/schema-compat/reject/*/; do
+for dir in tests/schema-compat/testdata/reject/*/; do
 	[[ -d "$dir" ]] || continue
 	rejected=$((rejected + 1))
 	name="${dir%/}"
