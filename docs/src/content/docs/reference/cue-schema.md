@@ -24,8 +24,10 @@ tasks: {...}
 ```
 
 Every field the table lists is checked, including misspelled fields inside
-them. A misspelled top-level field is rejected only when your module's
-`language.version` is `v0.18.0` or later; see
+them; write `tasks`, `services` and `images` entries as `schema.#Task & {...}`
+(and so on) to get the same for their own top-level fields. A misspelled
+top-level field is rejected only when your module's `language.version` is
+`v0.18.0` or later; see
 [CUE releases and language versions](/how-to/configure-a-project/#cue-releases-and-language-versions).
 
 **Fields:**

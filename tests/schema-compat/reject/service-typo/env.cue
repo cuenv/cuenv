@@ -1,4 +1,5 @@
 // want: restartt: field not allowed
+// min-language: v0.18.0
 package compat
 
 import "github.com/cuenv/cuenv/schema"

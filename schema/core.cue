@@ -10,6 +10,17 @@ package schema
 // v0.17+ close() around an embedded definition rejects the definition's own
 // fields under file-level embedding. scripts/check-schema-compat.sh checks
 // both properties.
+//
+// Exception: the `tasks`, `services` and `images` maps reference #Task,
+// #TaskGroup, #Service and #ContainerImage directly. `dependsOn` and pipeline
+// task lists are typed references to these entries, and cuenv's CUE fork
+// shares such a reference only when the entry was constrained by a direct
+// definition reference; inside a struct literal the sharing is lost and
+// evaluation becomes exponential in the depth of the dependency graph (see
+// docs/design/specs/cue-recursive-sharing.md). The cost is that, before
+// language v0.18, a misspelled top-level field of an entry written without
+// `schema.#Task &` (or `schema.#Service &`, `schema.#ContainerImage &`) is
+// ignored. Nested fields are still checked.
 #Base: {
 	config?: {#Config}
 	env?: {#Env}
@@ -32,21 +43,21 @@ package schema
 	// Named tasks and groups derive fully-qualified runtime names from their
 	// field labels. Sequences are handled by the Go bridge because list element
 	// aliases are not implemented in CUE yet.
-	tasks?: [taskName=string]: (({#Task} | {#TaskGroup}) & {
+	tasks?: [taskName=string]: ((#Task | #TaskGroup) & {
 		_cuenvPrefix: ""
 		_cuenvSelf:   taskName
 	}) | #TaskSequence
 	// Services live in their own field but share the project DAG.
 	// Services may depend on tasks (build → run); tasks may depend on
 	// services (db ready → seed task). Cycles forbidden as with tasks.
-	services?: [svcName=string]: {#Service} & {
+	services?: [svcName=string]: #Service & {
 		_cuenvPrefix: ""
 		_cuenvSelf:   svcName
 	}
 	// Container image builds — declarative image definitions that
 	// participate in the task DAG and produce output references
 	// (ref, digest) consumable by tasks and other images.
-	images?: [imageName=string]: {#ContainerImage} & {
+	images?: [imageName=string]: #ContainerImage & {
 		_cuenvPrefix: ""
 		_cuenvSelf:   imageName
 	}

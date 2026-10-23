@@ -49,9 +49,12 @@ How strictly your project is checked depends on your module's
 
 - Before `v0.18.0`, embedding `schema.#Project` at file level leaves the top
   level of the file open. A misspelled top-level field such as `nmae:` is
-  accepted and ignored. Every field the schema declares (`env`, `tasks`,
-  `config`, `ci`, and the rest) is still checked, so `config: outputFormatt:`
-  is an error.
+  accepted and ignored. Every field the schema declares (`env`, `config`,
+  `ci`, `hooks`, `runtime`, and the rest) is still checked, so
+  `config: outputFormatt:` is an error. Entries of `tasks`, `services` and
+  `images` are checked in full only when you write them as
+  `schema.#Task & {...}` (or `schema.#Service`, `schema.#ContainerImage`); a
+  bare `build: {comand: "x"}` has its top-level typo ignored.
 - From `v0.18.0`, CUE's strict embedding also closes the top level, so `nmae:`
   is an error too.
 
