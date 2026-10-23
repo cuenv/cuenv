@@ -32,9 +32,26 @@ pub type ReferenceMap = HashMap<String, String>;
 /// Maps field paths (e.g., "./tasks.build") to the source location of that field.
 pub type SourceMap = HashMap<String, SourceLocation>;
 
+/// Canonical reference metadata retained for command-specific lowering.
+#[derive(Debug, Clone)]
+pub struct DirectReference {
+    /// Canonical CUE field path for exact validation exemptions.
+    pub path: String,
+    /// Structured destination labels, preserving quoting and special labels.
+    pub labels: Vec<String>,
+    /// Terminal same-instance target labels.
+    pub target: Vec<String>,
+    /// Bare primitive declaration type, empty for unsupported declarations.
+    pub primitive_type: String,
+    /// Whether lowering preserves the full expression's constraints.
+    pub supported: bool,
+}
+
 /// Optional metadata extracted alongside evaluated CUE instances.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleEvaluationMetadata {
+    /// Canonical native references, kept separately from legacy AST metadata.
+    pub direct_references: HashMap<String, Vec<DirectReference>>,
     pub references: Option<ReferenceMap>,
     pub sources: Option<SourceMap>,
     pub caller_sources: Option<SourceMap>,
@@ -54,6 +71,8 @@ pub struct ModuleEvaluationInput {
 /// from a CUE module, enabling cross-instance analysis.
 #[derive(Debug, Clone)]
 pub struct ModuleEvaluation {
+    /// Native references keyed by instance and field path.
+    pub direct_references: HashMap<String, Vec<DirectReference>>,
     /// Path to the CUE module root (directory containing cue.mod/)
     pub root: PathBuf,
 
@@ -147,7 +166,11 @@ impl ModuleEvaluation {
             })
             .collect();
 
-        Self { root, instances }
+        Self {
+            root,
+            instances,
+            direct_references: metadata.direct_references,
+        }
     }
 
     /// Get all Base instances (directories without a `name` field)

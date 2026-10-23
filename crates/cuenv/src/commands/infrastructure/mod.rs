@@ -18,6 +18,7 @@ mod holder;
 mod interrupts;
 mod invocation;
 mod output;
+mod output_selectors;
 mod provider;
 mod provider_environment;
 pub(crate) mod types;
@@ -36,7 +37,8 @@ use cuenv_infrastructure::{
     InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, Plan, PlanMode, ProjectInstance,
     RecoverOptions, RecoverOverrides, ResourceAddress, StateLock, StateStore, TenantKey,
     TenantLock, TursoConfiguration, TursoStateStore, UnrecordedFileProblem, UnrecordedStore,
-    strip_control_characters, strip_control_characters_except_newlines, validate_configuration,
+    declared_resource, strip_control_characters, strip_control_characters_except_newlines,
+    validate_configuration,
 };
 use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;
@@ -129,6 +131,13 @@ pub enum InfrastructureAction {
         /// without `--env`.
         separate_state: SeparateState,
     },
+    /// Record one provider resource that already exists.
+    Import {
+        /// Configured resource address, such as `cloudflare_zone.primary`.
+        address: String,
+        /// Opaque identifier accepted by the provider's import implementation.
+        identifier: String,
+    },
     /// Delete every managed resource of the project.
     Destroy {
         /// Whether to ask before destroying.
@@ -152,6 +161,7 @@ impl InfrastructureAction {
         match self {
             Self::Plan => InfrastructurePolicyAction::Plan,
             Self::Apply { .. } => InfrastructurePolicyAction::Apply,
+            Self::Import { .. } => InfrastructurePolicyAction::Import,
             Self::Destroy { .. } => InfrastructurePolicyAction::Destroy,
             // Listing the locks of the whole database is listing state.
             Self::State(StateAction::List | StateAction::Locks) => {
@@ -168,7 +178,7 @@ impl InfrastructureAction {
     /// environment. State-only commands resolve just the backend token.
     const fn uses_provider_environment(&self) -> bool {
         match self {
-            Self::Plan | Self::Apply { .. } | Self::Destroy { .. } => true,
+            Self::Plan | Self::Apply { .. } | Self::Import { .. } | Self::Destroy { .. } => true,
             Self::State(_) | Self::Unlock { .. } => false,
         }
     }
@@ -180,6 +190,7 @@ impl InfrastructureAction {
         match self {
             Self::Plan
             | Self::Apply { .. }
+            | Self::Import { .. }
             | Self::Destroy { .. }
             | Self::State(StateAction::Adopt) => NameCheck::WholeModule,
             Self::State(
@@ -207,7 +218,22 @@ impl InfrastructureAction {
     const fn confirmation(&self) -> ConfirmationPolicy {
         match self {
             Self::Apply { confirmation, .. } | Self::Destroy { confirmation } => *confirmation,
-            Self::Plan | Self::State(_) | Self::Unlock { .. } => ConfirmationPolicy::AssumeYes,
+            Self::Plan | Self::Import { .. } | Self::State(_) | Self::Unlock { .. } => {
+                ConfirmationPolicy::AssumeYes
+            }
+        }
+    }
+
+    /// A safe action label for traces; arguments such as provider import
+    /// identifiers are never included.
+    const fn trace_name(&self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Apply { .. } => "apply",
+            Self::Import { .. } => "import",
+            Self::Destroy { .. } => "destroy",
+            Self::State(_) => "state",
+            Self::Unlock { .. } => "unlock",
         }
     }
 }
@@ -226,10 +252,6 @@ pub struct InfrastructureOptions {
     /// Text or JSON output.
     pub output: OutputFormat,
 }
-
-const IMPORT_HELP: &str = "cuenv cannot import resources yet: find the resource with the \
-                           provider's own tools and delete it, then plan again (the next apply \
-                           creates it anew).";
 
 /// Text from a provider or the store, for display: redacted from the raw
 /// text first and then stripped of control characters except newlines
@@ -275,7 +297,10 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
         ),
         InfrastructureError::UnrecordedChangeLost { .. } => (
             InfrastructureFailureKind::Failed,
-            Some(IMPORT_HELP.to_string()),
+            Some(
+                "The provider may have changed an object, but cuenv could not record or save its state. Inspect the object and state store before retrying the operation."
+                    .to_string(),
+            ),
         ),
         InfrastructureError::Interrupted { .. }
         | InfrastructureError::InterruptedWhilePlanning
@@ -515,7 +540,7 @@ fn migration_blocked(message: String, locks: &[TenantLock], invocation: &Invocat
 /// block, its name is not unique in the module, another instance owns its
 /// state, the state store is unreachable or locked, the plan is not
 /// confirmed, a provider fails, or the run is interrupted.
-#[tracing::instrument(skip_all, fields(path = %options.path, action = ?options.action))]
+#[tracing::instrument(skip_all, fields(path = %options.path, action = options.action.trace_name()))]
 pub async fn execute_infrastructure(options: &InfrastructureOptions) -> Result<(), CliError> {
     // Text read from providers (their log lines and error messages) is
     // redacted as it is read, before control characters are stripped.
@@ -553,7 +578,7 @@ async fn run(
     let target = evaluate_target(options, interrupts).await?;
     preflight(&options.action, &target, &invocation)?;
     let resolved = resolve(&options.action, &target, &invocation).await?;
-    let facts = SelectionFacts::of(&target);
+    let facts = SelectionFacts::of(&target, &options.action);
     let Target {
         tenant,
         unselected_tenant,
@@ -659,7 +684,29 @@ fn preflight(
         validate_configuration(&target.infrastructure, target.environment.as_deref())
             .map_err(|error| failure(&error, invocation))?;
     }
+    if let InfrastructureAction::Import { address, .. } = action
+        && declared_resource(
+            &target.infrastructure.resources,
+            &parse_resource_address(address)?,
+        )
+        .is_none()
+    {
+        return Err(CliError::config(format!(
+            "cannot import {}: declare that resource in the selected infrastructure configuration first",
+            strip_control_characters(address)
+        )));
+    }
     Ok(())
+}
+
+/// Parse a `type.name` address with the same rules as output references.
+fn parse_resource_address(address: &str) -> Result<ResourceAddress, CliError> {
+    ResourceAddress::parse(address).ok_or_else(|| {
+        CliError::config(format!(
+            "invalid resource address {}; expected type.name",
+            strip_control_characters(address)
+        ))
+    })
 }
 
 /// Parse and validate the Turso URL before any secret is resolved: nothing
@@ -923,17 +970,21 @@ struct SelectionFacts {
 }
 
 impl SelectionFacts {
-    fn of(target: &Target) -> Self {
+    fn of(target: &Target, action: &InfrastructureAction) -> Self {
+        let mut configured: Vec<ResourceAddress> = target
+            .infrastructure
+            .resources
+            .iter()
+            .map(|(name, declaration)| {
+                ResourceAddress::new(declaration.resource_type.clone(), name.clone())
+            })
+            .collect();
+        if let InfrastructureAction::Import { address, .. } = action {
+            configured.retain(|resource| resource.to_string() == *address);
+        }
         Self {
             selection: target.selection,
-            configured: target
-                .infrastructure
-                .resources
-                .iter()
-                .map(|(name, declaration)| {
-                    ResourceAddress::new(declaration.resource_type.clone(), name.clone())
-                })
-                .collect(),
+            configured,
         }
     }
 }
@@ -960,6 +1011,7 @@ async fn guard_selection(
     match request.action {
         InfrastructureAction::Plan
         | InfrastructureAction::Apply { .. }
+        | InfrastructureAction::Import { .. }
         | InfrastructureAction::Destroy { .. } => guard_identity(context, request).await,
         // Whole database, or another project's tenant: nothing of the
         // evaluated project's environments applies.
@@ -1544,6 +1596,18 @@ async fn dispatch(
                 .await?
         }
         InfrastructureAction::Plan => plan(context, inputs).await,
+        InfrastructureAction::Import {
+            address,
+            identifier,
+        } => {
+            import(ImportRequest {
+                context,
+                inputs,
+                address,
+                identifier,
+            })
+            .await
+        }
         InfrastructureAction::Apply { confirmation, .. } => {
             converge(
                 &Convergence {
@@ -2190,6 +2254,46 @@ async fn plan(context: &CommandContext<'_>, inputs: EngineInputs) -> Result<(), 
     let plan = result.map_err(|error| failure(&error, context.invocation))?;
     context.output.plan(&plan);
     Ok(())
+}
+
+/// The inputs needed to import a provider resource.
+struct ImportRequest<'command, 'context> {
+    context: &'command CommandContext<'context>,
+    inputs: EngineInputs,
+    address: &'command str,
+    identifier: &'command str,
+}
+
+/// Import a provider resource while holding the tenant lock and after
+/// confirming this CUE instance owns the state.
+async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliError> {
+    let ImportRequest {
+        context,
+        inputs,
+        address,
+        identifier,
+    } = request;
+    let target = parse_resource_address(address)?;
+    let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
+    let importing = &mut engine;
+    let result = under_lock(context, "import", |lock| async move {
+        claim_ownership(context, &lock).await?;
+        let warnings = importing
+            .import(&target, identifier, &lock)
+            .await
+            .map_err(|error| failure(&error, context.invocation))?;
+        context.interrupts.check()?;
+        for warning in warnings {
+            emit_stderr!(format!("warning: {warning}"));
+        }
+        context
+            .output
+            .imported(context.tenant, &target, &context.invocation.command("plan"));
+        Ok(())
+    })
+    .await;
+    engine.shutdown().await;
+    result
 }
 
 /// How a converging command runs.

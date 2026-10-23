@@ -44,6 +44,32 @@ impl ResourceAddress {
             name: name.into(),
         }
     }
+
+    /// Parse a `type.name` address. The type must be a lowercase,
+    /// provider-prefixed resource type such as `cloudflare_zone`, and the
+    /// name must start with a letter and use only letters, digits, `-` and
+    /// `_`. Returns `None` for anything else.
+    #[must_use]
+    pub fn parse(address: &str) -> Option<Self> {
+        let (resource_type, name) = address.split_once('.')?;
+        let (prefix, _) = resource_type.split_once('_')?;
+        if prefix.is_empty()
+            || !resource_type.starts_with(|character: char| character.is_ascii_lowercase())
+            || resource_type.split('_').any(|part| {
+                part.is_empty()
+                    || !part.chars().all(|character| {
+                        character.is_ascii_lowercase() || character.is_ascii_digit()
+                    })
+            })
+            || !name.starts_with(|character: char| character.is_ascii_alphabetic())
+            || !name.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            })
+        {
+            return None;
+        }
+        Some(Self::new(resource_type, name))
+    }
 }
 
 impl fmt::Display for ResourceAddress {
@@ -526,6 +552,23 @@ pub(crate) mod base64_bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_only_provider_prefixed_type_name_addresses() {
+        assert_eq!(
+            ResourceAddress::parse("cloudflare_dns_record.www-1"),
+            Some(ResourceAddress::new("cloudflare_dns_record", "www-1"))
+        );
+        for address in [
+            "a.b.c",
+            "zone.primary",
+            "cloudflare_zone",
+            "cloudflare_zone.primary.extra",
+            "Cloudflare_zone.primary",
+        ] {
+            assert_eq!(ResourceAddress::parse(address), None, "{address}");
+        }
+    }
 
     #[test]
     fn record_versions_advance_with_every_write() {

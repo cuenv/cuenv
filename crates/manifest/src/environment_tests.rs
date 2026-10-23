@@ -24,13 +24,14 @@ fn policy_accepts_every_documented_field() {
     let policy: Policy = serde_json::from_value(json!({
         "allowTasks": ["build"],
         "allowExec": ["make"],
-        "allowInfrastructure": ["plan", "state-list", "unlock"],
+        "allowInfrastructure": ["plan", "import", "state-list", "unlock"],
     }))
     .unwrap();
     assert_eq!(
         policy.allow_infrastructure,
         Some(vec![
             InfrastructurePolicyAction::Plan,
+            InfrastructurePolicyAction::Import,
             InfrastructurePolicyAction::StateList,
             InfrastructurePolicyAction::Unlock,
         ])
@@ -53,6 +54,7 @@ fn every_action_round_trips_through_its_schema_name() {
     let names = [
         "plan",
         "apply",
+        "import",
         "destroy",
         "state-list",
         "state-remove",

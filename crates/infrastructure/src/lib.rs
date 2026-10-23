@@ -23,6 +23,7 @@ pub mod error;
 pub mod object_change;
 pub mod plugin;
 mod protocol;
+pub mod references;
 pub mod registry;
 pub mod schema;
 pub mod state;
@@ -33,7 +34,8 @@ pub mod unrecorded;
 pub use cancellation::{Cancellation, RecordingGuard};
 pub use engine::{
     Action, ApplyContext, ApplyEvent, EngineOptions, EngineSetup, InfrastructureEngine, Plan,
-    PlanDigest, PlanMode, PlanSummary, ResourceChange, render_plan, validate_configuration,
+    PlanDigest, PlanMode, PlanSummary, ResourceChange, declared_resource, render_plan,
+    validate_configuration,
 };
 pub use error::{
     InfrastructureError, Result, UnrecordedFileProblem, failure_category, strip_control_characters,

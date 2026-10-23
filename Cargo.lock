@@ -1677,6 +1677,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "cuenv-events",
  "cuenv-manifest",
  "dirs 6.0.0",
  "hex",

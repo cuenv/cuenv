@@ -556,6 +556,7 @@ impl CommandExecutor {
             let rel_path = relative_path_from_root(&module.root, target_path);
             let instance = module.get(&rel_path)?;
             Some(ModuleEvaluation {
+                direct_references: module.direct_references.clone(),
                 root: module.root.clone(),
                 instances: HashMap::from([(rel_path, instance.clone())]),
             })
