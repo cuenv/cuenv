@@ -18,6 +18,7 @@ mod holder;
 mod interrupts;
 mod invocation;
 mod output;
+mod output_selectors;
 mod provider;
 mod provider_environment;
 pub(crate) mod types;

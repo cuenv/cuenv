@@ -26,8 +26,9 @@ pub use formatters::*;
 pub use hooks::*;
 pub use infrastructure::{
     Infrastructure, InfrastructureConfiguration, InfrastructureOutputReference,
-    InfrastructurePolicyAction, InfrastructureProvider, InfrastructureSelectionError,
-    InfrastructureState, ManagedResourceDeclaration, ProviderEnvironment, TursoState,
+    InfrastructureOutputType, InfrastructurePolicyAction, InfrastructureProvider,
+    InfrastructureSelectionError, InfrastructureState, ManagedResourceDeclaration,
+    ProviderEnvironment, TursoState,
 };
 pub use project::Project;
 pub use rules::*;

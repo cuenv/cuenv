@@ -31,6 +31,7 @@ impl EvaluationMetadataBuilder {
 
     pub(super) fn finish(self) -> ModuleEvaluationMetadata {
         ModuleEvaluationMetadata {
+            direct_references: HashMap::new(),
             references: non_empty(self.references),
             sources: non_empty(self.sources),
             caller_sources: non_empty(self.caller_sources),

@@ -361,10 +361,24 @@ pub struct InfrastructureOutputReference {
     pub attribute: String,
 }
 
+/// Primitive type of a native CUE output declaration, retained for live-schema validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfrastructureOutputType {
+    /// A CUE string and Terraform string output.
+    String,
+    /// A CUE number and Terraform number output.
+    Number,
+    /// A CUE bool and Terraform boolean output.
+    Boolean,
+}
+
 /// A managed resource declaration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedResourceDeclaration {
+    /// Native output declaration types supplied by the evaluator, never provider inputs.
+    #[serde(skip)]
+    pub output_types: BTreeMap<String, InfrastructureOutputType>,
     /// Resource type, for example `random_pet`.
     #[serde(rename = "type")]
     pub resource_type: String,
@@ -577,6 +591,7 @@ mod tests {
     #[test]
     fn provider_name_defaults_to_type_prefix() {
         let declaration = ManagedResourceDeclaration {
+            output_types: BTreeMap::new(),
             resource_type: "cloudflare_dns_record".into(),
             provider: None,
             depends_on: Vec::new(),

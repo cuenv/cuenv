@@ -101,6 +101,23 @@ null final values, data sources, and references into undeclared resources are
 not supported. References infer and persist the same dependency edges as
 `dependsOn`.
 
+The descriptor remains supported alongside a native CUE selector such as
+`configuration.zone_id: infrastructure.resources.primary.outputs.id`. CUE
+evaluates the selector and exports its canonical reference path even though the
+provider output is incomplete. The infrastructure command lowers that metadata
+to the same runtime reference used by the descriptor. It permits incompleteness
+only for recognized direct selectors and declared output placeholders; all
+other selected infrastructure values remain subject to concrete validation.
+
+Generated provider resource types expose eligible top-level primitive outputs
+under `outputs`. Untyped resources declare selected outputs explicitly, for
+example `outputs: {id: string}`. Such declarations identify the output and its
+primitive type; they are removed before provider configuration is decoded or
+sent. Defaults, literal values, refinements, and expressions over outputs are
+not supported in this first selector form. Both syntaxes share provider schema
+compatibility, sensitivity checks, inferred dependencies, unknown-value
+handling, replacement planning, and apply semantics.
+
 When a producer's planned output is known, it participates in the consumer's
 plan. If it is unknown until the producer is applied, cuenv resolves it and
 replans the consumer immediately before applying it. A replacement required by

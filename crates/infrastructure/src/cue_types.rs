@@ -358,10 +358,30 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         package.line(0, "#Resource: {");
         package.field(1, "type", &cue_string(resource_type));
         package.field(1, "configuration", "#Configuration");
+        package.field(1, "outputs", "#Outputs");
         package.line(1, "...");
         package.line(0, "}");
         package.blank();
         package.configuration(&resource.block);
+        package.blank();
+        package.line(
+            0,
+            "// #Outputs contains selectable top-level scalar provider outputs.",
+        );
+        package.line(0, "#Outputs: {");
+        for (name, attribute) in &resource.block.attributes {
+            if !attribute.sensitive
+                && !attribute.write_only
+                && attribute.nested.is_none()
+                && matches!(
+                    attribute.value_type,
+                    Type::String | Type::Number | Type::Boolean
+                )
+            {
+                package.field(1, &label(name), &type_expression(&attribute.value_type, 1));
+            }
+        }
+        package.line(0, "}");
         files.insert(
             Path::new(RESOURCES_DIRECTORY_NAME)
                 .join(resource_type)

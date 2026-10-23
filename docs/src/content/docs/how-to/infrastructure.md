@@ -46,7 +46,7 @@ cuenv i plan
 
 An import identifier is interpreted by the provider. cuenv supports one returned resource of the declared type per import. It reads the imported object before storing it, so the following plan compares live state with the configuration. Import does not call `ApplyResourceChange`; it does not create or update the remote object. Use the matching `--env`, `-p` and `--package` on import and follow-up commands. The command's success output includes a plan command that preserves those selectors.
 
-A resource configuration can use a top-level scalar output from another declared resource:
+A resource configuration can use a top-level scalar output from another declared resource. The descriptor form works with typed and untyped resources:
 
 ```cue
 resources: {
@@ -67,7 +67,32 @@ resources: {
 }
 ```
 
-`fromResource` is the full `type.name` address and `attribute` is a top-level provider attribute. cuenv infers an apply and destroy dependency from the reference, and stores it with the consuming resource. The provider schema must declare both the source output and destination argument as the same primitive type (`string`, `number` or `boolean`); nested attributes, collections, write-only fields and sensitive source attributes are not supported. Generated provider CUE types import the shared reference definition from `schema/infrastructure.cue` for top-level primitive resource arguments. If a source value is unknown until its create or replacement finishes, cuenv resolves it and asks the consumer provider for a final plan before applying that consumer. A replacement reported by the provider in the initial plan stays visible and is ordered as destroy then create. If only the final plan reveals a replacement that the confirmed plan did not include, cuenv stops before changing the consumer; run `plan` again after its source is recorded.
+`fromResource` is the full `type.name` address and `attribute` is a top-level provider attribute. cuenv infers an apply and destroy dependency from the reference, and stores it with the consuming resource.
+
+You can also write a native CUE selector. For an untyped resource, declare the output with its primitive type. Generated provider resource types expose supported output attributes under `outputs` automatically:
+
+```cue
+infrastructure: {
+	resources: {
+		primary: {
+			type: "cloudflare_zone"
+			outputs: {id: string}
+			configuration: {name: "example.com"}
+		}
+		www: {
+			type: "cloudflare_record"
+			configuration: {
+				zone_id: infrastructure.resources.primary.outputs.id
+				// Other provider-required record arguments go here.
+			}
+		}
+	}
+}
+```
+
+The `outputs` declaration gives CUE a reference target; cuenv resolves its value from provider state and removes the declaration before sending configuration to the provider. Selectors must name one declared top-level output in the same selected infrastructure configuration. Declare untyped outputs as a bare `string`, `number` or `bool`; refined constraints, defaults and literal values are not supported. The source output and destination argument must have the same primitive type. Nested attributes, collections, write-only fields, and sensitive outputs are not supported. Arithmetic and interpolation over provider outputs are not supported.
+
+Both forms infer the same dependency. If a source value is unknown until its create or replacement finishes, cuenv resolves it and asks the consumer provider for a final plan before applying that consumer. A replacement reported by the provider in the initial plan stays visible and is ordered as destroy then create. If only the final plan reveals a replacement that the confirmed plan did not include, cuenv stops before changing the consumer; run `plan` again after its source is recorded.
 
 ## Dev and Staging environments
 

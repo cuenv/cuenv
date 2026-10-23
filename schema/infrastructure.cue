@@ -229,6 +229,12 @@ _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)
 	// Resources that must be applied before this one (and destroyed after).
 	dependsOn?: [...#InfrastructureName]
 
+	// Abstract top-level scalar outputs. Generated provider types declare the
+	// available attributes; untyped resources declare each selected attribute
+	// explicitly, for example `outputs: id: string`. Values come from provider
+	// state at runtime and are never sent as provider configuration.
+	outputs?: {[string]: string | number | bool}
+
 	// Resource arguments, validated by the provider's schema. A generated
 	// `#Resource` types them with its `#Configuration`.
 	configuration?: {...}

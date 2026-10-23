@@ -185,6 +185,7 @@ import (
 #Resource: {
 	type: "example_pet"
 	configuration: #Configuration
+	outputs: #Outputs
 	...
 }
 
@@ -204,13 +205,22 @@ import (
 	// The provider chooses a value when this is not set.
 	separator?: string | cuenv_schema.#InfrastructureOutputReference
 }
+
+// #Outputs contains selectable top-level scalar provider outputs.
+#Outputs: {
+	id: string
+	length: number
+	prefix: string
+	separator: string
+}
 "#;
     assert_eq!(pet, expected);
     let empty = types
         .files
         .get(Path::new("resources/example_empty/resource.cue"))
         .unwrap();
-    assert!(empty.ends_with("#Configuration: {}\n"), "{empty}");
+    assert!(empty.contains("#Configuration: {}\n"), "{empty}");
+    assert!(empty.ends_with("#Outputs: {\n}\n"), "{empty}");
     assert!(!empty.contains("import"), "{empty}");
 }
 

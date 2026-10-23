@@ -47,7 +47,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;
 use cuenv_manifest::manifest::{
-    Infrastructure, InfrastructureProvider, ManagedResourceDeclaration,
+    Infrastructure, InfrastructureOutputType, InfrastructureProvider, ManagedResourceDeclaration,
 };
 use sha2::{Digest, Sha256};
 
@@ -2168,6 +2168,20 @@ impl InfrastructureEngine {
                         "source must be a top-level scalar attribute",
                     )
                 })?;
+            if let Some(declared) = source_declaration.output_types.get(&reference.attribute) {
+                let declared_type = match declared {
+                    InfrastructureOutputType::String => Type::String,
+                    InfrastructureOutputType::Number => Type::Number,
+                    InfrastructureOutputType::Boolean => Type::Boolean,
+                };
+                if declared_type != source_attribute.value_type {
+                    return Err(reference_error(
+                        destination,
+                        reference,
+                        "native CUE output declaration type does not match the provider schema",
+                    ));
+                }
+            }
             if source_attribute.value_type != destination_attribute.value_type {
                 return Err(reference_error(
                     destination,

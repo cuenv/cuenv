@@ -788,6 +788,7 @@ infrastructure: {{
 	}}
 	resources: {{
 		pet: random_pet.#Resource & {{configuration: {{{pet}, separator: "-"}}}}
+		consumer: random_pet.#Resource & {{configuration: {{length: 1, prefix: infrastructure.resources.pet.outputs.id}}}}
 		password: random_password.#Resource & {{
 			dependsOn: ["pet"]
 			configuration: {{length: 16, special: false}}
@@ -808,7 +809,7 @@ infrastructure: {{
         &backend,
     )?;
     let plan = lifecycle.run(&["plan"])?;
-    assert_eq!(plan["summary"]["create"], 2);
+    assert_eq!(plan["summary"]["create"], 3);
 
     let env_cue = lifecycle.directory.path().join("env.cue");
     fs::write(&env_cue, configuration("lenght: 2", &types.schema_digest)?)?;
@@ -826,5 +827,80 @@ infrastructure: {{
     fs::write(&env_cue, configuration("length: 2", &stale)?)?;
     let refused = lifecycle.refused(&["plan"])?;
     assert!(refused.contains("were generated from schema"), "{refused}");
+    Ok(())
+}
+
+/// Native and descriptor syntax must produce the same provider input, inferred
+/// dependency and subsequent no-op plan. Also exercise the live schema check
+/// for an untyped source declaration that promises the wrong primitive type.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real Random provider and Turso/sqld; see module documentation"]
+async fn native_output_selectors_match_descriptor_runtime_behavior() -> TestResult {
+    let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
+        .canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let project = format!("native-output-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::new(MODULE, &project)?;
+    let store = TursoStateStore::new(backend.clone())?;
+    let configuration = format!(
+        r#"package examples
+import "github.com/cuenv/cuenv/schema"
+schema.#Project
+name: {project}
+infrastructure: {{
+ state: turso: url: {url}
+ providers: random: {{source: "hashicorp/random", path: {provider}}}
+ resources: {{
+  primary: {{type: "random_pet", outputs: id: string, configuration: {{length: 1}}}}
+  consumer: {{type: "random_pet", configuration: {{length: 1, prefix: infrastructure.resources.primary.outputs.id}}}}
+ }}
+}}
+"#,
+        project = serde_json::to_string(&project)?,
+        url = serde_json::to_string(&backend.url)?,
+        provider = serde_json::to_string(&provider)?,
+    );
+    let lifecycle =
+        Lifecycle::from_configuration(prepare_directory()?, configuration.clone(), &backend)?;
+    let initial = lifecycle.run(&["plan"])?;
+    assert_eq!(initial["summary"]["create"], 2);
+    let created = lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(created["applied"]["create"], 2);
+    let rows = store.list(&tenant).await?;
+    let primary = rows
+        .iter()
+        .find(|row| row.address.name == "primary")
+        .ok_or("primary missing")?;
+    let consumer = rows
+        .iter()
+        .find(|row| row.address.name == "consumer")
+        .ok_or("consumer missing")?;
+    assert_eq!(consumer.state["prefix"], primary.state["id"]);
+    assert_eq!(consumer.dependencies, ["random_pet.primary"]);
+    assert_eq!(lifecycle.run(&["plan"])?["summary"]["unchanged"], 2);
+
+    let descriptor = configuration.replace(
+        "infrastructure.resources.primary.outputs.id",
+        r#"{fromResource: "random_pet.primary", attribute: "id"}"#,
+    );
+    fs::write(lifecycle.directory.path().join("env.cue"), &descriptor)?;
+    assert_eq!(lifecycle.run(&["plan"])?["summary"]["unchanged"], 2);
+    assert_eq!(store.list(&tenant).await?, rows);
+
+    fs::write(
+        lifecycle.directory.path().join("env.cue"),
+        configuration.replace("outputs: id: string", "outputs: id: number"),
+    )?;
+    let refused = lifecycle.refused(&["plan"])?;
+    assert!(
+        refused.contains("native CUE output declaration type does not match the provider schema"),
+        "{refused}"
+    );
+    assert_eq!(store.list(&tenant).await?, rows);
+    fs::write(lifecycle.directory.path().join("env.cue"), descriptor)?;
+    lifecycle.run(&["destroy", "--yes"])?;
     Ok(())
 }

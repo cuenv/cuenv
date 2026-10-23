@@ -10,6 +10,8 @@ use std::path::Path;
 
 /// A path-local evaluation of the instance in one directory.
 pub(super) struct PathEvaluation<'request> {
+    /// Native reference scanning and exact strict-validation exceptions.
+    pub(super) reference_evaluation: Option<cuengine::ReferenceEvaluation>,
     /// Canonical directory of the instance.
     pub(super) target_path: &'request Path,
     /// CUE package to evaluate.
@@ -31,6 +33,7 @@ pub(super) struct PathEvaluation<'request> {
 /// fails, or the directory has no instance of the package.
 pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluation> {
     let PathEvaluation {
+        reference_evaluation,
         target_path,
         package,
         concrete_paths,
@@ -46,6 +49,7 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
 
     let target_rel_path = compute_relative_path(target_path, &module_root);
     let options = ModuleEvalOptions {
+        reference_evaluation,
         recursive: false,
         with_meta: true,
         with_references: true,
@@ -100,17 +104,43 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
         metadata.insert(adjusted_key, meta_value);
     }
 
+    let mut evaluation_metadata = metadata.finish();
+    evaluation_metadata.direct_references = raw
+        .direct_references
+        .into_iter()
+        .map(|(instance, references)| {
+            let instance = if instance == "." {
+                target_rel_path.clone()
+            } else {
+                instance
+            };
+            (
+                instance,
+                references
+                    .into_iter()
+                    .map(|reference| cuenv_core::module::DirectReference {
+                        path: reference.path,
+                        labels: reference.labels,
+                        target: reference.target,
+                        primitive_type: reference.primitive_type,
+                        supported: reference.supported,
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
     Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
         root: module_root,
         raw_instances: instances,
         project_paths: projects,
-        metadata: metadata.finish(),
+        metadata: evaluation_metadata,
     }))
 }
 
 impl CommandExecutor {
     pub(super) fn evaluate_path_module(&self, target_path: &Path) -> Result<ModuleEvaluation> {
         evaluate_path(PathEvaluation {
+            reference_evaluation: None,
             target_path,
             package: &self.package,
             concrete_paths: Vec::new(),

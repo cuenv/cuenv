@@ -142,6 +142,7 @@ async fn provider_install_source_is_validated_before_provider_launch() {
 
 fn declaration(resource_type: &str, depends_on: &[&str]) -> ManagedResourceDeclaration {
     ManagedResourceDeclaration {
+        output_types: BTreeMap::new(),
         resource_type: resource_type.into(),
         provider: None,
         depends_on: depends_on.iter().map(|name| (*name).to_owned()).collect(),
@@ -389,6 +390,7 @@ async fn invalid_unused_provider_fails_before_any_declared_provider_launches() {
     configuration.resources.insert(
         "pet".into(),
         ManagedResourceDeclaration {
+            output_types: BTreeMap::new(),
             resource_type: "random_pet".into(),
             provider: None,
             depends_on: Vec::new(),
