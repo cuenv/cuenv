@@ -417,8 +417,15 @@ impl Package {
     fn finish(self, package_name: &str) -> String {
         let mut output = self.header;
         let _ = write!(output, "\n\npackage {package_name}\n\n");
-        if self.uses_list {
-            output.push_str("import \"list\"\n\n");
+        match (self.uses_list, self.uses_output_reference) {
+            (true, true) => output.push_str(
+                "import (\n\t\"list\"\n\tcuenv_schema \"github.com/cuenv/cuenv/schema\"\n)\n\n",
+            ),
+            (true, false) => output.push_str("import \"list\"\n\n"),
+            (false, true) => {
+                output.push_str("import cuenv_schema \"github.com/cuenv/cuenv/schema\"\n\n");
+            }
+            (false, false) => {}
         }
         output.push_str(self.body.trim_end());
         output.push('\n');
@@ -454,17 +461,6 @@ impl Package {
     fn configuration(&mut self, block: &Block) {
         let value = self.block_struct(block, 0);
         self.line(0, &format!("#Configuration: {value}"));
-        if self.uses_output_reference {
-            self.blank();
-            self.line(
-                0,
-                "// A primitive argument supplied by another managed resource.",
-            );
-            self.line(0, "#InfrastructureOutputReference: close({");
-            self.line(1, r#"fromResource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$""#);
-            self.line(1, r#"attribute!: string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$""#);
-            self.line(0, "})");
-        }
     }
 
     /// The struct a block's configuration is written as, opening at the
@@ -511,7 +507,7 @@ impl Package {
                 Type::String | Type::Number | Type::Boolean
             )
         {
-            value.push_str(" | #InfrastructureOutputReference");
+            value.push_str(" | cuenv_schema.#InfrastructureOutputReference");
             self.uses_output_reference = true;
         }
         Some(Field {

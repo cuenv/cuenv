@@ -176,7 +176,10 @@ fn resource_package_follows_the_field_rules() {
 
 package example_pet
 
-import "list"
+import (
+	"list"
+	cuenv_schema "github.com/cuenv/cuenv/schema"
+)
 
 // #Resource declares a managed resource of type example_pet.
 #Resource: {
@@ -188,9 +191,9 @@ import "list"
 #Configuration: {
 	keepers?: {[string]: string}
 	// The length (in words) of the pet name.
-	length?: number | #InfrastructureOutputReference
+	length?: number | cuenv_schema.#InfrastructureOutputReference
 	// Deprecated: Use `separator`.
-	prefix?: string | #InfrastructureOutputReference
+	prefix?: string | cuenv_schema.#InfrastructureOutputReference
 	rule!: [...{
 		"for"?: {
 			cidr!: string
@@ -199,14 +202,8 @@ import "list"
 		port!: number
 	}] & list.MinItems(1) & list.MaxItems(3)
 	// The provider chooses a value when this is not set.
-	separator?: string | #InfrastructureOutputReference
+	separator?: string | cuenv_schema.#InfrastructureOutputReference
 }
-
-// A primitive argument supplied by another managed resource.
-#InfrastructureOutputReference: close({
-	fromResource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
-	attribute!: string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
-})
 "#;
     assert_eq!(pet, expected);
     let empty = types
@@ -442,6 +439,16 @@ fn generated_references_are_limited_to_top_level_primitive_resource_arguments() 
     )?;
     let directory = tempfile::tempdir()?;
     initialize_cue_module(directory.path())?;
+    std::fs::write(
+        directory.path().join("cue.mod/module.cue"),
+        "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.14.1\"\n",
+    )?;
+    let shared_schema = directory.path().join("schema");
+    std::fs::create_dir_all(&shared_schema)?;
+    std::fs::write(
+        shared_schema.join("infrastructure.cue"),
+        include_str!("../../../../schema/infrastructure.cue"),
+    )?;
     for (path, contents) in &types.files {
         let path = directory.path().join(&types.directory).join(path);
         std::fs::create_dir_all(path.parent().ok_or("generated path has no parent")?)?;

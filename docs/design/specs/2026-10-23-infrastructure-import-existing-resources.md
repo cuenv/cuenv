@@ -103,11 +103,13 @@ not supported. References infer and persist the same dependency edges as
 
 When a producer's planned output is known, it participates in the consumer's
 plan. If it is unknown until the producer is applied, cuenv resolves it and
-replans the consumer immediately before applying it. If that final plan changes
-the already-confirmed action into a replacement, cuenv stops before changing
-the consumer; run `plan` again after the producer has been recorded. Generated
-provider resource types accept the descriptor for top-level primitive
-arguments.
+replans the consumer immediately before applying it. A replacement required by
+the provider's initial plan remains a replacement even when the referenced
+value is unknown, so the confirmed action and dependency schedule include its
+delete and create. If only the final plan changes an initially confirmed
+update into a replacement, cuenv stops before changing the consumer; run
+`plan` again after the producer has been recorded. Generated provider resource
+types import the shared descriptor definition from `schema/infrastructure.cue`.
 
 ## State, policy, and identity behavior
 
@@ -147,9 +149,11 @@ command contract, shared interfaces, and final diff across these scopes:
    refreshes the partial result, validates the final state, and conditionally
    records exactly one absent address using the existing recovery machinery.
    Fake-provider cases cover a successful import with refresh and no apply,
-   reference dependency/no-op behavior, unknown-output replacement handling,
-   and sensitivity refusal. Failure injection for malformed import results,
-   refresh errors, concurrent writes, and recovery remains additional coverage.
+   zero and multiple results, type mismatch, identity, deferral, disappeared
+   objects during refresh, occupied addresses, reference dependency/no-op
+   behavior, replacement ordering with unknown outputs, and sensitivity
+   refusal. Failure injection for malformed import results, concurrent writes,
+   and recovery remains additional coverage.
 3. **Command and policy — complete.** Added the top-level import action and
    arguments, full configuration and provider-environment routing,
    `allowInfrastructure` policy, target-scoped identity guards, ownership and
@@ -188,9 +192,10 @@ ownership and lock conflicts; lost state-write recovery; cancellation; and the
 next ordinary plan after import. Run the infrastructure end-to-end and command
 lifecycle suites with the fake provider and local state service. Run
 `cuenv task ci.schema-docs-check` for the schema, documentation, and skill
-updates. New fake-provider end-to-end cases cover import without apply,
-dependency inference and no-op behavior for output references, unknown output
-replacement handling, and refusing to flow sensitive outputs. The full
+updates. Fake-provider end-to-end cases cover import without apply, rejected
+import results and occupied addresses, dependency inference and no-op behavior
+for output references, unknown-output replacement scheduling, and refusing to
+flow sensitive outputs. The full
 infrastructure end-to-end and CLI lifecycle suites still provide broader
 coverage when their provider and local state-service prerequisites are present.
 

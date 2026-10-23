@@ -39,7 +39,7 @@
 //! parallel applies are not supported. `create_before_destroy` is not
 //! supported: a replacement is always destroy, then create.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -628,26 +628,47 @@ struct ResourcePlanInput<'input> {
     stored: Option<&'input ManagedResource>,
 }
 
+/// The inputs needed to replan one operation after resolving its references.
+struct ReferencedReplan<'step> {
+    change: &'step ResourceChange,
+    step: &'step ApplyStep,
+    schema: &'step Schema,
+    lock: &'step StateLock,
+    rows: &'step mut BTreeMap<ResourceAddress, ManagedResource>,
+    on_event: &'step mut (dyn FnMut(ApplyEvent) + Send),
+}
+
+#[derive(Clone, Copy)]
+struct ResolveReferenceConfiguration<'step> {
+    change: &'step ResourceChange,
+    destination_block: &'step Block,
+    prepared: &'step Value,
+    rows: &'step BTreeMap<ResourceAddress, ManagedResource>,
+}
+
+struct OperationRunContext<'run> {
+    lock: &'run StateLock,
+    rows: &'run mut BTreeMap<ResourceAddress, ManagedResource>,
+    on_event: &'run mut (dyn FnMut(ApplyEvent) + Send),
+}
+
 /// The addresses of the resources a declaration depends on.
 fn full_dependencies(
     declared: &BTreeMap<String, ManagedResourceDeclaration>,
     declaration: &ManagedResourceDeclaration,
     references: &ConfigurationReferences,
 ) -> Result<Vec<String>> {
-    let mut dependencies = declaration
-        .depends_on
-        .iter()
-        .map(|name| {
-            declared
-                .get(name)
-                .map(|dependency| ResourceAddress::new(&dependency.resource_type, name).to_string())
-                .ok_or_else(|| {
-                    InfrastructureError::configuration(format!(
-                        "dependency on unknown resource '{name}'"
-                    ))
-                })
-        })
-        .collect::<Result<BTreeSet<_>>>()?;
+    let mut dependencies = Vec::new();
+    let mut seen = HashSet::new();
+    for name in &declaration.depends_on {
+        let dependency = declared.get(name).ok_or_else(|| {
+            InfrastructureError::configuration(format!("dependency on unknown resource '{name}'"))
+        })?;
+        let address = ResourceAddress::new(&dependency.resource_type, name).to_string();
+        if seen.insert(address.clone()) {
+            dependencies.push(address);
+        }
+    }
     for reference in references.references() {
         let Some(dependency) = declared.get(&reference.source.name) else {
             return Err(InfrastructureError::configuration(format!(
@@ -661,9 +682,12 @@ fn full_dependencies(
                 reference.source
             )));
         }
-        dependencies.insert(reference.source.to_string());
+        let address = reference.source.to_string();
+        if seen.insert(address.clone()) {
+            dependencies.push(address);
+        }
     }
-    Ok(dependencies.into_iter().collect())
+    Ok(dependencies)
 }
 
 /// Changes in the order apply runs them.
@@ -916,6 +940,11 @@ impl InfrastructureEngine {
             )));
         }
         let (state, _) = provider_value(refreshed.new_state.as_ref(), &value_type)?;
+        if state.is_null() {
+            return Err(InfrastructureError::plugin(format!(
+                "provider import for {address} found no existing object during refresh"
+            )));
+        }
         check_upgraded(address, &state)?;
         let dependencies =
             full_dependencies(&self.infrastructure.resources, &declaration, &references)?;
@@ -1080,7 +1109,7 @@ impl InfrastructureEngine {
                 "plan belongs to a different tenant",
             ));
         }
-        self.require_current(plan).await?;
+        let rows = self.require_current(plan).await?;
         for warning in &plan.warnings {
             on_event(ApplyEvent::Warning(warning.clone()));
         }
@@ -1090,6 +1119,7 @@ impl InfrastructureEngine {
             Convergence {
                 plan,
                 lock: context.lock,
+                rows,
                 on_event,
             },
         )
@@ -1105,6 +1135,7 @@ impl InfrastructureEngine {
         let Convergence {
             plan,
             lock,
+            rows,
             on_event,
         } = convergence;
         let schedule = Schedule::build(&plan.changes)?;
@@ -1120,6 +1151,7 @@ impl InfrastructureEngine {
                 total,
             },
             lock,
+            rows,
             on_event,
         };
         if let Err(error) = self.execute(runner, &mut execution).await {
@@ -1167,6 +1199,9 @@ impl InfrastructureEngine {
                     .put(&self.tenant, execution.lock, record)
                     .await
                     .map_err(|error| naming_address(error, &change.address))?;
+                execution
+                    .rows
+                    .insert(change.address.clone(), record.clone());
                 (execution.on_event)(ApplyEvent::Refreshed {
                     address: change.address.clone(),
                 });
@@ -1182,7 +1217,14 @@ impl InfrastructureEngine {
                 });
             }
             let outcome = runner
-                .run_operation(operation, execution.lock, execution.on_event)
+                .run_operation(
+                    operation,
+                    OperationRunContext {
+                        lock: execution.lock,
+                        rows: &mut execution.rows,
+                        on_event: execution.on_event,
+                    },
+                )
                 .await;
             let Err(failure) = outcome else {
                 execution.run.finished(index);
@@ -1208,6 +1250,12 @@ impl InfrastructureEngine {
                 },
             );
             if !continues || self.cancellation().is_stop_requested() {
+                if operation.starts_change() || operation.completes_change() {
+                    (execution.on_event)(ApplyEvent::Failed {
+                        address: change.address.clone(),
+                        action: change.action,
+                    });
+                }
                 return Err(error);
             }
             execution.run.failed(index, error, execution.on_event);
@@ -1216,8 +1264,11 @@ impl InfrastructureEngine {
     }
 
     /// Refuse a plan whose view of stored state no longer matches the store.
-    async fn require_current(&self, plan: &Plan) -> Result<()> {
-        let mut stored: BTreeMap<ResourceAddress, ManagedResource> = self
+    async fn require_current(
+        &self,
+        plan: &Plan,
+    ) -> Result<BTreeMap<ResourceAddress, ManagedResource>> {
+        let stored: BTreeMap<ResourceAddress, ManagedResource> = self
             .store
             .list(&self.tenant)
             .await?
@@ -1225,19 +1276,27 @@ impl InfrastructureEngine {
             .map(|resource| (resource.address.clone(), resource))
             .collect();
         for change in &plan.changes {
-            let current = stored.remove(&change.address);
-            if current != change.stored {
+            if stored.get(&change.address) != change.stored.as_ref() {
                 return Err(InfrastructureError::PlanOutdated {
                     address: change.address.to_string(),
                 });
             }
         }
         // A record the plan never saw appeared since.
-        stored.into_keys().next().map_or(Ok(()), |address| {
-            Err(InfrastructureError::PlanOutdated {
+        let planned_addresses = plan
+            .changes
+            .iter()
+            .map(|change| change.address.clone())
+            .collect::<BTreeSet<_>>();
+        if let Some(address) = stored
+            .keys()
+            .find(|address| !planned_addresses.contains(address))
+        {
+            return Err(InfrastructureError::PlanOutdated {
                 address: address.to_string(),
-            })
-        })
+            });
+        }
+        Ok(stored)
     }
 
     /// After a stop request, a provider failure is most likely the stopped
@@ -1294,9 +1353,13 @@ impl InfrastructureEngine {
     async fn apply_operation(
         &self,
         operation: &ApplyOperation<'_>,
-        lock: &StateLock,
-        on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+        context: OperationRunContext<'_>,
     ) -> std::result::Result<(), OperationFailure> {
+        let OperationRunContext {
+            lock,
+            rows,
+            on_event,
+        } = context;
         let change = operation.change;
         let provider = self.loaded(&change.provider)?;
         let schema = resource_schema(provider, &change.provider, &change.address.resource_type)?;
@@ -1311,7 +1374,14 @@ impl InfrastructureEngine {
             {
                 planned_step.clone()
             } else if let Some(step) = self
-                .replan_referenced_step(change, planned_step, schema, lock, on_event)
+                .replan_referenced_step(ReferencedReplan {
+                    change,
+                    step: planned_step,
+                    schema,
+                    lock,
+                    rows,
+                    on_event,
+                })
                 .await
                 .map_err(OperationFailure::from_reference_replan)?
             {
@@ -1380,6 +1450,7 @@ impl InfrastructureEngine {
                             StepKind::Delete => OperationFailure::AbortAfterDelete(error),
                             StepKind::Create | StepKind::Update => OperationFailure::Abort(error),
                         })?;
+                    rows.remove(&change.address);
                 }
             } else {
                 let stored = change.stored.as_ref();
@@ -1429,6 +1500,7 @@ impl InfrastructureEngine {
                     },
                 )
                 .await?;
+                rows.insert(change.address.clone(), record);
             }
 
             // The change is recorded, so a failure the provider reported
@@ -1450,6 +1522,7 @@ impl InfrastructureEngine {
             // Also covers resources already gone during refresh (no steps).
             let _recording = self.cancellation().begin_recording();
             self.forget(lock, &change.address).await?;
+            rows.remove(&change.address);
         }
         Ok(())
     }
@@ -1460,21 +1533,29 @@ impl InfrastructureEngine {
     /// replacement that was absent from the confirmed plan.
     async fn replan_referenced_step(
         &self,
-        change: &ResourceChange,
-        step: &ApplyStep,
-        schema: &Schema,
-        lock: &StateLock,
-        on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+        input: ReferencedReplan<'_>,
     ) -> Result<Option<ApplyStep>> {
+        let ReferencedReplan {
+            change,
+            step,
+            schema,
+            lock,
+            rows,
+            on_event,
+        } = input;
         let prepared = change.reference_configuration.as_ref().ok_or_else(|| {
             InfrastructureError::configuration(format!(
                 "{} has output references but no prepared configuration",
                 change.address
             ))
         })?;
-        let configuration = self
-            .resolve_reference_configuration(change, &schema.block, prepared)
-            .await?;
+        let configuration =
+            self.resolve_reference_configuration(ResolveReferenceConfiguration {
+                change,
+                destination_block: &schema.block,
+                prepared,
+                rows,
+            })?;
         let configuration = schema.block.normalize_configuration(configuration);
         let value_type = schema.block.implied_type();
         let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
@@ -1590,6 +1671,7 @@ impl InfrastructureEngine {
                         },
                     )
                     .await?;
+                    rows.insert(change.address.clone(), record);
                     return Ok(None);
                 }
             }
@@ -1619,22 +1701,19 @@ impl InfrastructureEngine {
         }))
     }
 
-    async fn resolve_reference_configuration(
+    fn resolve_reference_configuration(
         &self,
-        change: &ResourceChange,
-        destination_block: &Block,
-        prepared: &Value,
+        input: ResolveReferenceConfiguration<'_>,
     ) -> Result<Value> {
-        let rows = self
-            .store
-            .list(&self.tenant)
-            .await?
-            .into_iter()
-            .map(|row| (row.address.clone(), row))
-            .collect::<BTreeMap<_, _>>();
+        let ResolveReferenceConfiguration {
+            change,
+            destination_block,
+            prepared,
+            rows,
+        } = input;
         self.validate_output_references(&change.address, &change.references, destination_block)?;
         change.references.resolve(prepared, |reference| {
-            self.reference_output_value(&change.address, reference, &rows)
+            self.reference_output_value(&change.address, reference, rows)
         })
     }
 
@@ -1967,24 +2046,6 @@ impl InfrastructureEngine {
                 planned_value: planned.clone(),
             });
             change.after = planned;
-            return Ok(change);
-        }
-
-        if reference_output_unknown {
-            warnings.push(format!(
-                "{address} may require replacement after a referenced output becomes known; apply will stop before replacement if the final plan changes the confirmed action"
-            ));
-            change.action = Action::Update;
-            change.after = planned.clone();
-            change.steps.push(ApplyStep {
-                kind: StepKind::Update,
-                prior: prior.bytes,
-                planned: planned_bytes,
-                configuration: configuration_bytes,
-                planned_private: response.planned_private,
-                prior_private: prior.private,
-                planned_value: planned,
-            });
             return Ok(change);
         }
 
@@ -2386,6 +2447,7 @@ impl Progress {
 struct Convergence<'apply> {
     plan: &'apply Plan,
     lock: &'apply StateLock,
+    rows: BTreeMap<ResourceAddress, ManagedResource>,
     on_event: &'apply mut (dyn FnMut(ApplyEvent) + Send),
 }
 
@@ -2396,8 +2458,7 @@ trait OperationRunner {
     async fn run_operation(
         &self,
         operation: &ApplyOperation<'_>,
-        lock: &StateLock,
-        on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+        context: OperationRunContext<'_>,
     ) -> std::result::Result<(), OperationFailure>;
 }
 
@@ -2406,10 +2467,9 @@ impl OperationRunner for InfrastructureEngine {
     async fn run_operation(
         &self,
         operation: &ApplyOperation<'_>,
-        lock: &StateLock,
-        on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+        context: OperationRunContext<'_>,
     ) -> std::result::Result<(), OperationFailure> {
-        self.apply_operation(operation, lock, on_event).await
+        self.apply_operation(operation, context).await
     }
 }
 
@@ -2419,6 +2479,7 @@ struct Execution<'run, 'schedule, 'plan> {
     run: ScheduleRun<'schedule, 'plan>,
     progress: Progress,
     lock: &'run StateLock,
+    rows: BTreeMap<ResourceAddress, ManagedResource>,
     on_event: &'run mut (dyn FnMut(ApplyEvent) + Send),
 }
 
@@ -3019,22 +3080,18 @@ fn dependency_graph(
                 .into_iter()
                 .flat_map(ConfigurationReferences::references)
             {
-                let Some((dependency_name, _)) =
-                    resources.iter().find(|(candidate, declaration)| {
-                        candidate.as_str() == reference.source.name
-                            && declaration.resource_type == reference.source.resource_type
+                if !resources
+                    .get(&reference.source.name)
+                    .is_some_and(|declaration| {
+                        declaration.resource_type == reference.source.resource_type
                     })
-                else {
+                {
                     return Err(InfrastructureError::configuration(format!(
                         "resource '{name}' references unknown resource '{}'",
                         reference.source
                     )));
-                };
-                if dependency_name == name {
-                    dependencies.insert(name.clone());
-                } else {
-                    dependencies.insert(dependency_name.clone());
                 }
+                dependencies.insert(reference.source.name.clone());
             }
             Ok((name.clone(), dependencies.into_iter().collect()))
         })

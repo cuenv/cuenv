@@ -19,7 +19,8 @@
 //
 // Importing fake_plain returns the identifier as id and name, with arn null.
 // ReadResource fills arn so import tests can establish that refresh happened.
-// Optional import-response.json overrides type_name, state and private (base64).
+// Optional import-response.json overrides type_name, state, private (base64),
+// resource_count, identity and deferred for import-response tests.
 //
 // Resource types:
 //
@@ -598,6 +599,13 @@ func (w *wrap) UpgradeResourceState(ctx context.Context, request *tfprotov6.Upgr
 
 func (w *wrap) ReadResource(ctx context.Context, request *tfprotov6.ReadResourceRequest) (*tfprotov6.ReadResourceResponse, error) {
 	if request.TypeName == "fake_plain" {
+		if flag("import-refresh-null") {
+			journal("plain: ReadResource imported object missing")
+			return &tfprotov6.ReadResourceResponse{
+				NewState: &tfprotov6.DynamicValue{MsgPack: []byte{0xc0}},
+				Private:  request.Private,
+			}, nil
+		}
 		isNull, err := request.CurrentState.IsNull()
 		journal("plain: ReadResource current_state null=%v error=%v", isNull, err)
 		if string(request.Private) == "{}" {
@@ -631,9 +639,12 @@ func (w *wrap) ImportResourceState(ctx context.Context, request *tfprotov6.Impor
 		return nil, err
 	}
 	result := struct {
-		TypeName string          `json:"type_name"`
-		State    json.RawMessage `json:"state"`
-		Private  []byte          `json:"private"`
+		TypeName      string          `json:"type_name"`
+		State         json.RawMessage `json:"state"`
+		Private       []byte          `json:"private"`
+		ResourceCount *int            `json:"resource_count"`
+		Identity      bool            `json:"identity"`
+		Deferred      bool            `json:"deferred"`
 	}{TypeName: request.TypeName, State: state, Private: []byte("{}")}
 	if override, err := os.ReadFile(filepath.Join(currentDirectory(), "import-response.json")); err == nil {
 		if err := json.Unmarshal(override, &result); err != nil {
@@ -642,13 +653,30 @@ func (w *wrap) ImportResourceState(ctx context.Context, request *tfprotov6.Impor
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	return &tfprotov6.ImportResourceStateResponse{
-		ImportedResources: []*tfprotov6.ImportedResource{{
+	count := 1
+	if result.ResourceCount != nil {
+		count = *result.ResourceCount
+	}
+	response := &tfprotov6.ImportResourceStateResponse{}
+	for range count {
+		imported := &tfprotov6.ImportedResource{
 			TypeName: result.TypeName,
 			State:    &tfprotov6.DynamicValue{JSON: result.State},
 			Private:  result.Private,
-		}},
-	}, nil
+		}
+		if result.Identity {
+			imported.Identity = &tfprotov6.ResourceIdentityData{
+				IdentityData: &tfprotov6.DynamicValue{JSON: []byte(`{"id":"outside"}`)},
+			}
+		}
+		response.ImportedResources = append(response.ImportedResources, imported)
+	}
+	if result.Deferred {
+		response.Deferred = &tfprotov6.Deferred{
+			Reason: tfprotov6.DeferredReasonResourceConfigUnknown,
+		}
+	}
+	return response, nil
 }
 
 func main() {

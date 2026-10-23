@@ -4,6 +4,7 @@
 //! compatibility, dependency ordering and sensitivity belong to the engine;
 //! this module parses descriptors and replaces their configuration positions.
 
+use cuenv_manifest::manifest::InfrastructureOutputReference;
 use serde_json::{Map, Value as Json};
 
 use crate::error::{InfrastructureError, Result};
@@ -54,37 +55,30 @@ impl ConfigurationReferences {
                     "a reference must contain exactly `fromResource` and `attribute`",
                 ));
             }
-            let source = descriptor
-                .get("fromResource")
-                .and_then(Json::as_str)
-                .ok_or_else(|| {
-                    problem(
-                        destination_attribute,
-                        "`fromResource` must be a string address `type.name`",
-                    )
-                })?;
-            let source = parse_address(source).ok_or_else(|| {
+            let descriptor: InfrastructureOutputReference = serde_json::from_value(value.clone())
+                .map_err(|_| {
+                problem(
+                    destination_attribute,
+                    "a reference must contain exactly `fromResource` and `attribute`, both strings",
+                )
+            })?;
+            let source = parse_address(&descriptor.from_resource).ok_or_else(|| {
                 problem(
                     destination_attribute,
                     "`fromResource` must be a valid resource address `type.name`",
                 )
             })?;
-            let attribute = descriptor
-                .get("attribute")
-                .and_then(Json::as_str)
-                .filter(|attribute| {
-                    !attribute.is_empty() && !attribute.chars().any(char::is_control)
-                })
-                .ok_or_else(|| {
-                    problem(
-                        destination_attribute,
-                        "`attribute` must be a nonempty string without control characters",
-                    )
-                })?;
+            let attribute = descriptor.attribute;
+            if !is_identifier(&attribute) {
+                return Err(problem(
+                    destination_attribute,
+                    "`attribute` must be a CUE identifier",
+                ));
+            }
             references.push(ResourceOutputReference {
                 destination_attribute: destination_attribute.clone(),
                 source,
-                attribute: attribute.to_string(),
+                attribute,
             });
         }
         Ok(Self { references })
@@ -254,6 +248,14 @@ fn parse_address(address: &str) -> Option<ResourceAddress> {
     Some(ResourceAddress::new(resource_type, name))
 }
 
+fn is_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
 fn problem(destination_attribute: &str, reason: &str) -> InfrastructureError {
     InfrastructureError::configuration(format!("configuration.{destination_attribute}: {reason}"))
 }
@@ -308,6 +310,8 @@ mod tests {
             json!({"fromResource": "secret"}),
             json!({"fromResource": "secret", "attribute": "id", "extra": "secret"}),
             json!({"fromResource": 123, "attribute": "id"}),
+            json!({"fromResource": "fake_obj.source", "attribute": "nested.id"}),
+            json!({"fromResource": "fake_obj.source", "attribute": ""}),
             json!({"fromResource": "cloudflare_zone.primary", "attribute": 123}),
             json!({"fromResource": "cloudflare_zone.primary", "attribute": ""}),
             json!({"fromResource": "cloudflare_zone.primary", "attribute": "secret\n"}),

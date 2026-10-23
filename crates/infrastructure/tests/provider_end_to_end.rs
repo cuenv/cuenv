@@ -425,7 +425,7 @@ async fn generated_types_describe_real_provider_schemas() -> TestResult {
         .ok_or("no random_pet package")?;
     // Computed-only `id` is not configuration.
     assert!(
-        pet.contains("\tlength?: number | #InfrastructureOutputReference\n"),
+        pet.contains("\tlength?: number | cuenv_schema.#InfrastructureOutputReference\n"),
         "{pet}"
     );
     assert!(!pet.contains("\tid?:"), "{pet}");
@@ -1159,6 +1159,28 @@ impl Fake {
         Ok(converged?)
     }
 
+    async fn import(
+        &self,
+        resources: &serde_json::Value,
+        identifier: &str,
+    ) -> TestResult<Result<Vec<String>, InfrastructureError>> {
+        let mut engine = self.engine(resources, &Cancellation::default())?;
+        let lock = self.store.lock(&self.tenant, "fake import").await?;
+        let address = cuenv_infrastructure::ResourceAddress::new("fake_plain", "thing");
+        let imported = engine.import(&address, identifier, &lock).await;
+        self.store.unlock(&self.tenant, &lock).await?;
+        engine.shutdown().await;
+        Ok(imported)
+    }
+
+    fn set_import_response(&self, response: &serde_json::Value) -> TestResult {
+        std::fs::write(
+            self.directory.path().join("import-response.json"),
+            serde_json::to_vec(response)?,
+        )?;
+        Ok(())
+    }
+
     fn set_flag(&self, name: &str) -> TestResult {
         std::fs::write(self.directory.path().join(name), b"")?;
         Ok(())
@@ -1246,6 +1268,75 @@ async fn fake_import_refreshes_and_records_one_resource_without_applying() -> Te
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_import_rejects_unsupported_provider_responses_without_recording_state() -> TestResult
+{
+    for (response, expected) in [
+        (json!({"resource_count": 0}), "returned 0 resources"),
+        (json!({"resource_count": 2}), "returned 2 resources"),
+        (json!({"type_name": "fake_repl"}), "different resource type"),
+        (
+            json!({"identity": true}),
+            "identity data that cuenv cannot preserve",
+        ),
+        (json!({"deferred": true}), "Invalid Deferred Response"),
+    ] {
+        let fake = Fake::new().await?;
+        fake.set_import_response(&response)?;
+        let resources = json!({
+            "thing": {"type": "fake_plain", "configuration": {"name": "outside-id"}}
+        });
+        let error = fake
+            .import(&resources, "outside-id")
+            .await?
+            .expect_err("unsupported import result must be refused");
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    }
+
+    let fake = Fake::new().await?;
+    fake.set_flag("import-refresh-null")?;
+    let resources = json!({
+        "thing": {"type": "fake_plain", "configuration": {"name": "outside-id"}}
+    });
+    let error = fake
+        .import(&resources, "outside-id")
+        .await?
+        .expect_err("an object that disappears during refresh must not be recorded");
+    assert!(
+        error
+            .to_string()
+            .contains("found no existing object during refresh"),
+        "{error}"
+    );
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_import_refuses_an_occupied_address_before_calling_the_provider() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({
+        "thing": {"type": "fake_plain", "configuration": {"name": "outside-id"}}
+    });
+    fake.import(&resources, "outside-id").await??;
+
+    let error = fake
+        .import(&resources, "second-id")
+        .await?
+        .expect_err("an existing record must block import");
+    assert!(error.to_string().contains("already records it"), "{error}");
+    let journal = fake.journal();
+    assert_eq!(
+        journal.matches("ImportResourceState identifier=").count(),
+        1
+    );
+    assert_eq!(fake.store.list(&fake.tenant).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
 async fn fake_output_references_infer_dependencies_and_stay_noop() -> TestResult {
     let fake = Fake::new().await?;
     let resources = json!({
@@ -1273,7 +1364,7 @@ async fn fake_output_references_infer_dependencies_and_stay_noop() -> TestResult
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
-async fn fake_unknown_reference_replacement_waits_for_a_fresh_plan() -> TestResult {
+async fn fake_unknown_reference_keeps_the_provider_replacement_plan() -> TestResult {
     let fake = Fake::new().await?;
     let existing = json!({
         "record": {"type": "fake_repl", "configuration": {"name": "old"}}
@@ -1293,22 +1384,83 @@ async fn fake_unknown_reference_replacement_waits_for_a_fresh_plan() -> TestResu
         },
     });
     let first = fake.converge(&desired, PlanMode::Apply).await?;
-    assert!(first.plan.warnings.iter().any(|warning| {
-        warning.contains("may require replacement after a referenced output becomes known")
-    }));
-    assert!(first.applied.is_err());
-    assert_eq!(fake.record("record").await?.state["name"], "old");
-    assert!(!fake.journal().contains("repl: Delete id="));
-
-    let next = fake.plan(&desired).await?;
     assert_eq!(
-        actions(&next)
+        actions(&first.plan)
             .into_iter()
             .find(|(address, _)| address == "fake_repl.record")
             .map(|(_, action)| action),
         Some(Action::Replace),
-        "{next:?}"
+        "{:?}",
+        first.plan
     );
+    first.applied?;
+    assert_eq!(fake.record("record").await?.state["name"], "plain-1");
+    assert!(fake.journal().contains("repl: Delete name=old"));
+
+    let next = fake.plan(&desired).await?;
+    assert!(!next.has_work(), "{:?}", actions(&next));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn referenced_replacement_orders_consumer_and_producer_in_one_apply() -> TestResult {
+    let fake = Fake::new().await?;
+    let reference = json!({
+        "fromResource": "fake_obj.producer",
+        "attribute": "id",
+    });
+    let initial = json!({
+        "producer": obj(&json!({"key": "old"})),
+        "consumer": obj(&json!({
+            "key": "child",
+            "parent": reference,
+            "version": reference,
+        })),
+    });
+    fake.converge(&initial, PlanMode::Apply).await?.applied?;
+    fake.clear_journal()?;
+
+    let desired = json!({
+        "producer": obj(&json!({"key": "new"})),
+        "consumer": obj(&json!({
+            "key": "child",
+            "parent": reference,
+            "version": reference,
+        })),
+    });
+    let run = fake.converge(&desired, PlanMode::Apply).await?;
+    let planned_actions = actions(&run.plan);
+    assert_eq!(
+        planned_actions
+            .iter()
+            .filter(|(_, action)| *action == Action::Replace)
+            .count(),
+        2,
+        "{planned_actions:?}"
+    );
+    run.applied?;
+
+    let changes = fake.changes();
+    assert_eq!(changes.len(), 4, "{changes:?}");
+    assert!(
+        changes[0].starts_with("obj: Delete key=child"),
+        "{changes:?}"
+    );
+    assert!(changes[1].starts_with("obj: Delete key=old"), "{changes:?}");
+    assert!(changes[2].starts_with("obj: Create key=new"), "{changes:?}");
+    assert!(
+        changes[3].starts_with("obj: Create key=child parent=new"),
+        "{changes:?}"
+    );
+    let consumer = fake.record("consumer").await?;
+    assert_eq!(consumer.state["parent"], "new");
+    assert_eq!(consumer.state["version"], "new");
+    assert_eq!(consumer.dependencies, ["fake_obj.producer"]);
+    assert!(!fake.exists("old"));
+
+    let unchanged = fake.plan(&desired).await?;
+    assert!(!unchanged.has_work(), "{:?}", actions(&unchanged));
     Ok(())
 }
 

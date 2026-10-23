@@ -149,6 +149,25 @@ fn declaration(resource_type: &str, depends_on: &[&str]) -> ManagedResourceDecla
     }
 }
 
+#[test]
+fn full_dependencies_preserves_declared_order_and_appends_unique_references() {
+    let mut consumer = declaration("fake_obj", &["third", "first", "third"]);
+    consumer.configuration.insert(
+        "parent".into(),
+        json!({"fromResource": "fake_obj.third", "attribute": "id"}),
+    );
+    let declared = BTreeMap::from([
+        ("consumer".into(), consumer),
+        ("first".into(), declaration("fake_obj", &[])),
+        ("third".into(), declaration("fake_obj", &[])),
+    ]);
+    let references = ConfigurationReferences::extract(&declared["consumer"].configuration).unwrap();
+    assert_eq!(
+        full_dependencies(&declared, &declared["consumer"], &references).unwrap(),
+        ["fake_obj.third", "fake_obj.first"]
+    );
+}
+
 fn provider(version: Option<&str>, path: Option<&str>) -> InfrastructureProvider {
     InfrastructureProvider {
         source: "hashicorp/unused".into(),
@@ -1289,8 +1308,7 @@ impl OperationRunner for ScriptedRunner {
     async fn run_operation(
         &self,
         operation: &ApplyOperation<'_>,
-        _lock: &StateLock,
-        _on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+        _context: OperationRunContext<'_>,
     ) -> std::result::Result<(), OperationFailure> {
         let label = format!("{} {}", operation.kind.label(), operation.change.address);
         self.journal.lock().unwrap().push(label.clone());
@@ -1380,6 +1398,7 @@ async fn run_scripted(
             Convergence {
                 plan: &plan,
                 lock: &lock,
+                rows: BTreeMap::new(),
                 on_event: &mut |event| events.push(event),
             },
         )
@@ -1429,8 +1448,7 @@ impl OperationRunner for IdentityRunner {
     async fn run_operation(
         &self,
         operation: &ApplyOperation<'_>,
-        _lock: &StateLock,
-        _on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+        _context: OperationRunContext<'_>,
     ) -> std::result::Result<(), OperationFailure> {
         let address = operation.change.address.to_string();
         let mut held = self.held.lock().unwrap();
@@ -1562,6 +1580,7 @@ async fn a_replacement_whose_new_prerequisite_fails_to_create_is_left_deleted_an
             Convergence {
                 plan: &plan,
                 lock: &lock,
+                rows: BTreeMap::new(),
                 on_event: &mut |event| events.push(event),
             },
         )
@@ -1704,6 +1723,7 @@ async fn an_interrupt_between_the_halves_reports_the_replacement_it_left_deleted
             Convergence {
                 plan: &plan,
                 lock: &lock,
+                rows: BTreeMap::new(),
                 on_event: &mut |event| events.push(event),
             },
         )
@@ -1792,6 +1812,7 @@ async fn a_fatal_failure_ends_the_run_and_keeps_earlier_failures_visible() {
             Convergence {
                 plan: &plan,
                 lock: &lock,
+                rows: BTreeMap::new(),
                 on_event: &mut |event| events.push(event),
             },
         )

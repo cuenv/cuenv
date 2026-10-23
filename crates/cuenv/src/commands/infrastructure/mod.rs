@@ -1589,7 +1589,15 @@ async fn dispatch(
         InfrastructureAction::Import {
             address,
             identifier,
-        } => import(context, inputs, address, identifier).await,
+        } => {
+            import(ImportRequest {
+                context,
+                inputs,
+                address,
+                identifier,
+            })
+            .await
+        }
         InfrastructureAction::Apply { confirmation, .. } => {
             converge(
                 &Convergence {
@@ -2238,14 +2246,23 @@ async fn plan(context: &CommandContext<'_>, inputs: EngineInputs) -> Result<(), 
     Ok(())
 }
 
+/// The inputs needed to import a provider resource.
+struct ImportRequest<'command, 'context> {
+    context: &'command CommandContext<'context>,
+    inputs: EngineInputs,
+    address: &'command str,
+    identifier: &'command str,
+}
+
 /// Import a provider resource while holding the tenant lock and after
 /// confirming this CUE instance owns the state.
-async fn import(
-    context: &CommandContext<'_>,
-    inputs: EngineInputs,
-    address: &str,
-    identifier: &str,
-) -> Result<(), CliError> {
+async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliError> {
+    let ImportRequest {
+        context,
+        inputs,
+        address,
+        identifier,
+    } = request;
     let (resource_type, name) = address.split_once('.').ok_or_else(|| {
         CliError::config(format!(
             "invalid resource address {}; expected type.name",
