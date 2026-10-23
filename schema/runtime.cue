@@ -13,7 +13,7 @@ package schema
 //       platforms: ["darwin-arm64"]
 //       tools: {jq: "1.7.1"}
 //   }
-#Runtime: #NixRuntime | #DevenvRuntime | #ContainerRuntime | #DaggerRuntime | #OCIRuntime | #ToolsRuntime
+#Runtime: {#NixRuntime} | {#DevenvRuntime} | {#ContainerRuntime} | {#DaggerRuntime} | {#OCIRuntime} | {#ToolsRuntime}
 
 // #NixRuntime activates a Nix flake devShell
 #NixRuntime: {

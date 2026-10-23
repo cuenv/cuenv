@@ -16,6 +16,14 @@ Do not infer that a schema definition is fully implemented. Respect `implemented
 
 Schema project/base regression tests should build temporary local modules from the checked-out schema, return `Result` from filesystem, schema-copy, command, and evaluation setup, and avoid file-level unwrap/expect allowances so schema failures stay explicit.
 
+Schema authoring rules, enforced by `cuenv task ci.schema-compat` across CUE v0.16 to v0.18:
+
+- Do not wrap definitions in `close({...})`. Definitions are already closed, and `close()` with an embedded definition breaks file-level embedding on CUE v0.17+.
+- Reference a definition from `#Base`/`#Project` fields inside a struct literal (`config?: {#Config}`), and wrap each definition in a disjunction the same way. A bare reference is left open when a consumer embeds `schema.#Project` at file level before language `v0.18.0`.
+- Exception: keep `tasks`, `services` and `images` entries as direct references (`#Task`, `#Service`, `#ContainerImage`). The CUE fork shares typed `dependsOn` references only for directly referenced definitions; wrapping them makes deep dependency chains exponential (`deep_depends_on_chain_evaluates_in_linear_time` in `schema_project_base_tests.rs` catches it). Examples should write entries as `schema.#Task & {...}`.
+- Use `{...}` instead of `_` for free-form object fields; CUE v0.17 closes `_` under file-level embedding.
+- Add a `tests/schema-compat/testdata/reject/<name>/env.cue` fixture when a change adds a closedness guarantee.
+
 Use `cuenv task ci.schema-docs-check` after changing schema, docs, examples, prompts, or skills.
 
 Adversarial prompts to test this skill:

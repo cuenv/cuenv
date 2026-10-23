@@ -13,7 +13,7 @@ package schema
 // matching this open type, which would make the #EnvironmentVariable
 // disjunction ambiguous and leave the variable unresolved.
 #Secret: {
-	resolver: "aws" | "gcp" | "onepassword" | "vault" | "infisical" | "exec"
+	resolver:  "aws" | "gcp" | "onepassword" | "vault" | "infisical" | "exec"
 	value?:    _|_
 	policies?: _|_
 	...
@@ -26,8 +26,3 @@ package schema
 	args?: [...string]
 }
 
-// For backward compatibility
-#ExecResolver: {
-	command: string
-	args?: [...string]
-}

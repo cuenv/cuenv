@@ -30,14 +30,18 @@ on:
     - docs/src/content/docs/tutorials/**
     - env.cue
     - env.cue/**
+    - examples/**
     - llms.txt
     - llms.txt/**
     - prompts/**
     - readme.md
     - readme.md/**
     - schema/**
+    - scripts/check-schema-compat.sh
+    - scripts/check-schema-compat.sh/**
     - scripts/check-schema-docs.sh
     - scripts/check-schema-docs.sh/**
+    - tests/schema-compat/**
   pull_request:
     branches:
     - main
@@ -65,14 +69,18 @@ on:
     - docs/src/content/docs/tutorials/**
     - env.cue
     - env.cue/**
+    - examples/**
     - llms.txt
     - llms.txt/**
     - prompts/**
     - readme.md
     - readme.md/**
     - schema/**
+    - scripts/check-schema-compat.sh
+    - scripts/check-schema-compat.sh/**
     - scripts/check-schema-docs.sh
     - scripts/check-schema-docs.sh/**
+    - tests/schema-compat/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true

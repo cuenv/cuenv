@@ -449,34 +449,35 @@ leaves it alone.
 
 ## CODEOWNERS and rules
 
-[`examples/owners-basic`](https://github.com/cuenv/cuenv/tree/main/examples/owners-basic)
-uses the **legacy top-level `owners:`** shape.
+[`examples/rules-codeowners-precedence`](https://github.com/cuenv/cuenv/tree/main/examples/rules-codeowners-precedence)
+declares ownership in a `.rules.cue` file. `cuenv sync` aggregates the rules
+from every `.rules.cue` file into one CODEOWNERS file at the repository root.
 
 ```cue
 package examples
 
-import "github.com/cuenv/cuenv/schema"
+import "github.com/cuenv/cuenv/schema/rules"
 
-schema.#Project
-
-name: "owners-basic"
-
-owners: {
-	output: platform: "github"
-	rules: {
-		"default": {pattern: "*", owners: ["@core-team"], order: 0}
-		"rust-files": {pattern: "*.rs", owners: ["@rust-team"], section: "Backend", order: 1}
-		"docs": {pattern: "/docs/**", owners: ["@docs-team"], order: 3}
+rules.#DirectoryRules & {
+	owners: rules: {
+		fallback: {
+			pattern: "**"
+			owners:  ["@cuenv/maintainers"]
+			order:   0
+		}
+		rust: {
+			pattern:     "*.rs"
+			owners:      ["@cuenv/rust"]
+			description: "Narrower rules appear later so CODEOWNERS precedence wins."
+			section:     "Language owners"
+			order:       10
+		}
 	}
 }
 ```
 
-:::caution[Prefer the .rules.cue path]
-This is the legacy shape kept for compatibility. For new projects, define
-ownership through the canonical `.rules.cue` schemas and the default sync
-provider rather than top-level `owners:`. Do **not** use `cuenv sync codeowners`.
-See the [CODEOWNERS how-to](/how-to/codeowners/).
-:::
+There is no top-level `owners:` field on `schema.#Project`. Do **not** use
+`cuenv sync codeowners`. See the [CODEOWNERS how-to](/how-to/codeowners/).
 
 ## VCS dependencies
 

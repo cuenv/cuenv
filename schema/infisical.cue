@@ -8,9 +8,9 @@ package schema
 	secretName:  string
 
 	// Optional read controls
-	secretPath?:              string | *"/"
-	type?:                    "shared" | "personal" | *"shared"
-	version?:                 int
+	secretPath?:             string | *"/"
+	type?:                   "shared" | "personal" | *"shared"
+	version?:                int
 	expandSecretReferences?: bool | *true
 	includeImports?:         bool | *true
 
