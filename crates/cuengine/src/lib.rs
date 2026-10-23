@@ -222,10 +222,41 @@ unsafe fn cue_bridge_version() -> *mut c_char {
     panic!("FFI not available in documentation builds")
 }
 
+/// A native reference with its canonical CUE path and structured field labels.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectReference {
+    /// Canonical path understood by the bridge's strict validation.
+    pub path: String,
+    /// Destination labels, without CUE quoting or path parsing.
+    pub labels: Vec<String>,
+    /// Canonical terminal target labels in the same instance.
+    pub target: Vec<String>,
+    /// Bare terminal declaration type, or empty for an unsupported declaration.
+    pub primitive_type: String,
+    /// Whether the complete expression can be lowered without losing constraints.
+    pub supported: bool,
+}
+
+/// Generic native reference evaluation used by callers that lower references.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceEvaluation {
+    /// Subtrees scanned for direct, same-instance references. Expressions are excluded.
+    pub paths: Vec<String>,
+    /// Exact namespace paths that hold abstract declarations rather than configuration.
+    pub abstract_paths: Vec<String>,
+    /// Exact field paths and canonical target labels permitted to remain abstract.
+    pub deferred: std::collections::HashMap<String, Vec<String>>,
+}
+
 /// Options for module evaluation
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleEvalOptions {
+    /// Explicit reference scanning and exceptions to concrete-path validation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_evaluation: Option<ReferenceEvaluation>,
     /// Extract source positions into separate `meta` map
     pub with_meta: bool,
     /// Extract reference paths for values that are CUE references (e.g., `dependsOn: [build]`)
@@ -414,6 +445,9 @@ pub struct FieldMeta {
 /// Result of evaluating an entire CUE module
 #[derive(Debug, Default, Deserialize)]
 pub struct ModuleResult {
+    /// Canonical same-instance references under the explicitly requested scan paths.
+    #[serde(default, rename = "directReferences")]
+    pub direct_references: std::collections::HashMap<String, Vec<DirectReference>>,
     /// Map of relative path to evaluated JSON value
     pub instances: std::collections::HashMap<String, serde_json::Value>,
     /// Paths that conform to schema.#Project (verified via CUE unification)
@@ -959,6 +993,7 @@ pub fn module_dependency_version(
 )]
 pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<String> {
     let options = ModuleEvalOptions {
+        reference_evaluation: None,
         with_meta: false,
         with_references: false,
         recursive: false,

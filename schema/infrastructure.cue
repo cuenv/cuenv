@@ -35,8 +35,9 @@ import "strings"
 // is not affected by its own module's language version. The Rust engine
 // repeats the checks for projects that do not unify with this schema.
 //
-// Proof of concept: resources cannot reference each other's attributes yet;
-// order them with `dependsOn`.
+// Proof of concept: top-level primitive resource arguments can refer to
+// another resource's primitive attribute with #InfrastructureOutputReference.
+// Use `dependsOn` when only ordering is needed.
 //
 // Closedness: every nested definition is referenced inside a struct literal
 // (`{#InfrastructureState}` rather than `#InfrastructureState`). A project
@@ -228,7 +229,20 @@ _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)
 	// Resources that must be applied before this one (and destroyed after).
 	dependsOn?: [...#InfrastructureName]
 
+	// Abstract top-level scalar outputs. Generated provider types declare the
+	// available attributes; untyped resources declare each selected attribute
+	// explicitly, for example `outputs: id: string`. Values come from provider
+	// state at runtime and are never sent as provider configuration.
+	outputs?: {[string]: string | number | bool}
+
 	// Resource arguments, validated by the provider's schema. A generated
 	// `#Resource` types them with its `#Configuration`.
 	configuration?: {...}
+})
+
+// A top-level primitive resource argument supplied by another managed
+// resource. The engine validates the selected resource and output attribute.
+#InfrastructureOutputReference: close({
+	fromResource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
+	attribute!: string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
 })

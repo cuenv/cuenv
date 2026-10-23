@@ -644,6 +644,19 @@ fn infrastructure_command(
                 },
             },
         ),
+        InfrastructureCommands::Import {
+            address,
+            identifier,
+            path,
+            package,
+        } => (
+            path,
+            package,
+            InfrastructureAction::Import {
+                address,
+                identifier,
+            },
+        ),
         InfrastructureCommands::Destroy { path, package, yes } => (
             path,
             package,
