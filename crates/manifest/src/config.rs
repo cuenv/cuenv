@@ -204,5 +204,4 @@ pub struct BackendOptions {
     /// Default container image for the Dagger backend
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
-
 }

@@ -460,9 +460,7 @@ mod tests {
     fn test_backend_options_with_no_image() {
         let config = BackendConfig {
             backend_type: "dagger".to_string(),
-            options: Some(BackendOptions {
-                image: None,
-            }),
+            options: Some(BackendOptions { image: None }),
         };
 
         let backend = create_dagger_backend(Some(&config), "/project".into());
