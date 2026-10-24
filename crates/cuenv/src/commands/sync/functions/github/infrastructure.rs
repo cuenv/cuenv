@@ -75,7 +75,10 @@ fn workflow_filename(project_name: &str, pipeline_name: &str) -> String {
 
 /// Generate the plan and apply workflows for a project, or nothing when the
 /// project does not set `infrastructure.workflows`.
-pub(super) fn generate_workflows(project: &ProjectInfo) -> Result<Vec<(String, String)>> {
+pub(super) fn generate_workflows(
+    project: &ProjectInfo,
+    package: &str,
+) -> Result<Vec<(String, String)>> {
     let Some(workflows) = workflows(&project.config)? else {
         return Ok(Vec::new());
     };
@@ -96,6 +99,7 @@ pub(super) fn generate_workflows(project: &ProjectInfo) -> Result<Vec<(String, S
         Some(project.relative_path.to_string_lossy().to_string())
     };
     let path = shell_quote(project_path.as_deref().unwrap_or("."));
+    let sources = configuration_sources(project, package)?;
 
     let plan_command = plan_command(&path, &project.config.name);
     let comment_steps: Vec<Step> = if workflows.plan.comment {
@@ -106,6 +110,7 @@ pub(super) fn generate_workflows(project: &ProjectInfo) -> Result<Vec<(String, S
     let plan = generate_workflow(&WorkflowRequest {
         project,
         project_path: project_path.as_deref(),
+        sources: &sources,
         pipeline_name: PLAN_PIPELINE,
         pipeline: plan_pipeline(),
         command: &CommandWorkflow {
@@ -130,6 +135,7 @@ pub(super) fn generate_workflows(project: &ProjectInfo) -> Result<Vec<(String, S
     let apply = generate_workflow(&WorkflowRequest {
         project,
         project_path: project_path.as_deref(),
+        sources: &sources,
         pipeline_name: APPLY_PIPELINE,
         pipeline: apply_pipeline(&workflows.apply),
         command: &CommandWorkflow {
@@ -148,6 +154,21 @@ pub(super) fn generate_workflows(project: &ProjectInfo) -> Result<Vec<(String, S
     })?;
 
     Ok(vec![plan, apply])
+}
+
+/// The module-relative files the project's configuration is built from,
+/// as the CUE loader resolves them: the project's own files, same-package
+/// files of ancestor directories, and every in-module package it imports.
+fn configuration_sources(project: &ProjectInfo, package: &str) -> Result<Vec<String>> {
+    cuengine::instance_sources(&project.module_root, &project.project_path, package)
+        .map(|sources| sources.files)
+        .map_err(|error| {
+            cuenv_core::Error::configuration(format!(
+                "Failed to list the CUE files of project '{}' for its infrastructure workflows: \
+                 {error}",
+                project.config.name
+            ))
+        })
 }
 
 /// Quote a value for a POSIX shell command line.
@@ -269,6 +290,9 @@ if (existing) {{
 struct WorkflowRequest<'a> {
     project: &'a ProjectInfo,
     project_path: Option<&'a str>,
+    /// Configuration files whose changes trigger the workflow, in addition
+    /// to the paths the compiler derives.
+    sources: &'a [String],
     pipeline_name: &'a str,
     pipeline: Pipeline,
     command: &'a CommandWorkflow<'a>,
@@ -280,6 +304,7 @@ fn generate_workflow(request: &WorkflowRequest<'_>) -> Result<(String, String)> 
     let WorkflowRequest {
         project,
         project_path,
+        sources,
         pipeline_name,
         ref pipeline,
         command,
@@ -308,6 +333,16 @@ fn generate_workflow(request: &WorkflowRequest<'_>) -> Result<(String, String)> 
     ir.pipeline.name = pipeline_name.to_string();
     ir.pipeline.project_name = Some(project.config.name.clone());
     ir.pipeline.project_path = project_path.map(str::to_string);
+    // A pipeline without tasks derives only the project directory and
+    // `cue.mod/**`; add every file the configuration is loaded from, so a
+    // change to an imported package elsewhere in the module triggers too.
+    if let Some(trigger) = ir.pipeline.trigger.as_mut()
+        && !trigger.paths.is_empty()
+    {
+        trigger.paths.extend(sources.iter().cloned());
+        trigger.paths.sort();
+        trigger.paths.dedup();
+    }
 
     GitHubActionsEmitter::from_config(&github_config)
         .with_nix()
@@ -322,24 +357,51 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn project(workflows: &serde_json::Value) -> ProjectInfo {
+    /// A project in a CUE module on disk: `infrastructure/dns` imports the
+    /// module's `shared` package.
+    struct Fixture {
+        _module: tempfile::TempDir,
+        info: ProjectInfo,
+    }
+
+    fn project(workflows: &serde_json::Value) -> Fixture {
+        let module = tempfile::tempdir().expect("temporary module");
+        for (file, content) in [
+            (
+                "cue.mod/module.cue",
+                "module: \"example.com/infra@v0\"\nlanguage: version: \"v0.14.1\"\n",
+            ),
+            (
+                "infrastructure/dns/env.cue",
+                "package cuenv\n\nimport \"example.com/infra/shared\"\n\nname: shared.name\n",
+            ),
+            ("shared/shared.cue", "package shared\n\nname: \"dns\"\n"),
+        ] {
+            let path = module.path().join(file);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+            std::fs::write(path, content).expect("file");
+        }
         let mut config = Project::new("dns");
         config.infrastructure = Some(serde_json::json!({
             "state": {"turso": {"url": "http://127.0.0.1:8080"}},
             "workflows": workflows,
         }));
-        ProjectInfo {
-            project_path: PathBuf::from("/repo/infrastructure/dns"),
+        let info = ProjectInfo {
+            project_path: module.path().join("infrastructure/dns"),
             relative_path: PathBuf::from("infrastructure/dns"),
-            module_root: PathBuf::from("/repo"),
+            module_root: module.path().to_path_buf(),
             config,
+        };
+        Fixture {
+            _module: module,
+            info,
         }
     }
 
     fn workflows(
         workflows: &serde_json::Value,
     ) -> std::result::Result<Vec<serde_yaml::Value>, Box<dyn std::error::Error>> {
-        let generated = generate_workflows(&project(workflows))?;
+        let generated = generate_workflows(&project(workflows).info, "cuenv")?;
         let names: Vec<&str> = generated.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
             names,
@@ -370,18 +432,18 @@ mod tests {
     #[test]
     fn projects_without_workflows_generate_nothing()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let mut info = project(&serde_json::Value::Null);
-        info.config.infrastructure = Some(serde_json::json!({"state": {}}));
-        assert!(generate_workflows(&info)?.is_empty());
-        info.config.infrastructure = None;
-        assert!(generate_workflows(&info)?.is_empty());
+        let mut fixture = project(&serde_json::Value::Null);
+        fixture.info.config.infrastructure = Some(serde_json::json!({"state": {}}));
+        assert!(generate_workflows(&fixture.info, "cuenv")?.is_empty());
+        fixture.info.config.infrastructure = None;
+        assert!(generate_workflows(&fixture.info, "cuenv")?.is_empty());
         Ok(())
     }
 
     #[test]
     fn invalid_workflows_are_a_configuration_error() {
-        let info = project(&serde_json::json!({"apply": {"on": "nightly"}}));
-        let error = generate_workflows(&info).expect_err("invalid apply.on");
+        let fixture = project(&serde_json::json!({"apply": {"on": "nightly"}}));
+        let error = generate_workflows(&fixture.info, "cuenv").expect_err("invalid apply.on");
         assert!(
             error.to_string().contains("infrastructure.workflows"),
             "{error}"
@@ -394,9 +456,24 @@ mod tests {
         let generated = workflows(&serde_json::json!({}))?;
         let (plan, apply) = (&generated[0], &generated[1]);
 
+        let plan_paths: Vec<&str> = plan["on"]["pull_request"]["paths"]
+            .as_sequence()
+            .ok_or("plan paths")?
+            .iter()
+            .filter_map(serde_yaml::Value::as_str)
+            .collect();
+        for path in [
+            ".github/workflows/dns-infrastructure-plan.yml",
+            "cue.mod/**",
+            "infrastructure/dns/**",
+            "infrastructure/dns/env.cue",
+            "shared/shared.cue",
+        ] {
+            assert!(plan_paths.contains(&path), "{path} in {plan_paths:?}");
+        }
         assert_eq!(
-            plan["on"]["pull_request"]["paths"][2],
-            "infrastructure/dns/**"
+            apply["on"]["push"]["paths"].as_sequence().map(Vec::len),
+            Some(plan_paths.len())
         );
         assert!(plan["on"].get("push").is_none());
         assert_eq!(plan["concurrency"]["cancel-in-progress"], true);
@@ -534,12 +611,12 @@ mod tests {
 
     #[test]
     fn a_pipeline_with_a_generated_name_is_refused() {
-        let mut info = project(&serde_json::json!({}));
+        let mut fixture = project(&serde_json::json!({}));
         let mut ci = CI::default();
         ci.pipelines
             .insert(APPLY_PIPELINE.to_string(), Pipeline::default());
-        info.config.ci = Some(ci);
-        let error = generate_workflows(&info).expect_err("name collision");
+        fixture.info.config.ci = Some(ci);
+        let error = generate_workflows(&fixture.info, "cuenv").expect_err("name collision");
         assert!(
             error.to_string().contains("infrastructure-apply"),
             "{error}"
@@ -549,19 +626,20 @@ mod tests {
     #[test]
     fn disabling_workflows_marks_their_files_stale()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let mut info = project(&serde_json::json!({}));
+        let mut fixture = project(&serde_json::json!({}));
+        let info = &mut fixture.info;
         info.config.name = "rawkode.academy".to_string();
-        assert!(stale_workflows(&info)?.is_empty());
+        assert!(stale_workflows(info)?.is_empty());
         info.config.infrastructure = Some(serde_json::json!({"state": {}}));
         assert_eq!(
-            stale_workflows(&info)?,
+            stale_workflows(info)?,
             [
                 "rawkodeacademy-infrastructure-plan.yml",
                 "rawkodeacademy-infrastructure-apply.yml"
             ]
         );
         info.config.infrastructure = None;
-        assert!(stale_workflows(&info)?.is_empty());
+        assert!(stale_workflows(info)?.is_empty());
         Ok(())
     }
 }

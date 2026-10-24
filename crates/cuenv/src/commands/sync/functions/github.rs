@@ -15,6 +15,8 @@ pub(super) struct GithubSyncRequest<'a> {
     pub(super) repo_root: &'a Path,
     pub(super) options: CiSyncOptions<'a>,
     pub(super) projects: &'a [ProjectInfo],
+    /// CUE package the projects were evaluated from.
+    pub(super) package: &'a str,
 }
 
 #[derive(Clone, Copy)]
@@ -32,6 +34,7 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
         repo_root,
         options,
         projects,
+        package,
     } = request;
     if projects.is_empty() {
         return Err(cuenv_core::Error::configuration(
@@ -58,7 +61,7 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
     }
     let mut stale_workflows: Vec<String> = Vec::new();
     for project in projects {
-        all_workflows.extend(infrastructure::generate_workflows(project)?);
+        all_workflows.extend(infrastructure::generate_workflows(project, package)?);
         stale_workflows.extend(infrastructure::stale_workflows(project)?);
     }
 

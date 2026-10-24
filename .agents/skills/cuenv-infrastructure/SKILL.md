@@ -63,7 +63,7 @@ No abbreviations anywhere in this feature: schema definitions, fields, command n
 - The provider always comes from `ci.providers`; never make `infrastructure.workflows` add a provider, because that would also emit every `ci.pipelines` entry for it.
 - Sync decodes only `infrastructure.workflows` from the raw value, never the whole configuration, so incomplete environments still do not block sync.
 - Applies share one concurrency group (`${{ github.workflow }}`) and never cancel each other: a cancelled apply can leave the lock held. Keep it that way. Plans may be cancelled.
-- Only the top-level configuration is planned and applied; do not claim named environments run in CI. Trigger paths do not follow CUE imports outside the project directory.
+- Only the top-level configuration is planned and applied; do not claim named environments run in CI. Trigger paths come from the CUE loader (`cuengine::instance_sources`, Go `cue_instance_sources` in `crates/cuengine/sources.go`): the project's files, ancestor same-package files and transitive in-module imports, plus the project directory and `cue.mod/**`. Never fall back to directory guesses when the loader fails; sync fails instead.
 
 ## Status guardrails
 

@@ -563,10 +563,7 @@ cuenv writes two workflows:
 
 Both workflows run the project's `ci` contributors first, so cuenv is installed and secret providers are set up the same way as for its pipelines; a secret provider counts as used when the project's variables or its `infrastructure` block (the state token, for example) refer to it. Turning `workflows` off removes the two files on the next `cuenv sync ci`.
 
-Limits:
-
-- Only the top-level configuration is planned and applied; named environments are not.
-- The workflows run when files under the project directory, its `env.cue` or `cue.mod/**` change. A change to a CUE package outside the project directory that the project imports does not trigger them; run the apply workflow manually after such a change.
+The workflows run when a file the project's configuration is loaded from changes: cuenv asks the CUE loader for the project's files, the same-package files of parent directories that CUE unifies into it, and the files of every package it imports from the module, and adds them to the project directory and `cue.mod/**`. Run `cuenv sync ci` after adding an import so the trigger paths follow it (`cuenv sync ci --check` in CI reports the drift). Only the top-level configuration is planned and applied; named environments are not.
 
 ### Apply order
 

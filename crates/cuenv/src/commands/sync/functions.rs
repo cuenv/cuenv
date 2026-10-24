@@ -234,6 +234,7 @@ pub async fn execute_sync_ci(
                     repo_root: &repo_root,
                     options: request.options,
                     projects: &target_projects,
+                    package: request.package,
                 };
                 execute_sync_github(github_request).await
             }

@@ -199,6 +199,11 @@ unsafe extern "C" {
         module_root: *const c_char,
         dependency_path: *const c_char,
     ) -> *mut c_char;
+    fn cue_instance_sources(
+        module_root: *const c_char,
+        directory: *const c_char,
+        package_name: *const c_char,
+    ) -> *mut c_char;
     fn cue_free_string(s: *mut c_char);
     fn cue_bridge_version() -> *mut c_char;
 }
@@ -211,6 +216,15 @@ unsafe fn cue_eval_module(_: *const c_char, _: *const c_char, _: *const c_char) 
 
 #[cfg(docsrs)]
 unsafe fn cue_module_dependency_version(_: *const c_char, _: *const c_char) -> *mut c_char {
+    panic!("FFI not available in documentation builds")
+}
+
+#[cfg(docsrs)]
+unsafe fn cue_instance_sources(
+    _: *const c_char,
+    _: *const c_char,
+    _: *const c_char,
+) -> *mut c_char {
     panic!("FFI not available in documentation builds")
 }
 
@@ -473,6 +487,16 @@ pub struct ModuleResult {
 pub struct ModuleDependencyVersion {
     /// The dependency version, if present.
     pub version: Option<String>,
+}
+
+/// The files a CUE instance is built from.
+#[derive(Debug, Deserialize)]
+pub struct InstanceSources {
+    /// Paths relative to the module root, sorted, with `/` separators: the
+    /// instance's own files (including same-package files of ancestor
+    /// directories) and the files of every package it imports, transitively,
+    /// that lives inside the module.
+    pub files: Vec<String>,
 }
 
 struct ModuleEvalWorker {
@@ -960,6 +984,43 @@ pub fn module_dependency_version(
         )]
         unsafe {
             cue_module_dependency_version(c_module_root.as_ptr(), c_dependency_path.as_ptr())
+        }
+    };
+    let result = bridge_owned_c_string(result_ptr);
+    let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
+    process_bridge_json(&json_str, module_root, FUNCTION_NAME)
+}
+
+/// List the files the CUE instance of `package_name` in `directory` is built
+/// from. The instance is loaded but neither built nor evaluated.
+///
+/// # Errors
+///
+/// Returns an error if an argument is not a valid C string or the instance
+/// cannot be loaded.
+pub fn instance_sources(
+    module_root: &Path,
+    directory: &Path,
+    package_name: &str,
+) -> Result<InstanceSources> {
+    const FUNCTION_NAME: &str = "cue_instance_sources";
+    let c_module_root = path_to_cstring(module_root, FUNCTION_NAME, "module root")?;
+    let c_directory = path_to_cstring(directory, FUNCTION_NAME, "directory")?;
+    let c_package_name = str_to_cstring(package_name, FUNCTION_NAME, "package name")?;
+
+    // Safety: cue_instance_sources takes valid C strings and returns a
+    // heap-allocated C string owned by the caller.
+    let result_ptr = {
+        #[expect(
+            unsafe_code,
+            reason = "Required to call the Go instance-sources bridge"
+        )]
+        unsafe {
+            cue_instance_sources(
+                c_module_root.as_ptr(),
+                c_directory.as_ptr(),
+                c_package_name.as_ptr(),
+            )
         }
     };
     let result = bridge_owned_c_string(result_ptr);
