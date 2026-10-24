@@ -378,15 +378,35 @@ fn initialize_cue_module(directory: &Path) -> TestResult {
     Ok(())
 }
 
+/// `schema/infrastructure.cue` and the files its definitions refer to
+/// (`#InfrastructureStateToken` uses `#Secret` and `#InterpolatedEnv`, which
+/// use `#Policy`).
+const INFRASTRUCTURE_SCHEMA: [(&str, &str); 4] = [
+    (
+        "infrastructure.cue",
+        include_str!("../../../../schema/infrastructure.cue"),
+    ),
+    ("env.cue", include_str!("../../../../schema/env.cue")),
+    (
+        "secrets.cue",
+        include_str!("../../../../schema/secrets.cue"),
+    ),
+    ("policy.cue", include_str!("../../../../schema/policy.cue")),
+];
+
+fn write_infrastructure_schema(directory: &Path) -> TestResult {
+    for (name, contents) in INFRASTRUCTURE_SCHEMA {
+        std::fs::write(directory.join(name), contents)?;
+    }
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires the CUE command"]
 fn output_reference_schema_is_closed_and_requires_an_address_and_attribute() -> TestResult {
     let directory = tempfile::tempdir()?;
     initialize_cue_module(directory.path())?;
-    std::fs::write(
-        directory.path().join("infrastructure.cue"),
-        include_str!("../../../../schema/infrastructure.cue"),
-    )?;
+    write_infrastructure_schema(directory.path())?;
     for (value, expected) in [
         (
             r#"{fromResource: "cloudflare_zone.primary", attribute: "id"}"#,
@@ -455,10 +475,7 @@ fn generated_references_are_limited_to_top_level_primitive_resource_arguments() 
     )?;
     let shared_schema = directory.path().join("schema");
     std::fs::create_dir_all(&shared_schema)?;
-    std::fs::write(
-        shared_schema.join("infrastructure.cue"),
-        include_str!("../../../../schema/infrastructure.cue"),
-    )?;
+    write_infrastructure_schema(&shared_schema)?;
     for (path, contents) in &types.files {
         let path = directory.path().join(&types.directory).join(path);
         std::fs::create_dir_all(path.parent().ok_or("generated path has no parent")?)?;

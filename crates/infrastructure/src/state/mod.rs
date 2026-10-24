@@ -12,7 +12,12 @@
 //! Every tenant also has at most one owner record naming the CUE instance
 //! that owns its state ([`TenantOwner`]), and at most one lock.
 
+mod d1;
+#[cfg(test)]
+mod fake_server;
+mod http;
 mod memory;
+mod sql;
 mod turso;
 
 use std::fmt;
@@ -23,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{InfrastructureError, Result};
 use crate::tenant::{ProjectInstance, TenantKey};
 
+pub use d1::{D1Configuration, D1StateStore};
 pub use memory::MemoryStateStore;
 pub use turso::{TursoConfiguration, TursoStateStore};
 

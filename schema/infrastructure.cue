@@ -8,7 +8,8 @@ import "strings"
 //
 // cuenv launches unmodified Terraform provider binaries and drives them over
 // the Terraform plugin protocol (versions 5 and 6) using gRPC. Every managed
-// resource is stored as its own record in a remote Turso (libSQL) database,
+// resource is stored as its own record in a remote SQLite database (Turso or
+// Cloudflare D1),
 // keyed by the CUE module path (tenant), project name (discriminator) and
 // selected named environment. Legacy no-flag configuration has a distinct
 // state namespace.
@@ -23,7 +24,8 @@ import "strings"
 //
 // Semantic checks: this file reports a provider that sets both or neither of
 // `version` and `path`, a `dependsOn` entry or `provider` that names nothing
-// declared, and an invalid Turso URL, with `error()`. Each check applies to
+// declared, a state block that names no backend or two, and an invalid Turso
+// URL, with `error()`. Each check applies to
 // the top-level configuration and to every `environments.NAME` configuration,
 // so a mistake in an environment that is not selected is still found. A check
 // reads only the part of the configuration it needs and runs only when that
@@ -51,6 +53,19 @@ import "strings"
 	// top-level configuration and every named environment; each has its own
 	// identity inside it (module path, project name and environment).
 	state!: {#InfrastructureState}
+
+	// Exactly one state backend. Presence is decided from the field names,
+	// so a backend with an error of its own (an invalid Turso URL, a
+	// malformed D1 identifier) reports only that error.
+	if state != _|_ {
+		let backends = [for field, _ in state {field}]
+		if len(backends) == 0 {
+			_unresolved: state: error("set one state backend: `turso` or `d1`")
+		}
+		if len(backends) > 1 {
+			_unresolved: state: error("set exactly one state backend, `turso` or `d1`, not both")
+		}
+	}
 
 	// Named environments, selected with `--env NAME`. A selected environment
 	// supplies its complete provider and resource set: nothing is inherited
@@ -146,8 +161,16 @@ import "strings"
 
 #InfrastructureName: string & =~"^[a-zA-Z][a-zA-Z0-9_-]*$"
 
+// Exactly one state backend. Both keep the same tables, so a database
+// written through one is never read through the other by accident: each
+// backend names its own database.
 #InfrastructureState: close({
-	turso!: {#TursoState}
+	// A Turso (libSQL) database, or a local `sqld`.
+	turso?: {#TursoState}
+
+	// A Cloudflare D1 database, reached through the Cloudflare API.
+	d1?: {#D1State}
+
 })
 
 #TursoState: close({
@@ -170,10 +193,40 @@ import "strings"
 		_invalidUrl: error("`url` must be libsql://, https:// or wss:// with a host name or address, or http:// or ws:// with a loopback host (localhost, 127.x.y.z, [::1]); an optional port from 1 to 65535 and path; no credentials, query, fragment or whitespace")
 	}
 
-	// Environment variable holding the database authentication token. The
-	// default matches the name the Turso command line tool documents.
-	authenticationTokenEnvironmentVariable: *"TURSO_AUTH_TOKEN" | (string & =~"^[A-Za-z_][A-Za-z0-9_]*$")
+	// Database authentication token. Optional: a local `sqld` may need
+	// none, and cuenv then connects without one.
+	token?: #InfrastructureStateToken
 })
+
+#D1State: close({
+	// Cloudflare account ID: the 32 lowercase hexadecimal digits shown in
+	// the dashboard and by `wrangler whoami`.
+	accountId!: string & =~"^[0-9a-f]{32}$"
+
+	// D1 database ID: the lowercase UUID `wrangler d1 list` prints (not the
+	// database name).
+	databaseId!: string & =~"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+	// Cloudflare API token with D1 Edit access. Required: the Cloudflare
+	// API refuses every request without one.
+	token!: #InfrastructureStateToken
+})
+
+// A state backend's authentication token, written like a project environment
+// variable: a literal string, a #Secret resolved when the command runs, an
+// interpolation of strings and secrets, or #EnvPassthrough with a `name` to
+// read that variable from cuenv's own environment (a CI secret, for
+// instance). Nothing is read from the environment unless it is named here.
+// Integers, booleans and policies do not apply to a token. One state database
+// serves the top level and every environment, so there is one token.
+//
+// cuenv redacts the resolved token from all output and never passes it to a
+// provider; a passthrough variable is withheld from providers under its name.
+#InfrastructureStateToken: string | #Secret | #InterpolatedEnv | close({
+	cuenvPassthrough: true
+	name!:            string & =~"^[A-Za-z_][A-Za-z0-9_]*$"
+})
+
 
 // Building blocks of the Turso URL contract. The Rust state store parses the
 // URL independently. The schema accepts a subset of what the store accepts and

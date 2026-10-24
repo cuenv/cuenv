@@ -11,7 +11,8 @@
 //! cuenv exec -- cargo test -p cuenv --test infrastructure_lifecycle -- --ignored
 //! ```
 //! Start a local server with `sqld --http-listen-addr 127.0.0.1:8080`.
-//! `TURSO_AUTH_TOKEN` is optional for an authenticated test database. Each run
+//! `TURSO_AUTH_TOKEN` is optional for an authenticated test database; every
+//! generated configuration passes it through as the state token. Each run
 //! uses a unique project name and temporary configuration and user directories.
 
 use std::error::Error;
@@ -89,8 +90,11 @@ impl Lifecycle {
                 &serde_json::to_string(project)?,
             )
             .replace(
-                "\"http://127.0.0.1:8080\"",
-                &serde_json::to_string(&backend.url)?,
+                "state: turso: url: \"http://127.0.0.1:8080\"",
+                &format!(
+                    "state: turso: {{url: {}, token: {{cuenvPassthrough: true, name: \"TURSO_AUTH_TOKEN\"}}}}",
+                    serde_json::to_string(&backend.url)?
+                ),
             )
             .replace(
                 "version: \"3.9.1\"",
@@ -161,7 +165,7 @@ env: environment: dev: {SECRET_VARIABLE}: {{
 }}
 
 infrastructure: {{
-	state: turso: url: {url}
+	state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
 	environments: dev: {{
 		providers: random: {{source: "hashicorp/random", path: {wrapper}}}
 		resources: pet: {{
@@ -212,7 +216,7 @@ cache: remote: {{
 }}
 
 infrastructure: {{
-	state: turso: url: {url}
+	state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
 	providers: random: {{source: "hashicorp/random", path: {wrapper}}}
 	resources: pet: {{
 		type: "random_pet"
@@ -546,7 +550,7 @@ schema.#Project
 name: {project}
 
 infrastructure: {{
-	state: turso: url: {url}
+	state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
 	{top_level}
 	environments: dev: {{
 		{provider_block}
@@ -684,7 +688,7 @@ name: {project}
 env: SOME_TOKEN: schema.#ExecSecret & {{command: {secret}}}
 
 infrastructure: {{
-	state: turso: url: {url}
+	state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
 	providers: random: {{source: "hashicorp/random", path: {provider}}}
 	resources: pet: {{type: "random_pet", configuration: {{length: 2, separator: "-"}}}}
 }}
@@ -779,7 +783,7 @@ schema.#Project
 name: {project}
 
 infrastructure: {{
-	state: turso: url: {url}
+	state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
 	providers: random: {{
 		source:        "hashicorp/random"
 		path:          {provider}
@@ -851,7 +855,7 @@ import "github.com/cuenv/cuenv/schema"
 schema.#Project
 name: {project}
 infrastructure: {{
- state: turso: url: {url}
+ state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
  providers: random: {{source: "hashicorp/random", path: {provider}}}
  resources: {{
   primary: {{type: "random_pet", outputs: id: string, configuration: {{length: 1}}}}
