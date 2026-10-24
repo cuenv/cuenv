@@ -534,13 +534,17 @@ impl CommandHandler for SyncHandler {
             return Ok(result.output);
         }
 
+        // Infrastructure first: it writes the generated provider types in
+        // `cue.mod/gen` from `cuenv.lock` without evaluating anything, and
+        // every later provider evaluates the module (and caches the result),
+        // which fails for projects that import types not written yet.
         let provider_output = registry
             .sync_selected(
                 &[
+                    "infrastructure",
                     "rules",
                     "vcs",
                     "lock",
-                    "infrastructure",
                     "codegen",
                     "ci",
                     "git-hooks",
