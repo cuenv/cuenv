@@ -546,6 +546,25 @@ Every plan is checked the way Terraform checks it: a provider that plans a value
 
 Resources removed from `infrastructure.resources` are deleted. Stored state is only ever handed back to the provider source that created it.
 
+### Plan and apply from GitHub Actions
+
+Set `infrastructure.workflows`, list `github` in `ci.providers`, and run `cuenv sync ci`:
+
+```cue
+ci: providers: ["github"]
+
+infrastructure: workflows: {}
+```
+
+cuenv writes two workflows:
+
+- `<project>-infrastructure-plan.yml` runs `cuenv i plan` on pull requests that touch the project, adds the plan to the job summary and posts it as a pull request comment. Each project keeps one comment, which later pushes edit; set `plan: comment: false` to keep only the summary. Pull requests from forks get no comment, since their token cannot write one, and a plan cancelled by a newer push posts nothing.
+- `<project>-infrastructure-apply.yml` runs `cuenv i apply --yes` on pushes to `main`. Set `apply: on` to `"tag"` (pushed tags matching `apply.tags`), `"release"` (published releases) or `"manual"` (manual runs only); manual runs are allowed alongside the others unless `apply: manual: false`. With `on: "push"`, a manual run from any branch other than `apply.branch` skips the job. `apply: environment` names a GitHub environment for the job, for example one that requires approval or restricts the refs that may deploy. Every apply run, whatever its ref, waits for the one in progress instead of cancelling it, because a cancelled apply can leave the lock held.
+
+Both workflows run the project's `ci` contributors first, so cuenv is installed and secret providers are set up the same way as for its pipelines; a secret provider counts as used when the project's variables or its `infrastructure` block (the state token, for example) refer to it. Turning `workflows` off removes the two files on the next `cuenv sync ci`.
+
+The workflows run when a file the project's configuration is loaded from changes: cuenv asks the CUE loader for the project's files, the same-package files of parent directories that CUE unifies into it, and the files of every package it imports from the module, and adds them to the project directory and `cue.mod/**`. Run `cuenv sync ci` after adding an import so the trigger paths follow it (`cuenv sync ci --check` in CI reports the drift). Only the top-level configuration is planned and applied; named environments are not.
+
 ### Apply order
 
 Apply orders the plan as one dependency graph, following Terraform's rules, and the plan lists its changes in the order they run, so the preview is the order of events. A replacement is two operations in the graph: the delete of the old object and the create of the new one.

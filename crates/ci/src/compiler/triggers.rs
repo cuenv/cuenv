@@ -21,6 +21,11 @@ impl Compiler {
             .map(cuenv_core::ci::StringOrVec::to_vec)
             .unwrap_or_default();
 
+        let tags = when
+            .and_then(|w| w.tag.as_ref())
+            .map(cuenv_core::ci::StringOrVec::to_vec)
+            .unwrap_or_default();
+
         let pull_request = when.and_then(|w| w.pull_request);
 
         let scheduled = when
@@ -67,6 +72,7 @@ impl Compiler {
 
         TriggerCondition {
             branches,
+            tags,
             pull_request,
             scheduled,
             release,
