@@ -339,7 +339,22 @@ fn generate_workflow(request: &WorkflowRequest<'_>) -> Result<(String, String)> 
     if let Some(trigger) = ir.pipeline.trigger.as_mut()
         && !trigger.paths.is_empty()
     {
-        trigger.paths.extend(sources.iter().cloned());
+        let directories: Vec<String> = trigger
+            .paths
+            .iter()
+            .filter_map(|path| path.strip_suffix("**"))
+            .map(str::to_string)
+            .collect();
+        trigger.paths.extend(
+            sources
+                .iter()
+                .filter(|source| {
+                    !directories
+                        .iter()
+                        .any(|directory| source.starts_with(directory))
+                })
+                .cloned(),
+        );
         trigger.paths.sort();
         trigger.paths.dedup();
     }
@@ -358,7 +373,7 @@ mod tests {
     use std::path::PathBuf;
 
     /// A project in a CUE module on disk: `infrastructure/dns` imports the
-    /// module's `shared` package.
+    /// module's `shared` package and its own `zones` subpackage.
     struct Fixture {
         _module: tempfile::TempDir,
         info: ProjectInfo,
@@ -373,7 +388,11 @@ mod tests {
             ),
             (
                 "infrastructure/dns/env.cue",
-                "package cuenv\n\nimport \"example.com/infra/shared\"\n\nname: shared.name\n",
+                "package cuenv\n\nimport (\n\t\"example.com/infra/shared\"\n\t\"example.com/infra/infrastructure/dns/zones\"\n)\n\nname: shared.name\nzone: zones.name\n",
+            ),
+            (
+                "infrastructure/dns/zones/zones.cue",
+                "package zones\n\nname: \"example.com\"\n",
             ),
             ("shared/shared.cue", "package shared\n\nname: \"dns\"\n"),
         ] {
@@ -474,6 +493,11 @@ mod tests {
         assert_eq!(
             apply["on"]["push"]["paths"].as_sequence().map(Vec::len),
             Some(plan_paths.len())
+        );
+        // Files under a derived directory glob are not listed again.
+        assert!(
+            !plan_paths.contains(&"infrastructure/dns/zones/zones.cue"),
+            "{plan_paths:?}"
         );
         assert!(plan["on"].get("push").is_none());
         assert_eq!(plan["concurrency"]["cancel-in-progress"], true);

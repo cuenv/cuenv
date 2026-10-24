@@ -188,6 +188,9 @@ fn apply_managed_section(existing: &str, section: &IgnoreSection) -> Result<Stri
     if section.patterns.is_empty() {
         return Ok(without_section);
     }
+    if let Some(replaced) = replace_managed_section(existing, section)? {
+        return Ok(replaced);
+    }
 
     let mut next = without_section.trim_end().to_string();
     if !next.is_empty() {
@@ -196,6 +199,37 @@ fn apply_managed_section(existing: &str, section: &IgnoreSection) -> Result<Stri
     next.push_str(section.generate().trim_end());
     next.push('\n');
     Ok(next)
+}
+
+/// Rewrite `section` where it already is, leaving everything around it
+/// untouched. Returns `None` when the content has no such section.
+fn replace_managed_section(existing: &str, section: &IgnoreSection) -> Result<Option<String>> {
+    // Validates the markers of every section.
+    let sections = extract_managed_sections(existing)?;
+    if !sections.iter().any(|block| block.name == section.name) {
+        return Ok(None);
+    }
+
+    let begin_marker = format!("{SECTION_BEGIN_PREFIX}{}", section.name);
+    let end_marker = format!("{SECTION_END_PREFIX}{}", section.name);
+    let mut output: Vec<String> = Vec::new();
+    let mut inside = false;
+    for line in existing.lines() {
+        if inside {
+            inside = line != end_marker;
+            continue;
+        }
+        if line == begin_marker {
+            output.extend(section.generate().trim_end().lines().map(str::to_string));
+            inside = true;
+            continue;
+        }
+        output.push(line.to_string());
+    }
+
+    let mut next = output.join("\n");
+    next.push('\n');
+    Ok(Some(next))
 }
 
 #[derive(Debug)]
@@ -249,8 +283,9 @@ fn extract_managed_sections(content: &str) -> Result<Vec<ManagedSectionBlock>> {
 }
 
 fn remove_managed_section(content: &str, section_name: &str) -> Result<String> {
-    let mut output = Vec::new();
+    let mut output: Vec<String> = Vec::new();
     let mut current: Option<(String, Vec<String>)> = None;
+    let mut skip_leading_blank = false;
 
     for line in content.lines() {
         if let Some(name) = line.strip_prefix(SECTION_BEGIN_PREFIX) {
@@ -273,7 +308,15 @@ fn remove_managed_section(content: &str, section_name: &str) -> Result<String> {
                 )));
             }
             lines.push(line.to_string());
-            if current_name != section_name {
+            if current_name == section_name {
+                // Remove the blank lines that separated the section from what
+                // came before it; the ones after it now separate that from
+                // what follows, or are trimmed at the end of the file.
+                while output.last().is_some_and(|line: &String| line.is_empty()) {
+                    output.pop();
+                }
+                skip_leading_blank = output.is_empty();
+            } else {
                 output.extend(lines);
             }
             continue;
@@ -281,9 +324,13 @@ fn remove_managed_section(content: &str, section_name: &str) -> Result<String> {
 
         if let Some((_, lines)) = current.as_mut() {
             lines.push(line.to_string());
-        } else {
+        } else if !(skip_leading_blank && line.is_empty()) {
+            skip_leading_blank = false;
             output.push(line.to_string());
         }
+    }
+    while output.last().is_some_and(String::is_empty) {
+        output.pop();
     }
 
     if current.is_some() {
