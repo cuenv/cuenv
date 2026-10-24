@@ -14,7 +14,7 @@ pub(super) struct TaskResolution {
     pub(super) node: TaskNode,
     pub(super) tasks: Tasks,
     pub(super) graph_root_name: String,
-    pub(super) output_ref_deps: Vec<(String, String)>,
+    pub(super) output_ref_deps: Vec<cuenv_core::tasks::output_refs::OutputRefDep>,
 }
 
 pub(super) fn validate_task_selection(input: &TaskExecutionInput<'_>) -> Result<Vec<String>> {
@@ -188,7 +188,7 @@ fn resolve_label_tasks(
 fn current_instance_output_ref_deps(
     executor: &crate::commands::CommandExecutor,
     project_root: &Path,
-) -> Result<Vec<(String, String)>> {
+) -> Result<Vec<cuenv_core::tasks::output_refs::OutputRefDep>> {
     let module = executor.get_module(project_root)?;
     let rel_path = relative_path_from_root(&module.root, project_root);
 

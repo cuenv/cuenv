@@ -115,7 +115,7 @@ impl PendingEntry {
         let source = dependency_source(self.resolved, &self.name);
         Some(LockfileEntry {
             name: self.name,
-            version,
+            version: version.into(),
             source,
             checksum: self.integrity,
             dependencies: self.dependencies,

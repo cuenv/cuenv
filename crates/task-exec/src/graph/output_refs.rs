@@ -1,13 +1,14 @@
 use super::TaskGraph;
 use crate::Tasks;
 use cuenv_core::Result;
+use cuenv_core::tasks::output_refs::OutputRefDep;
 use cuenv_task_graph::{MutableTaskNodeData, TaskNodeData};
 
 impl TaskGraph {
     /// Add implicit dependency edges inferred from task output references.
     ///
-    /// Each pair `(from_task, to_task)` means `from_task` references an output
-    /// of `to_task` and therefore depends on it. This creates both:
+    /// Each [`OutputRefDep`] means its `task` references an output of its
+    /// `depends_on` task and therefore depends on it. This creates both:
     /// - A `dependsOn` entry on the task data (for consistency)
     /// - An actual petgraph edge (so topological sort / parallel groups work)
     ///
@@ -17,10 +18,14 @@ impl TaskGraph {
     /// edges and won't discover tasks that are only referenced via output refs.
     pub fn add_output_ref_deps(
         &mut self,
-        deps: &[(String, String)],
+        deps: &[OutputRefDep],
         all_tasks: &Tasks,
     ) -> Result<()> {
-        for (from, to) in deps {
+        for OutputRefDep {
+            task: from,
+            depends_on: to,
+        } in deps
+        {
             // Only process pairs where the source task is already in the graph.
             // This avoids pulling in unrelated tasks (e.g., pipeline[1] -> pipeline[0]
             // when the user only asked to run "work").

@@ -70,5 +70,24 @@ impl TaskOutputRef {
     }
 }
 
-/// A dependency pair: (task_that_references, task_being_referenced).
-pub type OutputRefDep = (String, String);
+/// An implicit dependency inferred from a task output reference: `task`
+/// references an output of `depends_on` and so must run after it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputRefDep {
+    /// The task whose definition references another task's output.
+    pub task: String,
+    /// The task whose output is referenced.
+    pub depends_on: String,
+}
+
+impl OutputRefDep {
+    /// Creates a dependency of `task` on `depends_on`.
+    #[must_use]
+    pub fn new(task: impl Into<String>, depends_on: impl Into<String>) -> Self {
+        Self {
+            task: task.into(),
+            depends_on: depends_on.into(),
+        }
+    }
+}

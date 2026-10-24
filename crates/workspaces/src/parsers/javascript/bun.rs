@@ -1,5 +1,5 @@
 use crate::core::traits::LockfileParser;
-use crate::core::types::{DependencyRef, DependencySource, LockfileEntry};
+use crate::core::types::{DependencyRef, DependencySource, LockfileEntry, Version};
 use crate::error::{Error, Result};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -192,7 +192,7 @@ fn entry_from_workspace(path_key: &str, workspace: &BunWorkspace) -> LockfileEnt
         version: workspace
             .version
             .clone()
-            .unwrap_or_else(|| "0.0.0".to_string()),
+            .map_or_else(|| "0.0.0".into(), Version::from),
         source: DependencySource::Workspace(workspace_path(path_key)),
         checksum: None,
         dependencies,
@@ -331,7 +331,7 @@ fn build_package_entry(
 
     Ok(LockfileEntry {
         name: package_name.to_string(),
-        version: locator_info.version,
+        version: locator_info.version.into(),
         source: locator_info.source,
         checksum,
         dependencies,
