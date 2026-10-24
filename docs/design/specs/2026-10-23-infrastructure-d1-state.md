@@ -15,7 +15,7 @@ nothing secret in errors.
 infrastructure: state: d1: {
 	accountId:  "0123456789abcdef0123456789abcdef"
 	databaseId: "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9"
-	authenticationTokenEnvironmentVariable: "CLOUDFLARE_D1_API_TOKEN" // default
+	token:      schema.#OnePasswordRef & {ref: "op://platform/d1/token"}
 }
 ```
 
@@ -64,9 +64,23 @@ implementation instead of two copies of the locking logic.
 - `accountId` must be 32 lowercase hexadecimal digits and `databaseId` a
   lowercase UUID, checked in CUE and in Rust before any secret is resolved. The
   identifiers go into the request path, so they are never anything else.
-- The token is required. Its default variable is `CLOUDFLARE_D1_API_TOKEN`,
-  not `CLOUDFLARE_API_TOKEN`: the state token's variable is withheld from every
-  provider, and the Cloudflare Terraform provider reads `CLOUDFLARE_API_TOKEN`.
+- The token is configured in CUE, for both backends: `token` takes a
+  `#InfrastructureStateToken` (a string, a `#Secret`, an interpolation, or
+  `#EnvPassthrough` with a required `name`). One database serves the top
+  level and every environment, so there is one token and no per-environment
+  override. The first draft read the token from an environment
+  variable named by `authenticationTokenEnvironmentVariable`, with a default
+  name and a fallback to the process environment; it was replaced so that
+  nothing is read implicitly. This removes Turso's
+  `authenticationTokenEnvironmentVariable`, released in 0.57.0. The token is
+  required for D1 (in CUE and Rust), and an unset passthrough variable is a
+  configuration error; Turso's is optional. A passthrough variable is withheld from
+  every provider, so passing through `CLOUDFLARE_API_TOKEN` would take the
+  Cloudflare provider's credential away from it.
+- `#Secret` now forbids `cuenvPassthrough`, as it already forbade `value` and
+  `policies`. Otherwise a struct-literal passthrough also matched the open
+  `#Secret`, and evaluation left the value an incomplete disjunction. This was
+  a latent bug in task `env` too.
 - Recovery files bind to a hash of the account and database IDs.
 - Errors never name the account or database: transport errors drop the URL
   (`reqwest::Error::without_url`), and Cloudflare's own messages, which can

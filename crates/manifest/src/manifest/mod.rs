@@ -28,7 +28,7 @@ pub use infrastructure::{
     D1State, Infrastructure, InfrastructureConfiguration, InfrastructureOutputReference,
     InfrastructureOutputType, InfrastructurePolicyAction, InfrastructureProvider,
     InfrastructureSelectionError, InfrastructureState, ManagedResourceDeclaration,
-    ProviderEnvironment, TursoState,
+    ProviderEnvironment, StateToken, TursoState,
 };
 pub use project::Project;
 pub use rules::*;

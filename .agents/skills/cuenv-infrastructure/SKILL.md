@@ -20,10 +20,10 @@ No abbreviations anywhere in this feature: schema definitions, fields, command n
 
 ## State backends
 
-- `infrastructure.state` names exactly one of `turso` and `d1` (the manifest type is an enum, `InfrastructureState`; use `authentication_token_environment_variable()` instead of matching when only the token variable matters). Change stored-data behaviour in `state/sql.rs` only, so the backends cannot drift; a transport change belongs in `turso.rs` or `d1.rs`.
+- `infrastructure.state` names exactly one of `turso` and `d1` (the manifest type is an enum, `InfrastructureState`; use `token()` and `token_field()` instead of matching when only the token matters). Change stored-data behaviour in `state/sql.rs` only, so the backends cannot drift; a transport change belongs in `turso.rs` or `d1.rs`.
 - D1 binds parameters as text, and only in a request of one statement. Keep every statement that binds a parameter a single request, bind integers only where they are compared with or stored into a column (a text parameter compared with a literal is always greater), spell blob and nullable text parameters with `Dialect`, and inline locally computed integers as literals in multi-statement requests (migrations, the migration announcement).
 - D1 reports SQL errors as HTTP 400 with code 7500; `d1.rs` reads the body before the status. Never quote a message of a request that carried state (`Disclosure::CodeOnly`), and never put the request URL in a message: transport errors drop it, and `D1::send` replaces the account and database IDs in Cloudflare's own messages.
-- The D1 token defaults to `CLOUDFLARE_D1_API_TOKEN`, not `CLOUDFLARE_API_TOKEN`: the state token variable is always withheld from providers, and the Cloudflare provider reads `CLOUDFLARE_API_TOKEN`.
+- The state token is configured, never read implicitly: `infrastructure.state.<backend>.token` (`#InfrastructureStateToken`: a string, `#Secret`, interpolation, or `#EnvPassthrough` with a required `name`) — one token per state database, which serves every environment (no per-environment overrides). Do not reintroduce a default environment variable or a fallback to the process environment. A passthrough variable is always withheld from providers; state-only commands resolve no project variables.
 
 ## Typed configuration (generated provider types)
 

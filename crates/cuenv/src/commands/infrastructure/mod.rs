@@ -45,6 +45,7 @@ use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;
 use cuenv_manifest::manifest::{
     Infrastructure, InfrastructurePolicyAction, InfrastructureState, ProviderEnvironment,
+    StateToken,
 };
 
 use self::evaluation::{EnvironmentSelection, NameCheck, Needs, Target, TargetRequest, TopLevel};
@@ -766,49 +767,31 @@ async fn resolve(
     } else {
         Vec::new()
     };
-    let token_variable = target
-        .infrastructure
-        .state
-        .authentication_token_environment_variable()
-        .to_string();
-    if project_environment_variables
-        .get(&token_variable)
-        .is_some_and(|value| !value.is_accessible_by_infrastructure(policy_name))
-    {
-        return Err(CliError::config(format!(
-            "environment variable {token_variable} is restricted from infrastructure action {policy_name}"
-        )));
-    }
-    let mut environment_to_resolve =
-        environment_variables_for_action(action, &project_environment_variables, &token_variable);
+    let state = &target.infrastructure.state;
+    let token_variable = state
+        .token()
+        .and_then(StateToken::passthrough_variable)
+        .map(str::to_string);
     // Only the state backend's token is resolved before the state store is
     // asked who owns the project: a secret is a command or a call to a secret
     // provider, and nothing should run for a run the owner check refuses.
-    let backend_token: HashMap<String, EnvValue> = environment_to_resolve
-        .remove_entry(&token_variable)
-        .into_iter()
-        .collect();
-    let (mut resolved_variables, token_secrets) =
-        resolve_environment_variables(policy_name, &backend_token).await?;
-    // Register before connecting to state or launching providers so their
-    // diagnostics and output redact every resolved secret part.
-    cuenv_events::register_secrets(token_secrets);
-    let store = connect(
-        &target.infrastructure,
-        &project_environment_variables,
-        &resolved_variables,
-    )
-    .map_err(|error| failure(&error, &Invocation::default()))?;
+    let credential = resolve_state_token(policy_name, state).await?;
+    let store = connect(&target.infrastructure, credential)
+        .map_err(|error| failure(&error, &Invocation::default()))?;
     if action.uses_provider_environment() {
         refuse_another_owner(store.as_ref(), target, invocation).await?;
     }
-    let (other_variables, other_secrets) =
-        resolve_environment_variables(policy_name, &environment_to_resolve).await?;
-    cuenv_events::register_secrets(other_secrets);
-    resolved_variables.extend(other_variables);
+    let (resolved_variables, secrets) = resolve_environment_variables(
+        policy_name,
+        &environment_variables_for_action(action, &project_environment_variables),
+    )
+    .await?;
+    cuenv_events::register_secrets(secrets);
+    // A project variable named like the token's passthrough variable never
+    // reaches a provider either.
     let mut provider_environment_variables: BTreeMap<String, String> = resolved_variables
         .into_iter()
-        .filter(|(name, _)| name != &token_variable)
+        .filter(|(name, _)| Some(name) != token_variable.as_ref())
         .collect();
     let provided: Vec<String> = provider_environment_variables.keys().cloned().collect();
     // The remote cache's credentials are named by the project's configuration.
@@ -821,7 +804,7 @@ async fn resolve(
             .filter_map(|name| std::env::var(name).ok())
             .filter(|value| !value.is_empty()),
     );
-    let withheld_environment_variables = if action.uses_provider_environment() {
+    let mut withheld_environment_variables = if action.uses_provider_environment() {
         if target.provider_environment == ProviderEnvironment::Isolated {
             // Proxy URLs carrying credentials reach isolated providers
             // without them (an overlay replaces the inherited value).
@@ -836,11 +819,15 @@ async fn resolve(
             provided: &provided,
             policy_withheld: &policy_withheld,
             configured_credentials: &target.remote_cache_credential_variables,
-            token_variable: &token_variable,
+            token_variable: token_variable.as_deref(),
         })
     } else {
         Vec::new()
     };
+    // Withheld whatever the action, so an engine never hands it on.
+    withheld_environment_variables.extend(token_variable);
+    withheld_environment_variables.sort();
+    withheld_environment_variables.dedup();
     Ok(Resolved {
         store,
         provider_environment_variables,
@@ -928,6 +915,69 @@ fn secret_failure(variable: &str, error: cuenv_core::Error) -> CliError {
             "Check the configuration and credentials of the secret provider behind {variable} \
              (1Password, AWS, Vault, a command...), and that the action's policy \
              (`allowInfrastructure`) lets it be used."
+        ),
+    )
+}
+
+/// The state backend's token, resolved, and what to say when there is none.
+#[derive(Debug)]
+struct StateCredential {
+    token: Option<String>,
+    /// Why `token` is `None`, naming the configuration field.
+    absence: String,
+}
+
+/// Resolve the state token: read a passthrough variable from the cuenv
+/// process environment, or resolve a literal, secret or interpolation like a
+/// project environment variable. Every resolved secret part and the token
+/// itself are registered for redaction before anything is connected.
+async fn resolve_state_token(
+    action: InfrastructurePolicyAction,
+    state: &InfrastructureState,
+) -> Result<StateCredential, CliError> {
+    let field = state.token_field().to_string();
+    let (token, absence) = match state.token() {
+        None => (None, format!("no state token is configured (`{field}`)")),
+        Some(StateToken::Passthrough { name }) => (
+            std::env::var(name).ok(),
+            format!("`{field}` reads {name}, which is not set or is empty"),
+        ),
+        Some(StateToken::Value(value)) => {
+            let single = HashMap::from([(field.clone(), value.clone())]);
+            let (mut values, secrets) =
+                cuenv_core::environment::Environment::resolve_for_infrastructure_with_secrets(
+                    action, &single,
+                )
+                .await
+                .map_err(|error| state_token_failure(&field, error))?;
+            cuenv_events::register_secrets(secrets);
+            (
+                values.remove(&field),
+                format!("`{field}` resolved to an empty value"),
+            )
+        }
+    };
+    let token = token.filter(|token| !token.is_empty());
+    // Redact the token from every output from here on, including provider
+    // and store errors that might echo it.
+    if let Some(token) = &token {
+        cuenv_events::register_secret(token.clone());
+    }
+    Ok(StateCredential { token, absence })
+}
+
+/// The error for a state token whose secret could not be resolved, a failure
+/// of the secret provider like [`secret_failure`].
+fn state_token_failure(field: &str, error: cuenv_core::Error) -> CliError {
+    let message = CliError::from(error).message().to_string();
+    let reason = message
+        .strip_prefix("Failed to resolve secret 'secret': ")
+        .unwrap_or(&message);
+    CliError::eval_with_help(
+        format!("cannot resolve the state token `{field}`: {reason}"),
+        format!(
+            "Check the configuration and credentials of the secret provider behind `{field}` \
+             (1Password, AWS, Vault, a command...)."
         ),
     )
 }
@@ -1483,18 +1533,17 @@ fn refuse_unconfirmable(
     Ok(())
 }
 
+/// The project variables an action resolves: all of them for an action that
+/// starts providers, none for a state-only action.
 fn environment_variables_for_action(
     action: &InfrastructureAction,
     project_environment: &HashMap<String, EnvValue>,
-    token_variable: &str,
 ) -> HashMap<String, EnvValue> {
     if action.uses_provider_environment() {
-        return project_environment.clone();
+        project_environment.clone()
+    } else {
+        HashMap::new()
     }
-    project_environment
-        .get(token_variable)
-        .map(|value| HashMap::from([(token_variable.to_string(), value.clone())]))
-        .unwrap_or_default()
 }
 
 /// Evaluate the target on a thread of its own. CUE evaluation cannot be
@@ -1656,16 +1705,7 @@ fn locked_providers(
 }
 
 fn engine_setup(context: &CommandContext<'_>, inputs: EngineInputs) -> EngineSetup {
-    let mut withheld_environment_variables = vec![
-        inputs
-            .infrastructure
-            .state
-            .authentication_token_environment_variable()
-            .to_string(),
-    ];
-    withheld_environment_variables.extend(inputs.withheld_environment_variables);
-    withheld_environment_variables.sort();
-    withheld_environment_variables.dedup();
+    let withheld_environment_variables = inputs.withheld_environment_variables;
     EngineSetup {
         tenant: context.tenant.clone(),
         store: Arc::clone(context.store),
@@ -1707,41 +1747,26 @@ fn unrecorded_store(
 /// tables, and [`under_lock`] creates or upgrades them before any write.
 fn connect(
     infrastructure: &Infrastructure,
-    project_environment: &HashMap<String, EnvValue>,
-    resolved_environment: &HashMap<String, String>,
+    credential: StateCredential,
 ) -> cuenv_infrastructure::Result<Arc<dyn StateStore>> {
-    let state = &infrastructure.state;
-    let variable = state.authentication_token_environment_variable();
-    let authentication_token = if project_environment.contains_key(variable) {
-        resolved_environment.get(variable).cloned()
-    } else {
-        std::env::var(variable).ok()
-    }
-    .filter(|token| !token.is_empty());
-    // Redact the token from every output from here on, including provider
-    // and store errors that might echo it.
-    if let Some(token) = &authentication_token {
-        cuenv_events::register_secret(token.clone());
-    }
-    match state {
+    let StateCredential { token, absence } = credential;
+    match &infrastructure.state {
         InfrastructureState::Turso(turso) => {
-            if authentication_token.is_none() {
+            if token.is_none() {
                 emit_stderr!(format!(
-                    "warning: {variable} is not set; connecting to Turso without an \
-                     authentication token"
+                    "warning: {absence}; connecting to Turso without an authentication token"
                 ));
             }
             Ok(Arc::new(TursoStateStore::new(TursoConfiguration {
                 url: turso.url.clone(),
-                authentication_token,
+                authentication_token: token,
             })?))
         }
         // The Cloudflare API refuses every request without a token.
         InfrastructureState::D1(d1) => {
-            let api_token = authentication_token.ok_or_else(|| {
+            let api_token = token.ok_or_else(|| {
                 InfrastructureError::configuration(format!(
-                    "{variable} is not set; D1 state needs a Cloudflare API token with D1 \
-                     Edit access"
+                    "{absence}; D1 state needs a Cloudflare API token with D1 Edit access"
                 ))
             })?;
             Ok(Arc::new(D1StateStore::new(D1Configuration {

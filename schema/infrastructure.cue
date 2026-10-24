@@ -193,9 +193,9 @@ import "strings"
 		_invalidUrl: error("`url` must be libsql://, https:// or wss:// with a host name or address, or http:// or ws:// with a loopback host (localhost, 127.x.y.z, [::1]); an optional port from 1 to 65535 and path; no credentials, query, fragment or whitespace")
 	}
 
-	// Environment variable holding the database authentication token. The
-	// default matches the name the Turso command line tool documents.
-	authenticationTokenEnvironmentVariable: *"TURSO_AUTH_TOKEN" | (string & =~"^[A-Za-z_][A-Za-z0-9_]*$")
+	// Database authentication token. Optional: a local `sqld` may need
+	// none, and cuenv then connects without one.
+	token?: #InfrastructureStateToken
 })
 
 #D1State: close({
@@ -207,12 +207,26 @@ import "strings"
 	// database name).
 	databaseId!: string & =~"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
-	// Environment variable holding a Cloudflare API token with D1 Edit
-	// access. The token is required. The default is deliberately not
-	// `CLOUDFLARE_API_TOKEN`: cuenv withholds the state token from every
-	// provider, and the Cloudflare provider reads that name.
-	authenticationTokenEnvironmentVariable: *"CLOUDFLARE_D1_API_TOKEN" | (string & =~"^[A-Za-z_][A-Za-z0-9_]*$")
+	// Cloudflare API token with D1 Edit access. Required: the Cloudflare
+	// API refuses every request without one.
+	token!: #InfrastructureStateToken
 })
+
+// A state backend's authentication token, written like a project environment
+// variable: a literal string, a #Secret resolved when the command runs, an
+// interpolation of strings and secrets, or #EnvPassthrough with a `name` to
+// read that variable from cuenv's own environment (a CI secret, for
+// instance). Nothing is read from the environment unless it is named here.
+// Integers, booleans and policies do not apply to a token. One state database
+// serves the top level and every environment, so there is one token.
+//
+// cuenv redacts the resolved token from all output and never passes it to a
+// provider; a passthrough variable is withheld from providers under its name.
+#InfrastructureStateToken: string | #Secret | #InterpolatedEnv | close({
+	cuenvPassthrough: true
+	name!:            string & =~"^[A-Za-z_][A-Za-z0-9_]*$"
+})
+
 
 // Building blocks of the Turso URL contract. The Rust state store parses the
 // URL independently. The schema accepts a subset of what the store accepts and

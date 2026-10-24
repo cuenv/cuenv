@@ -109,8 +109,8 @@ name: "platform"
 
 infrastructure: {
 	state: turso: {
-		url: "libsql://platform-acme.turso.io"
-		authenticationTokenEnvironmentVariable: "TURSO_AUTH_TOKEN"
+		url:   "libsql://platform-acme.turso.io"
+		token: schema.#OnePasswordRef & {ref: "op://platform/turso/token"}
 	}
 	environments: {
 		Dev: {
@@ -394,7 +394,7 @@ cuenv exec -- cargo test -p cuenv-infrastructure --lib -- --ignored \
   layouts_and_waiting_migrations_against_a_server
 ```
 
-Supply `TURSO_AUTH_TOKEN` if the test server requires authentication. The lifecycle tests copy `examples/infrastructure-random/env.cue` to a temporary CUE module, use a unique project name and the supplied provider path, and keep caches and recovery files in temporary user directories. The first test verifies that planning writes no state, applying creates the pet, password and port, and a second apply has no work. It then edits the pet length from two to three in the CUE file, plans and applies its replacement, checks the new identifier and length in durable state, destroys all three resources and verifies that state and locks are empty. A second destroy must also have no work. The second test runs a named `--env dev` stack whose provider receives an `#ExecSecret` through `allowInfrastructure`, and checks that the secret reaches the provider, is not stored in state and never appears in the command's output. Default test runs skip these tests and need neither network access nor provider downloads.
+Supply `TURSO_AUTH_TOKEN` if the test server requires authentication; the generated configurations pass it through as the state token. The lifecycle tests copy `examples/infrastructure-random/env.cue` to a temporary CUE module, use a unique project name and the supplied provider path, and keep caches and recovery files in temporary user directories. The first test verifies that planning writes no state, applying creates the pet, password and port, and a second apply has no work. It then edits the pet length from two to three in the CUE file, plans and applies its replacement, checks the new identifier and length in durable state, destroys all three resources and verifies that state and locks are empty. A second destroy must also have no work. The second test runs a named `--env dev` stack whose provider receives an `#ExecSecret` through `allowInfrastructure`, and checks that the secret reaches the provider, is not stored in state and never appears in the command's output. Default test runs skip these tests and need neither network access nor provider downloads.
 
 The D1 backend runs in the default test suite against a stand-in for the D1 API backed by a real in-memory SQLite database, which binds parameters as text and runs a request's statements as one transaction as D1 does. One ignored test runs the same lifecycle (migrate, lock, write, fenced write, blocked migration) against a real D1 database; give it an otherwise unused database, since it drops cuenv's tables when it ends:
 
@@ -409,30 +409,36 @@ cuenv exec -- cargo test -p cuenv-infrastructure --lib -- --ignored lifecycle_ag
 
 `infrastructure.state` names exactly one backend: `turso` or `d1`. Both keep the same tables and behave the same way: locking, compare and swap, ownership, migrations and recovery are one implementation over SQLite, and only the transport differs. Naming neither, or both, fails evaluation.
 
+### The state token
+
+Each backend takes one `token`, written like a project environment variable: any `#Secret`, a literal, or an interpolation of both. One database serves the top level and every environment, so the token does not change with `--env`. Nothing is read from the environment unless the configuration names it.
+
+- In CI, where the token arrives as an environment variable, name it explicitly: `token: schema.#EnvPassthrough & {name: "CLOUDFLARE_D1_API_TOKEN"}`. The variable is withheld from provider processes. Do not pass through `CLOUDFLARE_API_TOKEN` if the Cloudflare provider needs it, because the provider would lose its credential.
+- The token is resolved before anything else (state commands resolve nothing else), redacted from all output, never written to state and never passed to a provider. Integers, booleans and policies are rejected.
+
 ### Turso
 
 ```cue
 infrastructure: state: turso: {
-	url: "libsql://platform-acme.turso.io"
-	authenticationTokenEnvironmentVariable: "TURSO_AUTH_TOKEN" // default
+	url:   "libsql://platform-acme.turso.io"
+	token: schema.#OnePasswordRef & {ref: "op://platform/turso/token"}
 }
 ```
 
 - `url` accepts `libsql://`, `https://` and `wss://`. Plain `http://` and `ws://` are accepted only for loopback addresses (a local `sqld`), so the token never crosses a network in cleartext. URLs must not carry credentials, queries or fragments.
-- The authentication token is read from the resolved project environment when that variable is declared there, otherwise from the caller's environment. It is never written to CUE or state, never shown in errors or logs, and **withheld from provider processes**. Create one with `turso db tokens create <database>`.
+- Create a token with `turso db tokens create <database>`. Without a token, cuenv warns and connects unauthenticated, which suits a local `sqld`.
 ### Cloudflare D1
 
 ```cue
 infrastructure: state: d1: {
 	accountId:  "0123456789abcdef0123456789abcdef"
 	databaseId: "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9"
-	authenticationTokenEnvironmentVariable: "CLOUDFLARE_D1_API_TOKEN" // default
+	token:      schema.#OnePasswordRef & {ref: "op://platform/d1/token"}
 }
 ```
 
 - Create the database with `wrangler d1 create <name>` (or in the dashboard) and copy its ID; `accountId` is your Cloudflare account ID. Both must be lowercase, as Cloudflare prints them. cuenv talks to the database through the Cloudflare REST API (`/d1/database/<id>/raw`), so no Worker is needed.
-- The token is a Cloudflare API token with **D1 Edit** on the account. A D1 Read token should be enough for commands that only read (`plan`, `state list`, `unlock` without an argument), but that has not been verified yet. Unlike Turso, D1 always needs one: a missing token fails before anything is sent. It is resolved, redacted and withheld from providers exactly like the Turso token.
-- The default variable is `CLOUDFLARE_D1_API_TOKEN`, deliberately not `CLOUDFLARE_API_TOKEN`: cuenv withholds the state token's variable from every provider process, and the Cloudflare Terraform provider reads `CLOUDFLARE_API_TOKEN`. Keeping them apart lets one project store its state in D1 and manage Cloudflare resources with the provider. Pointing both at one variable would withhold the provider's credential.
+- The token is a Cloudflare API token with **D1 Edit** on the account. A D1 Read token should be enough for commands that only read (`plan`, `state list`, `unlock` without an argument), but that has not been verified yet. Unlike Turso, D1 always needs one: `token` is required, and a passthrough variable that is unset fails the command before anything is sent.
 - D1's API binds parameters as text and only in a request of a single statement, and runs the statements of one request as a transaction. cuenv's statements are shaped for that: each write is one statement that checks the lock itself, and each migration is one request that holds no parameters and fails as a whole.
 - D1 limits a string, blob or row to 2 MB. A resource whose state exceeds that cannot be recorded in D1; the error says so, and cuenv saves the change as an unrecorded file as for any other failed write.
 - Recovery files bind to a hash of the account and database IDs.

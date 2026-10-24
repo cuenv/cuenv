@@ -900,10 +900,13 @@ mod tests {
             "module: \"example.com/native\"\nlanguage: version: \"v0.14.1\"\n",
         )?;
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        std::fs::copy(
-            repository.join("schema/infrastructure.cue"),
-            directory.path().join("schema/infrastructure.cue"),
-        )?;
+        // `infrastructure.cue` and the definitions its state token uses.
+        for file in ["infrastructure.cue", "env.cue", "secrets.cue", "policy.cue"] {
+            std::fs::copy(
+                repository.join("schema").join(file),
+                directory.path().join("schema").join(file),
+            )?;
+        }
         std::fs::write(
             directory.path().join("env.cue"),
             format!(
