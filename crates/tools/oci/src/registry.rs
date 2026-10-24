@@ -7,7 +7,6 @@ use oci_distribution::manifest::{ImageIndexEntry, OciDescriptor, OciManifest};
 use oci_distribution::secrets::RegistryAuth;
 use oci_distribution::{Client, Reference};
 use sha2::{Digest, Sha256};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::OnceLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -35,9 +34,13 @@ impl OciClient {
             ..Default::default()
         };
 
-        catch_unwind(AssertUnwindSafe(|| Client::new(config))).map_err(|_| {
-            "Failed to initialize OCI client because system proxy discovery panicked".to_string()
-        })
+        // `Client::new` falls back to `Client::default()` on error, which builds
+        // a reqwest client that panics if construction fails. `try_from`
+        // surfaces the error instead. The reqwest 0.12 used by
+        // `oci-distribution` is built without its `system-proxy` feature, so
+        // proxies come from `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`
+        // only and no platform proxy discovery runs.
+        Client::try_from(config).map_err(|err| format!("Failed to initialize OCI client: {err}"))
     }
 
     fn client(&self) -> Result<&Client> {
