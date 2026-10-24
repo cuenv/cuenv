@@ -546,6 +546,21 @@ Every plan is checked the way Terraform checks it: a provider that plans a value
 
 Resources removed from `infrastructure.resources` are deleted. Stored state is only ever handed back to the provider source that created it.
 
+### Plan and apply from GitHub Actions
+
+Set `infrastructure.workflows.github` and run `cuenv sync ci`:
+
+```cue
+infrastructure: workflows: github: {}
+```
+
+cuenv writes two workflows:
+
+- `<project>-infrastructure-plan.yml` runs `cuenv i plan` on pull requests that touch the project, adds the plan to the job summary and posts it as a pull request comment. Each project keeps one comment, which later pushes edit; set `plan: comment: false` to keep only the summary. Pull requests from forks get no comment, since their token cannot write one.
+- `<project>-infrastructure-apply.yml` runs `cuenv i apply --yes` on pushes to `main`. Set `apply: on` to `"tag"` (pushed tags matching `apply.tags`), `"release"` (published releases) or `"manual"` (manual runs only); manual runs are allowed alongside the others unless `apply: manual: false`. `apply: environment` names a GitHub environment for the job, for example one that requires approval. A newer apply waits for one in progress instead of cancelling it, because a cancelled apply can leave the lock held.
+
+Both workflows run the project's `ci` contributors first, so cuenv is installed and secret providers such as 1Password are set up the same way as for its pipelines. Only the top-level configuration is planned and applied; named environments are not.
+
 ### Apply order
 
 Apply orders the plan as one dependency graph, following Terraform's rules, and the plan lists its changes in the order they run, so the preview is the order of events. A replacement is two operations in the graph: the delete of the old object and the create of the new one.

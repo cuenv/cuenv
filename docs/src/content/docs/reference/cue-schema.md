@@ -946,6 +946,38 @@ infrastructure: {
 | `state`        | `#InfrastructureState`                                   | Yes      | State backend (`turso` or `d1`), shared by the top level and every environment |
 | `environments` | `{[#InfrastructureName]: #InfrastructureConfiguration}`  | No       | Complete configurations selected with `--env NAME`                  |
 | `providers`, `resources`, `providerEnvironment` | see [`#InfrastructureConfiguration`](#infrastructureconfiguration) | No | The top-level configuration, used without `--env` |
+| `workflows`    | `#InfrastructureWorkflows`                               | No       | CI workflows that `cuenv sync ci` emits to plan and apply the top-level configuration |
+
+### #InfrastructureWorkflows
+
+CI workflows for the infrastructure, keyed by CI provider. Only `github`
+exists so far.
+
+```cue
+infrastructure: workflows: github: {}
+```
+
+| Field    | Type                             | Required | Description                                  |
+| -------- | -------------------------------- | -------- | -------------------------------------------- |
+| `github` | `#InfrastructureGitHubWorkflows` | No       | GitHub Actions plan and apply workflows      |
+
+### #InfrastructureGitHubWorkflows
+
+`cuenv sync ci` writes `<project>-infrastructure-plan.yml`, which runs
+`cuenv infrastructure plan` on pull requests that touch the project, and
+`<project>-infrastructure-apply.yml`, which runs `cuenv infrastructure apply
+--yes`. Both use the project's `ci` contributors to install cuenv and set up
+secret providers, and newer apply runs queue behind one in progress instead
+of cancelling it.
+
+| Field                 | Type                                         | Default    | Description                                                      |
+| --------------------- | -------------------------------------------- | ---------- | ---------------------------------------------------------------- |
+| `plan.comment`        | `bool`                                       | `true`     | Post the plan as a pull request comment that later runs edit     |
+| `apply.on`            | `"push"` \| `"tag"` \| `"release"` \| `"manual"` | `"push"`   | What triggers an apply                                           |
+| `apply.branch`        | `string`                                     | `"main"`   | The branch whose pushes apply, when `on` is `"push"`             |
+| `apply.tags`          | `[...string]`                                | `["v*"]`   | Tag patterns whose pushes apply, when `on` is `"tag"`            |
+| `apply.manual`        | `bool`                                       | `true`     | Also allow manual runs (`workflow_dispatch`)                     |
+| `apply.environment`   | `string`                                     | none       | GitHub environment for the apply job, for example to require approval |
 
 - **Import names.** CUE resolves a name to the nearest enclosing field before
   an import. Generated provider packages are named `<type>_provider` so that

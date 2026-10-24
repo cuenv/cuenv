@@ -57,6 +57,13 @@ No abbreviations anywhere in this feature: schema definitions, fields, command n
 - **Hygiene, not a sandbox.** Withholding and `isolated` are hygiene. `HOME` is passed even when isolated, so `~/.aws`, `~/.vault-token`, `~/.config/op` and `credentials.tfrc.json` are readable; every provider gets every policy-allowed project variable (no per-provider scoping); on Linux cuenv sets `PR_SET_DUMPABLE` to 0 at startup so a provider cannot read cuenv's `/proc/<pid>/environ` (keep that call first in `main`; there is no macOS equivalent). Untrusted providers need OS-level isolation. Residual exposure in `inherit` mode (CI OIDC tokens, `GITHUB_TOKEN`) must be documented, never denied. Never advise "pass each provider only the variables it needs": it is not possible.
 - The plan digest must distinguish the no-flag identity, explicit named environments and resolved provider-environment identity without exposing environment values.
 
+## CI workflows
+
+- `infrastructure.workflows.github` (`#InfrastructureWorkflows`, `#InfrastructureGitHubWorkflows`) makes `cuenv sync ci` write `<project>-infrastructure-plan.yml` (pull requests, plan, job summary, one pull request comment per project edited in place through `actions/github-script`, skipped for forks) and `<project>-infrastructure-apply.yml` (`apply.on`: `push` to `apply.branch` by default, `tag`, `release` or `manual`; `apply.manual` adds `workflow_dispatch`; `apply.environment` sets the job's GitHub environment without setting `CUENV_ENVIRONMENT`). The code is `crates/cuenv/src/commands/sync/functions/github/infrastructure.rs`; it reuses the thin workflow emitter through `GitHubActionsEmitter::emit_command_workflow`, so the project's `ci` contributors install cuenv and set up secret providers.
+- Sync decodes only `infrastructure.workflows` from the raw value, never the whole configuration, so incomplete environments still do not block sync. A project with workflows gets the `github` provider even without `ci.providers`.
+- Applies never cancel each other (`cancel-in-progress: false`): a cancelled apply can leave the lock held. Keep it that way. Plans may be cancelled.
+- Only the top-level configuration is planned and applied; do not claim named environments run in CI.
+
 ## Status guardrails
 
 - `cuenv infrastructure` is experimental and `--help` says so; keep that prominent in every document. `#Infrastructure` is a partial proof of concept. Do not present it as a Terraform replacement.

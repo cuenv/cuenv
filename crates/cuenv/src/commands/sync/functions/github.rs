@@ -1,5 +1,6 @@
 //! GitHub workflow sync operations.
 
+pub(super) mod infrastructure;
 mod matrix;
 
 use super::{CiSyncOptions, ProjectInfo};
@@ -54,6 +55,9 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
             let workflows = generate_github_workflow_for_project(project, pipeline_name, pipeline)?;
             all_workflows.extend(workflows);
         }
+    }
+    for project in projects {
+        all_workflows.extend(infrastructure::generate_workflows(project)?);
     }
 
     if hestia_enabled {
@@ -670,6 +674,11 @@ fn build_github_trigger_condition(
         .map(cuenv_core::ci::StringOrVec::to_vec)
         .unwrap_or_default();
 
+    let tags = when
+        .and_then(|w| w.tag.as_ref())
+        .map(cuenv_core::ci::StringOrVec::to_vec)
+        .unwrap_or_default();
+
     let pull_request = when.and_then(|w| w.pull_request);
 
     let scheduled = when
@@ -706,6 +715,7 @@ fn build_github_trigger_condition(
 
     TriggerCondition {
         branches,
+        tags,
         pull_request,
         scheduled,
         release,
@@ -877,6 +887,7 @@ mod tests {
             github_config: cuenv_github::config::GitHubConfig::default(),
             trigger: cuenv_ci::ir::TriggerCondition {
                 branches: vec![],
+                tags: vec![],
                 pull_request: None,
                 scheduled: vec![],
                 release: vec![],

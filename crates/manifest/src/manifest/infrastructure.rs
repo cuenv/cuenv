@@ -44,6 +44,111 @@ pub struct Infrastructure {
     /// Complete provider and resource sets selected with `--env`.
     #[serde(default)]
     pub environments: BTreeMap<String, InfrastructureConfiguration>,
+
+    /// CI workflows that `cuenv sync ci` emits for this infrastructure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<InfrastructureWorkflows>,
+}
+
+/// CI workflows for infrastructure, keyed by CI provider.
+///
+/// Based on `#InfrastructureWorkflows` in schema/infrastructure.cue.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InfrastructureWorkflows {
+    /// GitHub Actions plan and apply workflows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<InfrastructureGitHubWorkflows>,
+}
+
+/// GitHub Actions workflows that plan on pull requests and apply on
+/// `apply.on`.
+///
+/// Based on `#InfrastructureGitHubWorkflows` in schema/infrastructure.cue.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InfrastructureGitHubWorkflows {
+    /// The pull request plan workflow.
+    #[serde(default)]
+    pub plan: InfrastructurePlanWorkflow,
+    /// The apply workflow.
+    #[serde(default)]
+    pub apply: InfrastructureApplyWorkflow,
+}
+
+/// The pull request plan workflow.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InfrastructurePlanWorkflow {
+    /// Post the plan as a pull request comment that later runs edit.
+    #[serde(default = "default_true")]
+    pub comment: bool,
+}
+
+impl Default for InfrastructurePlanWorkflow {
+    fn default() -> Self {
+        Self { comment: true }
+    }
+}
+
+/// The apply workflow.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InfrastructureApplyWorkflow {
+    /// What triggers an apply.
+    #[serde(default)]
+    pub on: InfrastructureApplyTrigger,
+    /// The branch whose pushes apply, when `on` is `push`.
+    #[serde(default = "default_apply_branch")]
+    pub branch: String,
+    /// Tag patterns whose pushes apply, when `on` is `tag`.
+    #[serde(default = "default_apply_tags")]
+    pub tags: Vec<String>,
+    /// Also allow manual runs when `on` is not `manual`.
+    #[serde(default = "default_true")]
+    pub manual: bool,
+    /// GitHub environment for the apply job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+}
+
+impl Default for InfrastructureApplyWorkflow {
+    fn default() -> Self {
+        Self {
+            on: InfrastructureApplyTrigger::default(),
+            branch: default_apply_branch(),
+            tags: default_apply_tags(),
+            manual: true,
+            environment: None,
+        }
+    }
+}
+
+/// What triggers an infrastructure apply workflow.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum InfrastructureApplyTrigger {
+    /// Pushes to the configured branch.
+    #[default]
+    Push,
+    /// Pushed tags matching the configured patterns.
+    Tag,
+    /// Published GitHub releases.
+    Release,
+    /// Manual runs only.
+    Manual,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+fn default_apply_branch() -> String {
+    "main".to_string()
+}
+
+fn default_apply_tags() -> Vec<String> {
+    vec!["v*".to_string()]
 }
 
 /// The complete provider and resource configuration for one named environment.
@@ -196,6 +301,7 @@ impl Infrastructure {
             resources: configuration.resources.clone(),
             provider_environment: configuration.provider_environment,
             environments: BTreeMap::new(),
+            workflows: self.workflows.clone(),
         })
     }
 

@@ -73,8 +73,50 @@ import "strings"
 	// The common state backend remains above the environment selection.
 	environments?: [#InfrastructureName]: {#InfrastructureConfiguration}
 
+	// CI workflows that `cuenv sync ci` emits for this infrastructure. Only
+	// the top-level configuration is planned and applied.
+	workflows?: {#InfrastructureWorkflows}
+
 	// Top-level configuration, used when no `--env` is given.
 	#InfrastructureConfiguration
+})
+
+// CI workflows for infrastructure, keyed by CI provider. The workflows reuse
+// the project's `ci` contributors (cuenv install, secret providers).
+#InfrastructureWorkflows: close({
+	github?: {#InfrastructureGitHubWorkflows}
+})
+
+// GitHub Actions workflows: `cuenv infrastructure plan` on pull requests that
+// touch the project, and `cuenv infrastructure apply --yes` on `apply.on`.
+#InfrastructureGitHubWorkflows: close({
+	plan: close({
+		// Post the plan as a pull request comment. Each project keeps one
+		// comment, which later runs edit in place.
+		comment: *true | bool
+	})
+
+	apply: close({
+		// What triggers an apply:
+		//   "push"    pushes to `branch`
+		//   "tag"     pushed tags matching `tags`
+		//   "release" published GitHub releases
+		//   "manual"  manual runs (`workflow_dispatch`) only
+		on: *"push" | "tag" | "release" | "manual"
+
+		// The branch whose pushes apply, when `on` is "push".
+		branch: *"main" | string
+
+		// Tag patterns whose pushes apply, when `on` is "tag".
+		tags: *["v*"] | [...string]
+
+		// Also allow manual runs when `on` is "push", "tag" or "release".
+		manual: *true | bool
+
+		// GitHub environment for the apply job, for example to require a
+		// reviewer's approval before it runs.
+		environment?: string
+	})
 })
 
 // The complete provider and resource set of one configuration: the top level
