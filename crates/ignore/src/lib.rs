@@ -445,6 +445,7 @@ impl std::fmt::Display for FileStatus {
 
 /// Errors that can occur during ignore file generation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Invalid tool name (contains path separators or is empty).
     #[error("Invalid tool name '{name}': {reason}")]

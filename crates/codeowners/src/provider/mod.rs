@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 
 /// Error type for provider operations.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ProviderError {
     /// I/O error during file operations.
     Io(io::Error),

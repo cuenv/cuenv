@@ -79,6 +79,7 @@ pub struct LockfileEntry {
 /// Describes where a dependency comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type", content = "value")]
+#[non_exhaustive]
 pub enum DependencySource {
     /// Package registry URL.
     Registry(String),

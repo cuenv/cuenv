@@ -9,6 +9,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur during release management operations.
 #[derive(Error, Debug, Diagnostic)]
+#[non_exhaustive]
 pub enum Error {
     /// Failed to read or write a changeset file.
     #[error("Changeset I/O error: {message}")]

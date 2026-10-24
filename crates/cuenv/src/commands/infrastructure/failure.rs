@@ -181,15 +181,10 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
                 invocation.command("state recover")
             )),
         ),
-        // The messages of these say what to do next, or carry the
-        // provider's own diagnostics.
-        InfrastructureError::Codec(_)
-        | InfrastructureError::Plugin(_)
-        | InfrastructureError::RemoteProcedure { .. }
-        | InfrastructureError::Diagnostics { .. }
-        | InfrastructureError::ApplyIncomplete(_)
-        | InfrastructureError::Install(_)
-        | InfrastructureError::InputOutput { .. } => (InfrastructureFailureKind::Failed, None),
+        // Codec, Plugin, RemoteProcedure, Diagnostics, ApplyIncomplete, Install,
+        // InputOutput and any future variant: their messages say what to do next,
+        // or carry the provider's own diagnostics.
+        _ => (InfrastructureFailureKind::Failed, None),
     };
     CliError::infrastructure(message, help, kind)
 }

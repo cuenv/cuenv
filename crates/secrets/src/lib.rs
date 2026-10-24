@@ -62,6 +62,7 @@ use thiserror::Error;
 
 /// Error types for secret resolution
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SecretError {
     /// Secret not found
     #[error("Secret '{name}' not found from source '{secret_source}'")]

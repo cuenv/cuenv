@@ -26,6 +26,7 @@ use thiserror::Error;
 
 /// Error type for service operations.
 #[derive(Error, Debug, Diagnostic)]
+#[non_exhaustive]
 pub enum Error {
     /// A service failed to start or crashed.
     #[error("Service '{name}' failed: {message}")]

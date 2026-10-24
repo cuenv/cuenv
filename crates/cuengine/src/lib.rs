@@ -370,6 +370,7 @@ pub struct SkippedDirectory {
 /// Why a recursive evaluation did not load a directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum SkippedReason {
     /// Its name starts with `.`.
     Dot,

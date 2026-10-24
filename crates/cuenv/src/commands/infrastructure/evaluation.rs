@@ -480,9 +480,7 @@ fn select_infrastructure(
             &requested,
             context.declared_environments,
         ),
-        other @ (InfrastructureSelectionError::NotAnObject { .. }
-        | InfrastructureSelectionError::ProviderEnvironmentNotSet { .. }
-        | InfrastructureSelectionError::Invalid(_)) => CliError::config(other.to_string()),
+        other => CliError::config(other.to_string()),
     })
 }
 
@@ -759,6 +757,7 @@ fn skipped_help(skipped: &SkippedDirectory) -> String {
             format!("it is inside '{path}', which holds its own cue.mod (another CUE module)")
         }
         SkippedReason::Unreadable => format!("its directory '{path}' cannot be read"),
+        _ => format!("the loader skipped its directory '{path}'"),
     };
     format!(
         "The CUE loader leaves this project out when it loads every package of the module: \

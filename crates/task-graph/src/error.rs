@@ -7,6 +7,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur during task graph operations.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Error {
     /// A dependency cycle was detected in the graph.
     CycleDetected {

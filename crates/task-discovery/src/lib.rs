@@ -243,6 +243,7 @@ fn matches_args_compiled(args: &[String], matchers: &[CompiledArgMatcher]) -> bo
 
 /// Errors that can occur during task discovery
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DiscoveryError {
     #[error("Invalid path: {0}")]
     InvalidPath(PathBuf),
