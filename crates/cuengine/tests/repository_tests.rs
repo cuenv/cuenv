@@ -558,23 +558,26 @@ fn state_tokens_are_written_like_environment_variables() -> TestResult {
             (|token| matches!(token, StateToken::Value(EnvValue::String(value)) if value == "literal-token"))
                 as fn(&StateToken) -> bool,
         ),
-        ("schema.#OnePasswordRef & {ref: \"op://ci/d1/token\"}", |token| {
-            matches!(token, StateToken::Value(EnvValue::Secret(_)))
-        }),
+        (
+            "schema.#OnePasswordRef & {ref: \"op://ci/d1/token\"}",
+            |token| matches!(token, StateToken::Value(EnvValue::Secret(_))),
+        ),
         ("env.D1_TOKEN", |token| {
             matches!(token, StateToken::Value(EnvValue::Secret(_)))
         }),
-        ("[\"prefix-\", schema.#ExecSecret & {command: \"echo\"}]", |token| {
-            matches!(token, StateToken::Value(EnvValue::Interpolated(_)))
-        }),
+        (
+            "[\"prefix-\", schema.#ExecSecret & {command: \"echo\"}]",
+            |token| matches!(token, StateToken::Value(EnvValue::Interpolated(_))),
+        ),
         // Passthrough names its variable, as a struct literal or through
         // the definition.
         ("{cuenvPassthrough: true, name: \"CI_D1_TOKEN\"}", |token| {
             token.passthrough_variable() == Some("CI_D1_TOKEN")
         }),
-        ("schema.#EnvPassthrough & {name: \"CI_D1_TOKEN\"}", |token| {
-            token.passthrough_variable() == Some("CI_D1_TOKEN")
-        }),
+        (
+            "schema.#EnvPassthrough & {name: \"CI_D1_TOKEN\"}",
+            |token| token.passthrough_variable() == Some("CI_D1_TOKEN"),
+        ),
     ] {
         let fixture = SchemaFixture::new(&format!(
             "env: D1_TOKEN: schema.#ExecSecret & {{command: \"echo\"}}\n{}",

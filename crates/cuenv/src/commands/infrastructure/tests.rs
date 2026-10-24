@@ -82,7 +82,8 @@ fn d1_infrastructure(database_id: &str, token: &serde_json::Value) -> Infrastruc
 
 #[tokio::test]
 async fn d1_state_is_validated_before_any_secret_and_needs_its_token() {
-    let unset = serde_json::json!({"cuenvPassthrough": true, "name": "CUENV_TEST_D1_TOKEN_NEVER_SET"});
+    let unset =
+        serde_json::json!({"cuenvPassthrough": true, "name": "CUENV_TEST_D1_TOKEN_NEVER_SET"});
     let infrastructure = d1_infrastructure("0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9", &unset);
     validate_state_url(&infrastructure).unwrap();
     let invalid = validate_state_url(&d1_infrastructure("my-database", &unset))
@@ -132,7 +133,9 @@ async fn a_state_token_is_resolved_like_an_environment_variable() {
         .unwrap();
     assert_eq!(credential.token, None);
     assert!(
-        credential.absence.contains("`infrastructure.state.turso.token`"),
+        credential
+            .absence
+            .contains("`infrastructure.state.turso.token`"),
         "{}",
         credential.absence
     );

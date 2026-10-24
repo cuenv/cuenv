@@ -377,7 +377,9 @@ impl<'de> Deserialize<'de> for StateToken {
             let passthrough: StateTokenPassthrough = serde_json::from_value(value)
                 .map_err(|error| D::Error::custom(format!("invalid token passthrough: {error}")))?;
             if !passthrough.cuenv_passthrough {
-                return Err(D::Error::custom("token passthrough needs `cuenvPassthrough: true`"));
+                return Err(D::Error::custom(
+                    "token passthrough needs `cuenvPassthrough: true`",
+                ));
             }
             return Ok(Self::Passthrough {
                 name: passthrough.name,
@@ -785,10 +787,15 @@ mod tests {
             decode(serde_json::json!({"cuenvPassthrough": true, "name": "CI_TURSO_TOKEN"}))
                 .unwrap();
         assert_eq!(
-            passthrough.token().and_then(StateToken::passthrough_variable),
+            passthrough
+                .token()
+                .and_then(StateToken::passthrough_variable),
             Some("CI_TURSO_TOKEN")
         );
-        assert_eq!(passthrough.token_field(), "infrastructure.state.turso.token");
+        assert_eq!(
+            passthrough.token_field(),
+            "infrastructure.state.turso.token"
+        );
         // The JSON form round-trips.
         for state in [&secret, &interpolated, &passthrough] {
             let round_trip: InfrastructureState =
