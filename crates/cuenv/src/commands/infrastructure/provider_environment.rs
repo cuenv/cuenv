@@ -3,9 +3,10 @@
 //! Providers are third-party programs. By default (`inherit`) they keep the
 //! ambient environment, so a provider that authenticates through the host's
 //! cloud credentials keeps working, but they never receive the keys to
-//! cuenv's own secret stores (see [`cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES`]), the
-//! credentials a project's remote cache is configured with, or the state
-//! store's token, unless the project passes a variable of that name itself.
+//! cuenv's own secret stores (see [`cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES`]) or the
+//! credentials a project's remote cache is configured with, unless the project
+//! passes a variable of that name itself, and never the variable a state
+//! token's passthrough reads.
 //! The opt-in `isolated` mode starts from an empty environment (see
 //! [`ISOLATED_INHERITED_ENVIRONMENT_VARIABLES`]) and adds only what the
 //! project passes.
@@ -41,8 +42,8 @@ pub(super) struct ProviderEnvironmentInputs<'inputs> {
     /// Names of variables the project's configuration designates as
     /// credentials (the remote cache's token and header variables).
     pub(super) configured_credentials: &'inputs [String],
-    /// The variable holding the state store's authentication token.
-    pub(super) token_variable: &'inputs str,
+    /// The variable the state token's passthrough reads, if any.
+    pub(super) token_variable: Option<&'inputs str>,
 }
 
 /// The variable names to remove from the provider's environment after the
@@ -60,7 +61,7 @@ pub(super) fn withheld_environment_variables(
         .policy_withheld
         .iter()
         .cloned()
-        .chain(std::iter::once(inputs.token_variable.to_string()))
+        .chain(inputs.token_variable.map(str::to_string))
         .collect();
     match inputs.mode {
         ProviderEnvironment::Inherit => withheld.extend(
@@ -161,7 +162,7 @@ mod tests {
             provided,
             policy_withheld,
             configured_credentials: &[],
-            token_variable: "TURSO_AUTH_TOKEN",
+            token_variable: Some("TURSO_AUTH_TOKEN"),
         }
     }
 

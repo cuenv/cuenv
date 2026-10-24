@@ -899,7 +899,7 @@ state format can change between releases. See
 ### #Infrastructure
 
 Managed resources driven through Terraform provider plugins, with state in
-Turso. Every managed resource is one record keyed by the CUE module path, the
+Turso or Cloudflare D1. Every managed resource is one record keyed by the CUE module path, the
 project name and the selected environment (see
 [State identity](#state-identity)).
 
@@ -943,7 +943,7 @@ infrastructure: {
 
 | Field          | Type                                                     | Required | Description                                                         |
 | -------------- | -------------------------------------------------------- | -------- | ------------------------------------------------------------------- |
-| `state`        | `#InfrastructureState`                                   | Yes      | State backend (`turso`), shared by the top level and every environment |
+| `state`        | `#InfrastructureState`                                   | Yes      | State backend (`turso` or `d1`), shared by the top level and every environment |
 | `environments` | `{[#InfrastructureName]: #InfrastructureConfiguration}`  | No       | Complete configurations selected with `--env NAME`                  |
 | `providers`, `resources`, `providerEnvironment` | see [`#InfrastructureConfiguration`](#infrastructureconfiguration) | No | The top-level configuration, used without `--env` |
 
@@ -1008,6 +1008,8 @@ whether or not `--env` selects it:
 | a resource's `provider` names no provider of the same configuration | `…_unresolved."resources.NAME.provider"` | ``no provider named "…" in `providers` of this configuration`` |
 | a resource without `provider` whose type prefix (`aws` of `aws_instance`) is not a provider of the same configuration | `…_unresolved."resources.NAME.type"` | ``no provider named "aws" (the prefix of type "aws_instance") in `providers` of this configuration; declare it or set `provider` `` |
 | the database URL is not valid | `infrastructure.state.turso._invalidUrl` | ``` `url` must be libsql://, https:// or wss:// with a host name or address, or http:// or ws:// … ``` |
+| `state` names no backend | `infrastructure._unresolved.state` | ``set one state backend: `turso` or `d1` `` |
+| `state` names both backends | `infrastructure._unresolved.state` | ``set exactly one state backend, `turso` or `d1`, not both`` |
 
 The key starts with the path of the configuration: `infrastructure` for the
 top level, `infrastructure.environments.NAME` for an environment. A
@@ -1100,16 +1102,55 @@ provider needs.
 
 ### #InfrastructureState
 
-| Field   | Type          | Required | Description              |
-| ------- | ------------- | -------- | ------------------------ |
-| `turso` | `#TursoState` | Yes      | Remote Turso database    |
+Exactly one field must be set.
+
+| Field   | Type          | Required | Description                                       |
+| ------- | ------------- | -------- | ------------------------------------------------- |
+| `turso` | `#TursoState` | One of   | Remote Turso (libSQL) database, or a local `sqld` |
+| `d1`    | `#D1State`    | One of   | Cloudflare D1 database, through the Cloudflare API |
+
+### #D1State
+
+```cue
+infrastructure: state: d1: {
+    accountId:  "0123456789abcdef0123456789abcdef"
+    databaseId: "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9"
+    token: schema.#OnePasswordRef & {ref: "op://platform/d1/token"}
+}
+```
+
+| Field        | Type     | Required | Description                                                       |
+| ------------ | -------- | -------- | ----------------------------------------------------------------- |
+| `accountId`  | `string` | Yes      | Cloudflare account ID: 32 lowercase hexadecimal digits            |
+| `databaseId` | `string` | Yes      | D1 database ID (not its name): a lowercase UUID, as `wrangler d1 list` prints it |
+| `token`      | `#InfrastructureStateToken` | Yes | Cloudflare API token with D1 Edit access |
 
 ### #TursoState
 
 | Field          | Type     | Required | Description                                                  |
 | -------------- | -------- | -------- | ------------------------------------------------------------ |
 | `url`          | `string` | Yes      | `libsql://`, `https://` or `wss://` with a host name or address; `http://`/`ws://` only for a loopback host (local `sqld`). Optional port and path; no credentials, query, fragment or whitespace. See the URL contract below |
-| `authenticationTokenEnvironmentVariable` | `string` | No       | Environment variable holding the authentication token (a valid variable name). Default `TURSO_AUTH_TOKEN` |
+| `token`        | `#InfrastructureStateToken` | No | Database authentication token. Without one, cuenv warns and connects unauthenticated (a local `sqld`) |
+
+### #InfrastructureStateToken
+
+A state backend's authentication token, written like a project environment
+variable. One state database serves the top level and every environment
+(rows are keyed by environment), so there is one token. Nothing is read from
+the environment unless the configuration names it.
+
+| Form | Example |
+| ---- | ------- |
+| Literal string | `token: "…"` (avoid committing a real token) |
+| `#Secret` | `token: schema.#OnePasswordRef & {ref: "op://platform/d1/token"}` |
+| Interpolation | `token: ["prefix-", schema.#ExecSecret & {command: "get-token"}]` |
+| A project variable, by CUE reference | `token: env.D1_TOKEN` |
+| `#EnvPassthrough` with `name` (required) | `token: schema.#EnvPassthrough & {name: "CLOUDFLARE_D1_API_TOKEN"}` |
+
+Integers, booleans and `{value, policies}` are rejected: only cuenv reads the
+token, so policies do not apply. cuenv resolves the token before anything else, redacts it from all output and
+never passes it to a provider. A passthrough variable is also withheld from
+provider processes under its name.
 
 URL contract, shared with the Rust state store. The schema accepts a subset of
 what the store accepts and never a URL the store rejects, so a project that
@@ -1617,8 +1658,9 @@ command:
 Plan, apply and destroy resolve the project's variables and pass the allowed
 ones to provider processes; a denied variable is also removed from the
 inherited environment, so a same-named host variable cannot bypass the policy.
-The state commands resolve only the state backend token, so for them the policy
-decides whether that token variable may be used.
+The state commands resolve none of the project's variables: the state token
+is configured in `infrastructure.state` (see #InfrastructureStateToken), not in
+`env`.
 
 ```cue
 env: {
@@ -1626,10 +1668,11 @@ env: {
         value: schema.#OnePasswordRef & {ref: "op://vault/cloudflare/token"}
         policies: [{allowInfrastructure: ["plan", "apply", "destroy"]}]
     }
-    TURSO_AUTH_TOKEN: {
-        value: schema.#OnePasswordRef & {ref: "op://vault/turso/token"}
-        policies: [{allowInfrastructure: ["plan", "apply", "destroy", "state-list", "state-remove", "state-recover", "state-adopt", "unlock"]}]
-    }
+}
+
+infrastructure: state: turso: {
+    url:   "libsql://platform-acme.turso.io"
+    token: schema.#OnePasswordRef & {ref: "op://vault/turso/token"}
 }
 ```
 

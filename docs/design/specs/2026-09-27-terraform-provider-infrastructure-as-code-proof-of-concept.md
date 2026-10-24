@@ -15,7 +15,7 @@ Terraform or OpenTofu command line tool, no HCL, no state files.
 ## Naming
 
 No abbreviations: `#Infrastructure`, `infrastructure`, `configuration`,
-`authenticationTokenEnvironmentVariable`, `cuenv infrastructure`, crate
+`providerEnvironment`, `cuenv infrastructure`, crate
 `cuenv-infrastructure`, tables `cuenv_infrastructure_*`. The only short form
 is the command alias `cuenv i`. Established acronyms and external names
 (JSON, SQL, gRPC, Terraform's `cty`, Hrana wire keys) are unchanged.
