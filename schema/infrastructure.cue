@@ -73,23 +73,21 @@ import "strings"
 	// The common state backend remains above the environment selection.
 	environments?: [#InfrastructureName]: {#InfrastructureConfiguration}
 
-	// CI workflows that `cuenv sync ci` emits for this infrastructure. Only
-	// the top-level configuration is planned and applied.
+	// CI workflows that `cuenv sync ci` emits for this infrastructure, for
+	// the project's `ci.providers`. Only the top-level configuration is
+	// planned and applied.
 	workflows?: {#InfrastructureWorkflows}
 
 	// Top-level configuration, used when no `--env` is given.
 	#InfrastructureConfiguration
 })
 
-// CI workflows for infrastructure, keyed by CI provider. The workflows reuse
-// the project's `ci` contributors (cuenv install, secret providers).
+// CI workflows for infrastructure: `cuenv infrastructure plan` on pull
+// requests that touch the project, and `cuenv infrastructure apply --yes` on
+// `apply.on`. They are emitted for the project's `ci.providers` (only GitHub
+// Actions so far) and reuse its `ci` contributors (cuenv install, secret
+// providers).
 #InfrastructureWorkflows: close({
-	github?: {#InfrastructureGitHubWorkflows}
-})
-
-// GitHub Actions workflows: `cuenv infrastructure plan` on pull requests that
-// touch the project, and `cuenv infrastructure apply --yes` on `apply.on`.
-#InfrastructureGitHubWorkflows: close({
 	plan: close({
 		// Post the plan as a pull request comment. Each project keeps one
 		// comment, which later runs edit in place.
@@ -105,10 +103,10 @@ import "strings"
 		on: *"push" | "tag" | "release" | "manual"
 
 		// The branch whose pushes apply, when `on` is "push".
-		branch: *"main" | string
+		branch: *"main" | (string & !="")
 
 		// Tag patterns whose pushes apply, when `on` is "tag".
-		tags: *["v*"] | [...string]
+		tags: *["v*"] | [string, ...string]
 
 		// Also allow manual runs when `on` is "push", "tag" or "release".
 		manual: *true | bool

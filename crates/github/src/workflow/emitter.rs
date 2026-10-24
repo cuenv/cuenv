@@ -29,9 +29,14 @@ pub struct CommandWorkflow<'a> {
     pub step_id: Option<&'a str>,
     /// Shell command the main step runs.
     pub command: &'a str,
-    /// Whether a newer run cancels a run of the same workflow and ref that is
+    /// Concurrency group of the workflow; the default is one group per
+    /// workflow and ref.
+    pub concurrency_group: Option<&'a str>,
+    /// Whether a newer run in the same concurrency group cancels one that is
     /// still in progress.
     pub cancel_in_progress: bool,
+    /// Condition for the job (`jobs.<id>.if`).
+    pub job_if: Option<&'a str>,
     /// Steps that run after the main step, before the success and failure
     /// phase steps.
     pub follow_up_steps: &'a [Step],
@@ -369,7 +374,7 @@ impl GitHubActionsEmitter {
             name: Some(workflow_name.clone()),
             runs_on: self.runner_as_runs_on(),
             needs: Vec::new(),
-            if_condition: None,
+            if_condition: command.job_if.map(str::to_string),
             strategy: None,
             environment: environment.map(Environment::Name),
             env: IndexMap::new(),
@@ -386,7 +391,10 @@ impl GitHubActionsEmitter {
             name: workflow_name,
             on: triggers,
             concurrency: Some(Concurrency {
-                group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
+                group: command.concurrency_group.map_or_else(
+                    || "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
+                    str::to_string,
+                ),
                 cancel_in_progress: Some(command.cancel_in_progress),
             }),
             permissions: None,
@@ -742,7 +750,9 @@ impl Emitter for GitHubActionsEmitter {
                 step_name: &step_name,
                 step_id: None,
                 command: &command,
+                concurrency_group: None,
                 cancel_in_progress: true,
+                job_if: None,
                 follow_up_steps: &[],
                 job_environment: None,
             },

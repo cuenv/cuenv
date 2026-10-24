@@ -194,21 +194,12 @@ pub async fn execute_sync_ci(
     let providers: Vec<String> = if let Some(p) = request.options.provider {
         vec![p.to_string()]
     } else {
-        // Use configured providers from CUE, plus the providers that
-        // `infrastructure.workflows` asks for
-        let mut providers = target_projects
+        // Use configured providers from CUE
+        let providers = target_projects
             .first()
             .and_then(|p| p.config.ci.as_ref())
             .map(|ci| ci.providers.clone())
             .unwrap_or_default();
-        for project in &target_projects {
-            let provider = github::infrastructure::PROVIDER.to_string();
-            if github::infrastructure::github_workflows(&project.config)?.is_some()
-                && !providers.contains(&provider)
-            {
-                providers.push(provider);
-            }
-        }
 
         if providers.is_empty() {
             // No providers configured = emit nothing (explicit configuration required)

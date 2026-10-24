@@ -56,8 +56,10 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
             all_workflows.extend(workflows);
         }
     }
+    let mut stale_workflows: Vec<String> = Vec::new();
     for project in projects {
         all_workflows.extend(infrastructure::generate_workflows(project)?);
+        stale_workflows.extend(infrastructure::stale_workflows(project)?);
     }
 
     if hestia_enabled {
@@ -73,11 +75,10 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
         ));
     }
 
-    let stale_workflows = if hestia_enabled {
-        Vec::new()
-    } else {
-        vec![cuenv_github::workflow::HESTIA_GC_WORKFLOW_FILENAME]
-    };
+    if !hestia_enabled {
+        stale_workflows.push(cuenv_github::workflow::HESTIA_GC_WORKFLOW_FILENAME.to_string());
+    }
+    let stale_workflows: Vec<&str> = stale_workflows.iter().map(String::as_str).collect();
 
     let workflows_dir = repo_root.join(".github/workflows");
     sync_github_workflow_files(GithubWorkflowFilesSyncRequest {

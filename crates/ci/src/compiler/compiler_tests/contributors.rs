@@ -675,3 +675,43 @@ fn test_cue_task_condition_to_ir_always() {
     let result = Compiler::cue_task_condition_to_ir(CueTaskCondition::Always);
     assert_eq!(result, TaskCondition::Always);
 }
+
+fn secrets_provider_condition() -> ActivationCondition {
+    ActivationCondition {
+        secrets_provider: vec!["onepassword".to_string()],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn test_contributor_secrets_provider_uses_base_env_without_pipeline_environment() {
+    let mut project = Project::new("test");
+    project.env = Some(cuenv_core::environment::Env {
+        environment: None,
+        base: std::collections::HashMap::from([(
+            "TOKEN".to_string(),
+            cuenv_core::environment::EnvValue::String("op://vault/item/field".to_string()),
+        )]),
+    });
+    let compiler = Compiler::new(project);
+    let contributor = test_contributor("1password", Some(secrets_provider_condition()));
+    assert!(compiler.cue_contributor_is_active(&contributor, &test_ir()));
+}
+
+#[test]
+fn test_contributor_secrets_provider_uses_infrastructure_secrets() {
+    let mut project = Project::new("test");
+    project.infrastructure = Some(serde_json::json!({
+        "state": {"d1": {"token": {"resolver": "onepassword", "ref": "op://vault/item/field"}}},
+    }));
+    let compiler = Compiler::new(project);
+    let contributor = test_contributor("1password", Some(secrets_provider_condition()));
+    assert!(compiler.cue_contributor_is_active(&contributor, &test_ir()));
+
+    let mut project = Project::new("test");
+    project.infrastructure = Some(serde_json::json!({
+        "state": {"turso": {"url": "http://127.0.0.1:8080", "token": "plain"}},
+    }));
+    let compiler = Compiler::new(project);
+    assert!(!compiler.cue_contributor_is_active(&contributor, &test_ir()));
+}

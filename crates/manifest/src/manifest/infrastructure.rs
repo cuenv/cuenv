@@ -50,24 +50,13 @@ pub struct Infrastructure {
     pub workflows: Option<InfrastructureWorkflows>,
 }
 
-/// CI workflows for infrastructure, keyed by CI provider.
+/// CI workflows that plan on pull requests and apply on `apply.on`, emitted
+/// for the project's `ci.providers`.
 ///
 /// Based on `#InfrastructureWorkflows` in schema/infrastructure.cue.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct InfrastructureWorkflows {
-    /// GitHub Actions plan and apply workflows.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub github: Option<InfrastructureGitHubWorkflows>,
-}
-
-/// GitHub Actions workflows that plan on pull requests and apply on
-/// `apply.on`.
-///
-/// Based on `#InfrastructureGitHubWorkflows` in schema/infrastructure.cue.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct InfrastructureGitHubWorkflows {
     /// The pull request plan workflow.
     #[serde(default)]
     pub plan: InfrastructurePlanWorkflow,

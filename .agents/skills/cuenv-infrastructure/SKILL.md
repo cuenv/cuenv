@@ -59,10 +59,11 @@ No abbreviations anywhere in this feature: schema definitions, fields, command n
 
 ## CI workflows
 
-- `infrastructure.workflows.github` (`#InfrastructureWorkflows`, `#InfrastructureGitHubWorkflows`) makes `cuenv sync ci` write `<project>-infrastructure-plan.yml` (pull requests, plan, job summary, one pull request comment per project edited in place through `actions/github-script`, skipped for forks) and `<project>-infrastructure-apply.yml` (`apply.on`: `push` to `apply.branch` by default, `tag`, `release` or `manual`; `apply.manual` adds `workflow_dispatch`; `apply.environment` sets the job's GitHub environment without setting `CUENV_ENVIRONMENT`). The code is `crates/cuenv/src/commands/sync/functions/github/infrastructure.rs`; it reuses the thin workflow emitter through `GitHubActionsEmitter::emit_command_workflow`, so the project's `ci` contributors install cuenv and set up secret providers.
-- Sync decodes only `infrastructure.workflows` from the raw value, never the whole configuration, so incomplete environments still do not block sync. A project with workflows gets the `github` provider even without `ci.providers`.
-- Applies never cancel each other (`cancel-in-progress: false`): a cancelled apply can leave the lock held. Keep it that way. Plans may be cancelled.
-- Only the top-level configuration is planned and applied; do not claim named environments run in CI.
+- `infrastructure.workflows` (`#InfrastructureWorkflows`) makes `cuenv sync ci` write, for each provider in `ci.providers` (only `github` so far), `<project>-infrastructure-plan.yml` (pull requests, plan, job summary, one pull request comment per project edited in place through `actions/github-script`, skipped for forks and cancelled runs) and `<project>-infrastructure-apply.yml` (`apply.on`: `push` to `apply.branch` by default with the job guarded to that branch, `tag`, `release` or `manual`; `apply.manual` adds `workflow_dispatch`; `apply.environment` sets the job's GitHub environment without setting `CUENV_ENVIRONMENT`). The code is `crates/cuenv/src/commands/sync/functions/github/infrastructure.rs`; it reuses the thin workflow emitter through `GitHubActionsEmitter::emit_command_workflow`, so the project's `ci` contributors install cuenv and set up secret providers (detected from base variables and from secrets inside `infrastructure`).
+- The provider always comes from `ci.providers`; never make `infrastructure.workflows` add a provider, because that would also emit every `ci.pipelines` entry for it.
+- Sync decodes only `infrastructure.workflows` from the raw value, never the whole configuration, so incomplete environments still do not block sync.
+- Applies share one concurrency group (`${{ github.workflow }}`) and never cancel each other: a cancelled apply can leave the lock held. Keep it that way. Plans may be cancelled.
+- Only the top-level configuration is planned and applied; do not claim named environments run in CI. Trigger paths do not follow CUE imports outside the project directory.
 
 ## Status guardrails
 
