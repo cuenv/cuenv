@@ -75,7 +75,7 @@ impl ManualTrigger {
 }
 
 /// Trigger conditions controlling when a pipeline runs.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineCondition {
     /// Run on pull requests

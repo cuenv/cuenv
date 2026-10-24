@@ -241,3 +241,28 @@ fn test_derive_trigger_paths_root_project_no_inputs_fallback() {
         trigger.paths
     );
 }
+
+#[test]
+fn test_pipeline_tags_reach_the_trigger() {
+    use cuenv_core::ci::{CI, Pipeline, PipelineCondition, StringOrVec};
+
+    let pipeline = Pipeline {
+        when: Some(PipelineCondition {
+            tag: Some(StringOrVec::Vec(vec!["v*".to_string()])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut project = Project::new("test-project");
+    project.ci = Some(CI::default());
+    let options = CompilerOptions {
+        pipeline_name: Some("release".to_string()),
+        pipeline: Some(pipeline),
+        ..Default::default()
+    };
+
+    let ir = Compiler::with_options(project, options).compile().unwrap();
+    let trigger = ir.pipeline.trigger.expect("should have trigger");
+    assert_eq!(trigger.tags, vec!["v*".to_string()]);
+    assert!(trigger.branches.is_empty());
+}

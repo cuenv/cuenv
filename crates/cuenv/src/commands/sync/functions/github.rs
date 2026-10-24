@@ -1,5 +1,6 @@
 //! GitHub workflow sync operations.
 
+pub(super) mod infrastructure;
 mod matrix;
 
 use super::{CiSyncOptions, ProjectInfo};
@@ -14,6 +15,8 @@ pub(super) struct GithubSyncRequest<'a> {
     pub(super) repo_root: &'a Path,
     pub(super) options: CiSyncOptions<'a>,
     pub(super) projects: &'a [ProjectInfo],
+    /// CUE package the projects were evaluated from.
+    pub(super) package: &'a str,
 }
 
 #[derive(Clone, Copy)]
@@ -31,6 +34,7 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
         repo_root,
         options,
         projects,
+        package,
     } = request;
     if projects.is_empty() {
         return Err(cuenv_core::Error::configuration(
@@ -55,6 +59,11 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
             all_workflows.extend(workflows);
         }
     }
+    let mut stale_workflows: Vec<String> = Vec::new();
+    for project in projects {
+        all_workflows.extend(infrastructure::generate_workflows(project, package)?);
+        stale_workflows.extend(infrastructure::stale_workflows(project)?);
+    }
 
     if hestia_enabled {
         let workflow = cuenv_github::workflow::build_hestia_gc_workflow();
@@ -69,11 +78,10 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
         ));
     }
 
-    let stale_workflows = if hestia_enabled {
-        Vec::new()
-    } else {
-        vec![cuenv_github::workflow::HESTIA_GC_WORKFLOW_FILENAME]
-    };
+    if !hestia_enabled {
+        stale_workflows.push(cuenv_github::workflow::HESTIA_GC_WORKFLOW_FILENAME.to_string());
+    }
+    let stale_workflows: Vec<&str> = stale_workflows.iter().map(String::as_str).collect();
 
     let workflows_dir = repo_root.join(".github/workflows");
     sync_github_workflow_files(GithubWorkflowFilesSyncRequest {
@@ -670,6 +678,11 @@ fn build_github_trigger_condition(
         .map(cuenv_core::ci::StringOrVec::to_vec)
         .unwrap_or_default();
 
+    let tags = when
+        .and_then(|w| w.tag.as_ref())
+        .map(cuenv_core::ci::StringOrVec::to_vec)
+        .unwrap_or_default();
+
     let pull_request = when.and_then(|w| w.pull_request);
 
     let scheduled = when
@@ -706,6 +719,7 @@ fn build_github_trigger_condition(
 
     TriggerCondition {
         branches,
+        tags,
         pull_request,
         scheduled,
         release,
@@ -877,6 +891,7 @@ mod tests {
             github_config: cuenv_github::config::GitHubConfig::default(),
             trigger: cuenv_ci::ir::TriggerCondition {
                 branches: vec![],
+                tags: vec![],
                 pull_request: None,
                 scheduled: vec![],
                 release: vec![],

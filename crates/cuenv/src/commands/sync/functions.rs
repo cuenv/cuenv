@@ -195,18 +195,20 @@ pub async fn execute_sync_ci(
         vec![p.to_string()]
     } else {
         // Use configured providers from CUE
-        let ci_config = target_projects.first().and_then(|p| p.config.ci.as_ref());
+        let providers = target_projects
+            .first()
+            .and_then(|p| p.config.ci.as_ref())
+            .map(|ci| ci.providers.clone())
+            .unwrap_or_default();
 
-        match ci_config {
-            Some(ci) if !ci.providers.is_empty() => ci.providers.clone(),
-            _ => {
-                // No providers configured = emit nothing (explicit configuration required)
-                return Ok(
-                    "No CI providers configured. Add 'providers: [\"github\"]' to your ci config."
-                        .to_string(),
-                );
-            }
+        if providers.is_empty() {
+            // No providers configured = emit nothing (explicit configuration required)
+            return Ok(
+                "No CI providers configured. Add 'providers: [\"github\"]' to your ci config."
+                    .to_string(),
+            );
         }
+        providers
     };
 
     // Validate providers
@@ -232,6 +234,7 @@ pub async fn execute_sync_ci(
                     repo_root: &repo_root,
                     options: request.options,
                     projects: &target_projects,
+                    package: request.package,
                 };
                 execute_sync_github(github_request).await
             }
