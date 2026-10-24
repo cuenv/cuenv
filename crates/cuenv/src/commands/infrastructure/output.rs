@@ -11,7 +11,7 @@
 //! characters.
 
 use std::io::Write;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use cuenv_events::{emit_stderr, emit_stdout};
 use cuenv_infrastructure::{
@@ -71,8 +71,21 @@ pub(super) enum Finish {
 }
 
 impl ResultGate {
-    fn lock(&self) -> std::sync::MutexGuard<'_, GateState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    /// The gate's state.
+    ///
+    /// Its critical sections only match on the state, move a result in or
+    /// out, or insert one field into a JSON object; none of them panics, so
+    /// the lock is never poisoned. A poisoned gate would be a bug, and a
+    /// half-updated one could let two writers print to standard output, so
+    /// it is not used.
+    #[expect(
+        clippy::expect_used,
+        reason = "poisoning is unreachable; see the doc comment"
+    )]
+    fn lock(&self) -> MutexGuard<'_, GateState> {
+        self.state
+            .lock()
+            .expect("the result gate is never poisoned: its critical sections cannot panic")
     }
 
     /// Keep the command's result for when it finishes.

@@ -12,7 +12,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::sync::{Arc, LazyLock, PoisonError, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use aho_corasick::{AhoCorasick, AhoCorasickKind, MatchKind};
 
@@ -40,9 +40,25 @@ struct Compiled {
     matcher: Option<Arc<AhoCorasick>>,
 }
 
+/// The secrets to redact, behind a lock that fails closed.
+///
+/// A poisoned lock means a thread panicked while it was changing the
+/// registry (registering a secret or compiling the matcher), so the
+/// registry may be half updated: a secret may be missing from the set, or
+/// the matcher may not match what the set holds. Its contents are never
+/// read again. Instead, from then on every text is replaced whole by
+/// [`REDACTED_PLACEHOLDER`], [`has_secrets`] reports that secrets are
+/// registered (so callers that skip redaction when there are none still
+/// redact), and registering a secret changes nothing, since every text is
+/// already hidden. The poison is never cleared, so this lasts for the rest
+/// of the process.
+#[derive(Debug, Default)]
+struct SecretRegistry {
+    registry: RwLock<Registry>,
+}
+
 /// Global registry of secrets to redact
-static SECRET_REGISTRY: LazyLock<RwLock<Registry>> =
-    LazyLock::new(|| RwLock::new(Registry::default()));
+static SECRET_REGISTRY: LazyLock<SecretRegistry> = LazyLock::new(SecretRegistry::default);
 
 /// What redaction should do with a text.
 enum Matcher {
@@ -96,20 +112,56 @@ impl Registry {
     }
 }
 
-/// The matcher for the registry as it is now, compiled if it is not yet.
-fn matcher() -> Matcher {
-    let current = SECRET_REGISTRY
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .current();
-    if let Some(current) = current {
-        return current;
+impl SecretRegistry {
+    /// The matcher for the registry as it is now, compiled if it is not
+    /// yet; [`Matcher::Unavailable`] once the lock is poisoned.
+    fn matcher(&self) -> Matcher {
+        let Ok(registry) = self.registry.read() else {
+            return Matcher::Unavailable;
+        };
+        if let Some(current) = registry.current() {
+            return current;
+        }
+        drop(registry);
+        let Ok(mut registry) = self.registry.write() else {
+            return Matcher::Unavailable;
+        };
+        // Another thread may have compiled it while this one waited.
+        registry.current().unwrap_or_else(|| registry.compile())
     }
-    let mut registry = SECRET_REGISTRY
-        .write()
-        .unwrap_or_else(PoisonError::into_inner);
-    // Another thread may have compiled it while this one waited.
-    registry.current().unwrap_or_else(|| registry.compile())
+
+    /// Register each of `secrets`. Does nothing once the lock is poisoned:
+    /// every text is then hidden whole already.
+    fn register(&self, secrets: impl IntoIterator<Item = impl Into<String>>) {
+        if let Ok(mut registry) = self.registry.write() {
+            for secret in secrets {
+                registry.insert(&secret.into());
+            }
+        }
+    }
+
+    /// Whether any secret is registered; `true` once the lock is poisoned.
+    fn has_secrets(&self) -> bool {
+        self.registry
+            .read()
+            .map_or(true, |registry| !registry.secrets.is_empty())
+    }
+
+    /// Number of registered texts; `0` once the lock is poisoned, when the
+    /// count is not known.
+    fn secret_count(&self) -> usize {
+        self.registry
+            .read()
+            .map_or(0, |registry| registry.secrets.len())
+    }
+
+    fn redact_cow<'text>(&self, input: &'text str) -> Cow<'text, str> {
+        match self.matcher() {
+            Matcher::Nothing => Cow::Borrowed(input),
+            Matcher::Unavailable => Cow::Borrowed(REDACTED_PLACEHOLDER),
+            Matcher::Ready(matcher) => replace_matches(&matcher, input),
+        }
+    }
 }
 
 /// Register a secret value for redaction.
@@ -126,11 +178,7 @@ fn matcher() -> Matcher {
 /// register_secret("my-secret-token-12345");
 /// ```
 pub fn register_secret(secret: impl Into<String>) {
-    let secret = secret.into();
-    SECRET_REGISTRY
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(&secret);
+    SECRET_REGISTRY.register([secret.into()]);
 }
 
 /// Add `secret` to the registry; whether the registry gained an entry.
@@ -242,12 +290,7 @@ fn strip_quotes(quoted: &str) -> String {
 /// register_secrets(["secret1", "secret2", "secret3"]);
 /// ```
 pub fn register_secrets(secrets: impl IntoIterator<Item = impl Into<String>>) {
-    let mut registry = SECRET_REGISTRY
-        .write()
-        .unwrap_or_else(PoisonError::into_inner);
-    for secret in secrets {
-        registry.insert(&secret.into());
-    }
+    SECRET_REGISTRY.register(secrets);
 }
 
 /// Redact all registered secrets from a string.
@@ -272,11 +315,7 @@ pub fn redact(input: &str) -> String {
 /// [`redact`] without copying text that holds no secret.
 #[must_use]
 pub fn redact_cow(input: &str) -> Cow<'_, str> {
-    match matcher() {
-        Matcher::Nothing => Cow::Borrowed(input),
-        Matcher::Unavailable => Cow::Borrowed(REDACTED_PLACEHOLDER),
-        Matcher::Ready(matcher) => replace_matches(&matcher, input),
-    }
+    SECRET_REGISTRY.redact_cow(input)
 }
 
 /// `input` with the union of every match replaced by the placeholder.
@@ -403,23 +442,22 @@ fn redact_json_line(text: &str, keys: KeyHandling) -> String {
 }
 
 /// Check if any secrets are registered.
+///
+/// Also `true` when the registry can no longer be trusted (see
+/// [`SecretRegistry`]), so that text is still redacted.
 #[must_use]
 pub fn has_secrets() -> bool {
-    !SECRET_REGISTRY
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .secrets
-        .is_empty()
+    SECRET_REGISTRY.has_secrets()
 }
 
 /// Get the number of registered secrets.
+///
+/// `0` when the registry can no longer be trusted (see [`SecretRegistry`]);
+/// redaction then hides every text whole, so use [`has_secrets`] to decide
+/// whether to redact.
 #[must_use]
 pub fn secret_count() -> usize {
-    SECRET_REGISTRY
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .secrets
-        .len()
+    SECRET_REGISTRY.secret_count()
 }
 
 /// Clear all registered secrets.
@@ -428,8 +466,9 @@ pub fn secret_count() -> usize {
 #[cfg(test)]
 pub fn clear_secrets() {
     let mut registry = SECRET_REGISTRY
+        .registry
         .write()
-        .unwrap_or_else(PoisonError::into_inner);
+        .expect("only the poisoning tests poison a registry, and they use their own");
     registry.secrets.clear();
     registry.generation += 1;
     registry.compiled = None;
@@ -467,6 +506,69 @@ mod tests {
     use super::test_support::{COMPILATIONS, with_clean_registry};
     use super::*;
     use std::sync::atomic::Ordering;
+
+    /// A registry whose lock a thread poisoned by panicking while it held
+    /// the write guard, after `secret` was registered and compiled.
+    fn poisoned_registry(secret: &str) -> Arc<SecretRegistry> {
+        let registry = Arc::new(SecretRegistry::default());
+        registry.register([secret]);
+        assert_eq!(registry.redact_cow(secret), REDACTED_PLACEHOLDER);
+        let poisoner = Arc::clone(&registry);
+        let outcome = std::thread::spawn(move || {
+            let _guard = poisoner.registry.write().unwrap();
+            panic!("panic while changing the secret registry");
+        })
+        .join();
+        assert!(outcome.is_err(), "the poisoning thread panicked");
+        assert!(registry.registry.is_poisoned());
+        registry
+    }
+
+    #[test]
+    fn a_poisoned_registry_hides_every_text_whole() {
+        let registry = poisoned_registry("poisoned-secret-AAAA");
+        // No text is passed through, not even one without the secret: the
+        // registry may be missing secrets registered since.
+        for text in [
+            "the secret is poisoned-secret-AAAA",
+            "a later-secret-BBBB registered half way",
+            "nothing secret here",
+        ] {
+            assert_eq!(registry.redact_cow(text), REDACTED_PLACEHOLDER, "{text}");
+        }
+        assert!(registry.has_secrets(), "callers must still redact");
+        assert_eq!(registry.secret_count(), 0);
+    }
+
+    #[test]
+    fn registering_into_a_poisoned_registry_neither_panics_nor_reveals_text() {
+        let registry = poisoned_registry("poisoned-secret-AAAA");
+        registry.register(["later-secret-BBBB"]);
+        assert_eq!(
+            registry.redact_cow("later-secret-BBBB and poisoned-secret-AAAA"),
+            REDACTED_PLACEHOLDER
+        );
+        assert!(registry.registry.is_poisoned(), "the poison is never cleared");
+    }
+
+    #[test]
+    fn a_registry_poisoned_before_any_secret_still_fails_closed() {
+        let registry = Arc::new(SecretRegistry::default());
+        let poisoner = Arc::clone(&registry);
+        let _ = std::thread::spawn(move || {
+            let mut guard = poisoner.registry.write().unwrap();
+            // Half way through registering: the set changed, the
+            // generation did not.
+            guard.secrets.insert("half-registered-CCCC".to_string());
+            panic!("panic part-way through registering a secret");
+        })
+        .join();
+        assert_eq!(
+            registry.redact_cow("half-registered-CCCC"),
+            REDACTED_PLACEHOLDER
+        );
+        assert!(registry.has_secrets());
+    }
 
     #[test]
     fn the_matcher_is_compiled_once_per_registry_change_not_once_per_call() {

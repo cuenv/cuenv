@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use hyper_util::rt::TokioIo;
@@ -426,10 +426,27 @@ struct Connection {
 }
 
 impl ProviderProcess {
+    /// The process handle.
+    ///
+    /// Every critical section on it is a single call on the handle
+    /// (`id`, `start_kill`, `try_wait`) plus a `killpg` and a debug log,
+    /// none of which panics, so the lock is never poisoned. A poisoned lock
+    /// would be a bug, and the handle it guards (whether the process was
+    /// reaped) cannot be trusted, so it is not used.
+    #[expect(
+        clippy::expect_used,
+        reason = "poisoning is unreachable; see the doc comment"
+    )]
+    fn child(&self) -> MutexGuard<'_, Child> {
+        self.child
+            .lock()
+            .expect("the provider process lock is never poisoned: its critical sections cannot panic")
+    }
+
     /// Send the process and its process group `SIGKILL` (or the platform
     /// equivalent) without waiting for it to exit.
     pub(crate) fn kill(&self) {
-        let mut child = self.child.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut child = self.child();
         // The identifier is known only until the process is reaped, so the
         // group it leads cannot have been reused by then.
         #[cfg(unix)]
@@ -467,7 +484,7 @@ impl ProviderProcess {
     }
 
     fn has_exited(&self) -> bool {
-        let mut child = self.child.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut child = self.child();
         matches!(child.try_wait(), Ok(Some(_)) | Err(_))
     }
 
@@ -544,11 +561,14 @@ struct ProviderLog {
 
 impl ProviderLog {
     fn record(&self, line: String) {
-        let mut lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
-        if lines.len() == RETAINED_LOG_LINES {
-            lines.pop_front();
+        // Diagnostics only: like `render`, a poisoned log (unreachable, its
+        // critical sections cannot panic) is left alone instead of trusted.
+        if let Ok(mut lines) = self.lines.lock() {
+            if lines.len() == RETAINED_LOG_LINES {
+                lines.pop_front();
+            }
+            lines.push_back(line);
         }
-        lines.push_back(line);
     }
 
     fn render(&self) -> String {
@@ -776,11 +796,7 @@ impl ProviderClient {
     /// Operating system process identifier of the provider, while it runs.
     #[must_use]
     pub fn process_identifier(&self) -> Option<u32> {
-        self.process
-            .child
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .id()
+        self.process.child().id()
     }
 
     async fn call<RequestMessage, ResponseMessage>(
@@ -1615,7 +1631,7 @@ mod tests {
     fn mask_test_secret(text: &str) -> String {
         REDACTED_TEXTS
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(text.to_string());
         text.replace("SECRET\u{1b}VALUE", "*_*")
             .replace("p&ss<w>rd-GGGG", "*_*")
@@ -1649,7 +1665,7 @@ mod tests {
         assert!(!rendered.contains(marker), "{rendered}");
         let seen = REDACTED_TEXTS
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter(|text| text.contains(marker))
             .count();
