@@ -353,3 +353,65 @@ fn test_managed_sections_reject_malformed_blocks() {
         .expect_err("malformed section should fail");
     assert!(err.to_string().contains("missing end marker"));
 }
+
+#[test]
+fn test_alternating_managed_sections_are_stable() {
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join(".gitignore");
+    std::fs::write(&path, "target/\n").expect("seed gitignore");
+    let sync = |name: &str, pattern: &str| {
+        IgnoreFiles::builder()
+            .directory(temp.path())
+            .require_git_repo(false)
+            .section(IgnoreSection::new(name).pattern(pattern))
+            .generate()
+            .expect("generate section");
+    };
+
+    sync("cuenv vcs", ".cuenv/vcs/cache/");
+    sync("cuenv infrastructure", "/cue.mod/gen/");
+    let first = std::fs::read_to_string(&path).expect("gitignore");
+    assert_eq!(
+        first,
+        "target/\n\n# BEGIN cuenv vcs\n.cuenv/vcs/cache/\n# END cuenv vcs\n\n\
+         # BEGIN cuenv infrastructure\n/cue.mod/gen/\n# END cuenv infrastructure\n"
+    );
+
+    for _ in 0..3 {
+        sync("cuenv vcs", ".cuenv/vcs/cache/");
+        sync("cuenv infrastructure", "/cue.mod/gen/");
+    }
+    assert_eq!(std::fs::read_to_string(&path).expect("gitignore"), first);
+
+    // A changed section is rewritten where it is.
+    sync("cuenv vcs", ".cuenv/vcs/tmp/");
+    let changed = std::fs::read_to_string(&path).expect("gitignore");
+    assert_eq!(
+        changed,
+        first.replace(".cuenv/vcs/cache/", ".cuenv/vcs/tmp/")
+    );
+}
+
+#[test]
+fn test_removing_a_managed_section_removes_its_separator() {
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join(".gitignore");
+    std::fs::write(
+        &path,
+        "target/\n\n# BEGIN cuenv vcs\n.cuenv/vcs/cache/\n# END cuenv vcs\n\n\
+         # BEGIN cuenv infrastructure\n/cue.mod/gen/\n# END cuenv infrastructure\n",
+    )
+    .expect("seed gitignore");
+
+    IgnoreFiles::builder()
+        .directory(temp.path())
+        .require_git_repo(false)
+        .section(IgnoreSection::new("cuenv vcs"))
+        .generate()
+        .expect("remove section");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("gitignore"),
+        "target/\n\n# BEGIN cuenv infrastructure\n/cue.mod/gen/\n# END cuenv infrastructure\n"
+    );
+}
