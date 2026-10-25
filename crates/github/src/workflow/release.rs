@@ -149,7 +149,7 @@ impl ReleaseWorkflowBuilder {
         let mut steps = Vec::new();
 
         steps.push(
-            Step::uses("actions/checkout@v4")
+            Step::uses("actions/checkout@v7")
                 .with_name("Checkout")
                 .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
         );
@@ -233,7 +233,7 @@ impl ReleaseWorkflowBuilder {
         let mut steps = Vec::new();
 
         steps.push(
-            Step::uses("actions/checkout@v4")
+            Step::uses("actions/checkout@v7")
                 .with_name("Checkout")
                 .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
         );

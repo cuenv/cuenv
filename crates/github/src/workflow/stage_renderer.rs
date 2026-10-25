@@ -58,7 +58,7 @@ use super::schema::Step;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionSpec {
-    /// GitHub Action reference (e.g., "actions/checkout@v4")
+    /// GitHub Action reference (e.g., "actions/checkout@v7")
     pub uses: String,
 
     /// Action inputs
@@ -450,10 +450,10 @@ mod tests {
         );
 
         let mut task = make_test_task("test", &["echo"]);
-        task.provider_hints = Some(make_github_action_hints("actions/checkout@v4", inputs));
+        task.provider_hints = Some(make_github_action_hints("actions/checkout@v7", inputs));
 
         let action = ActionSpec::from_task(&task).expect("Should extract action");
-        assert_eq!(action.uses, "actions/checkout@v4");
+        assert_eq!(action.uses, "actions/checkout@v7");
         assert!(action.inputs.contains_key("key"));
     }
 
