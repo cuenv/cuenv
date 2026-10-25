@@ -124,6 +124,7 @@ miette = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 walkdir = { workspace = true }
 dirs = { workspace = true }
 ctrlc = "3.5"

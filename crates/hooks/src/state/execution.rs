@@ -271,7 +271,7 @@ pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
     hasher.update(config_hash.as_bytes());
     hasher.update(b":");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    hex::encode(hasher.finalize())[..16].to_string()
 }
 
 /// Compute a hash for hook execution that includes input file contents.
@@ -305,5 +305,5 @@ pub fn compute_execution_hash(hooks: &[Hook], base_dir: &Path) -> String {
     hasher.update(b":version:");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
 
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    hex::encode(hasher.finalize())[..16].to_string()
 }

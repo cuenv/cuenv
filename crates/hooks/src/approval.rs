@@ -463,7 +463,7 @@ pub fn compute_approval_hash(hooks: Option<&Hooks>) -> String {
     let canonical = serde_json::to_string(&hooks_only).unwrap_or_default();
     hasher.update(canonical.as_bytes());
 
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    hex::encode(hasher.finalize())[..16].to_string()
 }
 
 /// Compute a directory key for the approvals map
@@ -475,7 +475,7 @@ pub fn compute_directory_key(path: &Path) -> String {
 
     let mut hasher = Sha256::new();
     hasher.update(canonical_path.to_string_lossy().as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    hex::encode(hasher.finalize())[..16].to_string()
 }
 
 /// Validate and canonicalize a path to prevent path traversal attacks

@@ -257,8 +257,7 @@ impl ArtifactBuilder {
             hasher.update(&buffer[..bytes_read]);
         }
 
-        let hash = hasher.finalize();
-        Ok(format!("{hash:x}"))
+        Ok(hex::encode(hasher.finalize()))
     }
 
     /// Creates a tarball containing the binary.

@@ -24,6 +24,7 @@ async-trait = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 dirs = { workspace = true }
 tracing = { workspace = true }
 

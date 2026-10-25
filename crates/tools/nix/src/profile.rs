@@ -35,7 +35,7 @@ fn project_profile_id(project_root: &Path) -> String {
         .unwrap_or_else(|_| project_root.to_path_buf());
     let mut hasher = Sha256::new();
     hasher.update(canonical.to_string_lossy().as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    hex::encode(hasher.finalize())[..16].to_string()
 }
 
 /// Ensure profile contains all Nix tools from lockfile for current platform.

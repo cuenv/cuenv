@@ -526,5 +526,5 @@ fn compute_tool_digest(resolved: &ResolvedTool) -> String {
     hasher.update(resolved.platform.to_string().as_bytes());
     hasher.update(b":");
     hasher.update(format!("{:?}", resolved.source).as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }

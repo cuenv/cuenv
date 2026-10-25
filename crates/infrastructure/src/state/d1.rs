@@ -188,7 +188,7 @@ impl D1StateStore {
         digest.update(transport.account_id.as_bytes());
         digest.update(b"/");
         digest.update(transport.database_id.as_bytes());
-        format!("{:x}", digest.finalize())
+        hex::encode(digest.finalize())
     }
 }
 
