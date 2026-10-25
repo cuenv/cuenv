@@ -25,9 +25,11 @@ pub use codegen::*;
 pub use formatters::*;
 pub use hooks::*;
 pub use infrastructure::{
-    Infrastructure, InfrastructureConfiguration, InfrastructurePolicyAction,
-    InfrastructureProvider, InfrastructureSelectionError, InfrastructureState,
-    ManagedResourceDeclaration, ProviderEnvironment, TursoState,
+    D1State, Infrastructure, InfrastructureApplyTrigger, InfrastructureApplyWorkflow,
+    InfrastructureConfiguration, InfrastructureOutputReference, InfrastructureOutputType,
+    InfrastructurePlanWorkflow, InfrastructurePolicyAction, InfrastructureProvider,
+    InfrastructureSelectionError, InfrastructureState, InfrastructureWorkflows,
+    ManagedResourceDeclaration, ProviderEnvironment, StateToken, TursoState,
 };
 pub use project::Project;
 pub use rules::*;

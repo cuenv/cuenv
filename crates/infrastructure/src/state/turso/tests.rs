@@ -2,10 +2,25 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpListener;
 
 use super::*;
+use crate::state::fake_server::{FakeServer, fake_server, fake_server_with_headers};
+use crate::state::http::{
+    BodyPrefix, MAXIMUM_ERROR_BODY_BYTES, describe_error_body, status_is_transient,
+};
+use crate::state::sql::{
+    CREATE_SCHEMA_TABLE, INITIAL_SCHEMA_VERSION, LATEST_SCHEMA_VERSION, Layout, MIGRATIONS,
+    Migration, MigrationOutcome, MigrationTransaction, MigrationWait, RetryPolicy, SCHEMA_TABLE,
+    SELECT_ADDRESSES, SELECT_ALL_LOCKS, SELECT_RESOURCES, SELECT_SCHEMA_VERSION, classify_layout,
+    migration_outcome, row_to_resource, tenant_arguments,
+};
+use crate::state::{
+    ConditionalPut, ManagedResource, OwnerClaim, OwnerClaimMode, RecordVersion, ResourceAddress,
+    StateLock, StateStore,
+};
+use crate::tenant::{ProjectInstance, TenantKey};
 
 const RESOURCES_TABLE: &str = "cuenv_infrastructure_resources";
 const LOCKS_TABLE: &str = "cuenv_infrastructure_locks";
@@ -41,6 +56,7 @@ async fn drop_state_tables(store: &TursoStateStore) {
         "cuenv_infrastructure_environment_resources",
     ] {
         store
+            .inner
             .execute(Statement::new(
                 format!("DROP TABLE IF EXISTS {table}"),
                 Vec::new(),
@@ -70,9 +86,10 @@ fn migrations_with_a_probe() -> [Migration; 2] {
 
 async fn table_exists(store: &TursoStateStore, table: &str) -> bool {
     !store
+        .inner
         .execute(Statement::new(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-            vec![HranaValue::text(table)],
+            vec![SqlValue::text(table)],
         ))
         .await
         .unwrap()
@@ -104,7 +121,7 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     let lock = store.lock(&tenant, "migration test").await?;
 
     // A run holds a lock: the migration refuses and changes nothing.
-    let refused = store.migrate_to(&migrations).await.unwrap_err();
+    let refused = store.inner.migrate_to(&migrations).await.unwrap_err();
     // The error names the lock that blocks it, wherever it is held.
     let InfrastructureError::StateMigrationBlocked { version: 2, locks } = &refused else {
         panic!("{refused:?}");
@@ -119,7 +136,7 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     );
     // The same locks are listed, and released, without any project.
     assert_eq!(store.locks().await?, *locks);
-    assert_eq!(store.schema_version().await?, INITIAL_SCHEMA_VERSION);
+    assert_eq!(store.inner.schema_version().await?, INITIAL_SCHEMA_VERSION);
     assert!(
         !table_exists(store, PROBE_TABLE).await,
         "the refused migration must leave nothing behind"
@@ -131,7 +148,7 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     // Several locks fence it too, and so does the lock of a tenant alone.
     let other = TenantKey::with_environment("example.com/migration", "web", "Dev")?;
     let other_lock = store.lock(&other, "migration test").await?;
-    let both = store.migrate_to(&migrations).await.unwrap_err();
+    let both = store.inner.migrate_to(&migrations).await.unwrap_err();
     assert!(
         matches!(&both, InfrastructureError::StateMigrationBlocked { version: 2, locks }
             if locks.len() == 2 && locks.iter().any(|held| held.environment.as_deref() == Some("Dev"))),
@@ -141,7 +158,7 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     assert!(store.unlock(&tenant, &lock).await?);
     assert!(!store.unlock(&tenant, &lock).await?);
     assert!(matches!(
-        store.migrate_to(&migrations).await,
+        store.inner.migrate_to(&migrations).await,
         Err(InfrastructureError::StateMigrationBlocked { version: 2, .. })
     ));
     // A lock of a project nothing evaluates is released by its tenant alone.
@@ -162,8 +179,8 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
         .delete(&tenant, &lock, &probe_record().address)
         .await?;
     store.unlock(&tenant, &lock).await?;
-    store.migrate_to(&migrations).await?;
-    assert_eq!(store.schema_version().await?, 2);
+    store.inner.migrate_to(&migrations).await?;
+    assert_eq!(store.inner.schema_version().await?, 2);
     assert!(table_exists(store, PROBE_TABLE).await);
     assert!(matches!(
         store.list(&tenant).await,
@@ -191,9 +208,9 @@ async fn a_migration_refuses_while_any_lock_is_held() {
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })
     .unwrap();
-    store.migration_wait = short_migration_wait();
+    store.inner.migration_wait = short_migration_wait();
     assert_eq!(
-        store.stored_version().await.unwrap(),
+        store.inner.stored_version().await.unwrap(),
         0,
         "the database must start without cuenv tables"
     );
@@ -527,18 +544,18 @@ fn errors_about_statements_carrying_state_quote_only_codes() {
 #[test]
 fn corrupt_rows_are_reported_without_their_content() {
     let mut row = vec![
-        HranaValue::text("random_pet"),
-        HranaValue::text("pet"),
-        HranaValue::text("random"),
-        HranaValue::text("registry.terraform.io/hashicorp/random"),
-        HranaValue::integer(1),
-        HranaValue::text("{\"password\": hunter2}"),
-        HranaValue::Null,
-        HranaValue::text("[]"),
-        HranaValue::integer(0),
-        HranaValue::Null,
-        HranaValue::integer(1),
-        HranaValue::text(&uuid::Uuid::from_u128(7).to_string()),
+        SqlValue::text("random_pet"),
+        SqlValue::text("pet"),
+        SqlValue::text("random"),
+        SqlValue::text("registry.terraform.io/hashicorp/random"),
+        SqlValue::integer(1),
+        SqlValue::text("{\"password\": hunter2}"),
+        SqlValue::Null,
+        SqlValue::text("[]"),
+        SqlValue::integer(0),
+        SqlValue::Null,
+        SqlValue::integer(1),
+        SqlValue::text(&uuid::Uuid::from_u128(7).to_string()),
     ];
     let error = row_to_resource(&row).unwrap_err();
     assert!(
@@ -549,10 +566,8 @@ fn corrupt_rows_are_reported_without_their_content() {
     assert!(message.contains("state_json"), "{message}");
     assert!(message.contains("line 1"), "{message}");
     assert!(!message.contains("hunter2"), "{message}");
-    row[5] = HranaValue::text("{}");
-    row[6] = HranaValue::Blob {
-        base64: "!!!!".into(),
-    };
+    row[5] = SqlValue::text("{}");
+    row[6] = SqlValue::Unreadable;
     let message = row_to_resource(&row).unwrap_err().to_string();
     assert!(message.contains("random_pet.pet"), "{message}");
     assert!(!message.contains('!'), "{message}");
@@ -560,7 +575,7 @@ fn corrupt_rows_are_reported_without_their_content() {
 
 #[test]
 fn a_row_without_a_readable_address_still_gets_the_undecodable_error() {
-    let error = row_to_resource(&[HranaValue::Null, HranaValue::text("pet")]).unwrap_err();
+    let error = row_to_resource(&[SqlValue::Null, SqlValue::text("pet")]).unwrap_err();
     assert!(
         matches!(&error, InfrastructureError::UndecodableRecord { .. }),
         "{error:?}"
@@ -594,18 +609,18 @@ fn pipeline_body_matches_hrana_wire_format() {
     let statement = Statement::new(
         "SELECT ?",
         vec![
-            HranaValue::text("a"),
-            HranaValue::integer(7),
-            HranaValue::blob(&[1, 2, 3]),
-            HranaValue::blob(&[]),
-            HranaValue::optional_text(None),
+            SqlValue::text("a"),
+            SqlValue::integer(7),
+            SqlValue::blob(&[1, 2, 3]),
+            SqlValue::blob(&[]),
+            SqlValue::optional_text(None),
         ],
     );
     let body = PipelineBody {
         baton: None,
         requests: vec![
             PipelineRequest::Execute {
-                statement: &statement,
+                statement: HranaStatement::of(&statement),
             },
             PipelineRequest::Close,
         ],
@@ -640,7 +655,7 @@ fn transaction_batch_matches_hrana_wire_format() {
         baton: None,
         requests: vec![PipelineRequest::Batch {
             batch: Batch {
-                steps: transaction_steps(&statements, 2),
+                steps: transaction_steps(&statements.iter().collect::<Vec<_>>(), 2),
             },
         }],
     };
@@ -660,7 +675,9 @@ fn interprets_migration_batch_results() {
     let parse = |value: Value| -> BatchResult { serde_json::from_value(value).unwrap() };
     let execute = json!({"cols": [], "rows": [], "affected_row_count": 0});
     let first = MigrationTransaction::of(&MIGRATIONS[0]);
-    let steps = first.statements.len();
+    // BEGIN, the body, COMMIT, ROLLBACK.
+    let steps = first.statements.len() + 3;
+    let commit = steps - 2;
     let committed = parse(json!({
         // Every step ran except the rollback.
         "step_results": (0..steps)
@@ -669,30 +686,66 @@ fn interprets_migration_batch_results() {
         "step_errors": vec![Value::Null; steps],
     }));
     assert_eq!(
-        migration_outcome(&committed, &first).unwrap(),
-        MigrationOutcome::Applied
+        transaction_result(&committed, commit).unwrap(),
+        TransactionResult::Committed
     );
-    let failing = |message: &str| {
+    let failing = |index: usize, message: &str, code: &str| {
         let mut errors = vec![Value::Null; steps];
-        errors[1] = json!({"message": message, "code": "SQLITE_ERROR"});
+        errors[index] = json!({"message": message, "code": code});
         parse(json!({
             "step_results": vec![Value::Null; steps],
             "step_errors": errors,
         }))
     };
+    // The step after BEGIN is the body's first statement.
+    assert_eq!(
+        transaction_result(&failing(1, "boom", "SQLITE_ERROR"), commit).unwrap(),
+        TransactionResult::Failed {
+            statement: Some(0),
+            error: StatementError {
+                message: "boom".into(),
+                code: Some("SQLITE_ERROR".into()),
+            },
+        }
+    );
+    // A busy database is retried, not reported as the migration's failure.
+    assert!(
+        transaction_result(&failing(1, "database is locked", "SQLITE_BUSY"), commit)
+            .unwrap_err()
+            .is_transient()
+    );
+    // No commit result and no error: nothing was committed.
+    let uncommitted = parse(json!({
+        "step_results": vec![Value::Null; steps],
+        "step_errors": vec![Value::Null; steps],
+    }));
+    assert_eq!(
+        transaction_result(&uncommitted, commit).unwrap_err().kind,
+        FailureKind::Permanent
+    );
     for message in [
         "SQLite error: duplicate column name: tainted",
         "SQLite error: table cuenv_infrastructure_resources already exists",
     ] {
+        let result = transaction_result(&failing(1, message, "SQLITE_ERROR"), commit).unwrap();
         assert_eq!(
-            migration_outcome(&failing(message), &first).unwrap(),
+            migration_outcome(&result, &first).unwrap(),
             MigrationOutcome::AlreadyApplied,
             "{message}"
         );
     }
-    let failure = migration_outcome(&failing("no such table: t"), &first).unwrap_err();
+    let result =
+        transaction_result(&failing(1, "no such table: t", "SQLITE_ERROR"), commit).unwrap();
+    let error = migration_outcome(&result, &first).unwrap_err();
+    assert!(error.message.contains("no such table"));
+    let failure = Hrana::statement_failure(
+        &fast_store("http://127.0.0.1:1", Duration::from_secs(1))
+            .inner
+            .transport,
+        &error,
+        Disclosure::Full,
+    );
     assert_eq!(failure.kind, FailureKind::Statement);
-    assert!(failure.message.contains("no such table"));
 }
 
 #[test]
@@ -703,54 +756,72 @@ fn a_failing_fence_statement_means_a_lock_is_held_and_nothing_else_does() {
     };
     let transaction = MigrationTransaction::of(&later);
     let fence = transaction.fence_index.unwrap();
-    let steps = transaction.statements.len();
-    let errors_at = |index: usize, message: &str| -> BatchResult {
-        let mut errors = vec![Value::Null; steps];
-        errors[index] = json!({"message": message, "code": "SQLITE_CONSTRAINT_CHECK"});
-        serde_json::from_value(json!({
-            "step_results": vec![Value::Null; steps],
-            "step_errors": errors,
-        }))
-        .unwrap()
+    let failed = |statement: Option<usize>, message: &str| TransactionResult::Failed {
+        statement,
+        error: StatementError {
+            message: message.into(),
+            code: Some("SQLITE_ERROR".into()),
+        },
     };
     // The fence trips with an integer overflow; any other failure of that
     // statement is an ordinary failure, not a held lock.
     assert_eq!(
         migration_outcome(
-            &errors_at(fence, "SQLite error: integer overflow"),
+            &failed(Some(fence), "SQLite error: integer overflow"),
             &transaction
         )
         .unwrap(),
         MigrationOutcome::LockHeld
     );
-    let failure = migration_outcome(
-        &errors_at(fence, "CHECK constraint failed: lock_rows = 0"),
-        &transaction,
-    )
-    .unwrap_err();
-    assert_eq!(failure.kind, FailureKind::Statement);
+    assert!(
+        migration_outcome(
+            &failed(Some(fence), "CHECK constraint failed: lock_rows = 0"),
+            &transaction
+        )
+        .is_err()
+    );
     // The same text from any other statement is an ordinary failure.
-    let failure = migration_outcome(
-        &errors_at(fence + 3, "SQLite error: integer overflow"),
-        &transaction,
-    )
-    .unwrap_err();
-    assert_eq!(failure.kind, FailureKind::Statement);
-    // The fence runs after BEGIN and before any statement of the migration.
+    assert!(
+        migration_outcome(
+            &failed(Some(fence + 1), "SQLite error: integer overflow"),
+            &transaction
+        )
+        .is_err()
+    );
+    // A backend that does not name the statement (D1) is matched by the
+    // message, but only for a migration that has a fence.
+    assert_eq!(
+        migration_outcome(
+            &failed(None, "integer overflow: SQLITE_ERROR"),
+            &transaction
+        )
+        .unwrap(),
+        MigrationOutcome::LockHeld
+    );
+    let first = MigrationTransaction::of(&MIGRATIONS[0]);
+    assert!(migration_outcome(&failed(None, "integer overflow: SQLITE_ERROR"), &first).is_err());
+    // The fence runs before any statement of the migration, which binds
+    // nothing (a backend may refuse parameters in a transaction).
     let sql: Vec<&str> = transaction
         .statements
         .iter()
         .map(|statement| statement.sql.as_str())
         .collect();
-    assert_eq!(sql[0], "BEGIN IMMEDIATE");
+    assert_eq!(fence, 0);
     assert!(sql[fence].contains("cuenv_infrastructure_locks"), "{sql:?}");
     let body = sql
         .iter()
         .position(|statement| statement.contains("cuenv_infrastructure_probe"))
         .unwrap();
     assert!(fence < body);
+    assert!(
+        transaction
+            .statements
+            .iter()
+            .all(|statement| statement.arguments.is_empty())
+    );
     // The first migration creates the lock table, so it has nothing to fence.
-    assert_eq!(MigrationTransaction::of(&MIGRATIONS[0]).fence_index, None);
+    assert_eq!(first.fence_index, None);
 }
 
 #[test]
@@ -827,51 +898,50 @@ fn parses_pipeline_results_and_rows() {
         ],
     }))
     .unwrap();
-    let PipelineResult::Ok {
+    let mut results = response.results.into_iter();
+    let Some(PipelineResult::Ok {
         response: StreamResponse::Execute { result },
-    } = &response.results[0]
+    }) = results.next()
     else {
         panic!("expected execute result");
     };
-    let row = &result.rows[0];
+    let row = &result.into_result().rows[0];
     assert_eq!(row[0].as_text(), Some("random_pet"));
     assert_eq!(row[1].as_integer(), Some(3));
     assert_eq!(row[2].as_blob().unwrap(), Some(vec![1, 2, 3]));
     assert_eq!(row[3].as_blob().unwrap(), None);
-    assert!(matches!(response.results[1], PipelineResult::Error { .. }));
+    assert!(matches!(results.next(), Some(PipelineResult::Error { .. })));
     assert!(matches!(
-        response.results[2],
-        PipelineResult::Ok {
+        results.next(),
+        Some(PipelineResult::Ok {
             response: StreamResponse::Other
-        }
+        })
     ));
 }
 
 #[test]
 fn row_to_resource_reads_tainted_and_identity() {
-    let row = |tainted: &str, identity: HranaValue| {
+    let row = |tainted: &str, identity: SqlValue| {
         vec![
-            HranaValue::text("random_pet"),
-            HranaValue::text("pet"),
-            HranaValue::text("random"),
-            HranaValue::text("registry.terraform.io/hashicorp/random"),
-            HranaValue::integer(1),
-            HranaValue::text("{\"id\":\"x\"}"),
-            HranaValue::Null,
-            HranaValue::text("[]"),
-            HranaValue::Integer {
-                value: tainted.into(),
-            },
+            SqlValue::text("random_pet"),
+            SqlValue::text("pet"),
+            SqlValue::text("random"),
+            SqlValue::text("registry.terraform.io/hashicorp/random"),
+            SqlValue::integer(1),
+            SqlValue::text("{\"id\":\"x\"}"),
+            SqlValue::Null,
+            SqlValue::text("[]"),
+            SqlValue::Integer(tainted.parse().unwrap()),
             identity,
-            HranaValue::integer(7),
-            HranaValue::text(&uuid::Uuid::from_u128(7).to_string()),
+            SqlValue::integer(7),
+            SqlValue::text(&uuid::Uuid::from_u128(7).to_string()),
         ]
     };
-    let resource = row_to_resource(&row("1", HranaValue::text("{\"name\":\"a\"}"))).unwrap();
+    let resource = row_to_resource(&row("1", SqlValue::text("{\"name\":\"a\"}"))).unwrap();
     assert!(resource.tainted);
     assert_eq!(resource.serial, 7);
     assert_eq!(resource.identity, Some(json!({"name": "a"})));
-    let resource = row_to_resource(&row("0", HranaValue::Null)).unwrap();
+    let resource = row_to_resource(&row("0", SqlValue::Null)).unwrap();
     assert!(!resource.tainted);
     assert_eq!(resource.identity, None);
 }
@@ -896,9 +966,9 @@ async fn concurrent_migrations_converge() {
         outcome.unwrap().unwrap();
     }
     let latest = MIGRATIONS.last().unwrap().version;
-    assert_eq!(store.schema_version().await.unwrap(), latest);
+    assert_eq!(store.inner.schema_version().await.unwrap(), latest);
     store.migrate().await.unwrap();
-    assert_eq!(store.schema_version().await.unwrap(), latest);
+    assert_eq!(store.inner.schema_version().await.unwrap(), latest);
 }
 
 /// Against a real server: reads on a database cuenv never touched are
@@ -915,7 +985,7 @@ async fn fresh_database_reads_and_newer_schema_against_a_server() {
     })
     .unwrap();
     assert_eq!(
-        store.stored_version().await.unwrap(),
+        store.inner.stored_version().await.unwrap(),
         0,
         "the database must start without cuenv tables"
     );
@@ -936,9 +1006,10 @@ async fn fresh_database_reads_and_newer_schema_against_a_server() {
     store.unlock(&tenant(), &lock).await.unwrap();
 
     store
+        .inner
         .execute(Statement::new(
             "INSERT INTO cuenv_infrastructure_migrations (version) VALUES (?)",
-            vec![HranaValue::integer(LATEST_SCHEMA_VERSION + 1)],
+            vec![SqlValue::integer(LATEST_SCHEMA_VERSION + 1)],
         ))
         .await
         .unwrap();
@@ -958,84 +1029,6 @@ async fn fresh_database_reads_and_newer_schema_against_a_server() {
             "{error:?}"
         );
     }
-}
-
-// -----------------------------------------------------------------------
-// A minimal HTTP server standing in for Turso.
-// -----------------------------------------------------------------------
-
-/// How the fake server answers one request: `None` drops the connection.
-type Responder = dyn Fn(usize, Value) -> Option<(u16, String)> + Send + Sync;
-
-struct FakeServer {
-    url: String,
-    requests: Arc<AtomicUsize>,
-}
-
-async fn fake_server(responder: Arc<Responder>) -> FakeServer {
-    fake_server_with_headers(responder, String::new()).await
-}
-
-/// A fake server whose every reply also carries `headers` (each line
-/// ending in `\r\n`).
-async fn fake_server_with_headers(responder: Arc<Responder>, headers: String) -> FakeServer {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let requests = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&requests);
-    let replies = Arc::new(Replies { responder, headers });
-    tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            let index = counter.fetch_add(1, Ordering::SeqCst);
-            tokio::spawn(answer(stream, index, Arc::clone(&replies)));
-        }
-    });
-    FakeServer { url, requests }
-}
-
-/// How a fake server replies.
-struct Replies {
-    responder: Arc<Responder>,
-    headers: String,
-}
-
-async fn answer(mut stream: TcpStream, index: usize, replies: Arc<Replies>) {
-    let Replies { responder, headers } = replies.as_ref();
-    let mut buffer = Vec::new();
-    let mut chunk = [0_u8; 4096];
-    let header_end = loop {
-        let read = stream.read(&mut chunk).await.unwrap();
-        if read == 0 {
-            return;
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-        if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
-            break position + 4;
-        }
-    };
-    let request_headers = String::from_utf8_lossy(&buffer[..header_end]).to_ascii_lowercase();
-    let length: usize = request_headers
-        .lines()
-        .find_map(|line| line.strip_prefix("content-length:"))
-        .map_or(0, |value| value.trim().parse().unwrap());
-    while buffer.len() < header_end + length {
-        let read = stream.read(&mut chunk).await.unwrap();
-        if read == 0 {
-            return;
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-    }
-    let body: Value = serde_json::from_slice(&buffer[header_end..header_end + length]).unwrap();
-    let Some((status, response)) = responder(index, body) else {
-        return;
-    };
-    let reply = format!(
-        "HTTP/1.1 {status} Status\r\ncontent-type: application/json\r\n{headers}\
-         content-length: {}\r\nconnection: close\r\n\r\n{response}",
-        response.len()
-    );
-    stream.write_all(reply.as_bytes()).await.unwrap();
-    stream.shutdown().await.unwrap();
 }
 
 fn execute_response(rows: &Value, affected_row_count: u64) -> String {
@@ -1103,7 +1096,7 @@ fn first_statement(body: &Value) -> String {
 
 fn fast_store(url: &str, timeout: Duration) -> TursoStateStore {
     let mut store = TursoStateStore::with_timeout(configuration(url), timeout).unwrap();
-    store.retry_policy = RetryPolicy {
+    store.inner.retry_policy = RetryPolicy {
         retries: 3,
         initial_delay: Duration::from_millis(1),
     };
@@ -1467,13 +1460,13 @@ fn the_no_flag_identity_and_named_environments_are_distinct_key_values() {
     assert_eq!(
         tenant_arguments(&none),
         vec![
-            HranaValue::text("example.com/app"),
-            HranaValue::text("web"),
-            HranaValue::text(NO_ENVIRONMENT),
+            SqlValue::text("example.com/app"),
+            SqlValue::text("web"),
+            SqlValue::text(""),
         ]
     );
-    assert_eq!(tenant_arguments(&dev)[2], HranaValue::text("Dev"));
-    assert_eq!(tenant_arguments(&staging)[2], HranaValue::text("Staging"));
+    assert_eq!(tenant_arguments(&dev)[2], SqlValue::text("Dev"));
+    assert_eq!(tenant_arguments(&staging)[2], SqlValue::text("Staging"));
     assert_ne!(tenant_arguments(&dev), tenant_arguments(&staging));
     assert_ne!(tenant_arguments(&none), tenant_arguments(&dev));
     // The empty key value belongs to the no-flag identity alone.
@@ -1535,6 +1528,7 @@ async fn every_state_statement_is_scoped_by_environment() {
         assert!(store.list(&tenant).await.unwrap().is_empty());
         assert!(
             store
+                .inner
                 .read_resource(&tenant, &record.address)
                 .await
                 .unwrap()
@@ -1603,7 +1597,7 @@ async fn oversized_responses_are_refused_without_retrying() {
     }))
     .await;
     let mut store = fast_store(&server.url, Duration::from_secs(5));
-    store.maximum_response_bytes = 512;
+    store.inner.transport.maximum_response_bytes = 512;
     let message = store.list(&tenant()).await.unwrap_err().to_string();
     assert!(message.contains("exceeds the 512-byte limit"), "{message}");
     assert_eq!(server.requests.load(Ordering::SeqCst), 1);
@@ -1885,17 +1879,23 @@ fn only_the_overflow_of_the_fence_means_a_lock_is_held() {
         statements: &["CREATE TABLE cuenv_infrastructure_probe (value INTEGER NOT NULL)"],
     });
     let fence = transaction.fence_index.unwrap();
+    // Turso names the step; after BEGIN, the body's statement `fence`.
     let failed = |message: &str| {
-        let mut errors: Vec<Option<HranaError>> =
-            (0..transaction.statements.len()).map(|_| None).collect();
-        errors[fence] = Some(HranaError {
+        let mut errors: Vec<Option<HranaError>> = (0..transaction.statements.len() + 3)
+            .map(|_| None)
+            .collect();
+        errors[fence + 1] = Some(HranaError {
             message: message.to_string(),
             code: None,
         });
-        BatchResult {
-            step_results: Vec::new(),
-            step_errors: errors,
-        }
+        transaction_result(
+            &BatchResult {
+                step_results: Vec::new(),
+                step_errors: errors,
+            },
+            transaction.statements.len() + 1,
+        )
+        .unwrap()
     };
     assert_eq!(
         migration_outcome(&failed("SQLite error: integer overflow"), &transaction).unwrap(),
@@ -1987,7 +1987,7 @@ async fn layouts_and_waiting_migrations_against_a_server() {
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })
     .unwrap();
-    store.migration_wait = short_migration_wait();
+    store.inner.migration_wait = short_migration_wait();
     let store = Arc::new(store);
     let scenario = tokio::spawn({
         let store = Arc::clone(&store);
@@ -1999,7 +1999,7 @@ async fn layouts_and_waiting_migrations_against_a_server() {
 }
 
 async fn layout_scenario(store: &Arc<TursoStateStore>) -> Result<()> {
-    let create = |sql: &str| store.execute(Statement::new(sql, Vec::new()));
+    let create = |sql: &str| store.inner.execute(Statement::new(sql, Vec::new()));
     // A development build's schema table: refused as such, by every
     // operation, and nothing of this cuenv is created.
     create("CREATE TABLE cuenv_infrastructure_schema (version INTEGER NOT NULL)").await?;
@@ -2033,7 +2033,7 @@ async fn layout_scenario(store: &Arc<TursoStateStore>) -> Result<()> {
     let held = store.lock(&tenant, "stale").await?;
     let migrating = {
         let store = Arc::clone(store);
-        tokio::spawn(async move { store.migrate_to(&migrations_with_a_probe()).await })
+        tokio::spawn(async move { store.inner.migrate_to(&migrations_with_a_probe()).await })
     };
     tokio::time::sleep(Duration::from_millis(250)).await;
     let other = TenantKey::new("example.com/fake", "api")?;
@@ -2056,11 +2056,11 @@ async fn layout_scenario(store: &Arc<TursoStateStore>) -> Result<()> {
     // A lock released while it waits lets it through.
     let migrating = {
         let store = Arc::clone(store);
-        tokio::spawn(async move { store.migrate_to(&migrations_with_a_probe()).await })
+        tokio::spawn(async move { store.inner.migrate_to(&migrations_with_a_probe()).await })
     };
     tokio::time::sleep(Duration::from_millis(150)).await;
     store.unlock(&tenant, &held).await?;
     migrating.await.unwrap()?;
-    assert_eq!(store.schema_version().await?, 2);
+    assert_eq!(store.inner.schema_version().await?, 2);
     Ok(())
 }

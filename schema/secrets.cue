@@ -8,14 +8,16 @@ package schema
 // - Vault: VAULT_TOKEN + VAULT_ADDR → HTTP, otherwise CLI
 // - Infisical: Universal Auth env vars or INFISICAL_TOKEN → HTTP
 //
-// `value` and `policies` are reserved for #EnvironmentVariableWithPolicies.
-// Forbidding them here keeps `{value: ..., policies: [...]}` from also
+// `value` and `policies` are reserved for #EnvironmentVariableWithPolicies,
+// and `cuenvPassthrough` for #EnvPassthrough. Forbidding them here keeps
+// `{value: ..., policies: [...]}` and `{cuenvPassthrough: true}` from also
 // matching this open type, which would make the #EnvironmentVariable
 // disjunction ambiguous and leave the variable unresolved.
 #Secret: {
-	resolver:  "aws" | "gcp" | "onepassword" | "vault" | "infisical" | "exec"
-	value?:    _|_
-	policies?: _|_
+	resolver: "aws" | "gcp" | "onepassword" | "vault" | "infisical" | "exec"
+	value?:            _|_
+	policies?:         _|_
+	cuenvPassthrough?: _|_
 	...
 }
 
@@ -25,4 +27,3 @@ package schema
 	command:  string
 	args?: [...string]
 }
-

@@ -306,6 +306,23 @@ impl Output {
         }
     }
 
+    /// A resource added to managed state without changing the real object.
+    pub(super) fn imported(&self, tenant: &TenantKey, address: &ResourceAddress, next_plan: &str) {
+        if self.is_json() {
+            self.envelope(json!({
+                "tenant": tenant_identity(tenant),
+                "environment": tenant.environment(),
+                "imported": address.to_string(),
+                "nextCommand": next_plan,
+            }));
+        } else {
+            emit_stdout!(format!(
+                "Imported {address} into the state of {}. Run {next_plan} to review its configuration.",
+                tenant_label(tenant),
+            ));
+        }
+    }
+
     /// Records written by `state recover`.
     pub(super) fn recovered(&self, tenant: &TenantKey, addresses: &[ResourceAddress]) {
         if self.is_json() {

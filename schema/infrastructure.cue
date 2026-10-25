@@ -2,13 +2,15 @@ package schema
 
 import "strings"
 
+
 // =============================================================================
 // Infrastructure — infrastructure as code through Terraform provider plugins
 // =============================================================================
 //
 // cuenv launches unmodified Terraform provider binaries and drives them over
 // the Terraform plugin protocol (versions 5 and 6) using gRPC. Every managed
-// resource is stored as its own record in a remote Turso (libSQL) database,
+// resource is stored as its own record in a remote SQLite database (Turso or
+// Cloudflare D1),
 // keyed by the CUE module path (tenant), project name (discriminator) and
 // selected named environment. Legacy no-flag configuration has a distinct
 // state namespace.
@@ -23,7 +25,8 @@ import "strings"
 //
 // Semantic checks: this file reports a provider that sets both or neither of
 // `version` and `path`, a `dependsOn` entry or `provider` that names nothing
-// declared, and an invalid Turso URL, with `error()`. Each check applies to
+// declared, a state block that names no backend or two, and an invalid Turso
+// URL, with `error()`. Each check applies to
 // the top-level configuration and to every `environments.NAME` configuration,
 // so a mistake in an environment that is not selected is still found. A check
 // reads only the part of the configuration it needs and runs only when that
@@ -35,8 +38,9 @@ import "strings"
 // is not affected by its own module's language version. The Rust engine
 // repeats the checks for projects that do not unify with this schema.
 //
-// Proof of concept: resources cannot reference each other's attributes yet;
-// order them with `dependsOn`.
+// Proof of concept: top-level primitive resource arguments can refer to
+// another resource's primitive attribute with #InfrastructureOutputReference.
+// Use `dependsOn` when only ordering is needed.
 //
 // Closedness: every nested definition is referenced inside a struct literal
 // (`{#InfrastructureState}` rather than `#InfrastructureState`). A project
@@ -51,14 +55,67 @@ import "strings"
 	// identity inside it (module path, project name and environment).
 	state!: {#InfrastructureState}
 
+	// Exactly one state backend. Presence is decided from the field names,
+	// so a backend with an error of its own (an invalid Turso URL, a
+	// malformed D1 identifier) reports only that error.
+	if state != _|_ {
+		let backends = [for field, _ in state {field}]
+		if len(backends) == 0 {
+			_unresolved: state: error("set one state backend: `turso` or `d1`")
+		}
+		if len(backends) > 1 {
+			_unresolved: state: error("set exactly one state backend, `turso` or `d1`, not both")
+		}
+	}
+
 	// Named environments, selected with `--env NAME`. A selected environment
 	// supplies its complete provider and resource set: nothing is inherited
 	// from the top-level `providers`, `resources` or `providerEnvironment`.
 	// The common state backend remains above the environment selection.
 	environments?: [#InfrastructureName]: {#InfrastructureConfiguration}
 
+	// CI workflows that `cuenv sync ci` emits for this infrastructure, for
+	// the project's `ci.providers`. Only the top-level configuration is
+	// planned and applied.
+	workflows?: {#InfrastructureWorkflows}
+
 	// Top-level configuration, used when no `--env` is given.
 	#InfrastructureConfiguration
+}
+
+// CI workflows for infrastructure: `cuenv infrastructure plan` on pull
+// requests that touch the project, and `cuenv infrastructure apply --yes` on
+// `apply.on`. They are emitted for the project's `ci.providers` (only GitHub
+// Actions so far) and reuse its `ci` contributors (cuenv install, secret
+// providers).
+#InfrastructureWorkflows: {
+	plan: {
+		// Post the plan as a pull request comment. Each project keeps one
+		// comment, which later runs edit in place.
+		comment: *true | bool
+	}
+
+	apply: {
+		// What triggers an apply:
+		//   "push"    pushes to `branch`
+		//   "tag"     pushed tags matching `tags`
+		//   "release" published GitHub releases
+		//   "manual"  manual runs (`workflow_dispatch`) only
+		on: *"push" | "tag" | "release" | "manual"
+
+		// The branch whose pushes apply, when `on` is "push".
+		branch: *"main" | (string & !="")
+
+		// Tag patterns whose pushes apply, when `on` is "tag".
+		tags: *["v*"] | [string, ...string]
+
+		// Also allow manual runs when `on` is "push", "tag" or "release".
+		manual: *true | bool
+
+		// GitHub environment for the apply job, for example to require a
+		// reviewer's approval before it runs.
+		environment?: string
+	}
 }
 
 // The complete provider and resource set of one configuration: the top level
@@ -145,8 +202,15 @@ import "strings"
 
 #InfrastructureName: string & =~"^[a-zA-Z][a-zA-Z0-9_-]*$"
 
+// Exactly one state backend. Both keep the same tables, so a database
+// written through one is never read through the other by accident: each
+// backend names its own database.
 #InfrastructureState: {
-	turso!: {#TursoState}
+	// A Turso (libSQL) database, or a local `sqld`.
+	turso?: {#TursoState}
+
+	// A Cloudflare D1 database, reached through the Cloudflare API.
+	d1?: {#D1State}
 }
 
 #TursoState: {
@@ -169,10 +233,41 @@ import "strings"
 		_invalidUrl: error("`url` must be libsql://, https:// or wss:// with a host name or address, or http:// or ws:// with a loopback host (localhost, 127.x.y.z, [::1]); an optional port from 1 to 65535 and path; no credentials, query, fragment or whitespace")
 	}
 
-	// Environment variable holding the database authentication token. The
-	// default matches the name the Turso command line tool documents.
-	authenticationTokenEnvironmentVariable: *"TURSO_AUTH_TOKEN" | (string & =~"^[A-Za-z_][A-Za-z0-9_]*$")
+	// Database authentication token. Optional: a local `sqld` may need
+	// none, and cuenv then connects without one.
+	token?: #InfrastructureStateToken
 }
+
+#D1State: {
+	// Cloudflare account ID: the 32 lowercase hexadecimal digits shown in
+	// the dashboard and by `wrangler whoami`.
+	accountId!: string & =~"^[0-9a-f]{32}$"
+
+	// D1 database ID: the lowercase UUID `wrangler d1 list` prints (not the
+	// database name).
+	databaseId!: string & =~"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+	// Cloudflare API token with D1 Edit access. Required: the Cloudflare
+	// API refuses every request without one.
+	token!: #InfrastructureStateToken
+}
+
+// A state backend's authentication token, written like a project environment
+// variable: a literal string, a #Secret resolved when the command runs, an
+// interpolation of strings and secrets, or #EnvPassthrough with a `name` to
+// read that variable from cuenv's own environment (a CI secret, for
+// instance). Nothing is read from the environment unless it is named here.
+// Integers, booleans and policies do not apply to a token. One state database
+// serves the top level and every environment, so there is one token.
+//
+// cuenv redacts the resolved token from all output and never passes it to a
+// provider; a passthrough variable is withheld from providers under its name.
+// The passthrough arm is an inline struct, not a definition, so it is closed
+// explicitly. An open arm would accept extra fields.
+#InfrastructureStateToken: string | #Secret | #InterpolatedEnv | close({
+	cuenvPassthrough: true
+	name!:            string & =~"^[A-Za-z_][A-Za-z0-9_]*$"
+})
 
 // Building blocks of the Turso URL contract. The Rust state store parses the
 // URL independently. The schema accepts a subset of what the store accepts and
@@ -228,7 +323,20 @@ _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)
 	// Resources that must be applied before this one (and destroyed after).
 	dependsOn?: [...#InfrastructureName]
 
+	// Abstract top-level scalar outputs. Generated provider types declare the
+	// available attributes; untyped resources declare each selected attribute
+	// explicitly, for example `outputs: id: string`. Values come from provider
+	// state at runtime and are never sent as provider configuration.
+	outputs?: {[string]: string | number | bool}
+
 	// Resource arguments, validated by the provider's schema. A generated
 	// `#Resource` types them with its `#Configuration`.
 	configuration?: {...}
+}
+
+// A top-level primitive resource argument supplied by another managed
+// resource. The engine validates the selected resource and output attribute.
+#InfrastructureOutputReference: {
+	fromResource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
+	attribute!: string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
 }

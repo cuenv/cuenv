@@ -477,7 +477,7 @@ supervisor consumes that request to stop and re-spawn the service.
 
 Plan and apply infrastructure declared in the project's `infrastructure` block by
 driving Terraform provider plugins over gRPC. State is stored in the
-configured Turso database, keyed by the CUE module path, the project name and
+configured state database (Turso or Cloudflare D1), keyed by the CUE module path, the project name and
 the selected environment, and owned by one CUE instance (the project's
 directory and package).
 See [Manage infrastructure](/how-to/infrastructure/).
@@ -813,9 +813,11 @@ control characters removed.
 | `5`   | Any other infrastructure failure: provider, state store, apply, another instance owning the state, unrecorded changes pending or unusable, a recovery that would overwrite a newer record, a change that was not recorded, a lock that could not be released                                                                                                                         | `infrastructure`             |
 | `130` | Interrupted by a signal; everything applied is recorded. The lock is released, or the error says it was not and how to release it                                                                                                                                                                                                                                                    | `infrastructure_interrupted` |
 
-The Turso authentication token is read from the environment variable named by
-`infrastructure.state.turso.authenticationTokenEnvironmentVariable` (default
-`TURSO_AUTH_TOKEN`) and withheld from provider processes. Provider downloads
+The state backend's token is `infrastructure.state.<backend>.token`, one for
+every environment. It is a literal, a secret, an interpolation or an explicit
+`#EnvPassthrough` (required for D1), and nothing is read from the environment
+unless it is named there. It is redacted and never passed to provider
+processes, and a passthrough variable is withheld from them too. Provider downloads
 are cached in `TF_PLUGIN_CACHE_DIR` when set. Logs of the infrastructure
 engine follow `--level` like the rest of cuenv.
 

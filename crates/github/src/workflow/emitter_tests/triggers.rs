@@ -136,3 +136,18 @@ fn test_build_trigger_paths_sorted() {
     sorted.sort();
     assert_eq!(result, sorted);
 }
+
+#[test]
+fn push_trigger_includes_tags_without_branches() {
+    let emitter = GitHubActionsEmitter::new();
+    let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    ir.pipeline.trigger = Some(TriggerCondition {
+        tags: vec!["v*".to_string()],
+        ..Default::default()
+    });
+
+    let triggers = emitter.build_triggers(&ir, "ci.yml");
+    let push = triggers.push.expect("tag pushes trigger the workflow");
+    assert!(push.branches.is_empty());
+    assert_eq!(push.tags, vec!["v*".to_string()]);
+}

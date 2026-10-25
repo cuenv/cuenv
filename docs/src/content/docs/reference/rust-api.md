@@ -602,7 +602,7 @@ store
     .await?;
 let mut engine = InfrastructureEngine::new(EngineSetup {
     tenant: tenant.clone(), // TenantKey: module path, project name, optional environment
-    store: Arc::clone(&store), // Arc<dyn StateStore>, such as TursoStateStore
+    store: Arc::clone(&store), // Arc<dyn StateStore>, such as TursoStateStore or D1StateStore
     infrastructure,            // the selected configuration, see `Infrastructure::select`
     options: EngineOptions {
         project_directory,
@@ -644,7 +644,8 @@ it or took it over); report the second case rather than claiming a release.
 environment)` is a separate identity for a named environment (including
   `default`), and its `Display` form is `<module>#<project>@<environment>`.
   Every store method takes a `TenantKey`, and nothing falls back from one
-  identity to another. The Turso store keeps one table family keyed by
+  identity to another. The Turso and D1 stores (`TursoStateStore`,
+  `D1StateStore`, which share one SQLite implementation) keep one table family keyed by
   `(module_path, project, environment, …)`, with an empty environment for the
   no-flag identity, at schema version 1; `migrate()` fails with
   `InfrastructureError::StateSchemaNewer` for a newer schema and, for any later

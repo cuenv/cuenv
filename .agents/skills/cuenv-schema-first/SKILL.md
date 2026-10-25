@@ -16,7 +16,7 @@ Do not infer that a schema definition is fully implemented. Respect `implemented
 
 Schema project/base regression tests should build temporary local modules from the checked-out schema, return `Result` from filesystem, schema-copy, command, and evaluation setup, and avoid file-level unwrap/expect allowances so schema failures stay explicit.
 
-Schema authoring rules, enforced by `cuenv task ci.schema-compat` across CUE v0.16 to v0.18:
+Schema authoring rules, enforced by `cuenv task ci.schema-compat` across CUE v0.15.1 (the Nix dev shell), v0.16.1, v0.17.1 and v0.18.0-rc.1:
 
 - Do not wrap definitions in `close({...})`. Definitions are already closed, and `close()` with an embedded definition breaks file-level embedding on CUE v0.17+.
 - Reference a definition from `#Base`/`#Project` fields inside a struct literal (`config?: {#Config}`), and wrap each definition in a disjunction the same way. A bare reference is left open when a consumer embeds `schema.#Project` at file level before language `v0.18.0`.

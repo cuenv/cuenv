@@ -1,5 +1,7 @@
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
+
+use crate::environment::EnvValue;
 
 // ============================================================================
 // Infrastructure as Code Types
@@ -42,6 +44,100 @@ pub struct Infrastructure {
     /// Complete provider and resource sets selected with `--env`.
     #[serde(default)]
     pub environments: BTreeMap<String, InfrastructureConfiguration>,
+
+    /// CI workflows that `cuenv sync ci` emits for this infrastructure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<InfrastructureWorkflows>,
+}
+
+/// CI workflows that plan on pull requests and apply on `apply.on`, emitted
+/// for the project's `ci.providers`.
+///
+/// Based on `#InfrastructureWorkflows` in schema/infrastructure.cue.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InfrastructureWorkflows {
+    /// The pull request plan workflow.
+    #[serde(default)]
+    pub plan: InfrastructurePlanWorkflow,
+    /// The apply workflow.
+    #[serde(default)]
+    pub apply: InfrastructureApplyWorkflow,
+}
+
+/// The pull request plan workflow.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InfrastructurePlanWorkflow {
+    /// Post the plan as a pull request comment that later runs edit.
+    #[serde(default = "default_true")]
+    pub comment: bool,
+}
+
+impl Default for InfrastructurePlanWorkflow {
+    fn default() -> Self {
+        Self { comment: true }
+    }
+}
+
+/// The apply workflow.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InfrastructureApplyWorkflow {
+    /// What triggers an apply.
+    #[serde(default)]
+    pub on: InfrastructureApplyTrigger,
+    /// The branch whose pushes apply, when `on` is `push`.
+    #[serde(default = "default_apply_branch")]
+    pub branch: String,
+    /// Tag patterns whose pushes apply, when `on` is `tag`.
+    #[serde(default = "default_apply_tags")]
+    pub tags: Vec<String>,
+    /// Also allow manual runs when `on` is not `manual`.
+    #[serde(default = "default_true")]
+    pub manual: bool,
+    /// GitHub environment for the apply job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+}
+
+impl Default for InfrastructureApplyWorkflow {
+    fn default() -> Self {
+        Self {
+            on: InfrastructureApplyTrigger::default(),
+            branch: default_apply_branch(),
+            tags: default_apply_tags(),
+            manual: true,
+            environment: None,
+        }
+    }
+}
+
+/// What triggers an infrastructure apply workflow.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum InfrastructureApplyTrigger {
+    /// Pushes to the configured branch.
+    #[default]
+    Push,
+    /// Pushed tags matching the configured patterns.
+    Tag,
+    /// Published GitHub releases.
+    Release,
+    /// Manual runs only.
+    Manual,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+fn default_apply_branch() -> String {
+    "main".to_string()
+}
+
+fn default_apply_tags() -> Vec<String> {
+    vec!["v*".to_string()]
 }
 
 /// The complete provider and resource configuration for one named environment.
@@ -94,6 +190,8 @@ pub enum InfrastructurePolicyAction {
     Plan,
     /// `cuenv infrastructure apply`.
     Apply,
+    /// `cuenv infrastructure import`.
+    Import,
     /// `cuenv infrastructure destroy`.
     Destroy,
     /// `cuenv infrastructure state list`.
@@ -115,6 +213,7 @@ impl InfrastructurePolicyAction {
         match self {
             Self::Plan => "plan",
             Self::Apply => "apply",
+            Self::Import => "import",
             Self::Destroy => "destroy",
             Self::StateList => "state-list",
             Self::StateRemove => "state-remove",
@@ -191,6 +290,7 @@ impl Infrastructure {
             resources: configuration.resources.clone(),
             provider_environment: configuration.provider_environment,
             environments: BTreeMap::new(),
+            workflows: self.workflows.clone(),
         })
     }
 
@@ -290,12 +390,124 @@ const fn json_type_name(value: &serde_json::Value) -> &'static str {
     }
 }
 
-/// State backend configuration.
+/// State backend configuration: exactly one backend.
+///
+/// Based on `#InfrastructureState` in schema/infrastructure.cue.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct InfrastructureState {
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
+pub enum InfrastructureState {
     /// Remote Turso (libSQL) database.
-    pub turso: TursoState,
+    Turso(TursoState),
+    /// Cloudflare D1 database, reached through the Cloudflare API.
+    D1(D1State),
+}
+
+impl InfrastructureState {
+    /// The backend's authentication token. One database serves every
+    /// environment, so there is one token. `None` only for a Turso database
+    /// configured without one.
+    #[must_use]
+    pub const fn token(&self) -> Option<&StateToken> {
+        match self {
+            Self::Turso(turso) => turso.token.as_ref(),
+            Self::D1(d1) => Some(&d1.token),
+        }
+    }
+
+    /// Where the token is configured, for messages.
+    #[must_use]
+    pub const fn token_field(&self) -> &'static str {
+        match self {
+            Self::Turso(_) => "infrastructure.state.turso.token",
+            Self::D1(_) => "infrastructure.state.d1.token",
+        }
+    }
+}
+
+/// A state backend's authentication token.
+///
+/// Based on `#InfrastructureStateToken` in schema/infrastructure.cue: written
+/// like a project environment variable, but only as a string, a secret, an
+/// interpolation, or a passthrough that names its variable.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateToken {
+    /// A literal, a secret or an interpolation, resolved like a project
+    /// environment variable. Never [`EnvValue::Int`], [`EnvValue::Bool`] or
+    /// [`EnvValue::WithPolicies`].
+    Value(EnvValue),
+    /// The named variable of the cuenv process environment.
+    Passthrough {
+        /// The variable's name.
+        name: String,
+    },
+}
+
+impl StateToken {
+    /// The cuenv process variable this token reads, if it is a passthrough.
+    #[must_use]
+    pub fn passthrough_variable(&self) -> Option<&str> {
+        match self {
+            Self::Passthrough { name } => Some(name),
+            Self::Value(_) => None,
+        }
+    }
+}
+
+/// The JSON form of `#EnvPassthrough` with its required `name`.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StateTokenPassthrough {
+    cuenv_passthrough: bool,
+    name: String,
+}
+
+impl<'de> Deserialize<'de> for StateToken {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("cuenvPassthrough").is_some() {
+            let passthrough: StateTokenPassthrough = serde_json::from_value(value)
+                .map_err(|error| D::Error::custom(format!("invalid token passthrough: {error}")))?;
+            if !passthrough.cuenv_passthrough {
+                return Err(D::Error::custom(
+                    "token passthrough needs `cuenvPassthrough: true`",
+                ));
+            }
+            return Ok(Self::Passthrough {
+                name: passthrough.name,
+            });
+        }
+        match serde_json::from_value::<EnvValue>(value).map_err(D::Error::custom)? {
+            token @ (EnvValue::String(_) | EnvValue::Secret(_) | EnvValue::Interpolated(_)) => {
+                Ok(Self::Value(token))
+            }
+            EnvValue::Int(_) | EnvValue::Bool(_) => Err(D::Error::custom(
+                "a state token must be a string, a secret, an interpolation or a passthrough",
+            )),
+            EnvValue::WithPolicies(_) => Err(D::Error::custom(
+                "policies do not apply to a state token: only cuenv reads it",
+            )),
+        }
+    }
+}
+
+impl Serialize for StateToken {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Value(value) => value.serialize(serializer),
+            Self::Passthrough { name } => StateTokenPassthrough {
+                cuenv_passthrough: true,
+                name: name.clone(),
+            }
+            .serialize(serializer),
+        }
+    }
 }
 
 /// Turso database connection settings.
@@ -306,13 +518,25 @@ pub struct TursoState {
     /// `ws://` only for a loopback host (a local `sqld`).
     pub url: String,
 
-    /// Environment variable holding the database authentication token.
-    #[serde(default = "default_turso_authentication_token_environment_variable")]
-    pub authentication_token_environment_variable: String,
+    /// Database authentication token; none for a local `sqld` that needs
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<StateToken>,
 }
 
-fn default_turso_authentication_token_environment_variable() -> String {
-    "TURSO_AUTH_TOKEN".to_string()
+/// Cloudflare D1 database connection settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct D1State {
+    /// Cloudflare account ID: 32 lowercase hexadecimal digits.
+    pub account_id: String,
+
+    /// D1 database ID: a lowercase UUID.
+    pub database_id: String,
+
+    /// Cloudflare API token with D1 Edit access; the API refuses every
+    /// request without one.
+    pub token: StateToken,
 }
 
 /// A Terraform provider plugin.
@@ -345,10 +569,37 @@ pub struct InfrastructureProvider {
     pub configuration: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A top-level primitive argument supplied by another managed resource.
+///
+/// Based on `#InfrastructureOutputReference` in schema/infrastructure.cue.
+/// The engine validates the resource address, output attribute and types.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InfrastructureOutputReference {
+    /// Full address of the resource producing the value, such as `random_id.seed`.
+    pub from_resource: String,
+    /// Top-level primitive output attribute, such as `id`.
+    pub attribute: String,
+}
+
+/// Primitive type of a native CUE output declaration, retained for live-schema validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfrastructureOutputType {
+    /// A CUE string and Terraform string output.
+    String,
+    /// A CUE number and Terraform number output.
+    Number,
+    /// A CUE bool and Terraform boolean output.
+    Boolean,
+}
+
 /// A managed resource declaration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedResourceDeclaration {
+    /// Native output declaration types supplied by the evaluator, never provider inputs.
+    #[serde(skip)]
+    pub output_types: BTreeMap<String, InfrastructureOutputType>,
     /// Resource type, for example `random_pet`.
     #[serde(rename = "type")]
     pub resource_type: String,
@@ -408,6 +659,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn output_reference_round_trips_and_keeps_resource_configuration() {
+        let value = serde_json::json!({
+            "fromResource": "cloudflare_zone.primary",
+            "attribute": "id",
+        });
+        let reference: InfrastructureOutputReference =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(reference.from_resource, "cloudflare_zone.primary");
+        assert_eq!(reference.attribute, "id");
+        assert_eq!(serde_json::to_value(reference).unwrap(), value);
+        let declaration: ManagedResourceDeclaration = serde_json::from_value(serde_json::json!({
+            "type": "cloudflare_dns_record",
+            "configuration": {"zone_id": value},
+        }))
+        .unwrap();
+        assert_eq!(declaration.configuration["zone_id"], value);
+    }
+
+    #[test]
+    fn output_reference_rejects_missing_mistyped_and_unknown_fields() {
+        for value in [
+            serde_json::json!({"fromResource": "cloudflare_zone.primary"}),
+            serde_json::json!({"attribute": "id"}),
+            serde_json::json!({"fromResource": 12, "attribute": "id"}),
+            serde_json::json!({"fromResource": "cloudflare_zone.primary", "attribute": []}),
+            serde_json::json!({"fromResource": "cloudflare_zone.primary", "attribute": "id", "extra": "value"}),
+        ] {
+            assert!(serde_json::from_value::<InfrastructureOutputReference>(value).is_err());
+        }
+    }
+
+    #[test]
     fn deserializes_infrastructure_block() {
         let infrastructure: Infrastructure = serde_json::from_value(serde_json::json!({
             "state": {"turso": {"url": "libsql://db.turso.io"}},
@@ -418,13 +701,8 @@ mod tests {
             },
         }))
         .unwrap();
-        assert_eq!(
-            infrastructure
-                .state
-                .turso
-                .authentication_token_environment_variable,
-            "TURSO_AUTH_TOKEN"
-        );
+        // No token is read from anywhere unless one is configured.
+        assert_eq!(infrastructure.state.token(), None);
         assert_eq!(infrastructure.resources["pet"].provider_name(), "random");
         assert_eq!(
             infrastructure.resources["identifier"].depends_on,
@@ -502,9 +780,8 @@ mod tests {
         });
         serde_json::from_value::<Infrastructure>(valid.clone()).unwrap();
 
-        let typos: [(&[&str], &str); 6] = [
+        let typos: [(&[&str], &str); 5] = [
             (&[], "resource"),
-            (&["state"], "tursoo"),
             (&["state", "turso"], "authTokenEnv"),
             (&["providers", "random"], "sourcee"),
             (&["providers", "random"], "versions"),
@@ -527,8 +804,125 @@ mod tests {
     }
 
     #[test]
+    fn state_names_exactly_one_known_backend() {
+        let decode = |state: serde_json::Value| {
+            serde_json::from_value::<Infrastructure>(serde_json::json!({"state": state}))
+                .map(|infrastructure| infrastructure.state)
+        };
+        let d1 = decode(serde_json::json!({"d1": {
+            "accountId": "0123456789abcdef0123456789abcdef",
+            "databaseId": "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
+            "token": "d1-token",
+        }}))
+        .unwrap();
+        let InfrastructureState::D1(settings) = &d1 else {
+            panic!("{d1:?}");
+        };
+        assert_eq!(settings.account_id, "0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            d1.token(),
+            Some(&StateToken::Value(EnvValue::String("d1-token".to_string())))
+        );
+
+        for (state, expected) in [
+            (serde_json::json!({}), "expected"),
+            (
+                serde_json::json!({
+                    "turso": {"url": "libsql://db.turso.io"},
+                    "d1": {"accountId": "a", "databaseId": "b"},
+                }),
+                "map with a single key",
+            ),
+            (
+                serde_json::json!({"tursoo": {}}),
+                "unknown variant `tursoo`",
+            ),
+            (
+                serde_json::json!({"d1": {"accountId": "a", "databaseId": "b", "token": "x", "authenticationTokenEnvironmentVariable": "X"}}),
+                "unknown field `authenticationTokenEnvironmentVariable`",
+            ),
+            (
+                serde_json::json!({"d1": {"accountId": "a"}}),
+                "missing field `databaseId`",
+            ),
+            (
+                serde_json::json!({"d1": {"accountId": "a", "databaseId": "b"}}),
+                "missing field `token`",
+            ),
+            (
+                serde_json::json!({"d1": {"accountId": "a", "databaseId": "b", "token": "x", "environment": {}}}),
+                "unknown field `environment`",
+            ),
+        ] {
+            let error = decode(state.clone()).unwrap_err().to_string();
+            assert!(error.contains(expected), "{state}: {error}");
+        }
+    }
+
+    #[test]
+    fn state_tokens_take_environment_variable_forms() {
+        let decode = |token: serde_json::Value| {
+            serde_json::from_value::<InfrastructureState>(
+                serde_json::json!({"turso": {"url": "libsql://db.turso.io", "token": token}}),
+            )
+        };
+        let secret = decode(serde_json::json!({"resolver": "exec", "command": "echo"})).unwrap();
+        assert!(matches!(
+            secret.token(),
+            Some(StateToken::Value(EnvValue::Secret(_)))
+        ));
+        let interpolated =
+            decode(serde_json::json!(["prefix-", {"resolver": "exec", "command": "echo"}]))
+                .unwrap();
+        assert!(matches!(
+            interpolated.token(),
+            Some(StateToken::Value(EnvValue::Interpolated(_)))
+        ));
+        let passthrough =
+            decode(serde_json::json!({"cuenvPassthrough": true, "name": "CI_TURSO_TOKEN"}))
+                .unwrap();
+        assert_eq!(
+            passthrough
+                .token()
+                .and_then(StateToken::passthrough_variable),
+            Some("CI_TURSO_TOKEN")
+        );
+        assert_eq!(
+            passthrough.token_field(),
+            "infrastructure.state.turso.token"
+        );
+        // The JSON form round-trips.
+        for state in [&secret, &interpolated, &passthrough] {
+            let round_trip: InfrastructureState =
+                serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+            assert_eq!(&round_trip, state);
+        }
+
+        for (token, expected) in [
+            (serde_json::json!(42), "must be a string, a secret"),
+            (serde_json::json!(true), "must be a string, a secret"),
+            (
+                serde_json::json!({"value": "x", "policies": []}),
+                "policies do not apply to a state token",
+            ),
+            (
+                serde_json::json!({"cuenvPassthrough": true}),
+                "missing field `name`",
+            ),
+            (
+                serde_json::json!({"cuenvPassthrough": false, "name": "X"}),
+                "needs `cuenvPassthrough: true`",
+            ),
+        ] {
+            let error = decode(token.clone()).unwrap_err().to_string();
+            assert!(error.contains(expected), "{token}: {error}");
+        }
+    }
+
+    #[test]
     fn provider_name_defaults_to_type_prefix() {
         let declaration = ManagedResourceDeclaration {
+            output_types: BTreeMap::new(),
             resource_type: "cloudflare_dns_record".into(),
             provider: None,
             depends_on: Vec::new(),
@@ -593,7 +987,9 @@ mod tests {
         );
         assert_eq!(selected.providers["random"].path.as_deref(), Some("/bin/p"));
         assert_eq!(selected.provider_environment, ProviderEnvironment::Inherit);
-        assert_eq!(selected.state.turso.url, "libsql://db.turso.io");
+        assert!(
+            matches!(&selected.state, InfrastructureState::Turso(turso) if turso.url == "libsql://db.turso.io")
+        );
     }
 
     #[test]

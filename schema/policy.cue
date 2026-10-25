@@ -4,7 +4,7 @@ package schema
 // The names match the `cuenv infrastructure` subcommands: `state-list`,
 // `state-remove`, `state-recover` and `state-adopt` are the `state`
 // subcommands.
-#InfrastructureAction: "plan" | "apply" | "destroy" | "state-list" | "state-remove" | "state-recover" | "state-adopt" | "unlock"
+#InfrastructureAction: "plan" | "apply" | "import" | "destroy" | "state-list" | "state-remove" | "state-recover" | "state-adopt" | "unlock"
 
 // #Policy defines access control for environment variables
 #Policy: {

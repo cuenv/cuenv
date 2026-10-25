@@ -199,6 +199,11 @@ unsafe extern "C" {
         module_root: *const c_char,
         dependency_path: *const c_char,
     ) -> *mut c_char;
+    fn cue_instance_sources(
+        module_root: *const c_char,
+        directory: *const c_char,
+        package_name: *const c_char,
+    ) -> *mut c_char;
     fn cue_free_string(s: *mut c_char);
     fn cue_bridge_version() -> *mut c_char;
 }
@@ -215,6 +220,15 @@ unsafe fn cue_module_dependency_version(_: *const c_char, _: *const c_char) -> *
 }
 
 #[cfg(docsrs)]
+unsafe fn cue_instance_sources(
+    _: *const c_char,
+    _: *const c_char,
+    _: *const c_char,
+) -> *mut c_char {
+    panic!("FFI not available in documentation builds")
+}
+
+#[cfg(docsrs)]
 unsafe fn cue_free_string(_: *mut c_char) {}
 
 #[cfg(docsrs)]
@@ -222,10 +236,41 @@ unsafe fn cue_bridge_version() -> *mut c_char {
     panic!("FFI not available in documentation builds")
 }
 
+/// A native reference with its canonical CUE path and structured field labels.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectReference {
+    /// Canonical path understood by the bridge's strict validation.
+    pub path: String,
+    /// Destination labels, without CUE quoting or path parsing.
+    pub labels: Vec<String>,
+    /// Canonical terminal target labels in the same instance.
+    pub target: Vec<String>,
+    /// Bare terminal declaration type, or empty for an unsupported declaration.
+    pub primitive_type: String,
+    /// Whether the complete expression can be lowered without losing constraints.
+    pub supported: bool,
+}
+
+/// Generic native reference evaluation used by callers that lower references.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceEvaluation {
+    /// Subtrees scanned for direct, same-instance references. Expressions are excluded.
+    pub paths: Vec<String>,
+    /// Exact namespace paths that hold abstract declarations rather than configuration.
+    pub abstract_paths: Vec<String>,
+    /// Exact field paths and canonical target labels permitted to remain abstract.
+    pub deferred: std::collections::HashMap<String, Vec<String>>,
+}
+
 /// Options for module evaluation
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleEvalOptions {
+    /// Explicit reference scanning and exceptions to concrete-path validation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_evaluation: Option<ReferenceEvaluation>,
     /// Extract source positions into separate `meta` map
     pub with_meta: bool,
     /// Extract reference paths for values that are CUE references (e.g., `dependsOn: [build]`)
@@ -414,6 +459,9 @@ pub struct FieldMeta {
 /// Result of evaluating an entire CUE module
 #[derive(Debug, Default, Deserialize)]
 pub struct ModuleResult {
+    /// Canonical same-instance references under the explicitly requested scan paths.
+    #[serde(default, rename = "directReferences")]
+    pub direct_references: std::collections::HashMap<String, Vec<DirectReference>>,
     /// Map of relative path to evaluated JSON value
     pub instances: std::collections::HashMap<String, serde_json::Value>,
     /// Paths that conform to schema.#Project (verified via CUE unification)
@@ -439,6 +487,16 @@ pub struct ModuleResult {
 pub struct ModuleDependencyVersion {
     /// The dependency version, if present.
     pub version: Option<String>,
+}
+
+/// The files a CUE instance is built from.
+#[derive(Debug, Deserialize)]
+pub struct InstanceSources {
+    /// Paths relative to the module root, sorted, with `/` separators: the
+    /// instance's own files (including same-package files of ancestor
+    /// directories) and the files of every package it imports, transitively,
+    /// that lives inside the module.
+    pub files: Vec<String>,
 }
 
 struct ModuleEvalWorker {
@@ -933,6 +991,43 @@ pub fn module_dependency_version(
     process_bridge_json(&json_str, module_root, FUNCTION_NAME)
 }
 
+/// List the files the CUE instance of `package_name` in `directory` is built
+/// from. The instance is loaded but neither built nor evaluated.
+///
+/// # Errors
+///
+/// Returns an error if an argument is not a valid C string or the instance
+/// cannot be loaded.
+pub fn instance_sources(
+    module_root: &Path,
+    directory: &Path,
+    package_name: &str,
+) -> Result<InstanceSources> {
+    const FUNCTION_NAME: &str = "cue_instance_sources";
+    let c_module_root = path_to_cstring(module_root, FUNCTION_NAME, "module root")?;
+    let c_directory = path_to_cstring(directory, FUNCTION_NAME, "directory")?;
+    let c_package_name = str_to_cstring(package_name, FUNCTION_NAME, "package name")?;
+
+    // Safety: cue_instance_sources takes valid C strings and returns a
+    // heap-allocated C string owned by the caller.
+    let result_ptr = {
+        #[expect(
+            unsafe_code,
+            reason = "Required to call the Go instance-sources bridge"
+        )]
+        unsafe {
+            cue_instance_sources(
+                c_module_root.as_ptr(),
+                c_directory.as_ptr(),
+                c_package_name.as_ptr(),
+            )
+        }
+    };
+    let result = bridge_owned_c_string(result_ptr);
+    let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
+    process_bridge_json(&json_str, module_root, FUNCTION_NAME)
+}
+
 /// Convenience wrapper around `evaluate_module` for single-directory evaluation.
 ///
 /// Uses `evaluate_module` with `recursive: false` internally.
@@ -959,6 +1054,7 @@ pub fn module_dependency_version(
 )]
 pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<String> {
     let options = ModuleEvalOptions {
+        reference_evaluation: None,
         with_meta: false,
         with_references: false,
         recursive: false,

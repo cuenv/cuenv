@@ -117,3 +117,19 @@ func TestPackageScopeAll_OmitsAnonymousInstancesWithoutFiles(t *testing.T) {
 	assertInstanceKeys(t, result,
 		".:app", "child:app", "mixed:alpha", "mixed:beta", "single:single", "unnamed:_")
 }
+
+func TestRecursiveEvaluation_LoadsDirectoriesNamedLikeFiles(t *testing.T) {
+	// The walk hands the loader each directory as an argument, and the loader
+	// reads an argument with an extension as a file: "./podcast.fm" failed
+	// with "unknown file extension .fm".
+	moduleRoot := writeCueModuleAt(t, filepath.Join(t.TempDir(), "module"), map[string]string{
+		"values.cue":                   packageSource(`kind: "root"`),
+		"podcast.fm/values.cue":        packageSource(`name: "podcast"`),
+		"sites/rawkode.dev/values.cue": packageSource(`name: "site"`),
+		"schema.cue/values.cue":        packageSource(`name: "schema"`),
+	})
+
+	strict := allPackages(moduleRoot)
+	strict.instanceFailures = InstanceFailuresFail
+	assertInstanceKeys(t, strict.result(t), ".:app", "podcast.fm:app", "schema.cue:app", "sites/rawkode.dev:app")
+}

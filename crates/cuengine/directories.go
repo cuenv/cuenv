@@ -90,7 +90,9 @@ func recursiveDirectories(root string, moduleRoot string, skippedDirectories str
 		if relative == "." {
 			patterns = append(patterns, ".")
 		} else {
-			patterns = append(patterns, "./"+filepath.ToSlash(relative))
+			// The trailing slash keeps the loader from reading a directory
+			// named like a file ("podcast.fm", "schema.cue") as that file.
+			patterns = append(patterns, "./"+filepath.ToSlash(relative)+"/")
 		}
 		return nil
 	})

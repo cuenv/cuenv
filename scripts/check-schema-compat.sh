@@ -13,7 +13,9 @@
 #   fixtures.
 # - tests/schema-compat/testdata/reject/NAME/  must fail. A `// want: TEXT`
 #   line names the expected error text. A `// min-language: vX.Y.Z` line
-#   skips language versions that cannot reject it.
+#   marks a known gap: older language versions must accept the fixture and
+#   keep the misspelled field (the text before ':' in the want line) in the
+#   export. That language version and newer must fail with the want text.
 #
 # Fixtures live under `testdata` so that CUE and cuenv's module-wide
 # evaluation skip them; the reject fixtures are invalid on purpose.
@@ -27,7 +29,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 repo="$(pwd)"
 
-cue_versions="${CUENV_SCHEMA_COMPAT_CUE:-v0.16.1 v0.17.1 v0.18.0-rc.1}"
+# v0.15.1 is the CUE release in the Nix dev shell (nixpkgs cue).
+cue_versions="${CUENV_SCHEMA_COMPAT_CUE:-v0.15.1 v0.16.1 v0.17.1 v0.18.0-rc.1}"
 language_versions="v0.9.0 v0.14.1 v0.16.0 v0.17.0 v0.18.0"
 cache="${CUENV_SCHEMA_COMPAT_CACHE:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/cuenv/schema-compat}"
 
@@ -236,14 +239,42 @@ for dir in tests/schema-compat/testdata/reject/*/; do
 		record_failure "$name: missing '// want:' line"
 		continue
 	fi
+	# The known-gap field is the label the error names, for example `nmae`
+	# in `nmae: field not allowed`.
+	gap_field=""
+	if [[ -n "$min_language" ]]; then
+		gap_field="${want%%:*}"
+		gap_field="${gap_field#"${gap_field%%[![:space:]]*}"}"
+		gap_field="${gap_field%"${gap_field##*[![:space:]]}"}"
+		if [[ -z "$gap_field" || "$gap_field" == "$want" ]]; then
+			record_failure "$name: min-language requires a '// want:' line shaped like 'field: ...'"
+			continue
+		fi
+	fi
+	gap_baseline=""
 	for version in $cue_versions; do
 		for language in $language_versions; do
 			supports_language "$version" "$language" || continue
-			if [[ -n "$min_language" ]] && version_lt "$language" "$min_language"; then
-				continue
-			fi
 			consumer "$work/fixture" "$name" "$language"
 			out="$work/out.json"
+			if [[ -n "$min_language" ]] && version_lt "$language" "$min_language"; then
+				if ! evaluate "${cue[$version]}" "$work/fixture" "" "$out"; then
+					record_failure "$name: rejected under CUE $version, language $language; known gap should stay accepted before $min_language: $(head -n3 "$out.err" | tr '\n' ' ')"
+					continue
+				fi
+				if ! jq -e --arg field "$gap_field" '[.. | objects | select(has($field))] | length > 0' "$out" >/dev/null; then
+					record_failure "$name: CUE $version, language $language accepted the fixture but dropped field '$gap_field'"
+					continue
+				fi
+				if [[ -z "$gap_baseline" ]]; then
+					gap_baseline="$work/gap-baseline.json"
+					cp "$out" "$gap_baseline"
+					gap_baseline_label="CUE $version, language $language"
+				elif ! cmp -s "$gap_baseline" "$out"; then
+					record_failure "$name: accepted export under CUE $version, language $language differs from $gap_baseline_label"
+				fi
+				continue
+			fi
 			if evaluate "${cue[$version]}" "$work/fixture" "" "$out"; then
 				record_failure "$name: accepted under CUE $version, language $language; want error containing '$want'"
 			elif ! grep -qF -- "$want" "$out.err"; then

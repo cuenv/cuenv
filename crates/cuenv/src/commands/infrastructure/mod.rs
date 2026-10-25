@@ -2,7 +2,8 @@
 //!
 //! Evaluates the project's `infrastructure` block and hands it to
 //! `cuenv-infrastructure`, which drives Terraform provider plugins over gRPC
-//! and stores each managed resource in the configured Turso database. State
+//! and stores each managed resource in the configured state database (Turso
+//! or Cloudflare D1). State
 //! is keyed by the CUE module path and the project name, and owned by one
 //! CUE instance (directory and package).
 //!
@@ -18,6 +19,7 @@ mod holder;
 mod interrupts;
 mod invocation;
 mod output;
+mod output_selectors;
 mod provider;
 mod provider_environment;
 pub(crate) mod types;
@@ -32,15 +34,19 @@ use std::time::Duration;
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    ApplyContext, ApplyEvent, BackendMismatch, EngineOptions, EngineSetup, InfrastructureEngine,
-    InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, Plan, PlanMode, ProjectInstance,
-    RecoverOptions, RecoverOverrides, ResourceAddress, StateLock, StateStore, TenantKey,
-    TenantLock, TursoConfiguration, TursoStateStore, UnrecordedFileProblem, UnrecordedStore,
+    ApplyContext, ApplyEvent, BackendMismatch, D1Configuration, D1StateStore, EngineOptions,
+    EngineSetup, InfrastructureEngine, InfrastructureError, LockRequest, OwnerClaim,
+    OwnerClaimMode, Plan, PlanMode, ProjectInstance, RecoverOptions, RecoverOverrides,
+    ResourceAddress, StateLock, StateStore, TenantKey, TenantLock, TursoConfiguration,
+    TursoStateStore, UnrecordedFileProblem, UnrecordedStore, declared_resource,
     strip_control_characters, strip_control_characters_except_newlines, validate_configuration,
 };
 use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;
-use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, ProviderEnvironment};
+use cuenv_manifest::manifest::{
+    Infrastructure, InfrastructurePolicyAction, InfrastructureState, ProviderEnvironment,
+    StateToken,
+};
 
 use self::evaluation::{EnvironmentSelection, NameCheck, Needs, Target, TargetRequest, TopLevel};
 use self::interrupts::{HeldLock, Interrupts, interrupted_after_completion};
@@ -129,6 +135,13 @@ pub enum InfrastructureAction {
         /// without `--env`.
         separate_state: SeparateState,
     },
+    /// Record one provider resource that already exists.
+    Import {
+        /// Configured resource address, such as `cloudflare_zone.primary`.
+        address: String,
+        /// Opaque identifier accepted by the provider's import implementation.
+        identifier: String,
+    },
     /// Delete every managed resource of the project.
     Destroy {
         /// Whether to ask before destroying.
@@ -152,6 +165,7 @@ impl InfrastructureAction {
         match self {
             Self::Plan => InfrastructurePolicyAction::Plan,
             Self::Apply { .. } => InfrastructurePolicyAction::Apply,
+            Self::Import { .. } => InfrastructurePolicyAction::Import,
             Self::Destroy { .. } => InfrastructurePolicyAction::Destroy,
             // Listing the locks of the whole database is listing state.
             Self::State(StateAction::List | StateAction::Locks) => {
@@ -168,7 +182,7 @@ impl InfrastructureAction {
     /// environment. State-only commands resolve just the backend token.
     const fn uses_provider_environment(&self) -> bool {
         match self {
-            Self::Plan | Self::Apply { .. } | Self::Destroy { .. } => true,
+            Self::Plan | Self::Apply { .. } | Self::Import { .. } | Self::Destroy { .. } => true,
             Self::State(_) | Self::Unlock { .. } => false,
         }
     }
@@ -180,6 +194,7 @@ impl InfrastructureAction {
         match self {
             Self::Plan
             | Self::Apply { .. }
+            | Self::Import { .. }
             | Self::Destroy { .. }
             | Self::State(StateAction::Adopt) => NameCheck::WholeModule,
             Self::State(
@@ -207,7 +222,22 @@ impl InfrastructureAction {
     const fn confirmation(&self) -> ConfirmationPolicy {
         match self {
             Self::Apply { confirmation, .. } | Self::Destroy { confirmation } => *confirmation,
-            Self::Plan | Self::State(_) | Self::Unlock { .. } => ConfirmationPolicy::AssumeYes,
+            Self::Plan | Self::Import { .. } | Self::State(_) | Self::Unlock { .. } => {
+                ConfirmationPolicy::AssumeYes
+            }
+        }
+    }
+
+    /// A safe action label for traces; arguments such as provider import
+    /// identifiers are never included.
+    const fn trace_name(&self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Apply { .. } => "apply",
+            Self::Import { .. } => "import",
+            Self::Destroy { .. } => "destroy",
+            Self::State(_) => "state",
+            Self::Unlock { .. } => "unlock",
         }
     }
 }
@@ -226,10 +256,6 @@ pub struct InfrastructureOptions {
     /// Text or JSON output.
     pub output: OutputFormat,
 }
-
-const IMPORT_HELP: &str = "cuenv cannot import resources yet: find the resource with the \
-                           provider's own tools and delete it, then plan again (the next apply \
-                           creates it anew).";
 
 /// Text from a provider or the store, for display: redacted from the raw
 /// text first and then stripped of control characters except newlines
@@ -275,7 +301,10 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
         ),
         InfrastructureError::UnrecordedChangeLost { .. } => (
             InfrastructureFailureKind::Failed,
-            Some(IMPORT_HELP.to_string()),
+            Some(
+                "The provider may have changed an object, but cuenv could not record or save its state. Inspect the object and state store before retrying the operation."
+                    .to_string(),
+            ),
         ),
         InfrastructureError::Interrupted { .. }
         | InfrastructureError::InterruptedWhilePlanning
@@ -284,7 +313,11 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
         }
         InfrastructureError::State(_) => (
             InfrastructureFailureKind::Failed,
-            Some("Check the Turso URL, the authentication token and network access.".to_string()),
+            Some(
+                "Check the state backend settings (`infrastructure.state`), its authentication \
+                 token and network access."
+                    .to_string(),
+            ),
         ),
         // A local file problem, never a state store one.
         InfrastructureError::UnrecordedFile { path, kind, .. } => (
@@ -340,7 +373,7 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
                      is disposable, drop every table whose name starts with \
                      `cuenv_infrastructure` ({listed} and any others of that family) and run \
                      the command again; if it manages real resources, use another database \
-                     (`infrastructure.state.turso.url`) instead."
+                     (`infrastructure.state`) instead."
                 )),
             )
         }
@@ -348,8 +381,8 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
             InfrastructureFailureKind::Failed,
             Some(
                 "The database answered, but its tables do not match what this cuenv expects; \
-                 this is not a connection problem, so the Turso URL and token reach it. Point \
-                 `infrastructure.state.turso.url` at a database cuenv created (or an empty \
+                 this is not a connection problem, so the state backend settings and token \
+                 reach it. Point `infrastructure.state` at a database cuenv created (or an empty \
                  one), or remove the conflicting tables if they are not needed."
                     .to_string(),
             ),
@@ -358,8 +391,8 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
             InfrastructureFailureKind::Failed,
             Some(format!(
                 "The state store answered, but its record of {} is damaged or was not \
-                 written by cuenv; this is not a connection problem, so the Turso URL and \
-                 token are fine. {}",
+                 written by cuenv; this is not a connection problem, so the state backend \
+                 settings and token are fine. {}",
                 strip_control_characters(address),
                 undecodable_record_remedy(address, invocation)
             )),
@@ -515,7 +548,7 @@ fn migration_blocked(message: String, locks: &[TenantLock], invocation: &Invocat
 /// block, its name is not unique in the module, another instance owns its
 /// state, the state store is unreachable or locked, the plan is not
 /// confirmed, a provider fails, or the run is interrupted.
-#[tracing::instrument(skip_all, fields(path = %options.path, action = ?options.action))]
+#[tracing::instrument(skip_all, fields(path = %options.path, action = options.action.trace_name()))]
 pub async fn execute_infrastructure(options: &InfrastructureOptions) -> Result<(), CliError> {
     // Text read from providers (their log lines and error messages) is
     // redacted as it is read, before control characters are stripped.
@@ -553,7 +586,7 @@ async fn run(
     let target = evaluate_target(options, interrupts).await?;
     preflight(&options.action, &target, &invocation)?;
     let resolved = resolve(&options.action, &target, &invocation).await?;
-    let facts = SelectionFacts::of(&target);
+    let facts = SelectionFacts::of(&target, &options.action);
     let Target {
         tenant,
         unselected_tenant,
@@ -659,16 +692,43 @@ fn preflight(
         validate_configuration(&target.infrastructure, target.environment.as_deref())
             .map_err(|error| failure(&error, invocation))?;
     }
+    if let InfrastructureAction::Import { address, .. } = action
+        && declared_resource(
+            &target.infrastructure.resources,
+            &parse_resource_address(address)?,
+        )
+        .is_none()
+    {
+        return Err(CliError::config(format!(
+            "cannot import {}: declare that resource in the selected infrastructure configuration first",
+            strip_control_characters(address)
+        )));
+    }
     Ok(())
 }
 
-/// Parse and validate the Turso URL before any secret is resolved: nothing
-/// is sent and no client is built, so a mistake in the URL never costs a call
-/// to a secret provider. (A configured URL is validated again when the store
-/// is created.)
+/// Parse a `type.name` address with the same rules as output references.
+fn parse_resource_address(address: &str) -> Result<ResourceAddress, CliError> {
+    ResourceAddress::parse(address).ok_or_else(|| {
+        CliError::config(format!(
+            "invalid resource address {}; expected type.name",
+            strip_control_characters(address)
+        ))
+    })
+}
+
+/// Validate the state backend's address (the Turso URL, or the D1 account and
+/// database identifiers) before any secret is resolved: nothing is sent and no
+/// client is built, so a mistake never costs a call to a secret provider. (The
+/// address is validated again when the store is created.)
 fn validate_state_url(infrastructure: &Infrastructure) -> Result<(), CliError> {
-    TursoStateStore::validate_url(&infrastructure.state.turso.url)
-        .map_err(|error| failure(&error, &Invocation::default()))
+    match &infrastructure.state {
+        InfrastructureState::Turso(turso) => TursoStateStore::validate_url(&turso.url),
+        InfrastructureState::D1(d1) => {
+            D1StateStore::validate_identifiers(&d1.account_id, &d1.database_id)
+        }
+    }
+    .map_err(|error| failure(&error, &Invocation::default()))
 }
 
 /// What running the command needs from the environment and the state store.
@@ -707,50 +767,31 @@ async fn resolve(
     } else {
         Vec::new()
     };
-    let token_variable = target
-        .infrastructure
-        .state
-        .turso
-        .authentication_token_environment_variable
-        .clone();
-    if project_environment_variables
-        .get(&token_variable)
-        .is_some_and(|value| !value.is_accessible_by_infrastructure(policy_name))
-    {
-        return Err(CliError::config(format!(
-            "environment variable {token_variable} is restricted from infrastructure action {policy_name}"
-        )));
-    }
-    let mut environment_to_resolve =
-        environment_variables_for_action(action, &project_environment_variables, &token_variable);
+    let state = &target.infrastructure.state;
+    let token_variable = state
+        .token()
+        .and_then(StateToken::passthrough_variable)
+        .map(str::to_string);
     // Only the state backend's token is resolved before the state store is
     // asked who owns the project: a secret is a command or a call to a secret
     // provider, and nothing should run for a run the owner check refuses.
-    let backend_token: HashMap<String, EnvValue> = environment_to_resolve
-        .remove_entry(&token_variable)
-        .into_iter()
-        .collect();
-    let (mut resolved_variables, token_secrets) =
-        resolve_environment_variables(policy_name, &backend_token).await?;
-    // Register before connecting to state or launching providers so their
-    // diagnostics and output redact every resolved secret part.
-    cuenv_events::register_secrets(token_secrets);
-    let store = connect(
-        &target.infrastructure,
-        &project_environment_variables,
-        &resolved_variables,
-    )
-    .map_err(|error| failure(&error, &Invocation::default()))?;
+    let credential = resolve_state_token(policy_name, state).await?;
+    let store = connect(&target.infrastructure, credential)
+        .map_err(|error| failure(&error, &Invocation::default()))?;
     if action.uses_provider_environment() {
         refuse_another_owner(store.as_ref(), target, invocation).await?;
     }
-    let (other_variables, other_secrets) =
-        resolve_environment_variables(policy_name, &environment_to_resolve).await?;
-    cuenv_events::register_secrets(other_secrets);
-    resolved_variables.extend(other_variables);
+    let (resolved_variables, secrets) = resolve_environment_variables(
+        policy_name,
+        &environment_variables_for_action(action, &project_environment_variables),
+    )
+    .await?;
+    cuenv_events::register_secrets(secrets);
+    // A project variable named like the token's passthrough variable never
+    // reaches a provider either.
     let mut provider_environment_variables: BTreeMap<String, String> = resolved_variables
         .into_iter()
-        .filter(|(name, _)| name != &token_variable)
+        .filter(|(name, _)| Some(name) != token_variable.as_ref())
         .collect();
     let provided: Vec<String> = provider_environment_variables.keys().cloned().collect();
     // The remote cache's credentials are named by the project's configuration.
@@ -763,7 +804,7 @@ async fn resolve(
             .filter_map(|name| std::env::var(name).ok())
             .filter(|value| !value.is_empty()),
     );
-    let withheld_environment_variables = if action.uses_provider_environment() {
+    let mut withheld_environment_variables = if action.uses_provider_environment() {
         if target.provider_environment == ProviderEnvironment::Isolated {
             // Proxy URLs carrying credentials reach isolated providers
             // without them (an overlay replaces the inherited value).
@@ -778,11 +819,15 @@ async fn resolve(
             provided: &provided,
             policy_withheld: &policy_withheld,
             configured_credentials: &target.remote_cache_credential_variables,
-            token_variable: &token_variable,
+            token_variable: token_variable.as_deref(),
         })
     } else {
         Vec::new()
     };
+    // Withheld whatever the action, so an engine never hands it on.
+    withheld_environment_variables.extend(token_variable);
+    withheld_environment_variables.sort();
+    withheld_environment_variables.dedup();
     Ok(Resolved {
         store,
         provider_environment_variables,
@@ -874,6 +919,69 @@ fn secret_failure(variable: &str, error: cuenv_core::Error) -> CliError {
     )
 }
 
+/// The state backend's token, resolved, and what to say when there is none.
+#[derive(Debug)]
+struct StateCredential {
+    token: Option<String>,
+    /// Why `token` is `None`, naming the configuration field.
+    absence: String,
+}
+
+/// Resolve the state token: read a passthrough variable from the cuenv
+/// process environment, or resolve a literal, secret or interpolation like a
+/// project environment variable. Every resolved secret part and the token
+/// itself are registered for redaction before anything is connected.
+async fn resolve_state_token(
+    action: InfrastructurePolicyAction,
+    state: &InfrastructureState,
+) -> Result<StateCredential, CliError> {
+    let field = state.token_field().to_string();
+    let (token, absence) = match state.token() {
+        None => (None, format!("no state token is configured (`{field}`)")),
+        Some(StateToken::Passthrough { name }) => (
+            std::env::var(name).ok(),
+            format!("`{field}` reads {name}, which is not set or is empty"),
+        ),
+        Some(StateToken::Value(value)) => {
+            let single = HashMap::from([(field.clone(), value.clone())]);
+            let (mut values, secrets) =
+                cuenv_core::environment::Environment::resolve_for_infrastructure_with_secrets(
+                    action, &single,
+                )
+                .await
+                .map_err(|error| state_token_failure(&field, error))?;
+            cuenv_events::register_secrets(secrets);
+            (
+                values.remove(&field),
+                format!("`{field}` resolved to an empty value"),
+            )
+        }
+    };
+    let token = token.filter(|token| !token.is_empty());
+    // Redact the token from every output from here on, including provider
+    // and store errors that might echo it.
+    if let Some(token) = &token {
+        cuenv_events::register_secret(token.clone());
+    }
+    Ok(StateCredential { token, absence })
+}
+
+/// The error for a state token whose secret could not be resolved, a failure
+/// of the secret provider like [`secret_failure`].
+fn state_token_failure(field: &str, error: cuenv_core::Error) -> CliError {
+    let message = CliError::from(error).message().to_string();
+    let reason = message
+        .strip_prefix("Failed to resolve secret 'secret': ")
+        .unwrap_or(&message);
+    CliError::eval_with_help(
+        format!("cannot resolve the state token `{field}`: {reason}"),
+        format!(
+            "Check the configuration and credentials of the secret provider behind `{field}` \
+             (1Password, AWS, Vault, a command...)."
+        ),
+    )
+}
+
 /// The other state identities of the project, besides the one this run acts
 /// on: what hints and refusals look at when state exists under a different
 /// `--env` than the one given (or the one forgotten).
@@ -923,17 +1031,21 @@ struct SelectionFacts {
 }
 
 impl SelectionFacts {
-    fn of(target: &Target) -> Self {
+    fn of(target: &Target, action: &InfrastructureAction) -> Self {
+        let mut configured: Vec<ResourceAddress> = target
+            .infrastructure
+            .resources
+            .iter()
+            .map(|(name, declaration)| {
+                ResourceAddress::new(declaration.resource_type.clone(), name.clone())
+            })
+            .collect();
+        if let InfrastructureAction::Import { address, .. } = action {
+            configured.retain(|resource| resource.to_string() == *address);
+        }
         Self {
             selection: target.selection,
-            configured: target
-                .infrastructure
-                .resources
-                .iter()
-                .map(|(name, declaration)| {
-                    ResourceAddress::new(declaration.resource_type.clone(), name.clone())
-                })
-                .collect(),
+            configured,
         }
     }
 }
@@ -960,6 +1072,7 @@ async fn guard_selection(
     match request.action {
         InfrastructureAction::Plan
         | InfrastructureAction::Apply { .. }
+        | InfrastructureAction::Import { .. }
         | InfrastructureAction::Destroy { .. } => guard_identity(context, request).await,
         // Whole database, or another project's tenant: nothing of the
         // evaluated project's environments applies.
@@ -1420,18 +1533,17 @@ fn refuse_unconfirmable(
     Ok(())
 }
 
+/// The project variables an action resolves: all of them for an action that
+/// starts providers, none for a state-only action.
 fn environment_variables_for_action(
     action: &InfrastructureAction,
     project_environment: &HashMap<String, EnvValue>,
-    token_variable: &str,
 ) -> HashMap<String, EnvValue> {
     if action.uses_provider_environment() {
-        return project_environment.clone();
+        project_environment.clone()
+    } else {
+        HashMap::new()
     }
-    project_environment
-        .get(token_variable)
-        .map(|value| HashMap::from([(token_variable.to_string(), value.clone())]))
-        .unwrap_or_default()
 }
 
 /// Evaluate the target on a thread of its own. CUE evaluation cannot be
@@ -1544,6 +1656,18 @@ async fn dispatch(
                 .await?
         }
         InfrastructureAction::Plan => plan(context, inputs).await,
+        InfrastructureAction::Import {
+            address,
+            identifier,
+        } => {
+            import(ImportRequest {
+                context,
+                inputs,
+                address,
+                identifier,
+            })
+            .await
+        }
         InfrastructureAction::Apply { confirmation, .. } => {
             converge(
                 &Convergence {
@@ -1581,17 +1705,7 @@ fn locked_providers(
 }
 
 fn engine_setup(context: &CommandContext<'_>, inputs: EngineInputs) -> EngineSetup {
-    let mut withheld_environment_variables = vec![
-        inputs
-            .infrastructure
-            .state
-            .turso
-            .authentication_token_environment_variable
-            .clone(),
-    ];
-    withheld_environment_variables.extend(inputs.withheld_environment_variables);
-    withheld_environment_variables.sort();
-    withheld_environment_variables.dedup();
+    let withheld_environment_variables = inputs.withheld_environment_variables;
     EngineSetup {
         tenant: context.tenant.clone(),
         store: Arc::clone(context.store),
@@ -1633,29 +1747,35 @@ fn unrecorded_store(
 /// tables, and [`under_lock`] creates or upgrades them before any write.
 fn connect(
     infrastructure: &Infrastructure,
-    project_environment: &HashMap<String, EnvValue>,
-    resolved_environment: &HashMap<String, String>,
+    credential: StateCredential,
 ) -> cuenv_infrastructure::Result<Arc<dyn StateStore>> {
-    let turso = &infrastructure.state.turso;
-    let variable = &turso.authentication_token_environment_variable;
-    let authentication_token = if project_environment.contains_key(variable) {
-        resolved_environment.get(variable).cloned()
-    } else {
-        std::env::var(variable).ok()
+    let StateCredential { token, absence } = credential;
+    match &infrastructure.state {
+        InfrastructureState::Turso(turso) => {
+            if token.is_none() {
+                emit_stderr!(format!(
+                    "warning: {absence}; connecting to Turso without an authentication token"
+                ));
+            }
+            Ok(Arc::new(TursoStateStore::new(TursoConfiguration {
+                url: turso.url.clone(),
+                authentication_token: token,
+            })?))
+        }
+        // The Cloudflare API refuses every request without a token.
+        InfrastructureState::D1(d1) => {
+            let api_token = token.ok_or_else(|| {
+                InfrastructureError::configuration(format!(
+                    "{absence}; D1 state needs a Cloudflare API token with D1 Edit access"
+                ))
+            })?;
+            Ok(Arc::new(D1StateStore::new(D1Configuration {
+                account_id: d1.account_id.clone(),
+                database_id: d1.database_id.clone(),
+                api_token,
+            })?))
+        }
     }
-    .filter(|token| !token.is_empty());
-    match &authentication_token {
-        // Redact the token from every output from here on, including
-        // provider and store errors that might echo it.
-        Some(token) => cuenv_events::register_secret(token.clone()),
-        None => emit_stderr!(format!(
-            "warning: {variable} is not set; connecting to Turso without an authentication token"
-        )),
-    }
-    Ok(Arc::new(TursoStateStore::new(TursoConfiguration {
-        url: turso.url.clone(),
-        authentication_token,
-    })?))
 }
 
 /// Refuse to act on state another CUE instance owns. Reads only.
@@ -2190,6 +2310,46 @@ async fn plan(context: &CommandContext<'_>, inputs: EngineInputs) -> Result<(), 
     let plan = result.map_err(|error| failure(&error, context.invocation))?;
     context.output.plan(&plan);
     Ok(())
+}
+
+/// The inputs needed to import a provider resource.
+struct ImportRequest<'command, 'context> {
+    context: &'command CommandContext<'context>,
+    inputs: EngineInputs,
+    address: &'command str,
+    identifier: &'command str,
+}
+
+/// Import a provider resource while holding the tenant lock and after
+/// confirming this CUE instance owns the state.
+async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliError> {
+    let ImportRequest {
+        context,
+        inputs,
+        address,
+        identifier,
+    } = request;
+    let target = parse_resource_address(address)?;
+    let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
+    let importing = &mut engine;
+    let result = under_lock(context, "import", |lock| async move {
+        claim_ownership(context, &lock).await?;
+        let warnings = importing
+            .import(&target, identifier, &lock)
+            .await
+            .map_err(|error| failure(&error, context.invocation))?;
+        context.interrupts.check()?;
+        for warning in warnings {
+            emit_stderr!(format!("warning: {warning}"));
+        }
+        context
+            .output
+            .imported(context.tenant, &target, &context.invocation.command("plan"));
+        Ok(())
+    })
+    .await;
+    engine.shutdown().await;
+    result
 }
 
 /// How a converging command runs.

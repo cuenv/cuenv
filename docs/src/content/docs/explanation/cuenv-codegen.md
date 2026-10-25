@@ -53,14 +53,14 @@ The top-level codegen configuration:
 ```cue
 #Codegen: {
     files:    [string]: gen.#ProjectFile  // Files to generate (path → definition)
-    context?: _                            // Optional context data for templating
+    context?: {...}                        // Optional struct passed into templates
 }
 ```
 
 | Field     | Type                      | Description                           |
 | --------- | ------------------------- | ------------------------------------- |
 | `files`   | `map[string]#ProjectFile` | Map of file paths to file definitions |
-| `context` | `any` (optional)          | Context data available for templating |
+| `context` | struct (optional)         | Context data available for templating. A string or list is rejected. |
 
 ### #ProjectFile
 

@@ -25,6 +25,7 @@ use cuenv_manifest::environment::Env;
 use cuenv_manifest::manifest::{Infrastructure, InfrastructureSelectionError, ProviderEnvironment};
 
 use super::invocation::Invocation;
+use super::output_selectors::OutputSelectors;
 use crate::cli::CliError;
 use crate::commands::module_evaluation::{PathEvaluation, evaluate_path};
 
@@ -155,9 +156,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         })
         .transpose()?;
     let mut concrete_paths = vec!["infrastructure.state".to_string()];
-    if let Some(path) = &selected_path {
-        concrete_paths.push(path.clone());
-    }
+
     // Export the infrastructure object leniently so its complete set of
     // top-level keys reaches the DTO's unknown-field check. Only selected
     // paths are required concrete; unselected named values are removed before
@@ -171,7 +170,14 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         Needs::StateOnly => "infrastructure.state",
     };
     let export_paths = exported_paths(infrastructure_path);
+    let scanning = OutputSelectors {
+        instance_path: ".",
+        references: &std::collections::HashMap::new(),
+        environment: request.environment,
+    }
+    .scanning();
     let mut module = evaluate_path(PathEvaluation {
+        reference_evaluation: (request.needs == Needs::Configuration).then_some(scanning),
         target_path: &target_path,
         package: request.package,
         concrete_paths: concrete_paths.clone(),
@@ -186,21 +192,31 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             error,
         })
     })?;
-    if request.environment.is_none() && request.needs == Needs::Configuration {
+    if request.needs == Needs::Configuration {
         let relative_path = compute_relative_path(&target_path, &module.root);
-        if let Some(value) = module
-            .get(Path::new(&relative_path))
-            .map(|instance| &instance.value)
-        {
-            for field in ["providers", "resources"] {
-                if value.pointer(&format!("/infrastructure/{field}")).is_some() {
-                    concrete_paths.push(format!("infrastructure.{field}"));
+        if let Some(instance) = module.get(Path::new(&relative_path)) {
+            if let Some(path) = &selected_path {
+                concrete_paths.push(path.clone());
+            } else {
+                for field in ["providers", "resources"] {
+                    if instance
+                        .value
+                        .pointer(&format!("/infrastructure/{field}"))
+                        .is_some()
+                    {
+                        concrete_paths.push(format!("infrastructure.{field}"));
+                    }
                 }
             }
-        }
-        if concrete_paths.len() > 1 {
+            let selectors = OutputSelectors {
+                instance_path: &relative_path,
+                references: &module.direct_references,
+                environment: request.environment,
+            };
+            let references = selectors.evaluation(&instance.value)?;
             let unselected_export_paths = exported_paths("infrastructure");
             module = evaluate_path(PathEvaluation {
+                reference_evaluation: Some(references),
                 target_path: &target_path,
                 package: request.package,
                 concrete_paths,
@@ -341,6 +357,16 @@ fn project_target(
         ))
     })?;
     let mut selected = instance.clone();
+    let output_declarations = if request.needs == Needs::Configuration {
+        OutputSelectors {
+            instance_path: &relative_path,
+            references: &module.direct_references,
+            environment,
+        }
+        .lower(&mut selected.value)?
+    } else {
+        BTreeMap::new()
+    };
     let declared_environments = match request.needs {
         Needs::Configuration => declared_environment_names(&selected.value),
         Needs::StateOnly => declared_environments_if_evaluable(target_path, request.package),
@@ -380,12 +406,19 @@ fn project_target(
         project_name: &project_name,
         declared_environments: &declared_environments,
     };
-    let infrastructure = selected
+    let mut infrastructure = selected
         .value
         .get("infrastructure")
         .cloned()
         .map(|value| select_infrastructure(value, &selection))
         .transpose()?;
+    if let Some(infrastructure) = &mut infrastructure {
+        for (name, declarations) in output_declarations {
+            if let Some(resource) = infrastructure.resources.get_mut(&name) {
+                resource.output_types = declarations;
+            }
+        }
+    }
     Ok(ProjectedTarget {
         project,
         infrastructure,
@@ -460,6 +493,7 @@ fn select_infrastructure(
 /// value is unknown.
 fn export_if_evaluable(target_path: &Path, package: &str, path: &str) -> Option<serde_json::Value> {
     let module = evaluate_path(PathEvaluation {
+        reference_evaluation: None,
         target_path,
         package,
         concrete_paths: Vec::new(),
@@ -586,6 +620,7 @@ fn explain_concrete_failure(failure: ConcreteFailure<'_>) -> CliError {
         error,
     } = failure;
     let lenient = evaluate_path(PathEvaluation {
+        reference_evaluation: None,
         target_path,
         package,
         concrete_paths: Vec::new(),
@@ -853,6 +888,214 @@ fn check_unique_name(check: &UniquenessCheck<'_>) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type TestResult<Success = ()> = Result<Success, Box<dyn std::error::Error>>;
+
+    fn native_fixture(body: &str) -> TestResult<tempfile::TempDir> {
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir(directory.path().join("cue.mod"))?;
+        std::fs::create_dir(directory.path().join("schema"))?;
+        std::fs::write(
+            directory.path().join("cue.mod/module.cue"),
+            "module: \"example.com/native\"\nlanguage: version: \"v0.14.1\"\n",
+        )?;
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // `infrastructure.cue` and the definitions its state token uses.
+        for file in ["infrastructure.cue", "env.cue", "secrets.cue", "policy.cue"] {
+            std::fs::copy(
+                repository.join("schema").join(file),
+                directory.path().join("schema").join(file),
+            )?;
+        }
+        std::fs::write(
+            directory.path().join("env.cue"),
+            format!(
+                r#"package cuenv
+import "example.com/native/schema"
+name: "native"
+infrastructure: schema.#Infrastructure & {{
+ state: turso: url: "http://127.0.0.1:8080"
+ providers: fake: {{source: "example/fake", path: "/not-started"}}
+ {body}
+}}
+"#
+            ),
+        )?;
+        Ok(directory)
+    }
+
+    fn evaluate_native_fixture(
+        directory: &Path,
+        environment: Option<&str>,
+    ) -> Result<Target, CliError> {
+        evaluate(TargetRequest {
+            path: &directory.to_string_lossy(),
+            package: "cuenv",
+            name_check: NameCheck::TargetOnly,
+            needs: Needs::Configuration,
+            environment,
+        })
+    }
+
+    #[test]
+    fn native_selectors_lower_to_identical_descriptors_and_retain_output_types() -> TestResult {
+        use cuenv_manifest::manifest::InfrastructureOutputType;
+        let direct = native_fixture(
+            r#"resources: {
+ primary: {type: "fake_plain", outputs: id: string}
+ record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}
+}"#,
+        )?;
+        let descriptor = native_fixture(
+            r#"resources: {
+ primary: {type: "fake_plain"}
+ record: {type: "fake_plain", configuration: name: {fromResource: "fake_plain.primary", attribute: "id"}}
+}"#,
+        )?;
+        let native = evaluate_native_fixture(direct.path(), None)?.infrastructure;
+        let existing = evaluate_native_fixture(descriptor.path(), None)?.infrastructure;
+        assert_eq!(
+            serde_json::to_value(&native)?,
+            serde_json::to_value(&existing)?
+        );
+        assert_eq!(
+            native.resources["primary"].output_types.get("id"),
+            Some(&InfrastructureOutputType::String)
+        );
+        cuenv_infrastructure::validate_configuration(&native, None)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_selectors_support_aliases_conjunctions_and_quoted_labels() -> TestResult {
+        let directory = native_fixture(
+            r#"let alias = infrastructure.resources["source-key"].outputs["_id"]
+ _fieldAlias: infrastructure.resources["source-key"].outputs["_id"]
+ resources: {
+ "source-key": {type: "fake_plain", outputs: {"_id": string, "true": string}}
+ record: {type: "fake_plain", configuration: {
+  direct: infrastructure.resources["source-key"].outputs["_id"]
+  viaLet: alias
+  viaField: _fieldAlias
+  typed: string & infrastructure.resources["source-key"].outputs["_id"]
+  "_argument": infrastructure.resources["source-key"].outputs["_id"]
+  "true": infrastructure.resources["source-key"].outputs["true"]
+ }}
+}"#,
+        )?;
+        let configuration = evaluate_native_fixture(directory.path(), None)?.infrastructure;
+        for (name, value) in &configuration.resources["record"].configuration {
+            assert_eq!(value["fromResource"], "fake_plain.source-key", "{name}");
+            assert_eq!(
+                value["attribute"],
+                if name == "true" { "true" } else { "_id" },
+                "{name}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_labels_named_outputs_remain_ordinary_references() -> TestResult {
+        let directory = native_fixture(
+            r#"resources: {
+ outputs: {type: "fake_plain", configuration: name: "literal"}
+ record: {type: "fake_plain", configuration: outputs: infrastructure.resources.outputs.configuration.name}
+}"#,
+        )?;
+        let configuration = evaluate_native_fixture(directory.path(), None)?.infrastructure;
+        assert_eq!(
+            configuration.resources["record"].configuration["outputs"],
+            "literal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_selectors_use_only_the_selected_environment() -> TestResult {
+        let directory = native_fixture(
+            r#"environments: "outputs": {
+ providers: fake: {source: "example/fake", path: "/not-started"}
+ resources: {
+ primary: {type: "fake_plain", outputs: id: string}
+ record: {type: "fake_plain", configuration: name: infrastructure.environments.outputs.resources.primary.outputs.id}
+ }
+}
+environments: unused: providers: fake: {source: "example/fake", version: string}"#,
+        )?;
+        let configuration =
+            evaluate_native_fixture(directory.path(), Some("outputs"))?.infrastructure;
+        assert_eq!(
+            configuration.resources["record"].configuration["name"]["fromResource"],
+            "fake_plain.primary"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_defaulted_structs_are_preserved() -> TestResult {
+        let directory = native_fixture(
+            r#"resources: record: {type: "fake_plain", configuration: name: *{} | {field: string, another: int}}"#,
+        )?;
+        let configuration = evaluate_native_fixture(directory.path(), None)?.infrastructure;
+        assert_eq!(
+            configuration.resources["record"].configuration["name"],
+            serde_json::json!({})
+        );
+        let directory = native_fixture(
+            r#"resources: record: {type: "fake_plain", configuration: {names: *[] | [for value in [{name: "literal"}] {value.name}], chain: *[] | [for item in [1] let alias = item {value: alias}]}}"#,
+        )?;
+        let configuration = evaluate_native_fixture(directory.path(), None)?.infrastructure;
+        assert_eq!(
+            configuration.resources["record"].configuration["names"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            configuration.resources["record"].configuration["chain"],
+            serde_json::json!([])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_native_selectors_fail_before_external_side_effects() -> TestResult {
+        for body in [
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: infrastructure.resources.missing.outputs.id}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string & =~"^prefix"}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: number & >0}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: *"default" | string}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id & "literal"}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | infrastructure.resources.primary.outputs.id}}"#,
+            r#"let string = infrastructure.resources.primary.outputs.id
+resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: name: *42 | string}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: {string: infrastructure.resources.primary.outputs.id, name: *42 | string}}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *{} | {field: infrastructure.resources.primary.outputs.id}}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | infrastructure.resources.primary.outputs.id[0:2]}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *[] | [for value in [infrastructure.resources.primary.outputs.id] {value}]}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: index: number}, record: {type: "fake_plain", configuration: name: *0 | [1,2][infrastructure.resources.primary.outputs.index]}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: index: number}, record: {type: "fake_plain", configuration: name: *[] | [for values in [[1,2]] {values[infrastructure.resources.primary.outputs.index]}]}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *{} | {"\(infrastructure.resources.primary.outputs.id)": "literal"}}}"#,
+            r#"let alias = infrastructure.resources.primary.outputs.id
+resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | alias}}"#,
+            r#"_alias: infrastructure.resources.primary.outputs.id
+resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | _alias}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: (number | =~"^prefix") & infrastructure.resources.primary.outputs.id}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: "prefix-\(infrastructure.resources.primary.outputs.id)"}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id + 1}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: nested: name: infrastructure.resources.primary.outputs.id}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, missing!: string}}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, unknown: string}}}"#,
+            r#"providers: fake: configuration: name: infrastructure.resources.primary.outputs.id
+resources: primary: {type: "fake_plain", outputs: id: string}"#,
+        ] {
+            let directory = native_fixture(body)?;
+            assert!(
+                evaluate_native_fixture(directory.path(), None).is_err(),
+                "{body}"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn keys_normalize_like_instances() {

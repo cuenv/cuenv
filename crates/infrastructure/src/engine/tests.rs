@@ -142,11 +142,31 @@ async fn provider_install_source_is_validated_before_provider_launch() {
 
 fn declaration(resource_type: &str, depends_on: &[&str]) -> ManagedResourceDeclaration {
     ManagedResourceDeclaration {
+        output_types: BTreeMap::new(),
         resource_type: resource_type.into(),
         provider: None,
         depends_on: depends_on.iter().map(|name| (*name).to_owned()).collect(),
         configuration: serde_json::Map::new(),
     }
+}
+
+#[test]
+fn full_dependencies_preserves_declared_order_and_appends_unique_references() {
+    let mut consumer = declaration("fake_obj", &["third", "first", "third"]);
+    consumer.configuration.insert(
+        "parent".into(),
+        json!({"fromResource": "fake_obj.third", "attribute": "id"}),
+    );
+    let declared = BTreeMap::from([
+        ("consumer".into(), consumer),
+        ("first".into(), declaration("fake_obj", &[])),
+        ("third".into(), declaration("fake_obj", &[])),
+    ]);
+    let references = ConfigurationReferences::extract(&declared["consumer"].configuration).unwrap();
+    assert_eq!(
+        full_dependencies(&declared, &declared["consumer"], &references).unwrap(),
+        ["fake_obj.third", "fake_obj.first"]
+    );
 }
 
 fn provider(version: Option<&str>, path: Option<&str>) -> InfrastructureProvider {
@@ -370,6 +390,7 @@ async fn invalid_unused_provider_fails_before_any_declared_provider_launches() {
     configuration.resources.insert(
         "pet".into(),
         ManagedResourceDeclaration {
+            output_types: BTreeMap::new(),
             resource_type: "random_pet".into(),
             provider: None,
             depends_on: Vec::new(),
@@ -465,6 +486,8 @@ fn change(address: ResourceAddress, action: Action) -> ResourceChange {
         sensitive: Vec::new(),
         requires_replace: Vec::new(),
         dependencies: Vec::new(),
+        references: crate::references::ConfigurationReferences::default(),
+        reference_configuration: None,
         steps: Vec::new(),
         refreshed_record: None,
         stored: None,
@@ -491,6 +514,7 @@ fn replacement_step(kind: StepKind) -> ApplyStep {
         planned: Vec::new(),
         configuration: Vec::new(),
         planned_private: Vec::new(),
+        prior_private: Vec::new(),
         planned_value: Value::Null,
     }
 }
@@ -1286,8 +1310,7 @@ impl OperationRunner for ScriptedRunner {
     async fn run_operation(
         &self,
         operation: &ApplyOperation<'_>,
-        _lock: &StateLock,
-        _on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+        _context: OperationRunContext<'_>,
     ) -> std::result::Result<(), OperationFailure> {
         let label = format!("{} {}", operation.kind.label(), operation.change.address);
         self.journal.lock().unwrap().push(label.clone());
@@ -1377,6 +1400,7 @@ async fn run_scripted(
             Convergence {
                 plan: &plan,
                 lock: &lock,
+                rows: BTreeMap::new(),
                 on_event: &mut |event| events.push(event),
             },
         )
@@ -1426,8 +1450,7 @@ impl OperationRunner for IdentityRunner {
     async fn run_operation(
         &self,
         operation: &ApplyOperation<'_>,
-        _lock: &StateLock,
-        _on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+        _context: OperationRunContext<'_>,
     ) -> std::result::Result<(), OperationFailure> {
         let address = operation.change.address.to_string();
         let mut held = self.held.lock().unwrap();
@@ -1559,6 +1582,7 @@ async fn a_replacement_whose_new_prerequisite_fails_to_create_is_left_deleted_an
             Convergence {
                 plan: &plan,
                 lock: &lock,
+                rows: BTreeMap::new(),
                 on_event: &mut |event| events.push(event),
             },
         )
@@ -1701,6 +1725,7 @@ async fn an_interrupt_between_the_halves_reports_the_replacement_it_left_deleted
             Convergence {
                 plan: &plan,
                 lock: &lock,
+                rows: BTreeMap::new(),
                 on_event: &mut |event| events.push(event),
             },
         )
@@ -1789,6 +1814,7 @@ async fn a_fatal_failure_ends_the_run_and_keeps_earlier_failures_visible() {
             Convergence {
                 plan: &plan,
                 lock: &lock,
+                rows: BTreeMap::new(),
                 on_event: &mut |event| events.push(event),
             },
         )
@@ -1920,6 +1946,22 @@ fn interrupted_apply_without_a_provider_response_reports_the_unknown_resource() 
             .to_string()
             .contains("every applied change is recorded")
     );
+}
+
+#[test]
+fn referenced_replan_continues_for_provider_failures_but_aborts_storage_and_interrupt_errors() {
+    let provider_error = OperationFailure::from_reference_replan(InfrastructureError::plugin(
+        "provider rejected the resolved configuration",
+    ));
+    assert!(provider_error.continues());
+
+    let store_error =
+        OperationFailure::from_reference_replan(InfrastructureError::state("state listing failed"));
+    assert!(!store_error.continues());
+
+    let interrupt =
+        OperationFailure::from_reference_replan(InfrastructureError::InterruptedWhilePlanning);
+    assert!(!interrupt.continues());
 }
 
 #[test]
@@ -2523,6 +2565,7 @@ fn inconsistent_create_and_update_results_are_provider_errors() {
         planned: Vec::new(),
         configuration: Vec::new(),
         planned_private: Vec::new(),
+        prior_private: Vec::new(),
         planned_value: named("planned"),
     };
     let check = |step: &ApplyStep, returned: &Value| {

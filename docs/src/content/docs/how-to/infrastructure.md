@@ -1,12 +1,12 @@
 ---
 title: Manage infrastructure
-description: Declare managed resources in CUE and let cuenv drive Terraform provider plugins directly, with CUE types generated from each provider's own schema and multi-tenant state in Turso.
+description: Declare managed resources in CUE and let cuenv drive Terraform provider plugins directly, with CUE types generated from each provider's own schema and multi-tenant state in Turso or Cloudflare D1.
 ---
 
-cuenv can manage real infrastructure with the provider ecosystem you already know from Terraform and OpenTofu — without either command line tool. `cuenv infrastructure` (short form: `cuenv i`) launches unmodified `terraform-provider-*` binaries, speaks their gRPC plugin protocol (versions 5 and 6), and stores every managed resource as its own record in a remote [Turso](https://turso.tech) (libSQL) database. Use `--env Dev` or `--env Staging` to select a complete infrastructure configuration and its project environment values.
+cuenv can manage real infrastructure with the provider ecosystem you already know from Terraform and OpenTofu — without either command line tool. `cuenv infrastructure` (short form: `cuenv i`) launches unmodified `terraform-provider-*` binaries, speaks their gRPC plugin protocol (versions 5 and 6), and stores every managed resource as its own record in a remote SQLite database: [Turso](https://turso.tech) (libSQL) or [Cloudflare D1](https://developers.cloudflare.com/d1/). Use `--env Dev` or `--env Staging` to select a complete infrastructure configuration and its project environment values.
 
 :::caution[Experimental]
-`cuenv infrastructure` is **experimental**, and `cuenv infrastructure --help` says so. Its behavior, command line flags, schema and state layout can still change between releases, and it is not covered by the stability promises of the other commands. `#Infrastructure` is **partial**: create, update, replace, delete, refresh, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. Read [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, Plugin Framework resources that declare a resource identity are not handled yet, and records cannot be moved between state identities yet.
+`cuenv infrastructure` is **experimental**, and `cuenv infrastructure --help` says so. Its behavior, command line flags, schema and state layout can still change between releases, and it is not covered by the stability promises of the other commands. `#Infrastructure` is **partial**: create, update, replace, delete, refresh, import, top-level scalar output references, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. Read [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, Plugin Framework resources that declare a resource identity are not handled yet, sensitive outputs cannot be passed between resources, and records cannot be moved between state identities yet.
 
 There is no migration path from databases written by earlier development builds of this command; see [Configure the state database](#configure-the-state-database).
 :::
@@ -18,6 +18,7 @@ There is no migration path from databases written by earlier development builds 
 | `cuenv infrastructure plan`                   | `cuenv i plan`          | Refresh recorded resources and show what `apply` would change           |
 | `cuenv infrastructure apply`                  | `cuenv i apply`         | Lock, plan, confirm, apply                                              |
 | `cuenv infrastructure destroy`                | `cuenv i destroy`       | Delete every managed resource the project owns                          |
+| `cuenv infrastructure import <address> <id>`  | `cuenv i import`        | Refresh and record one existing provider resource                       |
 | `cuenv infrastructure state list`             | `cuenv i state`         | List managed resources recorded for the project (`list` is the default) |
 | `cuenv infrastructure state locks`            | `cuenv i state locks`   | List every lock in the state database, for every project                |
 | `cuenv infrastructure state remove <address>` | `cuenv i state remove`  | Forget one managed resource without deleting it                         |
@@ -31,6 +32,67 @@ There is no migration path from databases written by earlier development builds 
 `apply` also takes `--allow-separate-state` (see [Moving between identities](#moving-between-identities)), and `unlock` takes `--module` and `--project` to act on the lock of a project that is not the one being evaluated (see [Stale locks](#when-things-go-wrong)).
 
 `i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. Every subcommand honours the global `--json` flag and then prints exactly one JSON document on standard output (events go to standard error); `apply` and `destroy` require `--yes` with `--json`.
+
+`import` takes the provider's opaque import identifier. Declare the resource first, select the desired environment with `--env` when needed, then run for example `cuenv i import cloudflare_record.www <provider-specific-id>`. cuenv asks the provider to import one object, refreshes it, and records the refreshed state without calling the provider's apply operation. Review the suggested `plan` command afterward; it includes the same environment, path and package selection. The provider defines the identifier format. Sensitive import identifiers are registered for output redaction and are not included in cuenv's own output or trace fields.
+
+## Import and connect resources
+
+Import an existing object after declaring its resource type, provider and desired configuration:
+
+```bash
+cuenv i import cloudflare_record.www '<provider-specific-id>'
+cuenv i plan
+```
+
+An import identifier is interpreted by the provider. cuenv supports one returned resource of the declared type per import. It reads the imported object before storing it, so the following plan compares live state with the configuration. Import does not call `ApplyResourceChange`; it does not create or update the remote object. Use the matching `--env`, `-p` and `--package` on import and follow-up commands. The command's success output includes a plan command that preserves those selectors.
+
+A resource configuration can use a top-level scalar output from another declared resource. The descriptor form works with typed and untyped resources:
+
+```cue
+resources: {
+	primary: {
+		type: "cloudflare_zone"
+		configuration: {name: "example.com"}
+	}
+	www: {
+		type: "cloudflare_record"
+		configuration: {
+			zone_id: {
+				fromResource: "cloudflare_zone.primary"
+				attribute: "id"
+			}
+			// Other provider-required record arguments go here.
+		}
+	}
+}
+```
+
+`fromResource` is the full `type.name` address and `attribute` is a top-level provider attribute. cuenv infers an apply and destroy dependency from the reference, and stores it with the consuming resource.
+
+You can also write a native CUE selector. For an untyped resource, declare the output with its primitive type. Generated provider resource types expose supported output attributes under `outputs` automatically:
+
+```cue
+infrastructure: {
+	resources: {
+		primary: {
+			type: "cloudflare_zone"
+			outputs: {id: string}
+			configuration: {name: "example.com"}
+		}
+		www: {
+			type: "cloudflare_record"
+			configuration: {
+				zone_id: infrastructure.resources.primary.outputs.id
+				// Other provider-required record arguments go here.
+			}
+		}
+	}
+}
+```
+
+The `outputs` declaration gives CUE a reference target; cuenv resolves its value from provider state and removes the declaration before sending configuration to the provider. Selectors must name one declared top-level output in the same selected infrastructure configuration. Declare untyped outputs as a bare `string`, `number` or `bool`; refined constraints, defaults and literal values are not supported. The source output and destination argument must have the same primitive type. Nested attributes, collections, write-only fields, and sensitive outputs are not supported. Arithmetic and interpolation over provider outputs are not supported.
+
+Both forms infer the same dependency. If a source value is unknown until its create or replacement finishes, cuenv resolves it and asks the consumer provider for a final plan before applying that consumer. A replacement reported by the provider in the initial plan stays visible and is ordered as destroy then create. If only the final plan reveals a replacement that the confirmed plan did not include, cuenv stops before changing the consumer; run `plan` again after its source is recorded. Outputs that were known at plan time need no final plan. When a consumer is replaced and its final plan fails after its delete, apply warns that it was destroyed and not recreated; the next apply creates it.
 
 ## Dev and Staging environments
 
@@ -47,8 +109,8 @@ name: "platform"
 
 infrastructure: {
 	state: turso: {
-		url: "libsql://platform-acme.turso.io"
-		authenticationTokenEnvironmentVariable: "TURSO_AUTH_TOKEN"
+		url:   "libsql://platform-acme.turso.io"
+		token: schema.#OnePasswordRef & {ref: "op://platform/turso/token"}
 	}
 	environments: {
 		Dev: {
@@ -117,7 +179,7 @@ DEPLOY_TOKEN: {
 }
 ```
 
-- The names are `plan`, `apply`, `destroy`, `state-list`, `state-remove`, `state-recover`, `state-adopt` and `unlock` (`#InfrastructureAction`). Any other name fails evaluation, and so does a misspelled field such as `allowInfrastucture`.
+- The names are `plan`, `apply`, `import`, `destroy`, `state-list`, `state-remove`, `state-recover`, `state-adopt` and `unlock` (`#InfrastructureAction`). Any other name fails evaluation, and so does a misspelled field such as `allowInfrastucture`.
 - A variable that has policies is available to an infrastructure action only when some policy lists that action. `allowTasks` and `allowExec` do not grant it: a variable that was reachable from infrastructure commands before it carried only `allowTasks` is now withheld from them.
 - Policy filtering happens before any secret is retrieved. A variable the policy denies is also removed from the environment the provider inherits, so a same-named host variable cannot bypass the policy.
 - A secret that cannot be resolved fails the command with an error that names the variable. The error never quotes the secret command's own error output, because a failing command can print the secret or the credentials it was given.
@@ -176,7 +238,7 @@ cuenv refuses to run without a CUE module path, and `plan`, `apply` and `destroy
 The state database also records which instance (`<directory>:<package>`) owns each project and environment, claimed by the first `apply` or `destroy`. Any other instance using the same module path, project name and environment — another checkout, a nested module, a copied directory — is refused until you move ownership explicitly with `cuenv i state adopt`, run from the instance that should own it. `plan`, `apply` and `destroy` check the owner as soon as the state store is connected, before any of the project's secrets is resolved (an `#ExecSecret` runs a command, and nothing should run for a refused run); only the state backend's token is resolved first. `state remove` and `state recover` with pending changes check the recorded owner while holding the lock; even `state recover --force` requires ownership. They do not claim previously unowned state. `state list`, `unlock` and empty recovery skip ownership checks. State operations other than `state adopt`, and `unlock`, skip the module-wide name check so a broken sibling does not prevent access. Moving a project to a different module or renaming it starts from empty state.
 
 :::caution[Tenancy is a naming boundary, not a security boundary]
-The module path is declared by the project itself. Anyone holding a database token can read or write every tenant in that database, including every named environment of a project. For isolation between teams or customers, give each tenant its own Turso database and token.
+The module path is declared by the project itself. Anyone holding a database token can read or write every tenant in that database, including every named environment of a project. For isolation between teams or customers, give each tenant its own database and token (a Turso database, or a D1 database with a token scoped to it).
 :::
 
 ## Typed configuration
@@ -265,7 +327,7 @@ The generated files, the lock and the provider binary are tied together by the s
 
 cuenv only replaces or removes a `cue.mod/gen` directory whose `provider.cue` starts with its generated-code header, and refuses otherwise. A `cuenv.lock` that pins infrastructure providers is lockfile format version 5; cuenv versions that do not know the section refuse such a lockfile rather than drop it. Lockfiles without the section stay at version 4.
 
-What is not generated yet: data sources, computed attributes for references between resources (see [Current limitations](#current-limitations)), provider functions and ephemeral resources; write-only arguments are left out because cuenv does not send them. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource type (`hashicorp/aws` has about 1700), so evaluation only pays for the resources you import, but the generated directory is large and `cuenv sync` writes all of it.
+Generated resource configuration accepts a top-level scalar argument as either its normal value or an output reference. Data sources, provider functions and ephemeral resources are not generated; write-only arguments are left out because cuenv does not send them. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource type (`hashicorp/aws` has about 1700), so evaluation only pays for the resources you import, but the generated directory is large and `cuenv sync` writes all of it.
 
 
 ## A minimal example without typed configuration
@@ -332,23 +394,62 @@ cuenv exec -- cargo test -p cuenv-infrastructure --lib -- --ignored \
   layouts_and_waiting_migrations_against_a_server
 ```
 
-Supply `TURSO_AUTH_TOKEN` if the test server requires authentication. The lifecycle tests copy `examples/infrastructure-random/env.cue` to a temporary CUE module, use a unique project name and the supplied provider path, and keep caches and recovery files in temporary user directories. The first test verifies that planning writes no state, applying creates the pet, password and port, and a second apply has no work. It then edits the pet length from two to three in the CUE file, plans and applies its replacement, checks the new identifier and length in durable state, destroys all three resources and verifies that state and locks are empty. A second destroy must also have no work. The second test runs a named `--env dev` stack whose provider receives an `#ExecSecret` through `allowInfrastructure`, and checks that the secret reaches the provider, is not stored in state and never appears in the command's output. Default test runs skip these tests and need neither network access nor provider downloads.
+Supply `TURSO_AUTH_TOKEN` if the test server requires authentication; the generated configurations pass it through as the state token. The lifecycle tests copy `examples/infrastructure-random/env.cue` to a temporary CUE module, use a unique project name and the supplied provider path, and keep caches and recovery files in temporary user directories. The first test verifies that planning writes no state, applying creates the pet, password and port, and a second apply has no work. It then edits the pet length from two to three in the CUE file, plans and applies its replacement, checks the new identifier and length in durable state, destroys all three resources and verifies that state and locks are empty. A second destroy must also have no work. The second test runs a named `--env dev` stack whose provider receives an `#ExecSecret` through `allowInfrastructure`, and checks that the secret reaches the provider, is not stored in state and never appears in the command's output. Default test runs skip these tests and need neither network access nor provider downloads.
+
+The D1 backend runs in the default test suite against a stand-in for the D1 API backed by a real in-memory SQLite database, which binds parameters as text and runs a request's statements as one transaction as D1 does. One ignored test runs the same lifecycle (migrate, lock, write, fenced write, blocked migration) against a real D1 database; give it an otherwise unused database, since it drops cuenv's tables when it ends:
+
+```bash
+CUENV_INFRASTRUCTURE_TEST_D1_ACCOUNT_ID=<account id> \
+CUENV_INFRASTRUCTURE_TEST_D1_DATABASE_ID=<database id> \
+CLOUDFLARE_D1_API_TOKEN=<token with D1 Edit> \
+cuenv exec -- cargo test -p cuenv-infrastructure --lib -- --ignored lifecycle_against_d1
+```
 
 ## Configure the state database
 
+`infrastructure.state` names exactly one backend: `turso` or `d1`. Both keep the same tables and behave the same way: locking, compare and swap, ownership, migrations and recovery are one implementation over SQLite, and only the transport differs. Naming neither, or both, fails evaluation.
+
+### The state token
+
+Each backend takes one `token`, written like a project environment variable: any `#Secret`, a literal, or an interpolation of both. One database serves the top level and every environment, so the token does not change with `--env`. Nothing is read from the environment unless the configuration names it.
+
+- In CI, where the token arrives as an environment variable, name it explicitly: `token: schema.#EnvPassthrough & {name: "CLOUDFLARE_D1_API_TOKEN"}`. The variable is withheld from provider processes. Do not pass through `CLOUDFLARE_API_TOKEN` if the Cloudflare provider needs it, because the provider would lose its credential.
+- The token is resolved before anything else (state commands resolve nothing else), redacted from all output, never written to state and never passed to a provider. Integers, booleans and policies are rejected.
+
+### Turso
+
 ```cue
 infrastructure: state: turso: {
-	url: "libsql://platform-acme.turso.io"
-	authenticationTokenEnvironmentVariable: "TURSO_AUTH_TOKEN" // default
+	url:   "libsql://platform-acme.turso.io"
+	token: schema.#OnePasswordRef & {ref: "op://platform/turso/token"}
 }
 ```
 
 - `url` accepts `libsql://`, `https://` and `wss://`. Plain `http://` and `ws://` are accepted only for loopback addresses (a local `sqld`), so the token never crosses a network in cleartext. URLs must not carry credentials, queries or fragments.
-- The authentication token is read from the resolved project environment when that variable is declared there, otherwise from the caller's environment. It is never written to CUE or state, never shown in errors or logs, and **withheld from provider processes**. Create one with `turso db tokens create <database>`.
+- Create a token with `turso db tokens create <database>`. Without a token, cuenv warns and connects unauthenticated, which suits a local `sqld`.
+### Cloudflare D1
+
+```cue
+infrastructure: state: d1: {
+	accountId:  "0123456789abcdef0123456789abcdef"
+	databaseId: "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9"
+	token:      schema.#OnePasswordRef & {ref: "op://platform/d1/token"}
+}
+```
+
+- Create the database with `wrangler d1 create <name>` (or in the dashboard) and copy its ID; `accountId` is your Cloudflare account ID. Both must be lowercase, as Cloudflare prints them. cuenv talks to the database through the Cloudflare REST API (`/d1/database/<id>/raw`), so no Worker is needed.
+- The token is a Cloudflare API token with **D1 Edit** on the account. A D1 Read token should be enough for commands that only read (`plan`, `state list`, `unlock` without an argument), but that has not been verified yet. Unlike Turso, D1 always needs one: `token` is required, and a passthrough variable that is unset fails the command before anything is sent.
+- D1's API binds parameters as text and only in a request of a single statement, and runs the statements of one request as a transaction. cuenv's statements are shaped for that: each write is one statement that checks the lock itself, and each migration is one request that holds no parameters and fails as a whole.
+- D1 limits a string, blob or row to 2 MB. A resource whose state exceeds that cannot be recorded in D1; the error says so, and cuenv saves the change as an unrecorded file as for any other failed write.
+- Recovery files bind to a hash of the account and database IDs.
+- Transient D1 errors that Cloudflare documents as retryable (a lost network connection, a reset database, a transient issue on a remote node), as well as timeouts, 5xx and 429, are retried with backoff. An overloaded database is not retried, as Cloudflare asks. Error messages never name the account or database: Cloudflare's own messages have both IDs replaced.
+
+### What both backends share
+
 - cuenv creates and migrates its tables right before any command takes the lock. There is one table family, `cuenv_infrastructure_resources`, `cuenv_infrastructure_locks` and `cuenv_infrastructure_owners`, plus `cuenv_infrastructure_pending_migration` (see below) and `cuenv_infrastructure_migrations`, which records the schema version. Every row is keyed by module path, project name and environment; the environment is empty for a run without `--env`, and a named environment is a separate identity with no fallback to or from the no-flag one. Resource rows carry a generation (a UUID that is replaced when an address is deleted and created again) and a serial. Other commands (`plan`, `state list`, `unlock`, `state recover` with nothing to recover) never create or migrate tables, so they work with a read-only token and report empty state for a fresh database. A database whose schema is newer than the running cuenv is refused rather than misread.
 - The schema is at version 1, and no released cuenv has ever written these tables. Later versions will migrate in place, and a migration refuses to run while any run holds a lock (it is checked inside the migration's transaction), so a run that is applying changes never has its writes land in a half-migrated shape. A migration that finds locks held waits up to 30 seconds for them (announcing itself in `cuenv_infrastructure_pending_migration`, so that no new lock is taken meanwhile and a steady stream of short runs cannot starve it; the announcement expires by itself after a minute if the migrating process dies), then fails with every blocking lock listed: module, project, environment, lock identifier, holder and age. That failure exits `4` with the JSON code `infrastructure_locked` and `blockingLocks`, and its help names the command that releases each lock. One stale lock left by a dead run, of any project sharing the database, can therefore be found with `cuenv i state locks` and released with `cuenv i unlock <lock identifier> --module <module path> --project <project> [--env <name>]`, without evaluating that project.
 - **Databases written by earlier development builds of this command are not adopted, and never mistaken for newer ones.** Those builds used different table layouts and recorded schema versions 1 to 5 in `cuenv_infrastructure_schema`; this cuenv records its versions in `cuenv_infrastructure_migrations`, so the two cannot collide. A database that holds the tables of a development build (`cuenv_infrastructure_schema`, any `cuenv_infrastructure_environment_*` table, or the misspelled `cuenv_infrastructurestructure_*` family) is refused by every command, reads included, as "written by an unreleased development build of cuenv" with the tables named; a database that holds tables with cuenv's own names but no migration record is refused as a schema conflict. Neither is a connection problem. Drop every table whose name starts with `cuenv_infrastructure` before using the command, which discards the state recorded there; for a database that manages real resources, record them first and use a fresh database. Recovery files written by those builds (format versions 1 to 4 without the `kind` marker current files carry) are refused the same way, naming the file.
-- Transient failures (timeouts, 5xx, 429) are retried with backoff. Redirects are never followed, and plaintext loopback URLs bypass `HTTP_PROXY`.
+- Transient failures (timeouts, 5xx, 429, and Turso's `SQLITE_BUSY`) are retried with backoff, waiting longer when the server sends a `Retry-After` (up to 30 seconds). Redirects are never followed, response bodies are bounded, and plaintext loopback Turso URLs bypass `HTTP_PROXY`.
 
 :::caution
 Like Terraform state, resource records contain every attribute the provider returns, including values marked sensitive (for example `random_password.result`). Treat the database as secret material and scope its tokens accordingly.
@@ -445,6 +546,25 @@ Every plan is checked the way Terraform checks it: a provider that plans a value
 
 Resources removed from `infrastructure.resources` are deleted. Stored state is only ever handed back to the provider source that created it.
 
+### Plan and apply from GitHub Actions
+
+Set `infrastructure.workflows`, list `github` in `ci.providers`, and run `cuenv sync ci`:
+
+```cue
+ci: providers: ["github"]
+
+infrastructure: workflows: {}
+```
+
+cuenv writes two workflows:
+
+- `<project>-infrastructure-plan.yml` runs `cuenv i plan` on pull requests that touch the project, adds the plan to the job summary and posts it as a pull request comment. Each project keeps one comment, which later pushes edit; set `plan: comment: false` to keep only the summary. Pull requests from forks get no comment, since their token cannot write one, and a plan cancelled by a newer push posts nothing.
+- `<project>-infrastructure-apply.yml` runs `cuenv i apply --yes` on pushes to `main`. Set `apply: on` to `"tag"` (pushed tags matching `apply.tags`), `"release"` (published releases) or `"manual"` (manual runs only); manual runs are allowed alongside the others unless `apply: manual: false`. With `on: "push"`, a manual run from any branch other than `apply.branch` skips the job. `apply: environment` names a GitHub environment for the job, for example one that requires approval or restricts the refs that may deploy. Every apply run, whatever its ref, waits for the one in progress instead of cancelling it, because a cancelled apply can leave the lock held.
+
+Both workflows run the project's `ci` contributors first, so cuenv is installed and secret providers are set up the same way as for its pipelines; a secret provider counts as used when the project's variables or its `infrastructure` block (the state token, for example) refer to it. Turning `workflows` off removes the two files on the next `cuenv sync ci`.
+
+The workflows run when a file the project's configuration is loaded from changes: cuenv asks the CUE loader for the project's files, the same-package files of parent directories that CUE unifies into it, and the files of every package it imports from the module, and adds them to the project directory and `cue.mod/**`. Run `cuenv sync ci` after adding an import so the trigger paths follow it (`cuenv sync ci --check` in CI reports the drift). Only the top-level configuration is planned and applied; named environments are not.
+
 ### Apply order
 
 Apply orders the plan as one dependency graph, following Terraform's rules, and the plan lists its changes in the order they run, so the preview is the order of events. A replacement is two operations in the graph: the delete of the old object and the create of the new one.
@@ -476,17 +596,17 @@ A replacement whose old object was destroyed but whose new object was not create
 - **Stale locks.** Every run prints `Acquired lock <identifier>` on standard error, and `Released lock <identifier>` when it ends and the lock was still held. If the lock row was removed while the run was working (another actor released it with `unlock`, or deleted it), the run says the lock was no longer held and that nothing was released, instead of claiming a release; a failure then reports `lockReleased: false`. `cuenv i unlock` shows who holds the lock and since when; `cuenv i unlock <lock identifier>` releases exactly that lock. Locks are per identity (project and environment), so pass the same `--env` as the run that holds it. `unlock <identifier>` never succeeds without releasing something: if the identifier matches no lock (it was released already, or belongs to another environment, which the error says), it exits `2`, and if another run holds the lock it exits `4`. A lock left behind by a project that no longer evaluates, was deleted, or lives in another repository sharing the database is found with `cuenv i state locks`, which lists every lock in the database (module, project, environment, identifier, holder, age) with the command that releases it, and released with `cuenv i unlock <lock identifier> --module <module path> --project <project> [--env <name>]`. That command evaluates the current project only to learn which database to reach; it does not evaluate the locked project. Check that the run is gone before releasing a lock.
 - **Recovery conflicts.** `cuenv i state recover` compares the stored generation and serial with the version the saved change replaced. Deleting and recreating an address starts a fresh generation even when its contents and serial match. A retry acknowledges only the same generation, resulting serial and contents. If another run changed the record, recovery stops and names the file, the address and the reason: inspect both objects, then either move the saved file aside or run `cuenv i state recover --force` to record it anyway.
 - **Removed providers and damaged records.** `cuenv i state remove <address>` forgets one managed resource without touching the real object, under the lock — the escape hatch when its provider is gone. It reads only the address columns, so it also removes a record whose content cannot be decoded (damaged, or not written by cuenv); `state list` and `plan` report such a record by address and name this command.
-- **Changed state backend.** Recovery files bind to a hash of the normalized Turso backend URL (`localhost`, `127.0.0.1` and `[::1]` count as the same backend, since they can only reach this machine on the same port). Recovery refuses a file saved for a different backend, or without a binding, and names the file. `--force` does not override that. After inspecting the saved object and both backends, run `cuenv i state recover --accept-backend`. The two flags are independent: `--force` overrides a changed stored record only, `--accept-backend` overrides a backend mismatch only, and each is decided file by file.
+- **Changed state backend.** Recovery files bind to a hash of the backend: the normalized Turso URL (`localhost`, `127.0.0.1` and `[::1]` count as the same backend, since they can only reach this machine on the same port), or the D1 account and database IDs. Recovery refuses a file saved for a different backend, or without a binding, and names the file. `--force` does not override that. After inspecting the saved object and both backends, run `cuenv i state recover --accept-backend`. The two flags are independent: `--force` overrides a changed stored record only, `--accept-backend` overrides a backend mismatch only, and each is decided file by file.
 - **Provider executable busy.** Linux refuses to start a program that some process still has open for writing (`Text file busy`). A provider cuenv has just installed can be in that state for a moment when another process was started while the file was being written, so cuenv retries the launch for about a second before reporting the error.
 - **Lost provider response during interruption.** If the apply RPC ends without a response, cuenv names the resource whose outcome is unknown. Inspect the provider before retrying: the operation may have changed infrastructure without returning state to record.
 - **Exit codes.** `1` you declined the confirmation, `2` configuration (including a duplicate project name and the refusals described in [Moving between identities](#moving-between-identities)), `3` evaluation (including any instance in the module that cannot be evaluated, and a secret that cannot be resolved), `4` another run holds the lock, or a schema migration is blocked by held locks or waiting for them (retry later), `5` other infrastructure failures (including state owned by another instance), `130` interrupted. JSON error codes are `infrastructure`, `infrastructure_locked`, `infrastructure_cancelled` and `infrastructure_interrupted`; every error document carries `help`, and lock-related ones carry `lockIdentifier` and `lockReleased`.
 
 ## Current limitations
 
-- **No references between resources.** A resource cannot consume another's computed attributes; use `dependsOn` for ordering only.
+- **Output reference boundaries.** Only top-level scalar provider attributes can be connected, and source/destination types must match. Sensitive outputs, nested values, collections, write-only fields and data source outputs cannot be referenced. If a value was unknown at plan time and its final value makes an existing consumer require replacement, apply stops before deleting or updating that consumer; plan again after the source is recorded.
 - **Resource identity is not supported.** Plugin Framework resources that declare an identity (recent AWS, Google and Azure resources) fail on update with "Missing Resource Identity After Update".
 - **Dynamic-typed attributes** round-trip as tuples and objects rather than their original list, set or map types.
-- No data sources, imports, `moved` blocks, saved plan files or `--target`.
+- No data sources, `moved` blocks, saved plan files or `--target`. Import accepts only one string identifier and one returned resource; structured provider identities and multi-resource import are not supported.
 - Replacement is always destroy-then-create; operations run one at a time.
 - **No `state move`.** Records cannot be moved between the no-flag identity and a named environment, or between environment names; see [Moving between identities](#moving-between-identities).
 - **One state database for all environments.** `state` cannot be overridden per environment.

@@ -11,7 +11,7 @@ use cuenv_infrastructure::{
     UnrecordedStore,
 };
 use cuenv_manifest::environment::EnvValue;
-use cuenv_manifest::manifest::InfrastructurePolicyAction;
+use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, InfrastructureState};
 use tokio::sync::mpsc;
 
 use super::evaluation::{self, EnvironmentSelection, NameCheck, Needs, TargetRequest, TopLevel};
@@ -21,8 +21,8 @@ use super::output::{Finish, Output};
 use super::{
     AnswerFuture, Answers, CommandContext, ConfirmationPolicy, EngineInputs, GuardRequest,
     InfrastructureAction, InfrastructureOptions, SelectionFacts, SeparateState, Siblings,
-    StateAction, UnlockScope, confirm, dispatch, environment_variables_for_action, guard_selection,
-    release, run, under_lock,
+    StateAction, UnlockScope, confirm, connect, dispatch, environment_variables_for_action,
+    guard_selection, release, resolve_state_token, run, under_lock, validate_state_url,
 };
 use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
@@ -46,7 +46,7 @@ const INFRASTRUCTURE: &str = "infrastructure: {\n\
      }\n";
 
 #[test]
-fn state_only_actions_resolve_only_the_backend_token() {
+fn state_only_actions_resolve_no_project_variables() {
     let environment = HashMap::from([
         (
             "TURSO_AUTH_TOKEN".to_string(),
@@ -57,25 +57,103 @@ fn state_only_actions_resolve_only_the_backend_token() {
             EnvValue::String("platform-dev".to_string()),
         ),
     ]);
+    // The state token comes from `infrastructure.state`, never from the
+    // project's variables.
     let state_environment = environment_variables_for_action(
         &InfrastructureAction::State(StateAction::List),
         &environment,
-        "TURSO_AUTH_TOKEN",
     );
-    assert_eq!(
-        state_environment,
-        HashMap::from([(
-            "TURSO_AUTH_TOKEN".to_string(),
-            EnvValue::String("backend-token".to_string()),
-        )])
-    );
+    assert!(state_environment.is_empty(), "{state_environment:?}");
 
-    let provider_environment = environment_variables_for_action(
-        &InfrastructureAction::Plan,
-        &environment,
-        "TURSO_AUTH_TOKEN",
-    );
+    let provider_environment =
+        environment_variables_for_action(&InfrastructureAction::Plan, &environment);
     assert_eq!(provider_environment, environment);
+}
+
+/// A D1 state block with the given database and token.
+fn d1_infrastructure(database_id: &str, token: &serde_json::Value) -> Infrastructure {
+    serde_json::from_value(serde_json::json!({"state": {"d1": {
+        "accountId": "0123456789abcdef0123456789abcdef",
+        "databaseId": database_id,
+        "token": token,
+    }}}))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn d1_state_is_validated_before_any_secret_and_needs_its_token() {
+    let unset =
+        serde_json::json!({"cuenvPassthrough": true, "name": "CUENV_TEST_D1_TOKEN_NEVER_SET"});
+    let infrastructure = d1_infrastructure("0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9", &unset);
+    validate_state_url(&infrastructure).unwrap();
+    let invalid = validate_state_url(&d1_infrastructure("my-database", &unset))
+        .unwrap_err()
+        .to_string();
+    assert!(invalid.contains("D1 database identifier"), "{invalid}");
+
+    // Unlike Turso (a local `sqld` may need none), D1 refuses to connect
+    // without a token; a passthrough to an unset variable names it.
+    let credential =
+        resolve_state_token(InfrastructurePolicyAction::StateList, &infrastructure.state)
+            .await
+            .unwrap();
+    let Err(missing) = connect(&infrastructure, credential) else {
+        panic!("connected to D1 without a token");
+    };
+    let missing = missing.to_string();
+    assert!(
+        missing.contains(
+            "`infrastructure.state.d1.token` reads CUENV_TEST_D1_TOKEN_NEVER_SET, which is not set"
+        ),
+        "{missing}"
+    );
+}
+
+#[tokio::test]
+async fn a_state_token_is_resolved_like_an_environment_variable() {
+    let infrastructure = d1_infrastructure(
+        "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
+        &serde_json::json!(["resolved-", "d1-token"]),
+    );
+    let credential =
+        resolve_state_token(InfrastructurePolicyAction::StateList, &infrastructure.state)
+            .await
+            .unwrap();
+    assert_eq!(credential.token.as_deref(), Some("resolved-d1-token"));
+    let store = connect(&infrastructure, credential).unwrap();
+    assert!(store.recovery_identity().is_some());
+
+    // Turso without a token connects (with a warning) for a local `sqld`.
+    let turso: Infrastructure = serde_json::from_value(serde_json::json!({
+        "state": {"turso": {"url": "http://127.0.0.1:8080"}},
+    }))
+    .unwrap();
+    let credential = resolve_state_token(InfrastructurePolicyAction::StateList, &turso.state)
+        .await
+        .unwrap();
+    assert_eq!(credential.token, None);
+    assert!(
+        credential
+            .absence
+            .contains("`infrastructure.state.turso.token`"),
+        "{}",
+        credential.absence
+    );
+    connect(&turso, credential).unwrap();
+}
+
+#[test]
+fn import_uses_the_provider_configuration_and_import_policy() {
+    let action = InfrastructureAction::Import {
+        address: "cloudflare_record.www".to_string(),
+        identifier: "provider-secret-id".to_string(),
+    };
+    assert_eq!(action.policy_name(), InfrastructurePolicyAction::Import);
+    assert!(action.uses_provider_environment());
+    assert_eq!(action.name_check(), NameCheck::WholeModule);
+    assert_eq!(action.needs(), Needs::Configuration);
+    assert_eq!(action.confirmation(), ConfirmationPolicy::AssumeYes);
+    assert_eq!(action.trace_name(), "import");
 }
 
 fn write(root: &Path, relative: &str, contents: &str) {
@@ -2347,10 +2425,10 @@ infrastructure: {
     assert!(evaluate_at_environment(&project, NameCheck::TargetOnly, Some("dev")).is_err());
     // ... and a state-only command does not.
     let target = evaluate_state_only(&project, None);
-    assert_eq!(
-        target.infrastructure.state.turso.url,
-        "http://127.0.0.1:8080"
-    );
+    assert!(matches!(
+        &target.infrastructure.state,
+        InfrastructureState::Turso(turso) if turso.url == "http://127.0.0.1:8080"
+    ));
     assert!(target.infrastructure.providers.is_empty());
     assert!(target.warnings.is_empty());
     let target = evaluate_state_only(&project, Some("dev"));

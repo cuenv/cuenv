@@ -161,13 +161,8 @@ fn valid_infrastructure_evaluates_and_deserializes() -> TestResult {
     let declared: cuenv_core::manifest::Infrastructure =
         serde_json::from_value(project.infrastructure.ok_or("infrastructure missing")?)?;
     assert_eq!(declared.resources["id"].depends_on, vec!["pet".to_string()]);
-    assert_eq!(
-        declared
-            .state
-            .turso
-            .authentication_token_environment_variable,
-        "TURSO_AUTH_TOKEN"
-    );
+    // No token unless one is configured: nothing is read implicitly.
+    assert_eq!(declared.state.token(), None);
     Ok(())
 }
 
@@ -534,6 +529,140 @@ fn an_incomplete_value_in_an_unused_environment_does_not_fail_evaluation() -> Te
     ]))?;
     let project = fixture.project()?;
     assert!(project.infrastructure.is_some());
+    Ok(())
+}
+
+/// A D1 state block without its required `token`.
+const D1_STATE: &str = "state: d1: {accountId: \"0123456789abcdef0123456789abcdef\", \
+                        databaseId: \"0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9\"}";
+
+/// Decode the fixture's `infrastructure` as the CLI does.
+fn declared_infrastructure(
+    fixture: &SchemaFixture,
+) -> TestResult<cuenv_core::manifest::Infrastructure> {
+    let result = fixture.evaluate()?;
+    let instance = result.instances.get("app").ok_or("app instance missing")?;
+    let project: Project = serde_json::from_value(instance.clone())?;
+    Ok(serde_json::from_value(
+        project.infrastructure.ok_or("infrastructure missing")?,
+    )?)
+}
+
+#[test]
+fn state_tokens_are_written_like_environment_variables() -> TestResult {
+    use cuenv_core::environment::EnvValue;
+    use cuenv_core::manifest::StateToken;
+    for (token, check) in [
+        (
+            "\"literal-token\"",
+            (|token| matches!(token, StateToken::Value(EnvValue::String(value)) if value == "literal-token"))
+                as fn(&StateToken) -> bool,
+        ),
+        (
+            "schema.#OnePasswordRef & {ref: \"op://ci/d1/token\"}",
+            |token| matches!(token, StateToken::Value(EnvValue::Secret(_))),
+        ),
+        ("env.D1_TOKEN", |token| {
+            matches!(token, StateToken::Value(EnvValue::Secret(_)))
+        }),
+        (
+            "[\"prefix-\", schema.#ExecSecret & {command: \"echo\"}]",
+            |token| matches!(token, StateToken::Value(EnvValue::Interpolated(_))),
+        ),
+        // Passthrough names its variable, as a struct literal or through
+        // the definition.
+        ("{cuenvPassthrough: true, name: \"CI_D1_TOKEN\"}", |token| {
+            token.passthrough_variable() == Some("CI_D1_TOKEN")
+        }),
+        (
+            "schema.#EnvPassthrough & {name: \"CI_D1_TOKEN\"}",
+            |token| token.passthrough_variable() == Some("CI_D1_TOKEN"),
+        ),
+    ] {
+        let fixture = SchemaFixture::new(&format!(
+            "env: D1_TOKEN: schema.#ExecSecret & {{command: \"echo\"}}\n{}",
+            infrastructure(&[D1_STATE, &format!("state: d1: token: {token}"), PROVIDER])
+        ))?;
+        let declared = declared_infrastructure(&fixture)?;
+        let selected = declared.state.token().ok_or("no token")?;
+        assert!(check(selected), "{token}: {selected:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn state_tokens_reject_other_forms() -> TestResult {
+    for (line, expected) in [
+        // D1 cannot connect without a token; one token serves every
+        // environment, so there are no per-environment overrides.
+        ("", "token"),
+        ("state: d1: token: 42", "token"),
+        ("state: d1: token: {value: \"x\", policies: []}", "token"),
+        ("state: d1: token: {cuenvPassthrough: true}", "token"),
+        (
+            "state: d1: {token: \"x\", environment: dev: token: \"y\"}",
+            "environment",
+        ),
+    ] {
+        let message = SchemaFixture::new(&infrastructure(&[D1_STATE, line, PROVIDER]))?.error()?;
+        assert!(message.contains(expected), "{line}: {message}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_task_passthrough_written_as_a_struct_literal_is_not_ambiguous() -> TestResult {
+    // `#Secret` is open; without excluding `cuenvPassthrough` this literal
+    // also matched it and left the variable an incomplete disjunction.
+    let fixture = SchemaFixture::new(
+        "tasks: show: {command: \"env\", env: CI_TOKEN: {cuenvPassthrough: true, name: \"CI_TOKEN\"}}",
+    )?;
+    fixture.project()?;
+    Ok(())
+}
+
+#[test]
+fn state_names_exactly_one_backend() -> TestResult {
+    for (state, expected) in [
+        ("state: {}", "set one state backend: `turso` or `d1`"),
+        (
+            "state: {turso: url: \"libsql://db.turso.io\", d1: {accountId: \"0123456789abcdef0123456789abcdef\", databaseId: \"0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9\"}}",
+            "set exactly one state backend, `turso` or `d1`, not both",
+        ),
+    ] {
+        let message = SchemaFixture::new(&infrastructure(&[state, PROVIDER]))?.error()?;
+        assert!(message.contains(expected), "{state}: {message}");
+    }
+    // A backend with an error of its own reports only that error.
+    let message = SchemaFixture::new(&infrastructure(&[
+        "state: turso: url: \"postgres://db\"",
+        PROVIDER,
+    ]))?
+    .error()?;
+    assert!(message.contains("`url` must be libsql://"), "{message}");
+    assert!(!message.contains("state backend"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn d1_identifiers_must_have_cloudflare_forms() -> TestResult {
+    for (field, state) in [
+        (
+            "accountId",
+            "state: d1: {accountId: \"0123456789ABCDEF0123456789ABCDEF\", databaseId: \"0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9\"}",
+        ),
+        (
+            "databaseId",
+            "state: d1: {accountId: \"0123456789abcdef0123456789abcdef\", databaseId: \"my-database\"}",
+        ),
+        (
+            "authenticationTokenEnvironmentVariable",
+            "state: d1: {accountId: \"0123456789abcdef0123456789abcdef\", databaseId: \"0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9\", authenticationTokenEnvironmentVariable: \"X\"}",
+        ),
+    ] {
+        let message = SchemaFixture::new(&infrastructure(&[state, PROVIDER]))?.error()?;
+        assert!(message.contains(field), "{field}: {message}");
+    }
     Ok(())
 }
 

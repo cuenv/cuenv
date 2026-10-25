@@ -172,22 +172,49 @@ impl Compiler {
         }
     }
 
-    /// Check if the pipeline environment uses any of the specified secrets providers.
+    /// Check if the pipeline's variables (the selected environment, or the
+    /// base variables when the pipeline names none) or the project's
+    /// infrastructure configuration use any of the specified secrets providers.
     fn has_secrets_provider(&self, providers: &[String], ir: &IntermediateRepresentation) -> bool {
-        let Some(ref env_name) = ir.pipeline.environment else {
-            return false;
-        };
-        let Some(ref env) = self.project.env else {
-            return false;
-        };
+        let env_has_provider = self.project.env.as_ref().is_some_and(|env| {
+            let env_vars = ir
+                .pipeline
+                .environment
+                .as_ref()
+                .map_or_else(|| env.base.clone(), |name| env.for_environment(name));
+            env_vars
+                .values()
+                .any(|value| Self::value_has_provider(value, providers))
+        });
+        env_has_provider
+            || self
+                .project
+                .infrastructure
+                .as_ref()
+                .is_some_and(|infrastructure| Self::json_has_provider(infrastructure, providers))
+    }
 
-        let env_vars = env.for_environment(env_name);
-        for value in env_vars.values() {
-            if Self::value_has_provider(value, providers) {
-                return true;
+    /// Check if a raw configuration value holds a secret (`{resolver: ...}`)
+    /// or a 1Password reference for one of the specified providers.
+    pub(super) fn json_has_provider(value: &serde_json::Value, providers: &[String]) -> bool {
+        match value {
+            serde_json::Value::String(s) => {
+                providers.iter().any(|p| p == "onepassword") && s.contains("op://")
             }
+            serde_json::Value::Array(items) => items
+                .iter()
+                .any(|item| Self::json_has_provider(item, providers)),
+            serde_json::Value::Object(object) => {
+                object
+                    .get("resolver")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|resolver| providers.iter().any(|p| p == resolver))
+                    || object
+                        .values()
+                        .any(|item| Self::json_has_provider(item, providers))
+            }
+            _ => false,
         }
-        false
     }
 
     /// Check if an `EnvValue` uses any of the specified secret providers.

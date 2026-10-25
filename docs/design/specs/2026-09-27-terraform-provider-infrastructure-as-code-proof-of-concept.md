@@ -15,7 +15,7 @@ Terraform or OpenTofu command line tool, no HCL, no state files.
 ## Naming
 
 No abbreviations: `#Infrastructure`, `infrastructure`, `configuration`,
-`authenticationTokenEnvironmentVariable`, `cuenv infrastructure`, crate
+`providerEnvironment`, `cuenv infrastructure`, crate
 `cuenv-infrastructure`, tables `cuenv_infrastructure_*`. The only short form
 is the command alias `cuenv i`. Established acronyms and external names
 (JSON, SQL, gRPC, Terraform's `cty`, Hrana wire keys) are unchanged.
@@ -744,10 +744,12 @@ continuous integration (fake provider, `sqld`, the bridge's `go test`), the
 spelled-out apply order, the CUE semantic checks, and marking the command
 experimental.
 
-1. Cross-resource references. The real value of CUE here: let a resource's
-   configuration reference another's attributes, propagate unknowns through
-   planning, and resolve them during apply in dependency order. Derive
-   `dependsOn` from references.
+1. ~~Cross-resource references.~~ Implemented for top-level primitive
+   resource arguments: `fromResource` and `attribute` descriptors infer and
+   persist dependencies; known outputs participate in planning, and outputs
+   produced by creates resolve before the consumer's final plan. Sensitive
+   outputs, nested values and collections remain unsupported. See the
+   completed [import and output-reference design](2026-10-23-infrastructure-import-existing-resources.md).
 2. Protocol fidelity: resource identity (`GetResourceIdentitySchemas` and
    identity on read, plan and apply); numbers with full precision beyond 64-bit
    floats and integers; masking by sensitive path rather than whole top-level
@@ -799,8 +801,10 @@ experimental.
     (source, version, schema digest) and per-resource `#Resource` bindings
     locally, and the engine verifies the digest (see
     `2026-10-03-infrastructure-provider-types.md`).
-13. Data sources (`ReadDataSource`) and imports (`ImportResourceState`),
-    `--target`.
+13. Data sources (`ReadDataSource`) and `--target`. Importing one existing
+    resource with `ImportResourceState` is implemented, including refresh
+    before state persistence; see the completed
+    [`2026-10-23-infrastructure-import-existing-resources.md`](2026-10-23-infrastructure-import-existing-resources.md).
 14. Parallel apply across independent resources (the dependency graph already
     says which operations are independent).
 15. Provider version constraints, lock file entries in `cuenv.lock`, and GPG

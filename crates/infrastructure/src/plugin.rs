@@ -113,6 +113,7 @@ enum RemoteProcedure {
     ValidateResourceConfiguration,
     UpgradeResourceState,
     ReadResource,
+    ImportResourceState,
     PlanResourceChange,
     ApplyResourceChange,
     Stop,
@@ -133,6 +134,9 @@ impl RemoteProcedure {
                 "/tfplugin5.Provider/UpgradeResourceState"
             }
             (Protocol::Version5, Self::ReadResource) => "/tfplugin5.Provider/ReadResource",
+            (Protocol::Version5, Self::ImportResourceState) => {
+                "/tfplugin5.Provider/ImportResourceState"
+            }
             (Protocol::Version5, Self::PlanResourceChange) => {
                 "/tfplugin5.Provider/PlanResourceChange"
             }
@@ -152,6 +156,9 @@ impl RemoteProcedure {
                 "/tfplugin6.Provider/UpgradeResourceState"
             }
             (Protocol::Version6, Self::ReadResource) => "/tfplugin6.Provider/ReadResource",
+            (Protocol::Version6, Self::ImportResourceState) => {
+                "/tfplugin6.Provider/ImportResourceState"
+            }
             (Protocol::Version6, Self::PlanResourceChange) => {
                 "/tfplugin6.Provider/PlanResourceChange"
             }
@@ -918,6 +925,28 @@ impl ProviderClient {
         .await
     }
 
+    /// Ask the provider to resolve its opaque import identifier into resource state.
+    /// The caller must validate the results and refresh before recording them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the RPC fails.
+    pub async fn import_resource_state(
+        &self,
+        type_name: &str,
+        identifier: &str,
+    ) -> Result<protocol::ImportResourceStateResponse> {
+        self.call(
+            RemoteProcedure::ImportResourceState,
+            protocol::ImportResourceStateRequest {
+                type_name: type_name.to_string(),
+                identifier: identifier.to_string(),
+                client_capabilities: Some(client_capabilities()),
+            },
+        )
+        .await
+    }
+
     /// Refresh a managed resource from the real world.
     ///
     /// # Errors
@@ -1284,6 +1313,32 @@ async fn connect_unix(address: &str) -> Result<Channel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_uses_the_negotiated_protocol_path() {
+        assert_eq!(
+            RemoteProcedure::ImportResourceState.path(Protocol::Version5),
+            "/tfplugin5.Provider/ImportResourceState"
+        );
+        assert_eq!(
+            RemoteProcedure::ImportResourceState.path(Protocol::Version6),
+            "/tfplugin6.Provider/ImportResourceState"
+        );
+    }
+
+    #[test]
+    fn import_request_preserves_identifier_and_disables_deferral() {
+        use prost::Message;
+
+        let request = protocol::ImportResourceStateRequest {
+            type_name: "t".to_string(),
+            identifier: "a/b".to_string(),
+            client_capabilities: Some(client_capabilities()),
+        };
+        // Both protocols use type_name=1, id=2 and client_capabilities=3.
+        // Empty capabilities encode false for every supported feature.
+        assert_eq!(request.encode_to_vec(), b"\x0a\x01t\x12\x03a/b\x1a\x00");
+    }
 
     fn busy() -> std::io::Error {
         std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy)

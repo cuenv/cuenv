@@ -19,6 +19,32 @@ pub use super::jobs::{
 };
 pub use super::release::{ReleaseTarget, ReleaseWorkflowBuilder};
 
+/// The main step of a workflow emitted by
+/// [`GitHubActionsEmitter::emit_command_workflow`].
+#[derive(Debug, Clone, Copy)]
+pub struct CommandWorkflow<'a> {
+    /// Display name of the main step.
+    pub step_name: &'a str,
+    /// Id of the main step, for follow-up steps that read its outcome.
+    pub step_id: Option<&'a str>,
+    /// Shell command the main step runs.
+    pub command: &'a str,
+    /// Concurrency group of the workflow; the default is one group per
+    /// workflow and ref.
+    pub concurrency_group: Option<&'a str>,
+    /// Whether a newer run in the same concurrency group cancels one that is
+    /// still in progress.
+    pub cancel_in_progress: bool,
+    /// Condition for the job (`jobs.<id>.if`).
+    pub job_if: Option<&'a str>,
+    /// Steps that run after the main step, before the success and failure
+    /// phase steps.
+    pub follow_up_steps: &'a [Step],
+    /// GitHub environment for the job. Unlike the pipeline environment, it
+    /// does not select a cuenv environment (`CUENV_ENVIRONMENT`).
+    pub job_environment: Option<&'a str>,
+}
+
 /// GitHub Actions workflow emitter
 ///
 /// Transforms cuenv IR into GitHub Actions workflow YAML that can be
@@ -243,6 +269,142 @@ impl GitHubActionsEmitter {
         Ok((filename, yaml))
     }
 
+    /// Emit a thin workflow whose main step runs `command` instead of
+    /// `cuenv ci --pipeline <name>`, returning the filename and YAML content.
+    ///
+    /// The bootstrap, setup, success and failure phase steps are the same as
+    /// in [`Self::emit_thin_workflow`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmitterError::Serialization` if YAML serialization fails.
+    pub fn emit_command_workflow(
+        &self,
+        ir: &IntermediateRepresentation,
+        command: &CommandWorkflow<'_>,
+    ) -> EmitterResult<(String, String)> {
+        let workflow_name = Self::build_workflow_name(ir);
+        let filename = format!("{}.yml", sanitize_filename(&workflow_name));
+        let yaml = self.emit_thin_with(ir, command)?;
+        Ok((filename, yaml))
+    }
+
+    fn emit_thin_with(
+        &self,
+        ir: &IntermediateRepresentation,
+        command: &CommandWorkflow<'_>,
+    ) -> EmitterResult<String> {
+        use crate::workflow::stage_renderer::GitHubStageRenderer;
+
+        let mut scoped_ir = ir.clone();
+        scoped_ir.tasks.retain(|step| {
+            step.phase.is_none()
+                || step.github_task_filter.is_empty()
+                || ir
+                    .tasks
+                    .iter()
+                    .any(|task| task.phase.is_none() && step.github_task_filter.contains(&task.id))
+        });
+        let ir = &scoped_ir;
+        let workflow_name = Self::build_workflow_name(ir);
+        let workflow_filename = format!("{}.yml", sanitize_filename(&workflow_name));
+        let triggers = self.build_triggers(ir, &workflow_filename);
+        let permissions = self.build_permissions(ir);
+
+        let mut renderer = GitHubStageRenderer::new()
+            .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
+        if let Some(name) = &self.cachix_name {
+            renderer = renderer.with_cachix(name.clone());
+        }
+        let mut steps = Vec::new();
+
+        // Checkout step
+        steps.push(
+            Step::uses("actions/checkout@v4")
+                .with_name("Checkout")
+                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
+        );
+
+        // Bootstrap and setup phase steps
+        let (phase_steps, secret_env) =
+            self.render_phase_steps(ir, TaskExecution::Orchestrated, &CuenvSetup::BuildInJob);
+        steps.extend(phase_steps);
+
+        let mut main_step = Step::run(command.command).with_name(command.step_name);
+        if let Some(id) = command.step_id {
+            main_step = main_step.with_id(id);
+        }
+        Self::add_github_context_env(&mut main_step);
+
+        if let Some(env) = &ir.pipeline.environment {
+            main_step = main_step.with_env("CUENV_ENVIRONMENT", env.clone());
+        }
+
+        // Pass secret env vars from setup tasks to main step (e.g., OP_SERVICE_ACCOUNT_TOKEN)
+        // Transform ${VAR} to ${{ secrets.VAR }} format for GitHub Actions
+        for (key, value) in secret_env {
+            main_step = main_step.with_env(key, transform_secret_ref(&value));
+        }
+
+        steps.push(main_step);
+        steps.extend(command.follow_up_steps.iter().cloned());
+
+        // Success phase steps
+        for task in ir.sorted_phase_tasks(BuildStage::Success) {
+            let mut step = renderer.render_task(task);
+            step.if_condition = Some("success()".to_string());
+            steps.push(step);
+        }
+
+        // Failure phase steps
+        for task in ir.sorted_phase_tasks(BuildStage::Failure) {
+            let mut step = renderer.render_task(task);
+            step.if_condition = Some("failure()".to_string());
+            steps.push(step);
+        }
+
+        let environment = command
+            .job_environment
+            .map(str::to_string)
+            .or_else(|| ir.pipeline.environment.clone());
+
+        // Build single job
+        let job = Job {
+            permissions: Some(permissions),
+            name: Some(workflow_name.clone()),
+            runs_on: self.runner_as_runs_on(),
+            needs: Vec::new(),
+            if_condition: command.job_if.map(str::to_string),
+            strategy: None,
+            environment: environment.map(Environment::Name),
+            env: IndexMap::new(),
+            concurrency: None,
+            continue_on_error: None,
+            timeout_minutes: None,
+            steps,
+        };
+
+        let mut jobs = IndexMap::new();
+        jobs.insert(sanitize_job_id(&workflow_name), job);
+
+        let workflow = Workflow {
+            name: workflow_name,
+            on: triggers,
+            concurrency: Some(Concurrency {
+                group: command.concurrency_group.map_or_else(
+                    || "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
+                    str::to_string,
+                ),
+                cancel_in_progress: Some(command.cancel_in_progress),
+            }),
+            permissions: None,
+            env: IndexMap::new(),
+            jobs,
+        };
+
+        Self::serialize_workflow(&workflow)
+    }
+
     /// Emit multiple workflow files for projects with multiple pipelines.
     ///
     /// Returns a map of filename to YAML content.
@@ -321,17 +483,18 @@ impl GitHubActionsEmitter {
     ) -> Option<PushTrigger> {
         let trigger = trigger?;
 
-        // Only emit push trigger if we have branch conditions
-        if trigger.branches.is_empty() {
+        // Only emit push trigger if we have branch or tag conditions
+        if trigger.branches.is_empty() && trigger.tags.is_empty() {
             return None;
         }
 
+        // GitHub never evaluates path filters for tag pushes.
         let paths = Self::build_trigger_paths(&trigger.paths, workflow_filename);
 
         Some(PushTrigger {
             branches: trigger.branches.clone(),
+            tags: trigger.tags.clone(),
             paths,
-            ..Default::default()
         })
     }
 
@@ -575,111 +738,25 @@ impl Emitter for GitHubActionsEmitter {
     /// 3. Executes `cuenv ci --pipeline <name>` for orchestration
     /// 4. Runs success/failure phase steps with conditions
     fn emit_thin(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
-        use crate::workflow::stage_renderer::GitHubStageRenderer;
-
-        let mut scoped_ir = ir.clone();
-        scoped_ir.tasks.retain(|step| {
-            step.phase.is_none()
-                || step.github_task_filter.is_empty()
-                || ir
-                    .tasks
-                    .iter()
-                    .any(|task| task.phase.is_none() && step.github_task_filter.contains(&task.id))
-        });
-        let ir = &scoped_ir;
-        let workflow_name = Self::build_workflow_name(ir);
-        let workflow_filename = format!("{}.yml", sanitize_filename(&workflow_name));
-        let triggers = self.build_triggers(ir, &workflow_filename);
-        let permissions = self.build_permissions(ir);
-
-        let mut renderer = GitHubStageRenderer::new()
-            .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
-        if let Some(name) = &self.cachix_name {
-            renderer = renderer.with_cachix(name.clone());
-        }
-        let mut steps = Vec::new();
-
-        // Checkout step
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
-        );
-
-        // Bootstrap and setup phase steps
-        let (phase_steps, secret_env) =
-            self.render_phase_steps(ir, TaskExecution::Orchestrated, &CuenvSetup::BuildInJob);
-        steps.extend(phase_steps);
-
-        // Main execution step: cuenv ci --pipeline <name>
         let pipeline_name = &ir.pipeline.name;
-        let cuenv_command = ir.pipeline.project_path.as_ref().map_or_else(
+        let command = ir.pipeline.project_path.as_ref().map_or_else(
             || format!("cuenv ci --pipeline {pipeline_name}"),
             |path| format!("cuenv ci --pipeline {pipeline_name} --path {path}"),
         );
-
-        let mut main_step =
-            Step::run(&cuenv_command).with_name(format!("Run pipeline: {pipeline_name}"));
-        Self::add_github_context_env(&mut main_step);
-
-        if let Some(env) = &ir.pipeline.environment {
-            main_step = main_step.with_env("CUENV_ENVIRONMENT", env.clone());
-        }
-
-        // Pass secret env vars from setup tasks to main step (e.g., OP_SERVICE_ACCOUNT_TOKEN)
-        // Transform ${VAR} to ${{ secrets.VAR }} format for GitHub Actions
-        for (key, value) in secret_env {
-            main_step = main_step.with_env(key, transform_secret_ref(&value));
-        }
-
-        steps.push(main_step);
-
-        // Success phase steps
-        for task in ir.sorted_phase_tasks(BuildStage::Success) {
-            let mut step = renderer.render_task(task);
-            step.if_condition = Some("success()".to_string());
-            steps.push(step);
-        }
-
-        // Failure phase steps
-        for task in ir.sorted_phase_tasks(BuildStage::Failure) {
-            let mut step = renderer.render_task(task);
-            step.if_condition = Some("failure()".to_string());
-            steps.push(step);
-        }
-
-        // Build single job
-        let job = Job {
-            permissions: Some(permissions),
-            name: Some(workflow_name.clone()),
-            runs_on: self.runner_as_runs_on(),
-            needs: Vec::new(),
-            if_condition: None,
-            strategy: None,
-            environment: ir.pipeline.environment.clone().map(Environment::Name),
-            env: IndexMap::new(),
-            concurrency: None,
-            continue_on_error: None,
-            timeout_minutes: None,
-            steps,
-        };
-
-        let mut jobs = IndexMap::new();
-        jobs.insert(sanitize_job_id(&workflow_name), job);
-
-        let workflow = Workflow {
-            name: workflow_name,
-            on: triggers,
-            concurrency: Some(Concurrency {
-                group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
-                cancel_in_progress: Some(true),
-            }),
-            permissions: None,
-            env: IndexMap::new(),
-            jobs,
-        };
-
-        Self::serialize_workflow(&workflow)
+        let step_name = format!("Run pipeline: {pipeline_name}");
+        self.emit_thin_with(
+            ir,
+            &CommandWorkflow {
+                step_name: &step_name,
+                step_id: None,
+                command: &command,
+                concurrency_group: None,
+                cancel_in_progress: true,
+                job_if: None,
+                follow_up_steps: &[],
+                job_environment: None,
+            },
+        )
     }
 
     /// Emit an expanded mode GitHub Actions workflow.

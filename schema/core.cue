@@ -8,7 +8,9 @@ package schema
 // language version, so a misspelled nested field is an error. Definitions
 // are already closed, so the schema never wraps them in close(): on CUE
 // v0.17+ close() around an embedded definition rejects the definition's own
-// fields under file-level embedding. scripts/check-schema-compat.sh checks
+// fields under file-level embedding. The inline passthrough arm of
+// #InfrastructureStateToken is the exception: it is not a definition, and an
+// open arm would accept extra fields. scripts/check-schema-compat.sh checks
 // both properties.
 //
 // Exception: the `tasks`, `services` and `images` maps reference #Task,
@@ -65,4 +67,3 @@ package schema
 	// Infrastructure managed through Terraform provider plugins.
 	infrastructure?: {#Infrastructure}
 }
-
