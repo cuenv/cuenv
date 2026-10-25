@@ -6,7 +6,7 @@ description: Code formatting system for cuenv projects
 The formatters system provides code formatting for cuenv projects through two entry points:
 
 1. **`cuenv fmt`** - Format all files in your project
-2. **`cuenv sync cubes`** - Format generated files after code generation
+2. **`cuenv sync codegen`** - Format generated files after code generation
 
 Both use the same configuration and formatter infrastructure.
 
@@ -25,13 +25,13 @@ cuenv's formatter system:
 ┌──────────────────────────────────────────────────────────────────────┐
 │                           Entry Points                                │
 ├─────────────────────────────────┬────────────────────────────────────┤
-│         cuenv fmt               │        cuenv sync cubes            │
+│         cuenv fmt               │        cuenv sync codegen          │
 │   (format all matching files)   │   (format generated files only)    │
 └─────────────────┬───────────────┴────────────────┬───────────────────┘
                   │                                │
                   ▼                                ▼
          ┌────────────────┐               ┌────────────────┐
-         │ File Discovery │               │ Cube Generator │
+         │ File Discovery │               │  Codegen Sync  │
          │ (WalkBuilder)  │               │                │
          └───────┬────────┘               └───────┬────────┘
                  │                                │
@@ -180,34 +180,54 @@ cuenv fmt --fix
 cuenv fmt --only rust,go
 ```
 
-### cuenv sync cubes
+### cuenv sync codegen
 
 Format only generated files after code generation:
 
 ```bash
 # Normal mode - generate and format
-cuenv sync cubes
+cuenv sync codegen
 
 # Check mode - verify generation and formatting
-cuenv sync cubes --check
+cuenv sync codegen --check
 
 # Dry run - show what would happen
-cuenv sync cubes --dry-run
+cuenv sync codegen --dry-run
 ```
+
+## Execution Environment
+
+Formatters run inside the project's resolved environment, the same one
+`cuenv exec` builds. cuenv loads the project's runtime (Nix or devenv), keeps
+the lockfile in sync, activates lockfile tools, and overlays the `env` block
+(filtered by each formatter command's `allowExec` policies, with the global
+`-e/--env` overlay applied). Each formatter binary is resolved against that
+environment's `PATH`, falling back to the inherited `PATH`, and the process
+inherits cuenv's environment overlaid with the project environment.
+
+This keeps `cuenv fmt` on the toolchain the project declares, the one CI
+checks against, rather than whatever `rustfmt` happens to be on the caller's
+`PATH` (for example a rustup shim without a default toolchain).
+
+When the directory has no CUE module, or the project configures neither a
+runtime nor tools, nothing is added to `PATH` and formatters resolve against
+the inherited environment. Post-codegen formatting in `cuenv sync codegen`
+uses the same environment; dry runs skip environment resolution because no
+formatter runs.
 
 ## Exit Codes
 
-| Code | Meaning                                         |
-| ---- | ----------------------------------------------- |
-| `0`  | Success (all files formatted or check passed)   |
-| `3`  | Formatting check failed (files need formatting) |
+| Code | Meaning                                                                 |
+| ---- | ----------------------------------------------------------------------- |
+| `0`  | Success (all files formatted or check passed)                           |
+| `3`  | Formatting check failed, or a formatter failed to start or exited non-zero |
 
 ## Error Handling
 
 - **Check mode failures**: Return error and exit non-zero
-- **Fix mode failures**: Logged as warnings, execution continues
+- **Fix mode failures**: A formatter that exits non-zero (a parse error, a missing toolchain) is an error in fix mode too, for every formatter. `cuenv fmt --fix` never reports success when nothing was formatted.
 - **Invalid patterns**: Logged as warnings, pattern skipped
-- **Missing tools**: Error with clear message about which tool is missing
+- **Missing tools**: Error naming the tool and the path it resolved to
 
 ## Rust Implementation
 
@@ -217,22 +237,24 @@ The formatter system is implemented in two modules:
 Implements `cuenv fmt` with file discovery:
 
 ```rust
-pub fn execute_fmt(
-    path: &str,
-    package: &str,
-    fix: bool,
-    only: Option<&[String]>,
-) -> Result<String>
+pub async fn execute_fmt(request: FmtRequest<'_>, executor: &CommandExecutor) -> Result<String>
 ```
 
+`FmtRequest` carries the path, package, `FormatMode` (`Check` or `Fix`),
+the `--only` filter, and the environment override.
+
 **`crates/cuenv/src/commands/sync/formatters.rs`**
-Provides formatter runners used by both entry points:
+Provides formatter runners used by both entry points. A `FormatterContext`
+carries the project root, dry-run flag, `FormatMode`, and the
+`FormatterEnvironments` resolved through
+`crates/cuenv/src/commands/exec.rs` (`ProjectEnvironment::load` and
+`ProjectEnvironment::for_command`, shared with `cuenv exec`):
 
 ```rust
-pub fn run_rust_formatter(files: &[&Path], ...) -> Result<String>
-pub fn run_nix_formatter(files: &[&Path], ...) -> Result<String>
-pub fn run_go_formatter(files: &[&Path], ...) -> Result<String>
-pub fn run_cue_formatter(files: &[&Path], ...) -> Result<String>
+pub fn run_rust_formatter(files: &[&Path], config: Option<&RustFormatter>, context: &FormatterContext<'_>) -> Result<String>
+pub fn run_nix_formatter(files: &[&Path], config: Option<&NixFormatter>, context: &FormatterContext<'_>) -> Result<String>
+pub fn run_go_formatter(files: &[&Path], context: &FormatterContext<'_>) -> Result<String>
+pub fn run_cue_formatter(files: &[&Path], context: &FormatterContext<'_>) -> Result<String>
 pub fn matches_any_pattern(path: &str, patterns: &[String]) -> bool
 ```
 

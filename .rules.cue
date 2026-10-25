@@ -21,6 +21,7 @@ rules.#DirectoryRules & {
             "dist",
             "node_modules",
             "result",
+            "sbom.json",
             "target",
         ]
     }
