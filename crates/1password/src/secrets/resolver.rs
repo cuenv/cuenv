@@ -63,7 +63,7 @@ impl OnePasswordResolver {
     ///
     /// Returns an error if HTTP mode is detected (WASM + token) but WASM initialization fails.
     /// This prevents silent fallback to CLI mode which masks configuration errors.
-    pub fn new() -> Result<Self, SecretError> {
+    pub fn try_new() -> Result<Self, SecretError> {
         let client_id = if Self::http_mode_available() {
             // HTTP mode is available (WASM + token), WASM MUST initialize successfully
             // Do NOT silently fall back to CLI - that masks the real error
@@ -569,7 +569,7 @@ esac
         // If WASM is not available and token is not set, this should work
         if (!wasm::onepassword_wasm_available()
             || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
-            && let Ok(resolver) = OnePasswordResolver::new()
+            && let Ok(resolver) = OnePasswordResolver::try_new()
         {
             assert_eq!(resolver.provider_name(), "onepassword");
         }
@@ -579,7 +579,7 @@ esac
     fn test_resolver_supports_native_batch() {
         if (!wasm::onepassword_wasm_available()
             || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
-            && let Ok(resolver) = OnePasswordResolver::new()
+            && let Ok(resolver) = OnePasswordResolver::try_new()
         {
             assert!(resolver.supports_native_batch());
         }
@@ -590,7 +590,7 @@ esac
         // A resolver without client_id should return false for can_use_http
         if (!wasm::onepassword_wasm_available()
             || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
-            && let Ok(resolver) = OnePasswordResolver::new()
+            && let Ok(resolver) = OnePasswordResolver::try_new()
         {
             assert!(!resolver.can_use_http());
         }
@@ -600,7 +600,7 @@ esac
     fn test_resolver_debug_output() {
         if (!wasm::onepassword_wasm_available()
             || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
-            && let Ok(resolver) = OnePasswordResolver::new()
+            && let Ok(resolver) = OnePasswordResolver::try_new()
         {
             let debug = format!("{resolver:?}");
             assert!(debug.contains("OnePasswordResolver"));
@@ -613,7 +613,7 @@ esac
     async fn test_resolve_batch_empty() {
         if (!wasm::onepassword_wasm_available()
             || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
-            && let Ok(resolver) = OnePasswordResolver::new()
+            && let Ok(resolver) = OnePasswordResolver::try_new()
         {
             let empty: HashMap<String, SecretSpec> = HashMap::new();
             let result = resolver.resolve_batch(&empty).await;
@@ -659,7 +659,7 @@ esac
                 ("OP_SERVICE_ACCOUNT_TOKEN", None),
             ],
             async {
-                let resolver = OnePasswordResolver::new().unwrap();
+                let resolver = OnePasswordResolver::try_new().unwrap();
                 let secrets = HashMap::from([
                     (
                         "API_KEY".to_string(),
@@ -714,7 +714,7 @@ esac
                 ("OP_SERVICE_ACCOUNT_TOKEN", None),
             ],
             async {
-                let resolver = OnePasswordResolver::new().unwrap();
+                let resolver = OnePasswordResolver::try_new().unwrap();
                 let secrets = HashMap::from([
                     ("A".to_string(), SecretSpec::new("op://vault/item/a")),
                     ("B".to_string(), SecretSpec::new("op://vault/item/b")),
@@ -761,7 +761,7 @@ esac
                 ("OP_SERVICE_ACCOUNT_TOKEN", None),
             ],
             async {
-                let resolver = OnePasswordResolver::new().unwrap();
+                let resolver = OnePasswordResolver::try_new().unwrap();
                 let secrets = HashMap::from([
                     ("A".to_string(), SecretSpec::new("op://vault/item/a")),
                     ("B".to_string(), SecretSpec::new("op://vault/item/b")),
@@ -816,7 +816,7 @@ esac
                 ("OP_SERVICE_ACCOUNT_TOKEN", None),
             ],
             async {
-                let resolver = OnePasswordResolver::new().unwrap();
+                let resolver = OnePasswordResolver::try_new().unwrap();
                 let secrets =
                     HashMap::from([("A".to_string(), SecretSpec::new("op://vault/item/a"))]);
                 resolver
@@ -840,7 +840,7 @@ esac
                 ("OP_SERVICE_ACCOUNT_TOKEN", None),
             ],
             async {
-                let resolver = OnePasswordResolver::new().unwrap();
+                let resolver = OnePasswordResolver::try_new().unwrap();
                 let spec = SecretSpec::new("op://vault/item/a");
                 resolver.resolve("A", &spec).await.unwrap_err().to_string()
             },
@@ -863,7 +863,7 @@ esac
                 ("OP_SERVICE_ACCOUNT_TOKEN", None),
             ],
             async {
-                let resolver = OnePasswordResolver::new().unwrap();
+                let resolver = OnePasswordResolver::try_new().unwrap();
                 let spec = SecretSpec::new("op://vault/item/password");
 
                 let result = resolver.resolve("missing-op", &spec).await;

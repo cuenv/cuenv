@@ -24,7 +24,7 @@
 
 use std::future::Future;
 use std::io::Write;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use cuenv_events::emit_stderr;
@@ -80,15 +80,30 @@ struct Shared {
 }
 
 impl Shared {
-    fn lock(&self) -> Option<(LockPhase, HeldLock)> {
+    /// The guarded slot.
+    ///
+    /// Its critical sections only clone the slot or swap a new value in;
+    /// the old value is dropped after the guard is released, so no store's
+    /// `Drop` runs under the lock. Nothing in them panics, so the lock is
+    /// never poisoned. A poisoned lock would be a bug, and the forced exit
+    /// must not release a lock it only half knows about, so it is not used.
+    #[expect(
+        clippy::expect_used,
+        reason = "poisoning is unreachable; see the doc comment"
+    )]
+    fn slot(&self) -> MutexGuard<'_, Option<(LockPhase, HeldLock)>> {
         self.lock
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .expect("the held-lock slot is never poisoned: its critical sections cannot panic")
+    }
+
+    fn lock(&self) -> Option<(LockPhase, HeldLock)> {
+        self.slot().clone()
     }
 
     fn set(&self, lock: Option<(LockPhase, HeldLock)>) {
-        *self.lock.lock().unwrap_or_else(PoisonError::into_inner) = lock;
+        let previous = std::mem::replace(&mut *self.slot(), lock);
+        drop(previous);
     }
 }
 

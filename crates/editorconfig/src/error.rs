@@ -4,6 +4,7 @@
 
 /// Errors that can occur during EditorConfig file generation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Invalid EditorConfig section pattern.
     #[error("Invalid EditorConfig section pattern '{pattern}': {reason}")]

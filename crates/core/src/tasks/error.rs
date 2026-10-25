@@ -9,6 +9,7 @@ use thiserror::Error as ThisError;
 
 /// Errors raised while building the task graph or executing tasks.
 #[derive(ThisError, Debug, Diagnostic)]
+// Intentionally exhaustive: `cuenv`'s `From<cuenv_core::Error> for CliError` matches every variant so a new one forces an explicit exit-code decision.
 pub enum TaskError {
     #[error("Task execution failed: {message}")]
     #[diagnostic(code(cuenv::task::execution))]
@@ -134,7 +135,6 @@ impl From<cuenv_task_graph::Error> for TaskError {
                     suggestions.join("\n")
                 ))
             }
-            cuenv_task_graph::Error::TopologicalSortFailed { .. } => None,
             cuenv_task_graph::Error::DuplicateNodeName {
                 name,
                 existing_kind,
@@ -142,6 +142,8 @@ impl From<cuenv_task_graph::Error> for TaskError {
             } => Some(format!(
                 "Rename the {new_kind} '{name}' to avoid collision with the existing {existing_kind}"
             )),
+            // TopologicalSortFailed and any future variants carry no specific help.
+            _ => None,
         };
         TaskError::TaskGraph {
             message: err.to_string(),

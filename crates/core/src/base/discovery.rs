@@ -184,6 +184,7 @@ fn derive_synthetic_name(workspace_root: &Path, project_root: &Path) -> String {
 
 /// Errors that can occur during Base discovery
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DiscoveryError {
     #[error("Invalid path: {0}")]
     InvalidPath(PathBuf),

@@ -125,18 +125,18 @@ impl D1StateStore {
     /// Returns [`InfrastructureError::Configuration`] for an account or
     /// database identifier of the wrong form or an empty token, and
     /// [`InfrastructureError::State`] if the HTTP client cannot be built.
-    pub fn new(configuration: D1Configuration) -> Result<Self> {
+    pub fn try_new(configuration: D1Configuration) -> Result<Self> {
         Self::at(configuration, CLOUDFLARE_API, REQUEST_TIMEOUT)
     }
 
     /// Check the account and database identifiers against the same rules as
-    /// [`Self::new`] without creating a store: nothing is sent and no HTTP
+    /// [`Self::try_new`] without creating a store: nothing is sent and no HTTP
     /// client is built.
     ///
     /// # Errors
     ///
     /// Returns [`InfrastructureError::Configuration`] for the identifiers
-    /// [`Self::new`] refuses.
+    /// [`Self::try_new`] refuses.
     pub fn validate_identifiers(account_id: &str, database_id: &str) -> Result<()> {
         if !is_account_id(account_id) {
             return Err(InfrastructureError::configuration(

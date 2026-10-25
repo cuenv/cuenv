@@ -6,6 +6,7 @@ use thiserror::Error;
 
 /// Main error type for cuenv-hooks operations
 #[derive(Error, Debug, Diagnostic)]
+#[non_exhaustive]
 pub enum Error {
     /// Configuration error
     #[error("Configuration error: {message}")]

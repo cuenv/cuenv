@@ -73,7 +73,7 @@ fn infrastructure(desired: &Desired<'_>) -> TestResult<Infrastructure> {
 
 async fn store() -> TestResult<Arc<dyn StateStore>> {
     let store: Arc<dyn StateStore> = match std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL") {
-        Ok(url) => Arc::new(TursoStateStore::new(TursoConfiguration {
+        Ok(url) => Arc::new(TursoStateStore::try_new(TursoConfiguration {
             url,
             authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
         })?),
@@ -232,8 +232,8 @@ async fn managed_resource_lifecycle() -> TestResult {
     };
     let store = store().await?;
     let run = uuid::Uuid::new_v4().to_string();
-    let tenant = TenantKey::new(format!("example.com/end-to-end-{run}@v0"), "web")?;
-    let neighbour = TenantKey::new(format!("example.com/end-to-end-{run}"), "api")?;
+    let tenant = TenantKey::try_new(format!("example.com/end-to-end-{run}@v0"), "web")?;
+    let neighbour = TenantKey::try_new(format!("example.com/end-to-end-{run}"), "api")?;
     let _cleanup = (TenantCleanup::new(&tenant), TenantCleanup::new(&neighbour));
 
     // Create both resources, dependency first.
@@ -442,7 +442,7 @@ async fn a_provider_whose_schema_differs_from_its_generated_types_is_refused() -
     let live = cuenv_infrastructure::cue_types::schema_digest(&schema);
     let stale = format!("sha256:{}", "0".repeat(64));
     let project = tempfile::tempdir()?;
-    let tenant = TenantKey::new("example.com/schema-digest@v0", "web")?;
+    let tenant = TenantKey::try_new("example.com/schema-digest@v0", "web")?;
     for (digest, accepted) in [(live.as_str(), true), (stale.as_str(), false)] {
         let infrastructure: Infrastructure = serde_json::from_value(json!({
             "state": {"turso": {"url": "http://unused"}},
@@ -476,7 +476,7 @@ async fn a_provider_whose_schema_differs_from_its_generated_types_is_refused() -
 async fn installs_provider_from_registry() -> TestResult {
     let cache = tempfile::tempdir()?;
     let installer =
-        cuenv_infrastructure::registry::ProviderInstaller::new(cache.path().to_path_buf())?;
+        cuenv_infrastructure::registry::ProviderInstaller::try_new(cache.path().to_path_buf())?;
     let source = cuenv_infrastructure::registry::ProviderSource::parse("hashicorp/random")?;
     let binary = installer.ensure(&source, "3.7.2").await?;
     assert!(binary.starts_with(cache.path()));
@@ -503,7 +503,7 @@ async fn installs_provider_from_registry() -> TestResult {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
 async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestResult {
-    let state = TursoStateStore::new(TursoConfiguration {
+    let state = TursoStateStore::try_new(TursoConfiguration {
         url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })?;
@@ -516,7 +516,7 @@ async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestRe
         let tenant = if let Some(environment) = environment {
             TenantKey::with_environment(module, "web", environment)?
         } else {
-            TenantKey::new(module, "web")?
+            TenantKey::try_new(module, "web")?
         };
         let _cleanup = TenantCleanup::new(&tenant);
         let directory = tempfile::tempdir()?;
@@ -624,13 +624,13 @@ async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestRe
 #[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
 async fn turso_store_round_trips_records() -> TestResult {
     let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?;
-    let store = TursoStateStore::new(TursoConfiguration {
+    let store = TursoStateStore::try_new(TursoConfiguration {
         url,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })?;
     store.migrate().await?;
     let run = uuid::Uuid::new_v4().to_string();
-    let tenant = TenantKey::new(format!("example.com/store-{run}"), "web")?;
+    let tenant = TenantKey::try_new(format!("example.com/store-{run}"), "web")?;
     let _cleanup = TenantCleanup::new(&tenant);
     let record = cuenv_infrastructure::ManagedResource {
         address: cuenv_infrastructure::ResourceAddress::new("random_pet", "pet"),
@@ -743,8 +743,8 @@ async fn turso_store_round_trips_records() -> TestResult {
     store.delete(&tenant, &lock, &absent.address).await?;
 
     // The owner record is claimed once and transferred explicitly.
-    let root = ProjectInstance::new(".", "web")?;
-    let copy = ProjectInstance::new("_copy", "web")?;
+    let root = ProjectInstance::try_new(".", "web")?;
+    let copy = ProjectInstance::try_new("_copy", "web")?;
     assert_eq!(store.owner(&tenant).await?, None);
     let claim = |instance, mode| OwnerClaim { instance, mode };
     let owner = store
@@ -1071,7 +1071,7 @@ struct Converged {
 impl Fake {
     async fn new() -> TestResult<Self> {
         let run = uuid::Uuid::new_v4().to_string();
-        let tenant = TenantKey::new(format!("example.com/fake-{run}"), "web")?;
+        let tenant = TenantKey::try_new(format!("example.com/fake-{run}"), "web")?;
         Ok(Self {
             directory: tempfile::tempdir()?,
             store: store().await?,
@@ -2674,7 +2674,7 @@ async fn local_file_rename_with_a_dependent(reader_after: &str) -> TestResult {
     let directory = tempfile::tempdir()?;
     let store = store().await?;
     let run = uuid::Uuid::new_v4().to_string();
-    let tenant = TenantKey::new(format!("example.com/local-rename-dependent-{run}"), "web")?;
+    let tenant = TenantKey::try_new(format!("example.com/local-rename-dependent-{run}"), "web")?;
     let _cleanup = TenantCleanup::new(&tenant);
     let file = directory.path().join("site.conf");
     let reader = directory.path().join("reader.conf");
@@ -2748,7 +2748,7 @@ async fn local_file_rename_keeps_the_file_both_resources_manage() -> TestResult 
     let directory = tempfile::tempdir()?;
     let store = store().await?;
     let run = uuid::Uuid::new_v4().to_string();
-    let tenant = TenantKey::new(format!("example.com/local-rename-{run}"), "web")?;
+    let tenant = TenantKey::try_new(format!("example.com/local-rename-{run}"), "web")?;
     let _cleanup = TenantCleanup::new(&tenant);
     let file = directory.path().join("greeting.txt");
     let resources = |name: &str| {

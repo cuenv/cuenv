@@ -346,9 +346,9 @@ async fn random_provider_create_edit_destroy_stack() -> TestResult {
         url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
-    let store = TursoStateStore::new(backend.clone())?;
+    let store = TursoStateStore::try_new(backend.clone())?;
     let project = format!("random-lifecycle-{}", uuid::Uuid::new_v4());
-    let tenant = TenantKey::new(MODULE, &project)?;
+    let tenant = TenantKey::try_new(MODULE, &project)?;
     let lifecycle = Lifecycle::new(&provider, &backend, &project)?;
 
     let plan = lifecycle.run(&["plan"])?;
@@ -455,11 +455,11 @@ async fn named_environment_passes_an_exec_secret_to_the_provider() -> TestResult
         url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
-    let store = TursoStateStore::new(backend.clone())?;
+    let store = TursoStateStore::try_new(backend.clone())?;
     let project = format!("random-secret-lifecycle-{}", uuid::Uuid::new_v4());
     let tenant = TenantKey::with_environment(MODULE, &project, "dev")?;
     // A fresh project name means the no-flag namespace holds no rows to migrate.
-    let legacy = TenantKey::new(MODULE, &project)?;
+    let legacy = TenantKey::try_new(MODULE, &project)?;
     assert!(store.list(&legacy).await?.is_empty());
     let lifecycle = Lifecycle::with_environment_secret(&provider, &backend, &project)?;
 
@@ -576,9 +576,9 @@ async fn a_run_without_env_cannot_claim_what_an_environment_records() -> TestRes
         url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
-    let store = TursoStateStore::new(backend.clone())?;
+    let store = TursoStateStore::try_new(backend.clone())?;
     let project = format!("random-identity-{}", uuid::Uuid::new_v4());
-    let unselected = TenantKey::new(MODULE, &project)?;
+    let unselected = TenantKey::try_new(MODULE, &project)?;
     let dev = TenantKey::with_environment(MODULE, &project, "dev")?;
     let conflict = ConflictProject {
         provider: &provider,
@@ -847,8 +847,8 @@ async fn native_output_selectors_match_descriptor_runtime_behavior() -> TestResu
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let project = format!("native-output-{}", uuid::Uuid::new_v4());
-    let tenant = TenantKey::new(MODULE, &project)?;
-    let store = TursoStateStore::new(backend.clone())?;
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    let store = TursoStateStore::try_new(backend.clone())?;
     let configuration = format!(
         r#"package examples
 import "github.com/cuenv/cuenv/schema"

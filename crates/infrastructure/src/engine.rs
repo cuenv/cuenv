@@ -2327,7 +2327,7 @@ impl InfrastructureEngine {
             .plugin_cache_directory
             .clone()
             .unwrap_or_else(default_cache_directory);
-        let installer = ProviderInstaller::new(cache)?;
+        let installer = ProviderInstaller::try_new(cache)?;
         let Some(locked) = self.options.locked_providers.get(&source.to_string()) else {
             return installer.ensure(source, version).await;
         };

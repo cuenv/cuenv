@@ -348,7 +348,7 @@ impl RemoteCas {
             hasher.update(&buffer[..count]);
             size += count as u64;
         }
-        Digest::new(hex::encode(hasher.finalize()), size)
+        Digest::try_new(hex::encode(hasher.finalize()), size)
     }
 
     async fn write_file_streamed(&self, digest: &Digest, source: &Path) -> cuenv_cas::Result<()> {
@@ -402,7 +402,7 @@ impl RemoteCas {
                     "source changed while uploading: expected {expected_size} bytes, read {offset}"
                 )));
             }
-            let actual = Digest::new(hex::encode(hasher.finalize()), offset)?;
+            let actual = Digest::try_new(hex::encode(hasher.finalize()), offset)?;
             if actual != expected_digest {
                 return Err(cuenv_cas::Error::digest_mismatch(
                     expected_digest.to_resource(),
@@ -489,7 +489,7 @@ impl RemoteCas {
             file.sync_all()
                 .await
                 .map_err(|error| cuenv_cas::Error::io(error, destination, "fsync"))?;
-            let actual = Digest::new(hex::encode(hasher.finalize()), size)?;
+            let actual = Digest::try_new(hex::encode(hasher.finalize()), size)?;
             if &actual != digest {
                 return Err(cuenv_cas::Error::digest_mismatch(
                     digest.to_resource(),

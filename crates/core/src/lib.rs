@@ -189,6 +189,7 @@ impl AsRef<Path> for PackageDir {
 
 /// Errors that can occur when validating a PackageDir
 #[derive(Error, Debug, Clone, Diagnostic)]
+#[non_exhaustive]
 pub enum PackageDirError {
     /// The path does not exist
     #[error("path does not exist: {0}")]
@@ -304,6 +305,7 @@ impl std::fmt::Display for PackageName {
 
 /// Errors that can occur when validating a PackageName
 #[derive(Error, Debug, Clone, Diagnostic)]
+#[non_exhaustive]
 pub enum PackageNameError {
     /// The package name is invalid
     #[error("invalid package name: {0}")]

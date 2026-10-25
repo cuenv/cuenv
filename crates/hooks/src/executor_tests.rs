@@ -35,7 +35,7 @@ async fn test_hook_executor_creation() {
         state_dir: Some(temp_dir.path().to_path_buf()),
     };
 
-    let executor = HookExecutor::new(config).unwrap();
+    let executor = HookExecutor::try_new(config).unwrap();
     assert_eq!(executor.config.default_timeout_seconds, 60);
 }
 
@@ -86,7 +86,7 @@ async fn test_execute_single_hook_timeout() {
         fail_fast: true,
         state_dir: Some(temp_dir.path().to_path_buf()),
     };
-    let executor = HookExecutor::new(config).unwrap();
+    let executor = HookExecutor::try_new(config).unwrap();
 
     let hook = Hook {
         order: 100,
@@ -112,7 +112,7 @@ async fn test_background_execution() {
         state_dir: Some(temp_dir.path().to_path_buf()),
     };
 
-    let executor = HookExecutor::new(config).unwrap();
+    let executor = HookExecutor::try_new(config).unwrap();
     let directory_path = PathBuf::from("/test/directory");
     let config_hash = "test_hash".to_string();
 
@@ -203,7 +203,7 @@ async fn test_cancellation() {
                 state_dir: Some(temp_dir.path().to_path_buf()),
             };
 
-            let executor = HookExecutor::new(config).unwrap();
+            let executor = HookExecutor::try_new(config).unwrap();
             let directory_path = PathBuf::from("/test/cancel");
             let config_hash = "cancel_test".to_string();
 
@@ -314,7 +314,7 @@ async fn test_state_cleanup() {
                 state_dir: Some(temp_dir.path().to_path_buf()),
             };
 
-            let executor = HookExecutor::new(config).unwrap();
+            let executor = HookExecutor::try_new(config).unwrap();
             let directory_path = PathBuf::from("/test/cleanup");
             let config_hash = "cleanup_test".to_string();
 
@@ -390,7 +390,7 @@ async fn test_execution_state_tracking() {
         state_dir: Some(temp_dir.path().to_path_buf()),
     };
 
-    let executor = HookExecutor::new(config).unwrap();
+    let executor = HookExecutor::try_new(config).unwrap();
     let directory_path = PathBuf::from("/test/directory");
     let config_hash = "hash".to_string();
 
@@ -536,7 +536,7 @@ async fn test_hook_timeout_behavior() {
         fail_fast: true,
         state_dir: Some(temp_dir.path().to_path_buf()),
     };
-    let executor = HookExecutor::new(config).unwrap();
+    let executor = HookExecutor::try_new(config).unwrap();
 
     // Hook that sleeps longer than timeout
     let slow_hook = Hook {
@@ -596,7 +596,7 @@ async fn test_hook_timeout_with_partial_output() {
         fail_fast: true,
         state_dir: Some(temp_dir.path().to_path_buf()),
     };
-    let executor = HookExecutor::new(config).unwrap();
+    let executor = HookExecutor::try_new(config).unwrap();
 
     // Hook that outputs something then sleeps
     // Using bash -c to chain commands
@@ -632,7 +632,7 @@ async fn test_concurrent_hook_isolation() {
         fail_fast: false,
         state_dir: Some(temp_dir.path().to_path_buf()),
     };
-    let executor = Arc::new(HookExecutor::new(config).unwrap());
+    let executor = Arc::new(HookExecutor::try_new(config).unwrap());
 
     let mut join_set = JoinSet::new();
 

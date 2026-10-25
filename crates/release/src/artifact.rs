@@ -19,6 +19,7 @@ use std::str::FromStr;
 
 /// Supported build targets for binary distribution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Target {
     /// Linux `x86_64`
     LinuxX64,

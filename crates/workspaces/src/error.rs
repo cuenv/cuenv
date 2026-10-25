@@ -9,6 +9,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur during workspace operations.
 #[derive(Error, Debug, Diagnostic)]
+#[non_exhaustive]
 pub enum Error {
     /// Workspace root directory not found.
     #[error("Workspace not found at path: {path}")]

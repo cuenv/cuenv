@@ -1026,7 +1026,7 @@ mod tests {
     }
 
     fn tenant(project: &str) -> TenantKey {
-        TenantKey::new("example.com/app", project).unwrap()
+        TenantKey::try_new("example.com/app", project).unwrap()
     }
 
     fn save(store: &UnrecordedStore, tenant: &TenantKey, record: &ManagedResource) -> PathBuf {
@@ -1034,7 +1034,7 @@ mod tests {
     }
 
     fn backend_identity(url: &str) -> String {
-        TursoStateStore::new(TursoConfiguration {
+        TursoStateStore::try_new(TursoConfiguration {
             url: url.to_string(),
             authentication_token: None,
         })

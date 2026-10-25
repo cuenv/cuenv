@@ -273,7 +273,6 @@ pub struct Instance {
     pub value: serde_json::Value,
 
     /// Auto-inferred dependencies from task output references.
-    /// Each pair is (task_that_references, task_being_referenced).
     #[serde(default, skip_serializing)]
     pub output_ref_deps: Vec<crate::tasks::output_refs::OutputRefDep>,
 }

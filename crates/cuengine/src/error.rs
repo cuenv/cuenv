@@ -8,6 +8,7 @@ use thiserror::Error;
 
 /// Errors that can occur during CUE evaluation
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum CueEngineError {
     /// Configuration error (invalid paths, settings, etc.)
     #[error("Configuration error: {message}")]

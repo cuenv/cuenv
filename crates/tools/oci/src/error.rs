@@ -7,6 +7,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur during OCI operations.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// Failed to parse image reference.
     #[error("Invalid image reference '{0}': {1}")]

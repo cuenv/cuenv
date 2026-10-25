@@ -336,7 +336,7 @@ impl ServiceSupervisor {
             let log_probe = self.service.readiness.as_ref().and_then(|r| match r {
                 cuenv_core::manifest::Readiness::Log(l) => {
                     let source = l.source.as_deref().unwrap_or("either");
-                    LogProbe::new(&l.pattern, source).ok()
+                    LogProbe::try_new(&l.pattern, source).ok()
                 }
                 _ => None,
             });

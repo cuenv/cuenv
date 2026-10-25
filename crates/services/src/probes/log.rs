@@ -34,7 +34,7 @@ impl LogProbe {
     /// # Errors
     ///
     /// Returns an error if the regex pattern is invalid.
-    pub fn new(pattern: &str, source: &str) -> crate::Result<Self> {
+    pub fn try_new(pattern: &str, source: &str) -> crate::Result<Self> {
         let re = regex::Regex::new(pattern).map_err(|e| crate::Error::ProbeFailed {
             name: String::new(),
             message: format!("invalid regex pattern: {e}"),
@@ -99,13 +99,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_probe_not_ready() {
-        let probe = LogProbe::new("listening on", "either").unwrap();
+        let probe = LogProbe::try_new("listening on", "either").unwrap();
         assert!(matches!(probe.check().await, ProbeOutcome::NotReady));
     }
 
     #[tokio::test]
     async fn test_log_probe_ready_on_match() {
-        let probe = LogProbe::new("listening on .*:8080", "either").unwrap();
+        let probe = LogProbe::try_new("listening on .*:8080", "either").unwrap();
         probe
             .feed_line("server listening on 0.0.0.0:8080", "stdout")
             .await;
@@ -114,7 +114,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_probe_source_filter() {
-        let probe = LogProbe::new("ready", "stdout").unwrap();
+        let probe = LogProbe::try_new("ready", "stdout").unwrap();
         // Feed on stderr — should not match
         probe.feed_line("ready", "stderr").await;
         assert!(matches!(probe.check().await, ProbeOutcome::NotReady));
@@ -125,7 +125,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_probe_reset() {
-        let probe = LogProbe::new("ready", "either").unwrap();
+        let probe = LogProbe::try_new("ready", "either").unwrap();
         probe.feed_line("ready", "stdout").await;
         assert!(matches!(probe.check().await, ProbeOutcome::Ready));
 
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_invalid_regex() {
-        let result = LogProbe::new("[invalid", "either");
+        let result = LogProbe::try_new("[invalid", "either");
         assert!(result.is_err());
     }
 }

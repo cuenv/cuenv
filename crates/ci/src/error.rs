@@ -19,6 +19,7 @@ use thiserror::Error;
 
 /// Error types for CI execution
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ExecutorError {
     /// Compilation error
     #[error("Failed to compile project to IR: {0}")]
@@ -62,6 +63,7 @@ impl From<ExecutorError> for cuenv_core::Error {
 
 /// Error types for task execution
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RunnerError {
     /// Task command is empty
     #[error("Task '{task}' has empty command")]
@@ -86,6 +88,7 @@ pub enum RunnerError {
 
 /// Compiler errors
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CompilerError {
     #[error("Task graph validation failed: {0}")]
     ValidationFailed(String),
@@ -105,6 +108,7 @@ pub enum CompilerError {
 
 /// Errors related to flake.lock parsing and purity analysis
 #[derive(Debug, Error, Diagnostic)]
+#[non_exhaustive]
 pub enum FlakeLockError {
     /// Failed to parse flake.lock JSON
     #[error("Failed to parse flake.lock: {0}")]
@@ -188,6 +192,7 @@ impl FlakeLockError {
 
 /// Validation errors for IR documents
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ValidationError {
     #[error("Task graph contains cycle: {0}")]
     CyclicDependency(String),
@@ -222,6 +227,7 @@ pub enum ValidationError {
 
 /// Error types for emitter operations
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EmitterError {
     /// YAML/JSON serialization failed
     #[error("Serialization failed: {0}")]
@@ -248,6 +254,7 @@ pub type EmitterResult<T> = std::result::Result<T, EmitterError>;
 
 /// Errors for diff operations
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DiffError {
     /// Report file not found
     #[error("Report not found: {0}")]
@@ -276,6 +283,7 @@ pub enum DiffError {
 
 /// Errors for garbage collection
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum GCError {
     /// IO error
     #[error("IO error: {0}")]

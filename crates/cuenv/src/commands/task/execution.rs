@@ -1,12 +1,12 @@
+use super::cache::{TaskCacheContext, build_task_cache, resolve_runtime_cache_identity};
 use super::dag_export;
 use super::discovery::evaluate_manifest;
 use super::list_builder::prepare_task_index;
 use super::rendering::get_task_cli_help;
-use super::types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
-use super::{
-    TaskCacheContext, build_task_cache, build_task_executor, execute_task_with_strategy,
-    execute_with_rich_tui, format_task_results, resolve_runtime_cache_identity,
+use super::runner::{
+    build_task_executor, execute_task_with_strategy, execute_with_rich_tui, format_task_results,
 };
+use super::types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
 use crate::commands::CommandExecutor;
 use crate::commands::env_file::find_cue_module_root;
 use crate::commands::export::{StaticEnvConsumer, extract_static_env_vars};

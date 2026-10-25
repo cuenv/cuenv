@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn test_dependency_spec_registry() {
         let spec = DependencySpec::Registry {
-            version: "^1.0.0".to_string(),
+            version: "^1.0.0".into(),
             registry: None,
         };
 
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn test_dependency_spec_git() {
         let spec = DependencySpec::Git {
-            url: "https://github.com/user/repo.git".to_string(),
+            url: "https://github.com/user/repo.git".into(),
             rev: Some("main".to_string()),
         };
 
@@ -262,7 +262,7 @@ mod tests {
     fn test_lockfile_entry() {
         let entry = LockfileEntry {
             name: "example".to_string(),
-            version: "1.2.3".to_string(),
+            version: "1.2.3".into(),
             source: DependencySource::Registry("https://registry.npmjs.org/".to_string()),
             checksum: Some("sha512-abc123".to_string()),
             dependencies: vec![DependencyRef {
@@ -281,7 +281,7 @@ mod tests {
     fn test_lockfile_entry_workspace_member() {
         let entry = LockfileEntry {
             name: "workspace-pkg".to_string(),
-            version: "0.1.0".to_string(),
+            version: "0.1.0".into(),
             source: DependencySource::Workspace(PathBuf::from("packages/workspace-pkg")),
             checksum: None,
             dependencies: vec![],

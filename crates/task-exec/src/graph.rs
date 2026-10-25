@@ -106,6 +106,7 @@ mod graph_advanced_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output_refs::OutputRefDep;
     use crate::test_utils::create_task;
     use crate::{TaskGroup, TaskNode};
     use cuenv_task_graph::TaskNodeData;
@@ -322,7 +323,7 @@ mod tests {
         assert!(!graph.contains_task("tmpdir"));
 
         graph
-            .add_output_ref_deps(&[("work".into(), "tmpdir".into())], &tasks)
+            .add_output_ref_deps(&[OutputRefDep::new("work", "tmpdir")], &tasks)
             .unwrap();
 
         // tmpdir should now be present and ordered before work
@@ -354,7 +355,7 @@ mod tests {
         assert!(!graph.contains_task("b"));
 
         graph
-            .add_output_ref_deps(&[("x".into(), "b".into())], &tasks)
+            .add_output_ref_deps(&[OutputRefDep::new("x", "b")], &tasks)
             .unwrap();
 
         // Graph should be unchanged
@@ -389,7 +390,7 @@ mod tests {
 
         // Now apply output-ref deps; should be a no-op logically
         graph
-            .add_output_ref_deps(&[("work".into(), "tmpdir".into())], &tasks)
+            .add_output_ref_deps(&[OutputRefDep::new("work", "tmpdir")], &tasks)
             .unwrap();
         let sorted2 = graph.topological_sort().unwrap();
         let names2: Vec<_> = sorted2.iter().map(|n| n.name.as_str()).collect();

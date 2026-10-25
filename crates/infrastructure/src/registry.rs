@@ -527,7 +527,7 @@ impl ProviderInstaller {
     /// # Errors
     ///
     /// Returns [`InfrastructureError::Install`] if the HTTP client cannot be built.
-    pub fn new(cache_directory: PathBuf) -> Result<Self> {
+    pub fn try_new(cache_directory: PathBuf) -> Result<Self> {
         Self::with_transport(cache_directory, RegistryTransport::HttpsOnly)
     }
 
@@ -1342,7 +1342,7 @@ mod tests {
     #[tokio::test]
     async fn a_cached_install_of_the_pinned_archive_is_reused() {
         let cache = tempfile::tempdir().unwrap();
-        let installer = ProviderInstaller::new(cache.path().to_path_buf()).unwrap();
+        let installer = ProviderInstaller::try_new(cache.path().to_path_buf()).unwrap();
         let binary = cached_install(&installer, &random_source());
         let pinned = installer
             .ensure_pinned(&random_source(), "3.7.2", &"00".repeat(32))
@@ -1354,7 +1354,7 @@ mod tests {
     #[tokio::test]
     async fn a_cached_install_of_another_archive_is_not_reused_when_pinned() {
         let cache = tempfile::tempdir().unwrap();
-        let installer = ProviderInstaller::new(cache.path().to_path_buf()).unwrap();
+        let installer = ProviderInstaller::try_new(cache.path().to_path_buf()).unwrap();
         // Port 1 refuses connections: reinstalling fails without the network.
         let source = ProviderSource::parse("localhost:1/hashicorp/random").unwrap();
         cached_install(&installer, &source);
@@ -1457,7 +1457,7 @@ mod tests {
 
     #[test]
     fn install_directory_follows_terraform_cache_layout() {
-        let installer = ProviderInstaller::new(PathBuf::from("/cache")).unwrap();
+        let installer = ProviderInstaller::try_new(PathBuf::from("/cache")).unwrap();
         let directory = installer
             .install_directory(&random_source(), "3.7.2")
             .unwrap();
@@ -1472,7 +1472,7 @@ mod tests {
 
     #[test]
     fn install_directory_rejects_unvalidated_components() {
-        let installer = ProviderInstaller::new(PathBuf::from("/cache")).unwrap();
+        let installer = ProviderInstaller::try_new(PathBuf::from("/cache")).unwrap();
         assert!(
             installer
                 .install_directory(
@@ -1581,7 +1581,7 @@ mod tests {
 
     #[tokio::test]
     async fn registry_requests_refuse_plaintext_http() {
-        let installer = ProviderInstaller::new(PathBuf::from("/cache")).unwrap();
+        let installer = ProviderInstaller::try_new(PathBuf::from("/cache")).unwrap();
         let small = r#"{"providers.v1": "/v1/providers/"}"#.to_string();
         let url = document_server(small.clone(), Some(small.len())).await;
         let error = installer
@@ -1715,7 +1715,7 @@ mod tests {
     #[test]
     fn installs_from_archive_into_verified_cache_directory() {
         let cache = tempfile::tempdir().unwrap();
-        let installer = ProviderInstaller::new(cache.path().to_path_buf()).unwrap();
+        let installer = ProviderInstaller::try_new(cache.path().to_path_buf()).unwrap();
         let install_directory = installer
             .install_directory(&random_source(), "3.7.2")
             .unwrap();

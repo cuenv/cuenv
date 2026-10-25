@@ -163,7 +163,7 @@ fn entry_from_importer(importer_path: &str, importer: &PnpmImporter) -> Lockfile
 
     LockfileEntry {
         name,
-        version: "0.0.0".to_string(),
+        version: "0.0.0".into(),
         source: DependencySource::Workspace(path),
         checksum: None,
         dependencies,
@@ -201,7 +201,7 @@ fn entry_from_package(
 
     Ok(LockfileEntry {
         name,
-        version,
+        version: version.into(),
         source,
         checksum,
         dependencies,

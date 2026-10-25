@@ -26,7 +26,7 @@ impl TenantKey {
     /// # Errors
     ///
     /// Returns [`InfrastructureError::Configuration`] when either component is empty.
-    pub fn new(module_path: impl AsRef<str>, project: impl Into<String>) -> Result<Self> {
+    pub fn try_new(module_path: impl AsRef<str>, project: impl Into<String>) -> Result<Self> {
         let module_path = strip_major_version(module_path.as_ref().trim()).to_string();
         let project = project.into();
         if module_path.is_empty() {
@@ -56,7 +56,7 @@ impl TenantKey {
         project: impl Into<String>,
         environment: impl Into<String>,
     ) -> Result<Self> {
-        let mut key = Self::new(module_path, project)?;
+        let mut key = Self::try_new(module_path, project)?;
         let environment = environment.into();
         if environment.trim().is_empty()
             || environment.trim() != environment
@@ -120,7 +120,7 @@ impl ProjectInstance {
     /// Returns [`InfrastructureError::Configuration`] when the package is
     /// empty or contains `:`, or either part contains control characters,
     /// or the directory is absolute or climbs out of the module.
-    pub fn new(directory: &str, package: &str) -> Result<Self> {
+    pub fn try_new(directory: &str, package: &str) -> Result<Self> {
         let normalized = directory.replace('\\', "/");
         let trimmed = normalized
             .trim_start_matches("./")
@@ -230,20 +230,20 @@ mod tests {
 
     #[test]
     fn tenant_strips_major_version_suffix() {
-        let tenant = TenantKey::new("github.com/acme/infrastructure@v1", "web").unwrap();
+        let tenant = TenantKey::try_new("github.com/acme/infrastructure@v1", "web").unwrap();
         assert_eq!(tenant.module_path(), "github.com/acme/infrastructure");
         assert_eq!(tenant.to_string(), "github.com/acme/infrastructure#web");
     }
 
     #[test]
     fn tenant_requires_both_components() {
-        assert!(TenantKey::new("", "web").is_err());
-        assert!(TenantKey::new("github.com/acme/infrastructure", " ").is_err());
+        assert!(TenantKey::try_new("", "web").is_err());
+        assert!(TenantKey::try_new("github.com/acme/infrastructure", " ").is_err());
     }
 
     #[test]
     fn named_environment_is_distinct_from_legacy_and_default_is_not_implicit() {
-        let legacy = TenantKey::new("example.com/app@v1", "web").unwrap();
+        let legacy = TenantKey::try_new("example.com/app@v1", "web").unwrap();
         let default = TenantKey::with_environment("example.com/app@v1", "web", "default").unwrap();
         let dev = TenantKey::with_environment("example.com/app@v1", "web", "Dev").unwrap();
         assert_eq!(legacy.environment(), None);
@@ -260,24 +260,28 @@ mod tests {
     #[test]
     fn project_instances_join_directory_and_package() {
         assert_eq!(
-            ProjectInstance::new("", "infrastructure").unwrap().as_str(),
+            ProjectInstance::try_new("", "infrastructure")
+                .unwrap()
+                .as_str(),
             ".:infrastructure"
         );
         assert_eq!(
-            ProjectInstance::new("./services/web/", "web")
+            ProjectInstance::try_new("./services/web/", "web")
                 .unwrap()
                 .as_str(),
             "services/web:web"
         );
         assert_eq!(
-            ProjectInstance::new("_hidden", "web").unwrap().to_string(),
+            ProjectInstance::try_new("_hidden", "web")
+                .unwrap()
+                .to_string(),
             "_hidden:web"
         );
-        assert!(ProjectInstance::new(".", "").is_err());
-        assert!(ProjectInstance::new(".", "a:b").is_err());
-        assert!(ProjectInstance::new("/absolute", "web").is_err());
-        assert!(ProjectInstance::new("../outside", "web").is_err());
-        assert!(ProjectInstance::new("a\u{1b}b", "web").is_err());
+        assert!(ProjectInstance::try_new(".", "").is_err());
+        assert!(ProjectInstance::try_new(".", "a:b").is_err());
+        assert!(ProjectInstance::try_new("/absolute", "web").is_err());
+        assert!(ProjectInstance::try_new("../outside", "web").is_err());
+        assert!(ProjectInstance::try_new("a\u{1b}b", "web").is_err());
         assert_eq!(
             ProjectInstance::from_stored("a\u{1b}[2J:web").as_str(),
             "a[2J:web"

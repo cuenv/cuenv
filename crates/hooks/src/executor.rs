@@ -26,7 +26,7 @@ pub struct HookExecutor {
 
 impl HookExecutor {
     /// Create a new hook executor with the specified configuration
-    pub fn new(config: HookExecutionConfig) -> Result<Self> {
+    pub fn try_new(config: HookExecutionConfig) -> Result<Self> {
         let state_dir = if let Some(dir) = config.state_dir.clone() {
             dir
         } else {
@@ -50,7 +50,7 @@ impl HookExecutor {
             config.state_dir = Some(PathBuf::from(state_dir));
         }
 
-        Self::new(config)
+        Self::try_new(config)
     }
 
     /// Start executing hooks in the background for a directory
