@@ -1,9 +1,9 @@
 ---
 title: cuenv-workspaces
-description: Workspace and dependency resolution across multiple package managers
+description: Workspace discovery and lockfile parsing across multiple package managers
 ---
 
-The `cuenv-workspaces` crate provides trait-based abstractions for discovering, parsing, and resolving workspace configurations and dependencies across different package managers including npm, Bun, pnpm, Yarn (Classic and Modern), and Cargo.
+The `cuenv-workspaces` crate provides trait-based abstractions for discovering and parsing workspace configurations and dependencies across different package managers including npm, Bun, pnpm, Yarn (Classic and Modern), and Cargo.
 
 ## Overview
 
@@ -11,27 +11,26 @@ Modern projects often use multiple package managers or need to understand worksp
 
 - Workspace discovery (finding packages in monorepos)
 - Lockfile parsing (extracting resolved dependencies)
-- Dependency resolution (building dependency graphs)
 - Package manager detection (from lockfiles or commands)
 
 ## Architecture
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         cuenv-workspaces                                │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐  │
-│  │ WorkspaceDiscovery│  │ LockfileParser   │  │ DependencyResolver   │  │
-│  │ (trait)          │  │ (trait)          │  │ (trait)              │  │
-│  └────────┬─────────┘  └────────┬─────────┘  └──────────┬───────────┘  │
-│           │                     │                       │              │
-│  ┌────────┴─────────┐  ┌────────┴─────────┐  ┌──────────┴───────────┐  │
-│  │ PackageJson      │  │ NpmLockfile      │  │ GenericDependency    │  │
-│  │ PnpmWorkspace    │  │ BunLockfile      │  │ Resolver             │  │
-│  │ CargoToml        │  │ PnpmLockfile     │  └──────────────────────┘  │
-│  └──────────────────┘  │ YarnLockfile     │                            │
-│                        │ CargoLockfile    │                            │
-│                        └──────────────────┘                            │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│               cuenv-workspaces               │
+│  ┌───────────────────┐  ┌──────────────────┐ │
+│  │ WorkspaceDiscovery│  │ LockfileParser   │ │
+│  │ (trait)           │  │ (trait)          │ │
+│  └────────┬──────────┘  └────────┬─────────┘ │
+│           │                      │           │
+│  ┌────────┴──────────┐  ┌────────┴─────────┐ │
+│  │ PackageJson       │  │ NpmLockfile      │ │
+│  │ PnpmWorkspace     │  │ BunLockfile      │ │
+│  │ CargoToml         │  │ PnpmLockfile     │ │
+│  └───────────────────┘  │ YarnLockfile     │ │
+│                         │ CargoLockfile    │ │
+│                         └──────────────────┘ │
+└──────────────────────────────────────────────┘
 ```
 
 ### Core Traits
@@ -42,8 +41,9 @@ Discovers workspace configuration from a root directory.
 **LockfileParser**
 Parses lockfiles into structured entries.
 
-**DependencyResolver**
-Builds dependency graphs from workspace and lockfile data.
+Workspace-internal dependency paths come from
+`Workspace::resolve_workspace_dependency_paths`. The crate does not build an
+external dependency graph.
 
 Cargo lockfile parser integration tests return `Result` and use named entry
 lookup/error helpers so parser assertions stay explicit without file-level
@@ -206,10 +206,10 @@ The crate root keeps only the dependency-version lint allowance required by the
 workspace dependency graph; parser and derive warnings are handled at their
 actual source rather than by a crate-wide `unused_assignments` suppression.
 
-Yarn Classic parsing uses `yarn_lock_parser` when possible and falls back to a
-small parser state that handles headers, version/resolved/integrity fields, and
-dependency lines without keeping the fallback path as one monolithic parser
-function.
+Yarn Classic parsing uses a single infallible, indentation-aware line parser
+that handles headers, version/resolved/integrity fields, and dependency and
+optional-dependency blocks, including quoted scoped names. Malformed or
+truncated input never panics.
 
 Yarn Modern parsing keeps descriptor splitting, protocol detection, and
 git-resolution parsing in separate helpers so scoped package handling stays out

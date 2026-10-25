@@ -93,17 +93,6 @@ pub enum Error {
         workspace_root: PathBuf,
     },
 
-    /// Dependency resolution failed.
-    #[error("Failed to resolve dependencies: {message}")]
-    #[diagnostic(
-        code(cuenv::workspaces::dependency_resolution_failed),
-        help("Check for circular dependencies or missing dependencies in the lockfile")
-    )]
-    DependencyResolutionFailed {
-        /// Description of the resolution failure.
-        message: String,
-    },
-
     /// Unsupported package manager.
     #[error("Unsupported package manager: {manager}")]
     #[diagnostic(
@@ -278,17 +267,6 @@ mod tests {
         assert!(message.contains("Workspace member"));
         assert!(message.contains("my-package"));
         assert!(message.contains("not found"));
-    }
-
-    #[test]
-    fn test_dependency_resolution_failed_error() {
-        let error = Error::DependencyResolutionFailed {
-            message: "Circular dependency detected".to_string(),
-        };
-
-        let message = error.to_string();
-        assert!(message.contains("Failed to resolve dependencies"));
-        assert!(message.contains("Circular dependency"));
     }
 
     #[test]
@@ -553,11 +531,6 @@ mod tests {
         let error = Error::MemberNotFound {
             name: "test".to_string(),
             workspace_root: PathBuf::from("/test"),
-        };
-        assert!(error.code().is_some());
-
-        let error = Error::DependencyResolutionFailed {
-            message: "test".to_string(),
         };
         assert!(error.code().is_some());
 
