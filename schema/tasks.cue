@@ -142,7 +142,7 @@ package schema
 // elements.
 #Task: {
 	// GitHub token requirements for the job executing this task.
-	ci?: #TaskCI
+	ci?:          #TaskCI
 	_cuenvPrefix: string | *""
 	_cuenvSelf:   string | *""
 
@@ -179,7 +179,7 @@ package schema
 	// host task inherits the caller's environment without declaring a marker.
 	env?: {
 		[string]: #EnvironmentVariable | #TaskOutputRef
-		HOME?:   (string & !~"(?i)^cuenv:passthrough:HOME$") | int | bool | #Secret | #InterpolatedEnv | #EnvironmentVariableWithPolicies | #TaskOutputRef
+		HOME?:    (string & !~"(?i)^cuenv:passthrough:HOME$") | int | bool | #Secret | #InterpolatedEnv | #EnvironmentVariableWithPolicies | #TaskOutputRef
 	}
 
 	// Working directory override. Defaults to the task definition directory.
@@ -271,7 +271,8 @@ package schema
 			{[childName= !~"^(type|dependsOn|maxConcurrency|description)$"]: ((#Task | #TaskGroup) & {
 				_cuenvPrefix: _name + "."
 				_cuenvSelf:   childName
-			}) | #TaskSequence}
+			}) | #TaskSequence
+			}
 		}
 	}
 	_childrenByType[type]
@@ -314,22 +315,22 @@ package schema
 #Input: string | #ProjectReference | *#TaskOutput
 
 // Reference to another project's task within the same Git root
-#ProjectReference: close({
+#ProjectReference: {
 	project!: string
 	task!:    string
 	map!: [...#Mapping]
-})
+}
 
-#Mapping: close({
+#Mapping: {
 	from!: string
 	to!:   string
-})
+}
 
 // Reference to another task's outputs within the same project
-#TaskOutput: close({
+#TaskOutput: {
 	task!: string
 	map?: [...#Mapping]
-})
+}
 
 // =============================================================================
 // Task Captures (Regex Extraction from Output)
@@ -337,10 +338,10 @@ package schema
 
 // Regex capture from task output streams.
 // The first capture group's match becomes the named value.
-#TaskCapture: close({
+#TaskCapture: {
 	pattern!: string
 	source?:  "stdout" | "stderr" | *"stdout"
-})
+}
 
 // Reference to a captured value, resolved at runtime by the executor.
 // Usage in annotations:

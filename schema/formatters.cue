@@ -10,7 +10,7 @@ package schema
 }
 
 // #RustFormatter configures rustfmt for Rust files.
-#RustFormatter: close({
+#RustFormatter: {
 	// Whether this formatter is enabled (default: true)
 	enabled: bool | *true
 
@@ -19,10 +19,10 @@ package schema
 
 	// Rust edition for formatting rules
 	edition?: "2018" | "2021" | "2024"
-})
+}
 
 // #NixFormatter configures Nix file formatting.
-#NixFormatter: close({
+#NixFormatter: {
 	// Whether this formatter is enabled (default: true)
 	enabled: bool | *true
 
@@ -31,22 +31,22 @@ package schema
 
 	// Which Nix formatter tool to use
 	tool: "nixfmt" | "alejandra" | *"nixfmt"
-})
+}
 
 // #GoFormatter configures gofmt for Go files.
-#GoFormatter: close({
+#GoFormatter: {
 	// Whether this formatter is enabled (default: true)
 	enabled: bool | *true
 
 	// Glob patterns for files to format (default: ["*.go"])
 	includes: [...string] | *["*.go"]
-})
+}
 
 // #CueFormatter configures cue fmt for CUE files.
-#CueFormatter: close({
+#CueFormatter: {
 	// Whether this formatter is enabled (default: true)
 	enabled: bool | *true
 
 	// Glob patterns for files to format (default: ["*.cue"])
 	includes: [...string] | *["*.cue"]
-})
+}

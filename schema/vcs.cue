@@ -4,7 +4,7 @@ package schema
 //
 // `vendor` and `path` are required so projects make an explicit choice between
 // tracked source snapshots and local generated checkouts.
-#VcsDependency: close({
+#VcsDependency: {
 	// Git repository URL. Local paths are accepted by Git for tests and private mirrors.
 	url!: string
 	// Branch, tag, or commit-ish to resolve. Defaults to the remote default branch.
@@ -23,4 +23,4 @@ package schema
 	// (and gitignoring) the whole `path`. This lets repo-local content live in
 	// `path` alongside the synced children. Requires `subdir` and `vendor: false`.
 	overlay?: bool
-})
+}

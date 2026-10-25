@@ -10,7 +10,7 @@ package rules
 	[pattern=string & =~"^[^\\[\\]\\r\\n]+$"]: #EditorConfigSection
 }
 
-#EditorConfigSection: close({
+#EditorConfigSection: {
 	// Indentation style: "tab" or "space"
 	indent_style?: "tab" | "space"
 
@@ -34,4 +34,4 @@ package rules
 
 	// Maximum line length (soft limit), or "off" to disable
 	max_line_length?: int | "off"
-})
+}

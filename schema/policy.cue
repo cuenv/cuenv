@@ -7,7 +7,7 @@ package schema
 #InfrastructureAction: "plan" | "apply" | "import" | "destroy" | "state-list" | "state-remove" | "state-recover" | "state-adopt" | "unlock"
 
 // #Policy defines access control for environment variables
-#Policy: close({
+#Policy: {
 	// Allowlist of task names that can access this variable
 	allowTasks?: [...string]
 
@@ -19,4 +19,4 @@ package schema
 	// unless some policy lists that command's action; `allowTasks` and
 	// `allowExec` do not grant it.
 	allowInfrastructure?: [...#InfrastructureAction]
-})
+}
