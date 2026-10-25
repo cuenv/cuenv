@@ -1,27 +1,47 @@
 package schema
 
-#Base: close({
-	config?:     #Config
-	env?:        #Env
-	formatters?: #Formatters
-	runtime?:    #Runtime
-	hooks?:      #Hooks
-	vcs?:        [#VcsDependencyName]: #VcsDependency
-})
+// Closedness. Consumers embed `schema.#Project` (or `schema.#Base`) at file
+// level. Before CUE language v0.18 that leaves the file's own struct open,
+// and a field typed with a bare definition reference (`config?: #Config`)
+// is left open with it. Referencing the definition inside a struct literal
+// (`config?: {#Config}`) keeps it closed under every CUE release and
+// language version, so a misspelled nested field is an error. Definitions
+// are already closed, so the schema never wraps them in close(): on CUE
+// v0.17+ close() around an embedded definition rejects the definition's own
+// fields under file-level embedding. The inline passthrough arm of
+// #InfrastructureStateToken is the exception: it is not a definition, and an
+// open arm would accept extra fields. scripts/check-schema-compat.sh checks
+// both properties.
+//
+// Exception: the `tasks`, `services` and `images` maps reference #Task,
+// #TaskGroup, #Service and #ContainerImage directly. `dependsOn` and pipeline
+// task lists are typed references to these entries, and cuenv's CUE fork
+// shares such a reference only when the entry was constrained by a direct
+// definition reference; inside a struct literal the sharing is lost and
+// evaluation becomes exponential in the depth of the dependency graph (see
+// docs/design/specs/cue-recursive-sharing.md). The cost is that, before
+// language v0.18, a misspelled top-level field of an entry written without
+// `schema.#Task &` (or `schema.#Service &`, `schema.#ContainerImage &`) is
+// ignored. Nested fields are still checked.
+#Base: {
+	config?: {#Config}
+	env?: {#Env}
+	formatters?: {#Formatters}
+	runtime?: #Runtime
+	hooks?: {#Hooks}
+	vcs?: [#VcsDependencyName]: {#VcsDependency}
+}
 
 #ProjectName: string & =~"^[a-zA-Z0-9._-]+$"
 
 #VcsDependencyName: string & =~"^[a-zA-Z0-9_-][a-zA-Z0-9._-]*$" & !~"\\.\\."
 
-#Project: close({
+#Project: {
 	#Base
-	name!:    #ProjectName
-	runtime?: #Runtime
-	hooks?:   #Hooks
-	vcs?:     [#VcsDependencyName]: #VcsDependency
-	ci?:      #CI
-	cache?:   #Cache
-	release?: #Release
+	name!: #ProjectName
+	ci?: {#CI}
+	cache?: {#Cache}
+	release?: {#Release}
 	// Named tasks and groups derive fully-qualified runtime names from their
 	// field labels. Sequences are handled by the Go bridge because list element
 	// aliases are not implemented in CUE yet.
@@ -43,38 +63,7 @@ package schema
 		_cuenvPrefix: ""
 		_cuenvSelf:   imageName
 	}
-	codegen?: #Codegen
+	codegen?: {#Codegen}
 	// Infrastructure managed through Terraform provider plugins.
 	infrastructure?: {#Infrastructure}
-})
-
-// Match tasks across projects by metadata for discovery-based execution.
-#TaskMatcher: close({
-	// Match tasks with these labels (all must match)
-	labels?: [...string]
-
-	// Match tasks whose command matches this value
-	command?: string
-
-	// Match tasks whose args contain specific patterns
-	args?: [...#ArgMatcher]
-
-	// Run matched tasks in parallel (default: true)
-	parallel: bool | *true
-})
-
-// Discovery-based hook step that expands a #TaskMatcher into tasks.
-#MatchHook: close({
-	// Optional stable name used for task naming/logging
-	name?: string
-	// Task matcher to select tasks across the workspace
-	match!: #TaskMatcher
-})
-
-// Pattern matcher for task arguments
-#ArgMatcher: close({
-	// Match if any arg contains this substring
-	contains?: string
-	// Match if any arg matches this regex pattern
-	matches?: string
-})
+}

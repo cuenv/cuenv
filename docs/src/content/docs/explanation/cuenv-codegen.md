@@ -53,14 +53,14 @@ The top-level codegen configuration:
 ```cue
 #Codegen: {
     files:    [string]: gen.#ProjectFile  // Files to generate (path → definition)
-    context?: _                            // Optional context data for templating
+    context?: {...}                        // Optional struct passed into templates
 }
 ```
 
 | Field     | Type                      | Description                           |
 | --------- | ------------------------- | ------------------------------------- |
 | `files`   | `map[string]#ProjectFile` | Map of file paths to file definitions |
-| `context` | `any` (optional)          | Context data available for templating |
+| `context` | struct (optional)         | Context data available for templating. A string or list is rejected. |
 
 ### #ProjectFile
 
@@ -150,7 +150,6 @@ gen.#RustFile & {
 | `format.indent`     | `"space"` | Indentation (Rust convention) |
 | `format.indentSize` | `4`       | Spaces per indent level       |
 | `format.lineWidth`  | `100`     | Maximum line width            |
-| `rustfmt.edition`   | `"2021"`  | Rust edition                  |
 
 ### Go
 
@@ -215,13 +214,13 @@ gen.#YAMLFile & {
 
 | Schema             | Language     | Indent Default | Notes                     |
 | ------------------ | ------------ | -------------- | ------------------------- |
-| `#TypeScriptFile`  | `typescript` | 2 spaces       | Includes tsconfig options |
+| `#TypeScriptFile`  | `typescript` | 2 spaces       | Prettier-style options    |
 | `#JavaScriptFile`  | `javascript` | 2 spaces       | ES formatting defaults    |
 | `#JSONFile`        | `json`       | 2 spaces       | Strict JSON               |
 | `#JSONCFile`       | `jsonc`      | 2 spaces       | JSON with comments        |
 | `#YAMLFile`        | `yaml`       | 2 spaces       | YAML files                |
 | `#TOMLFile`        | `toml`       | 2 spaces       | TOML files                |
-| `#RustFile`        | `rust`       | 4 spaces       | Includes rustfmt options  |
+| `#RustFile`        | `rust`       | 4 spaces       | Rust line width default   |
 | `#GoFile`          | `go`         | tabs           | Go convention             |
 | `#PythonFile`      | `python`     | 4 spaces       | Black-compatible defaults |
 | `#MarkdownFile`    | `markdown`   | 2 spaces       | Documentation             |

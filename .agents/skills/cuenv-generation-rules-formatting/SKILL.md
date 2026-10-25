@@ -1,6 +1,6 @@
 ---
 name: cuenv-generation-rules-formatting
-description: Use for cuenv codegen, generated file language schemas, formatting, ignore files, CODEOWNERS, editorconfig, .rules.cue, and sync-provider drift. Covers schema/codegen.cue, schema/codegen/codegen.cue, schema/formatters.cue, schema/ignores.cue, schema/owners.cue, and schema/rules/*.
+description: Use for cuenv codegen, generated file language schemas, formatting, ignore files, CODEOWNERS, editorconfig, .rules.cue, and sync-provider drift. Covers schema/codegen.cue, schema/codegen/codegen.cue, schema/formatters.cue, and schema/rules/*.
 ---
 
 # Generation, Rules, Formatting
@@ -13,7 +13,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `crates/cuenv/src/commands/fmt.rs` for file discovery and formatter dispatch; shared formatter runners live under `crates/cuenv/src/commands/sync/formatters.rs`.
 - `schema/rules/*` for `.rules.cue` ignore, editorconfig, and owners behavior.
 - `crates/editorconfig/src/section.rs` owns editorconfig section/value modeling; `builder.rs` owns file rendering and write/dry-run behavior; `result.rs` and `error.rs` own generated-file status and errors.
-- `schema/ignores.cue` and `schema/owners.cue` only as legacy top-level schemas.
+- There is no top-level `owners` or `ignore` field on `#Project`; ownership and ignore files come only from `.rules.cue` (`schema/rules/*`).
 - `crates/ignore/src/lib.rs` for ignore file generation and `crates/ignore/src/sections.rs` for managed ignore-file sections.
 
 Status guardrails:

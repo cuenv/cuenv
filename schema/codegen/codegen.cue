@@ -23,10 +23,10 @@ package codegen
 	//   - scaffold: defaults to false (user-owned files should be committed)
 	gitignore: bool
 	if mode == "managed" {
-		gitignore: *true | _
+		gitignore: *true | bool
 	}
 	if mode == "scaffold" {
-		gitignore: *false | _
+		gitignore: *false | bool
 	}
 
 	// Formatting configuration
@@ -62,14 +62,6 @@ package codegen
 		trailingComma: "none" | "all" | "es5" | *"all"
 		semicolons:    bool | *true
 		quotes:        "single" | "double" | *"double"
-	}
-
-	// TypeScript-specific config
-	tsconfig?: {
-		target?:           "ES2020" | "ES2021" | "ES2022" | *"ES2022"
-		module?:           "CommonJS" | "ESNext" | "NodeNext" | *"NodeNext"
-		strict?:           bool | *true
-		moduleResolution?: "node" | "bundler" | *"bundler"
 	}
 }
 
@@ -135,12 +127,6 @@ package codegen
 		indent:     "space" | *"space"
 		indentSize: int | *4
 		lineWidth:  int | *100
-	}
-
-	// Rust-specific config
-	rustfmt?: {
-		edition?:              "2018" | "2021" | *"2021"
-		use_small_heuristics?: "Default" | "Off" | "Max" | *"Default"
 	}
 }
 

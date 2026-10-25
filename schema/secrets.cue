@@ -27,9 +27,3 @@ package schema
 	command:  string
 	args?: [...string]
 }
-
-// For backward compatibility
-#ExecResolver: {
-	command: string
-	args?: [...string]
-}

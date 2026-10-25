@@ -11,7 +11,7 @@ package schema
 #Service: {
 	_cuenvPrefix: string | *""
 	_cuenvSelf:   string | *""
-	_name: string | *(_cuenvPrefix + _cuenvSelf)
+	_name:        string | *(_cuenvPrefix + _cuenvSelf)
 
 	// Type discriminator — provided by #Service, users should not need
 	// to repeat this field in each service block.
@@ -37,7 +37,7 @@ package schema
 	// fast until image execution backends exist.
 	dependsOn?: [...(#TaskNode | #Service | #ContainerImage)]
 
-	// Labels for discovery via #ServiceMatcher (mirrors #TaskMatcher)
+	// Labels attached to the service
 	labels?: [...string]
 
 	// Human-readable description
@@ -83,50 +83,50 @@ package schema
 	initialDelay?: string | *"0s"
 }
 
-#ReadinessPort: close({
+#ReadinessPort: {
 	#ReadinessCommon
 	kind: "port"
 	// TCP port on localhost (or `host` if specified)
 	port!: int & >0 & <65536
 	host?: string | *"127.0.0.1"
-})
+}
 
-#ReadinessHttp: close({
+#ReadinessHttp: {
 	#ReadinessCommon
 	kind: "http"
 	url!: string
 	// Expected status code(s); default 2xx
 	expectStatus?: [...int] | *[200, 201, 202, 203, 204, 205, 206]
 	method?: "GET" | "HEAD" | *"GET"
-})
+}
 
-#ReadinessLog: close({
+#ReadinessLog: {
 	#ReadinessCommon
 	kind: "log"
 	// Regex; first match on stdout or stderr declares ready
 	pattern!: string
 	source?:  "stdout" | "stderr" | "either" | *"either"
-})
+}
 
-#ReadinessCommand: close({
+#ReadinessCommand: {
 	#ReadinessCommon
 	kind: "command"
 	// Exit 0 = ready. Runs in service env, not service process.
 	command!: string
 	args?: [...string]
-})
+}
 
-#ReadinessDelay: close({
+#ReadinessDelay: {
 	kind: "delay"
 	// Dumb sleep; escape hatch only
 	delay!: string
-})
+}
 
 // =============================================================================
 // Restart Policy
 // =============================================================================
 
-#RestartPolicy: close({
+#RestartPolicy: {
 	// never:         crash → mark failed, abort dependents
 	// onFailure:     restart on non-zero exit (default for services)
 	// always:        restart on any exit
@@ -134,23 +134,23 @@ package schema
 	mode?: "never" | "onFailure" | "always" | "unlessStopped" | *"onFailure"
 
 	// Exponential backoff between restarts
-	backoff?: close({
+	backoff?: {
 		initial?: string | *"1s"
 		max?:     string | *"30s"
 		factor?:  number | *2.0
-	})
+	}
 
 	// Cap restarts within a sliding window. Exceeding marks the service
 	// failed and aborts dependents.
 	maxRestarts?: int | *5
 	window?:      string | *"60s"
-})
+}
 
 // =============================================================================
 // File Watcher
 // =============================================================================
 
-#Watch: close({
+#Watch: {
 	// Glob patterns relative to project root
 	paths!: [...string]
 	// Patterns to ignore (gitignore syntax)
@@ -163,40 +163,31 @@ package schema
 	// Optional dependency tasks to re-run before restart
 	// (e.g., rebuild a binary). Treated as ad-hoc additions to the DAG.
 	rebuild?: [...#TaskNode]
-})
+}
 
 // =============================================================================
 // Logs
 // =============================================================================
 
-#ServiceLogs: close({
+#ServiceLogs: {
 	// Stream prefix shown in multiplexed output. Defaults to service name.
 	prefix?: string
 	// ANSI color hint for renderers (renderer chooses if absent)
 	color?: "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "white"
 	// Persist to file under .cuenv/run/<project>/logs/<svc>.log
 	persist?: bool | *true
-})
+}
 
 // =============================================================================
 // Shutdown
 // =============================================================================
 
-#Shutdown: close({
+#Shutdown: {
 	// SIGTERM by default; SIGINT/SIGKILL for stubborn programs
 	signal?: "SIGTERM" | "SIGINT" | "SIGHUP" | "SIGQUIT" | *"SIGTERM"
 	// Grace period before SIGKILL
 	timeout?: string | *"10s"
-})
-
-// =============================================================================
-// Service Matcher (mirrors #TaskMatcher for discovery)
-// =============================================================================
-
-#ServiceMatcher: close({
-	labels?: [...string]
-	parallel: bool | *true
-})
+}
 
 // =============================================================================
 // Service Port Declaration (informational, for `cuenv ps`)
@@ -205,11 +196,11 @@ package schema
 // Ports are declared to let `cuenv ps` display endpoints. They do not perform
 // port mapping or binding — the service process is responsible for binding.
 
-#ServicePort: close({
+#ServicePort: {
 	// Port number the service listens on (1–65535).
 	port!: int & >0 & <65536
 	// Protocol (default: "tcp").
 	protocol?: "tcp" | "udp" | *"tcp"
 	// Optional human-readable label (e.g., "http", "grpc", "metrics").
 	name?: string
-})
+}

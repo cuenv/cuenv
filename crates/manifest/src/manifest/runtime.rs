@@ -91,7 +91,7 @@ pub struct DaggerSecret {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Expose secret as an environment variable with this name
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "envVar", skip_serializing_if = "Option::is_none")]
     pub env_var: Option<String>,
     /// Secret resolver configuration
     pub resolver: serde_json::Value,
@@ -344,4 +344,29 @@ pub enum GitHubExtract {
         #[serde(skip_serializing_if = "Option::is_none")]
         env: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dagger_runtime_secret_reads_camel_case_env_var() {
+        // `schema.#DaggerSecret` declares `envVar`; the export uses that key.
+        let runtime: Runtime = serde_json::from_value(serde_json::json!({
+            "type": "dagger",
+            "image": "alpine:3",
+            "secrets": [{
+                "name": "npm",
+                "envVar": "NPM_TOKEN",
+                "resolver": {"resolver": "exec", "command": "echo"}
+            }]
+        }))
+        .expect("dagger runtime should deserialize");
+
+        let Runtime::Dagger(dagger) = runtime else {
+            panic!("expected a dagger runtime, got {runtime:?}");
+        };
+        assert_eq!(dagger.secrets[0].env_var.as_deref(), Some("NPM_TOKEN"));
+    }
 }

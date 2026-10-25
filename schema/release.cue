@@ -4,52 +4,52 @@ package schema
 #Target: "linux-x64" | "linux-arm64" | "darwin-arm64"
 
 // #GitHubBackend configures GitHub Releases as a distribution backend
-#GitHubBackend: close({
+#GitHubBackend: {
 	// Repository in "owner/repo" format (auto-detected from git remote if omitted)
 	repo?: string
 	// Upload binary tarballs as release assets (default: true)
 	assets?: bool | *true
 	// Create release as draft (default: false)
 	draft?: bool | *false
-})
+}
 
 // #HomebrewBackend configures Homebrew tap updates
-#HomebrewBackend: close({
+#HomebrewBackend: {
 	// Tap repository in "owner/repo" format (required)
 	tap!: string
 	// Formula name (default: project name)
 	formula?: string
 	// Token env var name for pushing to tap (default: HOMEBREW_TAP_TOKEN)
 	tokenEnv?: string | *"HOMEBREW_TAP_TOKEN"
-})
+}
 
 // #CratesBackend configures crates.io publishing
-#CratesBackend: close({
+#CratesBackend: {
 	// Token env var name (default: CARGO_REGISTRY_TOKEN)
 	tokenEnv?: string | *"CARGO_REGISTRY_TOKEN"
 	// Publish packages in dependency order (default: true)
 	ordered?: bool | *true
-})
+}
 
 // #CueBackend configures CUE registry publishing
-#CueBackend: close({
+#CueBackend: {
 	// Module path (auto-detected from cue.mod if omitted)
 	module?: string
 	// Token env var name (default: CUE_REGISTRY_TOKEN)
 	tokenEnv?: string | *"CUE_REGISTRY_TOKEN"
-})
+}
 
 // #ReleaseBackends defines which distribution backends to use
-#ReleaseBackends: close({
+#ReleaseBackends: {
 	github?:   #GitHubBackend
 	homebrew?: #HomebrewBackend
 	crates?:   #CratesBackend
 	cue?:      #CueBackend
-})
+}
 
 // #Release defines the release management configuration for cuenv.
 // This enables native release workflows including versioning, changelogs, and publishing.
-#Release: close({
+#Release: {
 	// Binary name for distribution (default: project name)
 	binary?: string
 
@@ -67,13 +67,13 @@ package schema
 
 	// CHANGELOG generation configuration
 	changelog?: #ChangelogConfig
-})
+}
 
 // #TagType defines the versioning scheme for release tags
 #TagType: "semver" | "calver"
 
 // #ReleaseGit defines git-related release settings
-#ReleaseGit: close({
+#ReleaseGit: {
 	// Default branch for releases (e.g., "main", "master")
 	defaultBranch?: string | *"main"
 
@@ -91,13 +91,13 @@ package schema
 
 	// Whether to push tags to remote
 	pushTags?: bool | *true
-})
+}
 
 // #VersioningStrategy defines how packages are versioned in a monorepo
 #VersioningStrategy: "fixed" | "linked" | "independent"
 
 // #ReleasePackages defines package grouping for version management
-#ReleasePackages: close({
+#ReleasePackages: {
 	// Default versioning strategy for packages not in explicit groups.
 	// - "fixed": All packages share the same version (lockstep versioning)
 	// - "linked": Packages are bumped together but can have different versions
@@ -116,10 +116,10 @@ package schema
 
 	// Independent packages: not part of any group, versioned independently
 	// This is implicit - packages not in fixed or linked are independent
-})
+}
 
 // #ChangelogConfig defines CHANGELOG generation settings
-#ChangelogConfig: close({
+#ChangelogConfig: {
 	// Path to the CHANGELOG file relative to project/package root
 	path?: string | *"CHANGELOG.md"
 
@@ -131,22 +131,22 @@ package schema
 
 	// Categories for organizing changelog entries
 	categories?: [...#ChangelogCategory]
-})
+}
 
 // #ChangelogCategory defines a category for changelog entries
-#ChangelogCategory: close({
+#ChangelogCategory: {
 	// Title for the category in the changelog
 	title: string
 
 	// Changeset types that belong to this category
 	types: [...#ChangesetType]
-})
+}
 
 // #ChangesetType defines the type of change in a changeset
 #ChangesetType: "major" | "minor" | "patch" | "none"
 
 // #Changeset represents a single changeset entry
-#Changeset: close({
+#Changeset: {
 	// Unique identifier for the changeset
 	id: string
 
@@ -158,13 +158,13 @@ package schema
 
 	// Optional longer description
 	description?: string
-})
+}
 
 // #PackageChange represents a version bump for a specific package
-#PackageChange: close({
+#PackageChange: {
 	// Package name or path
 	name: string
 
 	// Type of version bump
 	bump: #ChangesetType
-})
+}

@@ -1,14 +1,14 @@
 package schema
 
-#Hooks: close({
+#Hooks: {
 	onEnter?: [string]: #Hook
 	onExit?: [string]:  #Hook
 	prePush?: [string]: #Hook
-})
+}
 
 #Hook: #ExecHook
 
-#ExecHook: close({
+#ExecHook: {
 	order?:     int | *100
 	propagate?: bool | *false
 	command!:   string
@@ -19,4 +19,4 @@ package schema
 	// environment. A hook whose output cannot be evaluated is reported as
 	// failed even when the process exits 0.
 	source?: bool
-})
+}

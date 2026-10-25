@@ -13,14 +13,16 @@ The Dagger runtime is how cuenv runs a task inside a [Dagger](https://dagger.io)
 instead of on the host, with first-class support for **container chaining**, **secret
 mounts**, and **persistent cache volumes**.
 
-:::caution[Status: Partial]
+:::caution[Status: Partial — `runtime` does not run tasks in Dagger yet]
 The Dagger runtime (`#DaggerRuntime`) is **Partial**, per the
-[schema status reference](/reference/schema/status/). The schema is the supported surface
-and cuenv parses it today, but Dagger execution and downstream image
-output-reference resolution remain incomplete. Treat this page as a description of the
-**intended, supported configuration shape** — validate behaviour against your installed
-build before depending on it in production, and prefer the host backend for critical paths
-until the matrix promotes this to implemented.
+[schema status reference](/reference/schema/status/). cuenv validates and parses
+`runtime: schema.#DaggerRuntime`, but today it only records the runtime kind in the task's
+cache identity: it does not select the Dagger backend and does not supply the image,
+secrets or cache mounts. Tasks run in Dagger only through the
+[legacy form](#legacy-configbackend-and-task-level-dagger) (`config.backend` plus a
+per-task `dagger` block), which is what `examples/dagger-task` uses. This page describes the
+**intended configuration shape**; until the runtime form is wired to execution, use the
+legacy form for anything that must actually run in a container.
 :::
 
 ## The supported surface: `runtime: schema.#DaggerRuntime`
@@ -324,20 +326,19 @@ tasks: {
 Environment variables defined in `env` are available to the task's container alongside the
 mounted secrets.
 
-## Legacy (deprecated): `config.backend` and task-level `dagger`
+## Legacy: `config.backend` and task-level `dagger`
 
-:::danger[Deprecated]
+:::caution[Legacy, and the only form that executes today]
 The older API — a global `config.backend.type: "dagger"` plus a per-task `dagger: { ... }`
-block — is **deprecated**. The schema comment on `#Task` states it plainly:
-`// DEPRECATED: Use runtime: dagger: { ... } instead`. The corresponding
-`#DaggerConfig`, `#DaggerSecret`, and `#DaggerCacheMount` definitions are retained only for
-backward compatibility. Prefer `runtime: schema.#DaggerRuntime` in all new configuration.
+block — is marked legacy and will be replaced by `runtime: schema.#DaggerRuntime`. It is
+also, for now, the only form the Dagger backend executes. `config.backend` is declared in
+the schema as `#BackendConfig` (`type` and `options.image`); `cuenv task --backend`
+overrides `type`.
 :::
 
-The deprecated form looks like this, and is shown only so you can recognise and migrate it:
+The legacy form looks like this:
 
 ```cue
-// Deprecated — migrate to runtime: schema.#DaggerRuntime
 config: {
 	backend: {
 		type: "dagger"
@@ -360,20 +361,19 @@ tasks: {
 
 ### Migrating to the runtime form
 
-The field names inside the block are the same (`image`, `from`, `secrets`, `cache`), so
-migration is mechanical:
+Do not migrate yet: a task that moves to the runtime form stops running in Dagger. Once the
+runtime form drives execution, the field names inside the block are the same (`image`,
+`from`, `secrets`, `cache`), so migration will be mechanical:
 
 - Replace a per-task `dagger: { ... }` block with `runtime: schema.#DaggerRuntime & { ... }`.
 - Replace a global `config.backend.type: "dagger"` (with `options.image`) by setting a
   project-wide `runtime: schema.#DaggerRuntime & { image: ... }` and letting tasks inherit it.
 
-## Known discrepancy: the example still uses the legacy form
+## Why the example uses the legacy form
 
-`examples/dagger-task/env.cue` currently uses the deprecated `config.backend` plus
-per-task `dagger: {}` API, not `runtime: schema.#DaggerRuntime`. That example predates this
-guidance and should be migrated to the runtime form. We are flagging this honestly: until
-that example is updated, do not treat it as the recommended pattern — follow the
-`#DaggerRuntime` examples on this page instead.
+`examples/dagger-task/env.cue` uses `config.backend` plus per-task `dagger: {}` because that
+is the form that runs. It moves to `runtime: schema.#DaggerRuntime` when the runtime form is
+wired to the Dagger backend.
 
 ## CLI backend override
 

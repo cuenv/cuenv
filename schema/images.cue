@@ -40,21 +40,21 @@ package schema
 //       }
 //   }
 
-#ContainerImage: close({
+#ContainerImage: {
 	_cuenvPrefix: string | *""
 	_cuenvSelf:   string | *""
-	_name: string | *(_cuenvPrefix + _cuenvSelf)
+	_name:        string | *(_cuenvPrefix + _cuenvSelf)
 
 	// Type discriminator
 	type: "image"
 
 	// Runtime output references — resolved after build
-	ref:    #ImageOutputRef & {cuenvImage: _name, cuenvOutput: "ref"}
+	ref: #ImageOutputRef & {cuenvImage: _name, cuenvOutput: "ref"}
 	digest: #ImageOutputRef & {cuenvImage: _name, cuenvOutput: "digest"}
 
 	// Build source — set EITHER context (Dockerfile) OR installable (Nix).
-	context?:    string                  // Build context directory (Dockerfile image)
-	dockerfile?: string | *"Dockerfile" // Relative to context
+	context?:     string                 // Build context directory (Dockerfile image)
+	dockerfile?:  string | *"Dockerfile" // Relative to context
 	installable?: string                 // Nix flake installable, e.g. ".#images.api"
 
 	// Build configuration (Dockerfile images)
@@ -83,4 +83,4 @@ package schema
 
 	// Exactly one of `context` (Dockerfile) or `installable` (Nix) must be set;
 	// `cuenv build` enforces this at build time.
-})
+}

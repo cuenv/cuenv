@@ -9,11 +9,12 @@ package schema
 #InterpolatedEnv: [...#EnvPart]
 
 // Environment variable value with optional policies
-// Closed to avoid ambiguity with direct #Secret usage in #EnvironmentVariable
-#EnvironmentVariableWithPolicies: close({
+// Being a definition, it is closed, which keeps it distinct from a direct
+// #Secret in #EnvironmentVariable
+#EnvironmentVariableWithPolicies: {
 	value: string | int | bool | #Secret | #InterpolatedEnv
 	policies?: [...#Policy]
-})
+}
 
 // Host environment variable passthrough for task environments.
 // HOME cannot be passed through explicitly; set hermetic to false to inherit
@@ -21,10 +22,10 @@ package schema
 // Forwards a host process env var into the task environment.
 // The optional `name` field specifies which host var to read;
 // when omitted the Rust executor uses the env map key.
-#EnvPassthrough: close({
+#EnvPassthrough: {
 	cuenvPassthrough: true
-	name?:           string & !~"(?i)^HOME$"
-})
+	name?:            string & !~"(?i)^HOME$"
+}
 
 // Environment variable can be a simple value or a value with policies
 #EnvironmentVariable: string | int | bool | #Secret | #InterpolatedEnv | #EnvironmentVariableWithPolicies | #EnvPassthrough
@@ -32,13 +33,14 @@ package schema
 // We support non-string types for constraints
 // but when exported to the actual environment,
 // these will always be strings.
-#Environment: close({
+#Environment: {
 	[=~"^[A-Z0-9_]*$"]: #EnvironmentVariable
-})
+}
 
 // #Env defines the structure for environment variable configuration
-#Env: close({
+#Env: {
 	#Environment
+
 	// Environment-specific overrides
 	environment?: [string]: #Environment
-})
+}
