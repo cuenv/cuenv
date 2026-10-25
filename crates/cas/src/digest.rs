@@ -157,7 +157,10 @@ mod tests {
             format!("{}../x", "a".repeat(59)),
         ];
         for hash in invalid {
-            assert!(Digest::try_new(hash.clone(), 0).is_err(), "accepted {hash:?}");
+            assert!(
+                Digest::try_new(hash.clone(), 0).is_err(),
+                "accepted {hash:?}"
+            );
         }
         assert!(Digest::try_new("a".repeat(64), 0).is_ok());
     }

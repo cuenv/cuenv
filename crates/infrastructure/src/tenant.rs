@@ -260,7 +260,9 @@ mod tests {
     #[test]
     fn project_instances_join_directory_and_package() {
         assert_eq!(
-            ProjectInstance::try_new("", "infrastructure").unwrap().as_str(),
+            ProjectInstance::try_new("", "infrastructure")
+                .unwrap()
+                .as_str(),
             ".:infrastructure"
         );
         assert_eq!(
@@ -270,7 +272,9 @@ mod tests {
             "services/web:web"
         );
         assert_eq!(
-            ProjectInstance::try_new("_hidden", "web").unwrap().to_string(),
+            ProjectInstance::try_new("_hidden", "web")
+                .unwrap()
+                .to_string(),
             "_hidden:web"
         );
         assert!(ProjectInstance::try_new(".", "").is_err());

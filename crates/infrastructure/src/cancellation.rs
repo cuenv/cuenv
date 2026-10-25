@@ -180,7 +180,10 @@ impl Cancellation {
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                tracing::warn!(recordings, "records still being written when the wait ended");
+                tracing::warn!(
+                    recordings,
+                    "records still being written when the wait ended"
+                );
                 return false;
             }
             std::thread::sleep(remaining.min(RECORDING_POLL_INTERVAL));

@@ -235,10 +235,7 @@ mod tests {
             "cuenv:ref:pipeline[0]:stdout"
         );
         assert_eq!(deps.len(), 1);
-        assert_eq!(
-            deps[0],
-            OutputRefDep::new("pipeline[1]", "pipeline[0]")
-        );
+        assert_eq!(deps[0], OutputRefDep::new("pipeline[1]", "pipeline[0]"));
     }
 
     #[test]

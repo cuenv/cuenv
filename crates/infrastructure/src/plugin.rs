@@ -438,9 +438,9 @@ impl ProviderProcess {
         reason = "poisoning is unreachable; see the doc comment"
     )]
     fn child(&self) -> MutexGuard<'_, Child> {
-        self.child
-            .lock()
-            .expect("the provider process lock is never poisoned: its critical sections cannot panic")
+        self.child.lock().expect(
+            "the provider process lock is never poisoned: its critical sections cannot panic",
+        )
     }
 
     /// Send the process and its process group `SIGKILL` (or the platform

@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::http::ensure_rustls_crypto_provider;
+use cuenv_secrets::http::client_builder;
 use cuenv_tool_archive as archive;
 use cuenv_tool_runtime::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
@@ -16,7 +17,6 @@ use cuenv_tool_runtime::{
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use cuenv_secrets::http::client_builder;
 use std::path::{Path, PathBuf};
 
 /// Map archive extraction errors into core tool-resolution errors.

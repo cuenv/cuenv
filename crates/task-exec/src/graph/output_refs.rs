@@ -16,11 +16,7 @@ impl TaskGraph {
     /// (along with its transitive dependencies) from `all_tasks`. This is
     /// necessary because `build_for_task` only follows explicit `dependsOn`
     /// edges and won't discover tasks that are only referenced via output refs.
-    pub fn add_output_ref_deps(
-        &mut self,
-        deps: &[OutputRefDep],
-        all_tasks: &Tasks,
-    ) -> Result<()> {
+    pub fn add_output_ref_deps(&mut self, deps: &[OutputRefDep], all_tasks: &Tasks) -> Result<()> {
         for OutputRefDep {
             task: from,
             depends_on: to,

@@ -548,7 +548,10 @@ mod tests {
             registry.redact_cow("later-secret-BBBB and poisoned-secret-AAAA"),
             REDACTED_PLACEHOLDER
         );
-        assert!(registry.registry.is_poisoned(), "the poison is never cleared");
+        assert!(
+            registry.registry.is_poisoned(),
+            "the poison is never cleared"
+        );
     }
 
     #[test]

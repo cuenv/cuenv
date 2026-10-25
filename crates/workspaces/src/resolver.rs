@@ -45,7 +45,9 @@ impl DependencyResolver for GenericDependencyResolver {
 
         // 2. Add edges based on dependencies declared in lockfile entries
         for entry in lockfile {
-            if let Some(&source_idx) = node_map.get(&(entry.name.clone(), entry.version.to_string())) {
+            if let Some(&source_idx) =
+                node_map.get(&(entry.name.clone(), entry.version.to_string()))
+            {
                 for dep in &entry.dependencies {
                     // Find the dependency in the graph
                     // We look up by (name, version_req). This assumes that the lockfile parser
