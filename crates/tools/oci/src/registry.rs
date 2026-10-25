@@ -333,7 +333,7 @@ async fn compute_file_digest(path: &Path) -> Result<String> {
         hasher.update(&buffer[..n]);
     }
 
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
 }
 
 #[cfg(test)]

@@ -133,7 +133,7 @@ impl TursoStateStore {
                 .as_str()
                 .as_bytes(),
         );
-        format!("{:x}", digest.finalize())
+        hex::encode(digest.finalize())
     }
 }
 

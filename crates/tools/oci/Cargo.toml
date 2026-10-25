@@ -20,6 +20,7 @@ tar = { workspace = true }
 
 # Cryptography (for digest verification)
 sha2 = { workspace = true }
+hex = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true, features = ["fs", "io-util"] }

@@ -11,7 +11,7 @@
 //! changes when the secret changes, and cannot be reversed by anyone who does
 //! not hold the salt.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -31,7 +31,7 @@ pub const FINGERPRINT_PREFIX: &str = "cuenv-secret-fp:";
 #[must_use]
 pub fn compute_secret_fingerprint(name: &str, value: &str, salt: &str) -> String {
     // HMAC accepts a key of any length, so this cannot fail.
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(salt.as_bytes())
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(salt.as_bytes())
         .unwrap_or_else(|_| unreachable!("HMAC accepts keys of any length"));
     // Bind the name with an explicit length prefix. Concatenating `name` and
     // `value` directly would let ("AB", "C") and ("A", "BC") collide.
@@ -103,5 +103,14 @@ mod tests {
         let hex = fingerprint.strip_prefix(FINGERPRINT_PREFIX).unwrap();
         assert_eq!(hex.len(), 64);
         assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn fingerprint_matches_known_hmac_sha256() {
+        // HMAC-SHA256(key = "salt", msg = u64be(len("A")) || "A" || "B"), lowercase hex.
+        assert_eq!(
+            compute_secret_fingerprint("A", "B", "salt"),
+            "cuenv-secret-fp:7e679265a50d111a6afdcec50a39b3096788154d3ea47162331383cb61ca44bd"
+        );
     }
 }

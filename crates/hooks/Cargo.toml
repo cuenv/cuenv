@@ -31,6 +31,7 @@ fs4 = { version = "0.13", features = ["tokio"] }
 
 # Hashing
 sha2 = { workspace = true }
+hex = { workspace = true }
 
 # Time handling
 chrono = { workspace = true }
