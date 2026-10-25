@@ -47,7 +47,7 @@ Status guardrails:
 - The `cuenv-release` crate root uses the crate's normal warning policy without broad derive-workaround allowances. Keep release warning suppressions scoped to the module that needs them.
 - `crates/release/src/conventional.rs` owns conventional-commit parsing; keep gix commit walk ordering explicit and convert `git-conventional` components through their accessors instead of local interop lint suppressions.
 - `crates/github/src/release.rs` owns GitHub release backend configuration and token environment parsing; keep tests on scoped `temp_env` overrides instead of unsafe process-wide environment mutation.
-- Use `cuenv sync ci` to generate workflows.
+- Use `cuenv sync ci` to generate workflows. Generated checkout steps pin `actions/checkout@v7`.
 - GitLab is schema-recognized but schema-only for sync; `cuenv sync ci --provider gitlab` fails with a configuration error until a GitLab emitter exists.
 - Use `cuenv ci --export buildkite` for export-style CI output; GitLab export is not implemented.
 - `--jobs` is applied to local CI task DAG parallelism. `--filter-matrix` is rejected by the local runner until runtime matrix execution exists; provider-native matrix workflows still come from `cuenv sync ci`.

@@ -320,7 +320,7 @@ impl GitHubActionsEmitter {
 
         // Checkout step
         steps.push(
-            Step::uses("actions/checkout@v4")
+            Step::uses("actions/checkout@v7")
                 .with_name("Checkout")
                 .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
         );

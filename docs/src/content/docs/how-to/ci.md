@@ -69,7 +69,7 @@ jobs:
   cuenv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup cuenv
         run: # download + cuenv sync ci, injected by the cuenv contributor
       - name: Run pipeline
