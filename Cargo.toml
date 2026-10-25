@@ -153,9 +153,10 @@ xz2 = "0.1"
 toml = "0.9"
 toml_edit = "0.25"
 
-# Git and conventional commits
+# Git and conventional commits.
+# gix keeps default features off. sha1 is required so gix-hash has a hash algorithm.
 git-conventional = "0.12"
-gix = { version = "0.77", default-features = false, features = ["revision", "blob-diff", "tree-editor"] }
+gix = { version = "0.85", default-features = false, features = ["revision", "blob-diff", "tree-editor", "sha1"] }
 semver = "1"
 serde_yaml = "0.9"
 glob = "0.3"
