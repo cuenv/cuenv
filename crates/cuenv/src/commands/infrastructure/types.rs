@@ -223,7 +223,7 @@ pub fn gitignore_patterns(lockfile: &Lockfile) -> Result<Vec<String>, CliError> 
 pub fn sync_gitignore(
     module: &Module,
     patterns: &[String],
-    mode: &SyncMode,
+    mode: SyncMode,
 ) -> Result<bool, CliError> {
     if patterns.is_empty() && !gitignore_has_section(module)? {
         return Ok(false);
@@ -231,7 +231,7 @@ pub fn sync_gitignore(
     let result = IgnoreFiles::builder()
         .directory(&module.root)
         .require_git_repo(false)
-        .dry_run(mode != &SyncMode::Write)
+        .dry_run(mode != SyncMode::Write)
         .section(IgnoreSection::new(GITIGNORE_SECTION_NAME).patterns(patterns.iter().cloned()))
         .generate()
         .map_err(|error| CliError::config(format!("cannot update .gitignore: {error}")))?;
@@ -469,9 +469,9 @@ mod tests {
             ]
         );
 
-        assert!(sync_gitignore(&module, &patterns, &SyncMode::Check).unwrap());
-        assert!(sync_gitignore(&module, &patterns, &SyncMode::Write).unwrap());
-        assert!(!sync_gitignore(&module, &patterns, &SyncMode::Check).unwrap());
+        assert!(sync_gitignore(&module, &patterns, SyncMode::Check).unwrap());
+        assert!(sync_gitignore(&module, &patterns, SyncMode::Write).unwrap());
+        assert!(!sync_gitignore(&module, &patterns, SyncMode::Check).unwrap());
         let gitignore = std::fs::read_to_string(root.path().join(".gitignore")).unwrap();
         assert!(gitignore.starts_with("target/\n"), "{gitignore}");
         assert!(
@@ -484,7 +484,7 @@ mod tests {
         );
 
         // The last pin gone, the section goes too; other entries stay.
-        assert!(sync_gitignore(&module, &[], &SyncMode::Write).unwrap());
+        assert!(sync_gitignore(&module, &[], SyncMode::Write).unwrap());
         let gitignore = std::fs::read_to_string(root.path().join(".gitignore")).unwrap();
         assert!(!gitignore.contains("cuenv infrastructure"), "{gitignore}");
         assert!(gitignore.contains("target/"), "{gitignore}");
@@ -496,7 +496,7 @@ mod tests {
         let module = Module {
             root: root.path().to_path_buf(),
         };
-        assert!(!sync_gitignore(&module, &[], &SyncMode::Write).unwrap());
+        assert!(!sync_gitignore(&module, &[], SyncMode::Write).unwrap());
         assert!(!root.path().join(".gitignore").exists());
     }
 

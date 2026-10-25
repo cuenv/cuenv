@@ -267,7 +267,7 @@ fn sync_vcs_dependencies(request: VcsSyncRequest<'_>) -> Result<String> {
         if lockfile_is_changed(existing_lockfile.as_ref(), &next_lockfile) {
             outputs.push("Would update cuenv.lock".to_string());
         }
-        let result = sync_gitignore_section(&git_root, &gitignore_paths, &SyncMode::DryRun)?;
+        let result = sync_gitignore_section(&git_root, &gitignore_paths, SyncMode::DryRun)?;
         if result.files.iter().any(|file| {
             matches!(
                 file.status,
@@ -571,7 +571,7 @@ fn removed_vcs_dependencies(
 fn check_gitignore(git_root: &Path, paths: &[String]) -> Result<()> {
     let gitignore_path = git_root.join(".gitignore");
     ensure_managed_internal_path(git_root, &gitignore_path)?;
-    let result = sync_gitignore_section(git_root, paths, &SyncMode::Check)?;
+    let result = sync_gitignore_section(git_root, paths, SyncMode::Check)?;
     if result.files.iter().any(|file| {
         matches!(
             file.status,
@@ -588,20 +588,20 @@ fn check_gitignore(git_root: &Path, paths: &[String]) -> Result<()> {
 fn sync_gitignore(git_root: &Path, paths: &[String]) -> Result<()> {
     let gitignore_path = git_root.join(".gitignore");
     ensure_managed_internal_path(git_root, &gitignore_path)?;
-    sync_gitignore_section(git_root, paths, &SyncMode::Write)?;
+    sync_gitignore_section(git_root, paths, SyncMode::Write)?;
     Ok(())
 }
 
 fn sync_gitignore_section(
     git_root: &Path,
     paths: &[String],
-    mode: &SyncMode,
+    mode: SyncMode,
 ) -> Result<cuenv_ignore::SyncResult> {
     let section = IgnoreSection::new(GITIGNORE_SECTION_NAME).patterns(paths.iter().cloned());
     IgnoreFiles::builder()
         .directory(git_root)
         .require_git_repo(false)
-        .dry_run(mode != &SyncMode::Write)
+        .dry_run(mode != SyncMode::Write)
         .section(section)
         .generate()
         .map_err(|e| Error::configuration(format!("Failed to sync VCS .gitignore entries: {e}")))

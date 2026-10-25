@@ -55,20 +55,23 @@ fn sync_path(request: SyncRequest<'_>) -> Result<SyncResult> {
         ));
     }
 
-    let dry_run = options.mode == SyncMode::DryRun;
-    let check = options.mode == SyncMode::Check;
-
     // Evaluate the .rules.cue file
     let config = evaluate_rules_file(&rules_file, executor)?;
 
     // Get repo root for determining if this is the root .rules.cue
     let repo_root = find_repo_root(path).unwrap_or_else(|| path.to_path_buf());
-    let is_root = path == repo_root;
 
-    let mut output = sync_directory_rules(path, &config, dry_run.into(), check, is_root)?;
+    let mut output = sync_directory_rules(
+        path,
+        &config,
+        DirectoryRulesOptions {
+            mode: options.mode,
+            location: DirectoryLocation::of(path, &repo_root),
+        },
+    )?;
 
     if let Some(project) = build_project_owners(path, &repo_root, &config) {
-        let codeowners_output = sync_codeowners(&repo_root, &[project], dry_run.into(), check)?;
+        let codeowners_output = sync_codeowners(&repo_root, &[project], options.mode)?;
         if !codeowners_output.is_empty() {
             if !output.is_empty() {
                 output.push('\n');
@@ -90,9 +93,6 @@ fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
     let workspace_root = path.canonicalize().map_err(|e| {
         cuenv_core::Error::io_with_path("canonicalize sync workspace path", path.to_path_buf(), e)
     })?;
-
-    let dry_run = options.mode == SyncMode::DryRun;
-    let check = options.mode == SyncMode::Check;
 
     // The requested path selects the repository; discovery then walks the
     // whole repo root rather than the path's subtree because CODEOWNERS is a
@@ -145,10 +145,15 @@ fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
             }
         };
 
-        let is_root = directory == repo_root;
-
         // Sync per-directory config (ignore, editorconfig)
-        let result = sync_directory_rules(&directory, &config, dry_run.into(), check, is_root);
+        let result = sync_directory_rules(
+            &directory,
+            &config,
+            DirectoryRulesOptions {
+                mode: options.mode,
+                location: DirectoryLocation::of(&directory, &repo_root),
+            },
+        );
 
         match result {
             Ok(output) if !output.is_empty() => {
@@ -172,7 +177,7 @@ fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
 
     // Generate aggregated CODEOWNERS at repo root
     if !owner_projects.is_empty() {
-        let output = sync_codeowners(&repo_root, &owner_projects, dry_run.into(), check)?;
+        let output = sync_codeowners(&repo_root, &owner_projects, options.mode)?;
         if !output.is_empty() {
             outputs.push(format!("[CODEOWNERS]\n{output}"));
         }
@@ -193,20 +198,50 @@ fn evaluate_rules_file(file_path: &Path, _executor: &CommandExecutor) -> Result<
     crate::providers::evaluate_rules_file(file_path)
 }
 
+/// Where a `.rules.cue` directory sits relative to the repository root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectoryLocation {
+    /// The repository root, which owns the top-level `.editorconfig`.
+    Root,
+    /// Any directory below the repository root.
+    Nested,
+}
+
+impl DirectoryLocation {
+    fn of(directory: &Path, repo_root: &Path) -> Self {
+        if directory == repo_root {
+            Self::Root
+        } else {
+            Self::Nested
+        }
+    }
+}
+
+/// How to sync the per-directory rules of one `.rules.cue` directory.
+#[derive(Debug, Clone, Copy)]
+struct DirectoryRulesOptions {
+    mode: SyncMode,
+    location: DirectoryLocation,
+}
+
+impl DirectoryRulesOptions {
+    /// Check mode inspects files without writing them, like a dry run.
+    fn dry_run(self) -> DryRun {
+        DryRun::from(self.mode != SyncMode::Write)
+    }
+}
+
 /// Sync per-directory rules (ignore files, editorconfig).
 fn sync_directory_rules(
     directory: &Path,
     config: &DirectoryRules,
-    dry_run: DryRun,
-    check: bool,
-    is_root: bool,
+    options: DirectoryRulesOptions,
 ) -> Result<String> {
     let mut outputs = Vec::new();
-    let effective_dry_run = dry_run.is_dry_run() || check;
 
     // Generate ignore files
     if let Some(ref ignore) = config.ignore {
-        let output = sync_ignore_files(directory, ignore, effective_dry_run)?;
+        let output = sync_ignore_files(directory, ignore, options.dry_run())?;
         if !output.is_empty() {
             outputs.push(output);
         }
@@ -214,14 +249,14 @@ fn sync_directory_rules(
 
     // Generate editorconfig
     if let Some(ref editorconfig) = config.editorconfig {
-        let output = sync_editorconfig(directory, editorconfig, effective_dry_run, is_root)?;
+        let output = sync_editorconfig(directory, editorconfig, options)?;
         if !output.is_empty() {
             outputs.push(output);
         }
     }
 
     // Check mode validation
-    if check && !outputs.is_empty() {
+    if options.mode == SyncMode::Check && !outputs.is_empty() {
         // In check mode, if we would have made changes, that's an error
         let changes: Vec<&str> = outputs
             .iter()
@@ -284,7 +319,7 @@ fn build_project_owners(
 }
 
 /// Sync ignore files from Ignore configuration.
-fn sync_ignore_files(directory: &Path, ignore: &Ignore, dry_run: bool) -> Result<String> {
+fn sync_ignore_files(directory: &Path, ignore: &Ignore, dry_run: DryRun) -> Result<String> {
     let files: Vec<IgnoreFile> = ignore
         .iter()
         .map(|(tool, value)| {
@@ -310,7 +345,7 @@ fn sync_ignore_files(directory: &Path, ignore: &Ignore, dry_run: bool) -> Result
     let result = IgnoreFiles::builder()
         .directory(directory)
         .require_git_repo(false) // Don't require git for .rules.cue files
-        .dry_run(dry_run)
+        .dry_run(dry_run.is_dry_run())
         .files(files)
         .generate()
         .map_err(|e| {
@@ -329,8 +364,7 @@ fn sync_ignore_files(directory: &Path, ignore: &Ignore, dry_run: bool) -> Result
 fn sync_editorconfig(
     directory: &Path,
     config: &cuenv_core::manifest::EditorConfig,
-    dry_run: bool,
-    is_root: bool,
+    options: DirectoryRulesOptions,
 ) -> Result<String> {
     if config.sections.is_empty() {
         return Ok(String::new());
@@ -338,9 +372,9 @@ fn sync_editorconfig(
 
     let mut builder = EditorConfigFile::builder()
         .directory(directory)
-        .is_root(is_root)
+        .is_root(options.location == DirectoryLocation::Root)
         .header(CUENV_HEADER)
-        .dry_run(dry_run);
+        .dry_run(options.dry_run().is_dry_run());
 
     for (pattern, section) in &config.sections {
         let mut section_builder = BuilderSection::new();
@@ -395,18 +429,13 @@ fn sync_editorconfig(
 }
 
 /// Sync CODEOWNERS from aggregated owner rules.
-fn sync_codeowners(
-    repo_root: &Path,
-    projects: &[ProjectOwners],
-    dry_run: DryRun,
-    check: bool,
-) -> Result<String> {
+fn sync_codeowners(repo_root: &Path, projects: &[ProjectOwners], mode: SyncMode) -> Result<String> {
     if projects.is_empty() {
         return Ok(String::new());
     }
 
     let provider = detect_code_owners_provider(repo_root);
-    if check {
+    if mode == SyncMode::Check {
         let result = provider
             .check(repo_root, projects)
             .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
@@ -427,7 +456,7 @@ fn sync_codeowners(
     }
 
     let result = provider
-        .sync(repo_root, projects, dry_run.is_dry_run())
+        .sync(repo_root, projects, mode == SyncMode::DryRun)
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
 
     let status = match result.status {
@@ -461,7 +490,7 @@ mod tests {
             vec![Rule::new("*.rs", ["@backend"])],
         )];
 
-        let output = sync_codeowners(temp.path(), &projects, true.into(), false).expect("sync");
+        let output = sync_codeowners(temp.path(), &projects, SyncMode::DryRun).expect("sync");
         assert!(output.contains("CODEOWNERS"));
         assert!(
             output.contains("Would"),
@@ -479,7 +508,7 @@ mod tests {
         )];
 
         let err =
-            sync_codeowners(temp.path(), &projects, false.into(), true).expect_err("missing file");
+            sync_codeowners(temp.path(), &projects, SyncMode::Check).expect_err("missing file");
         let msg = err.to_string();
         assert!(
             msg.contains("CODEOWNERS file not found"),
@@ -506,7 +535,8 @@ mod tests {
         )
         .expect("write gitignore");
 
-        let dry_run_output = sync_ignore_files(temp.path(), &ignore, true).expect("dry-run sync");
+        let dry_run_output =
+            sync_ignore_files(temp.path(), &ignore, DryRun::Yes).expect("dry-run sync");
         assert!(
             dry_run_output.contains(".gitignore: Unchanged"),
             "expected VCS block preservation to avoid .gitignore drift, got: {dry_run_output}"
@@ -516,7 +546,7 @@ mod tests {
             "git".to_string(),
             IgnoreValue::Patterns(vec!["target/".to_string(), "dist/".to_string()]),
         );
-        sync_ignore_files(temp.path(), &ignore, false).expect("write sync");
+        sync_ignore_files(temp.path(), &ignore, DryRun::No).expect("write sync");
         let content = std::fs::read_to_string(temp.path().join(".gitignore")).expect("gitignore");
         assert!(
             content.contains(vcs_block.trim_end()),
