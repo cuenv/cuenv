@@ -1,19 +1,18 @@
 // Transitive dependencies bring in multiple versions of foldhash and unicode-width
 #![allow(clippy::multiple_crate_versions)]
 
-//! Workspace and dependency resolution for cuenv across multiple package managers.
+//! Workspace discovery and lockfile parsing for cuenv across multiple package managers.
 //!
-//! This crate provides trait-based abstractions for discovering, parsing, and resolving
+//! This crate provides trait-based abstractions for discovering and parsing
 //! workspace configurations and dependencies across different package managers including
 //! npm, Bun, pnpm, Yarn (Classic and Modern), and Cargo.
 //!
 //! # Architecture
 //!
-//! The crate is built around three core traits:
+//! The crate is built around two core traits:
 //!
 //! - [`WorkspaceDiscovery`] - Discovers workspace configuration from a root directory
 //! - [`LockfileParser`] - Parses lockfiles into structured entries
-//! - [`DependencyResolver`] - Builds dependency graphs from workspace and lockfile data
 //!
 //! # Workspace Discovery
 //!
@@ -187,7 +186,6 @@
 pub mod core;
 pub mod error;
 pub mod materializer;
-pub mod resolver;
 
 #[cfg(feature = "detection")]
 pub mod detection;
@@ -213,10 +211,7 @@ pub use core::{
 };
 
 // Re-export traits
-pub use core::{DependencyResolver, LockfileParser, WorkspaceDiscovery};
-
-// Re-export resolver types
-pub use resolver::GenericDependencyResolver;
+pub use core::{LockfileParser, WorkspaceDiscovery};
 
 // Re-export error types
 pub use error::{Error, Result};

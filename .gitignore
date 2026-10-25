@@ -14,4 +14,5 @@ crates/cuengine/vendor
 dist
 node_modules
 result
+sbom.json
 target

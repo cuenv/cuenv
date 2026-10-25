@@ -2046,7 +2046,6 @@ dependencies = [
  "glob",
  "jsonc-parser",
  "miette",
- "petgraph 0.8.3",
  "serde",
  "serde_json",
  "serde_yaml",

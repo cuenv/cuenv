@@ -301,7 +301,18 @@ cuenv fmt --fix -p ./packages/my-app
 **Exit Codes:**
 
 - `0`: All files are properly formatted (check mode) or formatting succeeded (fix mode)
-- `3`: Files need formatting (check mode) or formatter error
+- `3`: Files need formatting (check mode), or a formatter could not be started or exited non-zero in either mode (for example a parse error or a missing toolchain)
+
+**Environment:**
+
+Formatters run in the project's resolved environment, the same one
+[`cuenv exec`](#cuenv-exec) builds: the project's runtime (Nix or devenv),
+lockfile tool activation, and the `env` block. `rustfmt`, `nixfmt`/`alejandra`,
+`gofmt`, and `cue` are resolved against that environment's `PATH`, so `cuenv fmt`
+uses the toolchain the project declares instead of whatever is on the caller's
+`PATH`. The global `-e/--env` flag selects an environment overlay. When the
+project configures no runtime or tools, formatters resolve against the
+inherited `PATH`.
 
 :::note
 The `cuenv fmt` command requires a `formatters` block in your `env.cue`. See the [Formatters Guide](/how-to/formatters/) for configuration details.

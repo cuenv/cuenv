@@ -17,7 +17,7 @@ use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::{Base, Project, Runtime, ToolSpec};
 use cuenv_core::runtime::resolve_runtime_environment;
 use cuenv_task_exec::execute_command_with_redaction;
-use cuenv_tool_runtime::apply_resolved_tool_activation;
+use cuenv_tool_runtime::{ResolvedToolActivationStep, apply_resolved_tool_activation};
 use std::path::Path;
 
 use super::export::{StaticEnvConsumer, extract_static_env_vars};
@@ -57,16 +57,227 @@ pub struct ExecRequest<'a> {
     pub environment_override: Option<&'a str>,
 }
 
-#[derive(Clone, Copy)]
-struct ExecEnvironmentRequest<'a, 'b> {
-    exec: &'a ExecRequest<'b>,
-    directory: &'a Path,
-    manifest_kind: &'a ManifestKind,
+impl ExecRequest<'_> {
+    /// The project environment request this exec runs in.
+    #[must_use]
+    pub const fn project_environment_request(&self) -> ProjectEnvironmentRequest<'_> {
+        ProjectEnvironmentRequest {
+            path: self.path,
+            package: self.package,
+            environment_override: self.environment_override,
+        }
+    }
 }
 
-struct PreparedExecEnvironment {
+/// Request for the project environment that commands run in.
+///
+/// This is the environment `cuenv exec` builds: the project's runtime
+/// (Nix/devenv) variables, lockfile tool activation, and the CUE `env`
+/// block (optionally for a named environment).
+#[derive(Clone, Copy, Debug)]
+pub struct ProjectEnvironmentRequest<'a> {
+    /// Path to the CUE module or project directory.
+    pub path: &'a str,
+    /// CUE package name to evaluate.
+    pub package: &'a str,
+    /// Optional environment name to use.
+    pub environment_override: Option<&'a str>,
+}
+
+/// The command-independent part of a project's execution environment.
+///
+/// Loading it evaluates the manifest, resolves the runtime environment,
+/// keeps the lockfile in sync, and downloads activated tools once. The
+/// command-scoped environment, whose CUE variables are filtered by
+/// `allowExec` policies, comes from [`ProjectEnvironment::for_command`].
+///
+/// When the directory has no CUE module, or the project configures neither
+/// a runtime nor tools, the environment adds nothing to `PATH`, so commands
+/// resolve against the inherited `PATH`.
+pub struct ProjectEnvironment {
+    manifest_kind: ManifestKind,
     runtime_env: Environment,
+    activation_steps: Vec<ResolvedToolActivationStep>,
+    environment_override: Option<String>,
+}
+
+/// The environment one command runs in, plus the secret values to redact.
+#[derive(Debug)]
+pub struct CommandEnvironment {
+    environment: Environment,
     secrets_for_redaction: Vec<String>,
+}
+
+impl CommandEnvironment {
+    /// The resolved environment variables.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    /// Resolved secret values that must be redacted from output.
+    #[must_use]
+    pub fn secrets_for_redaction(&self) -> &[String] {
+        &self.secrets_for_redaction
+    }
+}
+
+impl ProjectEnvironment {
+    /// Load the project environment for `request.path`.
+    ///
+    /// Uses the executor's cached module evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if CUE evaluation, runtime resolution, lockfile
+    /// synchronization, or tool download fails.
+    pub async fn load(
+        request: ProjectEnvironmentRequest<'_>,
+        executor: &CommandExecutor,
+    ) -> Result<Self> {
+        let target_path = Path::new(request.path).canonicalize().map_err(|e| {
+            cuenv_core::Error::io_with_path(
+                "canonicalize path",
+                Path::new(request.path).to_path_buf(),
+                e,
+            )
+        })?;
+
+        let manifest_kind = load_manifest_kind(&target_path, executor)?;
+
+        // Shell hooks are intentionally not executed; runtime activation is
+        // handled here.
+        let mut runtime_env = Environment::new();
+        let runtime = match &manifest_kind {
+            ManifestKind::Project(project) => Some(project.runtime.as_ref()),
+            ManifestKind::Base(base) => {
+                tracing::debug!("Using Base configuration");
+                Some(base.runtime.as_ref())
+            }
+            ManifestKind::None => None,
+        };
+        if let Some(runtime) = runtime {
+            for (key, value) in resolve_runtime_environment(&target_path, runtime).await? {
+                runtime_env.set(key, value);
+            }
+        } else {
+            tracing::debug!("No CUE manifest found, using host environment");
+            if let Ok(host_path) = std::env::var("PATH") {
+                runtime_env.set("PATH".to_string(), host_path);
+            }
+        }
+
+        // Ensure lockfile is up to date for tools declared in the current project.
+        // This keeps `cuenv exec` self-healing when runtime tool definitions change.
+        if let Some(project) = manifest_kind.project() {
+            ensure_lockfile_for_runtime_tools(&target_path, request.package, project, executor)
+                .await?;
+        }
+
+        let activation_steps = if should_activate_lockfile_tools(manifest_kind.project()) {
+            // Download and activate tools from lockfile by prepending to PATH and library path.
+            // This happens automatically without requiring hook approval since tool
+            // activation is a controlled, safe operation (just adds paths to the environment).
+            // Use the target_path to scope tool activation to this project only.
+            // Tool activation failures are fatal - commands require their tools to run.
+            ensure_tools_downloaded(Some(&target_path))
+                .await
+                .map_err(|e| {
+                    cuenv_core::Error::configuration(format!("Failed to download tools: {e}"))
+                })?;
+            resolve_tool_activation_steps(Some(&target_path))
+                .map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to resolve tools activation: {e}"
+                    ))
+                })?
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self {
+            manifest_kind,
+            runtime_env,
+            activation_steps,
+            environment_override: request.environment_override.map(str::to_string),
+        })
+    }
+
+    /// Build the environment `command` runs in.
+    ///
+    /// CUE environment variables are filtered by their `allowExec` policies
+    /// for `command`, secrets are resolved and registered for redaction, and
+    /// tool activation is applied last.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if secret resolution fails.
+    pub async fn for_command(&self, command: &str) -> Result<CommandEnvironment> {
+        let mut environment = self.runtime_env.clone();
+        let mut secrets_for_redaction: Vec<String> = Vec::new();
+
+        let env_config = match &self.manifest_kind {
+            ManifestKind::Project(project) => {
+                let base_env_vars =
+                    extract_static_env_vars(project, StaticEnvConsumer::Exec(command));
+                tracing::debug!("Base environment variables for exec: {:?}", base_env_vars);
+                for (key, value) in base_env_vars {
+                    environment.set(key, value);
+                }
+                project.env.as_ref()
+            }
+            ManifestKind::Base(base) => base.env.as_ref(),
+            ManifestKind::None => None,
+        };
+
+        if let Some(env) = env_config {
+            let env_vars = self
+                .environment_override
+                .as_deref()
+                .map_or_else(|| env.base.clone(), |name| env.for_environment(name));
+
+            let (exec_env_vars, secrets) =
+                Environment::resolve_for_exec_with_secrets(command, &env_vars).await?;
+            secrets_for_redaction = secrets;
+
+            cuenv_events::register_secrets(secrets_for_redaction.iter().cloned());
+
+            for (key, value) in exec_env_vars {
+                environment.set(key, value);
+            }
+        }
+
+        if !self.activation_steps.is_empty() {
+            tracing::debug!(
+                steps = self.activation_steps.len(),
+                "Applying configured tool activation operations"
+            );
+        }
+        for step in &self.activation_steps {
+            let current = environment.get(&step.var);
+            if let Some(new_value) = apply_resolved_tool_activation(current, step) {
+                environment.set(step.var.clone(), new_value);
+            }
+        }
+
+        for name in [
+            "OP_SERVICE_ACCOUNT_TOKEN",
+            "INFISICAL_TOKEN",
+            "INFISICAL_CLIENT_SECRET",
+        ] {
+            if let Ok(token) = std::env::var(name)
+                && !token.is_empty()
+            {
+                secrets_for_redaction.push(token);
+            }
+        }
+
+        Ok(CommandEnvironment {
+            environment,
+            secrets_for_redaction,
+        })
+    }
 }
 
 fn load_manifest_kind(target_path: &Path, executor: &CommandExecutor) -> Result<ManifestKind> {
@@ -127,181 +338,24 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
         request.args
     );
 
-    // Evaluate CUE to get environment using module-wide evaluation
-    let target_path = Path::new(request.path).canonicalize().map_err(|e| {
-        cuenv_core::Error::io_with_path(
-            "canonicalize path",
-            Path::new(request.path).to_path_buf(),
-            e,
-        )
-    })?;
-
-    let manifest_kind = load_manifest_kind(&target_path, executor)?;
-    let project_for_runtime = manifest_kind.project();
-
-    // Get the command environment. Shell hooks are intentionally not executed by
-    // `cuenv exec`; runtime activation is handled below.
-    let directory = std::fs::canonicalize(request.path)
-        .unwrap_or_else(|_| Path::new(request.path).to_path_buf());
-
-    let mut prepared = prepare_exec_environment(ExecEnvironmentRequest {
-        exec: &request,
-        directory: &directory,
-        manifest_kind: &manifest_kind,
-    })
-    .await?;
-
-    // Ensure lockfile is up to date for tools declared in the current project.
-    // This keeps `cuenv exec` self-healing when runtime tool definitions change.
-    if let Some(project) = project_for_runtime {
-        ensure_lockfile_for_runtime_tools(&target_path, request.package, project, executor).await?;
-    }
-
-    if should_activate_lockfile_tools(project_for_runtime) {
-        // Download and activate tools from lockfile by prepending to PATH and library path.
-        // This happens automatically without requiring hook approval since tool
-        // activation is a controlled, safe operation (just adds paths to the environment).
-        // Use the target_path to scope tool activation to this project only.
-        // Tool activation failures are fatal - commands require their tools to run.
-        ensure_tools_downloaded(Some(&target_path))
-            .await
-            .map_err(|e| {
-                cuenv_core::Error::configuration(format!("Failed to download tools: {e}"))
-            })?;
-        if let Some(activation_steps) =
-            resolve_tool_activation_steps(Some(&target_path)).map_err(|e| {
-                cuenv_core::Error::configuration(format!("Failed to resolve tools activation: {e}"))
-            })?
-        {
-            tracing::debug!(
-                steps = activation_steps.len(),
-                "Applying configured tool activation operations"
-            );
-
-            for step in activation_steps {
-                let current = prepared.runtime_env.get(&step.var);
-                if let Some(new_value) = apply_resolved_tool_activation(current, &step) {
-                    prepared.runtime_env.set(step.var.clone(), new_value);
-                }
-            }
-        }
-    }
+    let project_env =
+        ProjectEnvironment::load(request.project_environment_request(), executor).await?;
+    let prepared = project_env.for_command(request.command).await?;
 
     // Resolve the command path using the runtime environment's PATH (with host fallback)
     // This is necessary because the child process will have hermetic PATH
-    let resolved_command = prepared.runtime_env.resolve_command(request.command);
+    let resolved_command = prepared.environment().resolve_command(request.command);
 
     // Execute the command with the environment, redacting any secrets from output
     let exit_code = execute_command_with_redaction(
         &resolved_command,
         request.args,
-        &prepared.runtime_env,
-        &prepared.secrets_for_redaction,
+        prepared.environment(),
+        prepared.secrets_for_redaction(),
     )
     .await?;
 
     Ok(exit_code)
-}
-
-async fn prepare_exec_environment(
-    request: ExecEnvironmentRequest<'_, '_>,
-) -> Result<PreparedExecEnvironment> {
-    let ExecEnvironmentRequest {
-        exec,
-        directory,
-        manifest_kind,
-    } = request;
-    let mut runtime_env = Environment::new();
-    let mut secrets_for_redaction: Vec<String> = Vec::new();
-
-    if let Some(project) = manifest_kind.project() {
-        let base_env_vars = extract_static_env_vars(project, StaticEnvConsumer::Exec(exec.command));
-        tracing::debug!("Base environment variables for exec: {:?}", base_env_vars);
-
-        let runtime_env_vars =
-            resolve_runtime_environment(directory, project.runtime.as_ref()).await?;
-        for (key, value) in runtime_env_vars {
-            runtime_env.set(key, value);
-        }
-
-        for (key, value) in &base_env_vars {
-            runtime_env.set(key.clone(), value.clone());
-        }
-
-        if let Some(env) = &project.env {
-            let env_vars = if let Some(env_name) = exec.environment_override {
-                env.for_environment(env_name)
-            } else {
-                env.base.clone()
-            };
-
-            let (exec_env_vars, secrets) =
-                cuenv_core::environment::Environment::resolve_for_exec_with_secrets(
-                    exec.command,
-                    &env_vars,
-                )
-                .await?;
-            secrets_for_redaction = secrets;
-
-            cuenv_events::register_secrets(secrets_for_redaction.iter().cloned());
-
-            for (key, value) in exec_env_vars {
-                runtime_env.set(key, value);
-            }
-        }
-    } else if let ManifestKind::Base(base) = manifest_kind {
-        tracing::debug!("Using Base configuration");
-
-        let runtime_env_vars =
-            resolve_runtime_environment(directory, base.runtime.as_ref()).await?;
-        for (key, value) in runtime_env_vars {
-            runtime_env.set(key, value);
-        }
-
-        if let Some(env) = &base.env {
-            let env_vars = if let Some(env_name) = exec.environment_override {
-                env.for_environment(env_name)
-            } else {
-                env.base.clone()
-            };
-
-            let (exec_env_vars, secrets) =
-                cuenv_core::environment::Environment::resolve_for_exec_with_secrets(
-                    exec.command,
-                    &env_vars,
-                )
-                .await?;
-            secrets_for_redaction = secrets;
-
-            cuenv_events::register_secrets(secrets_for_redaction.iter().cloned());
-
-            for (key, value) in exec_env_vars {
-                runtime_env.set(key, value);
-            }
-        }
-    } else {
-        tracing::debug!("No CUE manifest found, using host environment");
-        if let Ok(host_path) = std::env::var("PATH") {
-            runtime_env.set("PATH".to_string(), host_path);
-        }
-    }
-
-    for name in [
-        "OP_SERVICE_ACCOUNT_TOKEN",
-        "INFISICAL_TOKEN",
-        "INFISICAL_CLIENT_SECRET",
-    ] {
-        if let Ok(token) = std::env::var(name)
-            && !token.is_empty()
-        {
-            secrets_for_redaction.push(token);
-        }
-    }
-
-    Ok(PreparedExecEnvironment {
-        runtime_env,
-        secrets_for_redaction,
-    })
 }
 
 fn should_activate_lockfile_tools(project: Option<&Project>) -> bool {

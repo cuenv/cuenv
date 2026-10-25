@@ -20,6 +20,7 @@ Status guardrails:
 
 - Use `cuenv sync codegen` for codegen.
 - Use `cuenv fmt --fix` for formatting.
+- `cuenv fmt` runs formatters in the project environment that `cuenv exec` resolves (runtime, lockfile tools, `env`), falling back to the inherited `PATH` when the project configures no runtime or tools. A formatter that exits non-zero fails the command in both check and fix mode; there is no "(with warnings)" success.
 - Built-in sync providers use the single crate-private registry under `crates/cuenv/src/commands/sync/`; the static CLI parses options and passes a normalized `SyncRequest`. Do not describe this as a third-party plugin API, or imply registry-backed runtime or secret dispatch.
 - Do not recommend `cuenv sync ignore` or `cuenv sync codeowners`; use default `cuenv sync` rules behavior and `.rules.cue` schemas.
 - Generated CODEOWNERS headers should point back to `.rules.cue` and `cuenv sync`, never to legacy `env.cue` owners config or removed subcommands.

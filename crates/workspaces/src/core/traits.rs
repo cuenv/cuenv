@@ -1,14 +1,8 @@
-//! Core traits for workspace discovery, lockfile parsing, and dependency resolution.
+//! Core traits for workspace discovery and lockfile parsing.
 
-use crate::core::types::{DependencyRef, LockfileEntry, Workspace, WorkspaceMember};
+use crate::core::types::{LockfileEntry, Workspace, WorkspaceMember};
 use crate::error::Result;
 use std::path::Path;
-
-/// Type alias for dependency graphs using petgraph.
-///
-/// The graph nodes are [`DependencyRef`]s representing packages, and edges
-/// represent dependency relationships (no edge data needed).
-pub type DependencyGraph = petgraph::Graph<DependencyRef, ()>;
 
 /// Discovers workspace configuration from a root directory.
 ///
@@ -146,93 +140,4 @@ pub trait LockfileParser {
     ///
     /// For example: `"package-lock.json"`, `"Cargo.lock"`, `"pnpm-lock.yaml"`.
     fn lockfile_name(&self) -> &str;
-}
-
-/// Builds dependency graphs from workspace and lockfile data.
-///
-/// This trait combines workspace-internal dependencies (workspace protocol references)
-/// with external dependencies from lockfiles to build a complete dependency graph.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use cuenv_workspaces::{DependencyResolver, Workspace, LockfileEntry};
-///
-/// struct NpmDependencyResolver;
-///
-/// impl DependencyResolver for NpmDependencyResolver {
-///     fn resolve_dependencies(
-///         &self,
-///         workspace: &Workspace,
-///         lockfile: &[LockfileEntry],
-///     ) -> Result<DependencyGraph> {
-///         // Build graph with both workspace and external dependencies
-///         todo!()
-///     }
-///
-///     fn resolve_workspace_deps(&self, workspace: &Workspace) -> Result<Vec<DependencyRef>> {
-///         // Find dependencies using "workspace:*" protocol
-///         todo!()
-///     }
-///
-///     fn resolve_external_deps(&self, lockfile: &[LockfileEntry]) -> Result<Vec<DependencyRef>> {
-///         // Extract all external dependencies from lockfile
-///         todo!()
-///     }
-///
-///     fn detect_workspace_protocol(&self, spec: &str) -> bool {
-///         spec.starts_with("workspace:")
-///     }
-/// }
-/// ```
-pub trait DependencyResolver {
-    /// Builds a complete dependency graph from workspace and lockfile data.
-    ///
-    /// The graph should include:
-    /// - Workspace members as nodes
-    /// - Workspace-internal dependencies (workspace protocol)
-    /// - External dependencies from the lockfile
-    /// - Edges representing dependency relationships
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Dependencies cannot be resolved
-    /// - Circular dependencies are detected (if validation is enabled)
-    /// - Required dependencies are missing from the lockfile
-    fn resolve_dependencies(
-        &self,
-        workspace: &Workspace,
-        lockfile: &[LockfileEntry],
-    ) -> Result<DependencyGraph>;
-
-    /// Resolves workspace-internal dependencies.
-    ///
-    /// These are dependencies that reference other workspace members using
-    /// package manager-specific protocols:
-    /// - npm/pnpm/Yarn: `"workspace:*"`, `"workspace:^"`, etc.
-    /// - Cargo: `{ workspace = true }`
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workspace dependencies cannot be resolved.
-    fn resolve_workspace_deps(&self, workspace: &Workspace) -> Result<Vec<DependencyRef>>;
-
-    /// Resolves external dependencies from lockfile entries.
-    ///
-    /// Extracts all non-workspace dependencies from the lockfile.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if dependencies cannot be extracted or validated.
-    fn resolve_external_deps(&self, lockfile: &[LockfileEntry]) -> Result<Vec<DependencyRef>>;
-
-    /// Detects if a dependency specification uses the workspace protocol.
-    ///
-    /// # Examples
-    ///
-    /// - npm/pnpm/Yarn: `"workspace:*"` → `true`
-    /// - Cargo: Requires parsing TOML to check `workspace = true`
-    /// - Regular semver: `"^1.0.0"` → `false`
-    fn detect_workspace_protocol(&self, spec: &str) -> bool;
 }

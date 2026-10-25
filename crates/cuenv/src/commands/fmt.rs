@@ -3,16 +3,20 @@
 //! Formats all files in a repository based on the formatters configuration
 //! defined in `env.cue`. Uses the same formatter runners as the sync command
 //! but discovers files by walking the directory tree.
+//!
+//! Formatters run in the project's resolved environment (the one `cuenv exec`
+//! uses), so the project's declared toolchain is used rather than whatever is
+//! on cuenv's own `PATH`.
 
-use crate::commands::env_file::find_cue_module_root;
+use crate::commands::exec::ProjectEnvironmentRequest;
+use crate::commands::sync::formatters::{CUE, GOFMT, RUSTFMT};
 use crate::commands::sync::{
-    matches_any_pattern, run_cue_formatter, run_go_formatter, run_nix_formatter, run_rust_formatter,
+    FormatMode, FormatterContext, FormatterEnvironments, matches_any_pattern, run_cue_formatter,
+    run_go_formatter, run_nix_formatter, run_rust_formatter,
 };
-use crate::commands::{convert_engine_error, relative_path_from_root};
-use cuengine::ModuleEvalOptions;
-use cuenv_core::manifest::{Base, Formatters};
-use cuenv_core::module::TASK_FIELD;
-use cuenv_core::{ModuleEvaluation, Result};
+use crate::commands::{CommandExecutor, relative_path_from_root};
+use cuenv_core::Result;
+use cuenv_core::manifest::{Base, Formatters, NixFormatterTool};
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
@@ -125,35 +129,16 @@ fn discover_files(
 }
 
 /// Load the Base configuration from the CUE module.
-fn load_base_config(path: &str, package: &str) -> Result<Base> {
+///
+/// Uses the executor's cached module evaluation, which the project
+/// environment resolution reuses.
+fn load_base_config(path: &str, executor: &CommandExecutor) -> Result<Base> {
     let target_path = Path::new(path).canonicalize().map_err(|e| {
         cuenv_core::Error::io_with_path("canonicalize path", Path::new(path).to_path_buf(), e)
     })?;
 
-    let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE module found (looking for cue.mod/) starting from: {}",
-            target_path.display()
-        ))
-    })?;
-
-    let options = ModuleEvalOptions {
-        recursive: false,
-        target_dir: Some(target_path.to_string_lossy().to_string()),
-        task_field: Some(TASK_FIELD.to_string()),
-        ..Default::default()
-    };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
-        .map_err(convert_engine_error)?;
-
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
-        raw_result.instances,
-        raw_result.projects,
-        None,
-    );
-
-    let relative_path = relative_path_from_root(&module_root, &target_path);
+    let module = executor.get_module(&target_path)?;
+    let relative_path = relative_path_from_root(&module.root, &target_path);
     let instance = module.get(&relative_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
             "No CUE instance found at path: {} (relative: {})",
@@ -165,13 +150,42 @@ fn load_base_config(path: &str, package: &str) -> Result<Base> {
     instance.deserialize()
 }
 
+/// Request for the format command.
+#[derive(Clone, Copy, Debug)]
+pub struct FmtRequest<'a> {
+    /// Path to the CUE module directory.
+    pub path: &'a str,
+    /// CUE package name to evaluate.
+    pub package: &'a str,
+    /// Check (default) or fix.
+    pub mode: FormatMode,
+    /// Optional list of formatters to run (e.g., `["rust", "go"]`).
+    pub only: Option<&'a [String]>,
+    /// Optional environment name whose `env` overlay formatters run with.
+    pub environment_override: Option<&'a str>,
+}
+
+/// Formatter commands that have files to format.
+fn commands_to_run(files: &DiscoveredFiles, formatters: &Formatters) -> Vec<&'static str> {
+    let nix_tool = formatters
+        .nix
+        .as_ref()
+        .map_or(NixFormatterTool::default(), |nix| nix.tool);
+    [
+        (!files.rust.is_empty()).then_some(RUSTFMT),
+        (!files.nix.is_empty()).then_some(nix_tool.command()),
+        (!files.go.is_empty()).then_some(GOFMT),
+        (!files.cue.is_empty()).then_some(CUE),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 /// Execute the format command.
 ///
-/// # Arguments
-/// * `path` - Path to the CUE module directory
-/// * `package` - CUE package name to evaluate
-/// * `fix` - If true, apply formatting changes; if false, check mode (validate only)
-/// * `only` - Optional list of formatters to run (e.g., `["rust", "go"]`)
+/// Formatters run in the project's resolved environment. When the project
+/// configures no runtime or tools, they run with the inherited `PATH`.
 ///
 /// # Returns
 /// A string describing the formatting results.
@@ -179,16 +193,20 @@ fn load_base_config(path: &str, package: &str) -> Result<Base> {
 /// # Errors
 /// Returns an error if:
 /// - No formatters are configured in env.cue
+/// - The project environment cannot be resolved
 /// - In check mode and files need formatting
-/// - A formatter command fails to execute
-pub fn execute_fmt(
-    path: &str,
-    package: &str,
-    fix: bool,
-    only: Option<&[String]>,
-) -> Result<String> {
+/// - A formatter command fails to execute or exits non-zero
+pub async fn execute_fmt(request: FmtRequest<'_>, executor: &CommandExecutor) -> Result<String> {
+    let FmtRequest {
+        path,
+        package,
+        mode,
+        only,
+        environment_override,
+    } = request;
+
     // Load config
-    let config = load_base_config(path, package)?;
+    let config = load_base_config(path, executor)?;
 
     // Check formatters exist
     let formatters = config.formatters.ok_or_else(|| {
@@ -216,25 +234,32 @@ pub fn execute_fmt(
     info!(
         total = files.total_count(),
         "Found files to {}",
-        if fix { "format" } else { "check" }
+        mode.verb()
     );
 
-    // Run formatters (check = !fix)
-    let check = !fix;
-    let dry_run = cuenv_core::DryRun::No;
+    let environments = FormatterEnvironments::resolve(
+        ProjectEnvironmentRequest {
+            path,
+            package,
+            environment_override,
+        },
+        &commands_to_run(&files, &formatters),
+        executor,
+    )
+    .await?;
+    let context = FormatterContext {
+        project_root: &project_root,
+        dry_run: cuenv_core::DryRun::No,
+        mode,
+        environments: &environments,
+    };
     let mut results = Vec::new();
     let mut errors = Vec::new();
 
     // Run Rust formatter
     if !files.rust.is_empty() {
         let file_refs: Vec<&Path> = files.rust.iter().map(AsRef::as_ref).collect();
-        match run_rust_formatter(
-            &file_refs,
-            formatters.rust.as_ref(),
-            &project_root,
-            dry_run,
-            check,
-        ) {
+        match run_rust_formatter(&file_refs, formatters.rust.as_ref(), &context) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
         }
@@ -243,13 +268,7 @@ pub fn execute_fmt(
     // Run Nix formatter
     if !files.nix.is_empty() {
         let file_refs: Vec<&Path> = files.nix.iter().map(AsRef::as_ref).collect();
-        match run_nix_formatter(
-            &file_refs,
-            formatters.nix.as_ref(),
-            &project_root,
-            dry_run,
-            check,
-        ) {
+        match run_nix_formatter(&file_refs, formatters.nix.as_ref(), &context) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
         }
@@ -258,7 +277,7 @@ pub fn execute_fmt(
     // Run Go formatter
     if !files.go.is_empty() {
         let file_refs: Vec<&Path> = files.go.iter().map(AsRef::as_ref).collect();
-        match run_go_formatter(&file_refs, &project_root, dry_run, check) {
+        match run_go_formatter(&file_refs, &context) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
         }
@@ -267,7 +286,7 @@ pub fn execute_fmt(
     // Run CUE formatter
     if !files.cue.is_empty() {
         let file_refs: Vec<&Path> = files.cue.iter().map(AsRef::as_ref).collect();
-        match run_cue_formatter(&file_refs, &project_root, dry_run, check) {
+        match run_cue_formatter(&file_refs, &context) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
         }
@@ -276,7 +295,7 @@ pub fn execute_fmt(
     // Return first error if any occurred
     if let Some(first_error) = errors.into_iter().next() {
         // In check mode, add helpful message about --fix
-        if check {
+        if mode.is_check() {
             let error_msg = format!("{first_error}");
             return Err(cuenv_core::Error::configuration(format!(
                 "{error_msg}\n\nRun `cuenv fmt --fix` to apply changes."
@@ -408,23 +427,131 @@ mod tests {
         assert!(should_include("cue", Some(&only)));
     }
 
-    #[test]
-    fn test_execute_fmt_invalid_path() {
-        let result = execute_fmt("/nonexistent/path", "cuenv", false, None);
+    fn test_executor() -> CommandExecutor {
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        CommandExecutor::new(sender, "cuenv".to_string())
+    }
+
+    fn check_request(path: &str) -> FmtRequest<'_> {
+        FmtRequest {
+            path,
+            package: "cuenv",
+            mode: FormatMode::Check,
+            only: None,
+            environment_override: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_fmt_invalid_path() {
+        let result = execute_fmt(check_request("/nonexistent/path"), &test_executor()).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_execute_fmt_no_cue_module() {
+    #[tokio::test]
+    async fn test_execute_fmt_no_cue_module() {
         // Use temp dir without cue.mod
-        let temp = std::env::temp_dir();
-        let result = execute_fmt(temp.to_str().unwrap(), "cuenv", false, None);
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().to_string_lossy().into_owned();
+        let result = execute_fmt(check_request(&path), &test_executor()).await;
         assert!(result.is_err());
     }
 
     #[test]
     fn test_load_base_config_invalid_path() {
-        let result = load_base_config("/nonexistent/path", "cuenv");
+        let result = load_base_config("/nonexistent/path", &test_executor());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_commands_to_run_only_formatters_with_files() {
+        let formatters = Formatters {
+            nix: Some(cuenv_core::manifest::NixFormatter {
+                enabled: true,
+                includes: vec!["*.nix".to_string()],
+                tool: NixFormatterTool::Alejandra,
+            }),
+            ..Default::default()
+        };
+        let files = DiscoveredFiles {
+            rust: vec![PathBuf::from("lib.rs")],
+            nix: vec![PathBuf::from("flake.nix")],
+            go: vec![],
+            cue: vec![],
+        };
+        assert_eq!(
+            commands_to_run(&files, &formatters),
+            ["rustfmt", "alejandra"]
+        );
+    }
+
+    /// End-to-end: `execute_fmt` resolves `rustfmt` against the `PATH` the
+    /// project declares in `env.cue`, not cuenv's inherited `PATH`.
+    #[cfg(unix)]
+    mod project_environment {
+        use super::*;
+        use crate::commands::sync::formatters::test_support::install_test_script;
+        use tempfile::TempDir;
+
+        /// A CUE module whose `env.PATH` points at a fake `rustfmt`.
+        fn project_with_fake_rustfmt(script: &str) -> TempDir {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path();
+            let bin = root.join("bin");
+            std::fs::create_dir_all(root.join("cue.mod")).unwrap();
+            std::fs::create_dir(&bin).unwrap();
+            std::fs::write(
+                root.join("cue.mod/module.cue"),
+                "module: \"example.com/fmt\"\nlanguage: version: \"v0.14.1\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("env.cue"),
+                format!(
+                    "package cuenv\n\nenv: {{\n\tPATH: \"{}\"\n\tFAKE_FORMATTER_MARKER: \"{}\"\n}}\n\nformatters: rust: {{}}\n",
+                    bin.display(),
+                    root.join("invoked").display()
+                ),
+            )
+            .unwrap();
+            std::fs::write(root.join("lib.rs"), "fn main() {}\n").unwrap();
+            install_test_script(&bin.join("rustfmt"), script);
+            dir
+        }
+
+        fn fix_request(path: &str) -> FmtRequest<'_> {
+            FmtRequest {
+                mode: FormatMode::Fix,
+                ..check_request(path)
+            }
+        }
+
+        #[tokio::test]
+        async fn fix_mode_uses_project_path_rustfmt() {
+            let project = project_with_fake_rustfmt("echo \"$@\" > \"$FAKE_FORMATTER_MARKER\"");
+            let path = project.path().to_string_lossy().into_owned();
+
+            let output = execute_fmt(fix_request(&path), &test_executor())
+                .await
+                .unwrap();
+
+            assert_eq!(output, "Formatted 1 Rust file(s)");
+            let recorded = std::fs::read_to_string(project.path().join("invoked")).unwrap();
+            assert!(recorded.contains("lib.rs"), "{recorded}");
+        }
+
+        #[tokio::test]
+        async fn fix_mode_fails_when_project_rustfmt_fails() {
+            let project = project_with_fake_rustfmt("echo 'no toolchain' >&2\nexit 1");
+            let path = project.path().to_string_lossy().into_owned();
+
+            let error = execute_fmt(fix_request(&path), &test_executor())
+                .await
+                .expect_err("a failing rustfmt must fail `cuenv fmt --fix`");
+
+            let message = error.to_string();
+            assert!(message.contains("rustfmt failed"), "{message}");
+            assert!(message.contains("no toolchain"), "{message}");
+        }
     }
 }
