@@ -942,7 +942,7 @@ recorded in `cue.mod/module.cue`.
 **Subcommands:**
 
 - `lock`: Resolve tools, artifacts, and runtimes (including OCI image digests) into `cuenv.lock`. Supports `--dry-run`, `--check`, `-A/--all`, and `-u/--update [TOOLS...]` (omit names to update all).
-- `codegen`: Sync files from CUE codegen configurations. Adds `--diff` to show changed files.
+- `codegen`: Sync files from CUE codegen configurations. Adds `--diff` to show changed files. Like `--check`, `--diff` never writes: configured formatters only check generated files and never rewrite them.
 - `ci`: Sync CI workflow files from CUE configuration. Adds `--provider <github|buildkite>` to filter.
 - `vcs`: Sync cuenv-managed Git dependencies. Supports `-u/--update [NAMES...]` to refresh locked refs.
 - `infrastructure`: Regenerate the CUE types of every infrastructure provider `cuenv.lock` pins (see `cuenv infrastructure provider add`), and their `.gitignore` section; like managed codegen files they are not committed, so run it after a clone. Reads only `cuenv.lock`, not your CUE, installs each pinned release (requiring the pinned archive), and refuses one whose schema no longer has the pinned digest. Supports `--dry-run` and `--check`.
