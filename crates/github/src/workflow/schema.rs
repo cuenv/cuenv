@@ -336,7 +336,7 @@ pub struct Step {
     #[serde(rename = "if", skip_serializing_if = "Option::is_none")]
     pub if_condition: Option<String>,
 
-    /// Action to use (e.g., "actions/checkout@v4")
+    /// Action to use (e.g., "actions/checkout@v7")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uses: Option<String>,
 
@@ -439,12 +439,12 @@ mod tests {
 
     #[test]
     fn test_step_builder() {
-        let step = Step::uses("actions/checkout@v4")
+        let step = Step::uses("actions/checkout@v7")
             .with_name("Checkout")
             .with_input("fetch-depth", serde_yaml::Value::Number(2.into()));
 
         assert_eq!(step.name, Some("Checkout".to_string()));
-        assert_eq!(step.uses, Some("actions/checkout@v4".to_string()));
+        assert_eq!(step.uses, Some("actions/checkout@v7".to_string()));
         assert!(step.with_inputs.contains_key("fetch-depth"));
     }
 
