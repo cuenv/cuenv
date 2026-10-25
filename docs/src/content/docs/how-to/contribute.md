@@ -172,6 +172,7 @@ Use structured error types with `thiserror`:
 
 ```rust
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MyError {
     #[error("Configuration error: {message}")]
     Config { message: String },
@@ -180,6 +181,33 @@ pub enum MyError {
     Io(#[from] std::io::Error),
 }
 ```
+
+Public error enums are `#[non_exhaustive]` so adding a variant is not a
+breaking change for downstream crates. A constructor that returns a `Result`
+is named `try_new`, never `new`.
+
+#### Public API Shape
+
+- Use a newtype, not a `type` alias, when values are easy to mix up or the
+  underlying representation may change (for example versions, version
+  requirements and URLs).
+- Prefer structs with named fields over public tuples or tuple aliases.
+
+#### Locks and Panics
+
+- Never recover a poisoned `Mutex` or `RwLock` with
+  `PoisonError::into_inner`. A poisoned lock means another thread panicked
+  part-way through an update, so treat it as fatal with an `expect` that states
+  the invariant, or fail closed. Secret redaction must always fail closed.
+- Do not rely on `std::panic::catch_unwind` for behaviour. Release builds use
+  `panic = "abort"`, so a catch-and-fallback path never runs in shipped
+  binaries. Avoid the panicking call instead.
+
+#### Module Layout
+
+A `mod.rs` that declares submodules contains only `mod` declarations,
+re-exports and a small amount of glue. Implementation lives in leaf modules
+named after their primary item.
 
 #### Testing
 
