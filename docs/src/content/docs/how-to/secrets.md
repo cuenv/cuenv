@@ -12,7 +12,9 @@ Application Default Credentials on your laptop, a service-account token in CI.
 
 cuenv resolves secrets at runtime. Secret values stay out of `env.cue`,
 generated CI workflows, and generated files. Output routed through cuenv is
-redacted before it reaches the terminal.
+redacted before it reaches the terminal. Redaction fails closed: if the secret
+registry is ever left in an inconsistent state by an internal panic, cuenv
+masks every subsequent output line in full rather than risk printing a secret.
 
 The current user-facing secret types are:
 

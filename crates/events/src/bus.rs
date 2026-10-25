@@ -272,6 +272,7 @@ fn synth_event_gap(skipped: u64) -> CuenvEvent {
 
 /// Error returned when sending to a closed bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SendError {
     /// The event bus has been closed.
     Closed,

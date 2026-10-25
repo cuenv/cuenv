@@ -125,7 +125,7 @@ impl InfisicalResolver {
     /// # Errors
     ///
     /// Returns an error if the HTTP client cannot be initialized.
-    pub fn new() -> Result<Self, SecretError> {
+    pub fn try_new() -> Result<Self, SecretError> {
         Ok(Self {
             client: build_client("infisical")?,
             cached_token: Mutex::new(None),
@@ -553,7 +553,7 @@ mod tests {
                 ("INFISICAL_ORGANIZATION_SLUG", None),
             ],
             async {
-                let resolver = InfisicalResolver::new()?;
+                let resolver = InfisicalResolver::try_new()?;
                 let mut config = InfisicalConfig::new("project", "prod", "API_KEY");
                 config.api_url = Some(api_url);
                 let spec = SecretSpec::new(serde_json::to_string(&config)?);
@@ -593,7 +593,7 @@ mod tests {
                 ("INFISICAL_TOKEN", Some("fallback-token")),
             ],
             async {
-                let resolver = InfisicalResolver::new()?;
+                let resolver = InfisicalResolver::try_new()?;
                 let mut config = InfisicalConfig::new("project", "prod", "API_KEY");
                 config.api_url = Some(api_url);
                 let spec = SecretSpec::new(serde_json::to_string(&config)?);
@@ -618,7 +618,7 @@ mod tests {
                 ("INFISICAL_TOKEN", Some("fallback-token")),
             ],
             async {
-                let resolver = InfisicalResolver::new()?;
+                let resolver = InfisicalResolver::try_new()?;
                 let config = InfisicalConfig::new("project", "prod", "API_KEY");
                 let spec = SecretSpec::new(serde_json::to_string(&config)?);
                 let result = resolver.resolve("API_KEY", &spec).await;

@@ -6,6 +6,7 @@ use thiserror::Error;
 
 /// Error type for CAS and action cache operations.
 #[derive(Error, Debug, Diagnostic)]
+#[non_exhaustive]
 pub enum Error {
     /// I/O error while reading or writing a blob.
     #[error("I/O {operation} failed{}", path.as_ref().map_or(String::new(), |p| format!(": {}", p.display())))]

@@ -9,6 +9,7 @@ use thiserror::Error as ThisError;
 
 /// Errors raised while resolving tools or checking platform support.
 #[derive(ThisError, Debug, Diagnostic)]
+// Intentionally exhaustive: `cuenv`'s `From<cuenv_core::Error> for CliError` matches every variant so a new one forces an explicit exit-code decision.
 pub enum ToolError {
     #[error("Tool resolution failed: {message}")]
     #[diagnostic(code(cuenv::tool::resolution))]

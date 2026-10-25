@@ -28,6 +28,7 @@ mod pkg;
 
 /// Error type for archive extraction operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ArchiveError {
     /// Underlying filesystem or stream I/O failure.
     #[error(transparent)]

@@ -170,7 +170,7 @@ fn build_entry(
 
     LockfileEntry {
         name,
-        version,
+        version: version.into(),
         source,
         checksum,
         dependencies,

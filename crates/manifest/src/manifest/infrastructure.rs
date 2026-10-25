@@ -232,6 +232,7 @@ impl std::fmt::Display for InfrastructurePolicyAction {
 
 /// Why a project's raw `infrastructure` value could not be selected.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum InfrastructureSelectionError {
     /// The value is not an object.
     #[error("`infrastructure` must be an object, found {found}")]

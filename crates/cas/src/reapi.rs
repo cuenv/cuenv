@@ -112,7 +112,7 @@ impl Digest {
         let size_bytes = u64::try_from(proto.size_bytes).map_err(|_| {
             Error::serialization(format!("negative blob size {}", proto.size_bytes))
         })?;
-        Self::new(proto.hash.clone(), size_bytes)
+        Self::try_new(proto.hash.clone(), size_bytes)
     }
 }
 

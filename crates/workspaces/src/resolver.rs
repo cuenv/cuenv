@@ -37,15 +37,17 @@ impl DependencyResolver for GenericDependencyResolver {
         for entry in lockfile {
             let dep_ref = DependencyRef {
                 name: entry.name.clone(),
-                version_req: entry.version.clone(),
+                version_req: entry.version.to_string(),
             };
             let idx = graph.add_node(dep_ref);
-            node_map.insert((entry.name.clone(), entry.version.clone()), idx);
+            node_map.insert((entry.name.clone(), entry.version.to_string()), idx);
         }
 
         // 2. Add edges based on dependencies declared in lockfile entries
         for entry in lockfile {
-            if let Some(&source_idx) = node_map.get(&(entry.name.clone(), entry.version.clone())) {
+            if let Some(&source_idx) =
+                node_map.get(&(entry.name.clone(), entry.version.to_string()))
+            {
                 for dep in &entry.dependencies {
                     // Find the dependency in the graph
                     // We look up by (name, version_req). This assumes that the lockfile parser
@@ -104,7 +106,7 @@ impl DependencyResolver for GenericDependencyResolver {
             .filter(|entry| !entry.is_workspace_member)
             .map(|entry| DependencyRef {
                 name: entry.name.clone(),
-                version_req: entry.version.clone(),
+                version_req: entry.version.to_string(),
             })
             .collect())
     }
@@ -213,7 +215,7 @@ mod tests {
     fn make_entry(name: &str, version: &str, is_workspace: bool) -> LockfileEntry {
         LockfileEntry {
             name: name.to_string(),
-            version: version.to_string(),
+            version: version.into(),
             source: if is_workspace {
                 DependencySource::Workspace(PathBuf::from(name))
             } else {
@@ -229,7 +231,7 @@ mod tests {
     fn make_entry_with_deps(name: &str, version: &str, deps: Vec<DependencyRef>) -> LockfileEntry {
         LockfileEntry {
             name: name.to_string(),
-            version: version.to_string(),
+            version: version.into(),
             source: DependencySource::Registry("https://registry.npmjs.org".to_string()),
             checksum: None,
             dependencies: deps,

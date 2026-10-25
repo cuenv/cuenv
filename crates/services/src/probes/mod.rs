@@ -150,7 +150,7 @@ pub fn create_probe(
                 l.common.initial_delay.as_deref(),
             )?;
             let source = l.source.as_deref().unwrap_or("either");
-            let runner = log::LogProbe::new(&l.pattern, source)?;
+            let runner = log::LogProbe::try_new(&l.pattern, source)?;
             Ok((Box::new(runner), config))
         }
         cuenv_core::manifest::Readiness::Command(c) => {

@@ -90,7 +90,7 @@ impl Generation<'_> {
                 self.source, self.version
             ))
         })?;
-        let installer = ProviderInstaller::new(default_cache_directory())
+        let installer = ProviderInstaller::try_new(default_cache_directory())
             .map_err(|error| infrastructure_error(&error))?;
         let binary = installer
             .ensure_pinned(self.source, self.version, pin)

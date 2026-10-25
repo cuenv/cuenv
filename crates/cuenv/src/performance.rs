@@ -60,28 +60,29 @@ impl PerformanceRegistry {
 
     /// Returns an aggregated summary of all recorded operations.
     ///
-    /// Recovers from poisoned mutex state to ensure metrics are never lost.
+    /// A poisoned registry (a thread panicked while recording) is not read:
+    /// like [`Self::record_operation`], which stops recording into it, the
+    /// summary is then empty rather than built from a half-updated list.
     #[must_use]
     pub fn get_summary(&self) -> PerformanceSummary {
-        // If the mutex is poisoned, recover the data anyway since metrics are non-critical
-        let ops = self
-            .operations
+        self.operations
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let total_operations = ops.len();
-        let successful_operations = ops.iter().filter(|op| op.success).count();
-        let total_duration: Duration = ops.iter().map(|op| op.duration).sum();
+            .map_or_else(|_| summarize(&[]), |ops| summarize(&ops))
+    }
+}
 
-        let avg_duration = average_duration(total_duration, total_operations);
+fn summarize(ops: &[OperationMetrics]) -> PerformanceSummary {
+    let total_operations = ops.len();
+    let successful_operations = ops.iter().filter(|op| op.success).count();
+    let total_duration: Duration = ops.iter().map(|op| op.duration).sum();
 
-        PerformanceSummary {
-            total_operations,
-            successful_operations,
-            failed_operations: total_operations - successful_operations,
-            total_duration,
-            average_duration: avg_duration,
-            operations: ops.clone(),
-        }
+    PerformanceSummary {
+        total_operations,
+        successful_operations,
+        failed_operations: total_operations - successful_operations,
+        total_duration,
+        average_duration: average_duration(total_duration, total_operations),
+        operations: ops.to_vec(),
     }
 }
 

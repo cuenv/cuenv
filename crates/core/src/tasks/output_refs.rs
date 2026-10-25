@@ -183,7 +183,7 @@ mod tests {
 
         // Dependencies should be collected
         assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0], ("work".to_string(), "tmpdir".to_string()));
+        assert_eq!(deps[0], OutputRefDep::new("work", "tmpdir"));
     }
 
     #[test]
@@ -208,7 +208,7 @@ mod tests {
         let env_val = value["tasks"]["work"]["env"]["TEMP_DIR"].as_str().unwrap();
         assert_eq!(env_val, "cuenv:ref:tmpdir:stdout");
         assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0], ("work".to_string(), "tmpdir".to_string()));
+        assert_eq!(deps[0], OutputRefDep::new("work", "tmpdir"));
     }
 
     #[test]
@@ -235,10 +235,7 @@ mod tests {
             "cuenv:ref:pipeline[0]:stdout"
         );
         assert_eq!(deps.len(), 1);
-        assert_eq!(
-            deps[0],
-            ("pipeline[1]".to_string(), "pipeline[0]".to_string())
-        );
+        assert_eq!(deps[0], OutputRefDep::new("pipeline[1]", "pipeline[0]"));
     }
 
     #[test]
@@ -283,8 +280,8 @@ mod tests {
 
         let deps = process_output_refs(&mut value);
         assert_eq!(deps.len(), 2);
-        assert!(deps.contains(&("c".to_string(), "a".to_string())));
-        assert!(deps.contains(&("c".to_string(), "b".to_string())));
+        assert!(deps.contains(&OutputRefDep::new("c", "a")));
+        assert!(deps.contains(&OutputRefDep::new("c", "b")));
     }
 
     #[test]

@@ -188,7 +188,7 @@ fn entry_from_package(
 
     Ok(Some(LockfileEntry {
         name,
-        version,
+        version: version.into(),
         source,
         checksum: package.checksum.clone(),
         dependencies,

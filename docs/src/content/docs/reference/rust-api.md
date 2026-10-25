@@ -402,7 +402,7 @@ Manages background hook execution.
 use cuenv_hooks::{HookExecutor, HookExecutionConfig};
 
 let config = HookExecutionConfig::default();
-let executor = HookExecutor::new(config)?;
+let executor = HookExecutor::try_new(config)?;
 ```
 
 ### ApprovalManager
@@ -592,7 +592,7 @@ use cuenv_infrastructure::{
 };
 
 let cancellation = Cancellation::default(); // shared with signal handling
-let instance = ProjectInstance::new("services/api", "cuenv")?; // directory and package
+let instance = ProjectInstance::try_new("services/api", "cuenv")?; // directory and package
 store.migrate().await?; // writes need current tables; reads never create them
 // Choose the identifier first and register it with signal handling, so a
 // forced exit during acquisition can name the lock it may hold.
@@ -639,7 +639,7 @@ released?;
 now released, and `Ok(false)` when it was already gone (another actor released
 it or took it over); report the second case rather than claiming a release.
 
-- **Identities.** `TenantKey::new(module_path, project)` is the identity of a
+- **Identities.** `TenantKey::try_new(module_path, project)` is the identity of a
   run without `--env`; `TenantKey::with_environment(module_path, project,
 environment)` is a separate identity for a named environment (including
   `default`), and its `Display` form is `<module>#<project>@<environment>`.

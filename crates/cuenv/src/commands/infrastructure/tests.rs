@@ -14,15 +14,19 @@ use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, InfrastructureState};
 use tokio::sync::mpsc;
 
+use super::confirm::{AnswerFuture, Answers, confirm};
+use super::dispatch::{CommandContext, EngineInputs, connect, dispatch};
 use super::evaluation::{self, EnvironmentSelection, NameCheck, Needs, TargetRequest, TopLevel};
+use super::guard::{GuardRequest, SelectionFacts, Siblings, guard_selection};
 use super::interrupts::{Interrupts, SignalSource};
 use super::invocation::Invocation;
+use super::lock::{release, under_lock};
 use super::output::{Finish, Output};
+use super::resolve::{environment_variables_for_action, resolve_state_token};
+use super::run::{run, validate_state_url};
 use super::{
-    AnswerFuture, Answers, CommandContext, ConfirmationPolicy, EngineInputs, GuardRequest,
-    InfrastructureAction, InfrastructureOptions, SelectionFacts, SeparateState, Siblings,
-    StateAction, UnlockScope, confirm, connect, dispatch, environment_variables_for_action,
-    guard_selection, release, resolve_state_token, run, under_lock, validate_state_url,
+    ConfirmationPolicy, InfrastructureAction, InfrastructureOptions, SeparateState, StateAction,
+    UnlockScope,
 };
 use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
@@ -220,7 +224,7 @@ fn a_unique_project_evaluates() {
     let target = evaluate(module.path(), NameCheck::WholeModule).unwrap();
     assert_eq!(
         target.tenant,
-        TenantKey::new("example.com/infrastructure", "app").unwrap()
+        TenantKey::try_new("example.com/infrastructure", "app").unwrap()
     );
     assert_eq!(target.instance.as_str(), "app:cuenv");
     assert_eq!(target.infrastructure.resources.len(), 1);
@@ -390,7 +394,7 @@ infrastructure: {
     assert!(target.infrastructure.environments.is_empty());
     assert_eq!(
         target.tenant,
-        TenantKey::new("example.com/infrastructure", "app").unwrap()
+        TenantKey::try_new("example.com/infrastructure", "app").unwrap()
     );
 }
 
@@ -796,7 +800,7 @@ impl Harness {
     fn new(format: OutputFormat, script: Script) -> Self {
         let counting = Arc::new(CountingStore::default());
         let store: Arc<dyn StateStore> = counting.clone();
-        let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
+        let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
         let output = Output::new(format);
         let (signals, receiver) = mpsc::unbounded_channel();
         let interrupts = Interrupts::watch(receiver, &output, Invocation::default());
@@ -809,7 +813,7 @@ impl Harness {
             counting,
             store: Arc::clone(&store),
             tenant: tenant.clone(),
-            instance: ProjectInstance::new("app", "cuenv").unwrap(),
+            instance: ProjectInstance::try_new("app", "cuenv").unwrap(),
             siblings: Siblings {
                 unselected_tenant: tenant.clone(),
                 declared_environments: Vec::new(),
@@ -1039,7 +1043,7 @@ async fn nothing_to_apply_asks_nothing() {
 #[tokio::test]
 async fn another_owner_is_refused_until_adopted() {
     let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
-    let other = ProjectInstance::new("_staging/app", "cuenv").unwrap();
+    let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
     harness.seed(&[], Some(&other)).await;
 
     for action in [
@@ -1089,7 +1093,7 @@ async fn state_remove_checks_the_owner_under_lock_until_adopted() {
                 TenantKey::with_environment("example.com/infrastructure", "app", environment)
                     .unwrap();
         }
-        let other = ProjectInstance::new("_staging/app", "cuenv").unwrap();
+        let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
         harness.seed(&["random_pet.pet"], Some(&other)).await;
         let before = harness.store.list(&harness.tenant).await.unwrap();
         let action = InfrastructureAction::State(StateAction::Remove {
@@ -1161,7 +1165,7 @@ async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
                 TenantKey::with_environment("example.com/infrastructure", "app", environment)
                     .unwrap();
         }
-        let other = ProjectInstance::new("_staging/app", "cuenv").unwrap();
+        let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
         harness.seed(&["random_pet.pet"], Some(&other)).await;
         let before = harness.store.list(&harness.tenant).await.unwrap();
         let mut saved = before[0].clone();
@@ -1553,7 +1557,7 @@ impl StateStore for UnreleasableStore {
 #[tokio::test(start_paused = true)]
 async fn release_does_not_wait_after_its_last_attempt() {
     let store = UnreleasableStore::default();
-    let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
     let started = tokio::time::Instant::now();
     assert!(
         release(&store, &tenant, &StateLock::generate())
@@ -1655,11 +1659,11 @@ async fn a_lock_that_was_taken_away_during_the_run_is_not_reported_as_released()
 #[test]
 fn the_release_notice_says_what_the_release_did() {
     let lock = StateLock::generate();
-    let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
-    let released = super::release_notice(&lock, &tenant, super::Release::Released);
+    let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
+    let released = super::lock::release_notice(&lock, &tenant, super::lock::Release::Released);
     assert!(released.starts_with("Released lock "), "{released}");
     assert!(released.contains(&lock.lock_identifier), "{released}");
-    let gone = super::release_notice(&lock, &tenant, super::Release::NoLongerHeld);
+    let gone = super::lock::release_notice(&lock, &tenant, super::lock::Release::NoLongerHeld);
     assert!(!gone.contains("Released"), "{gone}");
     assert!(gone.contains("no longer held"), "{gone}");
     assert!(gone.contains("nothing was released"), "{gone}");
@@ -2717,7 +2721,7 @@ async fn showing_the_lock_without_env_mentions_locks_in_declared_environments() 
         siblings: &siblings,
         ..harness.context()
     };
-    let found = super::locks_in_other_environments(&context).await;
+    let found = super::state_actions::locks_in_other_environments(&context).await;
     assert_eq!(found.len(), 1, "{found:?}");
     let note = found[0].note();
     assert!(
@@ -2738,7 +2742,7 @@ async fn showing_the_lock_without_env_mentions_locks_in_declared_environments() 
         ..harness.context()
     };
     assert!(
-        super::locks_in_other_environments(&context)
+        super::state_actions::locks_in_other_environments(&context)
             .await
             .is_empty()
     );
@@ -2768,7 +2772,7 @@ async fn recovering_without_env_mentions_pending_changes_of_declared_environment
         siblings: &siblings,
         ..harness.context()
     };
-    let found = super::pending_in_other_environments(&context, &unrecorded);
+    let found = super::state_actions::pending_in_other_environments(&context, &unrecorded);
     assert_eq!(found.len(), 1, "{found:?}");
     let note = found[0].note();
     assert!(note.contains("environment 'dev'"), "{note}");
@@ -2790,7 +2794,7 @@ fn json_results_carry_the_environment_in_its_own_field() {
     assert_eq!(payload["environment"], "dev");
 
     let output = Output::new(OutputFormat::Json);
-    let unselected = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    let unselected = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
     output.state(&unselected, &[]);
     let Finish::Report(Some(payload)) = output.finish() else {
         panic!("expected a result");
@@ -2817,9 +2821,10 @@ async fn a_failing_secret_names_its_variable_and_never_echoes_the_command_output
             )),
         ),
     ]);
-    let error = super::resolve_environment_variables(InfrastructurePolicyAction::Plan, &variables)
-        .await
-        .unwrap_err();
+    let error =
+        super::resolve::resolve_environment_variables(InfrastructurePolicyAction::Plan, &variables)
+            .await
+            .unwrap_err();
     let text = format!("{error} {}", error.help().unwrap_or_default());
     assert!(text.contains("DB_PASSWORD"), "{text}");
     assert!(!text.contains("leaked-token"), "{text}");
@@ -3104,7 +3109,7 @@ async fn state_locks_lists_every_tenants_lock_and_unlock_names_a_project_that_ne
 fn an_unlock_scope_replaces_only_what_it_names() {
     let evaluated = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
     let scoped = |module_path: Option<&str>, project: Option<&str>| {
-        super::scoped_tenant(
+        super::run::scoped_tenant(
             &evaluated,
             &UnlockScope {
                 module_path: module_path.map(str::to_string),
@@ -3123,7 +3128,7 @@ fn an_unlock_scope_replaces_only_what_it_names() {
         "example.com/app#api@Dev"
     );
     assert!(
-        super::scoped_tenant(
+        super::run::scoped_tenant(
             &evaluated,
             &UnlockScope {
                 module_path: None,

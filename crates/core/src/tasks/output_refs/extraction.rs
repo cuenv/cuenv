@@ -45,7 +45,7 @@ fn process_task_node(
                     for arg in args.iter_mut() {
                         if let Some(placeholder) = try_extract_output_ref(arg) {
                             if let Some(parsed) = TaskOutputRef::parse(&placeholder) {
-                                deps.push((current_task.to_string(), parsed.task.clone()));
+                                deps.push(OutputRefDep::new(current_task, parsed.task.clone()));
                             }
                             *arg = serde_json::Value::String(placeholder);
                         }
@@ -61,7 +61,7 @@ fn process_task_node(
                         };
                         if let Some(placeholder) = try_extract_output_ref(env_val) {
                             if let Some(parsed) = TaskOutputRef::parse(&placeholder) {
-                                deps.push((current_task.to_string(), parsed.task.clone()));
+                                deps.push(OutputRefDep::new(current_task, parsed.task.clone()));
                             }
                             *env_val = serde_json::Value::String(placeholder);
                         } else if let Some(placeholder) = try_extract_passthrough(env_val, &key) {

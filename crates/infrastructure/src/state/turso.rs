@@ -92,18 +92,18 @@ impl TursoStateStore {
     /// URLs (plaintext `http://` or `ws://` to a non-loopback host, a missing
     /// host, or embedded credentials) and [`InfrastructureError::State`] if the
     /// HTTP client cannot be built.
-    pub fn new(configuration: TursoConfiguration) -> Result<Self> {
+    pub fn try_new(configuration: TursoConfiguration) -> Result<Self> {
         Self::with_timeout(configuration, REQUEST_TIMEOUT)
     }
 
-    /// Check a database URL against the same rules as [`Self::new`] without
+    /// Check a database URL against the same rules as [`Self::try_new`] without
     /// creating a store: nothing is sent, and no HTTP client is built, so the
     /// check works where the platform has no root certificates to load.
     ///
     /// # Errors
     ///
     /// Returns [`InfrastructureError::Configuration`] for the URLs
-    /// [`Self::new`] refuses.
+    /// [`Self::try_new`] refuses.
     pub fn validate_url(url: &str) -> Result<()> {
         pipeline_url(url).map(drop)
     }

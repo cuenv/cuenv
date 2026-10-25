@@ -28,7 +28,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 ///
 /// Constructed *before* `enable_raw_mode` runs so its `Drop` is on the
 /// stack the moment raw mode is enabled — any panic between enabling raw
-/// mode and finishing `RichTui::new` still restores the terminal cleanly.
+/// mode and finishing `RichTui::try_new` still restores the terminal cleanly.
 /// Errors during cleanup are logged but cannot be propagated.
 struct TerminalGuard {
     raw_enabled: bool,
@@ -107,7 +107,7 @@ impl RichTui {
     /// # Errors
     ///
     /// Returns an error if terminal initialization fails.
-    pub fn new(event_rx: EventReceiver, ready_tx: oneshot::Sender<()>) -> io::Result<Self> {
+    pub fn try_new(event_rx: EventReceiver, ready_tx: oneshot::Sender<()>) -> io::Result<Self> {
         let mut guard = TerminalGuard::new();
         guard.enable_raw()?;
         let stdout = io::stdout();

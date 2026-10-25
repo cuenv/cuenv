@@ -45,6 +45,7 @@ use thiserror::Error;
 
 /// Errors that can occur during code generation
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum CodegenError {
     /// Error loading or evaluating CUE codegen configuration
     #[error("Codegen error: {0}")]

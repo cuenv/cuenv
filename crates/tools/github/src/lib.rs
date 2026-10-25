@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::http::ensure_rustls_crypto_provider;
+use cuenv_secrets::http::client_builder;
 use cuenv_tool_archive as archive;
 use cuenv_tool_runtime::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
@@ -16,7 +17,6 @@ use cuenv_tool_runtime::{
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
 /// Map archive extraction errors into core tool-resolution errors.
@@ -135,31 +135,9 @@ impl GitHubToolProvider {
     fn build_client() -> std::result::Result<Client, String> {
         ensure_rustls_crypto_provider();
 
-        let primary = catch_unwind(AssertUnwindSafe(|| {
-            Client::builder().user_agent("cuenv").build()
-        }));
-
-        match primary {
-            Ok(Ok(client)) => Ok(client),
-            Ok(Err(primary_err)) => Client::builder()
-                .user_agent("cuenv")
-                .no_proxy()
-                .build()
-                .map_err(|fallback_err| {
-                    format!(
-                        "Failed to create GitHub HTTP client: primary={primary_err}; fallback={fallback_err}"
-                    )
-                }),
-            Err(_) => Client::builder()
-                .user_agent("cuenv")
-                .no_proxy()
-                .build()
-                .map_err(|fallback_err| {
-                    format!(
-                        "Failed to create GitHub HTTP client after system proxy discovery panicked: fallback={fallback_err}"
-                    )
-                }),
-        }
+        client_builder()
+            .build()
+            .map_err(|err| format!("Failed to create GitHub HTTP client: {err}"))
     }
 
     fn client(&self) -> Result<&Client> {

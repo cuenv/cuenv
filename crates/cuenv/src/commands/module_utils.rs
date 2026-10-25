@@ -116,6 +116,7 @@ pub fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core::Error 
         }
         cuengine::CueEngineError::Validation { message } => cuenv_core::Error::validation(message),
         cuengine::CueEngineError::Cache { message } => cuenv_core::Error::configuration(message),
+        other => cuenv_core::Error::configuration(other.to_string()),
     }
 }
 

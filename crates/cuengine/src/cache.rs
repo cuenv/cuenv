@@ -32,7 +32,7 @@ impl EvaluationCache {
     /// # Errors
     ///
     /// Returns an error if capacity is 0
-    pub fn new(capacity: usize, ttl: Duration) -> Result<Self> {
+    pub fn try_new(capacity: usize, ttl: Duration) -> Result<Self> {
         let capacity = NonZeroUsize::new(capacity)
             .ok_or_else(|| CueEngineError::cache("Cache capacity must be non-zero"))?;
 
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn test_cache_new_zero_capacity_error() {
-        let result = EvaluationCache::new(0, Duration::from_secs(60));
+        let result = EvaluationCache::try_new(0, Duration::from_secs(60));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("non-zero"));
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_cache_basic_operations() {
-        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        let cache = EvaluationCache::try_new(10, Duration::from_secs(60)).unwrap();
         let path = Path::new("/test");
 
         // Test insertion and retrieval
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_cache_is_empty() {
-        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        let cache = EvaluationCache::try_new(10, Duration::from_secs(60)).unwrap();
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
 
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_cache_clear() {
-        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        let cache = EvaluationCache::try_new(10, Duration::from_secs(60)).unwrap();
         cache.insert(Path::new("/test1"), "pkg1", "value1".to_string());
         cache.insert(Path::new("/test2"), "pkg2", "value2".to_string());
         assert_eq!(cache.len(), 2);
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn test_cache_expiration() {
-        let cache = EvaluationCache::new(10, Duration::from_millis(100)).unwrap();
+        let cache = EvaluationCache::try_new(10, Duration::from_millis(100)).unwrap();
         let path = Path::new("/test");
 
         cache.insert(path, "pkg", "result".to_string());
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_cache_lru_eviction() {
-        let cache = EvaluationCache::new(2, Duration::from_secs(60)).unwrap();
+        let cache = EvaluationCache::try_new(2, Duration::from_secs(60)).unwrap();
 
         cache.insert(Path::new("/test1"), "pkg", "result1".to_string());
         cache.insert(Path::new("/test2"), "pkg", "result2".to_string());
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_cache_different_paths_same_package() {
-        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        let cache = EvaluationCache::try_new(10, Duration::from_secs(60)).unwrap();
         cache.insert(Path::new("/path1"), "pkg", "value1".to_string());
         cache.insert(Path::new("/path2"), "pkg", "value2".to_string());
 
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn test_cache_same_path_different_packages() {
-        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        let cache = EvaluationCache::try_new(10, Duration::from_secs(60)).unwrap();
         let path = Path::new("/test");
         cache.insert(path, "pkg1", "value1".to_string());
         cache.insert(path, "pkg2", "value2".to_string());
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_cache_update_existing_entry() {
-        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        let cache = EvaluationCache::try_new(10, Duration::from_secs(60)).unwrap();
         let path = Path::new("/test");
 
         cache.insert(path, "pkg", "old_value".to_string());

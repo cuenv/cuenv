@@ -6,6 +6,7 @@ use thiserror::Error;
 
 /// Errors produced while resolving or hashing input files.
 #[derive(Error, Debug, Diagnostic)]
+#[non_exhaustive]
 pub enum Error {
     /// An I/O operation failed.
     #[error("I/O {operation} failed{}", path.as_ref().map_or(String::new(), |p| format!(": {}", p.display())))]

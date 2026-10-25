@@ -276,8 +276,8 @@ mod tests {
     #[tokio::test]
     async fn rows_are_isolated_per_tenant() {
         let store = MemoryStateStore::new();
-        let web = TenantKey::new("example.com/a", "web").unwrap();
-        let api = TenantKey::new("example.com/a", "api").unwrap();
+        let web = TenantKey::try_new("example.com/a", "web").unwrap();
+        let api = TenantKey::try_new("example.com/a", "api").unwrap();
         let lock = store.lock(&web, "test").await.unwrap();
         store.put(&web, &lock, &resource("one")).await.unwrap();
         assert_eq!(store.list(&web).await.unwrap().len(), 1);
@@ -292,11 +292,11 @@ mod tests {
     #[tokio::test]
     async fn named_environments_isolate_resources_locks_owners_and_conditional_writes() {
         let store = MemoryStateStore::new();
-        let legacy = TenantKey::new("example.com/a", "web").unwrap();
+        let legacy = TenantKey::try_new("example.com/a", "web").unwrap();
         let dev = TenantKey::with_environment("example.com/a", "web", "Dev").unwrap();
         let staging = TenantKey::with_environment("example.com/a", "web", "Staging").unwrap();
-        let root = ProjectInstance::new(".", "web").unwrap();
-        let copy = ProjectInstance::new("copy", "web").unwrap();
+        let root = ProjectInstance::try_new(".", "web").unwrap();
+        let copy = ProjectInstance::try_new("copy", "web").unwrap();
         let legacy_lock = store.lock(&legacy, "legacy").await.unwrap();
         let dev_lock = store.lock(&dev, "dev").await.unwrap();
         let staging_lock = store.lock(&staging, "staging").await.unwrap();
@@ -370,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn writes_require_the_current_lock() {
         let store = MemoryStateStore::new();
-        let tenant = TenantKey::new("example.com/a", "web").unwrap();
+        let tenant = TenantKey::try_new("example.com/a", "web").unwrap();
         let first = store.lock(&tenant, "first").await.unwrap();
         assert!(
             store
@@ -389,7 +389,7 @@ mod tests {
     #[tokio::test]
     async fn lock_is_exclusive_and_force_unlock_needs_the_identifier() {
         let store = MemoryStateStore::new();
-        let tenant = TenantKey::new("example.com/a", "web").unwrap();
+        let tenant = TenantKey::try_new("example.com/a", "web").unwrap();
         let lock = store.lock(&tenant, "first").await.unwrap();
         assert!(matches!(
             store.lock(&tenant, "second").await,
@@ -408,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn caller_chosen_lock_identifiers_are_used_and_checked() {
         let store = MemoryStateStore::new();
-        let tenant = TenantKey::new("example.com/a", "web").unwrap();
+        let tenant = TenantKey::try_new("example.com/a", "web").unwrap();
         let chosen = StateLock::generate();
         let acquired = store
             .acquire_lock(
@@ -436,7 +436,7 @@ mod tests {
         assert!(
             store
                 .acquire_lock(
-                    &TenantKey::new("example.com/b", "web").unwrap(),
+                    &TenantKey::try_new("example.com/b", "web").unwrap(),
                     &LockRequest {
                         lock: &invalid,
                         holder: "test",
@@ -450,7 +450,7 @@ mod tests {
     #[tokio::test]
     async fn serials_advance_and_conditional_writes_compare_them() {
         let store = MemoryStateStore::new();
-        let tenant = TenantKey::new("example.com/a", "web").unwrap();
+        let tenant = TenantKey::try_new("example.com/a", "web").unwrap();
         let lock = store.lock(&tenant, "test").await.unwrap();
         let record = resource("one");
         store
@@ -505,9 +505,9 @@ mod tests {
     #[tokio::test]
     async fn owners_are_claimed_once_and_transferred_explicitly_under_the_lock() {
         let store = MemoryStateStore::new();
-        let tenant = TenantKey::new("example.com/a", "web").unwrap();
-        let root = ProjectInstance::new(".", "web").unwrap();
-        let copy = ProjectInstance::new("_copy", "web").unwrap();
+        let tenant = TenantKey::try_new("example.com/a", "web").unwrap();
+        let root = ProjectInstance::try_new(".", "web").unwrap();
+        let copy = ProjectInstance::try_new("_copy", "web").unwrap();
         assert!(store.owner(&tenant).await.unwrap().is_none());
         let not_held = StateLock::generate();
         assert!(matches!(
@@ -546,7 +546,7 @@ mod tests {
     #[tokio::test]
     async fn locks_lists_every_tenant_and_addresses_reads_keys() {
         let store = MemoryStateStore::new();
-        let api = TenantKey::new("example.com/app", "api").unwrap();
+        let api = TenantKey::try_new("example.com/app", "api").unwrap();
         let dev = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
         let api_lock = store.lock(&api, "first").await.unwrap();
         let dev_lock = store.lock(&dev, "second").await.unwrap();

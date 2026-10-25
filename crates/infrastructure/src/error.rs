@@ -11,6 +11,7 @@ pub type Result<Success> = std::result::Result<Success, InfrastructureError>;
 
 /// Errors raised while planning or applying infrastructure.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum InfrastructureError {
     /// Invalid `infrastructure` configuration.
     #[error("infrastructure configuration error: {0}")]

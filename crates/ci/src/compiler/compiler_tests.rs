@@ -1,11 +1,11 @@
 use super::*;
-use crate::ir::{BuildStage, TaskCondition};
+use crate::ir::{BuildStage, CachePolicy, PurityMode, TaskCondition};
 use cuenv_core::ci::{
     ActivationCondition, CI, Contributor, ContributorTask, Pipeline, PipelineCondition,
     PipelineMode, PipelineTask, SecretRef, StringOrVec, TaskCondition as CueTaskCondition, TaskRef,
 };
-use cuenv_core::tasks::{Input, Task, TaskDependency, TaskNode};
-use std::collections::HashMap;
+use cuenv_core::tasks::{Input, Task, TaskDependency, TaskGroup, TaskNode};
+use std::collections::{BTreeMap, HashMap};
 
 fn test_compiler() -> Compiler {
     Compiler::new(Project::new("test-project"))

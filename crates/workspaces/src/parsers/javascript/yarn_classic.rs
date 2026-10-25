@@ -2,12 +2,13 @@ use crate::core::traits::LockfileParser;
 use crate::core::types::{DependencyRef, DependencySource, LockfileEntry};
 use crate::error::{Error, Result};
 use std::fs;
-use std::panic;
 use std::path::{Path, PathBuf};
 
-type LockfileDetail = (Option<String>, Option<String>, Vec<DependencyRef>);
-
 /// Parser for Yarn Classic (v1.x) `yarn.lock` files.
+///
+/// The format is parsed line by line by a small, infallible state machine.
+/// Unrecognised lines are skipped and entries without a version are dropped,
+/// so malformed input degrades to fewer entries instead of an error or panic.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct YarnClassicLockfileParser;
 
@@ -19,51 +20,7 @@ impl LockfileParser for YarnClassicLockfileParser {
             operation: "reading yarn.lock".to_string(),
         })?;
 
-        // Try to use yarn_lock_parser for name and version extraction.
-        // If it fails (which can happen on some valid yarn.lock files), fall back to manual parsing.
-        // Note: yarn_lock_parser only provides name and version, not resolved/integrity/dependencies.
-        // We use catch_unwind because yarn_lock_parser can panic on some valid lockfiles.
-        let parsed_lockfile = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            yarn_lock_parser::parse_str(&contents)
-        }))
-        .ok()
-        .and_then(
-            |r: std::result::Result<
-                yarn_lock_parser::Lockfile<'_>,
-                yarn_lock_parser::YarnLockError,
-            >| r.ok(),
-        );
-
-        let entries = if let Some(lockfile) = parsed_lockfile {
-            let parsed_entries = lockfile.entries;
-            let detailed_entries = parse_lockfile_details(&contents);
-            let mut result = Vec::new();
-
-            for (i, basic_entry) in parsed_entries.iter().enumerate() {
-                let name = basic_entry.name.to_string();
-                let version = basic_entry.version.to_string();
-
-                let (resolved, integrity, dependencies) = detailed_entries.get(i).map_or_else(
-                    || (None, None, Vec::new()),
-                    |(r, i, d): &LockfileDetail| (r.clone(), i.clone(), d.clone()),
-                );
-
-                result.push(build_lockfile_entry(
-                    name,
-                    version,
-                    resolved,
-                    integrity,
-                    dependencies,
-                ));
-            }
-
-            result
-        } else {
-            // Fall back to fully manual parsing if yarn_lock_parser fails or panics
-            parse_yarn_lockfile_fully(&contents, lockfile_path)
-        };
-
-        Ok(entries)
+        Ok(parse_yarn_lockfile(&contents))
     }
 
     fn supports_lockfile(&self, path: &Path) -> bool {
@@ -123,200 +80,153 @@ impl LockfileParser for YarnClassicLockfileParser {
     }
 }
 
-/// Build a `LockfileEntry` from parsed components
-fn build_lockfile_entry(
+/// Parse the contents of a Yarn Classic lockfile into entries.
+fn parse_yarn_lockfile(contents: &str) -> Vec<LockfileEntry> {
+    contents
+        .lines()
+        .fold(YarnClassicParser::default(), |mut parser, line| {
+            parser.parse_line(line);
+            parser
+        })
+        .finish()
+}
+
+/// Entry currently being accumulated by [`YarnClassicParser`].
+#[derive(Default)]
+struct PendingEntry {
     name: String,
-    version: String,
+    version: Option<String>,
     resolved: Option<String>,
     integrity: Option<String>,
     dependencies: Vec<DependencyRef>,
-) -> LockfileEntry {
-    let source = match resolved {
-        Some(resolved_url)
-            if resolved_url.starts_with("git+") || resolved_url.contains("://github.com/") =>
-        {
-            DependencySource::Git(resolved_url)
-        }
-        Some(resolved_url) if resolved_url.starts_with("file:") => {
-            DependencySource::Path(PathBuf::from(resolved_url.trim_start_matches("file:")))
-        }
-        Some(resolved_url) => DependencySource::Registry(resolved_url),
-        None => DependencySource::Registry(format!("npm:{name}")),
-    };
+}
 
-    LockfileEntry {
-        name,
-        version,
-        source,
-        checksum: integrity,
-        dependencies,
-        is_workspace_member: false,
+impl PendingEntry {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            ..Self::default()
+        }
+    }
+
+    /// Convert into a [`LockfileEntry`], dropping entries that never declared a version.
+    fn into_lockfile_entry(self) -> Option<LockfileEntry> {
+        let version = self.version?;
+        let source = dependency_source(self.resolved, &self.name);
+        Some(LockfileEntry {
+            name: self.name,
+            version: version.into(),
+            source,
+            checksum: self.integrity,
+            dependencies: self.dependencies,
+            is_workspace_member: false,
+        })
     }
 }
 
-/// Parse additional details from Yarn Classic lockfile that `yarn_lock_parser` doesn't provide.
-/// Returns a vector of (`resolved_url`, `integrity`, `dependencies`) in the same order as entries appear.
-fn parse_lockfile_details(contents: &str) -> Vec<LockfileDetail> {
-    let mut details = Vec::new();
-    let mut current_resolved: Option<String> = None;
-    let mut current_integrity: Option<String> = None;
-    let mut current_dependencies = Vec::new();
-    let mut in_entry = false;
-
-    for line in contents.lines() {
-        let trimmed = line.trim();
-
-        // Skip comments and empty lines
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Check if this is a package header (no leading whitespace)
-        if !line.starts_with(' ') && !line.starts_with('\t') {
-            // Save the previous entry if exists
-            if in_entry {
-                details.push((
-                    current_resolved.take(),
-                    current_integrity.take(),
-                    std::mem::take(&mut current_dependencies),
-                ));
-            }
-            in_entry = true;
-        } else if in_entry {
-            // Parse entry properties
-            if let Some(resolved) = trimmed.strip_prefix("resolved ") {
-                current_resolved = Some(resolved.trim_matches('"').to_string());
-            } else if let Some(integrity) = trimmed.strip_prefix("integrity ") {
-                current_integrity = Some(integrity.trim_matches('"').to_string());
-            } else if trimmed.starts_with("dependencies:")
-                || trimmed.starts_with("optionalDependencies:")
-            {
-                // Dependencies section marker - will be parsed in next lines
-            } else if trimmed.contains(' ')
-                && !trimmed.starts_with('"')
-                && !trimmed.starts_with("version ")
-            {
-                // Dependency line: name "version"
-                let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
-                if parts.len() == 2 {
-                    let dep_name = parts[0].trim();
-                    let dep_version = parts[1].trim_matches('"');
-                    if !dep_name.is_empty() && !dep_version.is_empty() {
-                        current_dependencies.push(DependencyRef {
-                            name: dep_name.to_string(),
-                            version_req: dep_version.to_string(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // Save the last entry
-    if in_entry {
-        details.push((current_resolved, current_integrity, current_dependencies));
-    }
-
-    details
-}
-
-/// Fully manual parser for Yarn Classic lockfiles (used as fallback when `yarn_lock_parser` fails).
-/// This parses everything including name, version, resolved, integrity, and dependencies.
-fn parse_yarn_lockfile_fully(contents: &str, _lockfile_path: &Path) -> Vec<LockfileEntry> {
-    let mut parser = YarnClassicFallbackParser::default();
-    for line in contents.lines() {
-        parser.parse_line(line);
-    }
-    parser.finish()
+/// Which nested block of an entry the parser is inside.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    /// Directly under the entry header (`version`, `resolved`, ...).
+    #[default]
+    Properties,
+    /// Inside `dependencies:` or `optionalDependencies:`.
+    Dependencies,
+    /// Inside any other nested block (for example `peerDependenciesMeta:`), which is ignored.
+    Ignored,
 }
 
 #[derive(Default)]
-struct YarnClassicFallbackParser {
+struct YarnClassicParser {
     entries: Vec<LockfileEntry>,
-    current_name: Option<String>,
-    current_version: Option<String>,
-    current_resolved: Option<String>,
-    current_integrity: Option<String>,
-    current_dependencies: Vec<DependencyRef>,
-    in_entry: bool,
+    current: Option<PendingEntry>,
+    section: Section,
+    /// Indentation of the nested block's key line, used to detect when the block ends.
+    section_indent: usize,
 }
 
-impl YarnClassicFallbackParser {
+impl YarnClassicParser {
     fn parse_line(&mut self, line: &str) {
         let trimmed = line.trim();
-
         if trimmed.is_empty() || trimmed.starts_with('#') {
             return;
         }
 
-        if is_entry_header(line) {
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 {
             self.start_entry(trimmed);
-        } else if self.in_entry {
-            self.parse_entry_property(trimmed);
+            return;
+        }
+
+        if self.current.is_none() {
+            return;
+        }
+
+        if self.section != Section::Properties && indent <= self.section_indent {
+            self.section = Section::Properties;
+        }
+
+        match self.section {
+            Section::Properties => self.parse_property(trimmed, indent),
+            Section::Dependencies => self.push_dependency(trimmed),
+            Section::Ignored => {}
         }
     }
 
     fn start_entry(&mut self, header: &str) {
         self.finish_current_entry();
-        self.current_name = Some(package_name_from_descriptor(header));
-        self.in_entry = true;
+        self.section = Section::Properties;
+        self.current = header
+            .strip_suffix(':')
+            .and_then(package_name_from_descriptor)
+            .map(PendingEntry::new);
     }
 
-    fn parse_entry_property(&mut self, trimmed: &str) {
-        if let Some(version) = trimmed.strip_prefix("version ") {
-            self.current_version = Some(version.trim_matches('"').to_string());
-        } else if let Some(resolved) = trimmed.strip_prefix("resolved ") {
-            self.current_resolved = Some(resolved.trim_matches('"').to_string());
-        } else if let Some(integrity) = trimmed.strip_prefix("integrity ") {
-            self.current_integrity = Some(integrity.trim_matches('"').to_string());
-        } else if is_dependency_line(trimmed) {
-            self.push_dependency(trimmed);
+    fn parse_property(&mut self, trimmed: &str, indent: usize) {
+        if let Some(block) = trimmed.strip_suffix(':') {
+            self.section = match block.trim_matches('"') {
+                "dependencies" | "optionalDependencies" => Section::Dependencies,
+                _ => Section::Ignored,
+            };
+            self.section_indent = indent;
+            return;
+        }
+
+        let Some(current) = self.current.as_mut() else {
+            return;
+        };
+        let Some((key, value)) = split_key_value(trimmed) else {
+            return;
+        };
+        let value = Some(value.to_string());
+        match key {
+            "version" => current.version = value,
+            "resolved" => current.resolved = value,
+            "integrity" => current.integrity = value,
+            _ => {}
         }
     }
 
     fn push_dependency(&mut self, trimmed: &str) {
-        let Some((dep_name, dep_version)) = trimmed.split_once(' ') else {
+        let Some(current) = self.current.as_mut() else {
             return;
         };
-
-        let dep_name = dep_name.trim();
-        let dep_version = dep_version.trim_matches('"');
-        if dep_name.is_empty() || dep_version.is_empty() {
-            return;
+        if let Some((name, version_req)) = split_key_value(trimmed) {
+            current.dependencies.push(DependencyRef {
+                name: name.to_string(),
+                version_req: version_req.to_string(),
+            });
         }
-
-        self.current_dependencies.push(DependencyRef {
-            name: dep_name.to_string(),
-            version_req: dep_version.to_string(),
-        });
     }
 
     fn finish_current_entry(&mut self) {
-        if !self.in_entry {
-            return;
+        if let Some(entry) = self
+            .current
+            .take()
+            .and_then(PendingEntry::into_lockfile_entry)
+        {
+            self.entries.push(entry);
         }
-
-        let (Some(name), Some(version)) = (self.current_name.take(), self.current_version.take())
-        else {
-            self.reset_current_entry();
-            return;
-        };
-
-        self.entries.push(build_lockfile_entry(
-            name,
-            version,
-            self.current_resolved.take(),
-            self.current_integrity.take(),
-            std::mem::take(&mut self.current_dependencies),
-        ));
-    }
-
-    fn reset_current_entry(&mut self) {
-        self.current_name = None;
-        self.current_version = None;
-        self.current_resolved = None;
-        self.current_integrity = None;
-        self.current_dependencies.clear();
     }
 
     fn finish(mut self) -> Vec<LockfileEntry> {
@@ -325,33 +235,43 @@ impl YarnClassicFallbackParser {
     }
 }
 
-fn is_entry_header(line: &str) -> bool {
-    !line.starts_with(' ') && !line.starts_with('\t')
+/// Split a `key value` line where either side may be double-quoted.
+///
+/// Returns `None` when the line has no value or either side is empty.
+fn split_key_value(trimmed: &str) -> Option<(&str, &str)> {
+    let (key, rest) = match trimmed.strip_prefix('"') {
+        Some(quoted) => quoted.split_once('"')?,
+        None => trimmed.split_once(char::is_whitespace)?,
+    };
+    let value = rest.trim().trim_matches('"');
+    (!key.is_empty() && !value.is_empty()).then_some((key, value))
 }
 
-fn is_dependency_line(trimmed: &str) -> bool {
-    trimmed.contains(' ')
-        && !trimmed.starts_with('"')
-        && !trimmed.starts_with("dependencies:")
-        && !trimmed.starts_with("optionalDependencies:")
-}
-
-fn package_name_from_descriptor(header: &str) -> String {
-    let descriptor = header.trim_end_matches(':').trim_matches('"');
-    let first_descriptor = descriptor.split(',').next().unwrap_or(descriptor).trim();
-
-    if let Some(rest) = first_descriptor.strip_prefix('@') {
-        return rest.find('@').map_or_else(
-            || first_descriptor.to_string(),
-            |second_at| format!("@{}", &rest[..second_at]),
-        );
+/// Derive the dependency source from the `resolved` URL.
+fn dependency_source(resolved: Option<String>, name: &str) -> DependencySource {
+    match resolved {
+        Some(url) if url.starts_with("git+") || url.contains("://github.com/") => {
+            DependencySource::Git(url)
+        }
+        Some(url) if url.starts_with("file:") => {
+            DependencySource::Path(PathBuf::from(url.trim_start_matches("file:")))
+        }
+        Some(url) => DependencySource::Registry(url),
+        None => DependencySource::Registry(format!("npm:{name}")),
     }
+}
 
-    first_descriptor
-        .split('@')
-        .next()
-        .unwrap_or(first_descriptor)
-        .to_string()
+/// Extract the package name from an entry header such as
+/// `"@babel/core@^7.0.0", "@babel/core@^7.22.0"` or `left-pad@^1.3.0`.
+fn package_name_from_descriptor(header: &str) -> Option<String> {
+    let first = header.split(',').next()?.trim().trim_matches('"');
+    let name = match first.strip_prefix('@') {
+        Some(rest) => rest
+            .find('@')
+            .map_or(first, |second_at| &first[..=second_at]),
+        None => first.split('@').next().unwrap_or(first),
+    };
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 #[cfg(test)]
@@ -463,5 +383,163 @@ repeat-string@^1.0.0:
         let parser = YarnClassicLockfileParser;
         assert!(parser.supports_lockfile(Path::new("/tmp/yarn.lock")));
         assert!(!parser.supports_lockfile(Path::new("package-lock.json")));
+    }
+
+    fn entry<'a>(entries: &'a [LockfileEntry], name: &str) -> &'a LockfileEntry {
+        entries
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing entry {name}"))
+    }
+
+    #[test]
+    fn parses_lockfile_without_v1_header() {
+        // `yarn_lock_parser` 0.12 required `# yarn lockfile v1` on exactly the
+        // second line and rejected anything else, which sent these lockfiles
+        // down the old fallback path. The parser must handle them directly.
+        let yarn_lock = r#"lodash@^4.17.21:
+  version "4.17.21"
+  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"
+  integrity sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==
+"#;
+
+        let entries = parse_yarn_lockfile(yarn_lock);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entry(&entries, "lodash").version, "4.17.21");
+    }
+
+    /// Lines of a realistic Yarn 1.22 lockfile, joined with CRLF by the test.
+    const REALISTIC_YARN_V1_LINES: &[&str] = &[
+        "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.",
+        "# yarn lockfile v1",
+        "",
+        "",
+        "\"@babel/code-frame@^7.0.0\", \"@babel/code-frame@^7.22.5\":",
+        "  version \"7.22.5\"",
+        "  resolved \"https://registry.yarnpkg.com/@babel/code-frame/-/code-frame-7.22.5.tgz#234d98e1551960604f1246e6475891a570ad5658\"",
+        "  integrity sha512-Xmwn266vad+6DAqEB2A6V/CcZVp62BbwVmcOJc2RPuwih1kw02TjQvWVWlcKGbBPd+8/0V5DEkOcizRGYsspYQ==",
+        "  dependencies:",
+        "    \"@babel/highlight\" \"^7.22.5\"",
+        "",
+        "chokidar@^3.5.3:",
+        "  version \"3.5.3\"",
+        "  resolved \"https://registry.yarnpkg.com/chokidar/-/chokidar-3.5.3.tgz\"",
+        "  dependencies:",
+        "    anymatch \"~3.1.2\"",
+        "    glob-parent \"~5.1.2\"",
+        "  optionalDependencies:",
+        "    fsevents \"~2.3.2\"",
+        "",
+        "\"string-width-cjs@npm:string-width@^4.2.0\":",
+        "  version \"4.2.3\"",
+        "  resolved \"https://registry.yarnpkg.com/string-width/-/string-width-4.2.3.tgz\"",
+        "",
+        "\"my-fork@git+https://github.com/acme/my-fork.git#abc123\":",
+        "  version \"1.0.0\"",
+        "  resolved \"git+https://github.com/acme/my-fork.git#abc123\"",
+        "",
+        "\"local-pkg@file:./packages/local\":",
+        "  version \"0.0.1\"",
+        "  resolved \"file:./packages/local\"",
+        "",
+    ];
+
+    /// Realistic Yarn 1.22 output: quoted scoped dependency names,
+    /// `optionalDependencies`, alias descriptors, git and file sources, and
+    /// CRLF line endings.
+    #[test]
+    fn parses_realistic_yarn_v1_lockfile() {
+        let yarn_lock = REALISTIC_YARN_V1_LINES.join("\r\n");
+
+        let entries = parse_yarn_lockfile(&yarn_lock);
+        assert_eq!(entries.len(), 5);
+
+        let code_frame = entry(&entries, "@babel/code-frame");
+        assert_eq!(code_frame.version, "7.22.5");
+        assert!(
+            code_frame
+                .checksum
+                .as_deref()
+                .is_some_and(|c| c.starts_with("sha512-"))
+        );
+        assert_eq!(code_frame.dependencies.len(), 1);
+        assert_eq!(code_frame.dependencies[0].name, "@babel/highlight");
+        assert_eq!(code_frame.dependencies[0].version_req, "^7.22.5");
+
+        let chokidar = entry(&entries, "chokidar");
+        let deps: Vec<(&str, &str)> = chokidar
+            .dependencies
+            .iter()
+            .map(|d| (d.name.as_str(), d.version_req.as_str()))
+            .collect();
+        assert_eq!(
+            deps,
+            [
+                ("anymatch", "~3.1.2"),
+                ("glob-parent", "~5.1.2"),
+                ("fsevents", "~2.3.2")
+            ]
+        );
+        assert!(chokidar.checksum.is_none());
+
+        assert_eq!(entry(&entries, "string-width-cjs").version, "4.2.3");
+        assert!(matches!(
+            entry(&entries, "my-fork").source,
+            DependencySource::Git(_)
+        ));
+        assert_eq!(
+            entry(&entries, "local-pkg").source,
+            DependencySource::Path(PathBuf::from("./packages/local"))
+        );
+    }
+
+    #[test]
+    fn ignores_unknown_nested_blocks_and_entries_without_version() {
+        let yarn_lock = r#"
+broken@^1.0.0:
+  resolved "https://example.com/broken.tgz"
+
+pkg@^1.0.0:
+  version "1.0.0"
+  peerDependenciesMeta:
+    typescript:
+      optional true
+  dependencies:
+    dep "^2.0.0"
+  integrity sha512-after-nested
+"#;
+
+        let entries = parse_yarn_lockfile(yarn_lock);
+        assert_eq!(entries.len(), 1);
+        let pkg = entry(&entries, "pkg");
+        assert_eq!(pkg.dependencies.len(), 1);
+        assert_eq!(pkg.dependencies[0].name, "dep");
+        assert_eq!(pkg.checksum.as_deref(), Some("sha512-after-nested"));
+    }
+
+    /// Malformed input must never panic (release builds use `panic = "abort"`).
+    #[test]
+    fn malformed_input_never_panics() {
+        let samples = [
+            "",
+            ":",
+            "\"",
+            "@:",
+            "@@@:\n  version",
+            "\"unterminated:\n  \"dep\n  version \"\"",
+            "pkg@1:\n  dependencies:\n    \"\" \"1\"\n    lonely\n",
+            "  version \"1.0.0\"\n",
+            "\u{feff}pkg@1:\n\tversion \"1\"\n",
+            "pkg@1:\n  version \"1\"\n  dependencies:\n",
+        ];
+
+        for sample in samples {
+            let _ = parse_yarn_lockfile(sample);
+        }
+
+        let realistic = "\"@a/b@^1\", \"@a/b@^1.1\":\n  version \"1.1.0\"\n  dependencies:\n    \"@c/d\" \"^2\"\n";
+        for end in (0..=realistic.len()).filter(|i| realistic.is_char_boundary(*i)) {
+            let _ = parse_yarn_lockfile(&realistic[..end]);
+        }
     }
 }

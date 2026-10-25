@@ -24,14 +24,14 @@ fn build_registry() -> SecretRegistry {
 
     #[cfg(feature = "1password")]
     register_or_stub(&mut registry, "onepassword", || {
-        cuenv_1password::secrets::OnePasswordResolver::new()
+        cuenv_1password::secrets::OnePasswordResolver::try_new()
             .map(|r| Arc::new(r) as Arc<dyn SecretResolver>)
             .map_err(|e| format!("Failed to initialize 1Password resolver: {e}"))
     });
 
     #[cfg(feature = "infisical")]
     register_or_stub(&mut registry, "infisical", || {
-        cuenv_infisical::secrets::InfisicalResolver::new()
+        cuenv_infisical::secrets::InfisicalResolver::try_new()
             .map(|r| Arc::new(r) as Arc<dyn SecretResolver>)
             .map_err(|e| format!("Failed to initialize Infisical resolver: {e}"))
     });
@@ -43,7 +43,7 @@ fn build_registry() -> SecretRegistry {
 
     #[cfg(feature = "gcp")]
     register_or_stub(&mut registry, "gcp", || {
-        cuenv_gcp::secrets::GcpSecretManagerResolver::new()
+        cuenv_gcp::secrets::GcpSecretManagerResolver::try_new()
             .map(|r| Arc::new(r) as Arc<dyn SecretResolver>)
             .map_err(|e| format!("Failed to initialize GCP resolver: {e}"))
     });

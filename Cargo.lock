@@ -1882,6 +1882,7 @@ version = "0.60.1"
 dependencies = [
  "async-trait",
  "cuenv-core",
+ "cuenv-secrets",
  "cuenv-tool-archive",
  "cuenv-tool-runtime",
  "reqwest 0.13.3",
@@ -1951,6 +1952,7 @@ version = "0.60.1"
 dependencies = [
  "async-trait",
  "cuenv-core",
+ "cuenv-secrets",
  "cuenv-tool-archive",
  "cuenv-tool-runtime",
  "reqwest 0.13.3",
@@ -1998,7 +2000,6 @@ dependencies = [
  "toml",
  "tracing",
  "walkdir",
- "yarn-lock-parser",
 ]
 
 [[package]]
@@ -5002,15 +5003,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "nom-language"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2de2bc5b451bfedaef92c90b8939a8fff5770bdcc1fafd6239d086aab8fa6b29"
-dependencies = [
- "nom 8.0.0",
 ]
 
 [[package]]
@@ -9493,17 +9485,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2"
 dependencies = [
  "lzma-sys",
-]
-
-[[package]]
-name = "yarn-lock-parser"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "154dadbfd1b72916d7081717f4a437ccbb1605104eedf586af8683b52d30d42d"
-dependencies = [
- "nom 8.0.0",
- "nom-language",
- "thiserror 2.0.18",
 ]
 
 [[package]]

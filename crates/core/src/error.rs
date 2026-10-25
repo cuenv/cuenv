@@ -67,6 +67,7 @@ impl ConfigError {
 /// CUE evaluation domain errors: FFI bridge failures, CUE parsing, and
 /// schema/config validation.
 #[derive(ThisError, Debug, Diagnostic)]
+#[non_exhaustive]
 pub enum EvalError {
     #[error("FFI operation failed in {function}: {message}")]
     #[diagnostic(code(cuenv::ffi::error))]
@@ -104,6 +105,7 @@ pub enum EvalError {
 
 /// I/O and text-encoding errors with operation context.
 #[derive(ThisError, Debug, Diagnostic)]
+// Intentionally exhaustive: `cuenv`'s `From<cuenv_core::Error> for CliError` matches every variant so a new one forces an explicit exit-code decision.
 pub enum IoError {
     #[error("I/O {operation} failed{}", path.as_ref().map_or(String::new(), |p| format!(": {}", p.display())))]
     #[diagnostic(
@@ -133,6 +135,7 @@ pub enum IoError {
 /// the per-domain errors. Display, diagnostic codes, help, and source spans
 /// are forwarded from the wrapped domain error.
 #[derive(ThisError, Debug, Diagnostic)]
+// Intentionally exhaustive: `cuenv`'s `From<cuenv_core::Error> for CliError` matches every variant so a new one forces an explicit exit-code decision.
 pub enum Error {
     #[error(transparent)]
     #[diagnostic(transparent)]

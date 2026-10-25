@@ -155,6 +155,7 @@ impl RulesDiscovery {
 
 /// Errors that can occur during rules discovery.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RulesDiscoveryError {
     /// Invalid path encountered.
     #[error("Invalid path: {0}")]

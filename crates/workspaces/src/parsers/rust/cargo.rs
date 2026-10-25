@@ -72,7 +72,7 @@ impl LockfileParser for CargoLockfileParser {
 
             entries.push(LockfileEntry {
                 name,
-                version,
+                version: version.into(),
                 source,
                 checksum,
                 dependencies,

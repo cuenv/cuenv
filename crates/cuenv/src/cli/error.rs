@@ -70,6 +70,7 @@ fn redacted(text: impl Into<String>) -> String {
 
 /// CLI-specific error types with proper exit code mapping
 #[derive(Error, Debug, Clone, Diagnostic)]
+#[non_exhaustive]
 pub enum CliError {
     /// CLI or configuration error (exit code 2)
     #[error("CLI/configuration error: {message}")]

@@ -117,7 +117,7 @@ fn probe_record() -> ManagedResource {
 async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     let migrations = migrations_with_a_probe();
     store.migrate().await?;
-    let tenant = TenantKey::new("example.com/migration", "web")?;
+    let tenant = TenantKey::try_new("example.com/migration", "web")?;
     let lock = store.lock(&tenant, "migration test").await?;
 
     // A run holds a lock: the migration refuses and changes nothing.
@@ -203,7 +203,7 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
 #[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL)"]
 async fn a_migration_refuses_while_any_lock_is_held() {
     let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL").unwrap();
-    let mut store = TursoStateStore::new(TursoConfiguration {
+    let mut store = TursoStateStore::try_new(TursoConfiguration {
         url,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })
@@ -458,7 +458,7 @@ fn rejected_url_components_are_never_echoed() {
 
 #[test]
 fn store_debug_redacts_token() {
-    let store = TursoStateStore::new(configuration("libsql://db.turso.io")).unwrap();
+    let store = TursoStateStore::try_new(configuration("libsql://db.turso.io")).unwrap();
     let rendered = format!("{store:?}");
     assert!(!rendered.contains("secret-token"), "{rendered}");
     assert!(rendered.contains("<redacted>"), "{rendered}");
@@ -951,7 +951,7 @@ fn row_to_resource_reads_tainted_and_identity() {
 async fn concurrent_migrations_converge() {
     let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL").unwrap();
     let store = Arc::new(
-        TursoStateStore::new(TursoConfiguration {
+        TursoStateStore::try_new(TursoConfiguration {
             url,
             authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
         })
@@ -979,7 +979,7 @@ async fn concurrent_migrations_converge() {
 #[ignore = "requires an otherwise unused libSQL database (CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL)"]
 async fn fresh_database_reads_and_newer_schema_against_a_server() {
     let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL").unwrap();
-    let store = TursoStateStore::new(TursoConfiguration {
+    let store = TursoStateStore::try_new(TursoConfiguration {
         url,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })
@@ -1104,7 +1104,7 @@ fn fast_store(url: &str, timeout: Duration) -> TursoStateStore {
 }
 
 fn tenant() -> TenantKey {
-    TenantKey::new("example.com/fake", "web").unwrap()
+    TenantKey::try_new("example.com/fake", "web").unwrap()
 }
 
 #[tokio::test]
@@ -1454,7 +1454,7 @@ async fn an_undecodable_record_is_its_own_error_naming_the_address() {
 
 #[test]
 fn the_no_flag_identity_and_named_environments_are_distinct_key_values() {
-    let none = TenantKey::new("example.com/app", "web").unwrap();
+    let none = TenantKey::try_new("example.com/app", "web").unwrap();
     let dev = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
     let staging = TenantKey::with_environment("example.com/app", "web", "Staging").unwrap();
     assert_eq!(
@@ -1534,7 +1534,7 @@ async fn every_state_statement_is_scoped_by_environment() {
                 .unwrap()
                 .is_none()
         );
-        let instance = ProjectInstance::new(".", "web").unwrap();
+        let instance = ProjectInstance::try_new(".", "web").unwrap();
         store
             .claim_owner(
                 &tenant,
@@ -1665,7 +1665,7 @@ async fn plaintext_loopback_requests_bypass_proxy_environment() {
 #[test]
 fn loopback_spellings_of_one_server_share_a_recovery_identity() {
     let identity = |url: &str| {
-        TursoStateStore::new(TursoConfiguration {
+        TursoStateStore::try_new(TursoConfiguration {
             url: url.to_string(),
             authentication_token: None,
         })
@@ -1982,7 +1982,7 @@ async fn addresses_are_read_from_the_key_columns_alone() {
 #[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL)"]
 async fn layouts_and_waiting_migrations_against_a_server() {
     let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL").unwrap();
-    let mut store = TursoStateStore::new(TursoConfiguration {
+    let mut store = TursoStateStore::try_new(TursoConfiguration {
         url,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })
@@ -2036,7 +2036,7 @@ async fn layout_scenario(store: &Arc<TursoStateStore>) -> Result<()> {
         tokio::spawn(async move { store.inner.migrate_to(&migrations_with_a_probe()).await })
     };
     tokio::time::sleep(Duration::from_millis(250)).await;
-    let other = TenantKey::new("example.com/fake", "api")?;
+    let other = TenantKey::try_new("example.com/fake", "api")?;
     let refused = store.lock(&other, "newcomer").await.unwrap_err();
     assert!(
         matches!(
