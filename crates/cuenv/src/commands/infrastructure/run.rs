@@ -122,7 +122,7 @@ pub(super) fn scoped_tenant(
         .unwrap_or_else(|| evaluated.project().to_string());
     match evaluated.environment() {
         Some(environment) => TenantKey::with_environment(module_path, project, environment),
-        None => TenantKey::new(module_path, project),
+        None => TenantKey::try_new(module_path, project),
     }
     .map_err(|error| failure(&error, invocation))
 }

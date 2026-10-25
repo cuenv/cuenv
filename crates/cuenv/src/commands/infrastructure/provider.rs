@@ -66,7 +66,7 @@ fn parse_release(release: &str) -> Result<(ProviderSource, String), CliError> {
 async fn add(module: &Module, release: &str) -> Result<(), CliError> {
     let (source, version) = parse_release(release)?;
     let mut lockfile = module.lockfile()?;
-    let installer = ProviderInstaller::new(default_cache_directory())
+    let installer = ProviderInstaller::try_new(default_cache_directory())
         .map_err(|error| infrastructure_error(&error))?;
     let platforms = installer
         .archive_checksums(&source, &version)

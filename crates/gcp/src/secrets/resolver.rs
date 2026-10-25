@@ -96,7 +96,7 @@ impl GcpSecretManagerResolver {
     /// # Errors
     ///
     /// Returns an error if the HTTP client cannot be initialized.
-    pub fn new() -> Result<Self, SecretError> {
+    pub fn try_new() -> Result<Self, SecretError> {
         Ok(Self {
             client: build_client("gcp")?,
         })
@@ -360,7 +360,7 @@ mod tests {
                 ("GOOGLE_APPLICATION_CREDENTIALS", None),
             ],
             async {
-                let resolver = GcpSecretManagerResolver::new()?;
+                let resolver = GcpSecretManagerResolver::try_new()?;
                 let config = GcpSecretConfig::new("project", "API_KEY");
                 let spec = SecretSpec::new(serde_json::to_string(&config)?);
                 Ok::<_, Box<dyn Error>>(resolver.resolve("API_KEY", &spec).await)
@@ -393,7 +393,7 @@ mod tests {
                 ("GOOGLE_APPLICATION_CREDENTIALS", None),
             ],
             async {
-                let resolver = GcpSecretManagerResolver::new()?;
+                let resolver = GcpSecretManagerResolver::try_new()?;
                 let mut config = GcpSecretConfig::new("project", "API_KEY");
                 config.api_url = Some(api_url);
                 let spec = SecretSpec::new(serde_json::to_string(&config)?);

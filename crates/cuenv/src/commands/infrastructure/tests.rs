@@ -224,7 +224,7 @@ fn a_unique_project_evaluates() {
     let target = evaluate(module.path(), NameCheck::WholeModule).unwrap();
     assert_eq!(
         target.tenant,
-        TenantKey::new("example.com/infrastructure", "app").unwrap()
+        TenantKey::try_new("example.com/infrastructure", "app").unwrap()
     );
     assert_eq!(target.instance.as_str(), "app:cuenv");
     assert_eq!(target.infrastructure.resources.len(), 1);
@@ -394,7 +394,7 @@ infrastructure: {
     assert!(target.infrastructure.environments.is_empty());
     assert_eq!(
         target.tenant,
-        TenantKey::new("example.com/infrastructure", "app").unwrap()
+        TenantKey::try_new("example.com/infrastructure", "app").unwrap()
     );
 }
 
@@ -800,7 +800,7 @@ impl Harness {
     fn new(format: OutputFormat, script: Script) -> Self {
         let counting = Arc::new(CountingStore::default());
         let store: Arc<dyn StateStore> = counting.clone();
-        let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
+        let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
         let output = Output::new(format);
         let (signals, receiver) = mpsc::unbounded_channel();
         let interrupts = Interrupts::watch(receiver, &output, Invocation::default());
@@ -813,7 +813,7 @@ impl Harness {
             counting,
             store: Arc::clone(&store),
             tenant: tenant.clone(),
-            instance: ProjectInstance::new("app", "cuenv").unwrap(),
+            instance: ProjectInstance::try_new("app", "cuenv").unwrap(),
             siblings: Siblings {
                 unselected_tenant: tenant.clone(),
                 declared_environments: Vec::new(),
@@ -1043,7 +1043,7 @@ async fn nothing_to_apply_asks_nothing() {
 #[tokio::test]
 async fn another_owner_is_refused_until_adopted() {
     let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
-    let other = ProjectInstance::new("_staging/app", "cuenv").unwrap();
+    let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
     harness.seed(&[], Some(&other)).await;
 
     for action in [
@@ -1093,7 +1093,7 @@ async fn state_remove_checks_the_owner_under_lock_until_adopted() {
                 TenantKey::with_environment("example.com/infrastructure", "app", environment)
                     .unwrap();
         }
-        let other = ProjectInstance::new("_staging/app", "cuenv").unwrap();
+        let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
         harness.seed(&["random_pet.pet"], Some(&other)).await;
         let before = harness.store.list(&harness.tenant).await.unwrap();
         let action = InfrastructureAction::State(StateAction::Remove {
@@ -1165,7 +1165,7 @@ async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
                 TenantKey::with_environment("example.com/infrastructure", "app", environment)
                     .unwrap();
         }
-        let other = ProjectInstance::new("_staging/app", "cuenv").unwrap();
+        let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
         harness.seed(&["random_pet.pet"], Some(&other)).await;
         let before = harness.store.list(&harness.tenant).await.unwrap();
         let mut saved = before[0].clone();
@@ -1557,7 +1557,7 @@ impl StateStore for UnreleasableStore {
 #[tokio::test(start_paused = true)]
 async fn release_does_not_wait_after_its_last_attempt() {
     let store = UnreleasableStore::default();
-    let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
     let started = tokio::time::Instant::now();
     assert!(
         release(&store, &tenant, &StateLock::generate())
@@ -1659,7 +1659,7 @@ async fn a_lock_that_was_taken_away_during_the_run_is_not_reported_as_released()
 #[test]
 fn the_release_notice_says_what_the_release_did() {
     let lock = StateLock::generate();
-    let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
     let released = super::lock::release_notice(&lock, &tenant, super::lock::Release::Released);
     assert!(released.starts_with("Released lock "), "{released}");
     assert!(released.contains(&lock.lock_identifier), "{released}");
@@ -2794,7 +2794,7 @@ fn json_results_carry_the_environment_in_its_own_field() {
     assert_eq!(payload["environment"], "dev");
 
     let output = Output::new(OutputFormat::Json);
-    let unselected = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    let unselected = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
     output.state(&unselected, &[]);
     let Finish::Report(Some(payload)) = output.finish() else {
         panic!("expected a result");

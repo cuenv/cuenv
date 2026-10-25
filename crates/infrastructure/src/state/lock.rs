@@ -133,7 +133,7 @@ impl TenantLock {
             Some(environment) => {
                 TenantKey::with_environment(&self.module_path, &self.project, environment)
             }
-            None => TenantKey::new(&self.module_path, &self.project),
+            None => TenantKey::try_new(&self.module_path, &self.project),
         }
     }
 }

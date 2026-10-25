@@ -203,7 +203,7 @@ pub(super) fn connect(
                     "warning: {absence}; connecting to Turso without an authentication token"
                 ));
             }
-            Ok(Arc::new(TursoStateStore::new(TursoConfiguration {
+            Ok(Arc::new(TursoStateStore::try_new(TursoConfiguration {
                 url: turso.url.clone(),
                 authentication_token: token,
             })?))
@@ -215,7 +215,7 @@ pub(super) fn connect(
                     "{absence}; D1 state needs a Cloudflare API token with D1 Edit access"
                 ))
             })?;
-            Ok(Arc::new(D1StateStore::new(D1Configuration {
+            Ok(Arc::new(D1StateStore::try_new(D1Configuration {
                 account_id: d1.account_id.clone(),
                 database_id: d1.database_id.clone(),
                 api_token,

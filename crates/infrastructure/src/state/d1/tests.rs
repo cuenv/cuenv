@@ -43,7 +43,7 @@ fn store_at(server: &FakeServer) -> D1StateStore {
 }
 
 fn tenant() -> TenantKey {
-    TenantKey::new("example.com/d1", "web").unwrap()
+    TenantKey::try_new("example.com/d1", "web").unwrap()
 }
 
 fn record(name: &str) -> ManagedResource {
@@ -397,8 +397,8 @@ async fn writes_are_fenced_by_the_lock_and_by_the_stored_version() {
     assert_eq!(current.serial, 2);
 
     // Ownership is claimed once and transferred explicitly.
-    let instance = ProjectInstance::new(".", "web").unwrap();
-    let copy = ProjectInstance::new("_copy", "web").unwrap();
+    let instance = ProjectInstance::try_new(".", "web").unwrap();
+    let copy = ProjectInstance::try_new("_copy", "web").unwrap();
     let claim = |instance, mode| OwnerClaim { instance, mode };
     let owner = store
         .claim_owner(
@@ -537,7 +537,7 @@ async fn recovery_identity_names_the_account_and_database() {
     assert_eq!(identity.len(), 64);
     assert!(!identity.contains(ACCOUNT) && !identity.contains(DATABASE));
     assert_eq!(store_at(&server).recovery_identity().unwrap(), identity);
-    let other = D1StateStore::new(D1Configuration {
+    let other = D1StateStore::try_new(D1Configuration {
         database_id: "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9".into(),
         ..configuration()
     })
@@ -569,7 +569,7 @@ fn identifiers_follow_cloudflare_forms() {
             "{account} {database}"
         );
     }
-    let error = D1StateStore::new(D1Configuration {
+    let error = D1StateStore::try_new(D1Configuration {
         api_token: String::new(),
         ..configuration()
     })
@@ -581,7 +581,7 @@ fn identifiers_follow_cloudflare_forms() {
 fn debug_output_redacts_the_token() {
     let rendered = format!("{:?}", configuration());
     assert!(!rendered.contains(TOKEN), "{rendered}");
-    let store = D1StateStore::new(configuration()).unwrap();
+    let store = D1StateStore::try_new(configuration()).unwrap();
     let rendered = format!("{store:?}");
     assert!(!rendered.contains(TOKEN), "{rendered}");
     assert!(rendered.contains("<redacted>"), "{rendered}");
@@ -871,7 +871,7 @@ async fn a_short_result_list_is_refused() {
 #[ignore = "requires an otherwise unused D1 database (CUENV_INFRASTRUCTURE_TEST_D1_ACCOUNT_ID, CUENV_INFRASTRUCTURE_TEST_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN)"]
 async fn lifecycle_against_d1() {
     let variable = |name: &str| std::env::var(name).unwrap();
-    let mut store = D1StateStore::new(D1Configuration {
+    let mut store = D1StateStore::try_new(D1Configuration {
         account_id: variable("CUENV_INFRASTRUCTURE_TEST_D1_ACCOUNT_ID"),
         database_id: variable("CUENV_INFRASTRUCTURE_TEST_D1_DATABASE_ID"),
         api_token: variable("CLOUDFLARE_D1_API_TOKEN"),

@@ -495,7 +495,7 @@ fn change(address: ResourceAddress, action: Action) -> ResourceChange {
 }
 
 fn tenant() -> TenantKey {
-    TenantKey::new("example.com/app", "web").unwrap()
+    TenantKey::try_new("example.com/app", "web").unwrap()
 }
 
 fn plan_of(changes: Vec<ResourceChange>) -> Plan {

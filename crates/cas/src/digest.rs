@@ -27,7 +27,7 @@ impl Digest {
     /// Returns an error unless `hash` is exactly 64 lowercase hexadecimal
     /// characters. Remote cache responses are untrusted, so accepting a
     /// path-like or short hash would make the local CAS layout unsafe.
-    pub fn new(hash: impl Into<String>, size_bytes: u64) -> Result<Self> {
+    pub fn try_new(hash: impl Into<String>, size_bytes: u64) -> Result<Self> {
         let digest = Self {
             hash: hash.into(),
             size_bytes,
@@ -157,8 +157,8 @@ mod tests {
             format!("{}../x", "a".repeat(59)),
         ];
         for hash in invalid {
-            assert!(Digest::new(hash.clone(), 0).is_err(), "accepted {hash:?}");
+            assert!(Digest::try_new(hash.clone(), 0).is_err(), "accepted {hash:?}");
         }
-        assert!(Digest::new("a".repeat(64), 0).is_ok());
+        assert!(Digest::try_new("a".repeat(64), 0).is_ok());
     }
 }

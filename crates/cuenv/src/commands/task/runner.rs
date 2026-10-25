@@ -45,7 +45,7 @@ pub(super) async fn execute_with_rich_tui(
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
     // Create and initialize TUI
-    let mut tui = RichTui::new(event_rx, ready_tx)
+    let mut tui = RichTui::try_new(event_rx, ready_tx)
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to initialize TUI: {e}")))?;
 
     // Build TaskInfo structs from the task graph

@@ -254,7 +254,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         }
         Some(_) => EnvironmentSelection::NotDeclared,
     };
-    let instance = ProjectInstance::new(&relative_path, request.package)
+    let instance = ProjectInstance::try_new(&relative_path, request.package)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
 
     if request.name_check == NameCheck::WholeModule {
@@ -267,7 +267,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
 
     let module_path = cuenv_infrastructure::read_module_path(&module.root)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
-    let unselected_tenant = TenantKey::new(&module_path, &project.name)
+    let unselected_tenant = TenantKey::try_new(&module_path, &project.name)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
     let tenant = if let Some(name) = request.environment {
         TenantKey::with_environment(module_path, project.name, name)
@@ -686,7 +686,7 @@ struct ModuleInstances {
 /// the key splits at its last colon.
 fn normalized_key(key: &str) -> String {
     key.rsplit_once(':')
-        .and_then(|(directory, package)| ProjectInstance::new(directory, package).ok())
+        .and_then(|(directory, package)| ProjectInstance::try_new(directory, package).ok())
         .map_or_else(|| key.to_string(), |instance| instance.as_str().to_string())
 }
 
@@ -1118,19 +1118,19 @@ resources: primary: {type: "fake_plain", outputs: id: string}"#,
                 },
             ],
         };
-        let inside = ProjectInstance::new("deploy/_staging/app", "cuenv").unwrap();
+        let inside = ProjectInstance::try_new("deploy/_staging/app", "cuenv").unwrap();
         let skipped = skipped_target(&module, &inside).unwrap();
         assert_eq!(skipped.path, "deploy/_staging");
         let help = skipped_help(skipped);
         assert!(help.contains("'deploy/_staging' starts with '_'"), "{help}");
 
-        let exact = ProjectInstance::new("deploy/_stag", "cuenv").unwrap();
+        let exact = ProjectInstance::try_new("deploy/_stag", "cuenv").unwrap();
         assert_eq!(
             skipped_target(&module, &exact).unwrap().path,
             "deploy/_stag"
         );
 
-        let elsewhere = ProjectInstance::new("deploy/app", "cuenv").unwrap();
+        let elsewhere = ProjectInstance::try_new("deploy/app", "cuenv").unwrap();
         assert!(skipped_target(&module, &elsewhere).is_none());
     }
 }

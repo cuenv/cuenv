@@ -58,16 +58,16 @@ mod tests {
 
     #[test]
     fn owners_refuse_other_instances() {
-        let tenant = TenantKey::new("example.com/app", "web").unwrap();
+        let tenant = TenantKey::try_new("example.com/app", "web").unwrap();
         let owner = TenantOwner {
-            instance: ProjectInstance::new(".", "web").unwrap(),
+            instance: ProjectInstance::try_new(".", "web").unwrap(),
             claimed_at: "2026-01-01T00:00:00Z".into(),
         };
         owner
-            .require(&tenant, &ProjectInstance::new("", "web").unwrap())
+            .require(&tenant, &ProjectInstance::try_new("", "web").unwrap())
             .unwrap();
         let error = owner
-            .require(&tenant, &ProjectInstance::new("_copy", "web").unwrap())
+            .require(&tenant, &ProjectInstance::try_new("_copy", "web").unwrap())
             .unwrap_err();
         assert!(
             matches!(error, InfrastructureError::OwnedByAnotherInstance { .. }),
