@@ -58,6 +58,19 @@ cuenv fmt --fix
 
 Formats all files in-place. This is what you'll use during development.
 
+If a formatter fails, for example on a syntax error or because its toolchain is
+missing, `cuenv fmt --fix` reports the formatter's output and exits with code `3`.
+It never reports success when nothing was formatted.
+
+### Toolchain Resolution
+
+Formatters run in your project's environment, the same one `cuenv exec` uses.
+If the project declares a Nix or devenv runtime, or lockfile tools, `rustfmt`,
+`nixfmt`/`alejandra`, `gofmt`, and `cue` come from that environment's `PATH`.
+That keeps local formatting on the toolchain CI checks against. Pass the global
+`-e/--env <NAME>` flag to apply an environment overlay. Projects without a
+runtime or tools use the formatters on your inherited `PATH`.
+
 ### Filter by Formatter
 
 ```bash

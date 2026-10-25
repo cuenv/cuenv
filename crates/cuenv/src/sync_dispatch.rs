@@ -39,8 +39,9 @@ struct EnvListSyncRequest {
 struct FmtSyncRequest {
     path: String,
     package: String,
-    fix: bool,
+    mode: commands::sync::FormatMode,
     only: Option<Vec<String>>,
+    environment: Option<String>,
 }
 
 struct ExportSyncRequest {
@@ -90,13 +91,15 @@ pub fn execute_sync_command(command: Command, json_format: OutputFormat) -> Resu
         Command::Fmt {
             path,
             package,
-            fix,
+            mode,
             only,
+            environment,
         } => execute_fmt_command(FmtSyncRequest {
             path,
             package,
-            fix,
+            mode,
             only,
+            environment,
         }),
         Command::Export {
             shell,
@@ -366,10 +369,23 @@ fn execute_fmt_command(request: FmtSyncRequest) -> Result<(), CliError> {
     let FmtSyncRequest {
         path,
         package,
-        fix,
+        mode,
         only,
+        environment,
     } = request;
-    match commands::fmt::execute_fmt(&path, &package, fix, only.as_deref()) {
+    // Formatters run in the project environment, which `cuenv exec` resolves
+    // asynchronously (runtime, tools, secrets).
+    let executor = create_executor(&package);
+    let fmt_request = commands::fmt::FmtRequest {
+        path: &path,
+        package: &package,
+        mode,
+        only: only.as_deref(),
+        environment_override: environment.as_deref(),
+    };
+    let result =
+        current_thread_runtime()?.block_on(commands::fmt::execute_fmt(fmt_request, &executor));
+    match result {
         Ok(output) => {
             cuenv_events::println_redacted(&output);
             Ok(())

@@ -1,8 +1,11 @@
 //! Codegen sync operations.
 
-use crate::commands::sync::formatters;
+use crate::commands::exec::ProjectEnvironmentRequest;
+use crate::commands::sync::formatters::{
+    self, FormatMode, FormatterContext, FormatterEnvironments,
+};
 use crate::commands::{CommandExecutor, relative_path_from_root};
-use cuenv_core::manifest::Project;
+use cuenv_core::manifest::{Formatters, Project};
 use cuenv_core::{DryRun, Result};
 use cuenv_ignore::{FileStatus, IgnoreFiles, IgnoreSection};
 use similar::TextDiff;
@@ -39,6 +42,8 @@ pub struct CodegenSyncRequest<'a> {
 
 struct CodegenSyncContext<'a> {
     dir_path: &'a Path,
+    path: &'a str,
+    package: &'a str,
     options: CodegenSyncOptions,
     executor: &'a CommandExecutor,
 }
@@ -116,14 +121,16 @@ pub async fn execute_sync_codegen(
     let dir_path = Path::new(request.path);
     let context = CodegenSyncContext {
         dir_path,
+        path: request.path,
+        package: request.package,
         options: request.options,
         executor,
     };
-    execute_sync_codegen_local(&context)
+    execute_sync_codegen_local(&context).await
 }
 
 /// Sync codegen for the local project only
-fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<String> {
+async fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<String> {
     let dir_path = context.dir_path;
     let options = context.options;
     let executor = context.executor;
@@ -154,45 +161,30 @@ fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<String
     }
 
     // Run formatters on files that were actually written, or all configured files in check/dry-run.
-    let format_result = if let Some(ref formatters_config) = manifest.formatters {
-        if sync_result.written_files.is_empty()
-            && !options.dry_run.is_dry_run()
-            && !options.should_check()
-        {
-            // No files were written, skip formatting
-            String::new()
-        } else if options.dry_run.is_dry_run() || options.should_check() {
-            // In dry-run and check mode, inspect all configured files.
-            let file_paths: Vec<std::path::PathBuf> = codegen_config
-                .files
-                .keys()
-                .map(|p| dir_path.join(p))
-                .collect();
-            let file_refs: Vec<&Path> = file_paths.iter().map(|p| p.as_path()).collect();
-            formatters::format_generated_files(
-                &file_refs,
-                formatters_config,
-                dir_path,
-                options.dry_run,
-                options.check,
-            )?
-        } else {
-            // Format only the files that were actually written
-            let file_refs: Vec<&Path> = sync_result
-                .written_files
-                .iter()
-                .map(|p| p.as_path())
-                .collect();
-            formatters::format_generated_files(
-                &file_refs,
-                formatters_config,
-                dir_path,
-                options.dry_run,
-                options.check,
-            )?
-        }
+    let files_to_format: Vec<PathBuf> = if options.dry_run.is_dry_run() || options.should_check() {
+        // In dry-run and check mode, inspect all configured files.
+        codegen_config
+            .files
+            .keys()
+            .map(|p| dir_path.join(p))
+            .collect()
     } else {
-        String::new()
+        // Format only the files that were actually written
+        sync_result.written_files.clone()
+    };
+
+    let format_result = match &manifest.formatters {
+        Some(formatters_config) if !files_to_format.is_empty() => {
+            format_codegen_files(
+                CodegenFormatRequest {
+                    context,
+                    files: &files_to_format,
+                },
+                formatters_config,
+            )
+            .await?
+        }
+        _ => String::new(),
     };
 
     // Combine results
@@ -201,6 +193,53 @@ fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<String
     } else {
         Ok(format!("{}\n\n{format_result}", sync_result.output))
     }
+}
+
+struct CodegenFormatRequest<'a> {
+    context: &'a CodegenSyncContext<'a>,
+    files: &'a [PathBuf],
+}
+
+/// Run the configured formatters on codegen files in the project environment.
+async fn format_codegen_files(
+    request: CodegenFormatRequest<'_>,
+    formatters_config: &Formatters,
+) -> Result<String> {
+    let CodegenFormatRequest { context, files } = request;
+    let options = context.options;
+
+    // Formatters do not run in dry-run mode, so there is no environment to resolve.
+    let environments = if options.dry_run.is_dry_run() {
+        FormatterEnvironments::inherited()
+    } else {
+        FormatterEnvironments::resolve(
+            ProjectEnvironmentRequest {
+                path: context.path,
+                package: context.package,
+                environment_override: None,
+            },
+            &formatters::enabled_formatter_commands(formatters_config),
+            context.executor,
+        )
+        .await?
+    };
+
+    let mode = if options.check {
+        FormatMode::Check
+    } else {
+        FormatMode::Fix
+    };
+    let file_refs: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
+    formatters::format_generated_files(
+        &file_refs,
+        formatters_config,
+        &FormatterContext {
+            project_root: context.dir_path,
+            dry_run: options.dry_run,
+            mode,
+            environments: &environments,
+        },
+    )
 }
 
 /// Result of a codegen sync operation

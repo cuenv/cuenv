@@ -136,10 +136,12 @@ pub enum Command {
         path: String,
         /// CUE package name to evaluate.
         package: String,
-        /// Apply formatting changes (default is check mode).
-        fix: bool,
+        /// Check formatting (default) or apply formatting changes.
+        mode: sync::FormatMode,
         /// Only run specific formatters.
         only: Option<Vec<String>>,
+        /// Optional environment name whose `env` overlay formatters run with.
+        environment: Option<String>,
     },
     /// Initialize shell integration for the specified shell.
     ShellInit {

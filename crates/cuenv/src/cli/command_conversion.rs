@@ -3,7 +3,7 @@ use super::{
     RuntimeCommands, SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
 };
 use crate::commands::Command;
-use crate::commands::sync::{SyncMode, SyncScope};
+use crate::commands::sync::{FormatMode, SyncMode, SyncScope};
 
 impl Commands {
     /// Convert CLI commands to internal Command representation.
@@ -75,8 +75,13 @@ impl Commands {
             } => Command::Fmt {
                 path,
                 package,
-                fix,
+                mode: if fix {
+                    FormatMode::Fix
+                } else {
+                    FormatMode::Check
+                },
                 only: only.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
+                environment,
             },
             Self::Allow {
                 path,
