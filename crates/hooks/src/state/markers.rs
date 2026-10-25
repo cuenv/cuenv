@@ -13,7 +13,7 @@ impl StateManager {
         let mut hasher = Sha256::new();
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         hasher.update(canonical.to_string_lossy().as_bytes());
-        format!("{:x}", hasher.finalize())[..16].to_string()
+        hex::encode(hasher.finalize())[..16].to_string()
     }
 
     /// Get the path for a directory marker file

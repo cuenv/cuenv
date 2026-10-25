@@ -147,7 +147,7 @@ impl RustupToolProvider {
             hasher.update(t.as_bytes());
             hasher.update(b",");
         }
-        format!("sha256:{:x}", hasher.finalize())
+        format!("sha256:{}", hex::encode(hasher.finalize()))
     }
 }
 

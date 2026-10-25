@@ -122,8 +122,8 @@ rustls = { version = "0.23.40", default-features = false, features = ["std", "ri
 reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls-no-provider"] }
 # New dependencies for hook execution system
 dirs = "6.0"
-sha2 = "0.10"
-hmac = "0.12"
+sha2 = "0.11"
+hmac = "0.13"
 
 # Bazel Remote Execution API v2. `bazel-remote-apis` ships pre-generated
 # prost/tonic bindings, so building it needs no `protoc` on the host.
