@@ -27,6 +27,16 @@ impl CodegenSyncOptions {
     fn should_check(self) -> bool {
         self.check || self.diff
     }
+
+    /// How formatters treat generated files: `--check` and `--diff` only
+    /// inspect them, so neither may rewrite a file in place.
+    fn format_mode(self) -> FormatMode {
+        if self.should_check() {
+            FormatMode::Check
+        } else {
+            FormatMode::Fix
+        }
+    }
 }
 
 /// Request for syncing codegen for a single path.
@@ -224,11 +234,7 @@ async fn format_codegen_files(
         .await?
     };
 
-    let mode = if options.check {
-        FormatMode::Check
-    } else {
-        FormatMode::Fix
-    };
+    let mode = options.format_mode();
     let file_refs: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
     formatters::format_generated_files(
         &file_refs,
@@ -618,12 +624,37 @@ mod tests {
     use cuenv_core::manifest::{CodegenConfig, FileMode, FormatConfig, LintConfig, ProjectFile};
     use std::collections::HashMap;
 
-    fn options(check: bool) -> CodegenSyncOptions {
-        CodegenSyncOptions {
-            dry_run: DryRun::No,
-            check,
-            diff: false,
-        }
+    const CHECK: CodegenSyncOptions = CodegenSyncOptions {
+        dry_run: DryRun::No,
+        check: true,
+        diff: false,
+    };
+
+    const WRITE: CodegenSyncOptions = CodegenSyncOptions {
+        dry_run: DryRun::No,
+        check: false,
+        diff: false,
+    };
+
+    const DIFF: CodegenSyncOptions = CodegenSyncOptions {
+        dry_run: DryRun::No,
+        check: false,
+        diff: true,
+    };
+
+    #[test]
+    fn diff_formats_in_check_mode_without_rewriting() {
+        assert_eq!(DIFF.format_mode(), FormatMode::Check);
+    }
+
+    #[test]
+    fn check_formats_in_check_mode() {
+        assert_eq!(CHECK.format_mode(), FormatMode::Check);
+    }
+
+    #[test]
+    fn write_formats_in_fix_mode() {
+        assert_eq!(WRITE.format_mode(), FormatMode::Fix);
     }
 
     fn project_file(content: &str, language: &str) -> ProjectFile {
@@ -655,7 +686,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(true),
+            options: CHECK,
         };
 
         let result = sync_codegen_files(&request).expect("sync check");
@@ -673,7 +704,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(true),
+            options: CHECK,
         };
 
         let result = sync_codegen_files(&request).expect("sync check");
@@ -692,7 +723,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(false),
+            options: WRITE,
         };
 
         sync_codegen_files(&request).expect("sync write");
@@ -713,7 +744,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(false),
+            options: WRITE,
         };
 
         sync_codegen_files(&request).expect("sync write");
@@ -736,7 +767,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(true),
+            options: CHECK,
         };
 
         let result = sync_codegen_files(&request).expect("sync check");
@@ -759,7 +790,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(true),
+            options: CHECK,
         };
 
         let result = sync_codegen_files(&request).expect("sync check");

@@ -11,7 +11,7 @@ use std::path::Path;
 use super::super::CommandExecutor;
 
 /// Mode of operation for sync commands.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyncMode {
     /// Actually write files to disk.
     #[default]

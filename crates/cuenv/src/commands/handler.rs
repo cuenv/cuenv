@@ -435,7 +435,7 @@ impl CommandHandler for SyncHandler {
 
         let registry = default_registry();
         let options = SyncOptions {
-            mode: self.mode.clone(),
+            mode: self.mode,
             show_diff: self.show_diff,
             ci_provider: self.ci_provider.clone(),
             update_tools: self.update_tools.clone(),

@@ -396,7 +396,7 @@ async fn execute_lock_sync(request: LockSyncRequest<'_>) -> Result<String> {
         return reconcile_empty_lockfile_state(
             &lockfile_path,
             existing_lockfile.as_ref(),
-            &options.mode,
+            options.mode,
         );
     }
 
@@ -451,7 +451,7 @@ async fn execute_lock_sync(request: LockSyncRequest<'_>) -> Result<String> {
         return reconcile_empty_lockfile_state(
             &lockfile_path,
             existing_lockfile.as_ref(),
-            &options.mode,
+            options.mode,
         );
     }
 
@@ -522,7 +522,7 @@ async fn execute_lock_sync(request: LockSyncRequest<'_>) -> Result<String> {
 fn reconcile_empty_lockfile_state(
     lockfile_path: &Path,
     existing_lockfile: Option<&Lockfile>,
-    mode: &SyncMode,
+    mode: SyncMode,
 ) -> Result<String> {
     match mode {
         SyncMode::Check => {

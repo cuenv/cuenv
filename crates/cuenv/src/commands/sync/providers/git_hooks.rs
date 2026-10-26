@@ -5,7 +5,6 @@
 //! that can be run via `cuenv task hooks.pre-push.<name>`.
 
 use async_trait::async_trait;
-use cuenv_core::DryRun;
 use cuenv_core::Result;
 use std::path::Path;
 
@@ -62,10 +61,7 @@ fn sync_path(request: SyncRequest<'_>) -> Result<SyncResult> {
         ));
     }
 
-    let dry_run = options.mode == SyncMode::DryRun;
-    let check = options.mode == SyncMode::Check;
-
-    let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run.into(), check)?;
+    let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, options.mode)?;
 
     Ok(SyncResult::success(output))
 }
@@ -107,10 +103,7 @@ fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
         ));
     }
 
-    let dry_run = options.mode == SyncMode::DryRun;
-    let check = options.mode == SyncMode::Check;
-
-    let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run.into(), check)?;
+    let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, options.mode)?;
 
     Ok(SyncResult::success(output))
 }
@@ -128,8 +121,7 @@ fn format_hook_name(instance_path: &std::path::Path, project_name: &str, name: S
 fn sync_pre_push_hook(
     git_root: &Path,
     _hooks: &std::collections::HashMap<String, cuenv_hooks::Hook>,
-    dry_run: DryRun,
-    check: bool,
+    mode: SyncMode,
 ) -> Result<String> {
     use std::fs;
     #[cfg(unix)]
@@ -142,7 +134,7 @@ fn sync_pre_push_hook(
     let hook_script = generate_pre_push_script();
 
     // Check mode
-    if check {
+    if mode == SyncMode::Check {
         if pre_push_path.exists() {
             let existing = fs::read_to_string(&pre_push_path).unwrap_or_default();
             if existing == hook_script {
@@ -158,7 +150,7 @@ fn sync_pre_push_hook(
     }
 
     // Check if unchanged
-    if pre_push_path.exists() && !dry_run.is_dry_run() {
+    if pre_push_path.exists() && mode != SyncMode::DryRun {
         let existing = fs::read_to_string(&pre_push_path).unwrap_or_default();
         if existing == hook_script {
             return Ok("pre-push: unchanged".to_string());
@@ -166,7 +158,7 @@ fn sync_pre_push_hook(
     }
 
     // Dry-run mode
-    if dry_run.is_dry_run() {
+    if mode == SyncMode::DryRun {
         if pre_push_path.exists() {
             return Ok("pre-push: Would update".to_string());
         }

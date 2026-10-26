@@ -45,7 +45,7 @@ async fn sync_module(request: SyncRequest<'_>) -> std::result::Result<SyncResult
     let mut lines = Vec::new();
     let mut out_of_date = Vec::new();
     let patterns = types::gitignore_patterns(&lockfile)?;
-    if types::sync_gitignore(&module, &patterns, &request.options.mode)? {
+    if types::sync_gitignore(&module, &patterns, request.options.mode)? {
         match request.options.mode {
             SyncMode::Write => lines.push(".gitignore: updated".to_string()),
             SyncMode::DryRun => lines.push("Would update .gitignore".to_string()),

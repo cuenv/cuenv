@@ -103,7 +103,7 @@ async fn add(module: &Module, release: &str) -> Result<(), CliError> {
     types::sync_gitignore(
         module,
         &types::gitignore_patterns(&lockfile)?,
-        &SyncMode::Write,
+        SyncMode::Write,
     )?;
     emit_stdout!(added_message(&types, &version));
     Ok(())
@@ -140,7 +140,7 @@ fn remove(module: &Module, source: &str) -> Result<(), CliError> {
     types::sync_gitignore(
         module,
         &types::gitignore_patterns(&lockfile)?,
-        &SyncMode::Write,
+        SyncMode::Write,
     )?;
     emit_stdout!(format!(
         "Removed {source}: {}{}{}. Remove its imports and `providers` entry from your CUE.",
