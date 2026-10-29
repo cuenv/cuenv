@@ -31,7 +31,7 @@
 //	fake_taintdel  creates that fail part way; deletes that can fail
 //	fake_jsonplan  planned states sent as JSON instead of MessagePack
 //	fake_plain     upgraded states optionally sent as JSON
-//	fake_secret    computed sensitive output for reference rejection tests
+//	fake_secret    computed sensitive output for sensitive reference tests
 //	fake_undead    deletes that return the object instead of null, without errors
 //	fake_slow      creates that wait until the provider is asked to stop
 //	fake_protect   destroy plans that can be refused and carry private data

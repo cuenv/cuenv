@@ -1034,7 +1034,9 @@ impl InfrastructureEngine {
             .filter(|resource| !declared_addresses.contains(&resource.address))
         {
             self.ensure_not_stopped()?;
-            changes.push(self.plan_delete(row, &mut warnings).await?);
+            let change = self.plan_delete(row, &mut warnings).await?;
+            register_sensitive_values(&change);
+            changes.push(change);
         }
 
         for name in order {
@@ -1053,6 +1055,8 @@ impl InfrastructureEngine {
                 stored: stored.get(&address),
             };
             let change = self.plan_resource(&input, &mut warnings).await?;
+            // Before any consumer can copy them into its configuration.
+            register_sensitive_values(&change);
             planned_outputs.insert(change.address.clone(), change.after.clone());
             changes.push(change);
         }
@@ -1754,8 +1758,8 @@ impl InfrastructureEngine {
 
     /// The recorded value of one source output, upgraded to the provider's
     /// current schema version first, as a refresh would. Schema
-    /// compatibility and sensitivity are checked by
-    /// [`Self::validate_output_references`].
+    /// compatibility is checked by [`Self::validate_output_references`];
+    /// a sensitive value is registered for redaction before it is returned.
     async fn reference_output_value(
         &self,
         destination: &ResourceAddress,
@@ -1789,7 +1793,7 @@ impl InfrastructureEngine {
             &reference.source.resource_type,
         )?;
         let source_state = upgraded_state(source_provider, row, source_schema, warnings).await?;
-        source_state
+        let value = source_state
             .attribute(&reference.attribute)
             .cloned()
             .ok_or_else(|| {
@@ -1798,7 +1802,18 @@ impl InfrastructureEngine {
                     reference,
                     "source attribute is absent from state",
                 )
-            })
+            })?;
+        // A source created during this apply was never planned with a
+        // known value: register it before the consumer's provider sees it.
+        if source_schema
+            .block
+            .attributes
+            .get(&reference.attribute)
+            .is_some_and(|attribute| attribute.sensitive)
+        {
+            register_value_strings(&value);
+        }
+        Ok(value)
     }
 
     /// Write a record the provider's change produced. If the write fails,
@@ -1875,9 +1890,10 @@ impl InfrastructureEngine {
                 .prepare(&declaration.configuration, &value_type)
         }
         .map_err(|error| InfrastructureError::configuration(format!("{address}: {error}")))?;
-        // Check schema compatibility and sensitivity before any source
-        // output is copied into this configuration.
-        self.validate_output_references(&address, &input.references, block)?;
+        // Check schema compatibility before any source output is copied
+        // into this configuration.
+        let sensitive_destinations =
+            self.validate_output_references(&address, &input.references, block)?;
         let configuration = if input.references.references().is_empty() {
             configuration
         } else {
@@ -1920,7 +1936,7 @@ impl InfrastructureEngine {
             action: Action::NoOp,
             before: Value::Null,
             after: Value::Null,
-            sensitive: block.sensitive_attributes(),
+            sensitive: masked_attributes(block, sensitive_destinations),
             requires_replace: Vec::new(),
             dependencies: input.dependencies.clone(),
             references: input.references.clone(),
@@ -2106,29 +2122,16 @@ impl InfrastructureEngine {
     /// Check that every reference joins compatible top-level scalar
     /// attributes. Provider schemas are authoritative; generated CUE types
     /// catch the common mistakes before the engine starts a provider.
+    /// Returns the destination arguments set from a sensitive source output:
+    /// plans mask them as they mask the provider's own sensitive attributes.
     fn validate_output_references(
         &self,
         destination: &ResourceAddress,
         references: &ConfigurationReferences,
         destination_block: &Block,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
+        let mut sensitive = Vec::new();
         for reference in references.references() {
-            let destination_attribute = destination_block
-                .attributes
-                .get(&reference.destination_attribute)
-                .filter(|attribute| {
-                    attribute.nested.is_none()
-                        && attribute.presence != crate::schema::Presence::Computed
-                        && !attribute.write_only
-                        && is_scalar(&attribute.value_type)
-                })
-                .ok_or_else(|| {
-                    reference_error(
-                        destination,
-                        reference,
-                        "destination must be a settable top-level scalar argument",
-                    )
-                })?;
             let source_declaration =
                 declared_resource(&self.infrastructure.resources, &reference.source).ok_or_else(
                     || reference_error(destination, reference, "source resource is not declared"),
@@ -2139,52 +2142,19 @@ impl InfrastructureEngine {
                 source_declaration.provider_name(),
                 &reference.source.resource_type,
             )?;
-            let source_attribute = source_schema
-                .block
-                .attributes
-                .get(&reference.attribute)
-                .filter(|attribute| {
-                    attribute.nested.is_none()
-                        && !attribute.write_only
-                        && is_scalar(&attribute.value_type)
-                })
-                .ok_or_else(|| {
-                    reference_error(
-                        destination,
-                        reference,
-                        "source must be a top-level scalar attribute",
-                    )
-                })?;
-            if let Some(declared) = source_declaration.output_types.get(&reference.attribute) {
-                let declared_type = match declared {
-                    InfrastructureOutputType::String => Type::String,
-                    InfrastructureOutputType::Number => Type::Number,
-                    InfrastructureOutputType::Boolean => Type::Boolean,
-                };
-                if declared_type != source_attribute.value_type {
-                    return Err(reference_error(
-                        destination,
-                        reference,
-                        "native CUE output declaration type does not match the provider schema",
-                    ));
-                }
+            let joined = OutputReferenceCheck {
+                destination,
+                reference,
+                destination_block,
+                source_block: &source_schema.block,
+                declared_type: source_declaration.output_types.get(&reference.attribute),
             }
-            if source_attribute.value_type != destination_attribute.value_type {
-                return Err(reference_error(
-                    destination,
-                    reference,
-                    "source and destination scalar types must match",
-                ));
-            }
-            if source_attribute.sensitive {
-                return Err(reference_error(
-                    destination,
-                    reference,
-                    "sensitive source attributes cannot be referenced yet",
-                ));
+            .check()?;
+            if joined.sensitive && !sensitive.contains(&reference.destination_attribute) {
+                sensitive.push(reference.destination_attribute.clone());
             }
         }
-        Ok(())
+        Ok(sensitive)
     }
 
     fn loaded(&self, name: &str) -> Result<&LoadedProvider> {
@@ -3122,6 +3092,123 @@ fn dependency_graph(
             Ok((name.clone(), dependencies.into_iter().collect()))
         })
         .collect()
+}
+
+/// One reference's source and destination schemas, checked together.
+struct OutputReferenceCheck<'check> {
+    destination: &'check ResourceAddress,
+    reference: &'check ResourceOutputReference,
+    destination_block: &'check Block,
+    source_block: &'check Block,
+    declared_type: Option<&'check InfrastructureOutputType>,
+}
+
+/// The source attribute a valid reference reads.
+struct JoinedOutput {
+    sensitive: bool,
+}
+
+impl OutputReferenceCheck<'_> {
+    fn check(&self) -> Result<JoinedOutput> {
+        let Self {
+            destination,
+            reference,
+            destination_block,
+            source_block,
+            declared_type,
+        } = *self;
+        let destination_attribute = destination_block
+            .attributes
+            .get(&reference.destination_attribute)
+            .filter(|attribute| {
+                attribute.nested.is_none()
+                    && attribute.presence != crate::schema::Presence::Computed
+                    && !attribute.write_only
+                    && is_scalar(&attribute.value_type)
+            })
+            .ok_or_else(|| {
+                reference_error(
+                    destination,
+                    reference,
+                    "destination must be a settable top-level scalar argument",
+                )
+            })?;
+        let source_attribute = source_block
+            .attributes
+            .get(&reference.attribute)
+            .filter(|attribute| {
+                attribute.nested.is_none()
+                    && !attribute.write_only
+                    && is_scalar(&attribute.value_type)
+            })
+            .ok_or_else(|| {
+                reference_error(
+                    destination,
+                    reference,
+                    "source must be a top-level scalar attribute",
+                )
+            })?;
+        if let Some(declared) = declared_type {
+            let declared_type = match declared {
+                InfrastructureOutputType::String => Type::String,
+                InfrastructureOutputType::Number => Type::Number,
+                InfrastructureOutputType::Boolean => Type::Boolean,
+            };
+            if declared_type != source_attribute.value_type {
+                return Err(reference_error(
+                    destination,
+                    reference,
+                    "native CUE output declaration type does not match the provider schema",
+                ));
+            }
+        }
+        if source_attribute.value_type != destination_attribute.value_type {
+            return Err(reference_error(
+                destination,
+                reference,
+                "source and destination scalar types must match",
+            ));
+        }
+        Ok(JoinedOutput {
+            sensitive: source_attribute.sensitive,
+        })
+    }
+}
+
+/// Attributes a plan masks: the block's own sensitive attributes and the
+/// arguments set from a sensitive output of another resource.
+fn masked_attributes(block: &Block, sensitive_destinations: Vec<String>) -> Vec<String> {
+    let mut masked = block.sensitive_attributes();
+    for name in sensitive_destinations {
+        if !masked.contains(&name) {
+            masked.push(name);
+        }
+    }
+    masked
+}
+
+/// Register every known string inside a change's masked attributes, before
+/// and after, so a copy of one printed anywhere else is redacted too: in a
+/// consumer's provider diagnostics, in an error, or in the prior state of a
+/// resource whose reference has since been removed.
+fn register_sensitive_values(change: &ResourceChange) {
+    for value in [&change.before, &change.after] {
+        for name in &change.sensitive {
+            if let Some(attribute) = value.attribute(name) {
+                register_value_strings(attribute);
+            }
+        }
+    }
+}
+
+fn register_value_strings(value: &Value) {
+    match value {
+        Value::String(text) => cuenv_events::register_secret(text.clone()),
+        Value::List(items) => items.iter().for_each(register_value_strings),
+        Value::Object(attributes) => attributes.values().for_each(register_value_strings),
+        Value::Typed(typed) => register_value_strings(&typed.value),
+        Value::Null | Value::Unknown | Value::Boolean(_) | Value::Number(_) => {}
+    }
 }
 
 fn is_scalar(value_type: &Type) -> bool {

@@ -370,14 +370,19 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         );
         package.line(0, "#Outputs: {");
         for (name, attribute) in &resource.block.attributes {
-            if !attribute.sensitive
-                && !attribute.write_only
+            if !attribute.write_only
                 && attribute.nested.is_none()
                 && matches!(
                     attribute.value_type,
                     Type::String | Type::Number | Type::Boolean
                 )
             {
+                if attribute.sensitive {
+                    package.line(
+                        1,
+                        "// Sensitive: redacted from output, and plans show the arguments it sets as (sensitive).",
+                    );
+                }
                 package.field(1, &label(name), &type_expression(&attribute.value_type, 1));
             }
         }

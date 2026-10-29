@@ -38,6 +38,9 @@ fn pet_block() -> Block {
         "separator".into(),
         attribute(Type::String, Presence::OptionalComputed),
     );
+    let mut secret = attribute(Type::String, Presence::Computed);
+    secret.sensitive = true;
+    block.attributes.insert("secret".into(), secret);
     let mut token = attribute(Type::String, Presence::Optional);
     token.write_only = true;
     block.attributes.insert("token".into(), token);
@@ -211,6 +214,8 @@ import (
 	id: string
 	length: number
 	prefix: string
+	// Sensitive: redacted from output, and plans show the arguments it sets as (sensitive).
+	secret: string
 	separator: string
 }
 "#;

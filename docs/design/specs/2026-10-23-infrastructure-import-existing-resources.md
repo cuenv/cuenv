@@ -229,8 +229,8 @@ lifecycle suites with the fake provider and local state service. Run
 `cuenv task ci.schema-docs-check` for the schema, documentation, and skill
 updates. Fake-provider end-to-end cases cover import without apply, rejected
 import results and occupied addresses, dependency inference and no-op behavior
-for output references, unknown-output replacement scheduling, and refusing to
-flow sensitive outputs. The full
+for output references, unknown-output replacement scheduling, and flowing
+sensitive outputs masked and redacted. The full
 infrastructure end-to-end and CLI lifecycle suites still provide broader
 coverage when their provider and local state-service prerequisites are present.
 

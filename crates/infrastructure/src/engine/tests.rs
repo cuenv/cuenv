@@ -2770,3 +2770,104 @@ fn engine_setup_debug_omits_the_store_and_configuration_values() {
         "{rendered}"
     );
 }
+
+fn string_block(name: &str, presence: crate::schema::Presence, sensitive: bool) -> Block {
+    Block {
+        documentation: crate::schema::Documentation::default(),
+        attributes: BTreeMap::from([(
+            name.to_string(),
+            crate::schema::Attribute {
+                write_only: false,
+                documentation: crate::schema::Documentation::default(),
+                value_type: Type::String,
+                nested: None,
+                presence,
+                sensitive,
+            },
+        )]),
+        blocks: BTreeMap::new(),
+    }
+}
+
+fn token_reference() -> ResourceOutputReference {
+    ResourceOutputReference {
+        destination_attribute: "value".into(),
+        source: ResourceAddress::new("example_token", "deploy"),
+        attribute: "value".into(),
+    }
+}
+
+#[test]
+fn sensitive_source_outputs_can_be_referenced_and_are_reported_sensitive() {
+    let destination = ResourceAddress::new("example_secret", "token");
+    let reference = token_reference();
+    let destination_block = string_block("value", crate::schema::Presence::Required, false);
+    let check = |sensitive| {
+        OutputReferenceCheck {
+            destination: &destination,
+            reference: &reference,
+            destination_block: &destination_block,
+            source_block: &string_block("value", crate::schema::Presence::Computed, sensitive),
+            declared_type: Some(&InfrastructureOutputType::String),
+        }
+        .check()
+        .unwrap()
+        .sensitive
+    };
+    assert!(check(true));
+    assert!(!check(false));
+}
+
+#[test]
+fn arguments_set_from_sensitive_outputs_are_masked_in_plans() {
+    let block = string_block("value", crate::schema::Presence::Required, false);
+    let masked = masked_attributes(&block, vec!["value".into()]);
+    assert_eq!(masked, ["value"]);
+    let own = string_block("value", crate::schema::Presence::Required, true);
+    assert_eq!(masked_attributes(&own, vec!["value".into()]), ["value"]);
+
+    let mut update = change(
+        ResourceAddress::new("example_secret", "token"),
+        Action::Update,
+    );
+    update.before = Value::Object(BTreeMap::from([(
+        "value".to_string(),
+        Value::String("old-copied-token".into()),
+    )]));
+    update.after = Value::Object(BTreeMap::from([(
+        "value".to_string(),
+        Value::String("new-copied-token".into()),
+    )]));
+    update.sensitive = masked;
+    let text = render_plan(&plan_of(vec![update]));
+    assert!(
+        text.contains("~ value: (sensitive) -> (sensitive)"),
+        "{text}"
+    );
+    assert!(!text.contains("copied-token"), "{text}");
+}
+
+#[test]
+fn sensitive_values_are_registered_for_redaction_before_and_after() {
+    let mut replace = change(
+        ResourceAddress::new("example_token", "deploy"),
+        Action::Replace,
+    );
+    replace.before = Value::Object(BTreeMap::from([
+        (
+            "value".to_string(),
+            Value::String("prior-token-6b1d0f".into()),
+        ),
+        ("id".to_string(), Value::String("public-id-6b1d0f".into())),
+    ]));
+    replace.after = Value::Object(BTreeMap::from([(
+        "value".to_string(),
+        Value::List(vec![Value::String("planned-token-6b1d0f".into())]),
+    )]));
+    replace.sensitive = vec!["value".into()];
+    register_sensitive_values(&replace);
+    let redacted = cuenv_events::redact("prior-token-6b1d0f planned-token-6b1d0f public-id-6b1d0f");
+    assert!(!redacted.contains("prior-token-6b1d0f"), "{redacted}");
+    assert!(!redacted.contains("planned-token-6b1d0f"), "{redacted}");
+    assert!(redacted.contains("public-id-6b1d0f"), "{redacted}");
+}

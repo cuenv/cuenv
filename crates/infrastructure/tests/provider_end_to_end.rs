@@ -1489,7 +1489,7 @@ async fn referenced_replacement_orders_consumer_and_producer_in_one_apply() -> T
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
-async fn fake_sensitive_outputs_cannot_flow_through_references() -> TestResult {
+async fn fake_sensitive_outputs_flow_through_references_masked_and_redacted() -> TestResult {
     let fake = Fake::new().await?;
     let resources = json!({
         "secret": {"type": "fake_secret", "configuration": {"name": "private"}},
@@ -1503,17 +1503,26 @@ async fn fake_sensitive_outputs_cannot_flow_through_references() -> TestResult {
             },
         },
     });
-    let error = fake
-        .plan(&resources)
-        .await
-        .expect_err("sensitive output must be refused");
+    let plan = fake.plan(&resources).await?;
+    let consumer = plan
+        .changes
+        .iter()
+        .find(|change| change.address.name == "consumer")
+        .expect("consumer is planned");
+    assert_eq!(consumer.sensitive, ["name"]);
     assert!(
-        error
-            .to_string()
-            .contains("sensitive source attributes cannot be referenced yet"),
-        "{error}"
+        cuenv_infrastructure::render_plan(&plan).contains("+ name = (sensitive)"),
+        "{}",
+        cuenv_infrastructure::render_plan(&plan)
     );
-    assert!(!error.to_string().contains("arn:secret"));
+
+    fake.converge(&resources, PlanMode::Apply).await?.applied?;
+    let consumer = fake.record("consumer").await?;
+    assert_eq!(consumer.state["name"], "arn:secret");
+    assert!(!cuenv_events::redact("value arn:secret").contains("arn:secret"));
+
+    let replanned = fake.plan(&resources).await?;
+    assert!(!replanned.has_work(), "{:?}", actions(&replanned));
     Ok(())
 }
 

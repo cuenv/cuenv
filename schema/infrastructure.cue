@@ -40,6 +40,8 @@ import "strings"
 //
 // Proof of concept: top-level primitive resource arguments can refer to
 // another resource's primitive attribute with #InfrastructureOutputReference.
+// A sensitive source attribute may be referenced: plans show the destination
+// argument as (sensitive) and cuenv redacts the value from its output.
 // Use `dependsOn` when only ordering is needed.
 //
 // Closedness: every nested definition is referenced inside a struct literal
