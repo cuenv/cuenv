@@ -14,6 +14,7 @@
 //! `TURSO_AUTH_TOKEN` is optional for an authenticated test database; every
 //! generated configuration passes it through as the state token. Each run
 //! uses a unique project name and temporary configuration and user directories.
+//! Data source tests additionally use `CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER`.
 
 use std::error::Error;
 use std::fs;
@@ -62,6 +63,17 @@ struct Lifecycle {
     authentication_token: Option<String>,
     /// Every byte the CLI wrote to stdout and stderr, for leak assertions.
     transcript: Mutex<String>,
+}
+
+enum OutputFormat {
+    Json,
+    Text,
+}
+
+struct Invocation<'a> {
+    arguments: &'a [&'a str],
+    environment: &'a [(&'a str, &'a str)],
+    format: OutputFormat,
 }
 
 /// A temporary project directory holding a copy of the schema and a CUE module.
@@ -239,6 +251,22 @@ infrastructure: {{
 
     /// Run the CLI and record everything it printed.
     fn execute(&self, arguments: &[&str], environment: &[(&str, &str)]) -> TestResult<Output> {
+        self.execute_invocation(&Invocation {
+            arguments,
+            environment,
+            format: OutputFormat::Json,
+        })
+    }
+
+    fn execute_text(&self, arguments: &[&str]) -> TestResult<Output> {
+        self.execute_invocation(&Invocation {
+            arguments,
+            environment: &[],
+            format: OutputFormat::Text,
+        })
+    }
+
+    fn execute_invocation(&self, invocation: &Invocation<'_>) -> TestResult<Output> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_cuenv"));
         command
             .env_clear()
@@ -253,14 +281,18 @@ infrastructure: {{
                 self.directory.path().join(".runtime/state"),
             )
             .env("XDG_DATA_HOME", self.directory.path().join(".runtime/data"))
-            .current_dir(self.directory.path())
-            .args(["--json", "infrastructure"])
-            .args(arguments)
+            .current_dir(self.directory.path());
+        if matches!(invocation.format, OutputFormat::Json) {
+            command.arg("--json");
+        }
+        command
+            .arg("infrastructure")
+            .args(invocation.arguments)
             .args(["--package", "examples"]);
         if let Some(token) = &self.authentication_token {
             command.env("TURSO_AUTH_TOKEN", token);
         }
-        command.envs(environment.iter().copied());
+        command.envs(invocation.environment.iter().copied());
         // The CLI loads the platform's root certificates even for a plain-HTTP
         // state server; sandboxed builds provide them only through these variables.
         for variable in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
@@ -906,5 +938,410 @@ infrastructure: {{
     assert_eq!(store.list(&tenant).await?, rows);
     fs::write(lifecycle.directory.path().join("env.cue"), descriptor)?;
     lifecycle.run(&["destroy", "--yes"])?;
+    Ok(())
+}
+
+/// Generated data source packages must type actual CUE inputs, and native and
+/// descriptor references must both resolve fresh lookup results through the CLI.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn generated_data_sources_resolve_native_and_descriptor_references() -> TestResult {
+    use cuenv_infrastructure::Cancellation;
+    use cuenv_infrastructure::cue_types::{self, ProviderRelease};
+    use cuenv_infrastructure::registry::ProviderSource;
+
+    let provider =
+        PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let directory = prepare_directory()?;
+    let (schema, _) = cue_types::load_schema(&provider, &Cancellation::default()).await?;
+    let source = ProviderSource::parse("example.com/test/fake")?;
+    let types = cue_types::render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "0.0.0",
+        },
+    )?;
+    for (relative, content) in &types.files {
+        let path = directory.path().join(&types.directory).join(relative);
+        fs::create_dir_all(path.parent().ok_or("generated file has no parent")?)?;
+        fs::write(path, content)?;
+    }
+    let project = format!("data-source-lifecycle-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    let store = TursoStateStore::try_new(backend.clone())?;
+    let configuration = format!(
+        r#"package examples
+import (
+ "github.com/cuenv/cuenv/schema"
+ "example.com/test/fake:fake_provider"
+ "example.com/test/fake/data/fake_lookup"
+ "example.com/test/fake/resources/fake_plain"
+)
+schema.#Project
+name: {project}
+infrastructure: {{
+ state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
+ providers: fake: {{
+  source: "example.com/test/fake"
+  path: {provider}
+  schemaDigest: {digest}
+  configuration: fake_provider.#Configuration & {{directory: {directory}}}
+ }}
+ data: lookup: fake_lookup.#DataSource & {{configuration: {{name: "outside"}}}}
+ resources: {{
+  native: fake_plain.#Resource & {{configuration: {{name: infrastructure.data.lookup.outputs.value}}}}
+  descriptor: fake_plain.#Resource & {{configuration: {{name: {{fromDataSource: "fake_lookup.lookup", attribute: "value"}}}}}}
+  secret: fake_plain.#Resource & {{configuration: {{name: infrastructure.data.lookup.outputs.secret_value}}}}
+ }}
+}}
+"#,
+        project = serde_json::to_string(&project)?,
+        url = serde_json::to_string(&backend.url)?,
+        provider = serde_json::to_string(&provider)?,
+        digest = serde_json::to_string(&types.schema_digest)?,
+        directory = serde_json::to_string(directory.path())?,
+    );
+    let lifecycle = Lifecycle::from_configuration(directory, configuration.clone(), &backend)?;
+    assert_eq!(lifecycle.run(&["plan"])?["summary"]["create"], 3);
+    assert!(store.list(&tenant).await?.is_empty());
+    assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["create"], 3);
+    let rows = store.list(&tenant).await?;
+    assert_eq!(rows.len(), 3, "data sources must not create state rows");
+    for name in ["native", "descriptor"] {
+        let consumer = rows
+            .iter()
+            .find(|row| row.address.name == name)
+            .ok_or("consumer missing")?;
+        assert_eq!(consumer.state["name"], "lookup:outside");
+    }
+    let secret = rows
+        .iter()
+        .find(|row| row.address.name == "secret")
+        .ok_or("secret consumer missing")?
+        .state["name"]
+        .as_str()
+        .ok_or("missing secret value")?;
+    assert!(secret.starts_with("lookup-secret-"));
+    assert!(!lifecycle.transcript()?.contains(secret));
+
+    // A separate apply invocation must read the remote source again, even
+    // though no configuration changed and no data state was saved.
+    fs::write(
+        lifecycle.directory.path().join("lookup-value"),
+        "new-remote-value",
+    )?;
+    assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["update"], 2);
+    let updated = store.list(&tenant).await?;
+    assert_eq!(updated.len(), 3);
+    for name in ["native", "descriptor"] {
+        let consumer = updated
+            .iter()
+            .find(|row| row.address.name == name)
+            .ok_or("updated consumer missing")?;
+        assert_eq!(consumer.state["name"], "new-remote-value");
+    }
+    assert_eq!(lifecycle.run(&["plan"])?["summary"]["unchanged"], 3);
+
+    let env_cue = lifecycle.directory.path().join("env.cue");
+    let journal = lifecycle.directory.path().join("journal.log");
+    let before = fs::read_to_string(&journal)?;
+    fs::write(
+        &env_cue,
+        configuration.replace("name: \"outside\"", "naem: \"outside\""),
+    )?;
+    let output = lifecycle.execute(&["plan"], &[])?;
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.status.code(), Some(3), "{printed}");
+    assert!(
+        printed.contains("naem") && printed.contains("field not allowed"),
+        "{printed}"
+    );
+    assert_eq!(
+        fs::read_to_string(&journal)?,
+        before,
+        "invalid generated configuration reached the provider"
+    );
+    fs::write(&env_cue, &configuration)?;
+
+    // A read can return sensitive state together with diagnostics. The value
+    // must be registered before the diagnostic reaches the JSON CLI envelope.
+    fs::write(lifecycle.directory.path().join("lookup-error"), "")?;
+    let output = lifecycle.execute(&["plan"], &[])?;
+    assert!(!output.status.success());
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(printed.contains("lookup failed"), "{printed}");
+    assert!(!printed.contains(secret), "{printed}");
+    assert!(!lifecycle.transcript()?.contains(secret));
+    assert_eq!(store.list(&tenant).await?, updated);
+    fs::remove_file(lifecycle.directory.path().join("lookup-error"))?;
+    lifecycle.run(&["destroy", "--yes"])?;
+    assert!(store.list(&tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn data_source_only_cli_invocations_read_without_managed_state() -> TestResult {
+    let provider =
+        PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let directory = prepare_directory()?;
+    let project = format!("data-only-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    let store = TursoStateStore::try_new(backend.clone())?;
+    let configuration = format!(
+        r#"package examples
+import "github.com/cuenv/cuenv/schema"
+schema.#Project
+name: {project}
+infrastructure: {{
+ state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
+ providers: fake: {{source: "example.com/test/fake", path: {provider}, configuration: {{directory: {directory}}}}}
+ data: lookup: {{type: "fake_lookup", configuration: {{name: "outside"}}}}
+}}
+"#,
+        project = serde_json::to_string(&project)?,
+        url = serde_json::to_string(&backend.url)?,
+        provider = serde_json::to_string(&provider)?,
+        directory = serde_json::to_string(directory.path())?,
+    );
+    let lifecycle = Lifecycle::from_configuration(directory, configuration, &backend)?;
+    let mut previous_reads = 0;
+    for arguments in [&["plan"][..], &["plan"][..], &["apply", "--yes"][..]] {
+        let result = lifecycle.run(arguments)?;
+        assert_eq!(
+            result["dataSources"],
+            serde_json::json!([{
+                "address": "data.fake_lookup.lookup", "readAt": "plan",
+            }])
+        );
+        assert_eq!(result["changes"], serde_json::json!([]));
+        let journal = fs::read_to_string(lifecycle.directory.path().join("journal.log"))?;
+        let reads = journal.matches("lookup: Read name=outside").count();
+        assert!(
+            reads > previous_reads,
+            "each invocation must read again: {journal}"
+        );
+        previous_reads = reads;
+        assert!(store.list(&tenant).await?.is_empty());
+        assert_eq!(
+            lifecycle.run(&["state", "list"])?["resources"],
+            serde_json::json!([])
+        );
+    }
+    // A sensitive map's keys are values too. Echo one in a fresh-process
+    // diagnostic; registering the unrelated secret scalar cannot hide it.
+    let secret_key = format!(
+        "lookup-map-key-{}",
+        lifecycle
+            .directory
+            .path()
+            .file_name()
+            .ok_or("no directory name")?
+            .to_string_lossy()
+    );
+    fs::write(lifecycle.directory.path().join("lookup-map-error"), "")?;
+    let failed = lifecycle.execute(&["plan"], &[])?;
+    let diagnostic = format!(
+        "{}{}",
+        String::from_utf8_lossy(&failed.stdout),
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    assert!(!failed.status.success(), "{diagnostic}");
+    assert!(
+        diagnostic.contains("sensitive map key rejected"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains(&secret_key), "{diagnostic}");
+    assert!(!lifecycle.transcript()?.contains(&secret_key));
+    assert!(store.list(&tenant).await?.is_empty());
+    Ok(())
+}
+
+/// Each command is a fresh process with an empty redaction registry. Once the
+/// declarations are removed, destroy must recover the lookup-derived sensitivity
+/// from managed state rather than reading the lookup or rediscovering references.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn data_source_sensitive_output_stays_redacted_in_fresh_process_destroy() -> TestResult {
+    sensitive_data_source_destroy(SensitiveSource::Create).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn malformed_update_retains_data_source_sensitivity_for_fresh_process_destroy() -> TestResult
+{
+    sensitive_data_source_destroy(SensitiveSource::MalformedUpdate).await
+}
+
+enum SensitiveSource {
+    Create,
+    MalformedUpdate,
+}
+
+async fn sensitive_data_source_destroy(source: SensitiveSource) -> TestResult {
+    let provider =
+        PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let directory = prepare_directory()?;
+    let secret = format!(
+        "lookup-secret-{}",
+        directory
+            .path()
+            .file_name()
+            .ok_or("no directory name")?
+            .to_string_lossy()
+    );
+    let project = format!("data-source-destroy-secret-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    let store = TursoStateStore::try_new(backend.clone())?;
+    let declarations = r#"
+ data: lookup: {type: "fake_lookup", configuration: {name: "private"}}
+ resources: consumer: {
+  type: "fake_plain"
+  configuration: name: {fromDataSource: "fake_lookup.lookup", attribute: "secret_value"}
+ }
+"#;
+    let configuration = format!(
+        r#"package examples
+import "github.com/cuenv/cuenv/schema"
+schema.#Project
+name: {project}
+infrastructure: {{
+ state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
+ providers: fake: {{source: "example.com/test/fake", path: {provider}, configuration: {{directory: {directory}}}}}
+ {declarations}
+}}
+"#,
+        project = serde_json::to_string(&project)?,
+        url = serde_json::to_string(&backend.url)?,
+        provider = serde_json::to_string(&provider)?,
+        directory = serde_json::to_string(directory.path())?,
+    );
+    let initial_configuration = match source {
+        SensitiveSource::Create => configuration.clone(),
+        SensitiveSource::MalformedUpdate => configuration.replace(
+            r#"{fromDataSource: "fake_lookup.lookup", attribute: "secret_value"}"#,
+            r#""public-before-update""#,
+        ),
+    };
+    let lifecycle = Lifecycle::from_configuration(directory, initial_configuration, &backend)?;
+    assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["create"], 1);
+    if matches!(source, SensitiveSource::MalformedUpdate) {
+        assert!(
+            store.list(&tenant).await?[0]
+                .sensitive_attributes
+                .is_empty()
+        );
+        fs::write(lifecycle.directory.path().join("env.cue"), &configuration)?;
+        fs::write(
+            lifecycle.directory.path().join("malformed-update-result"),
+            "",
+        )?;
+        let update = lifecycle.execute(&["apply", "--yes"], &[])?;
+        assert!(!update.status.success(), "malformed update must fail");
+        assert!(
+            fs::read_to_string(lifecycle.directory.path().join("journal.log"))?
+                .contains("plain: Update committed remotely but returned malformed state")
+        );
+        fs::remove_file(lifecycle.directory.path().join("malformed-update-result"))?;
+    }
+    let rows = store.list(&tenant).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].address.to_string(), "fake_plain.consumer");
+    match source {
+        SensitiveSource::Create => assert_eq!(rows[0].state["name"], secret),
+        SensitiveSource::MalformedUpdate => {
+            assert_eq!(rows[0].state["name"], "public-before-update");
+        }
+    }
+    assert!(!lifecycle.transcript()?.contains(&secret));
+
+    // fake_plain.name is not sensitive in the provider schema. With both the
+    // lookup and consumer absent, only persisted sensitivity can mask this old
+    // value in a removal plan or a destroy run in a different process.
+    fs::write(
+        lifecycle.directory.path().join("env.cue"),
+        configuration.replace(declarations, "resources: {}"),
+    )?;
+    let journal = lifecycle.directory.path().join("journal.log");
+    let previous_reads = fs::read_to_string(&journal)?
+        .matches("lookup: Read")
+        .count();
+    assert!(previous_reads > 0);
+    let deletion_plan = lifecycle.run(&["plan"])?;
+    assert_eq!(deletion_plan["summary"]["delete"], 1);
+    assert!(!deletion_plan.to_string().contains(&secret));
+    assert!(
+        !lifecycle.transcript()?.contains(&secret),
+        "fresh-process removal plan leaked the lookup secret"
+    );
+    assert_eq!(store.list(&tenant).await?, rows);
+
+    let removal = lifecycle.execute_text(&["plan"])?;
+    let removal_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&removal.stdout),
+        String::from_utf8_lossy(&removal.stderr)
+    );
+    assert!(removal.status.success(), "{removal_text}");
+    assert!(removal_text.contains("(sensitive)"), "{removal_text}");
+    assert!(!removal_text.contains(&secret), "{removal_text}");
+
+    // Force a diagnostic containing the copied value. This new process must
+    // register stored sensitivity before refreshing an undeclared resource.
+    let diagnostic_flag = lifecycle.directory.path().join("echo-read-name");
+    fs::write(&diagnostic_flag, "")?;
+    let refused = lifecycle.execute_text(&["destroy", "--yes"])?;
+    let diagnostic = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(!refused.status.success(), "{diagnostic}");
+    assert!(diagnostic.contains("stored name rejected"), "{diagnostic}");
+    assert!(!diagnostic.contains(&secret), "{diagnostic}");
+    assert_eq!(store.list(&tenant).await?, rows);
+    fs::remove_file(diagnostic_flag)?;
+
+    let destroyed = lifecycle.execute_text(&["destroy", "--yes"])?;
+    let destroy_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&destroyed.stdout),
+        String::from_utf8_lossy(&destroyed.stderr)
+    );
+    assert!(destroyed.status.success(), "{destroy_text}");
+    assert!(destroy_text.contains("(sensitive)"), "{destroy_text}");
+    assert!(!destroy_text.contains(&secret), "{destroy_text}");
+    assert!(
+        !lifecycle.transcript()?.contains(&secret),
+        "fresh-process destroy leaked the lookup secret"
+    );
+    assert_eq!(
+        fs::read_to_string(&journal)?
+            .matches("lookup: Read")
+            .count(),
+        previous_reads
+    );
+    assert!(store.list(&tenant).await?.is_empty());
     Ok(())
 }

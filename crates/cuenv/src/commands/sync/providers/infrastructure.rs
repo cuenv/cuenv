@@ -82,8 +82,9 @@ async fn sync_module(request: SyncRequest<'_>) -> std::result::Result<SyncResult
                     pin.version, generated.schema_digest, pin.schema_digest
                 ),
                 format!(
-                    "The installed binary is not the release that was pinned. Run `cuenv \
-                     infrastructure provider add {source}@{}` to pin it again.",
+                    "The schema digest differs from the pin. This can follow a provider schema \
+                     change or a cuenv digest update, including data source support. Run `cuenv \
+                     infrastructure provider add {source}@{}` to regenerate and pin the types again.",
                     pin.version
                 ),
             ));

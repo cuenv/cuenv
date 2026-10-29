@@ -645,7 +645,7 @@ fn render_plan_text(plan: &Plan) {
         "cuenv infrastructure: {}",
         tenant_label(&plan.tenant)
     ));
-    if plan.has_work() {
+    if plan.has_work() || !plan.data_sources.is_empty() {
         emit_stdout!(cuenv_infrastructure::render_plan(plan));
     } else {
         emit_stdout!("No changes. Infrastructure matches the configuration.");
@@ -677,10 +677,21 @@ pub(super) fn plan_json(plan: &Plan) -> Value {
             })
         })
         .collect();
+    let data_sources: Vec<Value> = plan
+        .data_sources
+        .iter()
+        .map(|read| {
+            json!({
+                "address": format!("data.{}", read.address),
+                "readAt": if read.deferred { "apply" } else { "plan" },
+            })
+        })
+        .collect();
     json!({
         "tenant": tenant_identity(&plan.tenant),
         "environment": plan.tenant.environment(),
         "changes": changes,
+        "dataSources": data_sources,
         "summary": summary_json(&plan.summary()),
     })
 }

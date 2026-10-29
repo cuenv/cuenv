@@ -1042,6 +1042,59 @@ async fn nothing_to_apply_asks_nothing() {
 }
 
 #[tokio::test]
+async fn an_interrupted_no_work_apply_reports_failure_and_releases_the_lock() {
+    use cuenv_infrastructure::{InfrastructureEngine, PlanMode};
+
+    for mode in [PlanMode::Apply, PlanMode::Destroy] {
+        let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+        let context = &harness.context();
+        let mut engine =
+            InfrastructureEngine::new(super::dispatch::engine_setup(context, harness.inputs()));
+        let planning = &mut engine;
+        let error = under_lock(
+            context,
+            super::output::operation_name(mode),
+            |lock| async move {
+                let plan = planning.plan(mode).await.unwrap();
+                assert!(!plan.has_work());
+                // Request cancellation after planning, so this exercises the
+                // no-work application path rather than lock or planning checks.
+                context.interrupts.cancellation().stop();
+                super::apply::apply_plan(super::apply::Application {
+                    engine: planning,
+                    plan: &plan,
+                    lock: &lock,
+                    mode,
+                    output: context.output,
+                    invocation: context.invocation,
+                    interrupts: context.interrupts,
+                })
+                .await
+            },
+        )
+        .await
+        .unwrap_err();
+        engine.shutdown().await;
+
+        assert_eq!(exit_code_for(&error), EXIT_INTERRUPTED, "{mode:?}");
+        assert_eq!(error_code_for(&error), "infrastructure_interrupted");
+        assert!(lock_of(&error).unwrap().released);
+        assert_eq!(harness.acquisitions(), 1);
+        assert!(harness.current_lock().await.is_none());
+        assert!(
+            harness
+                .store
+                .list(&harness.tenant)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(harness.answers.locks_while_asked().is_empty());
+        assert!(matches!(harness.output.finish(), Finish::Report(None)));
+    }
+}
+
+#[tokio::test]
 async fn another_owner_is_refused_until_adopted() {
     let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
     let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
@@ -1885,8 +1938,9 @@ fn texts(error: &CliError) -> String {
 }
 
 const ENVIRONMENTS_ONLY: TopLevel = TopLevel {
-    provider_count: 1,
-    resource_count: 0,
+    providers: 1,
+    resources: 0,
+    data_sources: 0,
 };
 
 #[tokio::test]
@@ -1940,13 +1994,122 @@ async fn destroy_without_env_is_the_way_out_of_an_old_layout() {
     );
     // Without the providers destroy cannot run, and the help says so.
     case.top_level = TopLevel {
-        provider_count: 0,
-        resource_count: 0,
+        providers: 0,
+        resources: 0,
+        data_sources: 0,
     };
     let error = case.guard(&destroy_action()).await.unwrap_err();
     let text = texts(&error);
     assert!(text.contains("no top-level `providers`"), "{text}");
     assert!(text.contains("state remove random_pet.pet"), "{text}");
+}
+
+#[tokio::test]
+async fn data_only_top_level_configuration_coexists_with_named_environments() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    let case = GuardCase {
+        harness: &harness,
+        environment: None,
+        declared: &["dev", "prod"],
+        top_level: TopLevel {
+            providers: 1,
+            resources: 0,
+            data_sources: 1,
+        },
+        configured: &[],
+    };
+    for action in [InfrastructureAction::Plan, apply_action(), destroy_action()] {
+        case.guard(&action).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn data_only_top_level_cannot_bypass_recorded_legacy_managed_state() {
+    use cuenv_events::{EventBus, EventCategory, OutputEvent};
+
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    harness.seed(&["random_pet.pet"], None).await;
+    let case = GuardCase {
+        harness: &harness,
+        environment: None,
+        declared: &["data-only-legacy-regression"],
+        top_level: TopLevel {
+            providers: 1,
+            resources: 0,
+            data_sources: 1,
+        },
+        configured: &[],
+    };
+    let error = case.guard(&apply_action()).await.unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    let text = texts(&error);
+    assert!(text.contains("1 resource(s) are still recorded"), "{text}");
+    assert!(text.contains("`cuenv infrastructure destroy`"), "{text}");
+
+    // Capture this plan's warning, restoring the process-wide event sender
+    // before assertions or waiting for the bus to deliver it.
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    let previous = cuenv_events::global_sender();
+    cuenv_events::set_global_sender(bus.sender().unwrap());
+    let planned = case.guard(&InfrastructureAction::Plan).await;
+    match previous {
+        Some(sender) => {
+            cuenv_events::set_global_sender(sender);
+        }
+        None => cuenv_events::clear_global_sender(),
+    }
+    planned.unwrap();
+    let warning = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(event) = events.recv().await {
+            if let EventCategory::Output(OutputEvent::Stderr { content }) = event.category
+                && content.starts_with("warning:")
+                && content.contains("data-only-legacy-regression")
+            {
+                return content;
+            }
+        }
+        panic!("the plan warning event stream ended without the warning");
+    })
+    .await
+    .unwrap();
+    assert!(
+        warning.contains("1 resource(s) are still recorded"),
+        "{warning}"
+    );
+
+    case.guard(&destroy_action()).await.unwrap();
+    assert_eq!(harness.store.list(&harness.tenant).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn named_environment_state_does_not_block_data_only_top_level() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    record_for_environment(&harness, "dev", &["random_pet.pet"]).await;
+    let case = GuardCase {
+        harness: &harness,
+        environment: None,
+        declared: &["dev", "prod"],
+        top_level: TopLevel {
+            providers: 1,
+            resources: 0,
+            data_sources: 1,
+        },
+        configured: &[],
+    };
+    assert!(
+        harness
+            .store
+            .list(&harness.tenant)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    for action in [InfrastructureAction::Plan, apply_action(), destroy_action()] {
+        case.guard(&action).await.unwrap();
+    }
+    let dev = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
+    assert_eq!(harness.store.list(&dev).await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -1959,8 +2122,9 @@ async fn top_level_resources_and_non_overlapping_environments_coexist() {
         environment: None,
         declared: &["dev"],
         top_level: TopLevel {
-            provider_count: 1,
-            resource_count: 1,
+            providers: 1,
+            resources: 1,
+            data_sources: 0,
         },
         configured: &["random_pet.pet"],
     };
@@ -1990,8 +2154,9 @@ async fn an_environment_creating_what_the_unselected_identity_records_is_refused
         environment: Some("dev"),
         declared: &["dev"],
         top_level: TopLevel {
-            provider_count: 1,
-            resource_count: 2,
+            providers: 1,
+            resources: 2,
+            data_sources: 0,
         },
         configured: &["random_pet.pet"],
     };
@@ -2064,8 +2229,9 @@ async fn a_run_without_env_creating_what_an_environment_records_is_refused() {
         environment: None,
         declared: &["dev", "prod"],
         top_level: TopLevel {
-            provider_count: 1,
-            resource_count: 3,
+            providers: 1,
+            resources: 3,
+            data_sources: 0,
         },
         configured: &["random_pet.pet", "random_id.id", "random_string.fresh"],
     };
@@ -2130,8 +2296,9 @@ async fn a_long_list_of_claimed_addresses_is_shortened() {
         environment: None,
         declared: &["dev"],
         top_level: TopLevel {
-            provider_count: 1,
-            resource_count: addresses.len(),
+            providers: 1,
+            resources: addresses.len(),
+            data_sources: 0,
         },
         configured: &addresses,
     };
@@ -2323,8 +2490,9 @@ fn evaluation_reports_what_the_top_level_declares_before_an_environment_replaces
         (
             TopLevelResources::Declared,
             TopLevel {
-                provider_count: 1,
-                resource_count: 1,
+                providers: 1,
+                resources: 1,
+                data_sources: 0,
             },
         ),
         (TopLevelResources::Absent, ENVIRONMENTS_ONLY),

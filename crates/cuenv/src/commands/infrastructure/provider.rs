@@ -6,6 +6,7 @@
 //! the project's CUE: the generated packages may not be imported yet, and the
 //! printed snippet shows how to use them. `remove` undoes both.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use cuenv_core::lockfile::{LockedInfrastructureProvider, Lockfile};
@@ -153,45 +154,111 @@ fn remove(module: &Module, source: &str) -> Result<(), CliError> {
 
 /// What `add` prints: where the types went and how to use them.
 fn added_message(types: &GeneratedTypes, version: &str) -> String {
-    let example = types
-        .resource_types
-        .first()
-        .map_or("example_resource", String::as_str);
     let provider_alias = &types.package_name;
-    let local_name = example.split('_').next().unwrap_or(example);
+    let local_name = provider_alias.trim_end_matches("_provider");
+    let mut imports = format!("\t{}\n", types.provider_import());
+    let mut declarations = String::new();
+    if let Some(example) = types.resource_types.first() {
+        let _ = writeln!(
+            imports,
+            "\tresource_type {}",
+            types.resource_import(example)
+        );
+        let _ = writeln!(
+            declarations,
+            "\tresources: example: resource_type.#Resource & {{\n\
+             \t\tprovider: \"{local_name}\"\n\
+             \t\tconfiguration: {{\n\
+             \t\t\t// arguments of {example}\n\
+             \t\t}}\n\
+             \t}}"
+        );
+    }
+    if let Some(example) = types.data_source_types.first() {
+        // A provider can expose a resource and data source with the same
+        // type name. Keep the data source import distinct in that case too.
+        let _ = writeln!(
+            imports,
+            "\tdata_source_type {}",
+            types.data_source_import(example)
+        );
+        let _ = writeln!(
+            declarations,
+            "\tdata: lookup: data_source_type.#DataSource & {{\n\
+             \t\tprovider: \"{local_name}\"\n\
+             \t\tconfiguration: {{\n\
+             \t\t\t// arguments of {example}\n\
+             \t\t}}\n\
+             \t}}"
+        );
+    }
     format!(
-        "Generated CUE types for {import} {version} ({count} resource types) in {directory}\n\
+        "Generated CUE types for {import} {version} ({resource_count} resource types, {data_source_count} data source types) in {directory}\n\
          and pinned it in cuenv.lock.\n\
          \n\
-         Import the provider and the resource types you use:\n\
+         Import the provider and the resource and data source types you use:\n\
          \n\
          import (\n\
-         \t{provider_import}\n\
-         \t{resource_import}\n\
+         {imports}\
          )\n\
          \n\
          infrastructure: {{\n\
          \tproviders: {local_name}: {provider_alias}.#Provider\n\
-         \tresources: example: {example}.#Resource & {{\n\
-         \t\tconfiguration: {{\n\
-         \t\t\t// arguments of {example}\n\
-         \t\t}}\n\
-         \t}}\n\
+         {declarations}\
          }}\n\
          \n\
          Commit cuenv.lock. {directory} is generated and listed in .gitignore:\n\
          `cuenv sync` (or `cuenv sync infrastructure`) recreates it from cuenv.lock.",
         import = types.import_path,
-        count = types.resource_types.len(),
+        resource_count = types.resource_types.len(),
+        data_source_count = types.data_source_types.len(),
         directory = types.directory.display(),
-        provider_import = types.provider_import(),
-        resource_import = types.resource_import(example),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn added_message_supports_data_only_providers_and_duplicate_type_names() {
+        let mut types = GeneratedTypes {
+            import_path: "registry.terraform.io/acme/example".into(),
+            package_name: "example_provider".into(),
+            directory: "cue.mod/gen/registry.terraform.io/acme/example".into(),
+            files: std::collections::BTreeMap::new(),
+            schema_digest: format!("sha256:{}", "0".repeat(64)),
+            resource_types: Vec::new(),
+            data_source_types: vec!["example_lookup".into()],
+        };
+        let message = added_message(&types, "1.2.3");
+        assert!(
+            message.contains("0 resource types, 1 data source types"),
+            "{message}"
+        );
+        assert!(
+            message.contains(
+                "data_source_type \"registry.terraform.io/acme/example/data/example_lookup\""
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("data: lookup: data_source_type.#DataSource"),
+            "{message}"
+        );
+        assert!(!message.contains("#Resource"), "{message}");
+        types.resource_types.push("example_lookup".into());
+        let message = added_message(&types, "1.2.3");
+        assert!(
+            message.contains("resources: example: resource_type.#Resource"),
+            "{message}"
+        );
+        assert!(
+            message.contains("data: lookup: data_source_type.#DataSource"),
+            "{message}"
+        );
+        assert!(message.contains("provider: \"example\""), "{message}");
+    }
 
     #[test]
     fn releases_need_an_exact_version() {

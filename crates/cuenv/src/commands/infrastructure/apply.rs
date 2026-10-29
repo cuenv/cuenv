@@ -29,6 +29,7 @@ pub(super) async fn plan(
     let result = engine.plan(PlanMode::Apply).await;
     engine.shutdown().await;
     let plan = result.map_err(|error| failure(&error, context.invocation))?;
+    context.interrupts.check()?;
     context.output.plan(&plan);
     Ok(())
 }
@@ -95,6 +96,7 @@ pub(super) async fn converge(
             .plan(mode)
             .await
             .map_err(|error| failure(&error, context.invocation))?;
+        context.interrupts.check()?;
         context.output.preview(&plan);
         if plan.has_work() && convergence.confirmation == ConfirmationPolicy::Prompt {
             confirm(mode, context).await?;
@@ -137,6 +139,7 @@ pub(super) async fn apply_plan(application: Application<'_>) -> Result<(), CliEr
         invocation,
         interrupts,
     } = application;
+    interrupts.check()?;
     if !plan.has_work() {
         output.converged(&Converged {
             mode,
