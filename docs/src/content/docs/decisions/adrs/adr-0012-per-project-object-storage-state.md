@@ -169,26 +169,17 @@ snapshots.
 
 ### Project names
 
-A project is a `#Project` instance in the package cuenv evaluates (`cuenv`
-unless `--package` says otherwise). Instances in other CUE packages are not
-projects and never take part, even when they have a `name` field. Within that
-package, project names are unique, compared case-insensitively.
+Project names are unique. A project is a `#Project` instance in the package
+cuenv evaluates. Instances in other CUE packages are not projects. A duplicate
+name, compared case-insensitively, is an error in every command that
+evaluates the whole module (`plan`, `apply`, `destroy`, `import`,
+`cuenv sync`, `cuenv ci`). The shell hook path never runs the check.
 
-- **Infrastructure commands** (`plan`, `apply`, `destroy`, `import`) fail
-  closed on a duplicate between two infrastructure projects. A duplicate that
-  involves a project without `infrastructure` is only a warning in these
-  commands, so an unrelated project can never block an emergency apply.
-- **`cuenv sync` and `cuenv ci`** report every duplicate: a warning for one
-  release, then an error. They skip instances that fail to evaluate rather
-  than failing, so one broken instance cannot break CI.
-- **The shell hook path** never runs the check.
-- **The SQL backends' state key has no package.** For them, the existing
-  check across every package for instances with an `infrastructure` block
-  stays. The S3 key includes the package, so S3 does not need it.
-- **The module path is the identity.** Keeping it unique, for example
-  changing `module:` when a repository is copied, is the user's
-  responsibility. The plan prints the state location and every destroy, which
-  is the check for that mistake.
+The SQL backends keep their existing cross-package check unchanged, because
+their key has no package.
+
+The module path is the identity. Keeping it unique, for example by changing
+`module:` when a repository is copied, is the user's responsibility.
 
 ### Transport
 
@@ -230,8 +221,7 @@ package, project names are unique, compared case-insensitively.
   bucket credential, shares the original's state. The plan shows the state
   location and every destroy before anything runs. Nothing else guards
   against it.
-- Modules that reuse a project name in a non-infrastructure project see a
-  warning for one release and then an error in `cuenv sync` and `cuenv ci`.
+- Modules that reuse a project name fail until one is renamed.
 - Two nested modules that declare the same module path share state, and
   nothing detects it.
 - Builds from 0.61 and earlier still enforce the old gate against the SQL
