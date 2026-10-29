@@ -2,4 +2,6 @@
 
 mod resolver;
 
-pub use resolver::{InfisicalConfig, InfisicalResolver};
+pub use resolver::{
+    InfisicalAuthConfigError, InfisicalAuthMethod, InfisicalConfig, InfisicalResolver,
+};

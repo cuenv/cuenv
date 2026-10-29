@@ -120,8 +120,167 @@ cuenv env print
 
 `INFISICAL_API_URL` can point at another Infisical region or a self-hosted
 instance. A secret can also set `apiUrl` directly. `cuenv secrets setup
-infisical` performs an authentication-environment preflight; it does not
-download files or contact the API.
+infisical` performs an authentication-environment preflight with the same rules
+the resolver uses; it does not download files or contact the API.
+
+### Infisical authentication
+
+cuenv reads three kinds of Infisical credentials from its environment:
+
+| Method | Variables | What cuenv does |
+| --- | --- | --- |
+| Universal Auth | `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` | Calls `/api/v1/auth/universal-auth/login` |
+| OIDC Auth | `INFISICAL_MACHINE_IDENTITY_ID`, `INFISICAL_AUTH_JWT` | Calls `/api/v1/auth/oidc-auth/login` with the identity ID and the JWT |
+| Access token | `INFISICAL_TOKEN` | Uses the token as is |
+
+`INFISICAL_ORGANIZATION_SLUG` is optional and is sent with either login.
+`INFISICAL_AUTH_JWT` is the variable the Infisical Terraform provider reads by
+default too. cuenv never fetches the JWT itself: something outside cuenv (the
+`#InfisicalOidc` contributor on GitHub Actions, or your own script on another
+CI system) puts it in the environment.
+
+cuenv chooses the method like this:
+
+1. A half-configured login is an error: `INFISICAL_CLIENT_ID` without
+   `INFISICAL_CLIENT_SECRET` (or the reverse), or `INFISICAL_MACHINE_IDENTITY_ID`
+   without `INFISICAL_AUTH_JWT` (or the reverse). This holds even when another
+   method is complete.
+2. Complete Universal Auth and complete OIDC Auth together is an error; cuenv
+   does not guess which machine identity you meant.
+3. Complete Universal Auth or complete OIDC Auth logs in, and `INFISICAL_TOKEN`
+   is ignored.
+4. Otherwise `INFISICAL_TOKEN` is used.
+5. With none of them, resolution fails and names all three options.
+
+The access token a login returns is cached for its lifetime (minus a minute)
+and registered for redaction. `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET`,
+`INFISICAL_MACHINE_IDENTITY_ID`, `INFISICAL_AUTH_JWT` and `INFISICAL_TOKEN` are
+redacted from cuenv output and withheld from infrastructure provider processes
+unless the project passes them explicitly.
+
+### Infisical in GitHub Actions with OIDC
+
+Both patterns below authenticate as an Infisical machine identity with
+[OIDC Auth](https://infisical.com/docs/documentation/platform/identities/oidc-auth/github)
+configured for GitHub (discovery URL and issuer
+`https://token.actions.githubusercontent.com`, plus the subject, audiences and
+claims you want to allow). No Infisical
+credential is stored in GitHub; store the identity ID as the
+`INFISICAL_MACHINE_IDENTITY_ID` repository secret (or pass it literally, it is
+not a credential on its own). Both contributors are GitHub-only and are not
+part of `#DefaultContributors`.
+
+**Pattern A: cuenv resolves the secrets (`#InfisicalOidc`).** Keep your
+`#InfisicalSecret` references and add the contributor:
+
+```cue
+package cuenv
+
+import (
+	"list"
+	"github.com/cuenv/cuenv/schema"
+	xContributors "github.com/cuenv/cuenv/contrib/contributors"
+)
+
+schema.#Project & {
+	let _t = tasks
+
+	name: "my-project"
+
+	env: environment: production: {
+		DATABASE_URL: schema.#InfisicalSecret & {
+			projectId:   "00000000-0000-0000-0000-000000000000"
+			environment: "prod"
+			secretName:  "DATABASE_URL"
+		}
+	}
+
+	tasks: deploy: schema.#Task & {command: "./deploy.sh"}
+
+	ci: {
+		providers: ["github"]
+		contributors: list.Concat([
+			xContributors.#DefaultContributors,
+			[xContributors.#InfisicalOidc & {
+				// Optional: must be an audience the identity allows. Empty (the
+				// default) keeps GitHub's default audience, the owner's URL.
+				#audience: "https://github.com/my-org"
+				// Optional: defaults to the INFISICAL_MACHINE_IDENTITY_ID secret.
+				// #identityId: "${{ vars.INFISICAL_IDENTITY_ID }}"
+			}],
+		])
+		pipelines: deploy: {
+			environment: "production"
+			tasks: [_t.deploy]
+		}
+	}
+}
+```
+
+The generated job gets `id-token: write` and a step, after cuenv is installed
+and before `cuenv secrets setup infisical` and `cuenv ci`, that requests the
+job's ID token, masks it with `::add-mask::` and writes `INFISICAL_AUTH_JWT`
+and `INFISICAL_MACHINE_IDENTITY_ID` to `$GITHUB_ENV`. cuenv then logs in with
+OIDC Auth and resolves only the references the selected environment declares,
+with policies and redaction as for any other secret. Do not also set the
+`INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET` repository secrets: two
+complete login methods is an error. GitHub ID tokens are short-lived (minutes),
+and cuenv logs in on its first Infisical reference and reuses the access token
+afterwards; set the identity's access token TTL to cover the job, because once
+it expires cuenv cannot log in again with the same JWT. See
+[`examples/ci-infisical-oidc`](https://github.com/cuenv/cuenv/tree/main/examples/ci-infisical-oidc).
+
+**Pattern B: Infisical's action fetches the secrets
+(`#InfisicalSecretsAction`).** The contributor runs
+[`Infisical/secrets-action`](https://github.com/Infisical/secrets-action) with
+`method: oidc`, which exports every secret in the folder as a job environment
+variable (and masks it in the GitHub log). Tasks read the ones they need with
+`#EnvPassthrough`:
+
+```cue
+package cuenv
+
+import (
+	"github.com/cuenv/cuenv/schema"
+	xContributors "github.com/cuenv/cuenv/contrib/contributors"
+)
+
+schema.#Project & {
+	let _t = tasks
+
+	name: "my-project"
+
+	tasks: deploy: schema.#Task & {
+		command: "./deploy.sh"
+		env: DATABASE_URL: schema.#EnvPassthrough
+	}
+
+	ci: {
+		providers: ["github"]
+		contributors: [
+			xContributors.#Cuenv,
+			xContributors.#InfisicalSecretsAction & {
+				#project: slug: "my-project" // or #project: id: "..."
+				#envSlug:    "prod"
+				#secretPath: "/deploy"     // default "/"
+				// #domain: "https://eu.infisical.com" // default app.infisical.com
+				// #tasks: ["deploy"]                  // only these jobs
+			},
+		]
+		pipelines: deploy: tasks: [_t.deploy]
+	}
+}
+```
+
+The trade-off: with Pattern B, cuenv never sees an Infisical reference, so it
+cannot scope a secret to the environment or task that declares it, cannot apply
+`policies` (they wrap environment values, and `#EnvPassthrough` is task-level
+only), and does not register the values for its own redaction (GitHub's log
+masking still applies). Every later step of the job, including third-party
+actions, can read every exported secret. Pattern B suits projects that already use the
+action or need its features (recursive folders, file export); Pattern A keeps
+secret access declared and checked in `env.cue`. See
+[`examples/ci-infisical-action`](https://github.com/cuenv/cuenv/tree/main/examples/ci-infisical-action).
 
 **See also:** the runnable [`examples/ci-infisical`](https://github.com/cuenv/cuenv/tree/main/examples/ci-infisical)
 fixture wires these references into a CI pipeline.

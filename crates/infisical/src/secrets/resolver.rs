@@ -107,7 +107,8 @@ impl InfisicalConfig {
     }
 }
 
-/// Resolves secrets from Infisical using Universal Auth or direct access tokens.
+/// Resolves secrets from Infisical using Universal Auth, OIDC Auth, or direct
+/// access tokens.
 pub struct InfisicalResolver {
     client: Client,
     cached_token: Mutex<Option<CachedToken>>,
@@ -149,8 +150,8 @@ impl InfisicalResolver {
         config: &InfisicalConfig,
     ) -> Result<AuthHeader, SecretError> {
         match AuthMode::from_env(name, config)? {
-            AuthMode::Universal(credentials) => {
-                let access_token = self.universal_access_token(name, &credentials).await?;
+            AuthMode::Login(credentials) => {
+                let access_token = self.login_access_token(name, &credentials).await?;
                 Ok(AuthHeader {
                     value: format!("Bearer {access_token}"),
                     refreshable: true,
@@ -163,10 +164,10 @@ impl InfisicalResolver {
         }
     }
 
-    async fn universal_access_token(
+    async fn login_access_token(
         &self,
         name: &str,
-        credentials: &UniversalCredentials,
+        credentials: &LoginCredentials,
     ) -> Result<String, SecretError> {
         let key = credentials.cache_key();
         let mut guard = self.cached_token.lock().await;
@@ -181,6 +182,8 @@ impl InfisicalResolver {
         let response = self.login(name, credentials).await?;
         let expires_at = token_expiry(response.expires_in);
         let access_token = response.access_token;
+        // The access token is as powerful as the credentials that minted it.
+        cuenv_events::register_secret(access_token.clone());
         *guard = Some(CachedToken {
             key,
             access_token: access_token.clone(),
@@ -193,18 +196,32 @@ impl InfisicalResolver {
     async fn login(
         &self,
         name: &str,
-        credentials: &UniversalCredentials,
+        credentials: &LoginCredentials,
     ) -> Result<LoginResponse, SecretError> {
-        let url = endpoint_url(
-            &credentials.api_url,
-            "/api/v1/auth/universal-auth/login",
-            name,
-        )?;
-        let request = LoginRequest {
-            client_id: &credentials.client_id,
-            client_secret: &credentials.client_secret,
-            organization_slug: credentials.organization_slug.as_deref(),
+        let (path, request, method) = match &credentials.method {
+            LoginMethod::Universal {
+                client_id,
+                client_secret,
+            } => (
+                "/api/v1/auth/universal-auth/login",
+                LoginRequest::Universal {
+                    client_id,
+                    client_secret,
+                    organization_slug: credentials.organization_slug.as_deref(),
+                },
+                "Universal Auth",
+            ),
+            LoginMethod::Oidc { identity_id, jwt } => (
+                "/api/v1/auth/oidc-auth/login",
+                LoginRequest::Oidc {
+                    identity_id,
+                    jwt,
+                    organization_slug: credentials.organization_slug.as_deref(),
+                },
+                "OIDC Auth",
+            ),
         };
+        let url = endpoint_url(&credentials.api_url, path, name)?;
 
         let response = self
             .client
@@ -218,9 +235,16 @@ impl InfisicalResolver {
 
         let status = response.status();
         if !status.is_success() {
+            let hint = match credentials.method {
+                LoginMethod::Universal { .. } => "",
+                LoginMethod::Oidc { .. } => {
+                    " (check that INFISICAL_AUTH_JWT has not expired and that its issuer, \
+                     subject and audience match the identity's OIDC Auth configuration)"
+                }
+            };
             return Err(SecretError::resolution_failed(
                 name,
-                format!("Infisical Universal Auth login failed with HTTP {status}"),
+                format!("Infisical {method} login failed with HTTP {status}{hint}"),
             ));
         }
 
@@ -307,57 +331,208 @@ struct AuthHeader {
 }
 
 enum AuthMode {
-    Universal(UniversalCredentials),
+    Login(LoginCredentials),
     Token(String),
 }
 
 impl AuthMode {
     fn from_env(name: &str, config: &InfisicalConfig) -> Result<Self, SecretError> {
-        let client_id = env_var("INFISICAL_CLIENT_ID");
-        let client_secret = env_var("INFISICAL_CLIENT_SECRET");
-
-        match (client_id, client_secret) {
-            (Some(client_id), Some(client_secret)) => Ok(Self::Universal(UniversalCredentials {
+        let method = InfisicalAuthMethod::detect(env_var)
+            .map_err(|e| SecretError::resolution_failed(name, e.to_string()))?;
+        let organization_slug = env_var("INFISICAL_ORGANIZATION_SLUG");
+        let login = |method| {
+            Self::Login(LoginCredentials {
                 api_url: config.api_url(),
-                client_id,
-                client_secret,
-                organization_slug: env_var("INFISICAL_ORGANIZATION_SLUG"),
-            })),
-            (None, None) => env_var("INFISICAL_TOKEN").map(Self::Token).ok_or_else(|| {
-                SecretError::resolution_failed(
-                    name,
-                    "Set INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET, or set INFISICAL_TOKEN",
-                )
+                method,
+                organization_slug,
+            })
+        };
+        Ok(match method {
+            InfisicalAuthMethod::Universal => login(LoginMethod::Universal {
+                client_id: required_env("INFISICAL_CLIENT_ID"),
+                client_secret: required_env("INFISICAL_CLIENT_SECRET"),
             }),
-            _ => Err(SecretError::resolution_failed(
-                name,
-                "INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET must be set together",
-            )),
+            InfisicalAuthMethod::Oidc => login(LoginMethod::Oidc {
+                identity_id: required_env("INFISICAL_MACHINE_IDENTITY_ID"),
+                jwt: required_env("INFISICAL_AUTH_JWT"),
+            }),
+            InfisicalAuthMethod::Token => Self::Token(required_env("INFISICAL_TOKEN")),
+        })
+    }
+}
+
+/// Read a variable that `InfisicalAuthMethod::detect` has already seen set.
+fn required_env(name: &str) -> String {
+    env_var(name).unwrap_or_default()
+}
+
+/// How cuenv authenticates to Infisical, chosen from the environment.
+///
+/// Precedence, applied by [`InfisicalAuthMethod::detect`]:
+///
+/// 1. A partial login configuration is an error: `INFISICAL_CLIENT_ID`
+///    without `INFISICAL_CLIENT_SECRET` (or the reverse), or
+///    `INFISICAL_MACHINE_IDENTITY_ID` without `INFISICAL_AUTH_JWT` (or the
+///    reverse).
+/// 2. Complete Universal Auth and complete OIDC Auth together is an error:
+///    cuenv does not guess which identity was meant.
+/// 3. Complete Universal Auth or complete OIDC Auth logs in; `INFISICAL_TOKEN`
+///    is then ignored.
+/// 4. Otherwise `INFISICAL_TOKEN` is used as the access token.
+/// 5. With none of these set, resolution fails.
+///
+/// The resolver never fetches the JWT itself: whatever runs cuenv (a CI
+/// contributor, a script) puts it in `INFISICAL_AUTH_JWT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfisicalAuthMethod {
+    /// Universal Auth: `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET`.
+    Universal,
+    /// OIDC Auth: `INFISICAL_MACHINE_IDENTITY_ID` and `INFISICAL_AUTH_JWT`.
+    Oidc,
+    /// A ready access token in `INFISICAL_TOKEN`.
+    Token,
+}
+
+/// Why the environment does not select exactly one Infisical auth method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfisicalAuthConfigError {
+    /// Only one of the two Universal Auth variables is set.
+    PartialUniversal,
+    /// Only one of the two OIDC Auth variables is set.
+    PartialOidc {
+        /// Whether the identity ID is the one that is set.
+        has_identity_id: bool,
+    },
+    /// Both Universal Auth and OIDC Auth are fully configured.
+    Ambiguous,
+    /// No credentials at all.
+    Missing,
+}
+
+impl std::fmt::Display for InfisicalAuthConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PartialUniversal => {
+                f.write_str("INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET must be set together")
+            }
+            Self::PartialOidc {
+                has_identity_id: true,
+            } => f.write_str(
+                "INFISICAL_MACHINE_IDENTITY_ID is set but INFISICAL_AUTH_JWT is not; \
+                 OIDC Auth needs both (on GitHub Actions, add the #InfisicalOidc contributor, \
+                 which grants id-token: write and exports the job's ID token)",
+            ),
+            Self::PartialOidc {
+                has_identity_id: false,
+            } => f.write_str(
+                "INFISICAL_AUTH_JWT is set but INFISICAL_MACHINE_IDENTITY_ID is not; \
+                 OIDC Auth needs both",
+            ),
+            Self::Ambiguous => f.write_str(
+                "both Universal Auth (INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET) and \
+                 OIDC Auth (INFISICAL_MACHINE_IDENTITY_ID, INFISICAL_AUTH_JWT) are set; \
+                 unset one of them",
+            ),
+            Self::Missing => f.write_str(
+                "Set INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET (Universal Auth), \
+                 INFISICAL_MACHINE_IDENTITY_ID and INFISICAL_AUTH_JWT (OIDC Auth), \
+                 or INFISICAL_TOKEN",
+            ),
         }
     }
 }
 
-struct UniversalCredentials {
+impl std::error::Error for InfisicalAuthConfigError {}
+
+impl InfisicalAuthMethod {
+    /// Choose the auth method from environment variables read through
+    /// `lookup`, which returns `None` for unset or blank variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for partial, ambiguous or missing configuration; see
+    /// the type documentation for the precedence rules.
+    pub fn detect(
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, InfisicalAuthConfigError> {
+        let has = |name: &str| lookup(name).is_some();
+        let universal = match (has("INFISICAL_CLIENT_ID"), has("INFISICAL_CLIENT_SECRET")) {
+            (true, true) => true,
+            (false, false) => false,
+            _ => return Err(InfisicalAuthConfigError::PartialUniversal),
+        };
+        let oidc = match (
+            has("INFISICAL_MACHINE_IDENTITY_ID"),
+            has("INFISICAL_AUTH_JWT"),
+        ) {
+            (true, true) => true,
+            (false, false) => false,
+            (has_identity_id, _) => {
+                return Err(InfisicalAuthConfigError::PartialOidc { has_identity_id });
+            }
+        };
+        match (universal, oidc) {
+            (true, true) => Err(InfisicalAuthConfigError::Ambiguous),
+            (true, false) => Ok(Self::Universal),
+            (false, true) => Ok(Self::Oidc),
+            (false, false) if has("INFISICAL_TOKEN") => Ok(Self::Token),
+            (false, false) => Err(InfisicalAuthConfigError::Missing),
+        }
+    }
+
+    /// Choose the auth method from the process environment.
+    ///
+    /// # Errors
+    ///
+    /// See [`InfisicalAuthMethod::detect`].
+    pub fn from_process_env() -> Result<Self, InfisicalAuthConfigError> {
+        Self::detect(env_var)
+    }
+}
+
+struct LoginCredentials {
     api_url: String,
-    client_id: String,
-    client_secret: String,
+    method: LoginMethod,
     organization_slug: Option<String>,
 }
 
-impl UniversalCredentials {
+enum LoginMethod {
+    Universal {
+        client_id: String,
+        client_secret: String,
+    },
+    Oidc {
+        identity_id: String,
+        jwt: String,
+    },
+}
+
+impl LoginCredentials {
     fn cache_key(&self) -> TokenCacheKey {
+        let principal = match &self.method {
+            LoginMethod::Universal { client_id, .. } => {
+                TokenPrincipal::Universal(client_id.clone())
+            }
+            LoginMethod::Oidc { identity_id, .. } => TokenPrincipal::Oidc(identity_id.clone()),
+        };
         TokenCacheKey {
             api_url: self.api_url.clone(),
-            client_id: self.client_id.clone(),
+            principal,
             organization_slug: self.organization_slug.clone(),
         }
     }
 }
 
 #[derive(Clone, PartialEq, Eq)]
+enum TokenPrincipal {
+    Universal(String),
+    Oidc(String),
+}
+
+#[derive(Clone, PartialEq, Eq)]
 struct TokenCacheKey {
     api_url: String,
-    client_id: String,
+    principal: TokenPrincipal,
     organization_slug: Option<String>,
 }
 
@@ -368,12 +543,22 @@ struct CachedToken {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LoginRequest<'a> {
-    client_id: &'a str,
-    client_secret: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    organization_slug: Option<&'a str>,
+#[serde(untagged)]
+enum LoginRequest<'a> {
+    #[serde(rename_all = "camelCase")]
+    Universal {
+        client_id: &'a str,
+        client_secret: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        organization_slug: Option<&'a str>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Oidc {
+        identity_id: &'a str,
+        jwt: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        organization_slug: Option<&'a str>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -545,22 +730,14 @@ mod tests {
         }])
         .await?;
 
-        temp_env::async_with_vars(
-            [
-                ("INFISICAL_TOKEN", Some("direct-token")),
-                ("INFISICAL_CLIENT_ID", None),
-                ("INFISICAL_CLIENT_SECRET", None),
-                ("INFISICAL_ORGANIZATION_SLUG", None),
-            ],
-            async {
-                let resolver = InfisicalResolver::try_new()?;
-                let mut config = InfisicalConfig::new("project", "prod", "API_KEY");
-                config.api_url = Some(api_url);
-                let spec = SecretSpec::new(serde_json::to_string(&config)?);
-                let value = resolver.resolve("API_KEY", &spec).await?;
-                Ok::<_, Box<dyn Error>>(value)
-            },
-        )
+        temp_env::async_with_vars(auth_env(&[("INFISICAL_TOKEN", "direct-token")]), async {
+            let resolver = InfisicalResolver::try_new()?;
+            let mut config = InfisicalConfig::new("project", "prod", "API_KEY");
+            config.api_url = Some(api_url);
+            let spec = SecretSpec::new(serde_json::to_string(&config)?);
+            let value = resolver.resolve("API_KEY", &spec).await?;
+            Ok::<_, Box<dyn Error>>(value)
+        })
         .await
         .map(|value| assert_eq!(value, "direct-secret"))?;
 
@@ -586,12 +763,12 @@ mod tests {
         .await?;
 
         temp_env::async_with_vars(
-            [
-                ("INFISICAL_CLIENT_ID", Some("client-id")),
-                ("INFISICAL_CLIENT_SECRET", Some("client-secret")),
-                ("INFISICAL_ORGANIZATION_SLUG", Some("org")),
-                ("INFISICAL_TOKEN", Some("fallback-token")),
-            ],
+            auth_env(&[
+                ("INFISICAL_CLIENT_ID", "client-id"),
+                ("INFISICAL_CLIENT_SECRET", "client-secret"),
+                ("INFISICAL_ORGANIZATION_SLUG", "org"),
+                ("INFISICAL_TOKEN", "fallback-token"),
+            ]),
             async {
                 let resolver = InfisicalResolver::try_new()?;
                 let mut config = InfisicalConfig::new("project", "prod", "API_KEY");
@@ -612,11 +789,10 @@ mod tests {
     async fn partial_universal_auth_env_fails() -> Result<(), Box<dyn Error>> {
         let _guard = TEST_ENV_LOCK.lock().await;
         temp_env::async_with_vars(
-            [
-                ("INFISICAL_CLIENT_ID", Some("client-id")),
-                ("INFISICAL_CLIENT_SECRET", None),
-                ("INFISICAL_TOKEN", Some("fallback-token")),
-            ],
+            auth_env(&[
+                ("INFISICAL_CLIENT_ID", "client-id"),
+                ("INFISICAL_TOKEN", "fallback-token"),
+            ]),
             async {
                 let resolver = InfisicalResolver::try_new()?;
                 let config = InfisicalConfig::new("project", "prod", "API_KEY");
@@ -630,6 +806,300 @@ mod tests {
         Ok(())
     }
 
+    /// Every variable `InfisicalAuthMethod::detect` reads, unset; tests
+    /// override the ones they need so the host environment cannot leak in.
+    const AUTH_VARS: [&str; 6] = [
+        "INFISICAL_CLIENT_ID",
+        "INFISICAL_CLIENT_SECRET",
+        "INFISICAL_MACHINE_IDENTITY_ID",
+        "INFISICAL_AUTH_JWT",
+        "INFISICAL_TOKEN",
+        "INFISICAL_ORGANIZATION_SLUG",
+    ];
+
+    fn auth_env<'a>(set: &[(&'a str, &'a str)]) -> Vec<(&'a str, Option<&'a str>)> {
+        AUTH_VARS
+            .iter()
+            .map(|name| {
+                let value = set
+                    .iter()
+                    .find(|(set_name, _)| set_name == name)
+                    .map(|(_, value)| *value);
+                (*name, value)
+            })
+            .collect()
+    }
+
+    fn detect_with(set: &[(&str, &str)]) -> Result<InfisicalAuthMethod, InfisicalAuthConfigError> {
+        InfisicalAuthMethod::detect(|name| {
+            set.iter()
+                .find(|(set_name, _)| *set_name == name)
+                .map(|(_, value)| (*value).to_string())
+        })
+    }
+
+    #[test]
+    fn auth_method_precedence() {
+        use InfisicalAuthConfigError as E;
+        use InfisicalAuthMethod as M;
+        let universal = [
+            ("INFISICAL_CLIENT_ID", "id"),
+            ("INFISICAL_CLIENT_SECRET", "secret"),
+        ];
+        let oidc = [
+            ("INFISICAL_MACHINE_IDENTITY_ID", "identity"),
+            ("INFISICAL_AUTH_JWT", "jwt"),
+        ];
+        let token = [("INFISICAL_TOKEN", "token")];
+
+        assert_eq!(detect_with(&universal), Ok(M::Universal));
+        assert_eq!(detect_with(&oidc), Ok(M::Oidc));
+        assert_eq!(detect_with(&token), Ok(M::Token));
+        assert_eq!(
+            detect_with(&[universal.as_slice(), &token].concat()),
+            Ok(M::Universal)
+        );
+        assert_eq!(
+            detect_with(&[oidc.as_slice(), &token].concat()),
+            Ok(M::Oidc)
+        );
+        assert_eq!(
+            detect_with(&[universal.as_slice(), &oidc].concat()),
+            Err(E::Ambiguous)
+        );
+        assert_eq!(detect_with(&[]), Err(E::Missing));
+    }
+
+    #[test]
+    fn partial_auth_configuration_is_an_error_even_with_a_fallback() {
+        use InfisicalAuthConfigError as E;
+        let token = ("INFISICAL_TOKEN", "token");
+        assert_eq!(
+            detect_with(&[("INFISICAL_MACHINE_IDENTITY_ID", "identity"), token]),
+            Err(E::PartialOidc {
+                has_identity_id: true
+            })
+        );
+        assert_eq!(
+            detect_with(&[("INFISICAL_AUTH_JWT", "jwt"), token]),
+            Err(E::PartialOidc {
+                has_identity_id: false
+            })
+        );
+        // A partial OIDC configuration is not hidden by complete Universal Auth.
+        assert_eq!(
+            detect_with(&[
+                ("INFISICAL_CLIENT_ID", "id"),
+                ("INFISICAL_CLIENT_SECRET", "secret"),
+                ("INFISICAL_AUTH_JWT", "jwt"),
+            ]),
+            Err(E::PartialOidc {
+                has_identity_id: false
+            })
+        );
+        assert_eq!(
+            detect_with(&[("INFISICAL_CLIENT_SECRET", "secret"), token]),
+            Err(E::PartialUniversal)
+        );
+    }
+
+    #[test]
+    fn oidc_login_request_matches_the_infisical_api() -> Result<(), Box<dyn Error>> {
+        let request = LoginRequest::Oidc {
+            identity_id: "identity",
+            jwt: "header.payload.signature",
+            organization_slug: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&request)?,
+            serde_json::json!({"identityId": "identity", "jwt": "header.payload.signature"})
+        );
+        let request = LoginRequest::Oidc {
+            identity_id: "identity",
+            jwt: "jwt",
+            organization_slug: Some("org"),
+        };
+        assert_eq!(
+            serde_json::to_value(&request)?,
+            serde_json::json!({"identityId": "identity", "jwt": "jwt", "organizationSlug": "org"})
+        );
+        Ok(())
+    }
+
+    async fn resolve_api_key(api_url: Option<String>) -> Result<String, Box<dyn Error>> {
+        let resolver = InfisicalResolver::try_new()?;
+        let mut config = InfisicalConfig::new("project", "prod", "API_KEY");
+        config.api_url = api_url;
+        let spec = SecretSpec::new(serde_json::to_string(&config)?);
+        Ok(resolver.resolve("API_KEY", &spec).await?)
+    }
+
+    #[tokio::test]
+    async fn resolves_with_oidc_auth() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let (api_url, server) = spawn_server(vec![
+            MockResponse {
+                expected: "POST /api/v1/auth/oidc-auth/login",
+                status: 200,
+                body: r#"{"accessToken":"oidc-token","expiresIn":7200,"accessTokenMaxTTL":7200,"tokenType":"Bearer"}"#,
+            },
+            MockResponse {
+                expected: "Bearer oidc-token",
+                status: 200,
+                body: r#"{"secret":{"secretValue":"oidc-secret"}}"#,
+            },
+        ])
+        .await?;
+
+        let value = temp_env::async_with_vars(
+            auth_env(&[
+                ("INFISICAL_MACHINE_IDENTITY_ID", "identity-id"),
+                ("INFISICAL_AUTH_JWT", "github.id.token"),
+                ("INFISICAL_TOKEN", "fallback-token"),
+            ]),
+            resolve_api_key(Some(api_url)),
+        )
+        .await?;
+        assert_eq!(value, "oidc-secret");
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oidc_login_sends_identity_and_jwt() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let (api_url, server) = spawn_server(vec![
+            MockResponse {
+                expected: r#"{"identityId":"identity-id","jwt":"github.id.token","organizationSlug":"org"}"#,
+                status: 200,
+                body: r#"{"accessToken":"oidc-token","expiresIn":7200,"accessTokenMaxTTL":7200,"tokenType":"Bearer"}"#,
+            },
+            MockResponse {
+                expected: "Bearer oidc-token",
+                status: 200,
+                body: r#"{"secret":{"secretValue":"oidc-secret"}}"#,
+            },
+        ])
+        .await?;
+
+        temp_env::async_with_vars(
+            auth_env(&[
+                ("INFISICAL_MACHINE_IDENTITY_ID", "identity-id"),
+                ("INFISICAL_AUTH_JWT", "github.id.token"),
+                ("INFISICAL_ORGANIZATION_SLUG", "org"),
+            ]),
+            resolve_api_key(Some(api_url)),
+        )
+        .await?;
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oidc_access_token_is_cached_across_secrets() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let (api_url, server) = spawn_server(vec![
+            MockResponse {
+                expected: "POST /api/v1/auth/oidc-auth/login",
+                status: 200,
+                body: r#"{"accessToken":"oidc-token","expiresIn":7200,"accessTokenMaxTTL":7200,"tokenType":"Bearer"}"#,
+            },
+            MockResponse {
+                expected: "Bearer oidc-token",
+                status: 200,
+                body: r#"{"secret":{"secretValue":"first"}}"#,
+            },
+            MockResponse {
+                expected: "Bearer oidc-token",
+                status: 200,
+                body: r#"{"secret":{"secretValue":"second"}}"#,
+            },
+        ])
+        .await?;
+
+        let values = temp_env::async_with_vars(
+            auth_env(&[
+                ("INFISICAL_MACHINE_IDENTITY_ID", "identity-id"),
+                ("INFISICAL_AUTH_JWT", "github.id.token"),
+            ]),
+            async {
+                let resolver = InfisicalResolver::try_new()?;
+                let mut config = InfisicalConfig::new("project", "prod", "API_KEY");
+                config.api_url = Some(api_url);
+                let spec = SecretSpec::new(serde_json::to_string(&config)?);
+                let first = resolver.resolve("API_KEY", &spec).await?;
+                let second = resolver.resolve("API_KEY", &spec).await?;
+                Ok::<_, Box<dyn Error>>((first, second))
+            },
+        )
+        .await?;
+        assert_eq!(values, ("first".to_string(), "second".to_string()));
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oidc_login_http_failure_is_reported() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let (api_url, server) = spawn_server(vec![MockResponse {
+            expected: "POST /api/v1/auth/oidc-auth/login",
+            status: 401,
+            body: r#"{"message":"jwt expired"}"#,
+        }])
+        .await?;
+
+        let result = temp_env::async_with_vars(
+            auth_env(&[
+                ("INFISICAL_MACHINE_IDENTITY_ID", "identity-id"),
+                ("INFISICAL_AUTH_JWT", "expired.id.token"),
+            ]),
+            resolve_api_key(Some(api_url)),
+        )
+        .await;
+        let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            message.contains("OIDC Auth login failed with HTTP 401"),
+            "{message}"
+        );
+        assert!(message.contains("INFISICAL_AUTH_JWT"), "{message}");
+        assert!(!message.contains("expired.id.token"), "{message}");
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ambiguous_and_partial_oidc_env_fail_before_any_request() -> Result<(), Box<dyn Error>>
+    {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        for set in [
+            vec![
+                ("INFISICAL_CLIENT_ID", "client-id"),
+                ("INFISICAL_CLIENT_SECRET", "client-secret"),
+                ("INFISICAL_MACHINE_IDENTITY_ID", "identity-id"),
+                ("INFISICAL_AUTH_JWT", "github.id.token"),
+            ],
+            vec![
+                ("INFISICAL_MACHINE_IDENTITY_ID", "identity-id"),
+                ("INFISICAL_TOKEN", "fallback-token"),
+            ],
+        ] {
+            // No server: a request would fail with a connection error instead.
+            let result = temp_env::async_with_vars(
+                auth_env(&set),
+                resolve_api_key(Some("http://127.0.0.1:9".to_string())),
+            )
+            .await;
+            let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(message.contains("INFISICAL_"), "{message}");
+            assert!(!message.contains("request failed"), "{message}");
+        }
+        Ok(())
+    }
+
     async fn spawn_server(
         responses: Vec<MockResponse>,
     ) -> Result<(String, tokio::task::JoinHandle<io::Result<()>>), Box<dyn Error>> {
@@ -638,9 +1108,7 @@ mod tests {
         let handle = tokio::spawn(async move {
             for response in responses {
                 let (mut stream, _) = listener.accept().await?;
-                let mut buffer = vec![0_u8; 8192];
-                let read = stream.read(&mut buffer).await?;
-                let request = String::from_utf8_lossy(&buffer[..read]);
+                let request = read_request(&mut stream).await?;
                 if !request.contains(response.expected) {
                     return Err(io::Error::other(format!(
                         "request did not contain expected text: {}",
@@ -661,5 +1129,35 @@ mod tests {
         });
 
         Ok((format!("http://{addr}"), handle))
+    }
+
+    /// Read one request: the headers, then as many body bytes as
+    /// `content-length` announces, however the client split its writes.
+    async fn read_request(stream: &mut tokio::net::TcpStream) -> io::Result<String> {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&request);
+            if let Some(header_end) = text.find("\r\n\r\n") {
+                let content_length = text[..header_end]
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if request.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+        }
+        Ok(String::from_utf8_lossy(&request).into_owned())
     }
 }

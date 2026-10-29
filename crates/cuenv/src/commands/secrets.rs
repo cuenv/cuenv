@@ -85,34 +85,40 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Set up Infisical by validating required authentication environment variables.
+/// Set up Infisical by validating the authentication environment, with the
+/// same precedence the resolver applies (see
+/// `cuenv_infisical::InfisicalAuthMethod`).
+#[cfg(feature = "infisical")]
 fn setup_infisical() -> Result<(), CliError> {
-    let has_client_id = has_env("INFISICAL_CLIENT_ID");
-    let has_client_secret = has_env("INFISICAL_CLIENT_SECRET");
-    let has_token = has_env("INFISICAL_TOKEN");
+    use cuenv_infisical::InfisicalAuthMethod;
 
-    match (has_client_id, has_client_secret, has_token) {
-        (true, true, _) => {
+    match InfisicalAuthMethod::from_process_env() {
+        Ok(InfisicalAuthMethod::Universal) => {
             println_redacted("Infisical Universal Auth environment detected.");
             println_redacted("cuenv will use INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET.");
             Ok(())
         }
-        (false, false, true) => {
+        Ok(InfisicalAuthMethod::Oidc) => {
+            println_redacted("Infisical OIDC Auth environment detected.");
+            println_redacted(
+                "cuenv will use INFISICAL_MACHINE_IDENTITY_ID and INFISICAL_AUTH_JWT.",
+            );
+            Ok(())
+        }
+        Ok(InfisicalAuthMethod::Token) => {
             println_redacted("Infisical token environment detected.");
             println_redacted("cuenv will use INFISICAL_TOKEN.");
             Ok(())
         }
-        (true, false, _) | (false, true, _) => Err(CliError::config(
-            "INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET must be set together.",
-        )),
-        (false, false, false) => Err(CliError::config(
-            "Set INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET, or set INFISICAL_TOKEN.",
-        )),
+        Err(error) => Err(CliError::config(format!("{error}."))),
     }
 }
 
-fn has_env(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
+#[cfg(not(feature = "infisical"))]
+fn setup_infisical() -> Result<(), CliError> {
+    Err(CliError::config(
+        "This cuenv was built without Infisical support (the `infisical` feature).",
+    ))
 }
 
 fn format_download_size_mb(byte_count: usize) -> String {

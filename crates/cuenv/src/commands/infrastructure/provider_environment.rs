@@ -176,6 +176,8 @@ mod tests {
             "INFISICAL_TOKEN",
             "INFISICAL_CLIENT_ID",
             "INFISICAL_CLIENT_SECRET",
+            "INFISICAL_MACHINE_IDENTITY_ID",
+            "INFISICAL_AUTH_JWT",
             "VAULT_TOKEN",
             "TURSO_AUTH_TOKEN",
             "DENIED",
