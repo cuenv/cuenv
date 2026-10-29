@@ -174,9 +174,26 @@ exercise a diagnostic echoing a sensitive map key and a remote update that
 commits a lookup secret but returns malformed state, followed by fresh-process
 orphan/destroy previews and refresh diagnostics.
 
-Validation evidence and final runtime adversarial findings are recorded on the PR
-after integration. The root flake gate is required because this changes
-cross-crate runtime behavior, provider boundaries and CLI/schema support.
+## Integrated validation
+
+The root gate, `nix flake check -L --accept-flake-config`, passed on
+`x86_64-linux` after the runtime and migration fixes:
+
+- Workspace nextest: 4,168 passed, 98 skipped.
+- Infrastructure E2E: 89 passed, including real protocol-5/6 providers, shared
+  Turso state, migrations, and fresh-process CLI redaction; 369 tests outside
+  this ignored-suite selection were skipped. Registry downloads and live
+  Cloudflare D1 remain excluded from this sandboxed gate.
+- Workspace clippy, formatting, doctests and configured build checks passed.
+- BDD: 19 scenarios passed, 16 skipped.
+- `cuenv sync ci --check`, `cuenv task ci.schema-docs-check` and
+  `git diff --check` passed separately. Schema compatibility passed 41 accepted
+  and 21 rejected fixtures across all four configured CUE versions.
+
+Final targeted security, scheduling/protocol and migration re-reviews have no
+unresolved blockers. The nonblocking migration liveness caveat is recorded
+below. The root gate was required for cross-crate runtime behavior, provider
+boundaries and CLI/schema support; other operating systems were not checked.
 
 ## Next steps
 
