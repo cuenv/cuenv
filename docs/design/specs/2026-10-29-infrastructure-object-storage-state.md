@@ -12,8 +12,8 @@ Store each project's infrastructure state in its own object in an
 S3-compatible bucket (AWS S3, Cloudflare R2, MinIO), with its own format
 version. Upgrading cuenv in one project must never change another project's
 state. Keep every guarantee the SQL backends give: the lock check and the
-write are atomic, compare-and-swap works, ownership is enforced, recovery
-files are bound to the backend, and nothing secret appears in errors.
+write are atomic, compare-and-swap works, recovery files are bound to the
+backend, and nothing secret appears in errors.
 
 ```cue
 infrastructure: state: s3: {
@@ -35,7 +35,6 @@ infrastructure: state: s3: {
 - An intent journal written before each provider call.
 - `state push`.
 - Reading or writing bucket lifecycle and versioning configuration.
-- A module-wide uniqueness rule for projects without `infrastructure`.
 - Changing the SQL schema, apart from preserving fence rows (see Migration).
 
 ## Keys
@@ -93,7 +92,7 @@ The full `s3://<bucket>/<key>` of `state.json` appears in:
 
 - the `plan`, `apply`, `destroy` and `state list` headers;
 - `--json` output, as `stateLocation`;
-- every lock, owner, vanished-state and rename error.
+- every lock, vanished-state and rename error.
 
 ## `state.json`
 
@@ -105,7 +104,7 @@ The full `s3://<bucket>/<key>` of `state.json` appears in:
   "writer": "6f1c…",
   "tenant": {"modulePath": "github.com/acme/infra", "package": "cuenv",
              "project": "web", "environment": null},
-  "owner": {"instance": "services/web:cuenv", "claimedAt": "2026-10-29T12:00:00Z"},
+  "lastWriter": {"instance": "services/web:cuenv", "at": "2026-10-29T12:00:00Z"},
   "lock": {"lockIdentifier": "…", "holder": "…", "acquiredAt": "…",
            "cuenvVersion": "0.62.0",
            "lastChange": {"address": "random_pet.pet", "action": "create", "at": "…"}},
@@ -130,7 +129,7 @@ The full `s3://<bucket>/<key>` of `state.json` appears in:
 - **Unknown fields are preserved** at every level (serde flatten into a
   retained map), so a writer that is allowed to write never drops fields it
   does not know.
-- **Stored text is untrusted.** The holder, owner, tombstone and manifest text
+- **Stored text is untrusted.** The holder, writer, tombstone and manifest text
   can be written by anyone with bucket write access. Control characters are
   stripped before display (as in `sql.rs`), and any key or command built from
   this text is re-validated against the rules above before it is shown.
@@ -219,7 +218,7 @@ Deciding after an ambiguous response, by operation:
 | `force_unlock(tenant, id)` | GET, compare the id, then an `If-Match` write that clears the lock. Never touches records. |
 | `current_lock` | One GET. |
 | `locks()` | List `_locks/` (`encoding-type=url`), parse each key with the rules above, and GET the `state.json` built from the parsed segments. Report only locks that `state.json` confirms. Holder details come from `state.json`, never from the marker body. Stale markers are ignored. |
-| `owner` / `claim_owner` | One GET; the write protocol. |
+| `owner` | One GET; returns `lastWriter`, information only. |
 | `recovery_identity()` | sha256 of `cuenv-infrastructure-s3-recovery-v1\0` + the normalised endpoint host + `/` + bucket + `/` + root. Region, addressing and credentials are excluded, so a laptop and CI agree. |
 
 ### Engine changes
@@ -272,7 +271,7 @@ which `locks()` ignores. A held lock is never hidden from `locks()`.
    ask for confirmation unless `--yes` is given.
 3. Write the snapshot back:
    - **When `state.json` exists:** under the tenant lock, an `If-Match` PUT of
-     the snapshot's records and owner, with `serial = current + 1`, a fresh
+     the snapshot's records, with `serial = current + 1`, a fresh
      `writer` and the caller's lock.
    - **When `state.json` is absent:** create it with `If-None-Match: *` in a
      single write that carries the restorer's lock,
@@ -301,23 +300,29 @@ lists the tenant's `history/` and reads the project's `_migration.json`.
 
 ## Ownership
 
-The owner record (`<directory>:<package>`) keeps today's behaviour: claimed
-by the first apply or destroy, checked before any project secret is resolved.
+There is no ownership gate, on any backend. A tenant is identified by its key,
+and project names are unique within a module (see Uniqueness), so a second
+instance cannot claim the same tenant.
 
-When the recorded owner's directory is absent from this module's evaluation,
-is not skipped (not `_`/`.`-prefixed, holds no `cue.mod`), and this instance
-declares the same project:
-
-- `plan` reports that the state is owned by `<old dir:pkg>`, which no longer
-  declares the project;
-- `apply`, `destroy` and `import` refuse and print the exact
-  `cuenv infrastructure state adopt` command, with `-p` and `--package`;
-- `state adopt` performs the transfer (`claim_owner(Transfer)` under the
-  lock). It succeeds only if the owner in the body it read equals the
-  `dir:pkg` that this invocation's evaluation judged absent. Otherwise it
-  fails with `OwnedByAnotherInstance`.
-
-The SQL backends gain the same help text and keep their behaviour otherwise.
+- **Every locked write records the writer.** `lastWriter` stores the writer's
+  instance (`<directory>:<package>`) and the time. It is information only.
+- **Plan shows it.** Plan prints `lastWriter`, with a note when it differs
+  from the current instance. A moved directory is reported and never blocks.
+- **Rename detection uses it** (next section).
+- **Trait and type changes.**
+  - `StateStore::claim_owner`, `OwnerClaimMode`, `TenantOwner::require` and
+    `InfrastructureError::OwnedByAnotherInstance` are removed.
+  - The stores record `lastWriter` as part of every locked write.
+  - `owner()` becomes a read of `lastWriter`.
+  - The SQL owner table keeps its schema and is written as the last writer.
+- **`state adopt` is deprecated.** It is kept for one release as a no-op that
+  prints a deprecation notice, then removed. Its `#InfrastructureAction` name
+  (`state-adopt`) stays accepted for that release.
+- **A copied repository that keeps the original module path,** used with the
+  same bucket credential, shares the original's state. Docs say to change
+  `module:` when copying a repository. The plan header shows the state
+  location and the plan lists every destroy. That is the guard; there is no
+  other.
 
 ## Rename detection
 
@@ -325,7 +330,7 @@ This runs when acquire finds the tenant new (no `state.json`, nothing for the
 vanished-state guard). The command lists `<module>/_` across all packages and
 treats a `state.json` as a probable rename when all of these hold:
 
-- its owner **directory** equals this instance's directory;
+- its `lastWriter` **directory** equals this instance's directory;
 - the module-wide evaluation the command already runs **no longer declares**
   its (package, project, environment). The no-flag identity counts as
   declared when the project has a top-level `infrastructure` configuration;
@@ -344,8 +349,8 @@ name the old identity, its record count and its location, and offer:
    - When the hit is only a held lock, the refusal also prints the `unlock`
      command.
 3. **A separate project on purpose:** `--new-identity`.
-   - It skips rename detection only. It never bypasses the owner check or the
-     vanished-state guard, and a conformance test asserts both.
+   - It skips rename detection only. It never bypasses the vanished-state
+     guard, and a conformance test asserts that.
    - It is needed once: after the first write the tenant exists and detection
      no longer runs. Docs say not to add it to CI permanently.
 
@@ -543,6 +548,7 @@ It then tombstones the target and releases the source fence.
 | `state list` | header with the `s3://` location |
 | `state locks` | defaults to the current module (prefix `<module>/_`). `--all` lists every lock and prints the `--path`/`--package` needed to release each one. A 403 is reported as "credential is prefix-scoped". The help text no longer says "every project". |
 | `state pull` | new. Prints the tenant as JSON, built from trait reads (`list`, `owner`, `current_lock`) so it works on every backend. Help: the output contains plaintext provider secrets. |
+| `state adopt` | deprecated no-op for one release, then removed (see Ownership) |
 | `state restore` | new (see History and restore) |
 | `state migrate` | new (see Migration from SQL) |
 | `state rename` | new, phase 8 |
@@ -552,11 +558,28 @@ It then tombstones the target and releases the source fence.
 
 ### Uniqueness
 
-`check_unique_name` keeps its behaviour: every package, infrastructure
-projects only, fail closed, run on `plan`, `apply`, `destroy`, `import` and
-`state adopt`. Its comparison becomes case-insensitive. Release note: two
-existing infrastructure projects whose names differ only by case (`Web` and
-`web`) now fail, with no warning release.
+Project names are unique within a module, across every package, for every
+project, compared case-insensitively. The check is `check_unique_name`,
+extended:
+
+- **It covers every project,** not only those with an `infrastructure`
+  block.
+- **Child directories in the same package inherit their parent's `name`.**
+  A child that inherits only the name is part of the parent project and is
+  not counted. A child that also inherits the `infrastructure` block is still
+  a conflict, as today, because it would share the parent's state.
+- **It runs fail-closed** in `plan`, `apply`, `destroy` and `import`.
+  `cuenv sync` and `cuenv ci` report violations. It never runs on the shell
+  hook path.
+- **Rollout.**
+  - Duplicates among infrastructure projects are an error, as today, now also
+    when the names differ only by case.
+  - Duplicates that involve a project without `infrastructure` are a warning
+    for one release, then an error.
+- **Release note:** two infrastructure projects whose names differ only by
+  case (`Web` and `web`) now fail with no warning release.
+- **Task discovery.** The `cuenv-task-discovery` name index then never sees
+  duplicates; its silent last-one-wins insert becomes an error.
 
 ## Documentation
 
@@ -585,7 +608,8 @@ These pages need adding or updating:
   - **migration:** the migration flow and its fence caveat for older builds;
   - **R2:** keep r2.dev disabled and attach no custom domain to the state
     bucket;
-  - **renames:** rename and adopt behaviour, and what cannot be detected.
+  - **renames and moves:** directory moves need nothing; rename detection;
+    what cannot be detected; change `module:` when copying a repository.
 - Replace the sentence "Moving a project to a different module or renaming it
   starts from empty state" with the new rename behaviour.
 - `reference/cli.md`: every new or changed command and flag.
@@ -600,8 +624,10 @@ new production dependencies, schema or CLI changes, and cross-crate behaviour.
 
 1. **Conformance suite.** A generic `StateStore` suite over Memory, the Turso
    fake and the D1 fake, including fence survival across SQL `migrate()`.
-2. **Keys.** `object_key.rs`, the case-insensitive `check_unique_name`, and
-   environment case checks.
+2. **Keys and identity.** `object_key.rs`, module-wide case-insensitive
+   `check_unique_name` (warning for projects without `infrastructure`),
+   environment case checks, and removal of the ownership gate with
+   `lastWriter` recording, on the SQL stores too.
 3. **Transport.** SigV4 (test vectors) and the S3 transport on `http.rs`,
    adding `quick-xml`. Full flake gate.
 4. **Fake S3.** A stateful in-process stand-in with ETags,
@@ -612,8 +638,8 @@ new production dependencies, schema or CLI changes, and cross-crate behaviour.
    the engine flush, lock markers, history, the vanished-state guard, and
    `state restore`.
 6. **Wiring.** Schema, manifest and `connect` with multiple credentials,
-   `state pull`, adopt hints, rename detection with `--new-identity`, `state
-   locks` scoping, and docs. Full flake gate.
+   `state pull`, rename detection with `--new-identity`, `state locks`
+   scoping, the `state adopt` deprecation, and docs. Full flake gate.
 7. **Migration.** `state migrate`, `migrateStateTo`, the manifest, and SQL
    fence handling.
 8. **Rename and verification.** `state rename`, an ignored MinIO end-to-end
@@ -641,6 +667,7 @@ user) ran five rounds. The final round was unanimous.
 | 3 | Two blocks. | Rename detection limited to identities no longer declared. Restore can re-create a vanished object. |
 | 4 | One block. | Destroyed tenants no longer count as renames. `--new-identity` added. |
 | 5 | Unanimous. | Notes folded into this spec. |
+| After review | Maintainer decision. | Ownership gate removed and project names made unique module-wide. The gate protected against a copied repository that keeps the original module path, but a copy with the same layout passed it, and anyone who can make that mistake usually holds the bucket credential. |
 
 ### Corrections to the starting brief
 
