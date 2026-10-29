@@ -103,6 +103,7 @@ schema.#Project & {
 		contributors: [
 			xContributors.#NamespaceCache,
 			xContributors.#Nix,
+			xContributors.#Cachix,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xCodecov.#Codecov,
@@ -128,6 +129,10 @@ schema.#Project & {
 			// once the volume was warm it served no path to any job (Linux or
 			// macOS) while still uploading over a GiB per job.
 			namespaceCache: {}
+
+			// Publish built paths to the public cache so consumers of the flake
+			// can substitute cuenv instead of compiling it.
+			cachix: name: "cuenv"
 
 			trustedPublishing: cueRegistry: true
 
