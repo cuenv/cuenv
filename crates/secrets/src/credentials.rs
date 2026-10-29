@@ -83,6 +83,10 @@ pub const RESOLVER_ENVIRONMENT_VARIABLES: &[ResolverVariable] = &[
     credential(NamePattern::Exact("INFISICAL_TOKEN")),
     credential(NamePattern::Exact("INFISICAL_CLIENT_ID")),
     credential(NamePattern::Exact("INFISICAL_CLIENT_SECRET")),
+    // OIDC Auth: the identity is as sensitive as a client ID (the Infisical
+    // Terraform provider marks it sensitive), the JWT is a bearer credential.
+    credential(NamePattern::Exact("INFISICAL_MACHINE_IDENTITY_ID")),
+    credential(NamePattern::Exact("INFISICAL_AUTH_JWT")),
     credential(NamePattern::Exact("VAULT_TOKEN")),
     credential(NamePattern::Exact("CUENV_SECRET_SALT")),
     credential(NamePattern::Exact("CUENV_SECRET_SALT_PREV")),
@@ -244,7 +248,15 @@ mod tests {
     /// credential.
     fn looks_like_a_resolver_credential(name: &str) -> bool {
         const FAMILIES: &[&str] = &["OP_", "INFISICAL_", "VAULT_"];
-        const CREDENTIAL_WORDS: &[&str] = &["TOKEN", "SECRET", "SESSION", "PASSWORD", "CLIENT_ID"];
+        const CREDENTIAL_WORDS: &[&str] = &[
+            "TOKEN",
+            "SECRET",
+            "SESSION",
+            "PASSWORD",
+            "CLIENT_ID",
+            "IDENTITY_ID",
+            "JWT",
+        ];
         FAMILIES.iter().any(|family| name.starts_with(family))
             && CREDENTIAL_WORDS.iter().any(|word| name.contains(word))
     }
@@ -256,6 +268,8 @@ mod tests {
             "OP_CONNECT_TOKEN",
             "INFISICAL_TOKEN",
             "INFISICAL_CLIENT_SECRET",
+            "INFISICAL_MACHINE_IDENTITY_ID",
+            "INFISICAL_AUTH_JWT",
             "VAULT_TOKEN",
             "CUENV_SECRET_SALT",
             "CUENV_SECRET_SALT_PREV",

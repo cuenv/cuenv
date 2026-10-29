@@ -1711,6 +1711,7 @@ name = "cuenv-infisical"
 version = "0.60.1"
 dependencies = [
  "async-trait",
+ "cuenv-events",
  "cuenv-secrets",
  "reqwest 0.13.3",
  "serde",

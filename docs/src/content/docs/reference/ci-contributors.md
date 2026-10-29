@@ -166,6 +166,9 @@ The default set is the concatenation of three groups:
 Even when you include a contributor, it stays dormant until its `when` condition
 matches, so adding `#DefaultContributors` is safe.
 
+`#InfisicalOidc` and `#InfisicalSecretsAction` are opt-in and are not in any
+of these sets; add them next to the set you use.
+
 ### `#Nix` — install Determinate Nix
 
 - **CUE id:** `nix` (task `nix.install`) · **Compiled IR id:** `install-nix`
@@ -399,8 +402,80 @@ See also [How to manage secrets](/how-to/secrets/).
 - **Stage:** Setup
 - **Activates when:** the environment uses Infisical references (`secretsProvider: ["infisical"]`)
 
-Injects credential validation for the Infisical REST API. Example:
+Injects credential validation for the Infisical REST API
+(`cuenv secrets setup infisical`, priority **20**) and passes the
+`INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET`, `INFISICAL_TOKEN` and
+`INFISICAL_ORGANIZATION_SLUG` CI secrets to it and to the cuenv step. Example:
 [`examples/ci-infisical`](https://github.com/cuenv/cuenv/tree/main/examples/ci-infisical).
+
+### `#InfisicalOidc` — Infisical login with GitHub OIDC (GitHub)
+
+- **CUE id:** `infisical-oidc` (task `infisical.oidc`)
+- **Stage:** Setup (priority **15**: after `cuenv.setup`, before `infisical.setup`)
+- **Activates when:** the environment uses Infisical references (`secretsProvider: ["infisical"]`)
+- **Permissions:** `id-token: write`
+- **Parameters:** `#identityId` (default `"${INFISICAL_MACHINE_IDENTITY_ID}"`, the
+  repository secret), `#audience` (default `""`, GitHub's default audience)
+
+Opt-in companion to `#Infisical` for Pattern A, where cuenv resolves
+`#InfisicalSecret` references itself. The step requests the job's GitHub
+Actions ID token (with `#audience` when set), masks it, and writes
+`INFISICAL_AUTH_JWT` and `INFISICAL_MACHINE_IDENTITY_ID` to `$GITHUB_ENV`, so
+`cuenv secrets setup infisical` and the cuenv step log in with Infisical OIDC
+Auth. It runs as a plain shell step (`curl` and `jq`, both on GitHub-hosted
+runners), never through `cuenv exec`. The order in `ci.contributors` does not
+matter. On other providers the step fails because there is no Actions ID token
+endpoint.
+
+```cue
+import (
+	"list"
+	xContributors "github.com/cuenv/cuenv/contrib/contributors"
+)
+
+ci: contributors: list.Concat([
+	xContributors.#DefaultContributors,
+	[xContributors.#InfisicalOidc & {#audience: "https://github.com/my-org"}],
+])
+```
+
+Example: [`examples/ci-infisical-oidc`](https://github.com/cuenv/cuenv/tree/main/examples/ci-infisical-oidc).
+
+### `#InfisicalSecretsAction` — Infisical's official action (GitHub)
+
+- **CUE id:** `infisical-secrets-action` (task `infisical.secrets-action`)
+- **Stage:** Setup (priority **15**)
+- **Activates when:** always (add it only where you want it)
+- **Action:** [`Infisical/secrets-action@v1.0.18`](https://github.com/Infisical/secrets-action) with `method: oidc`
+- **Permissions:** `id-token: write`
+- **Parameters:** `#project` (required, `{slug: "..."}` or `{id: "..."}`),
+  `#envSlug` (required), `#identityId` (default the
+  `INFISICAL_MACHINE_IDENTITY_ID` secret), `#secretPath` (default `"/"`),
+  `#recursive` (default `false`), `#domain` (default the action's
+  `https://app.infisical.com`), `#audience` (default GitHub's), `#tasks`
+  (restrict the step to these task IDs' jobs)
+
+Pattern B: the action exports every secret under the path as a job
+environment variable, masked in the GitHub log; tasks read them with
+`schema.#EnvPassthrough`. cuenv does not resolve, scope, apply policies to, or
+redact these values. The action has no moving `v1` tag, so the contributor pins
+the release. On other providers the fallback command fails explicitly.
+
+```cue
+import xContributors "github.com/cuenv/cuenv/contrib/contributors"
+
+ci: contributors: [
+	xContributors.#Cuenv,
+	xContributors.#InfisicalSecretsAction & {
+		#project: slug: "my-project"
+		#envSlug: "prod"
+	},
+]
+```
+
+Example: [`examples/ci-infisical-action`](https://github.com/cuenv/cuenv/tree/main/examples/ci-infisical-action).
+See [How to manage secrets](/how-to/secrets/#infisical-in-github-actions-with-oidc)
+for the trade-offs between the two patterns.
 
 ### `#GhModels` — GitHub Models CLI (GitHub)
 

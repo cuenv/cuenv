@@ -29,7 +29,8 @@ Generation rules:
 
 - Use `schema.#ExecSecret` for custom command secrets.
 - Use `schema.#OnePasswordRef` for 1Password references.
-- Use `schema.#InfisicalSecret` for Infisical REST API references.
+- Use `schema.#InfisicalSecret` for Infisical REST API references. Auth comes from Universal Auth (`INFISICAL_CLIENT_ID` + `INFISICAL_CLIENT_SECRET`), OIDC Auth (`INFISICAL_MACHINE_IDENTITY_ID` + `INFISICAL_AUTH_JWT`) or `INFISICAL_TOKEN`; two complete logins, or half of one, is an error.
+- For GitHub Actions OIDC, add `contributors.#InfisicalOidc` (cuenv resolves the references) rather than storing Infisical credentials. Use `contributors.#InfisicalSecretsAction` with task-level `schema.#EnvPassthrough` only when the project wants Infisical's action to export secrets; cuenv then cannot scope, apply policies to, or redact them.
 - Use `schema.#AwsSecret` for AWS Secrets Manager references.
 - Use `schema.#GcpSecret` for Google Cloud Secret Manager references.
 - Treat `schema.#VaultSecret` as schema-only unless the current matrix changes.

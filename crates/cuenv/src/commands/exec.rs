@@ -265,6 +265,7 @@ impl ProjectEnvironment {
             "OP_SERVICE_ACCOUNT_TOKEN",
             "INFISICAL_TOKEN",
             "INFISICAL_CLIENT_SECRET",
+            "INFISICAL_AUTH_JWT",
         ] {
             if let Ok(token) = std::env::var(name)
                 && !token.is_empty()
