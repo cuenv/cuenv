@@ -102,6 +102,22 @@ impl SecretRegistry {
 
         resolver.resolve(name, spec).await
     }
+
+    /// Let the resolver for `provider` prepare to resolve `specs`; see
+    /// [`SecretResolver::prepare`].
+    ///
+    /// An unregistered provider is not an error here: resolution reports it
+    /// when (and if) one of its secrets is actually resolved.
+    ///
+    /// # Errors
+    ///
+    /// Returns the resolver's preparation error.
+    pub async fn prepare(&self, provider: &str, specs: &[SecretSpec]) -> Result<(), SecretError> {
+        match self.get(provider) {
+            Some(resolver) if !specs.is_empty() => resolver.prepare(specs).await,
+            _ => Ok(()),
+        }
+    }
 }
 
 impl std::fmt::Debug for SecretRegistry {
@@ -204,6 +220,54 @@ mod tests {
         } else {
             panic!("Expected UnsupportedResolver error");
         }
+    }
+
+    struct PreparingResolver {
+        prepared: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SecretResolver for PreparingResolver {
+        async fn resolve(&self, _name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
+            Ok(spec.source.clone())
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "preparing"
+        }
+
+        async fn prepare(&self, specs: &[SecretSpec]) -> Result<(), SecretError> {
+            let mut prepared = self.prepared.lock().map_err(|_| SecretError::MissingSalt)?;
+            prepared.extend(specs.iter().map(|spec| spec.source.clone()));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_registry_prepare_delegates_and_ignores_unknown_providers() {
+        let resolver = Arc::new(PreparingResolver {
+            prepared: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut registry = SecretRegistry::new();
+        registry.register(resolver.clone());
+
+        registry
+            .prepare("preparing", &[SecretSpec::new("a"), SecretSpec::new("b")])
+            .await
+            .unwrap();
+        registry.prepare("preparing", &[]).await.unwrap();
+        registry
+            .prepare("unknown", &[SecretSpec::new("c")])
+            .await
+            .unwrap();
+        // The default implementation is a no-op.
+        registry.register(Arc::new(EnvSecretResolver::new()));
+        registry
+            .prepare("env", &[SecretSpec::new("HOME")])
+            .await
+            .unwrap();
+
+        assert_eq!(*resolver.prepared.lock().unwrap(), vec!["a", "b"]);
     }
 
     #[tokio::test]

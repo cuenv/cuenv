@@ -567,6 +567,54 @@ impl Environment {
         Self::resolve_filtered_with_secrets(&accessible).await
     }
 
+    /// Let the secret providers referenced by `env_vars` prepare for a run
+    /// that resolves them later, one task at a time.
+    ///
+    /// Groups the secrets by resolver and calls
+    /// [`cuenv_secrets::SecretResolver::prepare`] once per resolver on the
+    /// process-wide registry, so a provider that logs in with a short-lived
+    /// credential (Infisical OIDC Auth) does so before the first task runs.
+    /// Nothing is resolved here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a provider fails to prepare.
+    pub async fn prepare_secret_providers(
+        env_vars: &HashMap<String, EnvValue>,
+    ) -> crate::Result<()> {
+        Self::prepare_secret_providers_with_registry(env_vars, cuenv_secrets::global_registry())
+            .await
+    }
+
+    /// [`Environment::prepare_secret_providers`] against `registry`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a provider fails to prepare.
+    pub async fn prepare_secret_providers_with_registry(
+        env_vars: &HashMap<String, EnvValue>,
+        registry: &cuenv_secrets::SecretRegistry,
+    ) -> crate::Result<()> {
+        let mut specs_by_resolver: BTreeMap<&str, Vec<cuenv_secrets::SecretSpec>> = BTreeMap::new();
+        for value in env_vars.values() {
+            for (_, secret) in value.collect_secrets() {
+                specs_by_resolver
+                    .entry(secret.resolver.as_str())
+                    .or_default()
+                    .push(secret.to_spec());
+            }
+        }
+        for (resolver, specs) in specs_by_resolver {
+            tracing::debug!(resolver, secrets = specs.len(), "preparing secret provider");
+            registry.prepare(resolver, &specs).await.map_err(|e| {
+                crate::Error::configuration(format!(
+                    "secret provider '{resolver}' could not get ready before the run: {e}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
     /// Build and resolve environment for a service, also returning secret values.
     ///
     /// Services use the same 3-phase secret resolution pipeline as tasks

@@ -152,6 +152,12 @@ cuenv chooses the method like this:
 4. Otherwise `INFISICAL_TOKEN` is used.
 5. With none of them, resolution fails and names all three options.
 
+Upgrading from a release without OIDC Auth: `INFISICAL_MACHINE_IDENTITY_ID`
+now selects OIDC Auth. If it is set in cuenv's environment while you log in
+with Universal Auth or `INFISICAL_TOKEN`, Infisical references now fail with
+"INFISICAL_MACHINE_IDENTITY_ID is set but INFISICAL_AUTH_JWT is not" (rule 1).
+Remove the variable from that environment, or switch to OIDC Auth.
+
 The access token a login returns is cached for its lifetime (minus a minute)
 and registered for redaction. `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET`,
 `INFISICAL_MACHINE_IDENTITY_ID`, `INFISICAL_AUTH_JWT` and `INFISICAL_TOKEN` are
@@ -220,14 +226,24 @@ schema.#Project & {
 The generated job gets `id-token: write` and a step, after cuenv is installed
 and before `cuenv secrets setup infisical` and `cuenv ci`, that requests the
 job's ID token, masks it with `::add-mask::` and writes `INFISICAL_AUTH_JWT`
-and `INFISICAL_MACHINE_IDENTITY_ID` to `$GITHUB_ENV`. cuenv then logs in with
-OIDC Auth and resolves only the references the selected environment declares,
-with policies and redaction as for any other secret. Do not also set the
-`INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET` repository secrets: two
-complete login methods is an error. GitHub ID tokens are short-lived (minutes),
-and cuenv logs in on its first Infisical reference and reuses the access token
-afterwards; set the identity's access token TTL to cover the job, because once
-it expires cuenv cannot log in again with the same JWT. See
+and `INFISICAL_MACHINE_IDENTITY_ID` to `$GITHUB_ENV` (with a random heredoc
+delimiter; the step fails, without printing the value, if either contains a
+line break). Like anything in `$GITHUB_ENV`, the JWT is readable by every later
+step of the job, including third-party actions, until it expires. cuenv then
+logs in with OIDC Auth and resolves only the references the selected
+environment declares, with policies and redaction as for any other secret. Do
+not also set the `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET` repository
+secrets: two complete login methods is an error.
+
+GitHub ID tokens are short-lived (minutes), while `cuenv ci` resolves each
+task's secrets when the task starts. So when OIDC Auth is configured and the
+pipeline's environment references Infisical secrets, `cuenv ci` logs in once
+before running any task, and reuses that access token for the rest of the run;
+a failed login stops the run before any task executes. cuenv never logs in a
+second time with the same JWT: if Infisical rejects the access token (HTTP 401)
+or it expires during the run, resolution fails and asks for a longer TTL. Set
+the identity's Access Token TTL (`access_token_ttl`) to cover the whole run.
+(`cuenv task` and `cuenv exec` resolve their environment once, up front.) See
 [`examples/ci-infisical-oidc`](https://github.com/cuenv/cuenv/tree/main/examples/ci-infisical-oidc).
 
 **Pattern B: Infisical's action fetches the secrets

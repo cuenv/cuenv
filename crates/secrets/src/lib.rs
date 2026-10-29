@@ -171,6 +171,23 @@ pub trait SecretResolver: Send + Sync {
     /// Examples: `"env"`, `"aws"`, `"vault"`, `"onepassword"`
     fn provider_name(&self) -> &'static str;
 
+    /// Prepare to resolve `specs` later in this process.
+    ///
+    /// Called once, before a run that resolves secrets lazily (such as a CI
+    /// pipeline, which resolves each task's environment when the task
+    /// starts), with every spec of this provider the run may resolve.
+    /// Providers that log in with short-lived credentials use it to log in
+    /// while those credentials are still valid; the default does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider cannot get ready, so the run can
+    /// stop before any task executes.
+    async fn prepare(&self, specs: &[SecretSpec]) -> Result<(), SecretError> {
+        let _ = specs;
+        Ok(())
+    }
+
     /// Resolve a single secret returning a secure value.
     ///
     /// The returned [`SecureSecret`] will automatically zero its memory on drop.
