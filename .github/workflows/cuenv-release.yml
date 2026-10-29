@@ -41,6 +41,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -80,6 +85,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -119,6 +129,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -161,6 +176,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
       with:
@@ -219,6 +239,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
       with:
@@ -277,6 +302,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
       with:
@@ -338,6 +368,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
       with:
@@ -403,6 +438,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
       with:
@@ -456,6 +496,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
       with:
@@ -506,6 +551,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
       with:
@@ -560,6 +610,11 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
       with:
