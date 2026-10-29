@@ -978,3 +978,105 @@ fn a_passthrough_path_is_never_replaced_by_the_hermetic_default() {
 
     assert_eq!(execution.get("PATH"), Some(&host_path));
 }
+
+struct RecordingPreparer {
+    prepared: std::sync::Mutex<Vec<String>>,
+    fail: bool,
+}
+
+#[async_trait::async_trait]
+impl cuenv_secrets::SecretResolver for RecordingPreparer {
+    async fn resolve(
+        &self,
+        name: &str,
+        _spec: &cuenv_secrets::SecretSpec,
+    ) -> std::result::Result<String, cuenv_secrets::SecretError> {
+        Err(cuenv_secrets::SecretError::resolution_failed(
+            name,
+            "prepare must not resolve",
+        ))
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "recording"
+    }
+
+    async fn prepare(
+        &self,
+        specs: &[cuenv_secrets::SecretSpec],
+    ) -> std::result::Result<(), cuenv_secrets::SecretError> {
+        if self.fail {
+            return Err(cuenv_secrets::SecretError::resolution_failed(
+                "TOKEN",
+                "login failed",
+            ));
+        }
+        self.prepared
+            .lock()
+            .unwrap()
+            .extend(specs.iter().map(|spec| spec.source.clone()));
+        Ok(())
+    }
+}
+
+fn recording_secret(id: &str) -> crate::secrets::Secret {
+    serde_json::from_value(serde_json::json!({"resolver": "recording", "id": id})).unwrap()
+}
+
+#[tokio::test]
+async fn prepare_secret_providers_groups_secrets_by_resolver() {
+    let preparer = std::sync::Arc::new(RecordingPreparer {
+        prepared: std::sync::Mutex::new(Vec::new()),
+        fail: false,
+    });
+    let mut registry = cuenv_secrets::SecretRegistry::with_builtins();
+    registry.register(preparer.clone());
+
+    let variables = HashMap::from([
+        ("PLAIN".into(), EnvValue::String("value".into())),
+        ("FIRST".into(), EnvValue::Secret(recording_secret("first"))),
+        (
+            "SECOND".into(),
+            EnvValue::Interpolated(vec![
+                EnvPart::Literal("x-".into()),
+                EnvPart::Secret(recording_secret("second")),
+            ]),
+        ),
+        (
+            // Other resolvers are prepared separately and never resolved.
+            "EXEC".into(),
+            EnvValue::Secret(crate::secrets::Secret::new(
+                "/this/command/must/never/run".into(),
+                vec![],
+            )),
+        ),
+    ]);
+
+    Environment::prepare_secret_providers_with_registry(&variables, &registry)
+        .await
+        .unwrap();
+
+    let mut prepared = preparer.prepared.lock().unwrap().clone();
+    prepared.sort();
+    assert_eq!(prepared.len(), 2);
+    assert!(prepared[0].contains("first"), "{prepared:?}");
+    assert!(prepared[1].contains("second"), "{prepared:?}");
+}
+
+#[tokio::test]
+async fn prepare_secret_providers_reports_failures() {
+    let mut registry = cuenv_secrets::SecretRegistry::new();
+    registry.register(std::sync::Arc::new(RecordingPreparer {
+        prepared: std::sync::Mutex::new(Vec::new()),
+        fail: true,
+    }));
+    let variables = HashMap::from([("TOKEN".into(), EnvValue::Secret(recording_secret("t")))]);
+
+    let error = Environment::prepare_secret_providers_with_registry(&variables, &registry)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("login failed"), "{error}");
+    assert!(error.contains("'recording'"), "{error}");
+    assert_eq!(error.matches("Configuration error").count(), 1, "{error}");
+}

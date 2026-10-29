@@ -24,7 +24,9 @@ use super::reporting::{
     write_pipeline_report,
 };
 use super::task_env::resolve_environment;
-use super::task_execution::{PipelineTaskResults, PipelineTasksRequest, execute_pipeline_tasks};
+use super::task_execution::{
+    PipelineTaskResults, PipelineTasksRequest, execute_pipeline_tasks, project_env_vars,
+};
 
 /// Request for running CI pipelines from the executor.
 pub struct RunCiRequest {
@@ -196,9 +198,11 @@ async fn run_ci_projects(
     // Track failures with structured errors
     let mut failures: Vec<(String, cuenv_core::Error)> = Vec::new();
 
-    // Process each project
+    // Plan every project first, so secret providers can prepare for the
+    // whole run before any task executes.
+    let mut plans = Vec::new();
     for (project_path, config) in &discovered.projects {
-        let Some(plan) = plan_project_pipeline(ProjectPipelinePlanRequest {
+        if let Some(plan) = plan_project_pipeline(ProjectPipelinePlanRequest {
             project_path,
             config,
             requested_pipeline: specific_pipeline,
@@ -206,11 +210,16 @@ async fn run_ci_projects(
             context,
             changed_files,
             project_map: &discovered.project_map,
-        })?
-        else {
-            continue;
-        };
+        })? {
+            plans.push((project_path, config, plan));
+        }
+    }
 
+    if !dry_run.is_dry_run() {
+        prepare_secret_providers(&plans).await?;
+    }
+
+    for (project_path, config, plan) in plans {
         tracing::info!(
             project = %project_path.display(),
             tasks = ?plan.tasks_to_run,
@@ -248,6 +257,26 @@ async fn run_ci_projects(
     }
 
     Ok(failures)
+}
+
+/// Let secret providers prepare for every secret the planned pipelines can
+/// resolve.
+///
+/// Tasks resolve their environment when they start, so without this a
+/// provider would first log in when the first task that needs it runs,
+/// possibly long after a short-lived credential (such as the GitHub Actions
+/// OIDC token behind Infisical OIDC Auth) has expired.
+async fn prepare_secret_providers(
+    plans: &[(&PathBuf, &Project, ProjectPipelinePlan)],
+) -> Result<()> {
+    let mut env_vars = HashMap::new();
+    for (project_path, config, plan) in plans {
+        for (key, value) in project_env_vars(config, plan.environment.as_deref()) {
+            // Keys only need to be unique; secrets are grouped by resolver.
+            env_vars.insert(format!("{}:{key}", project_path.display()), value);
+        }
+    }
+    cuenv_core::environment::Environment::prepare_secret_providers(&env_vars).await
 }
 
 #[derive(Clone, Copy)]

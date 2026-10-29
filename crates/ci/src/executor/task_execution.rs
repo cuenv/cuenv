@@ -354,6 +354,30 @@ fn task_walk_policy(max_parallel: usize, continue_on_error: bool) -> WalkPolicy 
     }
 }
 
+/// The project environment variables a CI task sees: the base `env` merged
+/// with the selected environment (`environment`, else `CUENV_ENVIRONMENT`).
+pub(super) fn project_env_vars(
+    config: &Project,
+    environment: Option<&str>,
+) -> HashMap<String, cuenv_core::environment::EnvValue> {
+    let env_name = environment
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("CUENV_ENVIRONMENT")
+                .ok()
+                .filter(|name| !name.is_empty())
+        });
+    config
+        .env
+        .as_ref()
+        .map(|env| match env_name.as_deref() {
+            Some(name) => env.for_environment(name),
+            None => env.base.clone(),
+        })
+        .unwrap_or_default()
+}
+
 async fn compile_and_execute_ir(
     config: &Project,
     task_name: &str,
@@ -379,22 +403,7 @@ async fn compile_and_execute_ir(
         )));
     }
 
-    let env_name = environment
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            std::env::var("CUENV_ENVIRONMENT")
-                .ok()
-                .filter(|name| !name.is_empty())
-        });
-    let project_env_vars = config
-        .env
-        .as_ref()
-        .map(|env| match env_name.as_deref() {
-            Some(name) => env.for_environment(name),
-            None => env.base.clone(),
-        })
-        .unwrap_or_default();
+    let project_env_vars = project_env_vars(config, environment);
     let (resolved_env, secrets) =
         cuenv_core::environment::Environment::resolve_for_task_with_secrets(
             task_name,
