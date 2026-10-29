@@ -47,7 +47,7 @@ top-level field is rejected only when your module's `language.version` is
 | `codegen`    | `#Codegen`                    | No       | Code generation configuration        |
 | `release`    | `#Release`                    | No       | Release management configuration     |
 | `vcs`        | `{[#VcsDependencyName]: #VcsDependency}` | No       | Cuenv-managed Git dependencies       |
-| `infrastructure`      | `#Infrastructure`                      | No       | Managed infrastructure (Terraform providers) |
+| `infrastructure`      | `#Infrastructure`                      | No       | Managed resources and read-only data sources (Terraform providers) |
 
 ### #Base
 
@@ -909,7 +909,7 @@ state format can change between releases. See
 
 ### #Infrastructure
 
-Managed resources driven through Terraform provider plugins, with state in
+Managed resources and read-only data sources driven through Terraform provider plugins, with managed state in
 Turso or Cloudflare D1. Every managed resource is one record keyed by the CUE module path, the
 project name and the selected environment (see
 [State identity](#state-identity)).
@@ -918,7 +918,8 @@ For typed, closed configuration, `cuenv infrastructure provider add
 <source>@<version>` generates CUE packages from the provider's own schema into
 `cue.mod/gen/<hostname>/<namespace>/<type>` and pins the release in
 `cuenv.lock`. Use the provider package's `#Provider` as the provider
-declaration and each `resources/<type>` package's `#Resource` as a resource
+declaration, each `resources/<type>` package's `#Resource` as a resource
+declaration, and each `data/<type>` package's `#DataSource` as a data source
 declaration (see [Generated provider types](#generated-provider-types)).
 
 `#Infrastructure` is the common `state` backend, an optional map of named
@@ -956,7 +957,7 @@ infrastructure: {
 | -------------- | -------------------------------------------------------- | -------- | ------------------------------------------------------------------- |
 | `state`        | `#InfrastructureState`                                   | Yes      | State backend (`turso` or `d1`), shared by the top level and every environment |
 | `environments` | `{[#InfrastructureName]: #InfrastructureConfiguration}`  | No       | Complete configurations selected with `--env NAME`                  |
-| `providers`, `resources`, `providerEnvironment` | see [`#InfrastructureConfiguration`](#infrastructureconfiguration) | No | The top-level configuration, used without `--env` |
+| `providers`, `resources`, `data`, `providerEnvironment` | see [`#InfrastructureConfiguration`](#infrastructureconfiguration) | No | The top-level configuration, used without `--env` |
 | `workflows`    | `#InfrastructureWorkflows`                               | No       | CI workflows that `cuenv sync ci` emits, for `ci.providers`, to plan and apply the top-level configuration |
 
 ### #InfrastructureWorkflows
@@ -1055,6 +1056,9 @@ The key starts with the path of the configuration: `infrastructure` for the
 top level, `infrastructure.environments.NAME` for an environment. A
 configuration is checked against its own `providers` and `resources` only: a
 top-level provider does not satisfy a resource inside an environment.
+The same provider and `dependsOn` checks apply to `data.NAME`, with error keys
+under `…_unresolved."data.NAME.…"`. A data source's `dependsOn` still names
+managed resources; dependencies on data sources are inferred from output references.
 
 Each check reads only the part of the configuration it needs and runs only when
 that part has no error of its own. A provider, a resource or a nested
@@ -1102,10 +1106,10 @@ and the error lists the declared environments.
 
 ### #InfrastructureConfiguration
 
-The complete provider and resource set of one configuration: the top level of
+The complete provider, managed resource and data source set of one configuration: the top level of
 `infrastructure`, or one entry of `infrastructure.environments`. A selected
 environment **replaces** the top-level configuration entirely. Nothing is
-inherited from the top-level `providers`, `resources` or `providerEnvironment`,
+inherited from the top-level `providers`, `resources`, `data` or `providerEnvironment`,
 and an incomplete environment (a resource that needs a provider the
 environment does not declare) is an error, not a merge.
 
@@ -1113,7 +1117,16 @@ environment does not declare) is an error, not a merge.
 | --------------------- | -------------------------------------------------- | -------- | ---------------------------------------------------------------- |
 | `providers`           | `{[#InfrastructureName]: #InfrastructureProvider}` | No       | Provider plugins keyed by local name. Always present in the evaluated project (an empty struct when none is declared) so the schema checks can tell "no providers" from "providers that failed to evaluate" |
 | `resources`           | `{[#InfrastructureName]: #ManagedResource}`        | No       | Managed resources keyed by name                                  |
+| `data`                | `{[#InfrastructureName]: #DataSource}`             | No       | Read-only provider lookups keyed by name; no managed state rows    |
 | `providerEnvironment` | `"inherit" \| "isolated"`                          | No       | What provider processes inherit from the cuenv process. Default `"inherit"` |
+
+A top-level configuration may contain only data sources, without `resources`,
+but when named environments are declared this is allowed only if the no-flag
+identity has no managed state rows. Existing no-flag managed state retains the
+apply refusal and plan warning; `destroy` remains available. Without named
+environments, ordinary orphan deletion applies: a data-only apply can delete
+formerly managed resources omitted from the configuration. The common state
+backend is still required.
 
 `providerEnvironment` controls the environment of every provider process; the
 project's own `env` variables that the running action's policy allows (see
@@ -1148,6 +1161,25 @@ Exactly one field must be set.
 | ------- | ------------- | -------- | ------------------------------------------------- |
 | `turso` | `#TursoState` | One of   | Remote Turso (libSQL) database, or a local `sqld` |
 | `d1`    | `#D1State`    | One of   | Cloudflare D1 database, through the Cloudflare API |
+
+Both backends share SQL schema version 2. A lock-fenced, transactional migration
+from version 1 adds managed-resource sensitivity metadata, defaulting existing
+rows to an empty list, and atomically renames `state_json` to
+`resource_state_json` without changing provider state or private bytes. Migration
+1 remains unchanged. The rename invalidates old SQL projections: a version-1
+reader that already passed its version check fails closed when its old SELECT
+runs after migration. No compatibility view exposes the old projection. Earlier
+incompatible development layouts remain refused; they are not version-1
+databases eligible for this migration.
+
+Stored managed records carry top-level `sensitive_attributes` metadata (an
+internal Rust/state field, not a CUE declaration field). The engine preserves
+the union of provider-schema, inherited-reference and stored sensitivity through
+refresh, import, failed updates and recovery, so later destroy/orphan plans in a
+fresh process can mask copied data-source secrets. Old records have no inferred
+provenance to reconstruct retroactively; data source support had not been
+released. Metadata controls masking and redaction, not encryption: sensitive
+values remain plaintext in managed state and recovery files.
 
 ### #D1State
 
@@ -1240,7 +1272,60 @@ see [Checks](#checks) for the errors.
 | `type`      | `string`          | Yes      | Managed resource type such as `random_pet` (`<provider>_<name>`) |
 | `provider`  | `#InfrastructureName`      | No       | Local provider name. Defaults to the type prefix; either way it must be a key of the same configuration's `providers` |
 | `dependsOn` | `[...#InfrastructureName]` | No       | Resources applied before (and destroyed after) this one; each must be a key of the same configuration's `resources` |
+| `outputs` | `{[string]: string \| number \| bool}` | No | Abstract top-level scalar outputs, removed before provider calls; generated types declare eligible attributes |
 | `configuration` | `{...}` | No | Resource arguments, validated by the provider schema |
+
+### #DataSource
+
+A read-only lookup declared under `infrastructure.data`. It has the same fields
+as [`#ManagedResource`](#managedresource), but `type` names a provider data source
+type, and `configuration` is validated against that type's data source schema.
+`dependsOn` names managed resources in the same configuration; references infer
+dependencies on managed resources or other data sources.
+
+Each `plan` or `apply` invocation reads fresh results. An apply keeps the reads
+from its own planning phase across confirmation. A read is deferred until apply
+when any managed prerequisite changes, even if its referenced identifier is
+already known, or when a data prerequisite is deferred. A deferred-read failure
+during apply skips dependents in the mixed graph while unrelated work can
+continue. A data read failure during planning aborts the plan.
+
+Data inputs and results may contain collections, but the `outputs` namespace and
+output references expose only top-level scalars. Data results have no managed
+state rows or recovery files. Values copied into managed resource arguments can
+still persist in managed state, including sensitive values. Managed prerequisites
+reached through data sources are stored as flattened resource dependencies for
+destroy ordering.
+Copied top-level sensitivity is persisted on the managed record for later
+destroy/orphan plans, including after a process restart; see
+[`#InfrastructureState`](#infrastructurestate) for migration and historical limits.
+
+### #InfrastructureOutputReference
+
+A top-level scalar argument of a managed resource or data source may reference
+a top-level scalar output in either namespace:
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `fromResource` | `string` | One of | Declared managed resource address, `type.name` |
+| `fromDataSource` | `string` | One of | Declared data source address, `type.name` |
+| `attribute` | `string` | Yes | Top-level scalar attribute name |
+
+Exactly one of `fromResource` and `fromDataSource` is allowed. For example,
+`{fromDataSource: "aws_ami.base", attribute: "id"}` selects a data source output.
+Native direct selectors such as `infrastructure.data.base.outputs.id` or
+`infrastructure.resources.primary.outputs.id` lower to the same reference;
+both managed resources and data sources can consume them. Sources must belong
+to the selected configuration, and source and destination primitive types must
+match. Untyped declarations supply placeholders such as `outputs: id: string`;
+generated types supply eligible declarations automatically. Nested or collection
+selection, refined output placeholders, and expressions over outputs are unsupported.
+
+Sensitive primitive outputs are masked in plans. Known sensitive strings are
+registered before validation and read calls; returned sensitive strings are
+registered before response diagnostics. Output redaction covers strings of at
+least four characters; numeric and boolean values are masked, not registered
+for textual redaction.
 
 ### Generated provider types
 
@@ -1252,7 +1337,15 @@ Not part of cuenv's schema module: `cuenv infrastructure provider add
 | Import path | Package | Definitions |
 | ----------- | ------- | ----------- |
 | `<hostname>/<namespace>/<type>` | `<type>_provider` (`-` becomes `_`), imported as `"registry.terraform.io/hashicorp/random:random_provider"` | `#Provider: {source, version, schemaDigest, configuration: #Configuration}` (closed); `#Configuration` (the provider block, closed) |
-| `<hostname>/<namespace>/<type>/resources/<resource type>` | `<resource type>` | `#Resource: {type, configuration: #Configuration, ...}`; `#Configuration` (closed) |
+| `<hostname>/<namespace>/<type>/resources/<resource type>` | `<resource type>` | `#Resource`, `#Configuration` (closed), `#Outputs` (top-level scalars) |
+| `<hostname>/<namespace>/<type>/data/<data source type>` | `<data source type>` | `#DataSource`, `#Configuration` (closed), `#Outputs` (top-level scalars), written in `data_source.cue` |
+
+Resource and data source configurations accept scalar output-reference
+descriptors. The schema digest includes nonempty data source schemas; providers
+without data sources retain their previous digest. To refresh an existing pin
+made before data source support for a provider that has data sources, run
+`cuenv infrastructure provider add <source>@<same-version>`. `cuenv sync
+infrastructure` regenerates from the pin and cannot update an obsolete digest.
 
 ```cue
 import (

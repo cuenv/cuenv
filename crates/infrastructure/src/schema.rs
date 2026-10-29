@@ -10,13 +10,15 @@ use crate::error::Result;
 use crate::protocol::{self, NestingMode};
 use crate::type_system::{Type, Value, deduplicate};
 
-/// A provider's schemas for itself and its managed resources.
+/// A provider's schemas for itself, its managed resources and its data sources.
 #[derive(Debug, Clone)]
 pub struct ProviderSchema {
     /// Schema of the `provider` configuration block.
     pub provider: Schema,
     /// Managed resource schemas, keyed by resource type name.
     pub resources: HashMap<String, Schema>,
+    /// Data source schemas, keyed by data source type name.
+    pub data_sources: HashMap<String, Schema>,
     /// Optional protocol features the provider supports.
     pub capabilities: ProviderCapabilities,
 }
@@ -369,6 +371,11 @@ impl ProviderSchema {
                 .into_iter()
                 .map(|(name, schema)| Ok((name, version6_schema(schema)?)))
                 .collect::<Result<_>>()?,
+            data_sources: response
+                .data_source_schemas
+                .into_iter()
+                .map(|(name, schema)| Ok((name, version6_schema(schema)?)))
+                .collect::<Result<_>>()?,
         })
     }
 
@@ -387,6 +394,11 @@ impl ProviderSchema {
                 .map_or_else(|| Ok(Schema::empty()), version5_schema)?,
             resources: response
                 .resource_schemas
+                .into_iter()
+                .map(|(name, schema)| Ok((name, version5_schema(schema)?)))
+                .collect::<Result<_>>()?,
+            data_sources: response
+                .data_source_schemas
                 .into_iter()
                 .map(|(name, schema)| Ok((name, version5_schema(schema)?)))
                 .collect::<Result<_>>()?,
@@ -552,6 +564,50 @@ fn version5_block(block: protocol::version5::Block) -> Result<Block> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn data_source_schemas_decode_separately_with_sensitive_attributes_in_both_protocols()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use prost::Message;
+
+        // Independent upstream wire fixture: resource_schemas (2) has type t
+        // at version 1; data_source_schemas (3) has the same name at version 7,
+        // with a computed, sensitive string attribute named id.
+        let bytes = b"\x12\x09\x0a\x01t\x12\x04\x08\x01\x12\x00\x1a\x1d\x0a\x01t\x12\x18\x08\x07\x12\x14\x12\x12\x0a\x02id\x12\x08\"string\"\x30\x01\x38\x01";
+        let version5 = ProviderSchema::from_version5(
+            protocol::version5::GetProviderSchemaResponse::decode(bytes.as_slice())?,
+        )?;
+        let version6 = ProviderSchema::from_version6(
+            protocol::version6::GetProviderSchemaResponse::decode(bytes.as_slice())?,
+        )?;
+        for schema in [version5, version6] {
+            assert_eq!(schema.resources.len(), 1);
+            assert_eq!(schema.resources["t"].version, 1);
+            assert_eq!(schema.data_sources.len(), 1);
+            let data_source = &schema.data_sources["t"];
+            assert_eq!(data_source.version, 7);
+            let attribute = &data_source.block.attributes["id"];
+            assert_eq!(attribute.value_type, Type::String);
+            assert_eq!(attribute.presence, Presence::Computed);
+            assert!(attribute.sensitive);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_data_source_schemas_are_empty() -> Result<()> {
+        assert!(
+            ProviderSchema::from_version5(protocol::version5::GetProviderSchemaResponse::default())?
+                .data_sources
+                .is_empty()
+        );
+        assert!(
+            ProviderSchema::from_version6(protocol::version6::GetProviderSchemaResponse::default())?
+                .data_sources
+                .is_empty()
+        );
+        Ok(())
+    }
 
     fn attribute(value_type: Type, presence: Presence) -> Attribute {
         Attribute {

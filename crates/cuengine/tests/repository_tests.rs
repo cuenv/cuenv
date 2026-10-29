@@ -246,6 +246,43 @@ fn registry_source_may_name_a_host_with_a_port() -> TestResult {
 const DEVELOPMENT: &str = "environments: dev: {providers: random: {source: \"hashicorp/random\", version: \"3.9.1\"}, resources: pet: type: \"random_pet\"}";
 
 #[test]
+fn data_sources_evaluate_in_their_own_configuration() -> TestResult {
+    let fixture = SchemaFixture::new(&infrastructure(&[
+        STATE,
+        PROVIDER,
+        "resources: pet: type: \"random_pet\"",
+        "data: lookup: {type: \"random_lookup\", dependsOn: [\"pet\"], configuration: query: \"name\"}",
+        "environments: dev: {providers: random: {source: \"hashicorp/random\", version: \"3.9.1\"}, data: lookup: {type: \"random_lookup\", configuration: query: \"other\"}}",
+    ]))?;
+    let result = fixture.evaluate()?;
+    let value = result.instances.get("app").ok_or("app instance missing")?;
+    let declared = value
+        .get("infrastructure")
+        .ok_or("infrastructure missing")?;
+    let top = Infrastructure::select(declared.clone(), None)?;
+    let development = Infrastructure::select(declared.clone(), Some("dev"))?;
+    assert_eq!(top.data["lookup"].configuration["query"], "name");
+    assert_eq!(development.data["lookup"].configuration["query"], "other");
+    assert!(development.resources.is_empty());
+    Ok(())
+}
+
+#[test]
+fn data_source_references_are_checked_in_each_environment() -> TestResult {
+    let fixture = SchemaFixture::new(&infrastructure(&[
+        STATE,
+        PROVIDER,
+        "resources: pet: type: \"random_pet\"",
+        "environments: dev: data: lookup: {type: \"random_lookup\", dependsOn: [\"pet\"]}",
+    ]))?;
+    let message = fixture.error()?;
+    assert!(message.contains("data.lookup.dependsOn[0]"), "{message}");
+    assert!(message.contains("data.lookup.type"), "{message}");
+    assert!(message.contains("environments.dev"), "{message}");
+    Ok(())
+}
+
+#[test]
 fn undeclared_references_name_what_is_missing() -> TestResult {
     let fixture = SchemaFixture::new(&infrastructure(&[
         STATE,

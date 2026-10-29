@@ -102,6 +102,7 @@ fn provider_schema() -> ProviderSchema {
                 },
             ),
         ]),
+        data_sources: HashMap::new(),
         capabilities: ProviderCapabilities::default(),
     }
 }
@@ -195,9 +196,9 @@ import (
 #Configuration: {
 	keepers?: {[string]: string}
 	// The length (in words) of the pet name.
-	length?: number | cuenv_schema.#InfrastructureOutputReference
+	length?: number | {cuenv_schema.#InfrastructureOutputReference}
 	// Deprecated: Use `separator`.
-	prefix?: string | cuenv_schema.#InfrastructureOutputReference
+	prefix?: string | {cuenv_schema.#InfrastructureOutputReference}
 	rule!: [...{
 		"for"?: {
 			cidr!: string
@@ -206,7 +207,7 @@ import (
 		port!: number
 	}] & list.MinItems(1) & list.MaxItems(3)
 	// The provider chooses a value when this is not set.
-	separator?: string | cuenv_schema.#InfrastructureOutputReference
+	separator?: string | {cuenv_schema.#InfrastructureOutputReference}
 }
 
 // #Outputs contains selectable top-level scalar provider outputs.
@@ -214,7 +215,7 @@ import (
 	id: string
 	length: number
 	prefix: string
-	// Sensitive: redacted from output, and plans show the arguments it sets as (sensitive).
+	// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.
 	secret: string
 	separator: string
 }
@@ -240,6 +241,10 @@ fn import_lines_qualify_provider_packages() {
         types.resource_import("example_pet"),
         r#""registry.terraform.io/acme/example-cloud/resources/example_pet""#
     );
+    assert_eq!(
+        types.data_source_import("example_pet"),
+        r#""registry.terraform.io/acme/example-cloud/data/example_pet""#
+    );
     let random = ProviderSource::parse("hashicorp/random").unwrap();
     let types = render(
         &provider_schema(),
@@ -253,6 +258,37 @@ fn import_lines_qualify_provider_packages() {
         types.provider_import(),
         r#""registry.terraform.io/hashicorp/random:random_provider""#
     );
+}
+
+#[test]
+fn data_source_packages_share_configuration_and_output_rules_with_resources() {
+    let mut schema = provider_schema();
+    schema.data_sources = schema.resources.clone();
+    let source = source();
+    let types = render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "1.2.3",
+        },
+    )
+    .unwrap();
+    assert_eq!(types.data_source_types, ["example_empty", "example_pet"]);
+    assert_eq!(types.files.len(), 5);
+    for name in &types.data_source_types {
+        let resource = &types.files[&Path::new("resources").join(name).join("resource.cue")];
+        let data_source = &types.files[&Path::new("data").join(name).join("data_source.cue")];
+        assert_eq!(
+            data_source,
+            &resource
+                .replace(
+                    &format!("the {name} resource"),
+                    &format!("the {name} data source")
+                )
+                .replace("#Resource", "#DataSource")
+                .replace("a managed resource", "a read-only data source")
+        );
+    }
 }
 
 #[test]
@@ -308,6 +344,72 @@ fn descriptions_do_not_change_the_digest_but_shapes_do() {
     let mut fewer = provider_schema();
     fewer.resources.remove("example_empty");
     assert_ne!(digest, schema_digest(&fewer));
+}
+
+#[test]
+fn providers_without_data_sources_preserve_the_legacy_digest() {
+    let mut schema = provider_schema();
+    schema.provider.block = Block::default();
+    schema.resources.clear();
+    assert_eq!(
+        schema_digest(&schema),
+        "sha256:8775c20fa4583efb231215871e3fcf84df44b1103e89c720418f980f6e4848f8"
+    );
+}
+
+#[test]
+fn data_source_schemas_are_sorted_and_bound_into_the_digest() {
+    let mut schema = provider_schema();
+    let legacy = schema_digest(&schema);
+    schema.data_sources = schema.resources.clone();
+    let digest = schema_digest(&schema);
+    assert_ne!(legacy, digest);
+
+    let mut reordered = schema.clone();
+    let mut entries: Vec<_> = reordered.data_sources.drain().collect();
+    entries.sort_by(|(left, _), (right, _)| right.cmp(left));
+    reordered.data_sources.extend(entries);
+    assert_eq!(digest, schema_digest(&reordered));
+
+    let mut described = schema.clone();
+    let pet = described.data_sources.get_mut("example_pet").unwrap();
+    pet.version += 1;
+    pet.block.documentation.description = "Lookup a pet.".into();
+    pet.block
+        .attributes
+        .get_mut("length")
+        .unwrap()
+        .documentation
+        .description = "Words.".into();
+    assert_eq!(digest, schema_digest(&described));
+
+    let mut changed = schema.clone();
+    changed
+        .data_sources
+        .get_mut("example_pet")
+        .unwrap()
+        .block
+        .attributes
+        .get_mut("length")
+        .unwrap()
+        .value_type = Type::String;
+    assert_ne!(digest, schema_digest(&changed));
+    changed = schema.clone();
+    changed
+        .data_sources
+        .get_mut("example_pet")
+        .unwrap()
+        .block
+        .attributes
+        .get_mut("length")
+        .unwrap()
+        .presence = Presence::Required;
+    assert_ne!(digest, schema_digest(&changed));
+    changed = schema.clone();
+    changed.data_sources.remove("example_empty");
+    assert_ne!(digest, schema_digest(&changed));
+    changed.data_sources.clear();
+    assert_eq!(legacy, schema_digest(&changed));
 }
 
 #[test]
@@ -418,6 +520,21 @@ fn output_reference_schema_is_closed_and_requires_an_address_and_attribute() -> 
             true,
         ),
         (
+            r#"{fromDataSource: "cloudflare_zone.primary", attribute: "id"}"#,
+            true,
+        ),
+        (
+            r#"{fromResource: "cloudflare_zone.primary", fromDataSource: "cloudflare_zone.primary", attribute: "id"}"#,
+            false,
+        ),
+        (r#"{attribute: "id"}"#, false),
+        (r#"{fromDataSource: "primary", attribute: "id"}"#, false),
+        (r#"{fromDataSource: "cloudflare_zone.primary"}"#, false),
+        (
+            r#"{fromDataSource: "cloudflare_zone.primary", attribute: "id", extra: true}"#,
+            false,
+        ),
+        (
             r#"{fromResource: "cloudflare_zone.primary", attribute: "id", extra: true}"#,
             false,
         ),
@@ -450,7 +567,7 @@ fn output_reference_schema_is_closed_and_requires_an_address_and_attribute() -> 
 
 #[test]
 #[ignore = "requires the CUE command"]
-fn generated_references_are_limited_to_top_level_primitive_resource_arguments() -> TestResult {
+fn generated_references_are_limited_to_top_level_primitive_arguments() -> TestResult {
     let mut schema = provider_schema();
     let resource = schema
         .resources
@@ -464,6 +581,7 @@ fn generated_references_are_limited_to_top_level_primitive_resource_arguments() 
         "labels".into(),
         attribute(Type::List(Box::new(Type::String)), Presence::Optional),
     );
+    schema.data_sources = schema.resources.clone();
     let source = source();
     let types = render(
         &schema,
@@ -487,6 +605,7 @@ fn generated_references_are_limited_to_top_level_primitive_resource_arguments() 
         std::fs::write(path, contents)?;
     }
     let reference = r#"{fromResource: "cloudflare_zone.primary", attribute: "id"}"#;
+    let data_reference = r#"{fromDataSource: "cloudflare_zone.primary", attribute: "id"}"#;
     for (kind, configuration, expected) in [
         (ConfigurationKind::Provider, r#"{api_key: "token"}"#.to_string(), true),
         (ConfigurationKind::Provider, format!("{{api_key: {reference}}}"), false),
@@ -498,10 +617,21 @@ fn generated_references_are_limited_to_top_level_primitive_resource_arguments() 
         (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], token: {reference}}}"), false),
         (ConfigurationKind::Resource, r#"{rule: [{port: 80}], separator: {fromResource: "cloudflare_zone.primary", attribute: "id", extra: true}}"#.to_string(), false),
         (ConfigurationKind::Resource, r#"{rule: [{port: 80}], separator: {fromResource: "cloudflare_zone.primary"}}"#.to_string(), false),
+        (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], separator: {data_reference}}}"), true),
+        (ConfigurationKind::Resource, r#"{rule: [{port: 80}], separator: {fromResource: "cloudflare_zone.primary", fromDataSource: "cloudflare_zone.primary", attribute: "id"}}"#.to_string(), false),
+        (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], separator: {reference}}}"), true),
+        (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], separator: {data_reference}, length: {data_reference}, enabled: {data_reference}}}"), true),
+        (ConfigurationKind::DataSource, format!("{{rule: [{{port: {data_reference}}}]}}"), false),
+        (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], labels: {data_reference}}}"), false),
+        (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], id: {data_reference}}}"), false),
+        (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], token: {data_reference}}}"), false),
+        (ConfigurationKind::DataSource, r#"{rule: [{port: 80}], separator: {fromDataSource: "cloudflare_zone.primary", attribute: "id", extra: true}}"#.to_string(), false),
+        (ConfigurationKind::DataSource, r#"{rule: [{port: 80}], separator: {fromResource: "cloudflare_zone.primary", fromDataSource: "cloudflare_zone.primary", attribute: "id"}}"#.to_string(), false),
     ] {
         let (import_path, package) = match kind {
             ConfigurationKind::Provider => (types.provider_import(), types.package_name.as_str()),
             ConfigurationKind::Resource => (types.resource_import("example_pet"), "example_pet"),
+            ConfigurationKind::DataSource => (types.data_source_import("example_pet"), "example_pet"),
         };
         std::fs::write(
             directory.path().join("test.cue"),

@@ -111,8 +111,10 @@ enum RemoteProcedure {
     ValidateProviderConfiguration,
     Configure,
     ValidateResourceConfiguration,
+    ValidateDataSourceConfiguration,
     UpgradeResourceState,
     ReadResource,
+    ReadDataSource,
     ImportResourceState,
     PlanResourceChange,
     ApplyResourceChange,
@@ -130,10 +132,14 @@ impl RemoteProcedure {
             (Protocol::Version5, Self::ValidateResourceConfiguration) => {
                 "/tfplugin5.Provider/ValidateResourceTypeConfig"
             }
+            (Protocol::Version5, Self::ValidateDataSourceConfiguration) => {
+                "/tfplugin5.Provider/ValidateDataSourceConfig"
+            }
             (Protocol::Version5, Self::UpgradeResourceState) => {
                 "/tfplugin5.Provider/UpgradeResourceState"
             }
             (Protocol::Version5, Self::ReadResource) => "/tfplugin5.Provider/ReadResource",
+            (Protocol::Version5, Self::ReadDataSource) => "/tfplugin5.Provider/ReadDataSource",
             (Protocol::Version5, Self::ImportResourceState) => {
                 "/tfplugin5.Provider/ImportResourceState"
             }
@@ -152,10 +158,14 @@ impl RemoteProcedure {
             (Protocol::Version6, Self::ValidateResourceConfiguration) => {
                 "/tfplugin6.Provider/ValidateResourceConfig"
             }
+            (Protocol::Version6, Self::ValidateDataSourceConfiguration) => {
+                "/tfplugin6.Provider/ValidateDataResourceConfig"
+            }
             (Protocol::Version6, Self::UpgradeResourceState) => {
                 "/tfplugin6.Provider/UpgradeResourceState"
             }
             (Protocol::Version6, Self::ReadResource) => "/tfplugin6.Provider/ReadResource",
+            (Protocol::Version6, Self::ReadDataSource) => "/tfplugin6.Provider/ReadDataSource",
             (Protocol::Version6, Self::ImportResourceState) => {
                 "/tfplugin6.Provider/ImportResourceState"
             }
@@ -828,7 +838,7 @@ impl ProviderClient {
         })
     }
 
-    /// Fetch the provider and managed resource schemas.
+    /// Fetch the provider, managed resource and data source schemas.
     ///
     /// # Errors
     ///
@@ -912,6 +922,56 @@ impl ProviderClient {
             )
             .await?;
         Ok(response.diagnostics)
+    }
+
+    /// Validate a data source configuration.
+    ///
+    /// Register sensitive configuration strings for redaction before calling;
+    /// provider diagnostics and transport errors can repeat those inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the RPC fails.
+    pub async fn validate_data_source_configuration(
+        &self,
+        type_name: &str,
+        configuration: Vec<u8>,
+    ) -> Result<Vec<Diagnostic>> {
+        let response: protocol::DiagnosticsResponse = self
+            .call(
+                RemoteProcedure::ValidateDataSourceConfiguration,
+                protocol::ValidateDataSourceConfigurationRequest {
+                    type_name: type_name.to_string(),
+                    configuration: Some(message_pack_value(configuration)),
+                },
+            )
+            .await?;
+        Ok(response.diagnostics)
+    }
+
+    /// Read a data source using its configuration.
+    ///
+    /// Register sensitive configuration strings before calling. Register
+    /// sensitive returned strings before rendering diagnostics, then validate
+    /// the returned state and reject any deferred response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the RPC fails.
+    pub async fn read_data_source(
+        &self,
+        type_name: &str,
+        configuration: Vec<u8>,
+    ) -> Result<protocol::ReadDataSourceResponse> {
+        self.call(
+            RemoteProcedure::ReadDataSource,
+            protocol::ReadDataSourceRequest {
+                type_name: type_name.to_string(),
+                configuration: Some(message_pack_value(configuration)),
+                client_capabilities: Some(client_capabilities()),
+            },
+        )
+        .await
     }
 
     /// Upgrade stored JSON state to the provider's current schema. The
@@ -1329,6 +1389,26 @@ async fn connect_unix(address: &str) -> Result<Channel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_source_procedures_use_the_negotiated_protocol_paths() {
+        assert_eq!(
+            RemoteProcedure::ValidateDataSourceConfiguration.path(Protocol::Version5),
+            "/tfplugin5.Provider/ValidateDataSourceConfig"
+        );
+        assert_eq!(
+            RemoteProcedure::ValidateDataSourceConfiguration.path(Protocol::Version6),
+            "/tfplugin6.Provider/ValidateDataResourceConfig"
+        );
+        assert_eq!(
+            RemoteProcedure::ReadDataSource.path(Protocol::Version5),
+            "/tfplugin5.Provider/ReadDataSource"
+        );
+        assert_eq!(
+            RemoteProcedure::ReadDataSource.path(Protocol::Version6),
+            "/tfplugin6.Provider/ReadDataSource"
+        );
+    }
 
     #[test]
     fn import_uses_the_negotiated_protocol_path() {

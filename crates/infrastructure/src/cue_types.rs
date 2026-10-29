@@ -2,16 +2,19 @@
 //!
 //! `cuenv infrastructure provider add` and `cuenv sync infrastructure` render
 //! the schema cuenv reads over gRPC as CUE packages under `cue.mod/gen`, one
-//! for the provider block and one per managed resource type:
+//! for the provider block and one per managed resource or data source type:
 //!
 //! ```text
 //! cue.mod/gen/registry.terraform.io/hashicorp/random/provider.cue
 //! cue.mod/gen/registry.terraform.io/hashicorp/random/resources/random_pet/resource.cue
+//! cue.mod/gen/registry.terraform.io/hashicorp/example/data/example_lookup/data_source.cue
 //! ```
 //!
 //! The provider package defines `#Provider` (source, version and schema
 //! digest bound to the types) and `#Configuration`; each resource package
-//! defines `#Resource` (bound to its type) and `#Configuration`. Field names
+//! defines `#Resource` (bound to its type), `#Configuration` and `#Outputs`.
+//! Data source packages expose `#DataSource`, `#Configuration` and `#Outputs`.
+//! Field names
 //! are Terraform's attribute names, which is what the engine decodes.
 //!
 //! The [schema digest](schema_digest) covers what the generated
@@ -50,6 +53,12 @@ pub const RESOURCES_DIRECTORY_NAME: &str = "resources";
 
 /// File holding a resource package, inside its directory.
 pub const RESOURCE_FILE_NAME: &str = "resource.cue";
+
+/// Directory holding one package per data source type.
+pub const DATA_SOURCES_DIRECTORY_NAME: &str = "data";
+
+/// File holding a data source package, inside its directory.
+pub const DATA_SOURCE_FILE_NAME: &str = "data_source.cue";
 
 /// Prefix of every schema digest.
 pub const SCHEMA_DIGEST_PREFIX: &str = "sha256:";
@@ -92,6 +101,8 @@ pub struct GeneratedTypes {
     pub schema_digest: String,
     /// Managed resource types, sorted.
     pub resource_types: Vec<String>,
+    /// Data source types, sorted.
+    pub data_source_types: Vec<String>,
 }
 
 impl GeneratedTypes {
@@ -110,6 +121,18 @@ impl GeneratedTypes {
                 self.import_path
             ),
             resource_type,
+        )
+    }
+
+    /// The `import` line for one data source type's package.
+    #[must_use]
+    pub fn data_source_import(&self, data_source_type: &str) -> String {
+        import_line(
+            &format!(
+                "{}/{DATA_SOURCES_DIRECTORY_NAME}/{data_source_type}",
+                self.import_path
+            ),
+            data_source_type,
         )
     }
 }
@@ -215,9 +238,11 @@ pub async fn load_schema(
 /// Digest of what the generated `#Configuration` definitions encode.
 ///
 /// `sha256:` and the hex SHA-256 of a canonical JSON document holding, for
-/// the provider block and every managed resource, each attribute's type,
+/// the provider block and every managed resource and data source, each attribute's type,
 /// nesting and flags and each nested block's nesting and item bounds.
 /// Descriptions, deprecation messages and schema versions are left out.
+/// Providers without data sources retain their legacy digest. Existing pins
+/// for providers with data sources must be regenerated with `provider add`.
 #[must_use]
 pub fn schema_digest(schema: &ProviderSchema) -> String {
     let resources: BTreeMap<&String, serde_json::Value> = schema
@@ -225,11 +250,19 @@ pub fn schema_digest(schema: &ProviderSchema) -> String {
         .iter()
         .map(|(name, resource)| (name, block_document(&resource.block)))
         .collect();
-    let document = json!({
+    let mut document = json!({
         "format": 1,
         "provider": block_document(&schema.provider.block),
         "resources": resources,
     });
+    if !schema.data_sources.is_empty() {
+        let data_sources: BTreeMap<&String, serde_json::Value> = schema
+            .data_sources
+            .iter()
+            .map(|(name, data_source)| (name, block_document(&data_source.block)))
+            .collect();
+        document["data_sources"] = json!(data_sources);
+    }
     let mut hasher = Sha256::new();
     hasher.update(document.to_string().as_bytes());
     format!("{SCHEMA_DIGEST_PREFIX}{}", hex::encode(hasher.finalize()))
@@ -363,35 +396,49 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         package.line(0, "}");
         package.blank();
         package.configuration(&resource.block);
-        package.blank();
-        package.line(
-            0,
-            "// #Outputs contains selectable top-level scalar provider outputs.",
-        );
-        package.line(0, "#Outputs: {");
-        for (name, attribute) in &resource.block.attributes {
-            if !attribute.write_only
-                && attribute.nested.is_none()
-                && matches!(
-                    attribute.value_type,
-                    Type::String | Type::Number | Type::Boolean
-                )
-            {
-                if attribute.sensitive {
-                    package.line(
-                        1,
-                        "// Sensitive: redacted from output, and plans show the arguments it sets as (sensitive).",
-                    );
-                }
-                package.field(1, &label(name), &type_expression(&attribute.value_type, 1));
-            }
-        }
-        package.line(0, "}");
+        package.outputs(&resource.block);
         files.insert(
             Path::new(RESOURCES_DIRECTORY_NAME)
                 .join(resource_type)
                 .join(RESOURCE_FILE_NAME),
             package.finish(resource_type),
+        );
+    }
+
+    let mut data_source_types: Vec<String> = schema.data_sources.keys().cloned().collect();
+    data_source_types.sort();
+    for data_source_type in &data_source_types {
+        let Some(data_source) = schema.data_sources.get(data_source_type) else {
+            continue;
+        };
+        let mut package = Package::new(
+            &description,
+            &format!("the {data_source_type} data source"),
+            ConfigurationKind::DataSource,
+        );
+        package.line(
+            0,
+            &format!("// #DataSource declares a read-only data source of type {data_source_type}."),
+        );
+        let documentation = documentation_lines(&data_source.block.documentation, &[]);
+        if !documentation.is_empty() {
+            package.line(0, "//");
+            package.comment_lines(0, &documentation);
+        }
+        package.line(0, "#DataSource: {");
+        package.field(1, "type", &cue_string(data_source_type));
+        package.field(1, "configuration", "#Configuration");
+        package.field(1, "outputs", "#Outputs");
+        package.line(1, "...");
+        package.line(0, "}");
+        package.blank();
+        package.configuration(&data_source.block);
+        package.outputs(&data_source.block);
+        files.insert(
+            Path::new(DATA_SOURCES_DIRECTORY_NAME)
+                .join(data_source_type)
+                .join(DATA_SOURCE_FILE_NAME),
+            package.finish(data_source_type),
         );
     }
 
@@ -402,6 +449,7 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         files,
         schema_digest,
         resource_types,
+        data_source_types,
     })
 }
 
@@ -418,6 +466,7 @@ struct Package {
 enum ConfigurationKind {
     Provider,
     Resource,
+    DataSource,
 }
 
 impl Package {
@@ -488,6 +537,33 @@ impl Package {
         self.line(0, &format!("#Configuration: {value}"));
     }
 
+    fn outputs(&mut self, block: &Block) {
+        self.blank();
+        self.line(
+            0,
+            "// #Outputs contains selectable top-level scalar provider outputs.",
+        );
+        self.line(0, "#Outputs: {");
+        for (name, attribute) in &block.attributes {
+            if !attribute.write_only
+                && attribute.nested.is_none()
+                && matches!(
+                    attribute.value_type,
+                    Type::String | Type::Number | Type::Boolean
+                )
+            {
+                if attribute.sensitive {
+                    self.line(
+                        1,
+                        "// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.",
+                    );
+                }
+                self.field(1, &label(name), &type_expression(&attribute.value_type, 1));
+            }
+        }
+        self.line(0, "}");
+    }
+
     /// The struct a block's configuration is written as, opening at the
     /// current position and closing at `depth`.
     fn block_struct(&mut self, block: &Block, depth: usize) -> String {
@@ -524,7 +600,7 @@ impl Package {
             Some(nested) => self.nested_attributes(nested, depth),
             None => type_expression(&attribute.value_type, depth),
         };
-        if self.configuration_kind == ConfigurationKind::Resource
+        if self.configuration_kind != ConfigurationKind::Provider
             && depth == 1
             && attribute.nested.is_none()
             && matches!(
@@ -532,7 +608,7 @@ impl Package {
                 Type::String | Type::Number | Type::Boolean
             )
         {
-            value.push_str(" | cuenv_schema.#InfrastructureOutputReference");
+            value.push_str(" | {cuenv_schema.#InfrastructureOutputReference}");
             self.uses_output_reference = true;
         }
         Some(Field {
