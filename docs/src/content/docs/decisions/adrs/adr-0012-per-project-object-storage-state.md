@@ -42,7 +42,7 @@ and user) went through five rounds until all five approved. Their objections
 are recorded in the implementation spec.
 
 After the review, the maintainer removed the ownership gate and made project
-names unique module-wide. The review had kept the gate as a backstop against
+names unique within the evaluated package for every project. The review had kept the gate as a backstop against
 a copied repository that keeps the original module path. That backstop did
 not hold: a copy with the same directory layout passes the gate, and anyone
 who can make the mistake usually holds the bucket credential anyway.
@@ -66,7 +66,9 @@ who can make the mistake usually holds the bucket credential anyway.
   grammar before any request. `root` elements may not contain a `.`. The
   request path must equal the expected key byte for byte.
 - **`TenantKey` is unchanged.** The object store takes the package from the
-  evaluated CUE instance. The SQL backends and their schema are not changed.
+  evaluated CUE instance. The SQL schema is not changed. The SQL backends
+  lose the ownership gate and record the last writer instead (see Ownership
+  and renames).
 
 `state.json` holds the format versions, the tenant identity, the last writer's
 instance, the lock, and every managed resource record. Every write is a conditional PUT
@@ -134,10 +136,14 @@ snapshots.
   module, so a second instance cannot claim the same tenant. The ownership
   check and the requirement to run `state adopt` after moving a directory are
   removed, for every backend.
-- **Writer instance, information only.** Each write records the writer's
-  instance (`<directory>:<package>`). Plan shows it, notes when it differs
-  from the current directory, and rename detection uses it. It never blocks a
-  run.
+- **Writer instance, information only.** Lock acquisition by an evaluated
+  command records the writer's instance (`<directory>:<package>`) as
+  `lastWriter`. Plan shows it and notes when it differs from the current
+  directory, and rename detection uses it. It never blocks a run.
+- **Skipped directories.** State commands refuse a target inside a directory
+  the module walk skips (`_x`, `.x`, `testdata`). Today only the ownership
+  gate stopped `state remove` run in a stale copy such as `_old/web` from
+  deleting live records.
 - **Rename detection.** A run that finds its own tenant empty looks for a
   tenant in the same module whose last writer was in its directory, that is
   no longer declared, and that still holds records or a lock. If it finds one, it refuses as
@@ -163,16 +169,22 @@ snapshots.
 
 ### Project names
 
-Project names are unique within a module, across every package, for every
-project, compared case-insensitively.
+A project is a `#Project` instance in the package cuenv evaluates (`cuenv`
+unless `--package` says otherwise). Instances in other CUE packages are not
+projects and never take part, even when they have a `name` field. Within that
+package, project names are unique, compared case-insensitively.
 
-- **Enforcement.** The check runs fail-closed in the infrastructure commands
-  that already evaluate the whole module (`plan`, `apply`, `destroy`,
-  `import`). `cuenv sync` and `cuenv ci` report violations. It never runs on
-  the shell hook path.
-- **Projects without `infrastructure`.** A duplicate among them is a warning
-  for one release, then an error. Duplicates among infrastructure projects
-  are already an error today.
+- **Infrastructure commands** (`plan`, `apply`, `destroy`, `import`) fail
+  closed on a duplicate between two infrastructure projects. A duplicate that
+  involves a project without `infrastructure` is only a warning in these
+  commands, so an unrelated project can never block an emergency apply.
+- **`cuenv sync` and `cuenv ci`** report every duplicate: a warning for one
+  release, then an error. They skip instances that fail to evaluate rather
+  than failing, so one broken instance cannot break CI.
+- **The shell hook path** never runs the check.
+- **The SQL backends' state key has no package.** For them, the existing
+  check across every package for instances with an `infrastructure` block
+  stays. The S3 key includes the package, so S3 does not need it.
 - **The module path is the identity.** Keeping it unique, for example
   changing `module:` when a repository is copied, is the user's
   responsibility. The plan prints the state location and every destroy, which
@@ -219,14 +231,23 @@ project, compared case-insensitively.
   location and every destroy before anything runs. Nothing else guards
   against it.
 - Modules that reuse a project name in a non-infrastructure project see a
-  warning for one release and then an error.
+  warning for one release and then an error in `cuenv sync` and `cuenv ci`.
+- Two nested modules that declare the same module path share state, and
+  nothing detects it.
+- Builds from 0.61 and earlier still enforce the old gate against the SQL
+  owner row, which new builds overwrite with the last writer. A pinned older
+  build may therefore refuse with `OwnedByAnotherInstance` and suggest
+  `state adopt`. The release note says so.
 
 ### Neutral
 
 - Turso stays supported. D1 is deprecated by #549.
 - `state adopt` is no longer required. It is kept for one release as a no-op
-  that prints a deprecation notice, then removed.
+  that prints a deprecation notice, then removed. `state-adopt` stays an
+  accepted, ignored value of `#InfrastructureAction` permanently, so existing
+  configurations keep evaluating.
 - The SQL schema is unchanged, apart from preserving migration fence rows.
+  The SQL owner table now records the last writer.
 
 ## Validation
 
