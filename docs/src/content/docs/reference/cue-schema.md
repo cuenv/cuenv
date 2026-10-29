@@ -1706,6 +1706,12 @@ env: {
 | `includeImports`         | `bool`                | true        | Include imported secrets           |
 | `apiUrl`                 | `string`              | env/default | Infisical API base URL             |
 
+cuenv authenticates with Universal Auth (`INFISICAL_CLIENT_ID` and
+`INFISICAL_CLIENT_SECRET`), OIDC Auth (`INFISICAL_MACHINE_IDENTITY_ID` and
+`INFISICAL_AUTH_JWT`) or `INFISICAL_TOKEN`; see
+[Infisical authentication](/how-to/secrets/#infisical-authentication) for the
+precedence rules and the GitHub Actions OIDC contributors.
+
 ### #GcpSecret
 
 Google Cloud Secret Manager reference.

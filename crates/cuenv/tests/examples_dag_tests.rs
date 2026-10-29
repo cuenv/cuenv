@@ -197,6 +197,20 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
+            name: "ci-infisical-oidc",
+            min_task_count: 1, // deploy
+            has_hooks: false,
+            has_env: true, // Infisical refs resolved with GitHub OIDC
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
+            name: "ci-infisical-action",
+            min_task_count: 1, // deploy
+            has_hooks: false,
+            has_env: false, // Secrets come from Infisical/secrets-action
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
             name: "ci-gcp-secret",
             min_task_count: 1, // deploy
             has_hooks: false,

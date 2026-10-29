@@ -672,7 +672,8 @@ command named in an error or hint carries the run's `--env`, `-p` and
 process environment minus the credentials of cuenv's secret resolvers
 (`OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, every `OP_SESSION_*`,
 `OP_CONNECT_HOST`, `INFISICAL_TOKEN`, `INFISICAL_CLIENT_ID`,
-`INFISICAL_CLIENT_SECRET`, `VAULT_TOKEN`, `CUENV_SECRET_SALT`,
+`INFISICAL_CLIENT_SECRET`, `INFISICAL_MACHINE_IDENTITY_ID`,
+`INFISICAL_AUTH_JWT`, `VAULT_TOKEN`, `CUENV_SECRET_SALT`,
 `CUENV_SECRET_SALT_PREV`, and the variables `cache.remote.auth` names), and
 the state token, unless the
 project passes a variable of that name. `providerEnvironment: "isolated"`
@@ -1147,7 +1148,7 @@ cuenv secrets setup <PROVIDER> [OPTIONS]
 cuenv secrets setup onepassword
 ```
 
-This downloads the 1Password WASM SDK to enable HTTP-based secret resolution. When `OP_SERVICE_ACCOUNT_TOKEN` is set, cuenv uses this for faster, batched secret resolution instead of the `op` CLI. For Infisical, setup validates that `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET`, or `INFISICAL_TOKEN`, are present.
+This downloads the 1Password WASM SDK to enable HTTP-based secret resolution. When `OP_SERVICE_ACCOUNT_TOKEN` is set, cuenv uses this for faster, batched secret resolution instead of the `op` CLI. For Infisical, setup validates the authentication environment with the resolver's rules and reports the method cuenv will use: Universal Auth (`INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET`), OIDC Auth (`INFISICAL_MACHINE_IDENTITY_ID` and `INFISICAL_AUTH_JWT`), or `INFISICAL_TOKEN`. A half-configured login, or both logins at once, is an error. It does not contact the API.
 
 See the [Secrets Guide](/how-to/secrets/) for more details on secret management.
 

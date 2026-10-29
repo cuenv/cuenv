@@ -6,7 +6,7 @@ package schema
 // - GCP: GOOGLE_APPLICATION_CREDENTIALS → HTTP, otherwise CLI
 // - 1Password: OP_SERVICE_ACCOUNT_TOKEN → HTTP, otherwise CLI
 // - Vault: VAULT_TOKEN + VAULT_ADDR → HTTP, otherwise CLI
-// - Infisical: Universal Auth env vars or INFISICAL_TOKEN → HTTP
+// - Infisical: Universal Auth, OIDC Auth (identity ID + JWT) or INFISICAL_TOKEN → HTTP
 //
 // `value` and `policies` are reserved for #EnvironmentVariableWithPolicies,
 // and `cuenvPassthrough` for #EnvPassthrough. Forbidding them here keeps

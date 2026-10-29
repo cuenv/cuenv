@@ -14,6 +14,10 @@
 //   - #OnePassword: Sets up 1Password WASM SDK for secret resolution
 //   - #Infisical: Validates Infisical REST API credentials for secret resolution
 //
+// Opt-in Contributors (not in #DefaultContributors):
+//   - #InfisicalOidc: Exports a GitHub OIDC token so cuenv logs in to Infisical
+//   - #InfisicalSecretsAction: Runs Infisical/secrets-action with OIDC
+//
 // GitHub-Specific Contributors:
 //   - #Cachix: Configures Cachix for Nix binary caching
 //   - #Hestia: Configures Hestia for GitHub Actions-backed Nix binary caching

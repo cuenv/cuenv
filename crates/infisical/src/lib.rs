@@ -4,4 +4,6 @@
 
 pub mod secrets;
 
-pub use secrets::{InfisicalConfig, InfisicalResolver};
+pub use secrets::{
+    InfisicalAuthConfigError, InfisicalAuthMethod, InfisicalConfig, InfisicalResolver,
+};
