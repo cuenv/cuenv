@@ -44,10 +44,15 @@ import "github.com/cuenv/cuenv/schema"
 // - grants the job `id-token: write`;
 // - before cuenv resolves secrets, requests the job's OIDC ID token, masks it
 //   and writes it to $GITHUB_ENV as INFISICAL_AUTH_JWT, together with
-//   INFISICAL_MACHINE_IDENTITY_ID.
+//   INFISICAL_MACHINE_IDENTITY_ID (heredoc form, random delimiter; a value
+//   with a line break fails the step). Later steps of the job can read the
+//   JWT until it expires.
 //
 // cuenv's Infisical resolver then calls Infisical's OIDC Auth login with the
-// identity ID and JWT. The resolver itself never talks to GitHub. Do not also
+// identity ID and JWT. `cuenv ci` logs in once, before its first task, while
+// the JWT is fresh, and never logs in again with the same JWT: set the
+// identity's access token TTL to cover the whole run, or later secret reads
+// fail (and say so). The resolver itself never talks to GitHub. Do not also
 // provide INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET: configuring both
 // login methods is an error.
 //
@@ -81,7 +86,9 @@ import "github.com/cuenv/cuenv/schema"
 //		[xContributors.#InfisicalOidc & {#audience: "https://github.com/my-org"}],
 //	])
 #InfisicalOidc: schema.#Contributor & {
-	#identityId: string | *"${INFISICAL_MACHINE_IDENTITY_ID}"
+	// A line break would add a variable to $GITHUB_ENV; the step also rejects
+	// one in the secret's value, which CUE cannot see.
+	#identityId: string & !~"[\n\r]" | *"${INFISICAL_MACHINE_IDENTITY_ID}"
 
 	// Single quotes and newlines would break out of the shell literal below.
 	#audience: string & !~"['\n\r]" | *""
@@ -116,11 +123,23 @@ import "github.com/cuenv/cuenv/schema"
 			  echo "::error::GitHub Actions returned no OIDC token" >&2
 			  exit 1
 			fi
+			# A line break in a value would let it set other variables (and break
+			# ::add-mask::), so refuse it without printing the value.
+			has_line_break() { [ "$(printf '%s' "$1" | tr -d '\\r\\n')" != "$1" ]; }
+			if has_line_break "$INFISICAL_MACHINE_IDENTITY_ID"; then
+			  echo "::error::INFISICAL_MACHINE_IDENTITY_ID contains a line break; check the secret or #identityId" >&2
+			  exit 1
+			fi
+			if has_line_break "$jwt"; then
+			  echo "::error::GitHub Actions returned an OIDC token containing a line break" >&2
+			  exit 1
+			fi
 			echo "::add-mask::${jwt}"
 			echo "::add-mask::${INFISICAL_MACHINE_IDENTITY_ID}"
+			delimiter="ghadelimiter_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')"
 			{
-			  echo "INFISICAL_AUTH_JWT=${jwt}"
-			  echo "INFISICAL_MACHINE_IDENTITY_ID=${INFISICAL_MACHINE_IDENTITY_ID}"
+			  printf 'INFISICAL_AUTH_JWT<<%s\\n%s\\n%s\\n' "$delimiter" "$jwt" "$delimiter"
+			  printf 'INFISICAL_MACHINE_IDENTITY_ID<<%s\\n%s\\n%s\\n' "$delimiter" "$INFISICAL_MACHINE_IDENTITY_ID" "$delimiter"
 			} >> "$GITHUB_ENV"
 			"""
 	}]
@@ -141,7 +160,8 @@ import "github.com/cuenv/cuenv/schema"
 // Parameters (definition fields, so set them by unification):
 // - #envSlug (required): Infisical environment slug, e.g. "prod".
 // - #project (required): the Infisical project, either `{slug: "..."}` or
-//   `{id: "..."}` (the action takes exactly one).
+//   `{id: "..."}`. The action takes exactly one, so setting both fails
+//   `cuenv sync ci`.
 // - #identityId: machine identity ID. Defaults to the
 //   INFISICAL_MACHINE_IDENTITY_ID repository secret.
 // - #secretPath: folder to read (default "/").
@@ -174,7 +194,7 @@ import "github.com/cuenv/cuenv/schema"
 #InfisicalSecretsAction: schema.#Contributor & {
 	#identityId: string | *"${INFISICAL_MACHINE_IDENTITY_ID}"
 	#envSlug!:   string
-	#project!: {slug!: string} | {id!: string}
+	#project!: close({slug!: string}) | close({id!: string})
 	#secretPath: string | *"/"
 	#recursive:  bool | *false
 	#domain:     string | *""
