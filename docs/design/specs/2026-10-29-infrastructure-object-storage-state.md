@@ -302,8 +302,7 @@ lists the tenant's `history/` and reads the project's `_migration.json`.
 ## Ownership
 
 There is no ownership gate, on any backend. A tenant is identified by its key,
-and project names are unique within the evaluated package (see Uniqueness),
-with the cross-package check kept for SQL, so a second
+and project names are unique (see Uniqueness), so a second
 instance cannot claim the same tenant.
 
 - **The writer is recorded at lock acquisition.** `LockRequest` gains
@@ -593,62 +592,36 @@ It then tombstones the target and releases the source fence.
 
 ### Uniqueness
 
-**What a project is.** A project is an instance of the package cuenv
-evaluates (`cuenv` unless `--package` says otherwise) that discovery treats as
-a `#Project`; today, an instance with a `name` field. Instances in other CUE
-packages are never evaluated for this check and never count, even with a
-`name` field. A Kubernetes package with `name: "api"` beside a cuenv project
-named `api` is not a duplicate.
+Project names are unique.
 
-**The rule.** Within that package, project names are unique, compared
-case-insensitively. A same-package child directory inherits its parent's
-`name`:
-- a child that inherits only the name is part of the parent project and is
-  not counted;
-- a child that also inherits the `infrastructure` block is a conflict, as
-  today.
-
-**Where it runs:**
-- **A same-package instance that fails to evaluate** makes infrastructure
-  commands fail closed. The error names the instance and says that
-  `state list`, `unlock` and `state remove` still work, as today's help text
-  does.
-- **Infrastructure commands** (`plan`, `apply`, `destroy`, `import`) fail
-  closed only on a duplicate between two infrastructure projects. A duplicate
-  that involves a project without `infrastructure` is a warning there, so an
-  unrelated project can never block an emergency apply or destroy.
-- **`cuenv sync` and `cuenv ci`** report every duplicate: a warning for one
-  release, then an error. They skip instances that fail to evaluate rather
-  than failing. `crates/ci` already evaluates only the `cuenv` package and
-  skips failures, so one broken instance cannot break CI.
-- **The shell hook path** never runs the check.
-- **The SQL backends' key has no package.** For them, the existing check
-  across every package for instances with an `infrastructure` block stays,
-  because without the ownership gate nothing else would stop two packages'
-  infrastructure projects named `api` from sharing state. The S3 key includes
-  the package, so the S3 backend skips that cross-package walk, and a broken
-  unrelated package no longer blocks its plan.
-
-**Implementation.**
-- `check_unique_name` moves from the binary crate into a shared crate, so
-  sync and ci can call it, with fail-closed and skip-and-report modes.
-- The false doc comment on `ModuleResult::projects` in `cuengine` ("verified
-  via CUE unification") is corrected to describe the `name`-field detection.
-  `cuengine` gains no cuenv-specific logic.
-
-**Tests and release notes.**
-- Conformance tests: two packages differing only by case that declare the
-  same project (refused through the `tenant` check if MinIO folds their
-  keys); an unrelated package with a `name` field; a
-  non-infrastructure duplicate (warning in `apply`, reported by `ci`);
-  infrastructure duplicates differing by case (error); the SQL cross-package
-  infrastructure duplicate (error); `state remove` in a skipped-directory
-  copy (refused).
-- Release note: two infrastructure projects whose names differ only by case
-  (`Web` and `web`) now fail with no warning release.
-- **Task discovery.** The `cuenv-task-discovery` name index never sees
-  duplicates once the rule is an error. Its silent last-one-wins insert
-  becomes an error.
+- **What a project is.** A `#Project` instance in the package cuenv evaluates
+  (`cuenv` unless `--package` says otherwise); today, an instance with a
+  `name` field. Instances in other CUE packages are not projects and never
+  take part, even with a `name` field.
+- **The rule.** A duplicate name in that package, compared case-insensitively,
+  is an error. A same-package child directory that inherits its parent's
+  `name` is part of the parent project, not a duplicate.
+- **Where it runs.** Every command that evaluates the whole module: `plan`,
+  `apply`, `destroy`, `import`, `cuenv sync`, `cuenv ci`. It fails closed.
+  An instance that fails to evaluate is named in the error, which also says
+  that `state list`, `unlock` and `state remove` still work. The shell hook
+  path never runs the check.
+- **SQL backends.** Their key has no package, so their existing cross-package
+  check stays unchanged.
+- **Implementation.** `check_unique_name` moves from the binary crate into a
+  shared crate so that sync and ci can call it. The false doc comment on
+  `ModuleResult::projects` in `cuengine` ("verified via CUE unification") is
+  corrected to describe the `name`-field detection. `cuengine` gains no
+  cuenv-specific logic.
+- **Task discovery.** The `cuenv-task-discovery` name index's silent
+  last-one-wins insert becomes an error.
+- **Tests.** A duplicate name; names differing only by case; two packages
+  differing only by case that declare the same project (refused through the
+  `tenant` check if MinIO folds their keys); an unrelated package with a
+  `name` field (not counted); `state remove` in a skipped-directory copy
+  (refused).
+- **Release note.** Modules that reuse a project name, including names that
+  differ only by case, fail until one is renamed.
 
 ## Documentation
 
@@ -697,8 +670,8 @@ new production dependencies, schema or CLI changes, and cross-crate behaviour.
 1. **Conformance suite.** A generic `StateStore` suite over Memory, the Turso
    fake and the D1 fake, including fence survival across SQL `migrate()`.
 2. **Keys and identity.** `object_key.rs`, `check_unique_name` moved to a
-   shared crate and extended (package-scoped, case-insensitive, warnings for
-   projects without `infrastructure`), the skipped-directory refusal,
+   shared crate and extended (package-scoped, case-insensitive, every
+   project), the skipped-directory refusal,
    environment case checks, and removal of the ownership gate with
    `lastWriter` recording, on the SQL stores too.
 3. **Transport.** SigV4 (test vectors) and the S3 transport on `http.rs`,
@@ -740,7 +713,7 @@ user) ran five rounds. The final round was unanimous.
 | 3 | Two blocks. | Rename detection limited to identities no longer declared. Restore can re-create a vanished object. |
 | 4 | One block. | Destroyed tenants no longer count as renames. `--new-identity` added. |
 | 5 | Unanimous. | Notes folded into this spec. |
-| After review | Maintainer decision, then round 6. | Ownership gate removed and project names made unique module-wide. The gate protected against a copied repository that keeps the original module path, but a copy with the same layout passed it, and anyone who can make that mistake usually holds the bucket credential. Round 6: four approvals and one block ("project" was undefined, so unrelated CUE packages would collide). Fixed by scoping projects to the evaluated package. Round 7: four approvals and one block (a git remote in `lastWriter` can carry CI tokens), fixed by recording no remote. Round 8: unanimous. Rename detection now evaluates another package before calling its hit undeclared, and refuses when that package fails to evaluate. Also folded in: `lastWriter` set at lock acquisition only, the skipped-directory refusal for state commands, the infrastructure-only fail-closed scope, and `state-adopt` kept in the action enum. |
+| After review | Maintainer decisions, then rounds 6–8. | Ownership gate removed and project names made unique module-wide. The gate protected against a copied repository that keeps the original module path, but a copy with the same layout passed it, and anyone who can make that mistake usually holds the bucket credential. Round 6: four approvals and one block ("project" was undefined, so unrelated CUE packages would collide). Fixed by scoping projects to the evaluated package. Round 7: four approvals and one block (a git remote in `lastWriter` can carry CI tokens), fixed by recording no remote. Round 8: unanimous. Afterwards the maintainer removed the infrastructure-only exception the review had added: project names are unique, full stop. Rename detection now evaluates another package before calling its hit undeclared, and refuses when that package fails to evaluate. Also folded in: `lastWriter` set at lock acquisition only, the skipped-directory refusal for state commands, the infrastructure-only fail-closed scope, and `state-adopt` kept in the action enum. |
 
 ### Corrections to the starting brief
 
