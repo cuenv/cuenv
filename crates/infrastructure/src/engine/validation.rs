@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cuenv_manifest::manifest::{Infrastructure, ManagedResourceDeclaration};
 
-use super::declared_resource;
+use super::{data_sources, declared_resource};
 use crate::error::{InfrastructureError, Result};
-use crate::references::ConfigurationReferences;
+use crate::references::{ConfigurationReferences, SourceAddress};
 use crate::registry::{ProviderSource, validate_version};
 
 /// Where in the `infrastructure` block a configuration lives: the top level,
@@ -36,6 +36,13 @@ impl<'name> ConfigurationScope<'name> {
         self.environment.map_or_else(
             || "infrastructure.resources".to_string(),
             |name| format!("infrastructure.environments.{name}.resources"),
+        )
+    }
+
+    fn data_sources(&self) -> String {
+        self.environment.map_or_else(
+            || "infrastructure.data".to_string(),
+            |name| format!("infrastructure.environments.{name}.data"),
         )
     }
 
@@ -83,6 +90,17 @@ pub fn validate_configuration(
     let mut problems = Vec::new();
     check_providers(infrastructure, &scope, &mut problems);
     check_resources(infrastructure, &scope, &mut problems);
+    check_data_sources(infrastructure, &scope, &mut problems);
+    if problems.is_empty()
+        && let Err(error) = data_sources::DeclarationGraph::new(infrastructure)
+    {
+        problems.push(format!(
+            "{} / {}: {}",
+            scope.resources(),
+            scope.data_sources(),
+            detail(error)
+        ));
+    }
     match problems.len() {
         0 => Ok(()),
         1 => Err(InfrastructureError::configuration(problems.remove(0))),
@@ -168,10 +186,10 @@ fn check_resources(
         match ConfigurationReferences::extract(&declaration.configuration) {
             Ok(resource_references) => {
                 for reference in resource_references.references() {
-                    if declared_resource(&infrastructure.resources, &reference.source).is_none() {
+                    if data_sources::declaration(infrastructure, &reference.source).is_none() {
                         problems.push(format!(
-                            "{path}.configuration.{}.fromResource: resource '{}' is not declared in {resources}",
-                            reference.destination_attribute, reference.source
+                            "{path}.configuration.{}.{}: source '{}' is not declared in this configuration",
+                            reference.destination_attribute, reference.source.descriptor_field(), reference.source
                         ));
                     }
                 }
@@ -181,6 +199,44 @@ fn check_resources(
         }
     }
     check_cycles(&infrastructure.resources, &references, &resources, problems);
+}
+
+fn check_data_sources(
+    infrastructure: &Infrastructure,
+    scope: &ConfigurationScope<'_>,
+    problems: &mut Vec<String>,
+) {
+    for (name, declaration) in &infrastructure.data {
+        let path = format!("{}.{name}", scope.data_sources());
+        if !infrastructure
+            .providers
+            .contains_key(declaration.provider_name())
+        {
+            problems.push(format!(
+                "{path}.provider: no provider named '{}' in {}{}",
+                declaration.provider_name(),
+                scope.providers(),
+                scope.inheritance_note()
+            ));
+        }
+        for (index, dependency) in declaration.depends_on.iter().enumerate() {
+            if !infrastructure.resources.contains_key(dependency) {
+                problems.push(format!(
+                    "{path}.dependsOn[{index}]: unknown managed resource '{dependency}'"
+                ));
+            }
+        }
+        match ConfigurationReferences::extract(&declaration.configuration) {
+            Ok(references) => {
+                for reference in references.references() {
+                    if data_sources::declaration(infrastructure, &reference.source).is_none() {
+                        problems.push(format!("{path}.configuration.{}.{}: source '{}' is not declared in this configuration", reference.destination_attribute, reference.source.descriptor_field(), reference.source));
+                    }
+                }
+            }
+            Err(error) => problems.push(format!("{path}: {}", detail(error))),
+        }
+    }
 }
 
 /// Report every dependency cycle among the declared resources: a resource
@@ -220,10 +276,13 @@ fn check_cycles(
             .into_iter()
             .flat_map(ConfigurationReferences::references)
         {
-            let Some(&to) = position.get(reference.source.name.as_str()) else {
+            let SourceAddress::Resource(source) = &reference.source else {
                 continue;
             };
-            if resources[names[to]].resource_type != reference.source.resource_type {
+            let Some(&to) = position.get(source.name.as_str()) else {
+                continue;
+            };
+            if resources[names[to]].resource_type != source.resource_type {
                 continue;
             }
             if to == from {
@@ -260,8 +319,8 @@ fn check_cycles(
                     .into_iter()
                     .flat_map(ConfigurationReferences::references)
                     .filter(|reference| {
-                        members.contains(&reference.source.name.as_str())
-                            && declared_resource(resources, &reference.source).is_some()
+                        matches!(&reference.source, SourceAddress::Resource(source) if members.contains(&source.name.as_str())
+                            && declared_resource(resources, source).is_some())
                     })
                     .map(move |reference| {
                         format!(

@@ -6,8 +6,8 @@
 //! anything cuenv does not read is left out, which protobuf decoding
 //! tolerates by skipping unknown fields.
 //!
-//! Protocols 5 and 6 are wire-identical for every managed-resource RPC
-//! used here. They differ in RPC names (see [`crate::plugin`]) and in
+//! Protocols 5 and 6 are wire-identical for every managed-resource and
+//! data-source RPC used here. They differ in RPC names (see [`crate::plugin`]) and in
 //! `Schema.Attribute`, where tag 10 is `write_only` in protocol 5 but the
 //! nested attribute type in protocol 6, so schema messages exist once per
 //! protocol.
@@ -17,8 +17,8 @@
 //! `sensitive` (`deprecated`, `write_only`) are decoded as `Option<bool>`:
 //! absent and `false` mean the same. `write_only`, descriptions, deprecation and
 //! nested block item bounds are decoded for the generated CUE types (see
-//! [`crate::cue_types`]); cuenv advertises no write-only support. Data source,
-//! function and ephemeral resource schemas are not decoded. Of the provider's
+//! [`crate::cue_types`]); cuenv advertises no write-only support. Function
+//! and ephemeral resource schemas are not decoded. Of the provider's
 //! `ServerCapabilities` only `plan_destroy` is decoded; it makes cuenv plan
 //! every destroy.
 
@@ -174,6 +174,37 @@ pub struct ValidateResourceConfigurationRequest {
     pub configuration: Option<DynamicValue>,
     #[prost(message, optional, tag = "3")]
     pub client_capabilities: Option<ClientCapabilities>,
+}
+
+/// `ValidateDataResourceConfig.Request` (protocol 6) / `ValidateDataSourceConfig.Request` (protocol 5).
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ValidateDataSourceConfigurationRequest {
+    #[prost(string, tag = "1")]
+    pub type_name: String,
+    #[prost(message, optional, tag = "2")]
+    pub configuration: Option<DynamicValue>,
+}
+
+/// `ReadDataSource.Request`, shared by protocols 5 and 6.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ReadDataSourceRequest {
+    #[prost(string, tag = "1")]
+    pub type_name: String,
+    #[prost(message, optional, tag = "2")]
+    pub configuration: Option<DynamicValue>,
+    #[prost(message, optional, tag = "4")]
+    pub client_capabilities: Option<ClientCapabilities>,
+}
+
+/// `ReadDataSource.Response`, shared by protocols 5 and 6.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ReadDataSourceResponse {
+    #[prost(message, optional, tag = "1")]
+    pub state: Option<DynamicValue>,
+    #[prost(message, repeated, tag = "2")]
+    pub diagnostics: Vec<Diagnostic>,
+    #[prost(message, optional, tag = "3")]
+    pub deferred: Option<Deferred>,
 }
 
 /// `UpgradeResourceState.Request`.
@@ -349,6 +380,8 @@ pub mod version6 {
         pub provider: Option<Schema>,
         #[prost(map = "string, message", tag = "2")]
         pub resource_schemas: HashMap<String, Schema>,
+        #[prost(map = "string, message", tag = "3")]
+        pub data_source_schemas: HashMap<String, Schema>,
         #[prost(message, repeated, tag = "4")]
         pub diagnostics: Vec<Diagnostic>,
         #[prost(message, optional, tag = "6")]
@@ -441,6 +474,8 @@ pub mod version5 {
         pub provider: Option<Schema>,
         #[prost(map = "string, message", tag = "2")]
         pub resource_schemas: HashMap<String, Schema>,
+        #[prost(map = "string, message", tag = "3")]
+        pub data_source_schemas: HashMap<String, Schema>,
         #[prost(message, repeated, tag = "4")]
         pub diagnostics: Vec<Diagnostic>,
         #[prost(message, optional, tag = "6")]
@@ -514,6 +549,58 @@ pub mod version5 {
 mod tests {
     use super::*;
     use prost::Message;
+
+    #[test]
+    fn data_source_requests_match_both_protocols_wire_contract() {
+        let configuration = Some(DynamicValue {
+            message_pack: vec![0x80],
+            json: Vec::new(),
+        });
+        let validation = ValidateDataSourceConfigurationRequest {
+            type_name: "t".to_string(),
+            configuration: configuration.clone(),
+        };
+        // Validation has only type_name (1) and config (2), unlike resources.
+        assert_eq!(validation.encode_to_vec(), b"\x0a\x01t\x12\x03\x0a\x01\x80");
+        let read = ReadDataSourceRequest {
+            type_name: "t".to_string(),
+            configuration,
+            client_capabilities: Some(ClientCapabilities::default()),
+        };
+        // Tag 3 is provider_meta, which cuenv does not send. Capabilities are
+        // tag 4, with both deferral and write-only support disabled.
+        assert_eq!(
+            read.encode_to_vec(),
+            b"\x0a\x01t\x12\x03\x0a\x01\x80\x22\x00"
+        );
+    }
+
+    #[test]
+    fn data_source_response_preserves_state_diagnostics_and_deferral()
+    -> Result<(), prost::DecodeError> {
+        // Upstream tags: state (1), diagnostics (2), deferred (3).
+        let response = ReadDataSourceResponse::decode(
+            b"\x0a\x04\x12\x02{}\x12\x05\x08\x02\x12\x01w\x1a\x02\x08\x01".as_slice(),
+        )?;
+        assert_eq!(
+            response.state.as_ref().map(|state| state.json.as_slice()),
+            Some(b"{}".as_slice())
+        );
+        assert_eq!(response.diagnostics.len(), 1);
+        assert_eq!(response.diagnostics[0].severity, Severity::Warning as i32);
+        assert_eq!(response.diagnostics[0].summary, "w");
+        assert_eq!(response.deferred.map(|deferred| deferred.reason), Some(1));
+        // Even an empty Deferred message must survive so the engine rejects it.
+        let empty_deferral = ReadDataSourceResponse::decode(b"\x1a\x00".as_slice())?;
+        assert!(empty_deferral.deferred.is_some());
+        let immediate = ReadDataSourceResponse::decode(b"\x0a\x03\x0a\x01\x80".as_slice())?;
+        assert_eq!(
+            immediate.state.map(|state| state.message_pack),
+            Some(vec![0x80])
+        );
+        assert!(immediate.deferred.is_none());
+        Ok(())
+    }
 
     #[test]
     fn import_response_decodes_provider_data_and_unsupported_features()

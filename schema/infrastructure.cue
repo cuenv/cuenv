@@ -2,7 +2,6 @@ package schema
 
 import "strings"
 
-
 // =============================================================================
 // Infrastructure — infrastructure as code through Terraform provider plugins
 // =============================================================================
@@ -19,8 +18,9 @@ import "strings"
 // generates CUE types from the provider binary's own schema into
 // `cue.mod/gen/<hostname>/<namespace>/<type>` and pins the release in
 // `cuenv.lock`. Use the generated `#Provider` as the provider declaration and
-// each `resources/<type>` package's `#Resource` as a resource declaration to
-// have CUE reject unknown and mistyped arguments before any provider runs.
+// each `resources/<type>` package's `#Resource` as a resource declaration, or
+// `data/<type>` package's `#DataSource` for a lookup, to have CUE reject unknown
+// and mistyped arguments before any provider runs.
 // `cuenv sync infrastructure` regenerates them from `cuenv.lock`.
 //
 // Semantic checks: this file reports a provider that sets both or neither of
@@ -38,8 +38,11 @@ import "strings"
 // is not affected by its own module's language version. The Rust engine
 // repeats the checks for projects that do not unify with this schema.
 //
-// Proof of concept: top-level primitive resource arguments can refer to
-// another resource's primitive attribute with #InfrastructureOutputReference.
+// Proof of concept: top-level primitive arguments can refer to another
+// resource or data source's primitive attribute with #InfrastructureOutputReference.
+// A sensitive source attribute may be referenced: plans show the destination
+// argument as (sensitive). Known sensitive strings of at least four characters
+// are registered for output redaction; numeric and boolean values are only masked.
 // Use `dependsOn` when only ordering is needed.
 //
 // Closedness: every nested definition is referenced inside a struct literal
@@ -69,8 +72,8 @@ import "strings"
 	}
 
 	// Named environments, selected with `--env NAME`. A selected environment
-	// supplies its complete provider and resource set: nothing is inherited
-	// from the top-level `providers`, `resources` or `providerEnvironment`.
+	// supplies its complete provider, resource and data source set: nothing is
+	// inherited from top-level `providers`, `resources`, `data` or `providerEnvironment`.
 	// The common state backend remains above the environment selection.
 	environments?: [#InfrastructureName]: {#InfrastructureConfiguration}
 
@@ -118,7 +121,7 @@ import "strings"
 	}
 }
 
-// The complete provider and resource set of one configuration: the top level
+// The complete provider, resource and data source set of one configuration: the top level
 // of `infrastructure`, or one entry of `infrastructure.environments`. Every
 // semantic check below reads only this configuration's own maps, so each
 // configuration is checked on its own.
@@ -135,6 +138,10 @@ import "strings"
 	// the resource's provider (explicit, or the type prefix) must be declared
 	// in this configuration's `providers`.
 	resources?: [#InfrastructureName]: {#ManagedResource}
+
+	// Read-only provider lookups. Results are read for each plan/apply and
+	// are never persisted as managed resource state.
+	data?: [#InfrastructureName]: {#DataSource}
 
 	// What provider processes inherit from the cuenv process environment.
 	//
@@ -195,6 +202,19 @@ import "strings"
 			}
 			if resource.provider == _|_ if resource.type != _|_ if declaredProviders[strings.SplitN(resource.type, "_", 2)[0]] == _|_ {
 				_unresolved: "resources.\(name).type": error("no provider named \"\(strings.SplitN(resource.type, "_", 2)[0])\" (the prefix of type \"\(resource.type)\") in `providers` of this configuration; declare it or set `provider`")
+			}
+		}
+	}
+	if data != _|_ for name, source in data {
+		if source.dependsOn != _|_ for index, dependency in source.dependsOn if (dependency =~ "") if declaredResources[dependency] == _|_ {
+			_unresolved: "data.\(name).dependsOn[\(index)]": error("no resource named \"\(dependency)\" in `resources` of this configuration")
+		}
+		if providers != _|_ {
+			if source.provider != _|_ if (source.provider =~ "") if declaredProviders[source.provider] == _|_ {
+				_unresolved: "data.\(name).provider": error("no provider named \"\(source.provider)\" in `providers` of this configuration")
+			}
+			if source.provider == _|_ if source.type != _|_ if declaredProviders[strings.SplitN(source.type, "_", 2)[0]] == _|_ {
+				_unresolved: "data.\(name).type": error("no provider named \"\(strings.SplitN(source.type, "_", 2)[0])\" (the prefix of type \"\(source.type)\") in `providers` of this configuration; declare it or set `provider`")
 			}
 		}
 	}
@@ -334,9 +354,18 @@ _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)
 	configuration?: {...}
 }
 
-// A top-level primitive resource argument supplied by another managed
-// resource. The engine validates the selected resource and output attribute.
+// A read-only lookup through a provider's data source schema. `dependsOn`
+// names managed resources; references infer dependencies on either kind.
+#DataSource: {
+	#ManagedResource
+}
+
+// A top-level primitive argument supplied by a managed resource or data
+// source. Exactly one source namespace must be selected.
 #InfrastructureOutputReference: {
 	fromResource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
-	attribute!: string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
+	attribute!:    string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
+} | {
+	fromDataSource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
+	attribute!:      string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
 }

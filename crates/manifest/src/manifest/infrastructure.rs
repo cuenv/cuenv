@@ -37,6 +37,10 @@ pub struct Infrastructure {
     #[serde(default)]
     pub resources: BTreeMap<String, ManagedResourceDeclaration>,
 
+    /// Read-only provider data sources; their results are never stored in state.
+    #[serde(default)]
+    pub data: BTreeMap<String, DataSourceDeclaration>,
+
     /// What provider processes inherit from the cuenv process environment.
     #[serde(default, rename = "providerEnvironment")]
     pub provider_environment: ProviderEnvironment,
@@ -156,6 +160,10 @@ pub struct InfrastructureConfiguration {
     /// Managed resources, keyed by resource name.
     #[serde(default)]
     pub resources: BTreeMap<String, ManagedResourceDeclaration>,
+
+    /// Read-only data sources belonging only to this configuration.
+    #[serde(default)]
+    pub data: BTreeMap<String, DataSourceDeclaration>,
 
     /// What this environment's provider processes inherit from the cuenv
     /// process environment.
@@ -289,6 +297,7 @@ impl Infrastructure {
             state: self.state.clone(),
             providers: configuration.providers.clone(),
             resources: configuration.resources.clone(),
+            data: configuration.data.clone(),
             provider_environment: configuration.provider_environment,
             environments: BTreeMap::new(),
             workflows: self.workflows.clone(),
@@ -359,6 +368,7 @@ impl Infrastructure {
             }
             object.remove("providers");
             object.remove("resources");
+            object.remove("data");
             object.remove("providerEnvironment");
         }
         if let Some(environments) = object
@@ -583,6 +593,16 @@ pub struct InfrastructureOutputReference {
     pub attribute: String,
 }
 
+/// A top-level primitive argument supplied by a read-only data source.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InfrastructureDataSourceReference {
+    /// Data source address within `infrastructure.data`, as `type.name`.
+    pub from_data_source: String,
+    /// Top-level primitive output attribute.
+    pub attribute: String,
+}
+
 /// Primitive type of a native CUE output declaration, retained for live-schema validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfrastructureOutputType {
@@ -617,6 +637,13 @@ pub struct ManagedResourceDeclaration {
     #[serde(default, deserialize_with = "deserialize_configuration")]
     pub configuration: serde_json::Map<String, serde_json::Value>,
 }
+
+/// A read-only provider declaration.
+///
+/// It has the same configuration and output shape as a managed resource.
+/// Membership in `infrastructure.data` selects
+/// data source RPCs; it never participates in managed state persistence.
+pub type DataSourceDeclaration = ManagedResourceDeclaration;
 
 /// Deserializes a `configuration` block.
 ///
@@ -689,6 +716,45 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<InfrastructureOutputReference>(value).is_err());
         }
+    }
+
+    #[test]
+    fn data_source_reference_rejects_ambiguous_sources() -> Result<(), serde_json::Error> {
+        let value = serde_json::json!({
+            "fromDataSource": "fake_lookup.primary", "attribute": "id",
+        });
+        let reference: InfrastructureDataSourceReference = serde_json::from_value(value.clone())?;
+        assert_eq!(reference.from_data_source, "fake_lookup.primary");
+        assert_eq!(serde_json::to_value(reference)?, value);
+        assert!(
+            serde_json::from_value::<InfrastructureDataSourceReference>(serde_json::json!({
+                "fromDataSource": "fake_lookup.primary",
+                "fromResource": "fake_lookup.primary",
+                "attribute": "id",
+            }))
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn selecting_data_sources_discards_the_other_configurations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let value = serde_json::json!({
+            "state": {"turso": {"url": "libsql://db.turso.io"}},
+            "data": {"base": {"type": "fake_lookup"}},
+            "environments": {
+                "development": {"data": {"selected": {"type": "fake_lookup"}}},
+                "incomplete": {"data": {"invalid": {"type": null}}},
+            },
+        });
+        let selected = Infrastructure::select(value.clone(), Some("development"))?;
+        assert_eq!(selected.data.len(), 1);
+        assert!(selected.data.contains_key("selected"));
+        let top = Infrastructure::select(value, None)?;
+        assert_eq!(top.data.len(), 1);
+        assert!(top.data.contains_key("base"));
+        Ok(())
     }
 
     #[test]

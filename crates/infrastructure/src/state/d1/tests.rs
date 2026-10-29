@@ -5,9 +5,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::state::fake_server::{FakeServer, fake_server, fake_server_with_headers};
-use crate::state::sql::{
-    INITIAL_SCHEMA_VERSION, MIGRATIONS, Migration, MigrationWait, RetryPolicy,
-};
+use crate::state::sql::{LATEST_SCHEMA_VERSION, MIGRATIONS, Migration, MigrationWait, RetryPolicy};
 use crate::state::{
     ConditionalPut, ManagedResource, OwnerClaim, OwnerClaimMode, RecordVersion, ResourceAddress,
     StateLock, StateStore,
@@ -55,6 +53,7 @@ fn record(name: &str) -> ManagedResource {
         state: json!({"id": name, "length": 2}),
         private: vec![0, 255, 16],
         dependencies: vec!["other".into()],
+        sensitive_attributes: vec!["id".into()],
         tainted: true,
         identity: Some(json!({"id": name})),
         serial: 0,
@@ -228,6 +227,269 @@ async fn reads_before_any_migration_are_empty_and_create_nothing() {
 }
 
 #[tokio::test]
+async fn version_two_preserves_existing_rows_and_owners_while_fencing_old_readers() {
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    let store = store_at(&server);
+    store.inner.migrate_to(&MIGRATIONS[..1]).await.unwrap();
+    // Seed the actual version-one layout, including a lock held by an old client.
+    database
+        .database
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO cuenv_infrastructure_resources \
+         (module_path, project, environment, resource_type, resource_name, provider, \
+          provider_source, schema_version, state_json, private, dependencies_json, tainted, \
+          identity_json, serial, generation, created_at, updated_at) VALUES \
+         ('example.com/d1', 'web', '', 'random_pet', 'pet', 'random', \
+          'registry.terraform.io/hashicorp/random', 3, '{\"id\":\"old-secret\"}', x'00ff', \
+          '[\"random_pet.other\"]', 1, '{\"id\":\"identity\"}', 7, \
+          '00000000-0000-0000-0000-000000000007', 'created', 'updated');
+         INSERT INTO cuenv_infrastructure_locks VALUES \
+         ('example.com/d1', 'web', '', 'old-lock', 'old-client', 'acquired');
+         INSERT INTO cuenv_infrastructure_owners VALUES \
+         ('example.com/d1', 'web', '', '.:web', 'claimed');",
+        )
+        .unwrap();
+    let rows = database.query("SELECT * FROM cuenv_infrastructure_resources");
+    let locks = store.locks().await.unwrap();
+    let owner = store.owner(&tenant()).await.unwrap();
+    assert!(
+        store
+            .list(&tenant())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("migrate the state store")
+    );
+    assert!(matches!(
+        store.migrate().await,
+        Err(InfrastructureError::StateMigrationBlocked { version: 2, .. })
+    ));
+    assert_eq!(store.inner.schema_version().await.unwrap(), 1);
+    assert_eq!(
+        database.query("SELECT * FROM cuenv_infrastructure_resources"),
+        rows
+    );
+    assert_eq!(store.locks().await.unwrap(), locks);
+    assert_eq!(store.owner(&tenant()).await.unwrap(), owner);
+
+    assert!(store.force_unlock(&tenant(), "old-lock").await.unwrap());
+    store.migrate().await.unwrap();
+    store.migrate().await.unwrap();
+    assert_eq!(store.inner.schema_version().await.unwrap(), 2);
+    assert_eq!(store.owner(&tenant()).await.unwrap(), owner);
+    let mut migrated = database.query("SELECT * FROM cuenv_infrastructure_resources");
+    assert_eq!(migrated[0].pop(), Some(json!("[]")));
+    assert_eq!(migrated, rows);
+    let legacy = store.list(&tenant()).await.unwrap().remove(0);
+    assert!(legacy.sensitive_attributes.is_empty());
+    assert_eq!(legacy.serial, 7);
+    let lock = store.lock(&tenant(), "new-client").await.unwrap();
+    let sensitive = ManagedResource {
+        sensitive_attributes: vec!["id".into()],
+        ..legacy.clone()
+    };
+    let update = ConditionalPut {
+        resource: &sensitive,
+        expected: RecordVersion::of(Some(&legacy)),
+    };
+    store
+        .put_if_unchanged(&tenant(), &lock, &update)
+        .await
+        .unwrap();
+    // A fresh client reads the names, independent of any process-local registry.
+    let fresh = store_at(&server);
+    let stored = fresh.list(&tenant()).await.unwrap().remove(0);
+    assert!(stored.same_content(&sensitive));
+    assert_eq!(stored.serial, 8);
+    assert_eq!(stored.generation, legacy.generation);
+    fresh
+        .put_if_unchanged(&tenant(), &lock, &update)
+        .await
+        .unwrap();
+    assert!(matches!(
+        fresh
+            .put_if_unchanged(
+                &tenant(),
+                &lock,
+                &ConditionalPut {
+                    resource: &legacy,
+                    expected: update.expected,
+                }
+            )
+            .await,
+        Err(InfrastructureError::StateChanged { .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_version_one_reader_paused_before_select_cannot_read_version_two_state() {
+    // The exact projection used by the version-one client, without metadata.
+    const VERSION_ONE_SELECT: &str = "SELECT resource_type, resource_name, provider, provider_source, \
+         schema_version, state_json, private, dependencies_json, tainted, identity_json, serial, \
+         generation FROM cuenv_infrastructure_resources \
+         WHERE module_path = ? AND project = ? AND environment = ? \
+         ORDER BY resource_type, resource_name";
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    let old_client = store_at(&server);
+    old_client.inner.migrate_to(&MIGRATIONS[..1]).await.unwrap();
+    let old_select = || {
+        Statement::new(
+            VERSION_ONE_SELECT,
+            crate::state::sql::tenant_arguments(&tenant()),
+        )
+    };
+    assert!(
+        old_client
+            .inner
+            .execute(old_select())
+            .await
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    // The old reader has passed its version check and pauses before SELECT.
+    assert_eq!(old_client.inner.stored_version().await.unwrap(), 1);
+    let writer = store_at(&server);
+    writer.migrate().await.unwrap();
+    let lock = writer.lock(&tenant(), "version-two writer").await.unwrap();
+    let sensitive = ManagedResource {
+        state: json!({"id": "sensitive-state-value"}),
+        sensitive_attributes: vec!["id".into()],
+        ..record("pet")
+    };
+    writer.put(&tenant(), &lock, &sensitive).await.unwrap();
+    writer.unlock(&tenant(), &lock).await.unwrap();
+
+    // Resuming the old SELECT must fail even though its earlier check passed.
+    let error = old_client.inner.execute(old_select()).await.unwrap_err();
+    assert!(
+        error.to_string().contains("no such column: state_json"),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("sensitive-state-value"));
+    let current = store_at(&server).list(&tenant()).await.unwrap().remove(0);
+    assert!(current.same_content(&sensitive));
+    assert_eq!(current.sensitive_attributes, ["id"]);
+}
+
+#[tokio::test]
+async fn a_failed_state_column_rename_rolls_back_the_sensitivity_column() {
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    let store = store_at(&server);
+    store.inner.migrate_to(&MIGRATIONS[..1]).await.unwrap();
+    // A foreign column makes the second statement fail, after ADD succeeded
+    // inside the migration transaction. Neither statement may commit alone.
+    database
+        .database
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "ALTER TABLE cuenv_infrastructure_resources ADD COLUMN resource_state_json TEXT",
+        )
+        .unwrap();
+    assert!(matches!(
+        store.migrate().await,
+        Err(InfrastructureError::StateSchemaConflict { .. })
+    ));
+    assert_eq!(store.inner.schema_version().await.unwrap(), 1);
+    assert!(database.query(
+        "SELECT name FROM pragma_table_info('cuenv_infrastructure_resources') WHERE name = 'sensitive_attributes'"
+    ).is_empty());
+    assert_eq!(database.query(
+        "SELECT name FROM pragma_table_info('cuenv_infrastructure_resources') WHERE name = 'state_json'"
+    ), vec![vec![json!("state_json")]]);
+}
+
+#[tokio::test]
+async fn stale_first_migrator_does_not_wait_on_current_schema_locks() {
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    crate::state::sql::tests::stale_first_migrator(&store_at(&server).inner).await;
+}
+
+#[tokio::test]
+async fn completed_migrations_leave_no_pending_announcements() {
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    crate::state::sql::tests::completed_announcements(&store_at(&server).inner).await;
+}
+
+#[tokio::test]
+async fn concurrent_sensitivity_migrations_converge_and_unrecorded_columns_are_refused() {
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    let store = store_at(&server);
+    store.inner.migrate_to(&MIGRATIONS[..1]).await.unwrap();
+    let other = store_at(&server);
+    let (first, second) = tokio::join!(store.migrate(), other.migrate());
+    first.unwrap();
+    second.unwrap();
+    assert_eq!(store.inner.schema_version().await.unwrap(), 2);
+
+    // A column alone does not prove that a migration was committed.
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    let store = store_at(&server);
+    store.inner.migrate_to(&MIGRATIONS[..1]).await.unwrap();
+    database
+        .database
+        .lock()
+        .unwrap()
+        .execute_batch(MIGRATIONS[1].statements[0])
+        .unwrap();
+    assert!(matches!(
+        store.migrate().await,
+        Err(InfrastructureError::StateSchemaConflict { .. })
+    ));
+    assert_eq!(store.inner.schema_version().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn malformed_sensitivity_is_refused_without_echoing_any_state() {
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    let store = store_at(&server);
+    store.migrate().await.unwrap();
+    let lock = store.lock(&tenant(), "test").await.unwrap();
+    let record = ManagedResource {
+        state: json!({"id": "secret-state"}),
+        ..record("pet")
+    };
+    store.put(&tenant(), &lock, &record).await.unwrap();
+    for metadata in [
+        "not-json-secret",
+        "null",
+        "{}",
+        "\"secret-metadata\"",
+        "[\"id\", {\"secret-metadata\": 1}]",
+    ] {
+        database
+            .database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE cuenv_infrastructure_resources SET sensitive_attributes = ?",
+                [metadata],
+            )
+            .unwrap();
+        let error = store.list(&tenant()).await.unwrap_err();
+        assert!(
+            matches!(&error, InfrastructureError::UndecodableRecord { problem, .. } if problem.contains("sensitive_attributes"))
+        );
+        assert!(!error.to_string().contains("secret-metadata"));
+        assert!(!error.to_string().contains("not-json-secret"));
+        assert!(!error.to_string().contains("secret-state"));
+        // The address remains usable for explicit removal of corrupt state.
+        assert_eq!(store.addresses(&tenant()).await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn records_round_trip_through_d1() {
     let database = EmulatedD1::new();
     let server = database.serve().await;
@@ -235,7 +497,10 @@ async fn records_round_trip_through_d1() {
     store.migrate().await.unwrap();
     // Migrating again changes nothing.
     store.migrate().await.unwrap();
-    assert_eq!(store.inner.schema_version().await.unwrap(), 1);
+    assert_eq!(
+        store.inner.schema_version().await.unwrap(),
+        LATEST_SCHEMA_VERSION
+    );
 
     let lock = store.lock(&tenant(), "test").await.unwrap();
     let written = record("pet");
@@ -261,10 +526,13 @@ async fn records_round_trip_through_d1() {
     );
 
     // Updates keep the generation and count the writes.
-    store.put(&tenant(), &lock, &written).await.unwrap();
+    let mut changed = written.clone();
+    changed.sensitive_attributes = vec!["length".into()];
+    store.put(&tenant(), &lock, &changed).await.unwrap();
     let updated = store.list(&tenant()).await.unwrap().remove(0);
     assert_eq!(updated.serial, 2);
     assert_eq!(updated.generation, stored[0].generation);
+    assert_eq!(updated.sensitive_attributes, ["length"]);
 
     // No private bytes and no identity are stored as null.
     let bare = ManagedResource {
@@ -444,14 +712,18 @@ async fn writes_are_fenced_by_the_lock_and_by_the_stored_version() {
 }
 
 /// The shipped migrations followed by one that only creates a table.
-fn migrations_with_a_probe() -> [Migration; 2] {
+fn migrations_with_a_probe() -> [Migration; 3] {
     [
         Migration {
             version: MIGRATIONS[0].version,
             statements: MIGRATIONS[0].statements,
         },
         Migration {
-            version: INITIAL_SCHEMA_VERSION + 1,
+            version: MIGRATIONS[1].version,
+            statements: MIGRATIONS[1].statements,
+        },
+        Migration {
+            version: LATEST_SCHEMA_VERSION + 1,
             statements: &["CREATE TABLE cuenv_infrastructure_probe (value INTEGER NOT NULL)"],
         },
     ]
@@ -470,7 +742,7 @@ async fn a_migration_refuses_while_any_lock_is_held() {
         .migrate_to(&migrations_with_a_probe())
         .await
         .unwrap_err();
-    let InfrastructureError::StateMigrationBlocked { version: 2, locks } = &refused else {
+    let InfrastructureError::StateMigrationBlocked { version: 3, locks } = &refused else {
         panic!("{refused:?}");
     };
     assert_eq!(locks[0].lock.lock_identifier, lock.lock_identifier);
@@ -480,7 +752,10 @@ async fn a_migration_refuses_while_any_lock_is_held() {
             .query("SELECT name FROM sqlite_master WHERE name = 'cuenv_infrastructure_probe'")
             .is_empty()
     );
-    assert_eq!(store.inner.schema_version().await.unwrap(), 1);
+    assert_eq!(
+        store.inner.schema_version().await.unwrap(),
+        LATEST_SCHEMA_VERSION
+    );
 
     store.unlock(&tenant(), &lock).await.unwrap();
     store
@@ -488,8 +763,11 @@ async fn a_migration_refuses_while_any_lock_is_held() {
         .migrate_to(&migrations_with_a_probe())
         .await
         .unwrap();
-    assert_eq!(store.inner.schema_version().await.unwrap(), 2);
-    // A build that knows only version 1 refuses the newer schema.
+    assert_eq!(
+        store.inner.schema_version().await.unwrap(),
+        LATEST_SCHEMA_VERSION + 1
+    );
+    // A build that knows only the shipped versions refuses the newer schema.
     for error in [
         store.list(&tenant()).await.unwrap_err(),
         store.lock(&tenant(), "older").await.unwrap_err(),
@@ -499,8 +777,8 @@ async fn a_migration_refuses_while_any_lock_is_held() {
             matches!(
                 error,
                 InfrastructureError::StateSchemaNewer {
-                    found: 2,
-                    supported: 1
+                    found: 3,
+                    supported: 2
                 }
             ),
             "{error:?}"
@@ -517,13 +795,13 @@ async fn a_waiting_migration_holds_off_new_locks() {
     // A migrator announced itself and is waiting for the locks to drain.
     database.query(
         "INSERT INTO cuenv_infrastructure_pending_migration (version, expires_at) \
-         VALUES (2, 99999999999) RETURNING version",
+         VALUES (3, 99999999999) RETURNING version",
     );
     let error = store.lock(&tenant(), "run").await.unwrap_err();
     assert!(
         matches!(
             error,
-            InfrastructureError::StateMigrationPending { version: 2 }
+            InfrastructureError::StateMigrationPending { version: 3 }
         ),
         "{error:?}"
     );
@@ -759,7 +1037,7 @@ async fn writes_never_quote_messages_and_never_leak_the_token() {
         Some(error(
             400,
             7500,
-            "string or blob too big: state_json \"hunter2\" d1-secret-token: SQLITE_TOOBIG",
+            "string or blob too big: resource_state_json \"hunter2\" d1-secret-token: SQLITE_TOOBIG",
         ))
     })
     .await;
@@ -896,7 +1174,7 @@ async fn lifecycle_against_d1() {
         ));
         assert!(matches!(
             store.inner.migrate_to(&migrations_with_a_probe()).await,
-            Err(InfrastructureError::StateMigrationBlocked { version: 2, .. })
+            Err(InfrastructureError::StateMigrationBlocked { version: 3, .. })
         ));
         store
             .delete(&tenant(), &lock, &record("pet").address)

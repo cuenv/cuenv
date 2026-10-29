@@ -178,11 +178,16 @@ pub(super) async fn guard_unselected_identity(
     if siblings.declared_environments.is_empty() {
         return Ok(());
     }
-    if siblings.top_level.resource_count > 0 {
+    if siblings.top_level.resources > 0 {
         return guard_environment_claims(context, request).await;
     }
     let recorded = recorded_addresses(context, context.tenant).await?;
-    let deletable = !recorded.is_empty() && siblings.top_level.provider_count > 0;
+    // A read-only top level is a valid configuration, but must not bypass the
+    // legacy-state protection merely by adding a lookup beside environments.
+    if siblings.top_level.data_sources > 0 && recorded.is_empty() {
+        return Ok(());
+    }
+    let deletable = !recorded.is_empty() && siblings.top_level.providers > 0;
     if matches!(action, InfrastructureAction::Destroy { .. }) && deletable {
         return Ok(());
     }
@@ -257,7 +262,7 @@ pub(super) fn unselected_refusal(
         ));
         let count = recorded.len();
         let destroy = invocation.command("destroy");
-        if siblings.top_level.provider_count > 0 {
+        if siblings.top_level.providers > 0 {
             format!(
                 "{count} resource(s) are still recorded without --env (`{list}` lists them): \
                  delete them with `{destroy}`, or forget them without touching the real objects \
@@ -369,7 +374,7 @@ pub(super) fn separate_state_refusal(
         "state remove {}",
         invocation::quote_argument(&conflicts[0].to_string())
     ));
-    let deletion = if context.siblings.top_level.provider_count > 0 {
+    let deletion = if context.siblings.top_level.providers > 0 {
         format!(
             "deleting the objects with `{}` (they are deleted) or by ",
             unselected.command("destroy")

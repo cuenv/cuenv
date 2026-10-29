@@ -46,7 +46,7 @@ pub(super) enum NameCheck {
 /// How much of the infrastructure configuration a command needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Needs {
-    /// The selected configuration's providers and resources, complete and
+    /// The selected configuration's providers, resources and data sources, complete and
     /// concrete (`plan`, `apply`, `destroy`).
     Configuration,
     /// Only `infrastructure.state` (`state list`, `state remove`,
@@ -78,9 +78,11 @@ pub(super) struct TargetRequest<'request> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct TopLevel {
     /// Number of top-level `providers`.
-    pub(super) provider_count: usize,
+    pub(super) providers: usize,
     /// Number of top-level `resources`.
-    pub(super) resource_count: usize,
+    pub(super) resources: usize,
+    /// Number of top-level `data` sources.
+    pub(super) data_sources: usize,
 }
 
 /// Whether the environment a run selected is one the project declares.
@@ -198,7 +200,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             if let Some(path) = &selected_path {
                 concrete_paths.push(path.clone());
             } else {
-                for field in ["providers", "resources"] {
+                for field in ["providers", "resources", "data"] {
                     if instance
                         .value
                         .pointer(&format!("/infrastructure/{field}"))
@@ -414,8 +416,13 @@ fn project_target(
         .transpose()?;
     if let Some(infrastructure) = &mut infrastructure {
         for (name, declarations) in output_declarations {
-            if let Some(resource) = infrastructure.resources.get_mut(&name) {
-                resource.output_types = declarations;
+            let declaration = if let Some(name) = name.strip_prefix("data.") {
+                infrastructure.data.get_mut(name)
+            } else {
+                infrastructure.resources.get_mut(&name)
+            };
+            if let Some(declaration) = declaration {
+                declaration.output_types = declarations;
             }
         }
     }
@@ -428,7 +435,7 @@ fn project_target(
     })
 }
 
-/// How many top-level providers and resources the project declares, counted
+/// How many top-level providers, resources and data sources the project declares, counted
 /// before an environment replaces them.
 fn top_level_declarations(project: &serde_json::Value) -> TopLevel {
     let count = |field: &str| {
@@ -438,8 +445,9 @@ fn top_level_declarations(project: &serde_json::Value) -> TopLevel {
             .map_or(0, serde_json::Map::len)
     };
     TopLevel {
-        provider_count: count("providers"),
-        resource_count: count("resources"),
+        providers: count("providers"),
+        resources: count("resources"),
+        data_sources: count("data"),
     }
 }
 
@@ -465,6 +473,7 @@ fn select_infrastructure(
                 for field in [
                     "providers",
                     "resources",
+                    "data",
                     "providerEnvironment",
                     "environments",
                 ] {
@@ -513,14 +522,17 @@ fn declared_environments_if_evaluable(target_path: &Path, package: &str) -> Vec<
 }
 
 /// What a state-only run without `--env` can tell of the top level: whether
-/// `resources` is declared, which decides how it speaks of the environments.
+/// `resources` or `data` is declared, which decides how it speaks of the environments.
 /// The provider count is not exported and is left at zero.
 fn top_level_resources_if_evaluable(target_path: &Path, package: &str) -> TopLevel {
     let resource_count = export_if_evaluable(target_path, package, "infrastructure.resources")
-        .map_or(0, |project| top_level_declarations(&project).resource_count);
+        .map_or(0, |project| top_level_declarations(&project).resources);
+    let data_source_count = export_if_evaluable(target_path, package, "infrastructure.data")
+        .map_or(0, |project| top_level_declarations(&project).data_sources);
     TopLevel {
-        provider_count: 0,
-        resource_count,
+        providers: 0,
+        resources: resource_count,
+        data_sources: data_source_count,
     }
 }
 
@@ -572,7 +584,7 @@ fn unknown_environment(project_name: &str, name: &str, declared: &[String]) -> C
         format!(
             "Environment names are case-sensitive and each environment is a complete \
              configuration under `infrastructure.environments`; the top-level providers and \
-             resources are not inherited. {}. If the environment was removed from the \
+             resources and data sources are not inherited. {}. If the environment was removed from the \
              configuration and its state still exists, `state list` and `state remove` (with \
              the same --env) still reach it: `state remove` forgets records without touching \
              the real objects, and to delete the objects themselves, restore the configuration \
@@ -962,6 +974,208 @@ infrastructure: schema.#Infrastructure & {{
             Some(&InfrastructureOutputType::String)
         );
         cuenv_infrastructure::validate_configuration(&native, None)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_data_selectors_lower_both_consumer_namespaces_without_name_collisions() -> TestResult
+    {
+        use cuenv_manifest::manifest::InfrastructureOutputType;
+
+        for environment in [None, Some("dev")] {
+            let root = environment.map_or_else(
+                || "infrastructure".to_string(),
+                |name| format!("infrastructure.environments.{name}"),
+            );
+            let configuration = format!(
+                r#"providers: fake: {{source: "example/fake", path: "/not-started"}}
+resources: {{
+ primary: {{type: "fake_plain", outputs: id: string}}
+ unused: {{type: "fake_plain", outputs: unused: bool}}
+ record: {{type: "fake_plain", configuration: {{
+  managed: {root}.resources.primary.outputs.id
+  lookup: {root}.data.primary.outputs.id
+ }}}}
+}}
+data: {{
+ primary: {{type: "fake_lookup", outputs: id: number}}
+ unused: {{type: "fake_lookup", outputs: unused: bool}}
+ record: {{type: "fake_lookup", configuration: {{
+  managed: string & {root}.resources.primary.outputs.id
+  lookup: number & {root}.data.primary.outputs.id
+ }}}}
+}}"#
+            );
+            let body = environment.map_or_else(
+                || configuration.clone(),
+                |name| format!("environments: {name}: {{ {configuration} }}"),
+            );
+            let directory = native_fixture(&body)?;
+            let infrastructure =
+                evaluate_native_fixture(directory.path(), environment)?.infrastructure;
+            for consumer in [
+                &infrastructure.resources["record"],
+                &infrastructure.data["record"],
+            ] {
+                assert_eq!(
+                    consumer.configuration["managed"],
+                    serde_json::json!({"fromResource": "fake_plain.primary", "attribute": "id"})
+                );
+                assert_eq!(
+                    consumer.configuration["lookup"],
+                    serde_json::json!({"fromDataSource": "fake_lookup.primary", "attribute": "id"})
+                );
+            }
+            assert_eq!(
+                infrastructure.resources["primary"].output_types["id"],
+                InfrastructureOutputType::String
+            );
+            assert_eq!(
+                infrastructure.data["primary"].output_types["id"],
+                InfrastructureOutputType::Number
+            );
+            let serialized = serde_json::to_value(infrastructure)?;
+            for namespace in ["resources", "data"] {
+                for name in ["primary", "unused"] {
+                    assert!(serialized[namespace][name].get("outputs").is_none());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_data_selectors_support_aliases_and_quoted_labels() -> TestResult {
+        let directory = native_fixture(
+            r#"let alias = infrastructure.data["source-key"].outputs["_id"]
+_fieldAlias: infrastructure.data["source-key"].outputs["_id"]
+data: {
+ "source-key": {type: "fake_lookup", outputs: "_id": string}
+ record: {type: "fake_lookup", configuration: {
+  viaLet: alias
+  viaField: _fieldAlias
+  "_argument": string & infrastructure.data["source-key"].outputs["_id"]
+ }}
+}"#,
+        )?;
+        let infrastructure = evaluate_native_fixture(directory.path(), None)?.infrastructure;
+        for value in infrastructure.data["record"].configuration.values() {
+            assert_eq!(
+                value,
+                &serde_json::json!({"fromDataSource": "fake_lookup.source-key", "attribute": "_id"})
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_data_selectors_reject_cross_environment_and_top_level_references() -> TestResult {
+        for (environment, consumer_root, producer_root) in [
+            (Some("dev"), "environments.dev.", ""),
+            (Some("dev"), "environments.dev.", "environments.prod."),
+            (None, "", "environments.dev."),
+        ] {
+            for producer_namespace in ["resources", "data"] {
+                for consumer_namespace in ["resources", "data"] {
+                    let producer_fields = producer_root.replace('.', ": ");
+                    let consumer_fields = consumer_root.replace('.', ": ");
+                    let directory = native_fixture(&format!(
+                        r#"{producer_fields}{producer_namespace}: primary: {{type: "fake_plain", outputs: id: string}}
+environments: {{
+ dev: providers: fake: {{source: "example/fake", path: "/not-started"}}
+ prod: providers: fake: {{source: "example/fake", path: "/not-started"}}
+}}
+{consumer_fields}{consumer_namespace}: record: {{type: "fake_plain", configuration: name: infrastructure.{producer_root}{producer_namespace}.primary.outputs.id}}"#
+                    ))?;
+                    let error = evaluate_native_fixture(directory.path(), environment).unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("selected infrastructure configuration"),
+                        "{producer_root}{producer_namespace} -> {consumer_root}{consumer_namespace}: {error}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn data_only_top_level_and_named_environments_are_complete_separate_configurations()
+    -> TestResult {
+        let directory = native_fixture(
+            r#"data: top: {type: "fake_lookup", configuration: name: "top"}
+environments: {
+ dev: {
+  providers: fake: {source: "example/fake", path: "/not-started"}
+  data: selected: {type: "fake_lookup", configuration: name: "dev"}
+ }
+ unused: {
+  providers: fake: {source: "example/fake", path: "/not-started"}
+  data: incomplete: {type: "fake_lookup", configuration: name: string}
+ }
+}"#,
+        )?;
+        let top = evaluate_native_fixture(directory.path(), None)?;
+        assert!(top.infrastructure.resources.is_empty());
+        assert_eq!(top.infrastructure.data.len(), 1);
+        assert_eq!(top.infrastructure.data["top"].configuration["name"], "top");
+        assert_eq!(top.top_level.resources, 0);
+        assert_eq!(top.top_level.data_sources, 1);
+        let selected = evaluate_native_fixture(directory.path(), Some("dev"))?;
+        assert_eq!(selected.infrastructure.data.len(), 1);
+        assert_eq!(
+            selected.infrastructure.data["selected"].configuration["name"],
+            "dev"
+        );
+        assert_eq!(selected.top_level, top.top_level);
+        assert!(evaluate_native_fixture(directory.path(), Some("unused")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn selected_data_must_be_concrete_but_state_only_commands_do_not_require_it() -> TestResult {
+        let directory = native_fixture(
+            r#"data: incomplete: {type: "fake_lookup", configuration: name: string}
+environments: dev: {
+ providers: fake: {source: "example/fake", path: "/not-started"}
+ data: complete: {type: "fake_lookup", configuration: name: "dev"}
+}"#,
+        )?;
+        assert!(evaluate_native_fixture(directory.path(), None).is_err());
+        assert!(evaluate_native_fixture(directory.path(), Some("dev")).is_ok());
+        let state = evaluate(TargetRequest {
+            path: &directory.path().to_string_lossy(),
+            package: "cuenv",
+            name_check: NameCheck::TargetOnly,
+            needs: Needs::StateOnly,
+            environment: None,
+        })?;
+        assert!(state.infrastructure.data.is_empty());
+        assert_eq!(state.top_level.data_sources, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_native_data_selectors_fail_before_external_side_effects() -> TestResult {
+        for body in [
+            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: infrastructure.data.missing.outputs.id}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: string & =~"^prefix"}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: *"default" | string}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: nested: name: infrastructure.data.primary.outputs.id}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: *"fallback" | infrastructure.data.primary.outputs.id}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: "prefix-\(infrastructure.data.primary.outputs.id)"}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: number}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id + 1}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: ids: [...string]}, record: {type: "fake_lookup", configuration: names: infrastructure.data.primary.outputs.ids}}"#,
+            r#"data: primary: {type: "fake_lookup", outputs: id: string}
+providers: fake: configuration: name: infrastructure.data.primary.outputs.id"#,
+        ] {
+            let directory = native_fixture(body)?;
+            assert!(
+                evaluate_native_fixture(directory.path(), None).is_err(),
+                "{body}"
+            );
+        }
         Ok(())
     }
 

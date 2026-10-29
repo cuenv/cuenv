@@ -103,18 +103,32 @@ Operations are ordered as one dependency graph, with the edges of Terraform's
 ```sql
 cuenv_infrastructure_resources(
   module_path, project, environment, resource_type, resource_name,   -- primary key
-  provider, provider_source, schema_version, state_json, private,
-  dependencies_json, tainted, identity_json, serial, generation,
+  provider, provider_source, schema_version, resource_state_json, private,
+  dependencies_json, sensitive_attributes, tainted, identity_json, serial, generation,
   created_at, updated_at)
 
 cuenv_infrastructure_locks(module_path, project, environment, lock_identifier, holder, acquired_at)
 
 cuenv_infrastructure_owners(module_path, project, environment, instance, claimed_at)
 
-cuenv_infrastructure_schema(version)
+cuenv_infrastructure_pending_migration(version, expires_at)
+
+cuenv_infrastructure_migrations(version)
 ```
 
-Schema version 1 is the only layout. `environment` is the empty string for a
+SQL schema version 2 adds top-level `sensitive_attributes` metadata through the
+shared store's lock-fenced, transactional migration from version 1. It adds the
+metadata with an empty-list default and atomically renames `state_json` to
+`resource_state_json`; migration 1 remains unchanged, and provider state and
+private bytes remain untouched. The rename invalidates legacy SQL projections:
+a version-1 reader that passed its version check before migration fails closed
+if its old SELECT runs afterward. No compatibility view restores the old
+projection; values are preserved, not transformed or re-encoded.
+Earlier incompatible development layouts, including those recorded in
+`cuenv_infrastructure_schema`, remain refused rather than adopted. They are
+distinct from the supported version-1 layout.
+
+`environment` is the empty string for a
 run without `--env`; a named environment can never be empty, so the no-flag
 identity and each named environment are separate tenants that never read each
 other's rows, locks or owners, and nothing falls back from one to the other.
@@ -125,7 +139,7 @@ recovery saves both, so a lost-response retry cannot acknowledge an independent
 insertion with identical content. `identity_json` is reserved for resource
 identity (next step 2).
 
-The schema is versioned (`cuenv_infrastructure_schema`): a newer version than
+The schema is versioned (`cuenv_infrastructure_migrations`): a newer version than
 the build knows is refused for reads, locks and force-unlock
 (`StateSchemaNewer`), reads never migrate, and each migration runs in its own
 `BEGIN IMMEDIATE` transaction. A migration after the first refuses, inside its
@@ -134,6 +148,14 @@ insert is guarded by the schema version in the same statement. See decision D1
 for the reasons, and its consequence: one stale lock blocks every future
 migration until it is released. A row that cannot be decoded is
 `UndecodableRecord` naming the address, not a Turso connectivity error.
+
+Managed records retain the union of provider-schema, inherited-reference and
+stored top-level sensitivity in `ManagedResource.sensitive_attributes`. Refresh,
+import, failed updates and recovery preserve the metadata, so a fresh-process
+destroy/orphan plan can mask secrets copied from a data source. Values remain
+plaintext in managed state and recovery files. Old records lack inferred
+provenance and cannot reconstruct it retroactively; runtime data source support
+had not been released.
 
 - The owner row records which CUE instance (`<directory relative to the module
 root>:<package>`) manages the tenant. The first locked run claims it; any
@@ -629,10 +651,12 @@ thousand line `turso.rs`. Not resolved: see next steps.
   legacy and named table families and the v2 and v3 recovery readers protected
   databases that exist only in development, and they were the source of
   findings N1 (a half-migrated database unreadable), R2 (force dropping
-  compare-and-swap) and N7. They are replaced by one schema version 1 and one
-  recovery format version 1. The versioned framework stays (schema table, newer
-  versions refused, fail closed) because the first released layout will need to
-  evolve, and future migrations are fenced: a migration refuses to run while any
+  compare-and-swap) and N7. At that milestone they were replaced by SQL schema
+  version 1 and recovery format version 1. SQL schema version 2 now adds
+  sensitivity metadata and renames the state column through a supported
+  transactional migration from that version 1; recovery format remains version 1.
+  The versioned framework (migration table,
+  newer versions refused, fail closed) fences upgrades: a migration refuses to run while any
   lock row exists, checked inside its transaction, because a run that holds a lock
   may be between two writes. Consequences: one stale lock blocks the next schema
   migration until released; and development databases from earlier iterations of
@@ -748,7 +772,10 @@ experimental.
    resource arguments: `fromResource` and `attribute` descriptors infer and
    persist dependencies; known outputs participate in planning, and outputs
    produced by creates resolve before the consumer's final plan. Sensitive
-   outputs, nested values and collections remain unsupported. See the
+   scalar outputs are supported (masked; strings of at least four characters
+   registered for redaction). Nested and collection output selection remain
+   unsupported. Runtime data sources add `fromDataSource` descriptors and native
+   selectors for either producer/consumer namespace. See the
    completed [import and output-reference design](2026-10-23-infrastructure-import-existing-resources.md).
 2. Protocol fidelity: resource identity (`GetResourceIdentitySchemas` and
    identity on read, plan and apply); numbers with full precision beyond 64-bit
@@ -801,7 +828,13 @@ experimental.
     (source, version, schema digest) and per-resource `#Resource` bindings
     locally, and the engine verifies the digest (see
     `2026-10-03-infrastructure-provider-types.md`).
-13. Data sources (`ReadDataSource`) and `--target`. Importing one existing
+13. `--target`. Runtime data sources (`ReadDataSource`, issue #545) are supported
+    experimentally under `infrastructure.data`: fresh per plan/apply invocation,
+    apply-owned planning reads across confirmation, deferred when managed
+    prerequisites change or data prerequisites defer. Data results are not
+    persisted; managed arguments copied from them can be. `dependsOn` remains
+    managed-only, references infer data edges, and managed ancestors are flattened
+    through data for destroy ordering. Importing one existing
     resource with `ImportResourceState` is implemented, including refresh
     before state persistence; see the completed
     [`2026-10-23-infrastructure-import-existing-resources.md`](2026-10-23-infrastructure-import-existing-resources.md).
