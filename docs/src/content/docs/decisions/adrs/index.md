@@ -16,6 +16,10 @@ This section captures binding decisions derived from proposals and implementatio
 - [ADR-0008: Hermetic, Input-Addressed Task Execution with Persistent Cache](/decisions/adrs/adr-0008-hermetic-task-execution-cache/)
 - [ADR-0009: Single Internal Sync Registry](/decisions/adrs/adr-0009-single-internal-sync-registry/)
 
+## Proposed ADRs
+
+- [ADR-0012: Per-Project Object-Storage State](/decisions/adrs/adr-0012-per-project-object-storage-state/)
+
 ## Superseded ADRs
 
 - [ADR-0006: Library-First Architecture with Unified Provider System](/decisions/adrs/adr-0006-library-first-provider-system/) — superseded by [RFC-0006](/decisions/rfcs/rfc-0006-workspace-refactoring-roadmap/) and [ADR-0009](/decisions/adrs/adr-0009-single-internal-sync-registry/).
