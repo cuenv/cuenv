@@ -41,6 +41,12 @@ A five-person review (storage correctness, operations, security, maintainer,
 and user) went through five rounds until all five approved. Their objections
 are recorded in the implementation spec.
 
+After the review, the maintainer removed the ownership gate and made project
+names unique module-wide. The review had kept the gate as a backstop against
+a copied repository that keeps the original module path. That backstop did
+not hold: a copy with the same directory layout passes the gate, and anyone
+who can make the mistake usually holds the bucket credential anyway.
+
 ## Decision
 
 ### One object per tenant, under a key derived from the CUE module
@@ -62,8 +68,8 @@ are recorded in the implementation spec.
 - **`TenantKey` is unchanged.** The object store takes the package from the
   evaluated CUE instance. The SQL backends and their schema are not changed.
 
-`state.json` holds the format versions, the tenant identity, the owner record,
-the lock, and every managed resource record. Every write is a conditional PUT
+`state.json` holds the format versions, the tenant identity, the last writer's
+instance, the lock, and every managed resource record. Every write is a conditional PUT
 on the ETag of the version it was derived from, made only after checking that
 the lock in that version is the writer's own. So the lock check and the write
 stay atomic, and the `StateStore` contract holds unchanged.
@@ -123,12 +129,18 @@ snapshots.
 
 ### Ownership and renames
 
-- **The owner record (`<directory>:<package>`) stays.** When its directory no
-  longer declares the project, commands refuse and name `state adopt`. They
-  never transfer ownership silently.
+- **No ownership gate.** A tenant is identified by its key (module path,
+  package, project, environment), and project names are unique within a
+  module, so a second instance cannot claim the same tenant. The ownership
+  check and the requirement to run `state adopt` after moving a directory are
+  removed, for every backend.
+- **Writer instance, information only.** Each write records the writer's
+  instance (`<directory>:<package>`). Plan shows it, notes when it differs
+  from the current directory, and rename detection uses it. It never blocks a
+  run.
 - **Rename detection.** A run that finds its own tenant empty looks for a
-  tenant in the same module that is owned by its directory, no longer
-  declared, and still holds records or a lock. If it finds one, it refuses as
+  tenant in the same module whose last writer was in its directory, that is
+  no longer declared, and that still holds records or a lock. If it finds one, it refuses as
   a probable rename and offers three ways forward:
   - rename the state;
   - retire the old identity;
@@ -151,9 +163,20 @@ snapshots.
 
 ### Project names
 
-The existing infrastructure uniqueness check stays as it is (every package,
-infrastructure projects only, fail closed) and becomes case-insensitive. A
-module-wide uniqueness rule for every project is outside this decision.
+Project names are unique within a module, across every package, for every
+project, compared case-insensitively.
+
+- **Enforcement.** The check runs fail-closed in the infrastructure commands
+  that already evaluate the whole module (`plan`, `apply`, `destroy`,
+  `import`). `cuenv sync` and `cuenv ci` report violations. It never runs on
+  the shell hook path.
+- **Projects without `infrastructure`.** A duplicate among them is a warning
+  for one release, then an error. Duplicates among infrastructure projects
+  are already an error today.
+- **The module path is the identity.** Keeping it unique, for example
+  changing `module:` when a repository is copied, is the user's
+  responsibility. The plan prints the state location and every destroy, which
+  is the check for that mistake.
 
 ### Transport
 
@@ -191,10 +214,18 @@ module-wide uniqueness rule for every project is outside this decision.
   Pinned machines must upgrade before a project migrates.
 - Renaming a module path cannot be detected. Renaming a project and moving
   its directory in the same change cannot be detected either.
+- A copied repository that keeps the original module path, used with the same
+  bucket credential, shares the original's state. The plan shows the state
+  location and every destroy before anything runs. Nothing else guards
+  against it.
+- Modules that reuse a project name in a non-infrastructure project see a
+  warning for one release and then an error.
 
 ### Neutral
 
 - Turso stays supported. D1 is deprecated by #549.
+- `state adopt` is no longer required. It is kept for one release as a no-op
+  that prints a deprecation notice, then removed.
 - The SQL schema is unchanged, apart from preserving migration fence rows.
 
 ## Validation
