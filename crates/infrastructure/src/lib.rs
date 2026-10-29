@@ -33,9 +33,9 @@ pub mod unrecorded;
 
 pub use cancellation::{Cancellation, RecordingGuard};
 pub use engine::{
-    Action, ApplyContext, ApplyEvent, EngineOptions, EngineSetup, InfrastructureEngine, Plan,
-    PlanDigest, PlanMode, PlanSummary, ResourceChange, declared_resource, render_plan,
-    validate_configuration,
+    Action, ApplyContext, ApplyEvent, DataSourcePlan, EngineOptions, EngineSetup,
+    InfrastructureEngine, Plan, PlanDigest, PlanMode, PlanSummary, ResourceChange,
+    declared_resource, render_plan, validate_configuration,
 };
 pub use error::{
     InfrastructureError, Result, UnrecordedFileProblem, failure_category, strip_control_characters,

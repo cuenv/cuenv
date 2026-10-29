@@ -39,7 +39,7 @@
 //! parallel applies are not supported. `create_before_destroy` is not
 //! supported: a replacement is always destroy, then create.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -61,7 +61,7 @@ use crate::plugin::{
     ApplyRequest, LaunchOptions, PlanRequest, ProviderClient, redact_provider_text,
 };
 use crate::protocol::{self, Diagnostic, Severity};
-use crate::references::{ConfigurationReferences, ResourceOutputReference};
+use crate::references::{ConfigurationReferences, ResourceOutputReference, SourceAddress};
 use crate::registry::{
     ProviderInstaller, ProviderSource, current_platform, default_cache_directory,
 };
@@ -73,11 +73,22 @@ use crate::tenant::TenantKey;
 use crate::type_system::{self, PathStep, Type, Value};
 use crate::unrecorded::UnrecordedStore;
 
+mod data_sources;
 mod schedule;
+mod sensitivity;
 mod validation;
 
+use data_sources::{
+    DataSourceExecution, DataSourcePlanning, DeclarationGraph, ReadyDataSources,
+    data_source_schema, planned_output, register_attributes,
+};
 use schedule::{Aftermath, ApplyOperation, OperationKind, Schedule, ScheduleRun};
+use sensitivity::{
+    SensitiveProviderValue, register_stored_values, resource_sensitivity, sensitive_provider_value,
+};
 use validation::ConfigurationScope;
+
+pub use data_sources::DataSourcePlan;
 
 pub use validation::validate_configuration;
 
@@ -252,6 +263,8 @@ pub struct Plan {
     /// last. The schedule is computed, and refused when no safe order
     /// exists, while planning.
     pub changes: Vec<ResourceChange>,
+    /// Invocation-local data results, in dependency order. Never persisted.
+    pub data_sources: Vec<DataSourcePlan>,
     /// Warnings collected while planning: the providers', and what ordering
     /// the changes had to overlook (stored dependencies that form a cycle).
     pub warnings: Vec<String>,
@@ -336,13 +349,14 @@ impl Plan {
     #[must_use]
     pub fn has_work(&self) -> bool {
         self.changes.iter().any(ResourceChange::has_work)
+            || self.data_sources.iter().any(|read| read.deferred)
     }
 
     /// Digest of everything this plan would do; see [`PlanDigest`].
     #[must_use]
     pub fn digest(&self) -> PlanDigest {
         let mut digest = DigestWriter::default();
-        digest.field(b"cuenv infrastructure plan digest 2");
+        digest.field(b"cuenv infrastructure plan digest 3");
         digest.field(self.tenant.module_path().as_bytes());
         digest.field(self.tenant.project().as_bytes());
         match self.tenant.environment() {
@@ -357,9 +371,18 @@ impl Plan {
         for change in &self.changes {
             digest.field(change.address.resource_type.as_bytes());
             digest.field(change.address.name.as_bytes());
+            digest.field(change.provider.as_bytes());
             digest.field(change.action.name().as_bytes());
             digest.value(&change.before);
             digest.value(&change.after);
+            digest.count(change.dependencies.len());
+            for dependency in &change.dependencies {
+                digest.field(dependency.as_bytes());
+            }
+            digest.count(change.sensitive.len());
+            for attribute in &change.sensitive {
+                digest.field(attribute.as_bytes());
+            }
             digest.count(change.requires_replace.len());
             for path in &change.requires_replace {
                 digest.field(path.as_bytes());
@@ -367,12 +390,15 @@ impl Plan {
             digest.count(change.references.references().len());
             for reference in change.references.references() {
                 digest.field(reference.destination_attribute.as_bytes());
-                digest.field(reference.source.resource_type.as_bytes());
-                digest.field(reference.source.name.as_bytes());
+                digest.field(reference.source.to_string().as_bytes());
                 digest.field(reference.attribute.as_bytes());
             }
             digest.record(change.stored.as_ref());
             digest.record(change.refreshed_record.as_ref());
+        }
+        digest.count(self.data_sources.len());
+        for read in &self.data_sources {
+            read.digest(&mut digest);
         }
         PlanDigest(hex::encode(digest.hasher.finalize()))
     }
@@ -613,6 +639,8 @@ pub struct InfrastructureEngine {
     infrastructure: Infrastructure,
     options: EngineOptions,
     providers: BTreeMap<String, LoadedProvider>,
+    /// Effective sensitivity for this plan, including reference propagation.
+    output_sensitivity: BTreeMap<SourceAddress, Vec<String>>,
 }
 
 impl fmt::Debug for InfrastructureEngine {
@@ -635,7 +663,7 @@ struct ResourcePlanInput<'input> {
     /// The resources it depends on, as full `type.name` addresses.
     dependencies: Vec<String>,
     references: ConfigurationReferences,
-    planned_outputs: &'input BTreeMap<ResourceAddress, Value>,
+    planned_outputs: &'input BTreeMap<SourceAddress, Value>,
     stored: Option<&'input ManagedResource>,
 }
 
@@ -646,6 +674,7 @@ struct ReferencedReplan<'step> {
     schema: &'step Schema,
     lock: &'step StateLock,
     rows: &'step mut BTreeMap<ResourceAddress, ManagedResource>,
+    data_sources: &'step BTreeMap<ResourceAddress, Value>,
     on_event: &'step mut (dyn FnMut(ApplyEvent) + Send),
 }
 
@@ -655,12 +684,26 @@ struct ResolveReferenceConfiguration<'step> {
     destination_block: &'step Block,
     prepared: &'step Value,
     rows: &'step BTreeMap<ResourceAddress, ManagedResource>,
+    data_sources: &'step BTreeMap<ResourceAddress, Value>,
 }
 
 struct OperationRunContext<'run> {
     lock: &'run StateLock,
     rows: &'run mut BTreeMap<ResourceAddress, ManagedResource>,
+    data_sources: &'run BTreeMap<ResourceAddress, Value>,
     on_event: &'run mut (dyn FnMut(ApplyEvent) + Send),
+}
+
+struct ReferenceValueInput<'read> {
+    destination: &'read ResourceAddress,
+    reference: &'read ResourceOutputReference,
+    rows: &'read BTreeMap<ResourceAddress, ManagedResource>,
+    data_sources: &'read BTreeMap<ResourceAddress, Value>,
+}
+
+struct DataSourceReadContext<'read> {
+    rows: &'read BTreeMap<ResourceAddress, ManagedResource>,
+    values: &'read BTreeMap<ResourceAddress, Value>,
 }
 
 /// The declaration at `address`: declared under its name and with its type.
@@ -672,38 +715,6 @@ pub fn declared_resource<'declared>(
     declared
         .get(&address.name)
         .filter(|declaration| declaration.resource_type == address.resource_type)
-}
-
-/// The addresses of the resources a declaration depends on.
-fn full_dependencies(
-    declared: &BTreeMap<String, ManagedResourceDeclaration>,
-    declaration: &ManagedResourceDeclaration,
-    references: &ConfigurationReferences,
-) -> Result<Vec<String>> {
-    let mut dependencies = Vec::new();
-    let mut seen = HashSet::new();
-    for name in &declaration.depends_on {
-        let dependency = declared.get(name).ok_or_else(|| {
-            InfrastructureError::configuration(format!("dependency on unknown resource '{name}'"))
-        })?;
-        let address = ResourceAddress::new(&dependency.resource_type, name).to_string();
-        if seen.insert(address.clone()) {
-            dependencies.push(address);
-        }
-    }
-    for reference in references.references() {
-        if declared_resource(declared, &reference.source).is_none() {
-            return Err(InfrastructureError::configuration(format!(
-                "reference to unknown resource '{}'",
-                reference.source
-            )));
-        }
-        let address = reference.source.to_string();
-        if seen.insert(address.clone()) {
-            dependencies.push(address);
-        }
-    }
-    Ok(dependencies)
 }
 
 /// Changes in the order apply runs them.
@@ -739,6 +750,7 @@ impl InfrastructureEngine {
             infrastructure: setup.infrastructure,
             options: setup.options,
             providers: BTreeMap::new(),
+            output_sensitivity: BTreeMap::new(),
         }
     }
 
@@ -804,7 +816,7 @@ impl InfrastructureEngine {
         }
         let result = self.plan_resources(mode).await;
         match result {
-            Err(_) if self.cancellation().is_stop_requested() => {
+            _ if self.cancellation().is_stop_requested() => {
                 tracing::debug!("planning ended by an interrupt");
                 Err(InfrastructureError::InterruptedWhilePlanning)
             }
@@ -856,37 +868,29 @@ impl InfrastructureEngine {
                     .to_string(),
             });
         }
-        if self
-            .store
-            .list(&self.tenant)
-            .await?
-            .iter()
-            .any(|record| &record.address == address)
-        {
+        let stored = self.store.list(&self.tenant).await?;
+        for record in &stored {
+            register_stored_values(record, &record.sensitive_attributes);
+        }
+        if stored.iter().any(|record| &record.address == address) {
             return Err(InfrastructureError::configuration(format!(
                 "cannot import {address}: this tenant already records it; inspect `state list` and select the intended `--env`, or remove the record with `state remove` only if forgetting managed state is intended"
             )));
         }
 
-        let references = ConfigurationReferences::extract(&declaration.configuration)?;
         let mut warnings = Vec::new();
         let provider_name = declaration.provider_name().to_string();
-        self.ensure_provider(&provider_name, &mut warnings).await?;
-        for reference in references.references() {
-            let source = declared_resource(&self.infrastructure.resources, &reference.source)
-                .ok_or_else(|| {
-                    InfrastructureError::configuration(format!(
-                        "reference from {address} names undeclared resource {}",
-                        reference.source
-                    ))
-                })?;
-            let source_provider = source.provider_name().to_string();
-            self.ensure_provider(&source_provider, &mut warnings)
-                .await?;
-        }
+        let sensitive = self
+            .import_sensitivity(
+                sensitivity::ImportSensitivity {
+                    address,
+                    stored: &stored,
+                },
+                &mut warnings,
+            )
+            .await?;
         let provider = self.loaded(&provider_name)?;
         let schema = resource_schema(provider, &provider_name, &address.resource_type)?;
-        self.validate_output_references(address, &references, &schema.block)?;
 
         // The identifier may appear in provider diagnostics or logs. Register
         // it before the process can echo it, then let the usual redaction
@@ -897,6 +901,21 @@ impl InfrastructureEngine {
             .client
             .import_resource_state(&address.resource_type, identifier)
             .await?;
+        let value_type = schema.block.implied_type();
+        // Inspect every returned object before any diagnostics can quote it.
+        // Unknown resource types have no trustworthy sensitivity schema here.
+        for resource in &imported.imported_resources {
+            if resource.type_name != address.resource_type {
+                return Err(InfrastructureError::plugin(format!(
+                    "provider import for {address} returned a different resource type"
+                )));
+            }
+            sensitive_provider_value(SensitiveProviderValue {
+                value: resource.state.as_ref(),
+                value_type: &value_type,
+                sensitive: &sensitive,
+            })?;
+        }
         check_diagnostics(
             &format!("import {address}"),
             &imported.diagnostics,
@@ -921,9 +940,11 @@ impl InfrastructureEngine {
                 "provider import for {address} returned identity data that cuenv cannot preserve"
             )));
         }
-        let value_type = schema.block.implied_type();
-        let (imported_state, imported_bytes) =
-            provider_value(imported.state.as_ref(), &value_type)?;
+        let (imported_state, imported_bytes) = sensitive_provider_value(SensitiveProviderValue {
+            value: imported.state.as_ref(),
+            value_type: &value_type,
+            sensitive: &sensitive,
+        })?;
         check_upgraded(address, &imported_state)?;
 
         self.ensure_not_stopped()?;
@@ -935,6 +956,11 @@ impl InfrastructureEngine {
                 imported.private.clone(),
             )
             .await?;
+        let (state, _) = sensitive_provider_value(SensitiveProviderValue {
+            value: refreshed.new_state.as_ref(),
+            value_type: &value_type,
+            sensitive: &sensitive,
+        })?;
         check_diagnostics(
             &format!("refresh imported {address}"),
             &refreshed.diagnostics,
@@ -947,15 +973,14 @@ impl InfrastructureEngine {
                 "refresh of imported {address} returned identity data that cuenv cannot preserve"
             )));
         }
-        let (state, _) = provider_value(refreshed.new_state.as_ref(), &value_type)?;
         if state.is_null() {
             return Err(InfrastructureError::plugin(format!(
                 "provider import for {address} found no existing object during refresh"
             )));
         }
         check_upgraded(address, &state)?;
-        let dependencies =
-            full_dependencies(&self.infrastructure.resources, &declaration, &references)?;
+        let dependencies = DeclarationGraph::new(&self.infrastructure)?
+            .managed_dependencies(&SourceAddress::Resource(address.clone()));
         let record = ManagedResource {
             address: address.clone(),
             provider: provider_name,
@@ -964,6 +989,7 @@ impl InfrastructureEngine {
             state: state.to_state_json(&value_type)?,
             private: refreshed.private,
             dependencies,
+            sensitive_attributes: sensitive,
             tainted: false,
             identity: None,
             serial: 0,
@@ -991,6 +1017,7 @@ impl InfrastructureEngine {
     }
 
     async fn plan_resources(&mut self, mode: PlanMode) -> Result<Plan> {
+        self.output_sensitivity.clear();
         let stored: BTreeMap<ResourceAddress, ManagedResource> = self
             .store
             .list(&self.tenant)
@@ -998,30 +1025,20 @@ impl InfrastructureEngine {
             .into_iter()
             .map(|resource| (resource.address.clone(), resource))
             .collect();
+        for row in stored.values() {
+            register_stored_values(row, &row.sensitive_attributes);
+        }
         let mut warnings = Vec::new();
         let mut changes = Vec::new();
+        let mut data_sources = Vec::new();
         let mut planned_outputs = BTreeMap::new();
+        let mut pending_sources = BTreeSet::new();
 
         let declared: BTreeMap<String, ManagedResourceDeclaration> = match mode {
             PlanMode::Apply => self.infrastructure.resources.clone(),
             PlanMode::Destroy => BTreeMap::new(),
         };
-        let references: BTreeMap<String, ConfigurationReferences> = declared
-            .iter()
-            .map(|(name, declaration)| {
-                Ok((
-                    name.clone(),
-                    ConfigurationReferences::extract(&declaration.configuration).map_err(
-                        |error| {
-                            InfrastructureError::configuration(format!(
-                                "infrastructure.resources.{name}: {error}"
-                            ))
-                        },
-                    )?,
-                ))
-            })
-            .collect::<Result<_>>()?;
-        let order = topological_order(&dependency_graph(&declared, &references)?)?;
+        let graph = DeclarationGraph::new(&self.infrastructure)?;
         let declared_addresses: BTreeSet<ResourceAddress> = declared
             .iter()
             .map(|(name, declaration)| ResourceAddress::new(&declaration.resource_type, name))
@@ -1039,25 +1056,59 @@ impl InfrastructureEngine {
             changes.push(change);
         }
 
-        for name in order {
-            let Some(declaration) = declared.get(&name) else {
-                continue;
-            };
+        for source in graph.order.iter().filter(|_| mode == PlanMode::Apply) {
             self.ensure_not_stopped()?;
-            let address = ResourceAddress::new(&declaration.resource_type, &name);
-            let resource_references = references.get(&name).cloned().unwrap_or_default();
+            if matches!(source, SourceAddress::DataSource(_)) {
+                let read = self
+                    .plan_data_source(
+                        DataSourcePlanning {
+                            source,
+                            graph: &graph,
+                            outputs: &planned_outputs,
+                            pending: &pending_sources,
+                        },
+                        &mut warnings,
+                    )
+                    .await?;
+                if read.deferred {
+                    pending_sources.insert(source.clone());
+                }
+                self.output_sensitivity
+                    .insert(source.clone(), read.sensitive.clone());
+                planned_outputs.insert(source.clone(), read.after.clone());
+                data_sources.push(read);
+                continue;
+            }
+            let address = source.address();
+            let name = &address.name;
+            let declaration = declared.get(name).ok_or_else(|| {
+                InfrastructureError::configuration(format!("{source} is not declared"))
+            })?;
+            let resource_references = graph.references.get(source).cloned().unwrap_or_default();
             let input = ResourcePlanInput {
-                name: &name,
+                name,
                 declaration,
-                dependencies: full_dependencies(&declared, declaration, &resource_references)?,
+                dependencies: graph.managed_dependencies(source),
                 references: resource_references,
                 planned_outputs: &planned_outputs,
-                stored: stored.get(&address),
+                stored: stored.get(address),
             };
             let change = self.plan_resource(&input, &mut warnings).await?;
             // Before any consumer can copy them into its configuration.
             register_sensitive_values(&change);
-            planned_outputs.insert(change.address.clone(), change.after.clone());
+            self.output_sensitivity
+                .insert(source.clone(), change.sensitive.clone());
+            if change.action.changes_infrastructure()
+                || graph
+                    .dependencies
+                    .get(source)
+                    .into_iter()
+                    .flatten()
+                    .any(|dependency| pending_sources.contains(dependency))
+            {
+                pending_sources.insert(source.clone());
+            }
+            planned_outputs.insert(source.clone(), change.after.clone());
             changes.push(change);
         }
 
@@ -1069,6 +1120,7 @@ impl InfrastructureEngine {
         Ok(Plan {
             tenant: self.tenant.clone(),
             changes,
+            data_sources,
             warnings,
             environment_identity: environment_identity(
                 &self.options.provider_environment_variables,
@@ -1164,6 +1216,8 @@ impl InfrastructureEngine {
             },
             lock,
             rows,
+            data_sources: DataSourceExecution::new(plan),
+            data_source_plans: &plan.data_sources,
             on_event,
         };
         if let Err(error) = self.execute(runner, &mut execution).await {
@@ -1182,6 +1236,17 @@ impl InfrastructureEngine {
                 },
             )));
         }
+        if !execution.data_sources.failures.is_empty() {
+            return Err(InfrastructureError::Diagnostics {
+                context: "data source reads failed".to_string(),
+                errors: execution
+                    .data_sources
+                    .failures
+                    .iter()
+                    .map(|(address, reason)| format!("data.{address}: {reason}"))
+                    .collect(),
+            });
+        }
         Ok(plan.summary())
     }
 
@@ -1197,12 +1262,40 @@ impl InfrastructureEngine {
         let schedule = execution.run.schedule();
         for (index, scheduled) in schedule.operations.iter().enumerate() {
             if execution.run.is_skipped(index) {
+                execution
+                    .data_sources
+                    .failed(&scheduled.operation.change.address);
                 continue;
             }
             let operation = &scheduled.operation;
             let change = operation.change;
             if self.cancellation().is_stop_requested() {
                 return Err(execution.progress.interrupted());
+            }
+            let reads = self
+                .read_ready_data_sources(
+                    runner,
+                    ReadyDataSources {
+                        plans: execution.data_source_plans,
+                        execution: &mut execution.data_sources,
+                        rows: &execution.rows,
+                        on_event: execution.on_event,
+                    },
+                )
+                .await;
+            execution
+                .run
+                .record_read_failures(execution.data_sources.take_read_failures());
+            if self.cancellation().is_stop_requested() {
+                return Err(execution.progress.interrupted());
+            }
+            reads?;
+            if operation.kind != OperationKind::Delete
+                && execution.data_sources.consumer_blocked(&change.references)
+            {
+                execution.data_sources.failed(&change.address);
+                execution.run.blocked(index, execution.on_event);
+                continue;
             }
             if operation.kind == OperationKind::Refresh
                 && let Some(record) = &change.refreshed_record
@@ -1218,6 +1311,7 @@ impl InfrastructureEngine {
                     address: change.address.clone(),
                 });
                 execution.run.finished(index);
+                execution.data_sources.finished(&change.address);
                 continue;
             }
             // A replacement starts with its delete and finishes with its
@@ -1234,6 +1328,7 @@ impl InfrastructureEngine {
                     OperationRunContext {
                         lock: execution.lock,
                         rows: &mut execution.rows,
+                        data_sources: &execution.data_sources.values,
                         on_event: execution.on_event,
                     },
                 )
@@ -1241,6 +1336,7 @@ impl InfrastructureEngine {
             let Err(failure) = outcome else {
                 execution.run.finished(index);
                 if operation.completes_change() {
+                    execution.data_sources.finished(&change.address);
                     execution.progress.completed += 1;
                     (execution.on_event)(ApplyEvent::Finished {
                         address: change.address.clone(),
@@ -1250,6 +1346,7 @@ impl InfrastructureEngine {
                 continue;
             };
             let continues = failure.continues();
+            execution.data_sources.failed(&change.address);
             execution
                 .run
                 .aborted(index, failure.aftermath(operation.kind));
@@ -1271,6 +1368,37 @@ impl InfrastructureEngine {
                 return Err(error);
             }
             execution.run.failed(index, error, execution.on_event);
+        }
+        let reads = self
+            .read_ready_data_sources(
+                runner,
+                ReadyDataSources {
+                    plans: execution.data_source_plans,
+                    execution: &mut execution.data_sources,
+                    rows: &execution.rows,
+                    on_event: execution.on_event,
+                },
+            )
+            .await;
+        execution
+            .run
+            .record_read_failures(execution.data_sources.take_read_failures());
+        if self.cancellation().is_stop_requested() {
+            return Err(execution.progress.interrupted());
+        }
+        reads?;
+        for read in execution
+            .data_source_plans
+            .iter()
+            .filter(|read| read.deferred)
+        {
+            if !execution.data_sources.values.contains_key(&read.address) {
+                execution
+                    .data_sources
+                    .failures
+                    .entry(read.address.clone())
+                    .or_insert_with(|| "a prerequisite did not complete".to_string());
+            }
         }
         Ok(())
     }
@@ -1370,12 +1498,17 @@ impl InfrastructureEngine {
         let OperationRunContext {
             lock,
             rows,
+            data_sources,
             on_event,
         } = context;
         let change = operation.change;
         let provider = self.loaded(&change.provider)?;
         let schema = resource_schema(provider, &change.provider, &change.address.resource_type)?;
         let value_type = schema.block.implied_type();
+        if let Some(row) = &change.stored {
+            register_stored_values(row, &change.sensitive);
+        }
+        register_sensitive_values(change);
         // The stored version every write replaces, for saving a record the
         // store cannot take.
         let version = operation.expected;
@@ -1392,6 +1525,7 @@ impl InfrastructureEngine {
                         schema,
                         lock,
                         rows,
+                        data_sources,
                         on_event,
                     })
                     .await;
@@ -1437,7 +1571,21 @@ impl InfrastructureEngine {
             let _recording = self.cancellation().begin_recording();
             let context = format!("apply {}", change.address);
             let failed = response.diagnostics.iter().any(is_error);
-            let returned = applied_value(&response, &value_type, &context)?;
+            let returned = self
+                .decode_apply_response(
+                    sensitivity::ApplyResponseValue {
+                        response: &response,
+                        value_type: &value_type,
+                    },
+                    sensitivity::RetainedSensitivity {
+                        change,
+                        lock,
+                        rows,
+                        expected: version,
+                    },
+                )
+                .await?;
+            register_attributes(&returned, &change.sensitive);
             let problem = apply_result_problem(&ApplyResult {
                 address: &change.address,
                 kind: step.kind,
@@ -1464,7 +1612,17 @@ impl InfrastructureEngine {
             if new_state.is_null() {
                 // A null result alongside errors means the change did not
                 // happen; keep whatever was recorded.
-                if !has_errors {
+                if has_errors {
+                    // A failed operation with no returned object retains its
+                    // old state, but must not lose newly learned sensitivity.
+                    self.retain_failed_sensitivity(sensitivity::RetainedSensitivity {
+                        change,
+                        lock,
+                        rows,
+                        expected: version,
+                    })
+                    .await?;
+                } else {
                     // The provider has deleted the object; recording that
                     // can still fail.
                     self.forget(lock, &change.address)
@@ -1484,6 +1642,10 @@ impl InfrastructureEngine {
                     schema_version: schema.version,
                     state: new_state.to_state_json(&value_type)?,
                     private: response.private.clone(),
+                    sensitive_attributes: remembered_sensitive_attributes(
+                        &change.sensitive,
+                        stored,
+                    ),
                     dependencies: match (step.kind, stored) {
                         // A failed delete leaves the old object, and its
                         // dependencies, as they were.
@@ -1564,6 +1726,7 @@ impl InfrastructureEngine {
             schema,
             lock,
             rows,
+            data_sources,
             on_event,
         } = input;
         let prepared = change.reference_configuration.as_ref().ok_or_else(|| {
@@ -1580,6 +1743,7 @@ impl InfrastructureEngine {
                     destination_block: &schema.block,
                     prepared,
                     rows,
+                    data_sources,
                 },
                 &mut warnings,
             )
@@ -1588,6 +1752,7 @@ impl InfrastructureEngine {
             on_event(ApplyEvent::Warning(warning));
         }
         let configuration = schema.block.normalize_configuration(configuration);
+        register_attributes(&configuration, &change.sensitive);
         let value_type = schema.block.implied_type();
         let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
         let provider = self.loaded(&change.provider)?;
@@ -1623,6 +1788,11 @@ impl InfrastructureEngine {
             })
             .await?;
         let mut warnings = Vec::new();
+        let (planned, planned_bytes) = sensitive_provider_value(SensitiveProviderValue {
+            value: response.planned_state.as_ref(),
+            value_type: &value_type,
+            sensitive: &change.sensitive,
+        })?;
         check_diagnostics(
             &format!("final plan for {}", change.address),
             &response.diagnostics,
@@ -1632,8 +1802,6 @@ impl InfrastructureEngine {
             on_event(ApplyEvent::Warning(warning));
         }
         reject_deferral(&change.address, response.deferred.as_ref())?;
-        let (planned, planned_bytes) =
-            provider_value(response.planned_state.as_ref(), &value_type)?;
         PlanValidity {
             address: &change.address,
             block: &schema.block,
@@ -1687,6 +1855,10 @@ impl InfrastructureEngine {
                         state: prior_value.to_state_json(&value_type)?,
                         private: step.prior_private.clone(),
                         dependencies: change.dependencies.clone(),
+                        sensitive_attributes: remembered_sensitive_attributes(
+                            &change.sensitive,
+                            Some(stored),
+                        ),
                         tainted: false,
                         identity: stored.identity.clone(),
                         serial: 0,
@@ -1740,12 +1912,21 @@ impl InfrastructureEngine {
             destination_block,
             prepared,
             rows,
+            data_sources,
         } = input;
         self.validate_output_references(&change.address, &change.references, destination_block)?;
         let mut outputs = BTreeMap::new();
         for reference in change.references.references() {
             let value = self
-                .reference_output_value(&change.address, reference, rows, warnings)
+                .reference_output_value(
+                    ReferenceValueInput {
+                        destination: &change.address,
+                        reference,
+                        rows,
+                        data_sources,
+                    },
+                    warnings,
+                )
                 .await?;
             outputs.insert(reference.destination_attribute.as_str(), value);
         }
@@ -1762,12 +1943,30 @@ impl InfrastructureEngine {
     /// a sensitive value is registered for redaction before it is returned.
     async fn reference_output_value(
         &self,
-        destination: &ResourceAddress,
-        reference: &ResourceOutputReference,
-        rows: &BTreeMap<ResourceAddress, ManagedResource>,
+        input: ReferenceValueInput<'_>,
         warnings: &mut Vec<String>,
     ) -> Result<Value> {
-        let row = rows.get(&reference.source).ok_or_else(|| {
+        self.ensure_not_stopped()?;
+        let ReferenceValueInput {
+            destination,
+            reference,
+            rows,
+            data_sources,
+        } = input;
+        if let SourceAddress::DataSource(address) = &reference.source {
+            return data_sources
+                .get(address)
+                .and_then(|value| value.attribute(&reference.attribute))
+                .cloned()
+                .ok_or_else(|| {
+                    reference_error(
+                        destination,
+                        reference,
+                        "has no successful data source result",
+                    )
+                });
+        }
+        let row = rows.get(reference.source.address()).ok_or_else(|| {
             reference_error(
                 destination,
                 reference,
@@ -1782,15 +1981,16 @@ impl InfrastructureEngine {
             ));
         }
         let source_declaration =
-            declared_resource(&self.infrastructure.resources, &reference.source).ok_or_else(
-                || reference_error(destination, reference, "source resource is not declared"),
-            )?;
+            declared_resource(&self.infrastructure.resources, reference.source.address())
+                .ok_or_else(|| {
+                    reference_error(destination, reference, "source resource is not declared")
+                })?;
         let source_provider = self.loaded(source_declaration.provider_name())?;
         require_same_source(row, source_provider)?;
         let source_schema = resource_schema(
             source_provider,
             source_declaration.provider_name(),
-            &reference.source.resource_type,
+            &reference.source.address().resource_type,
         )?;
         let source_state = upgraded_state(source_provider, row, source_schema, warnings).await?;
         let value = source_state
@@ -1805,11 +2005,16 @@ impl InfrastructureEngine {
             })?;
         // A source created during this apply was never planned with a
         // known value: register it before the consumer's provider sees it.
-        if source_schema
-            .block
-            .attributes
-            .get(&reference.attribute)
-            .is_some_and(|attribute| attribute.sensitive)
+        if resource_sensitivity(row, source_schema).contains(&reference.attribute)
+            || self
+                .output_sensitivity
+                .get(&reference.source)
+                .is_some_and(|attributes| attributes.contains(&reference.attribute))
+            || source_schema
+                .block
+                .attributes
+                .get(&reference.attribute)
+                .is_some_and(|attribute| attribute.sensitive)
         {
             register_value_strings(&value);
         }
@@ -1900,21 +2105,18 @@ impl InfrastructureEngine {
             input
                 .references
                 .resolve_planned(&configuration, |reference| {
-                    input
-                        .planned_outputs
-                        .get(&reference.source)
-                        .and_then(|state| state.attribute(&reference.attribute))
-                        .cloned()
-                        .ok_or_else(|| {
-                            reference_error(
-                                &address,
-                                reference,
-                                "source output is absent from its planned state",
-                            )
-                        })
+                    planned_output(input.planned_outputs, reference)
                 })?
         };
         let configuration = block.normalize_configuration(configuration);
+        let mut sensitive = masked_attributes(block, sensitive_destinations);
+        if let Some(row) = input.stored {
+            sensitive.extend(resource_sensitivity(row, schema));
+            sensitive.sort();
+            sensitive.dedup();
+            register_stored_values(row, &sensitive);
+        }
+        register_attributes(&configuration, &sensitive);
         let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
         let diagnostics = provider
             .client
@@ -1926,7 +2128,17 @@ impl InfrastructureEngine {
         check_diagnostics(&format!("validate {address}"), &diagnostics, warnings)?;
 
         let prior = match input.stored {
-            Some(row) => refresh(provider, row, warnings).await?,
+            Some(row) => {
+                refresh(
+                    provider,
+                    RefreshInput {
+                        row,
+                        sensitive: &sensitive,
+                    },
+                    warnings,
+                )
+                .await?
+            }
             None => None,
         };
 
@@ -1936,7 +2148,7 @@ impl InfrastructureEngine {
             action: Action::NoOp,
             before: Value::Null,
             after: Value::Null,
-            sensitive: masked_attributes(block, sensitive_destinations),
+            sensitive,
             requires_replace: Vec::new(),
             dependencies: input.dependencies.clone(),
             references: input.references.clone(),
@@ -1952,6 +2164,7 @@ impl InfrastructureEngine {
             schema,
             configuration: &configuration,
             configuration_bytes: &configuration_bytes,
+            sensitive: &change.sensitive,
         };
 
         let Some(prior) = prior else {
@@ -1989,10 +2202,13 @@ impl InfrastructureEngine {
                 prior_private: prior.private.clone(),
             })
             .await?;
+        let (planned, planned_bytes) = sensitive_provider_value(SensitiveProviderValue {
+            value: response.planned_state.as_ref(),
+            value_type: &value_type,
+            sensitive: &change.sensitive,
+        })?;
         check_diagnostics(&format!("plan {address}"), &response.diagnostics, warnings)?;
         reject_deferral(&address, response.deferred.as_ref())?;
-        let (planned, planned_bytes) =
-            provider_value(response.planned_state.as_ref(), &value_type)?;
         PlanValidity {
             address: &address,
             block,
@@ -2020,6 +2236,10 @@ impl InfrastructureEngine {
                     state: prior.value.to_state_json(&value_type)?,
                     private: prior.private.clone(),
                     dependencies: change.dependencies.clone(),
+                    sensitive_attributes: remembered_sensitive_attributes(
+                        &change.sensitive,
+                        Some(row),
+                    ),
                     tainted: false,
                     identity: row.identity.clone(),
                     serial: row.serial,
@@ -2082,7 +2302,16 @@ impl InfrastructureEngine {
         let provider = self.loaded(&row.provider)?;
         require_same_source(row, provider)?;
         let schema = resource_schema(provider, &row.provider, &row.address.resource_type)?;
-        let prior = refresh(provider, row, warnings).await?;
+        let sensitive = resource_sensitivity(row, schema);
+        let prior = refresh(
+            provider,
+            RefreshInput {
+                row,
+                sensitive: &sensitive,
+            },
+            warnings,
+        )
+        .await?;
 
         let mut change = ResourceChange {
             address: row.address.clone(),
@@ -2090,7 +2319,7 @@ impl InfrastructureEngine {
             action: Action::Delete,
             before: Value::Null,
             after: Value::Null,
-            sensitive: schema.block.sensitive_attributes(),
+            sensitive,
             requires_replace: Vec::new(),
             dependencies: row.dependencies.clone(),
             references: ConfigurationReferences::default(),
@@ -2108,6 +2337,7 @@ impl InfrastructureEngine {
                         address: &row.address,
                         value_type: &schema.block.implied_type(),
                         prior: &prior,
+                        sensitive: &change.sensitive,
                     },
                     warnings,
                 )
@@ -2133,15 +2363,20 @@ impl InfrastructureEngine {
         let mut sensitive = Vec::new();
         for reference in references.references() {
             let source_declaration =
-                declared_resource(&self.infrastructure.resources, &reference.source).ok_or_else(
+                data_sources::declaration(&self.infrastructure, &reference.source).ok_or_else(
                     || reference_error(destination, reference, "source resource is not declared"),
                 )?;
             let source_provider = self.loaded(source_declaration.provider_name())?;
-            let source_schema = resource_schema(
-                source_provider,
-                source_declaration.provider_name(),
-                &reference.source.resource_type,
-            )?;
+            let source_schema = match &reference.source {
+                SourceAddress::Resource(address) => resource_schema(
+                    source_provider,
+                    source_declaration.provider_name(),
+                    &address.resource_type,
+                )?,
+                SourceAddress::DataSource(address) => {
+                    data_source_schema(source_provider, &address.resource_type)?
+                }
+            };
             let joined = OutputReferenceCheck {
                 destination,
                 reference,
@@ -2150,7 +2385,13 @@ impl InfrastructureEngine {
                 declared_type: source_declaration.output_types.get(&reference.attribute),
             }
             .check()?;
-            if joined.sensitive && !sensitive.contains(&reference.destination_attribute) {
+            let inherited = self
+                .output_sensitivity
+                .get(&reference.source)
+                .is_some_and(|attributes| attributes.contains(&reference.attribute));
+            if (joined.sensitive || inherited)
+                && !sensitive.contains(&reference.destination_attribute)
+            {
                 sensitive.push(reference.destination_attribute.clone());
             }
         }
@@ -2431,6 +2672,12 @@ trait OperationRunner {
         operation: &ApplyOperation<'_>,
         context: OperationRunContext<'_>,
     ) -> std::result::Result<(), OperationFailure>;
+
+    async fn run_data_source(
+        &self,
+        read: &DataSourcePlan,
+        context: DataSourceReadContext<'_>,
+    ) -> Result<(Value, Vec<String>)>;
 }
 
 #[async_trait]
@@ -2442,6 +2689,15 @@ impl OperationRunner for InfrastructureEngine {
     ) -> std::result::Result<(), OperationFailure> {
         self.apply_operation(operation, context).await
     }
+
+    async fn run_data_source(
+        &self,
+        read: &DataSourcePlan,
+        context: DataSourceReadContext<'_>,
+    ) -> Result<(Value, Vec<String>)> {
+        self.resolve_and_read_data_source(read, context.rows, context.values)
+            .await
+    }
 }
 
 /// An apply in progress: where it stands in its schedule, how far it got,
@@ -2451,6 +2707,8 @@ struct Execution<'run, 'schedule, 'plan> {
     progress: Progress,
     lock: &'run StateLock,
     rows: BTreeMap<ResourceAddress, ManagedResource>,
+    data_sources: DataSourceExecution,
+    data_source_plans: &'plan [DataSourcePlan],
     on_event: &'run mut (dyn FnMut(ApplyEvent) + Send),
 }
 
@@ -2672,6 +2930,7 @@ struct DestroyPlanInput<'input> {
     address: &'input ResourceAddress,
     value_type: &'input Type,
     prior: &'input Refreshed,
+    sensitive: &'input [String],
 }
 
 /// Terraform's destroy plan, for providers with the `plan_destroy`
@@ -2691,13 +2950,17 @@ async fn plan_destroy(input: &DestroyPlanInput<'_>, warnings: &mut Vec<String>) 
             prior_private: input.prior.private.clone(),
         })
         .await?;
+    let (planned, _) = sensitive_provider_value(SensitiveProviderValue {
+        value: response.planned_state.as_ref(),
+        value_type: input.value_type,
+        sensitive: input.sensitive,
+    })?;
     check_diagnostics(
         &format!("plan destroy of {address}"),
         &response.diagnostics,
         warnings,
     )?;
     reject_deferral(address, response.deferred.as_ref())?;
-    let (planned, _) = provider_value(response.planned_state.as_ref(), input.value_type)?;
     if !planned.is_null() {
         return Err(InfrastructureError::plugin(format!(
             "provider planned a non-null destroy value for {address}, which is a provider bug"
@@ -2706,27 +2969,48 @@ async fn plan_destroy(input: &DestroyPlanInput<'_>, warnings: &mut Vec<String>) 
     Ok(response.planned_private)
 }
 
+struct RefreshInput<'input> {
+    row: &'input ManagedResource,
+    /// Includes newly inherited marks as well as stored and schema marks.
+    sensitive: &'input [String],
+}
+
 async fn refresh(
     provider: &LoadedProvider,
-    row: &ManagedResource,
+    input: RefreshInput<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<Option<Refreshed>> {
+    let RefreshInput { row, sensitive } = input;
     let type_name = &row.address.resource_type;
     let schema = resource_schema(provider, &row.provider, type_name)?;
     let value_type = schema.block.implied_type();
-    let (_, upgraded_bytes) = upgrade_state(provider, row, schema, warnings).await?;
+    register_stored_values(row, sensitive);
+    let (_, upgraded_bytes) = upgrade_state(
+        provider,
+        UpgradeStateInput {
+            row,
+            schema,
+            sensitive,
+        },
+        warnings,
+    )
+    .await?;
 
     let response = provider
         .client
         .read_resource(type_name, upgraded_bytes, row.private.clone())
         .await?;
+    let (value, bytes) = sensitive_provider_value(SensitiveProviderValue {
+        value: response.new_state.as_ref(),
+        value_type: &value_type,
+        sensitive,
+    })?;
     check_diagnostics(
         &format!("refresh {}", row.address),
         &response.diagnostics,
         warnings,
     )?;
     reject_deferral(&row.address, response.deferred.as_ref())?;
-    let (value, bytes) = provider_value(response.new_state.as_ref(), &value_type)?;
     if value.is_null() {
         return Ok(None);
     }
@@ -2745,12 +3029,23 @@ async fn refresh(
 
 /// Ask the provider to upgrade a stored record to its current schema
 /// version. Returns the upgraded state and its MessagePack encoding.
+struct UpgradeStateInput<'input> {
+    row: &'input ManagedResource,
+    schema: &'input Schema,
+    sensitive: &'input [String],
+}
+
 async fn upgrade_state(
     provider: &LoadedProvider,
-    row: &ManagedResource,
-    schema: &Schema,
+    input: UpgradeStateInput<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<(Value, Vec<u8>)> {
+    let UpgradeStateInput {
+        row,
+        schema,
+        sensitive,
+    } = input;
+    register_stored_values(row, sensitive);
     // Handing newer state to an older provider would silently drop what
     // it does not know; Terraform refuses too.
     if row.schema_version > schema.version {
@@ -2772,12 +3067,16 @@ async fn upgrade_state(
         .client
         .upgrade_resource_state(&row.address.resource_type, row.schema_version, state_json)
         .await?;
+    let (upgraded, upgraded_bytes) = sensitive_provider_value(SensitiveProviderValue {
+        value: upgrade.upgraded_state.as_ref(),
+        value_type: &value_type,
+        sensitive,
+    })?;
     check_diagnostics(
         &format!("upgrade state of {}", row.address),
         &upgrade.diagnostics,
         warnings,
     )?;
-    let (upgraded, upgraded_bytes) = provider_value(upgrade.upgraded_state.as_ref(), &value_type)?;
     check_upgraded(&row.address, &upgraded)?;
     Ok((upgraded, upgraded_bytes))
 }
@@ -2791,12 +3090,26 @@ async fn upgraded_state(
     schema: &Schema,
     warnings: &mut Vec<String>,
 ) -> Result<Value> {
+    let sensitive = resource_sensitivity(row, schema);
+    register_stored_values(row, &sensitive);
     if row.schema_version != schema.version {
-        return Ok(upgrade_state(provider, row, schema, warnings).await?.0);
+        return Ok(upgrade_state(
+            provider,
+            UpgradeStateInput {
+                row,
+                schema,
+                sensitive: &sensitive,
+            },
+            warnings,
+        )
+        .await?
+        .0);
     }
     let state_json = serde_json::to_vec(&row.state)
         .map_err(|error| InfrastructureError::state(json_error_category(&error)))?;
-    type_system::from_json_bytes(&state_json, &schema.block.implied_type())
+    let value = type_system::from_json_bytes(&state_json, &schema.block.implied_type())?;
+    register_attributes(&value, &sensitive);
+    Ok(value)
 }
 
 /// Inputs for planning a create.
@@ -2806,6 +3119,7 @@ struct CreatePlanInput<'input> {
     schema: &'input Schema,
     configuration: &'input Value,
     configuration_bytes: &'input [u8],
+    sensitive: &'input [String],
 }
 
 async fn plan_create(
@@ -2831,13 +3145,17 @@ async fn plan_create(
             prior_private,
         })
         .await?;
+    let (planned, planned_bytes) = sensitive_provider_value(SensitiveProviderValue {
+        value: response.planned_state.as_ref(),
+        value_type: &value_type,
+        sensitive: input.sensitive,
+    })?;
     check_diagnostics(
         &format!("plan create of {address}"),
         &response.diagnostics,
         warnings,
     )?;
     reject_deferral(address, response.deferred.as_ref())?;
-    let (planned, planned_bytes) = provider_value(response.planned_state.as_ref(), &value_type)?;
     PlanValidity {
         address,
         block: &input.schema.block,
@@ -3019,7 +3337,11 @@ fn is_error(diagnostic: &Diagnostic) -> bool {
 /// Provider text is redacted before it is stripped: a secret that
 /// contains a control character would no longer match once stripped.
 fn render_diagnostic(diagnostic: &Diagnostic) -> String {
-    render_diagnostic_with(diagnostic, redact_provider_text)
+    // Engine-discovered sensitive outputs are registered with the event
+    // registry even when a caller supplies its own provider-log redactor.
+    render_diagnostic_with(diagnostic, |text| {
+        cuenv_events::redact(&redact_provider_text(text))
+    })
 }
 
 fn render_diagnostic_with(diagnostic: &Diagnostic, redact: fn(&str) -> String) -> String {
@@ -3065,33 +3387,6 @@ pub(crate) fn check_diagnostics(
 /// Render an attribute path as `rules.match[0]["key"]`.
 fn render_path(path: &protocol::AttributePath) -> String {
     crate::object_change::render_steps(&path_steps(path))
-}
-
-fn dependency_graph(
-    resources: &BTreeMap<String, ManagedResourceDeclaration>,
-    references: &BTreeMap<String, ConfigurationReferences>,
-) -> Result<BTreeMap<String, Vec<String>>> {
-    resources
-        .iter()
-        .map(|(name, declaration)| {
-            let mut dependencies: BTreeSet<String> =
-                declaration.depends_on.iter().cloned().collect();
-            for reference in references
-                .get(name)
-                .into_iter()
-                .flat_map(ConfigurationReferences::references)
-            {
-                if declared_resource(resources, &reference.source).is_none() {
-                    return Err(InfrastructureError::configuration(format!(
-                        "resource '{name}' references unknown resource '{}'",
-                        reference.source
-                    )));
-                }
-                dependencies.insert(reference.source.name.clone());
-            }
-            Ok((name.clone(), dependencies.into_iter().collect()))
-        })
-        .collect()
 }
 
 /// One reference's source and destination schemas, checked together.
@@ -3187,6 +3482,25 @@ fn masked_attributes(block: &Block, sensitive_destinations: Vec<String>) -> Vec<
     masked
 }
 
+/// Removing a reference must not erase sensitivity from state that still
+/// contains the copied value, including records retained after failed writes.
+fn remembered_sensitive_attributes(
+    current: &[String],
+    prior: Option<&ManagedResource>,
+) -> Vec<String> {
+    current
+        .iter()
+        .chain(
+            prior
+                .into_iter()
+                .flat_map(|record| &record.sensitive_attributes),
+        )
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Register every known string inside a change's masked attributes, before
 /// and after, so a copy of one printed anywhere else is redacted too: in a
 /// consumer's provider diagnostics, in an error, or in the prior state of a
@@ -3205,7 +3519,15 @@ fn register_value_strings(value: &Value) {
     match value {
         Value::String(text) => cuenv_events::register_secret(text.clone()),
         Value::List(items) => items.iter().for_each(register_value_strings),
-        Value::Object(attributes) => attributes.values().for_each(register_value_strings),
+        Value::Object(attributes) => {
+            // Value represents both maps and objects. Within an already
+            // sensitive subtree, keys can be provider/user data too. The
+            // enclosing schema attribute name is never passed here.
+            for (name, value) in attributes {
+                cuenv_events::register_secret(name.clone());
+                register_value_strings(value);
+            }
+        }
         Value::Typed(typed) => register_value_strings(&typed.value),
         Value::Null | Value::Unknown | Value::Boolean(_) | Value::Number(_) => {}
     }
@@ -3277,6 +3599,14 @@ fn topological_order(graph: &BTreeMap<String, Vec<String>>) -> Result<Vec<String
 #[must_use]
 pub fn render_plan(plan: &Plan) -> String {
     let mut rendered = String::new();
+    for read in &plan.data_sources {
+        let timing = if read.deferred {
+            "read during apply"
+        } else {
+            "read during plan"
+        };
+        let _ = writeln!(rendered, "  <= data.{} ({timing})", read.address);
+    }
     for change in &plan.changes {
         let label = match change.action {
             Action::Refresh => {

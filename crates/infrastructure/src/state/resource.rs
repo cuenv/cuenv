@@ -76,6 +76,10 @@ pub struct ManagedResource {
     pub private: Vec<u8>,
     /// Names of resources this one depends on, used to order destroys.
     pub dependencies: Vec<String>,
+    /// Top-level attribute names whose values are effectively sensitive,
+    /// including sensitivity inherited through output references. Never values.
+    #[serde(default)]
+    pub sensitive_attributes: Vec<String>,
     /// The resource exists but its creation failed part way; the next plan
     /// must replace it.
     #[serde(default)]
@@ -206,6 +210,7 @@ mod tests {
             state: serde_json::json!({}),
             private: Vec::new(),
             dependencies: Vec::new(),
+            sensitive_attributes: Vec::new(),
             tainted: false,
             identity: None,
             serial: 4,

@@ -4,12 +4,49 @@
 //! compatibility, dependency ordering and sensitivity belong to the engine;
 //! this module parses descriptors and replaces their configuration positions.
 
-use cuenv_manifest::manifest::InfrastructureOutputReference;
+use cuenv_manifest::manifest::{InfrastructureDataSourceReference, InfrastructureOutputReference};
 use serde_json::{Map, Value as Json};
 
 use crate::error::{InfrastructureError, Result};
 use crate::state::ResourceAddress;
 use crate::type_system::{Type, Value};
+
+/// Identity of an output producer. Data sources never have managed state addresses.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceAddress {
+    /// A managed resource, backed by a state record.
+    Resource(ResourceAddress),
+    /// An invocation-local data source.
+    DataSource(ResourceAddress),
+}
+
+impl SourceAddress {
+    /// Provider type and local declaration name, without a namespace prefix.
+    #[must_use]
+    pub const fn address(&self) -> &ResourceAddress {
+        match self {
+            Self::Resource(address) | Self::DataSource(address) => address,
+        }
+    }
+
+    /// Descriptor field selecting this namespace.
+    #[must_use]
+    pub const fn descriptor_field(&self) -> &'static str {
+        match self {
+            Self::Resource(_) => "fromResource",
+            Self::DataSource(_) => "fromDataSource",
+        }
+    }
+}
+
+impl std::fmt::Display for SourceAddress {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resource(address) => address.fmt(formatter),
+            Self::DataSource(address) => write!(formatter, "data.{address}"),
+        }
+    }
+}
 
 /// One resource output used by a top-level configuration argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,7 +54,7 @@ pub struct ResourceOutputReference {
     /// Argument of the consuming resource that receives the output.
     pub destination_attribute: String,
     /// Full address of the resource that supplies the output.
-    pub source: ResourceAddress,
+    pub source: SourceAddress,
     /// Top-level attribute to read from that resource's output.
     pub attribute: String,
 }
@@ -49,23 +86,28 @@ impl ConfigurationReferences {
             if descriptor.len() != 2 || !descriptor.contains_key("attribute") {
                 return Err(problem(
                     destination_attribute,
-                    "a reference must contain exactly `fromResource` and `attribute`",
+                    "a reference must contain exactly one source (`fromResource` or `fromDataSource`) and `attribute`",
                 ));
             }
-            let descriptor: InfrastructureOutputReference = serde_json::from_value(value.clone())
-                .map_err(|_| {
+            let malformed = || {
                 problem(
                     destination_attribute,
-                    "a reference must contain exactly `fromResource` and `attribute`, both strings",
+                    "a reference must contain exactly one source (`fromResource` or `fromDataSource`) and `attribute`, both strings",
                 )
-            })?;
-            let source = ResourceAddress::parse(&descriptor.from_resource).ok_or_else(|| {
-                problem(
-                    destination_attribute,
-                    "`fromResource` must be a valid resource address `type.name`",
-                )
-            })?;
-            let attribute = descriptor.attribute;
+            };
+            let (source, attribute) = if descriptor.contains_key("fromDataSource") {
+                let descriptor: InfrastructureDataSourceReference =
+                    serde_json::from_value(value.clone()).map_err(|_| malformed())?;
+                let address =
+                    ResourceAddress::parse(&descriptor.from_data_source).ok_or_else(malformed)?;
+                (SourceAddress::DataSource(address), descriptor.attribute)
+            } else {
+                let descriptor: InfrastructureOutputReference =
+                    serde_json::from_value(value.clone()).map_err(|_| malformed())?;
+                let address =
+                    ResourceAddress::parse(&descriptor.from_resource).ok_or_else(malformed)?;
+                (SourceAddress::Resource(address), descriptor.attribute)
+            };
             if !is_identifier(&attribute) {
                 return Err(problem(
                     destination_attribute,
@@ -237,9 +279,9 @@ enum UnknownOutputs {
 
 /// Whether a configuration value is a reserved reference descriptor.
 fn is_descriptor(value: &Json) -> bool {
-    value
-        .as_object()
-        .is_some_and(|object| object.contains_key("fromResource"))
+    value.as_object().is_some_and(|object| {
+        object.contains_key("fromResource") || object.contains_key("fromDataSource")
+    })
 }
 
 fn is_identifier(value: &str) -> bool {
@@ -291,7 +333,7 @@ mod tests {
             references.references(),
             &[ResourceOutputReference {
                 destination_attribute: "zone_id".to_string(),
-                source: ResourceAddress::new("cloudflare_zone", "primary"),
+                source: SourceAddress::Resource(ResourceAddress::new("cloudflare_zone", "primary")),
                 attribute: "id".to_string(),
             }]
         );
@@ -338,6 +380,69 @@ mod tests {
                 json!({"fromResource": address, "attribute": "id"}),
             )]);
             assert!(ConfigurationReferences::extract(&configuration).is_err());
+        }
+    }
+
+    #[test]
+    fn data_source_and_resource_descriptors_have_distinct_identities() -> Result<()> {
+        let configuration = Map::from_iter([
+            (
+                "managed".to_string(),
+                json!({"fromResource": "example_object.primary", "attribute": "id"}),
+            ),
+            (
+                "lookup".to_string(),
+                json!({"fromDataSource": "example_object.primary", "attribute": "id"}),
+            ),
+        ]);
+        let references = ConfigurationReferences::extract(&configuration)?;
+        let sources: std::collections::BTreeSet<String> = references
+            .references()
+            .iter()
+            .map(|reference| reference.source.to_string())
+            .collect();
+        assert_eq!(
+            sources,
+            std::collections::BTreeSet::from([
+                "example_object.primary".to_string(),
+                "data.example_object.primary".to_string()
+            ])
+        );
+        let value_type = Type::Object(BTreeMap::from([
+            ("managed".to_string(), Type::String),
+            ("lookup".to_string(), Type::String),
+        ]));
+        let prepared = references.prepare(&configuration, &value_type)?;
+        let resolved = references.resolve(&prepared, |reference| {
+            Ok(Value::String(reference.source.to_string()))
+        })?;
+        assert_eq!(
+            resolved.attribute("lookup"),
+            Some(&Value::String("data.example_object.primary".to_string()))
+        );
+        assert_eq!(
+            resolved.attribute("managed"),
+            Some(&Value::String("example_object.primary".to_string()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn data_source_descriptors_reject_ambiguous_sources_and_collection_paths() {
+        for value in [
+            json!({"fromResource": "example_object.primary", "fromDataSource": "example_object.primary", "attribute": "id"}),
+            json!({"fromDataSource": "data.example_object.primary", "attribute": "id"}),
+            json!({"fromDataSource": "example_object.primary", "attribute": "items[0].id"}),
+            json!({"fromDataSource": "example_object.primary", "attribute": "id", "extra": true}),
+            json!({"fromDataSource": 123, "attribute": "id"}),
+        ] {
+            assert!(
+                ConfigurationReferences::extract(&Map::from_iter([(
+                    "argument".to_string(),
+                    value
+                )]))
+                .is_err()
+            );
         }
     }
 
@@ -404,7 +509,7 @@ mod tests {
         ]));
         let prepared = references.prepare(&configuration, &value_type)?;
         let planned = references.resolve_planned(&prepared, |reference| {
-            if reference.source.name == "primary" {
+            if reference.source.address().name == "primary" {
                 Ok(Value::String("zone-123".to_string()))
             } else {
                 Ok(Value::Unknown)

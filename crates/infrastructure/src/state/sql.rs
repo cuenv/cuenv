@@ -50,6 +50,9 @@ use crate::error::{
 };
 use crate::tenant::{ProjectInstance, TenantKey};
 
+#[cfg(test)]
+pub(super) mod tests;
+
 /// One schema migration: the statements that move the database to `version`.
 pub(super) struct Migration {
     pub(super) version: i64,
@@ -63,10 +66,11 @@ pub(super) struct Migration {
 /// unreleased development build is refused by name (see
 /// [`UNRELEASED_LAYOUT_TABLES`]) instead of being adopted or silently
 /// ignored.
-pub(super) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    statements: &[
-        "CREATE TABLE cuenv_infrastructure_resources (
+pub(super) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        statements: &[
+            "CREATE TABLE cuenv_infrastructure_resources (
             module_path TEXT NOT NULL,
             project TEXT NOT NULL,
             environment TEXT NOT NULL,
@@ -86,7 +90,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[Migration {
             updated_at TEXT NOT NULL,
             PRIMARY KEY (module_path, project, environment, resource_type, resource_name)
         ) WITHOUT ROWID",
-        "CREATE TABLE cuenv_infrastructure_locks (
+            "CREATE TABLE cuenv_infrastructure_locks (
             module_path TEXT NOT NULL,
             project TEXT NOT NULL,
             environment TEXT NOT NULL,
@@ -95,7 +99,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[Migration {
             acquired_at TEXT NOT NULL,
             PRIMARY KEY (module_path, project, environment)
         ) WITHOUT ROWID",
-        "CREATE TABLE cuenv_infrastructure_owners (
+            "CREATE TABLE cuenv_infrastructure_owners (
             module_path TEXT NOT NULL,
             project TEXT NOT NULL,
             environment TEXT NOT NULL,
@@ -103,12 +107,23 @@ pub(super) const MIGRATIONS: &[Migration] = &[Migration {
             claimed_at TEXT NOT NULL,
             PRIMARY KEY (module_path, project, environment)
         ) WITHOUT ROWID",
-        "CREATE TABLE cuenv_infrastructure_pending_migration (
+            "CREATE TABLE cuenv_infrastructure_pending_migration (
             version INTEGER NOT NULL PRIMARY KEY,
             expires_at INTEGER NOT NULL
         )",
-    ],
-}];
+        ],
+    },
+    Migration {
+        version: 2,
+        statements: &[
+            "ALTER TABLE cuenv_infrastructure_resources ADD COLUMN sensitive_attributes TEXT NOT NULL DEFAULT '[]'",
+            // Invalidate a version-one SELECT that passed its schema check
+            // before this transaction: it must never read new sensitive state
+            // through its old projection, which has no sensitivity metadata.
+            "ALTER TABLE cuenv_infrastructure_resources RENAME COLUMN state_json TO resource_state_json",
+        ],
+    },
+];
 
 /// The first schema version. It creates the lock table, so only later
 /// migrations can be fenced by it.
@@ -174,15 +189,15 @@ const SELECT_PENDING_MIGRATION: &str = "SELECT version FROM cuenv_infrastructure
      WHERE expires_at > ?";
 
 pub(super) const SELECT_RESOURCES: &str = "SELECT resource_type, resource_name, provider, provider_source, \
-     schema_version, state_json, private, dependencies_json, tainted, identity_json, serial, \
-     generation FROM cuenv_infrastructure_resources \
+     schema_version, resource_state_json, private, dependencies_json, tainted, identity_json, serial, \
+     generation, sensitive_attributes FROM cuenv_infrastructure_resources \
      WHERE module_path = ? AND project = ? AND environment = ? \
      ORDER BY resource_type, resource_name";
 
 /// One record of a tenant, with the columns of [`SELECT_RESOURCES`].
 const SELECT_RESOURCE: &str = "SELECT resource_type, resource_name, provider, provider_source, \
-     schema_version, state_json, private, dependencies_json, tainted, identity_json, serial, \
-     generation FROM cuenv_infrastructure_resources \
+     schema_version, resource_state_json, private, dependencies_json, tainted, identity_json, serial, \
+     generation, sensitive_attributes FROM cuenv_infrastructure_resources \
      WHERE module_path = ? AND project = ? AND environment = ? \
      AND resource_type = ? AND resource_name = ?";
 
@@ -226,9 +241,9 @@ impl Dialect {
         format!(
             "INSERT INTO cuenv_infrastructure_resources \
              (module_path, project, environment, resource_type, resource_name, provider, \
-             provider_source, schema_version, state_json, private, dependencies_json, tainted, \
-             identity_json, serial, created_at, updated_at, generation) \
-             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, {}, ?, ?, {}, 1, ?, ?, ?",
+             provider_source, schema_version, resource_state_json, private, dependencies_json, tainted, \
+             identity_json, sensitive_attributes, serial, created_at, updated_at, generation) \
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, {}, ?, ?, {}, ?, 1, ?, ?, ?",
             self.blob_parameter, self.optional_text_parameter
         )
     }
@@ -236,9 +251,9 @@ impl Dialect {
     /// The columns of [`RecordColumns::update_arguments`], as assignments.
     fn update_assignments(self) -> String {
         format!(
-            "provider = ?, provider_source = ?, schema_version = ?, state_json = ?, \
+            "provider = ?, provider_source = ?, schema_version = ?, resource_state_json = ?, \
              private = {}, dependencies_json = ?, tainted = ?, identity_json = {}, \
-             serial = serial + 1, updated_at = ?",
+             sensitive_attributes = ?, serial = serial + 1, updated_at = ?",
             self.blob_parameter, self.optional_text_parameter
         )
     }
@@ -498,12 +513,16 @@ impl<T: SqlTransport> SqlStateStore<T> {
     /// a state error asking for a migration for an older or missing one.
     async fn require_current_schema(&self) -> Result<()> {
         let version = self.stored_version().await?;
+        Self::require_schema_version(version)
+    }
+
+    fn require_schema_version(version: i64) -> Result<()> {
         if version == LATEST_SCHEMA_VERSION {
             Ok(())
         } else {
             Err(InfrastructureError::state(format!(
                 "{} state schema is at version {version} but this cuenv writes version \
-                 {LATEST_SCHEMA_VERSION}; migrate the state store before taking the lock",
+                 {LATEST_SCHEMA_VERSION}; migrate the state store before reading resources or taking the lock",
                 T::NAME
             )))
         }
@@ -624,7 +643,7 @@ impl<T: SqlTransport> SqlStateStore<T> {
                 other => break other,
             }
         };
-        if let Err(error) = self.withdraw_announcement().await {
+        if let Err(error) = self.withdraw_announcement(migration.version).await {
             tracing::warn!(%error, "could not withdraw the migration announcement; it expires by itself");
         }
         outcome
@@ -633,30 +652,27 @@ impl<T: SqlTransport> SqlStateStore<T> {
     /// Announce that a migration to `version` waits for the locks to drain.
     async fn announce_migration(&self, version: i64, wait: MigrationWait) -> Result<()> {
         let expires_at = unix_seconds_from_now(wait.announcement_lifetime);
-        self.pipeline(&[
-            Statement::new(
-                "DELETE FROM cuenv_infrastructure_pending_migration",
-                Vec::new(),
+        // One atomic statement on both transports: a Turso pipeline does not
+        // make DELETE/INSERT atomic. A concurrent waiter may already have
+        // announced this version, or completed it since we observed a lock.
+        self.execute(Statement::new(
+            format!(
+                "INSERT INTO cuenv_infrastructure_pending_migration (version, expires_at) \
+                 SELECT {version}, {expires_at} \
+                 WHERE ({SELECT_SCHEMA_VERSION}) < {version} \
+                 ON CONFLICT (version) DO UPDATE SET \
+                 expires_at = MAX(expires_at, excluded.expires_at)"
             ),
-            // Literals, not parameters: a request of several statements
-            // binds nothing (D1 refuses parameters there), and both values
-            // are integers computed here.
-            Statement::new(
-                format!(
-                    "INSERT INTO cuenv_infrastructure_pending_migration (version, expires_at) \
-                     VALUES ({version}, {expires_at})"
-                ),
-                Vec::new(),
-            ),
-        ])
+            Vec::new(),
+        ))
         .await
         .map(|_| ())
     }
 
-    async fn withdraw_announcement(&self) -> Result<()> {
+    async fn withdraw_announcement(&self, version: i64) -> Result<()> {
         self.execute(Statement::new(
-            "DELETE FROM cuenv_infrastructure_pending_migration",
-            Vec::new(),
+            "DELETE FROM cuenv_infrastructure_pending_migration WHERE version = ?",
+            vec![SqlValue::integer(version)],
         ))
         .await
         .map(|_| ())
@@ -730,10 +746,14 @@ impl<T: SqlTransport> SqlStateStore<T> {
     }
 
     pub(super) async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>> {
-        if self.stored_version().await? == 0 {
+        let version = self.stored_version().await?;
+        if version == 0 {
             // Never migrated: nothing has been recorded yet.
             return Ok(Vec::new());
         }
+        // Never read a pre-sensitivity projection: a concurrent migration and
+        // subsequent write could otherwise make sensitive state look public.
+        Self::require_schema_version(version)?;
         let result = self
             .execute(Statement::new(SELECT_RESOURCES, tenant_arguments(tenant)))
             .await?;
@@ -757,9 +777,10 @@ impl<T: SqlTransport> SqlStateStore<T> {
                     "{} WHERE {LOCK_HELD} \
                      ON CONFLICT ({RESOURCE_KEY}) DO UPDATE SET \
                      provider = excluded.provider, provider_source = excluded.provider_source, \
-                     schema_version = excluded.schema_version, state_json = excluded.state_json, \
+                     schema_version = excluded.schema_version, resource_state_json = excluded.resource_state_json, \
                      private = excluded.private, dependencies_json = excluded.dependencies_json, \
                      tainted = excluded.tainted, identity_json = excluded.identity_json, \
+                     sensitive_attributes = excluded.sensitive_attributes, \
                      serial = cuenv_infrastructure_resources.serial + 1, \
                      updated_at = excluded.updated_at",
                     T::DIALECT.insert_resource()
@@ -1262,8 +1283,9 @@ fn lock_arguments(tenant: &TenantKey, lock: &StateLock) -> Vec<SqlValue> {
 
 /// A record's serialized columns.
 struct RecordColumns {
-    state_json: String,
+    resource_state_json: String,
     dependencies_json: String,
+    sensitive_attributes: String,
     identity_json: Option<String>,
     timestamp: String,
     insertion_generation: uuid::Uuid,
@@ -1281,10 +1303,12 @@ impl RecordColumns {
             ))
         };
         Ok(Self {
-            state_json: serde_json::to_string(&resource.state)
+            resource_state_json: serde_json::to_string(&resource.state)
                 .map_err(|error| failed("state", &error))?,
             dependencies_json: serde_json::to_string(&resource.dependencies)
                 .map_err(|error| failed("dependencies", &error))?,
+            sensitive_attributes: serde_json::to_string(&resource.sensitive_attributes)
+                .map_err(|error| failed("sensitive_attributes", &error))?,
             identity_json: resource
                 .identity
                 .as_ref()
@@ -1307,18 +1331,19 @@ impl RecordColumns {
         arguments
     }
 
-    /// Provider through `identity_json`, then the update timestamp: the
+    /// Provider through `sensitive_attributes`, then the update timestamp: the
     /// arguments of [`Dialect::update_assignments`].
     fn update_arguments(&self, resource: &ManagedResource) -> Vec<SqlValue> {
         vec![
             SqlValue::text(&resource.provider),
             SqlValue::text(&resource.provider_source),
             SqlValue::integer(resource.schema_version),
-            SqlValue::text(&self.state_json),
+            SqlValue::text(&self.resource_state_json),
             SqlValue::blob(&resource.private),
             SqlValue::text(&self.dependencies_json),
             SqlValue::integer(i64::from(resource.tainted)),
             SqlValue::optional_text(self.identity_json.as_deref()),
+            SqlValue::text(&self.sensitive_attributes),
             SqlValue::text(&self.timestamp),
         ]
     }
@@ -1467,7 +1492,7 @@ pub(super) fn row_to_resource(row: &[SqlValue]) -> Result<ManagedResource> {
             ),
         )
     };
-    let state_json = text(5, "state_json")?;
+    let resource_state_json = text(5, "resource_state_json")?;
     let dependencies_json = text(7, "dependencies_json")?;
     let identity = row
         .get(9)
@@ -1476,11 +1501,13 @@ pub(super) fn row_to_resource(row: &[SqlValue]) -> Result<ManagedResource> {
         .transpose()
         .map_err(|error| corrupt("identity_json", &error))?;
     let generation = text(11, "generation")?;
+    let sensitive_attributes = text(12, "sensitive_attributes")?;
     Ok(ManagedResource {
         provider: text(2, "provider")?,
         provider_source: text(3, "provider_source")?,
         schema_version: integer(4, "schema_version")?,
-        state: serde_json::from_str(&state_json).map_err(|error| corrupt("state_json", &error))?,
+        state: serde_json::from_str(&resource_state_json)
+            .map_err(|error| corrupt("resource_state_json", &error))?,
         private: row
             .get(6)
             .map(SqlValue::as_blob)
@@ -1490,6 +1517,8 @@ pub(super) fn row_to_resource(row: &[SqlValue]) -> Result<ManagedResource> {
             .unwrap_or_default(),
         dependencies: serde_json::from_str(&dependencies_json)
             .map_err(|error| corrupt("dependencies_json", &error))?,
+        sensitive_attributes: serde_json::from_str(&sensitive_attributes)
+            .map_err(|error| corrupt("sensitive_attributes", &error))?,
         tainted: integer(8, "tainted")? != 0,
         identity,
         serial: integer(10, "serial")?,
@@ -1760,10 +1789,18 @@ impl MigrationTransaction {
             // (0 or 1) is subtracted from -(2^63 - 1). The count keeps the
             // expression from being folded into a constant that would fail
             // whether or not a lock exists.
+            // Only an unapplied migration needs the fence: another client
+            // may have committed this version and acquired a current-schema
+            // lock since our initial version read. Let the existing-object
+            // check below report AlreadyApplied instead of announcing an
+            // upgrade that has already finished.
             fence_index = Some(statements.len());
             statements.push(Statement::new(
-                "SELECT abs(-9223372036854775807 - MIN(COUNT(*), 1)) \
-                 FROM cuenv_infrastructure_locks",
+                format!(
+                    "SELECT abs(-9223372036854775807 - MIN(COUNT(*), 1)) \
+                     FROM cuenv_infrastructure_locks \
+                     WHERE ({SELECT_SCHEMA_VERSION}) < {version}"
+                ),
                 Vec::new(),
             ));
         }
@@ -1787,6 +1824,15 @@ impl MigrationTransaction {
                     "INSERT INTO cuenv_infrastructure_migrations (version) SELECT {version} \
                      WHERE NOT EXISTS (SELECT 1 FROM cuenv_infrastructure_migrations \
                                        WHERE version >= {version})"
+                ),
+                Vec::new(),
+            ),
+            // Commit the shape, version and completed-announcement cleanup
+            // together. A waiter that announces later sees the recorded
+            // version and writes nothing; a newer migration stays pending.
+            Statement::new(
+                format!(
+                    "DELETE FROM cuenv_infrastructure_pending_migration WHERE version <= {version}"
                 ),
                 Vec::new(),
             ),

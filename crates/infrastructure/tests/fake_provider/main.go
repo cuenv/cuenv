@@ -1,7 +1,7 @@
 // Command terraform-provider-fake is a protocol 6 Terraform provider built on
 // the Plugin Framework that reproduces provider behaviours the cuenv
 // infrastructure engine must handle. It exists only for
-// crates/infrastructure/tests/provider_end_to_end.rs; build it with
+// the provider and CLI infrastructure lifecycle suites; build it with
 //
 //	go build -o terraform-provider-fake .
 //
@@ -14,6 +14,9 @@
 //	create-ok     fake_taintdel creates succeed (otherwise they fail part way)
 //	fail-delete   fake_taintdel deletes fail
 //	upgrade-json  fake_plain upgraded states are sent as JSON
+//	echo-read-name  fake_plain refresh diagnostics echo the stored name
+//	malformed-update-result  fake_plain updates save remote state but return
+//	              an invalid arn; later refreshes recover the remote values
 //	protect       fake_protect refuses destroy plans
 //	slow-delete   fake_repl deletes take four seconds
 //	create-requires-replace  fake_repl create plans report name in requires_replace,
@@ -32,6 +35,8 @@
 //	fake_jsonplan  planned states sent as JSON instead of MessagePack
 //	fake_plain     upgraded states optionally sent as JSON
 //	fake_secret    computed sensitive output for sensitive reference tests
+//	fake_sensitive_input  sensitive name; fail-sensitive-validation makes validation
+//	               echo a known name, but accepts unknown names during initial plans
 //	fake_undead    deletes that return the object instead of null, without errors
 //	fake_slow      creates that wait until the provider is asked to stop
 //	fake_protect   destroy plans that can be refused and carry private data
@@ -137,7 +142,11 @@ func (p *fakeProvider) Configure(ctx context.Context, request provider.Configure
 	setDirectory(model.Directory.ValueString())
 }
 
-func (p *fakeProvider) DataSources(context.Context) []func() datasource.DataSource { return nil }
+func (p *fakeProvider) DataSources(context.Context) []func() datasource.DataSource {
+	return []func() datasource.DataSource{
+		func() datasource.DataSource { return &lookup{} },
+	}
+}
 
 func (p *fakeProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
@@ -147,6 +156,7 @@ func (p *fakeProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &simple{kind: "jsonplan"} },
 		func() resource.Resource { return &simple{kind: "plain"} },
 		func() resource.Resource { return &simple{kind: "secret"} },
+		func() resource.Resource { return &simple{kind: "sensitive_input"} },
 		func() resource.Resource { return &simple{kind: "undead"} },
 		func() resource.Resource { return &simple{kind: "slow"} },
 		func() resource.Resource { return &basic{kind: "protect"} },
@@ -268,13 +278,26 @@ func (r *simple) Metadata(_ context.Context, _ resource.MetadataRequest, respons
 func (r *simple) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{Attributes: map[string]schema.Attribute{
 		"id":   identifierAttribute,
-		"name": schema.StringAttribute{Required: true},
+		"name": schema.StringAttribute{Required: true, Sensitive: r.kind == "sensitive_input"},
 		"arn": schema.StringAttribute{
 			Computed:      true,
 			Sensitive:     r.kind == "secret",
 			PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 		},
 	}}
+}
+
+func (r *simple) ValidateConfig(ctx context.Context, request resource.ValidateConfigRequest, response *resource.ValidateConfigResponse) {
+	if r.kind != "sensitive_input" || !flag("fail-sensitive-validation") {
+		return
+	}
+	var name types.String
+	response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("name"), &name)...)
+	if response.Diagnostics.HasError() || name.IsUnknown() || name.IsNull() {
+		return
+	}
+	journal("sensitive_input: ValidateConfig rejected known name")
+	response.Diagnostics.AddError("sensitive input rejected: "+name.ValueString(), "validation received "+name.ValueString())
 }
 
 // ModifyPlan keeps the prior name when the configured one differs only in
@@ -575,6 +598,30 @@ func (w *wrap) ApplyResourceChange(ctx context.Context, request *tfprotov6.Apply
 		journal("jsonplan: ApplyResourceChange received planned_state null=%v", isNull)
 	}
 	response, err := w.ProviderServer.ApplyResourceChange(ctx, request)
+	if err == nil && request.TypeName == "fake_plain" && flag("malformed-update-result") {
+		priorNull, _ := request.PriorState.IsNull()
+		plannedNull, _ := request.PlannedState.IsNull()
+		if !priorNull && !plannedNull {
+			remote, converted := toJSON(response.NewState)
+			if !converted {
+				return nil, fmt.Errorf("could not encode fake remote state")
+			}
+			if err := os.WriteFile(filepath.Join(currentDirectory(), "plain-remote-state.json"), remote.JSON, 0600); err != nil {
+				return nil, err
+			}
+			var malformed map[string]any
+			if err := json.Unmarshal(remote.JSON, &malformed); err != nil {
+				return nil, err
+			}
+			malformed["arn"] = map[string]any{"invalid": true}
+			encoded, err := json.Marshal(malformed)
+			if err != nil {
+				return nil, err
+			}
+			response.NewState = &tfprotov6.DynamicValue{JSON: encoded}
+			journal("plain: Update committed remotely but returned malformed state")
+		}
+	}
 	if err == nil && request.TypeName == "fake_undead" {
 		if plannedNull, _ := request.PlannedState.IsNull(); plannedNull {
 			journal("undead: ApplyResourceChange returned the prior state for a delete")
@@ -606,6 +653,12 @@ func (w *wrap) UpgradeResourceState(ctx context.Context, request *tfprotov6.Upgr
 
 func (w *wrap) ReadResource(ctx context.Context, request *tfprotov6.ReadResourceRequest) (*tfprotov6.ReadResourceResponse, error) {
 	if request.TypeName == "fake_plain" {
+		if remote, err := os.ReadFile(filepath.Join(currentDirectory(), "plain-remote-state.json")); err == nil {
+			request.CurrentState = &tfprotov6.DynamicValue{JSON: remote}
+			journal("plain: ReadResource recovered remote state after malformed update")
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
 		if flag("import-refresh-null") {
 			journal("plain: ReadResource imported object missing")
 			return &tfprotov6.ReadResourceResponse{
@@ -615,6 +668,29 @@ func (w *wrap) ReadResource(ctx context.Context, request *tfprotov6.ReadResource
 		}
 		isNull, err := request.CurrentState.IsNull()
 		journal("plain: ReadResource current_state null=%v error=%v", isNull, err)
+		if flag("echo-read-name") {
+			decoded, err := request.CurrentState.Unmarshal(simpleType)
+			if err != nil {
+				return nil, err
+			}
+			var attributes map[string]tftypes.Value
+			if err := decoded.As(&attributes); err != nil {
+				return nil, err
+			}
+			var name string
+			if err := attributes["name"].As(&name); err != nil {
+				return nil, err
+			}
+			return &tfprotov6.ReadResourceResponse{
+				NewState: request.CurrentState,
+				Private:  request.Private,
+				Diagnostics: []*tfprotov6.Diagnostic{{
+					Severity: tfprotov6.DiagnosticSeverityError,
+					Summary:  "stored name rejected: " + name,
+					Detail:   "refresh diagnostic echoed " + name,
+				}},
+			}, nil
+		}
 		if string(request.Private) == "{}" {
 			decoded, err := request.CurrentState.Unmarshal(simpleType)
 			if err != nil {

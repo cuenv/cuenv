@@ -35,6 +35,7 @@ fn topological_order_puts_dependencies_first() {
 
 fn record(resource_type: &str, name: &str, dependencies: &[&str]) -> ManagedResource {
     ManagedResource {
+        sensitive_attributes: Vec::new(),
         address: ResourceAddress::new(resource_type, name),
         provider: "random".into(),
         provider_source: "registry.terraform.io/hashicorp/random".into(),
@@ -151,7 +152,7 @@ fn declaration(resource_type: &str, depends_on: &[&str]) -> ManagedResourceDecla
 }
 
 #[test]
-fn full_dependencies_preserves_declared_order_and_appends_unique_references() {
+fn managed_dependencies_deduplicate_explicit_and_reference_edges() {
     let mut consumer = declaration("fake_obj", &["third", "first", "third"]);
     consumer.configuration.insert(
         "parent".into(),
@@ -162,10 +163,14 @@ fn full_dependencies_preserves_declared_order_and_appends_unique_references() {
         ("first".into(), declaration("fake_obj", &[])),
         ("third".into(), declaration("fake_obj", &[])),
     ]);
-    let references = ConfigurationReferences::extract(&declared["consumer"].configuration).unwrap();
+    let mut infrastructure = infrastructure();
+    infrastructure.resources = declared;
+    let graph = DeclarationGraph::new(&infrastructure).unwrap();
     assert_eq!(
-        full_dependencies(&declared, &declared["consumer"], &references).unwrap(),
-        ["fake_obj.third", "fake_obj.first"]
+        graph.managed_dependencies(&SourceAddress::Resource(ResourceAddress::new(
+            "fake_obj", "consumer"
+        ))),
+        ["fake_obj.first", "fake_obj.third"]
     );
 }
 
@@ -500,6 +505,7 @@ fn tenant() -> TenantKey {
 
 fn plan_of(changes: Vec<ResourceChange>) -> Plan {
     Plan {
+        data_sources: Vec::new(),
         tenant: tenant(),
         changes,
         warnings: Vec::new(),
@@ -1307,11 +1313,59 @@ impl ScriptedRunner {
 
 #[async_trait]
 impl OperationRunner for ScriptedRunner {
+    async fn run_data_source(
+        &self,
+        read: &DataSourcePlan,
+        context: DataSourceReadContext<'_>,
+    ) -> Result<(Value, Vec<String>)> {
+        let label = format!("read data.{}", read.address);
+        self.journal.lock().unwrap().push(label.clone());
+        if let Some((after, cancellation)) = &self.stop_after
+            && after == &label
+        {
+            cancellation.stop();
+        }
+        if self.failing.contains(&label) {
+            return Err(InfrastructureError::Diagnostics {
+                context: label,
+                errors: vec!["lookup failed".to_string()],
+            });
+        }
+        for dependency in &read.dependencies {
+            if let SourceAddress::DataSource(address) = dependency {
+                assert!(
+                    context.values.contains_key(address),
+                    "read ran before its data prerequisite"
+                );
+            }
+        }
+        Ok((
+            Value::Object(BTreeMap::from([(
+                "id".to_string(),
+                Value::String(format!("read-{}", read.address.name)),
+            )])),
+            Vec::new(),
+        ))
+    }
+
     async fn run_operation(
         &self,
         operation: &ApplyOperation<'_>,
-        _context: OperationRunContext<'_>,
+        context: OperationRunContext<'_>,
     ) -> std::result::Result<(), OperationFailure> {
+        if !matches!(
+            operation.kind,
+            OperationKind::Delete | OperationKind::ReplaceDelete
+        ) {
+            for reference in operation.change.references.references() {
+                if let SourceAddress::DataSource(address) = &reference.source {
+                    assert!(
+                        context.data_sources.contains_key(address),
+                        "consumer ran without its data result"
+                    );
+                }
+            }
+        }
         let label = format!("{} {}", operation.kind.label(), operation.change.address);
         self.journal.lock().unwrap().push(label.clone());
         if self.failing.contains(&label) {
@@ -1354,6 +1408,7 @@ impl OperationRunner for ScriptedRunner {
 struct Scripted {
     result: Result<PlanSummary>,
     events: Vec<ApplyEvent>,
+    stored: Vec<ManagedResource>,
 }
 
 impl Scripted {
@@ -1386,13 +1441,26 @@ async fn run_scripted(
     changes: Vec<ResourceChange>,
     runner: &(impl OperationRunner + Sync),
 ) -> Scripted {
+    let plan = plan_of(in_schedule_order(changes).unwrap().changes);
+    run_scripted_plan(plan, runner).await
+}
+
+async fn run_scripted_plan(plan: Plan, runner: &(impl OperationRunner + Sync)) -> Scripted {
+    run_scripted_plan_with_cancellation(plan, runner, Cancellation::default()).await
+}
+
+async fn run_scripted_plan_with_cancellation(
+    plan: Plan,
+    runner: &(impl OperationRunner + Sync),
+    cancellation: Cancellation,
+) -> Scripted {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-    let engine = engine(store, directory.path());
+    let mut engine = engine(Arc::clone(&store), directory.path());
+    engine.options.cancellation = cancellation;
     let lock = StateLock {
         lock_identifier: "scripted".into(),
     };
-    let plan = plan_of(in_schedule_order(changes).unwrap().changes);
     let mut events = Vec::new();
     let result = engine
         .converge(
@@ -1405,7 +1473,11 @@ async fn run_scripted(
             },
         )
         .await;
-    Scripted { result, events }
+    Scripted {
+        result,
+        events,
+        stored: store.list(&tenant()).await.unwrap(),
+    }
 }
 
 /// Runs operations in a world where every object holds a unique real-world
@@ -1447,6 +1519,16 @@ impl IdentityRunner {
 
 #[async_trait]
 impl OperationRunner for IdentityRunner {
+    async fn run_data_source(
+        &self,
+        _read: &DataSourcePlan,
+        _context: DataSourceReadContext<'_>,
+    ) -> Result<(Value, Vec<String>)> {
+        Err(InfrastructureError::configuration(
+            "identity runner does not read data",
+        ))
+    }
+
     async fn run_operation(
         &self,
         operation: &ApplyOperation<'_>,
@@ -2450,10 +2532,12 @@ async fn stale_plans_are_refused_before_anything_is_written() {
     );
 }
 
-/// A store whose record writes fail with a state error.
+/// A store whose record writes fail, optionally requesting stop after a
+/// successful read to exercise cancellation at the final async boundary.
 #[derive(Debug, Default)]
 struct FailingWrites {
     inner: MemoryStateStore,
+    stop_after_list: Option<Cancellation>,
 }
 
 #[async_trait::async_trait]
@@ -2463,7 +2547,11 @@ impl StateStore for FailingWrites {
     }
 
     async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>> {
-        self.inner.list(tenant).await
+        let records = self.inner.list(tenant).await?;
+        if let Some(cancellation) = &self.stop_after_list {
+            cancellation.stop();
+        }
+        Ok(records)
     }
 
     async fn put(
@@ -2531,6 +2619,33 @@ impl StateStore for FailingWrites {
         claim: &crate::state::OwnerClaim<'_>,
     ) -> Result<crate::state::TenantOwner> {
         self.inner.claim_owner(tenant, lock, claim).await
+    }
+}
+
+#[tokio::test]
+async fn public_plan_rejects_a_successful_result_after_the_final_async_operation_requests_stop() {
+    // An empty configuration has no later resource/read iteration to catch
+    // cancellation. The successful list is the planner's last awaited effect,
+    // just as a successful final data-only read can be the last provider call.
+    for mode in [PlanMode::Apply, PlanMode::Destroy] {
+        let directory = tempfile::tempdir().unwrap();
+        let cancellation = Cancellation::default();
+        let store: Arc<dyn StateStore> = Arc::new(FailingWrites {
+            stop_after_list: Some(cancellation.clone()),
+            ..FailingWrites::default()
+        });
+        let mut engine = engine(store, directory.path());
+        engine.options.cancellation = cancellation.clone();
+        assert!(!cancellation.is_stop_requested());
+        let result = engine.plan(mode).await;
+        assert!(
+            cancellation.is_stop_requested(),
+            "planning never reached the final effect"
+        );
+        assert!(
+            matches!(result, Err(InfrastructureError::InterruptedWhilePlanning)),
+            "{result:?}"
+        );
     }
 }
 
@@ -2792,7 +2907,7 @@ fn string_block(name: &str, presence: crate::schema::Presence, sensitive: bool) 
 fn token_reference() -> ResourceOutputReference {
     ResourceOutputReference {
         destination_attribute: "value".into(),
-        source: ResourceAddress::new("example_token", "deploy"),
+        source: SourceAddress::Resource(ResourceAddress::new("example_token", "deploy")),
         attribute: "value".into(),
     }
 }
@@ -2870,4 +2985,1068 @@ fn sensitive_values_are_registered_for_redaction_before_and_after() {
     assert!(!redacted.contains("prior-token-6b1d0f"), "{redacted}");
     assert!(!redacted.contains("planned-token-6b1d0f"), "{redacted}");
     assert!(redacted.contains("public-id-6b1d0f"), "{redacted}");
+}
+
+fn data_source_address(name: &str) -> SourceAddress {
+    SourceAddress::DataSource(ResourceAddress::new("example_lookup", name))
+}
+
+fn deferred_data_source(name: &str, dependencies: Vec<SourceAddress>) -> DataSourcePlan {
+    DataSourcePlan {
+        address: ResourceAddress::new("example_lookup", name),
+        provider: "example".to_string(),
+        after: Value::Object(BTreeMap::from([("id".to_string(), Value::Unknown)])),
+        sensitive: Vec::new(),
+        deferred: true,
+        configuration: Value::Object(BTreeMap::new()),
+        references: ConfigurationReferences::default(),
+        dependencies,
+    }
+}
+
+fn consuming_data_source(name: &str, source: &str) -> ResourceChange {
+    let mut consumer = change(ResourceAddress::new("random_pet", name), Action::Create);
+    consumer.dependencies = vec!["random_pet.producer".to_string()];
+    consumer.references = ConfigurationReferences::extract(&serde_json::Map::from_iter([(
+        "id".to_string(),
+        json!({"fromDataSource": format!("example_lookup.{source}"), "attribute": "id"}),
+    )]))
+    .unwrap();
+    consumer
+}
+
+#[test]
+fn mixed_graph_keeps_namespaces_and_persists_managed_ancestry() -> Result<()> {
+    let mut infrastructure = infrastructure();
+    infrastructure
+        .resources
+        .insert("same".to_string(), declaration("example_lookup", &[]));
+    let mut first = declaration("example_lookup", &["same"]);
+    first.configuration.insert(
+        "id".to_string(),
+        json!({"fromResource": "example_lookup.same", "attribute": "id"}),
+    );
+    infrastructure.data.insert("same".to_string(), first);
+    let mut second = declaration("example_lookup", &[]);
+    second.configuration.insert(
+        "id".to_string(),
+        json!({"fromDataSource": "example_lookup.same", "attribute": "id"}),
+    );
+    infrastructure.data.insert("second".to_string(), second);
+    let mut consumer = declaration("example_object", &[]);
+    consumer.configuration.insert(
+        "id".to_string(),
+        json!({"fromDataSource": "example_lookup.second", "attribute": "id"}),
+    );
+    infrastructure
+        .resources
+        .insert("consumer".to_string(), consumer);
+    let graph = DeclarationGraph::new(&infrastructure)?;
+    let consumer = SourceAddress::Resource(ResourceAddress::new("example_object", "consumer"));
+    assert_eq!(
+        graph.managed_dependencies(&consumer),
+        ["example_lookup.same"]
+    );
+    assert_eq!(
+        graph
+            .order
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        [
+            "example_lookup.same",
+            "data.example_lookup.same",
+            "data.example_lookup.second",
+            "example_object.consumer",
+        ]
+    );
+    // Closing a cycle through the other namespace must fail before provider effects.
+    infrastructure
+        .resources
+        .get_mut("same")
+        .ok_or_else(|| InfrastructureError::configuration("missing test declaration"))?
+        .depends_on
+        .push("consumer".to_string());
+    assert!(DeclarationGraph::new(&infrastructure).is_err());
+    Ok(())
+}
+
+#[test]
+fn concrete_data_arguments_defer_for_pending_managed_ancestors() -> Result<()> {
+    let mut infrastructure = infrastructure();
+    infrastructure
+        .resources
+        .insert("producer".to_string(), declaration("random_pet", &[]));
+    infrastructure.resources.insert(
+        "unchanged".to_string(),
+        declaration("random_pet", &["producer"]),
+    );
+    infrastructure.data.insert(
+        "lookup".to_string(),
+        declaration("example_lookup", &["unchanged"]),
+    );
+    let mut consumer = declaration("random_pet", &[]);
+    consumer.configuration.insert(
+        "id".to_string(),
+        json!({"fromDataSource": "example_lookup.lookup", "attribute": "id"}),
+    );
+    infrastructure
+        .resources
+        .insert("consumer".to_string(), consumer);
+    let graph = DeclarationGraph::new(&infrastructure)?;
+    let dependencies = graph.managed_dependencies(&SourceAddress::Resource(ResourceAddress::new(
+        "random_pet",
+        "consumer",
+    )));
+    assert_eq!(
+        dependencies,
+        ["random_pet.producer", "random_pet.unchanged"]
+    );
+    let known = Value::Object(BTreeMap::from([(
+        "id".to_string(),
+        Value::String("stable-id".to_string()),
+    )]));
+    let dependency = SourceAddress::Resource(ResourceAddress::new("random_pet", "producer"));
+    assert!(!data_sources::read_is_deferred(
+        &known,
+        std::slice::from_ref(&dependency),
+        &BTreeSet::new()
+    ));
+    assert!(data_sources::read_is_deferred(
+        &known,
+        std::slice::from_ref(&dependency),
+        &BTreeSet::from([dependency.clone()])
+    ));
+    assert!(data_sources::read_is_deferred(
+        &Value::Unknown,
+        &[],
+        &BTreeSet::new()
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn deferred_reads_run_after_producer_once_and_before_every_consumer() {
+    let runner = ScriptedRunner::new();
+    let producer = change(
+        ResourceAddress::new("random_pet", "producer"),
+        Action::Update,
+    );
+    let mut plan = plan_of(
+        in_schedule_order(vec![
+            producer,
+            consuming_data_source("consumer_one", "second"),
+            consuming_data_source("consumer_two", "second"),
+        ])
+        .unwrap()
+        .changes,
+    );
+    plan.data_sources = vec![
+        deferred_data_source(
+            "first",
+            vec![SourceAddress::Resource(ResourceAddress::new(
+                "random_pet",
+                "producer",
+            ))],
+        ),
+        deferred_data_source("second", vec![data_source_address("first")]),
+    ];
+    let scripted = run_scripted_plan(plan, &runner).await;
+    assert!(scripted.result.is_ok(), "{:?}", scripted.result);
+    assert_eq!(
+        *runner.journal.lock().unwrap(),
+        [
+            "apply random_pet.producer",
+            "read data.example_lookup.first",
+            "read data.example_lookup.second",
+            "apply random_pet.consumer_one",
+            "apply random_pet.consumer_two",
+        ]
+    );
+    assert!(
+        scripted.stored.is_empty(),
+        "read results must never enter managed state"
+    );
+}
+
+#[tokio::test]
+async fn failed_data_read_blocks_chained_reads_and_consumers_but_not_unrelated_work() {
+    let runner = ScriptedRunner::new().failing(&["read data.example_lookup.first"]);
+    let mut plan = plan_of(
+        in_schedule_order(vec![
+            change(
+                ResourceAddress::new("random_pet", "producer"),
+                Action::Create,
+            ),
+            consuming_data_source("consumer", "second"),
+            pet("dependent", Action::Create, wired(&[], &["consumer"])),
+            change(
+                ResourceAddress::new("random_pet", "unrelated"),
+                Action::Create,
+            ),
+        ])
+        .unwrap()
+        .changes,
+    );
+    plan.data_sources = vec![
+        deferred_data_source(
+            "first",
+            vec![SourceAddress::Resource(ResourceAddress::new(
+                "random_pet",
+                "producer",
+            ))],
+        ),
+        deferred_data_source("second", vec![data_source_address("first")]),
+    ];
+    let scripted = run_scripted_plan(plan, &runner).await;
+    assert!(scripted.result.is_err());
+    let incomplete = scripted.incomplete();
+    assert_eq!(
+        incomplete
+            .failures
+            .iter()
+            .map(|failure| failure.address.to_string())
+            .collect::<Vec<_>>(),
+        ["data.example_lookup.first"]
+    );
+    assert_eq!(
+        Scripted::names(&incomplete.skipped),
+        ["consumer", "dependent"]
+    );
+    assert!(!scripted.events.iter().any(|event| matches!(event, ApplyEvent::Failed { address, .. } if address.name == "consumer" || address.name == "dependent")));
+    let journal = runner.journal.lock().unwrap();
+    assert!(journal.contains(&"apply random_pet.unrelated".to_string()));
+    assert!(!journal.iter().any(|entry| entry.contains("consumer")
+        || entry.contains("dependent")
+        || entry.contains("second")));
+    assert!(scripted.stored.is_empty());
+}
+
+#[tokio::test]
+async fn failed_managed_prerequisite_skips_its_data_read() {
+    let runner = ScriptedRunner::new().failing(&["apply random_pet.producer"]);
+    let mut plan = plan_of(
+        in_schedule_order(vec![
+            change(
+                ResourceAddress::new("random_pet", "producer"),
+                Action::Create,
+            ),
+            consuming_data_source("consumer", "lookup"),
+            change(
+                ResourceAddress::new("random_pet", "unrelated"),
+                Action::Create,
+            ),
+        ])
+        .unwrap()
+        .changes,
+    );
+    plan.data_sources = vec![deferred_data_source(
+        "lookup",
+        vec![SourceAddress::Resource(ResourceAddress::new(
+            "random_pet",
+            "producer",
+        ))],
+    )];
+    let scripted = run_scripted_plan(plan, &runner).await;
+    assert!(scripted.result.is_err());
+    let journal = runner.journal.lock().unwrap();
+    assert!(
+        !journal
+            .iter()
+            .any(|entry| entry.starts_with("read ") || entry.contains("consumer"))
+    );
+    assert!(journal.contains(&"apply random_pet.unrelated".to_string()));
+}
+
+#[tokio::test]
+async fn data_and_managed_failures_retain_their_own_identities_in_execution_order() {
+    let runner = ScriptedRunner::new().failing(&[
+        "read data.example_lookup.lookup",
+        "apply random_pet.unrelated",
+    ]);
+    let mut plan = plan_of(
+        in_schedule_order(vec![
+            pet("producer", Action::Create, wired(&[], &[])),
+            consuming_data_source("consumer", "lookup"),
+            pet("unrelated", Action::Create, wired(&[], &[])),
+        ])
+        .unwrap()
+        .changes,
+    );
+    plan.data_sources = vec![deferred_data_source(
+        "lookup",
+        vec![SourceAddress::Resource(ResourceAddress::new(
+            "random_pet",
+            "producer",
+        ))],
+    )];
+    let scripted = run_scripted_plan(plan, &runner).await;
+    let incomplete = scripted.incomplete();
+    assert_eq!(
+        incomplete
+            .failures
+            .iter()
+            .map(|failure| failure.address.to_string())
+            .collect::<Vec<_>>(),
+        ["data.example_lookup.lookup", "random_pet.unrelated",]
+    );
+    assert_eq!(Scripted::names(&incomplete.skipped), ["consumer"]);
+    assert!(scripted.events.iter().any(
+        |event| matches!(event, ApplyEvent::Failed { address, .. } if address.name == "unrelated")
+    ));
+    assert!(!scripted.events.iter().any(
+        |event| matches!(event, ApplyEvent::Failed { address, .. } if address.name == "consumer")
+    ));
+}
+
+#[tokio::test]
+async fn data_read_failure_preserves_an_unstarted_replacement_and_reports_a_started_one() {
+    for prerequisites in [
+        Vec::new(),
+        vec![SourceAddress::Resource(ResourceAddress::new(
+            "random_pet",
+            "producer",
+        ))],
+    ] {
+        let runner = ScriptedRunner::new().failing(&["read data.example_lookup.lookup"]);
+        let mut replacement = pet("consumer", Action::Replace, wired(&[], &["producer"]));
+        replacement.references = consuming_data_source("consumer", "lookup").references;
+        let mut plan = plan_of(
+            in_schedule_order(vec![
+                replacement,
+                pet("producer", Action::Create, wired(&[], &[])),
+                pet("unrelated", Action::Create, wired(&[], &[])),
+            ])
+            .unwrap()
+            .changes,
+        );
+        let waits_for_producer = !prerequisites.is_empty();
+        plan.data_sources = vec![deferred_data_source("lookup", prerequisites)];
+        let scripted = run_scripted_plan(plan, &runner).await;
+        assert!(scripted.result.is_err());
+        assert_eq!(
+            scripted
+                .incomplete()
+                .failures
+                .iter()
+                .map(|failure| failure.address.to_string())
+                .collect::<Vec<_>>(),
+            ["data.example_lookup.lookup"]
+        );
+        assert!(!scripted.events.iter().any(|event| matches!(event, ApplyEvent::Failed { address, .. } if address.name == "consumer")));
+        let journal = runner.journal.lock().unwrap();
+        assert!(!journal.contains(&"create random_pet.consumer".to_string()));
+        assert!(journal.contains(&"apply random_pet.unrelated".to_string()));
+        if waits_for_producer {
+            assert!(journal.contains(&"delete random_pet.consumer".to_string()));
+            assert_eq!(scripted.uncreated(), ["consumer"]);
+            assert!(!Scripted::names(&scripted.incomplete().skipped).contains(&"consumer"));
+        } else {
+            assert!(!journal.contains(&"delete random_pet.consumer".to_string()));
+            assert!(scripted.uncreated().is_empty());
+            assert!(Scripted::names(&scripted.incomplete().skipped).contains(&"consumer"));
+        }
+    }
+}
+
+#[test]
+fn persisted_data_ancestry_orders_destroy_after_the_data_declaration_is_gone() -> Result<()> {
+    let mut infrastructure = infrastructure();
+    infrastructure
+        .resources
+        .insert("producer".to_string(), declaration("random_pet", &[]));
+    infrastructure.data.insert(
+        "lookup".to_string(),
+        declaration("example_lookup", &["producer"]),
+    );
+    let mut consumer = declaration("random_pet", &[]);
+    consumer.configuration.insert(
+        "id".to_string(),
+        json!({"fromDataSource": "example_lookup.lookup", "attribute": "id"}),
+    );
+    infrastructure
+        .resources
+        .insert("consumer".to_string(), consumer);
+    let graph = DeclarationGraph::new(&infrastructure)?;
+    let dependencies = graph.managed_dependencies(&SourceAddress::Resource(ResourceAddress::new(
+        "random_pet",
+        "consumer",
+    )));
+    let mut consumer = pet("consumer", Action::Delete, wired(&[], &[]));
+    consumer
+        .stored
+        .as_mut()
+        .ok_or_else(|| InfrastructureError::configuration("missing test record"))?
+        .dependencies = dependencies;
+    let producer = pet("producer", Action::Delete, wired(&[], &[]));
+    assert_eq!(
+        short(&schedule_of(&[producer, consumer])),
+        ["delete consumer", "delete producer"]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn data_only_deferred_reads_execute_without_state_and_eager_reads_are_not_repeated() {
+    let runner = ScriptedRunner::new();
+    let mut plan = plan_of(Vec::new());
+    plan.data_sources = vec![deferred_data_source("standalone", Vec::new())];
+    assert!(plan.has_work());
+    assert!(!plan.has_changes());
+    let scripted = run_scripted_plan(plan.clone(), &runner).await;
+    assert!(scripted.result.is_ok());
+    assert!(scripted.stored.is_empty());
+    assert_eq!(
+        *runner.journal.lock().unwrap(),
+        ["read data.example_lookup.standalone"]
+    );
+    plan.data_sources[0].deferred = false;
+    plan.data_sources[0].after = Value::Object(BTreeMap::from([(
+        "id".to_string(),
+        Value::String("fresh-plan-result".to_string()),
+    )]));
+    let runner = ScriptedRunner::new();
+    let scripted = run_scripted_plan(plan, &runner).await;
+    assert!(scripted.result.is_ok());
+    assert!(runner.journal.lock().unwrap().is_empty());
+    assert!(scripted.stored.is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_unconsumed_read_is_reported_without_a_manufactured_resource_failure() {
+    let runner = ScriptedRunner::new().failing(&["read data.example_lookup.standalone"]);
+    let mut plan = plan_of(Vec::new());
+    plan.data_sources = vec![deferred_data_source("standalone", Vec::new())];
+    let scripted = run_scripted_plan(plan, &runner).await;
+    let incomplete = scripted.incomplete();
+    assert_eq!(incomplete.failures.len(), 1);
+    assert_eq!(
+        incomplete.failures[0].address.to_string(),
+        "data.example_lookup.standalone"
+    );
+    assert!(incomplete.skipped.is_empty());
+    assert_eq!(incomplete.total, 0);
+    assert_eq!(incomplete.completed, 0);
+    assert!(scripted.stored.is_empty());
+    assert!(
+        !scripted
+            .events
+            .iter()
+            .any(|event| matches!(event, ApplyEvent::Failed { .. }))
+    );
+}
+
+#[test]
+fn data_results_are_digested_and_sensitive_response_diagnostics_are_redacted() -> Result<()> {
+    let mut read = deferred_data_source("secret", Vec::new());
+    read.deferred = false;
+    read.sensitive = vec!["id".to_string()];
+    let secret = "data-response-secret-8fb42370";
+    let value_type = Type::Object(BTreeMap::from([("id".to_string(), Type::String)]));
+    let response = protocol::ReadDataSourceResponse {
+        state: Some(protocol::DynamicValue {
+            message_pack: Vec::new(),
+            json: serde_json::to_vec(&json!({"id": secret})).map_err(|_| {
+                InfrastructureError::configuration("test JSON serialization failed")
+            })?,
+        }),
+        diagnostics: vec![Diagnostic {
+            severity: Severity::Warning as i32,
+            summary: format!("received {secret}"),
+            detail: String::new(),
+            attribute: None,
+        }],
+        deferred: None,
+    };
+    let mut warnings = Vec::new();
+    read.after = data_sources::data_source_result(
+        data_sources::DataSourceResult {
+            read: &read,
+            value_type: &value_type,
+            response: &response,
+        },
+        &mut warnings,
+    )?;
+    assert_eq!(warnings.len(), 1);
+    assert!(!warnings[0].contains(secret));
+    let mut plan = plan_of(Vec::new());
+    plan.data_sources.push(read);
+    let before = plan.digest();
+    plan.data_sources[0].after = Value::Unknown;
+    assert_ne!(before, plan.digest());
+    assert!(!render_plan(&plan).contains(secret));
+    Ok(())
+}
+
+#[test]
+fn data_results_reject_null_unknown_and_provider_requested_deferral() -> Result<()> {
+    let read = deferred_data_source("lookup", Vec::new());
+    let value_type = Type::Object(BTreeMap::from([("id".to_string(), Type::String)]));
+    for value in [
+        Value::Null,
+        Value::Object(BTreeMap::from([("id".to_string(), Value::Unknown)])),
+    ] {
+        let response = protocol::ReadDataSourceResponse {
+            state: Some(protocol::DynamicValue {
+                message_pack: type_system::to_message_pack(&value, &value_type)?,
+                json: Vec::new(),
+            }),
+            diagnostics: Vec::new(),
+            deferred: None,
+        };
+        assert!(
+            data_sources::data_source_result(
+                data_sources::DataSourceResult {
+                    read: &read,
+                    value_type: &value_type,
+                    response: &response
+                },
+                &mut Vec::new()
+            )
+            .is_err()
+        );
+    }
+    let response = protocol::ReadDataSourceResponse {
+        state: None,
+        diagnostics: Vec::new(),
+        deferred: Some(protocol::Deferred { reason: 1 }),
+    };
+    let error = data_sources::data_source_result(
+        data_sources::DataSourceResult {
+            read: &read,
+            value_type: &value_type,
+            response: &response,
+        },
+        &mut Vec::new(),
+    );
+    assert!(
+        matches!(error, Err(InfrastructureError::Plugin(message)) if message.contains("provider-requested deferral"))
+    );
+    Ok(())
+}
+
+#[test]
+fn malformed_data_results_withhold_diagnostics_even_with_a_valid_sensitive_sibling() {
+    let mut read = deferred_data_source("malformed", Vec::new());
+    read.sensitive = vec!["secret_value".to_string()];
+    let value_type = Type::Object(BTreeMap::from([
+        ("length".to_string(), Type::Number),
+        ("secret_value".to_string(), Type::String),
+    ]));
+    for severity in [Severity::Warning, Severity::Error] {
+        let secret = format!("malformed-sibling-secret-{}", uuid::Uuid::new_v4());
+        assert_eq!(cuenv_events::redact(&secret), secret);
+        let mut state = protocol::DynamicValue {
+            message_pack: Vec::new(),
+            json: serde_json::to_vec(&json!({"length": {}, "secret_value": secret})).unwrap(),
+        };
+        if severity == Severity::Error {
+            let malformed = rmpv::Value::Map(vec![
+                (rmpv::Value::from("length"), rmpv::Value::Map(Vec::new())),
+                (
+                    rmpv::Value::from("secret_value"),
+                    rmpv::Value::from(secret.as_str()),
+                ),
+            ]);
+            rmpv::encode::write_value(&mut state.message_pack, &malformed).unwrap();
+            state.json.clear();
+        }
+        let response = protocol::ReadDataSourceResponse {
+            state: Some(state),
+            diagnostics: vec![Diagnostic {
+                severity: severity as i32,
+                summary: format!("untrusted diagnostic echoes {secret}"),
+                detail: secret.to_string(),
+                attribute: None,
+            }],
+            deferred: None,
+        };
+        let mut warnings = Vec::new();
+        let error = data_sources::data_source_result(
+            data_sources::DataSourceResult {
+                read: &read,
+                value_type: &value_type,
+                response: &response,
+            },
+            &mut warnings,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("diagnostics withheld"));
+        assert!(error.to_string().contains("data.example_lookup.malformed"));
+        assert!(!format!("{error:?}").contains(&secret));
+        assert!(!cuenv_events::redact(&secret).contains(&secret));
+        assert!(!error.to_string().contains("untrusted diagnostic"));
+        assert!(warnings.is_empty());
+    }
+}
+
+#[test]
+fn malformed_message_pack_data_results_never_render_response_diagnostics() -> Result<()> {
+    let mut read = deferred_data_source("malformed_wire", Vec::new());
+    read.sensitive = vec!["secret_value".to_string()];
+    let secret = "malformed-message-pack-secret-a81b9d20";
+    let value_type = Type::Object(BTreeMap::from([
+        ("length".to_string(), Type::Number),
+        ("secret_value".to_string(), Type::String),
+    ]));
+    // The wire encoding is valid, but an unrelated attribute violates the
+    // schema. Best-effort extraction must still protect the sensitive sibling.
+    let mut message_pack = Vec::new();
+    rmpv::encode::write_value(
+        &mut message_pack,
+        &rmpv::Value::Map(vec![
+            ("length".into(), rmpv::Value::Map(Vec::new())),
+            ("secret_value".into(), secret.into()),
+        ]),
+    )
+    .map_err(|_| InfrastructureError::configuration("test MessagePack encoding failed"))?;
+    // A truncated packet also must not make diagnostics safe to render.
+    for message_pack in [message_pack, vec![0x81]] {
+        let response = protocol::ReadDataSourceResponse {
+            state: Some(protocol::DynamicValue {
+                message_pack,
+                json: Vec::new(),
+            }),
+            diagnostics: vec![Diagnostic {
+                severity: Severity::Error as i32,
+                summary: format!("untrusted diagnostic echoes {secret}"),
+                detail: secret.to_string(),
+                attribute: None,
+            }],
+            deferred: None,
+        };
+        let mut warnings = Vec::new();
+        let error = data_sources::data_source_result(
+            data_sources::DataSourceResult {
+                read: &read,
+                value_type: &value_type,
+                response: &response,
+            },
+            &mut warnings,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("diagnostics withheld"));
+        assert!(
+            error
+                .to_string()
+                .contains("data.example_lookup.malformed_wire")
+        );
+        assert!(!format!("{error:?}").contains(secret));
+        assert!(!error.to_string().contains("untrusted diagnostic"));
+        assert!(warnings.is_empty());
+        assert!(!cuenv_events::redact(secret).contains(secret));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn stopping_during_a_read_prevents_the_next_managed_mutation_or_refresh_write() {
+    for failures in [Vec::new(), vec!["read data.example_lookup.lookup"]] {
+        for change in [
+            pet("consumer", Action::Create, wired(&[], &[])),
+            refresh_only("consumer"),
+        ] {
+            let cancellation = Cancellation::default();
+            let mut runner = ScriptedRunner::new().failing(&failures);
+            runner.stop_after = Some((
+                "read data.example_lookup.lookup".to_string(),
+                cancellation.clone(),
+            ));
+            // A concrete, unrelated managed operation does not need a final
+            // reference replan: only the post-read cancellation guard stops it.
+            let mut plan = plan_of(vec![change]);
+            plan.data_sources = vec![deferred_data_source("lookup", Vec::new())];
+            let scripted = run_scripted_plan_with_cancellation(plan, &runner, cancellation).await;
+            assert!(
+                matches!(
+                    scripted.result,
+                    Err(InfrastructureError::Interrupted { .. })
+                ),
+                "{:?}",
+                scripted.result
+            );
+            assert_eq!(
+                *runner.journal.lock().unwrap(),
+                ["read data.example_lookup.lookup"]
+            );
+            assert!(scripted.stored.is_empty());
+            assert!(
+                scripted.events.is_empty(),
+                "read-only interruption emitted managed events: {:?}",
+                scripted.events
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn stopping_during_the_final_unconsumed_read_interrupts_library_apply() {
+    for failures in [Vec::new(), vec!["read data.example_lookup.last"]] {
+        let cancellation = Cancellation::default();
+        let mut runner = ScriptedRunner::new().failing(&failures);
+        runner.stop_after = Some((
+            "read data.example_lookup.last".to_string(),
+            cancellation.clone(),
+        ));
+        let mut plan = plan_of(Vec::new());
+        plan.data_sources = vec![deferred_data_source("last", Vec::new())];
+        let scripted = run_scripted_plan_with_cancellation(plan, &runner, cancellation).await;
+        assert!(
+            matches!(
+                scripted.result,
+                Err(InfrastructureError::Interrupted { .. })
+            ),
+            "{:?}",
+            scripted.result
+        );
+        assert_eq!(
+            *runner.journal.lock().unwrap(),
+            ["read data.example_lookup.last"]
+        );
+        assert!(scripted.stored.is_empty());
+        assert!(scripted.events.is_empty());
+    }
+}
+
+#[test]
+fn schema_upgrades_protect_raw_historical_values_and_every_returned_attribute() {
+    let mut row = record("example_thing", "migrated", &[]);
+    row.schema_version = 1;
+    row.sensitive_attributes = vec!["old_secret".to_string()];
+    let old_secret = "historical-raw-secret-92ff82c4";
+    row.state = json!({"old_secret": {"nested": [old_secret]}});
+    let schema = Schema {
+        version: 2,
+        block: string_block("renamed_secret", crate::schema::Presence::Computed, false),
+    };
+    let sensitive = resource_sensitivity(&row, &schema);
+    assert_eq!(sensitive, ["old_secret", "renamed_secret"]);
+    register_stored_values(&row, &sensitive);
+    let new_secret = "upgraded-response-secret-d8dc01c0";
+    let response = protocol::DynamicValue {
+        message_pack: Vec::new(),
+        json: serde_json::to_vec(&json!({"renamed_secret": new_secret})).unwrap(),
+    };
+    sensitive_provider_value(SensitiveProviderValue {
+        value: Some(&response),
+        value_type: &schema.block.implied_type(),
+        sensitive: &sensitive,
+    })
+    .unwrap();
+    let mut warnings = Vec::new();
+    check_diagnostics(
+        "upgrade",
+        &[Diagnostic {
+            severity: Severity::Warning as i32,
+            summary: format!("old {old_secret}, new {new_secret}"),
+            detail: String::new(),
+            attribute: None,
+        }],
+        &mut warnings,
+    )
+    .unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(!warnings[0].contains(old_secret));
+    assert!(!warnings[0].contains(new_secret));
+    // The renamed mark survives a later invocation with the current schema
+    // and no reference declaration from which to reconstruct provenance.
+    row.schema_version = schema.version;
+    row.sensitive_attributes = remembered_sensitive_attributes(&sensitive, Some(&row));
+    assert_eq!(
+        resource_sensitivity(&row, &schema),
+        ["old_secret", "renamed_secret"]
+    );
+    assert_eq!(
+        remembered_sensitive_attributes(&[], Some(&row)),
+        row.sensitive_attributes
+    );
+}
+
+#[test]
+fn failed_updates_without_state_retain_old_bytes_and_new_sensitivity() {
+    let mut row = record("example_thing", "retained", &["parent"]);
+    row.sensitive_attributes = vec!["historical".to_string()];
+    let mut retained =
+        sensitivity::retained_sensitive_record(&row, &["inherited".to_string()]).unwrap();
+    assert_eq!(retained.sensitive_attributes, ["historical", "inherited"]);
+    assert!(sensitivity::retained_sensitive_record(&retained, &[]).is_none());
+    retained.sensitive_attributes = row.sensitive_attributes.clone();
+    assert_eq!(
+        retained, row,
+        "failed update changed retained provider state or identity"
+    );
+}
+
+#[test]
+fn unmapped_stored_sensitivity_masks_current_attributes_without_a_version_change() {
+    let mut row = record("example_thing", "renamed", &[]);
+    row.sensitive_attributes = vec!["old_secret".to_string()];
+    let schema = Schema {
+        version: row.schema_version,
+        block: string_block("renamed_secret", crate::schema::Presence::Computed, false),
+    };
+    let sensitive = resource_sensitivity(&row, &schema);
+    assert_eq!(sensitive, ["old_secret", "renamed_secret"]);
+    let mut deletion = change(row.address.clone(), Action::Delete);
+    deletion.before = Value::Object(BTreeMap::from([(
+        "renamed_secret".to_string(),
+        Value::String("renamed-stored-secret-f451b28c".to_string()),
+    )]));
+    deletion.sensitive = sensitive;
+    let rendered = render_plan(&plan_of(vec![deletion]));
+    assert!(rendered.contains("(sensitive)"), "{rendered}");
+    assert!(!rendered.contains("renamed-stored-secret-f451b28c"));
+}
+
+#[test]
+fn sensitive_map_keys_are_redacted_in_data_diagnostics_configuration_and_stored_state() {
+    let sensitive = vec!["credentials".to_string()];
+    let value_type = Type::Object(BTreeMap::from([(
+        "credentials".to_string(),
+        Type::Map(Box::new(Type::String)),
+    )]));
+    let key = format!("data-map-key-{}", uuid::Uuid::new_v4());
+    let mut read = deferred_data_source("credentials", Vec::new());
+    read.sensitive.clone_from(&sensitive);
+    let response = protocol::ReadDataSourceResponse {
+        state: Some(protocol::DynamicValue {
+            json: serde_json::to_vec(&json!({"credentials": {&key: "ordinary"}})).unwrap(),
+            message_pack: Vec::new(),
+        }),
+        diagnostics: vec![Diagnostic {
+            severity: Severity::Warning as i32,
+            summary: format!("credential key {key}"),
+            ..Diagnostic::default()
+        }],
+        deferred: None,
+    };
+    assert_eq!(cuenv_events::redact(&key), key);
+    let mut warnings = Vec::new();
+    data_sources::data_source_result(
+        data_sources::DataSourceResult {
+            read: &read,
+            value_type: &value_type,
+            response: &response,
+        },
+        &mut warnings,
+    )
+    .unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(!warnings[0].contains(&key));
+
+    let configuration_key = format!("configuration-map-key-{}", uuid::Uuid::new_v4());
+    let configuration = Value::from_configuration_json(
+        &json!({"credentials": {&configuration_key: "ordinary"}}),
+        &value_type,
+    )
+    .unwrap();
+    register_attributes(&configuration, &sensitive);
+    assert!(!cuenv_events::redact(&configuration_key).contains(&configuration_key));
+
+    let stored_key = format!("stored-map-key-{}", uuid::Uuid::new_v4());
+    let mut row = record("example_object", "stored", &[]);
+    row.state = json!({"credentials": [{"nested": {&stored_key: "ordinary"}}]});
+    row.sensitive_attributes = sensitive;
+    register_stored_values(&row, &[]);
+    assert!(!cuenv_events::redact(&stored_key).contains(&stored_key));
+
+    let planned_key = format!("planned-map-key-{}", uuid::Uuid::new_v4());
+    let mut planned = change(row.address, Action::Update);
+    planned.sensitive = vec!["credentials".to_string()];
+    planned.after = Value::from_configuration_json(
+        &json!({"credentials": {&planned_key: "ordinary"}}),
+        &value_type,
+    )
+    .unwrap();
+    register_sensitive_values(&planned);
+    assert!(!cuenv_events::redact(&planned_key).contains(&planned_key));
+}
+
+#[test]
+fn malformed_data_results_register_nested_sensitive_map_keys_in_both_encodings() {
+    let mut read = deferred_data_source("malformed_credentials", Vec::new());
+    read.sensitive = vec!["credentials".to_string()];
+    let value_type = Type::Object(BTreeMap::from([
+        ("count".to_string(), Type::Number),
+        ("credentials".to_string(), Type::Map(Box::new(Type::String))),
+    ]));
+    for encoding in ["json", "message_pack"] {
+        let key = format!("malformed-map-key-{}", uuid::Uuid::new_v4());
+        assert_eq!(cuenv_events::redact(&key), key);
+        let mut state = protocol::DynamicValue::default();
+        if encoding == "json" {
+            state.json = serde_json::to_vec(
+                &json!({"count": {}, "credentials": [{"nested": {&key: "ordinary"}}]}),
+            )
+            .unwrap();
+        } else {
+            let malformed = rmpv::Value::Map(vec![
+                ("count".into(), rmpv::Value::Map(Vec::new())),
+                (
+                    "credentials".into(),
+                    rmpv::Value::Array(vec![rmpv::Value::Map(vec![(
+                        "nested".into(),
+                        rmpv::Value::Map(vec![(key.as_str().into(), "ordinary".into())]),
+                    )])]),
+                ),
+            ]);
+            rmpv::encode::write_value(&mut state.message_pack, &malformed).unwrap();
+        }
+        let response = protocol::ReadDataSourceResponse {
+            state: Some(state),
+            diagnostics: vec![Diagnostic {
+                severity: Severity::Error as i32,
+                summary: format!("credential key {key}"),
+                ..Diagnostic::default()
+            }],
+            deferred: None,
+        };
+        let mut warnings = Vec::new();
+        let error = data_sources::data_source_result(
+            data_sources::DataSourceResult {
+                read: &read,
+                value_type: &value_type,
+                response: &response,
+            },
+            &mut warnings,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("diagnostics withheld"));
+        assert!(!error.to_string().contains(&key));
+        assert!(warnings.is_empty());
+        assert!(!cuenv_events::redact(&key).contains(&key), "{encoding}");
+    }
+}
+
+async fn malformed_update_response(
+    engine: &InfrastructureEngine,
+    lock: &StateLock,
+    stored: &ManagedResource,
+) -> Result<Value> {
+    let secret = format!("malformed-update-secret-{}", uuid::Uuid::new_v4());
+    let response = protocol::ApplyResourceChangeResponse {
+        new_state: Some(protocol::DynamicValue {
+            json: serde_json::to_vec(&json!({"payload": secret, "count": {}})).unwrap(),
+            message_pack: Vec::new(),
+        }),
+        private: vec![99],
+        diagnostics: vec![Diagnostic {
+            severity: Severity::Error as i32,
+            summary: format!("malformed update {secret}"),
+            ..Diagnostic::default()
+        }],
+        legacy_type_system: false,
+    };
+    let mut change = change(stored.address.clone(), Action::Update);
+    change.sensitive = vec!["payload".to_string()];
+    let value_type = Type::Object(BTreeMap::from([
+        ("count".to_string(), Type::Number),
+        ("payload".to_string(), Type::String),
+    ]));
+    let mut rows = BTreeMap::from([(stored.address.clone(), stored.clone())]);
+    let result = engine
+        .decode_apply_response(
+            sensitivity::ApplyResponseValue {
+                response: &response,
+                value_type: &value_type,
+            },
+            sensitivity::RetainedSensitivity {
+                change: &change,
+                lock,
+                rows: &mut rows,
+                expected: RecordVersion::of(Some(stored)),
+            },
+        )
+        .await;
+    assert!(!format!("{result:?}").contains(&secret));
+    assert!(!cuenv_events::redact(&secret).contains(&secret));
+    result
+}
+
+#[tokio::test]
+async fn malformed_apply_preserves_new_sensitivity_without_fabricating_provider_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let engine = engine(Arc::clone(&store), directory.path());
+    let lock = store.lock(&tenant(), "malformed update").await.unwrap();
+    let mut row = record("example_object", "updated", &["parent"]);
+    row.state = json!({"payload": "public", "count": 1});
+    row.private = vec![1, 2, 3];
+    store.put(&tenant(), &lock, &row).await.unwrap();
+    let prior = store.list(&tenant()).await.unwrap().remove(0);
+    let error = malformed_update_response(&engine, &lock, &prior)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("diagnostics withheld"));
+    let current = store.list(&tenant()).await.unwrap().remove(0);
+    let expected = ManagedResource {
+        sensitive_attributes: vec!["payload".to_string()],
+        ..prior.clone()
+    };
+    assert!(current.same_content(&expected));
+    assert_eq!(current.generation, prior.generation);
+    assert_eq!(current.serial, prior.serial + 1);
+    assert!(
+        !engine
+            .unrecorded_store()
+            .unwrap()
+            .has_pending(&tenant())
+            .unwrap()
+    );
+    store.unlock(&tenant(), &lock).await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_apply_sensitivity_write_failure_recovers_only_the_retained_record() {
+    let directory = tempfile::tempdir().unwrap();
+    let failing = Arc::new(FailingWrites::default());
+    let lock = failing
+        .inner
+        .lock(&tenant(), "failed metadata write")
+        .await
+        .unwrap();
+    let mut row = record("example_object", "updated", &["parent"]);
+    row.state = json!({"payload": "public", "count": 1});
+    row.private = vec![1, 2, 3];
+    failing.inner.put(&tenant(), &lock, &row).await.unwrap();
+    let prior = failing.inner.list(&tenant()).await.unwrap().remove(0);
+    let store: Arc<dyn StateStore> = failing.clone();
+    let engine = engine(store, directory.path());
+    let error = malformed_update_response(&engine, &lock, &prior)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, InfrastructureError::UnrecordedChange { .. }),
+        "{error}"
+    );
+    assert_eq!(
+        failing.inner.list(&tenant()).await.unwrap(),
+        std::slice::from_ref(&prior)
+    );
+    let recovery = engine.unrecorded_store().unwrap();
+    let saved = recovery.list(&tenant()).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].expected, RecordVersion::of(Some(&prior)));
+    let expected = ManagedResource {
+        sensitive_attributes: vec!["payload".to_string()],
+        ..prior.clone()
+    };
+    assert!(saved[0].record.same_content(&expected));
+    recovery
+        .recover(
+            &failing.inner,
+            &tenant(),
+            &crate::unrecorded::RecoverOptions {
+                lock: &lock,
+                overrides: crate::unrecorded::RecoverOverrides::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let current = failing.inner.list(&tenant()).await.unwrap().remove(0);
+    assert!(current.same_content(&expected));
+    assert_eq!(current.generation, prior.generation);
+    assert_eq!(current.serial, prior.serial + 1);
+    assert!(!recovery.has_pending(&tenant()).unwrap());
+    failing.inner.unlock(&tenant(), &lock).await.unwrap();
 }

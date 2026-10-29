@@ -38,6 +38,7 @@
 //! file are
 //! [`InfrastructureError::UnrecordedFile`] errors naming the file.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -183,6 +184,8 @@ struct FileResource {
     #[serde(with = "crate::state::base64_bytes")]
     private: Vec<u8>,
     dependencies: Vec<String>,
+    #[serde(default)]
+    sensitive_attributes: Vec<String>,
     tainted: bool,
     identity: Option<serde_json::Value>,
     generation: uuid::Uuid,
@@ -190,6 +193,9 @@ struct FileResource {
 
 impl FileResource {
     fn of(record: &ManagedResource) -> Self {
+        let mut sensitive_attributes = record.sensitive_attributes.clone();
+        sensitive_attributes.sort();
+        sensitive_attributes.dedup();
         Self {
             resource_type: record.address.resource_type.clone(),
             name: record.address.name.clone(),
@@ -199,6 +205,7 @@ impl FileResource {
             state: record.state.clone(),
             private: record.private.clone(),
             dependencies: record.dependencies.clone(),
+            sensitive_attributes,
             tainted: record.tainted,
             identity: record.identity.clone(),
             generation: record.generation,
@@ -214,6 +221,7 @@ impl FileResource {
             state: self.state,
             private: self.private,
             dependencies: self.dependencies,
+            sensitive_attributes: self.sensitive_attributes,
             tainted: self.tainted,
             identity: self.identity,
             serial: 0,
@@ -531,11 +539,29 @@ impl UnrecordedStore {
                 }
             }
         }
+        if unrecorded_records.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut retained_sensitivity: BTreeMap<_, _> = store
+            .list(tenant)
+            .await?
+            .into_iter()
+            .map(|stored| (stored.address, stored.sensitive_attributes))
+            .collect();
         let mut recorded = Vec::new();
         for unrecorded in unrecorded_records {
-            let record = &unrecorded.record;
+            let mut record = unrecorded.record.clone();
+            // Recovery can overwrite a retained object without running the
+            // engine. Never let an older payload remove its sensitivity marks.
+            if let Some(sensitive) = retained_sensitivity.get(&record.address) {
+                record
+                    .sensitive_attributes
+                    .extend(sensitive.iter().cloned());
+            }
+            record.sensitive_attributes.sort();
+            record.sensitive_attributes.dedup();
             let put = ConditionalPut {
-                resource: record,
+                resource: &record,
                 expected: unrecorded.expected,
             };
             match store.put_if_unchanged(tenant, options.lock, &put).await {
@@ -561,7 +587,7 @@ impl UnrecordedStore {
                             address = %record.address,
                             "overwriting a stored record that changed since the change was saved"
                         );
-                        store.put(tenant, options.lock, record).await?;
+                        store.put(tenant, options.lock, &record).await?;
                     } else {
                         return Err(InfrastructureError::StateChanged {
                             address,
@@ -573,6 +599,8 @@ impl UnrecordedStore {
                 }
                 Err(other) => return Err(other),
             }
+            retained_sensitivity
+                .insert(record.address.clone(), record.sensitive_attributes.clone());
             self.remove(&unrecorded)?;
             tracing::info!(address = %record.address, "recovered an unrecorded change");
             recorded.push(unrecorded.record.address);
@@ -1011,6 +1039,7 @@ mod tests {
             state: serde_json::json!({"id": identifier, "secret": "hunter2"}),
             private: vec![1, 2, 3],
             dependencies: Vec::new(),
+            sensitive_attributes: vec!["secret".to_string()],
             tainted: false,
             identity: None,
             serial: 0,
@@ -1422,6 +1451,101 @@ mod tests {
         recover(both).await.unwrap();
         assert_eq!(state_b.list(&tenant).await.unwrap()[0].state["id"], "saved");
         assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn recovery_keeps_saved_and_retained_sensitivity()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let unrecorded = UnrecordedStore::at(root.path());
+        let state = MemoryStateStore::new();
+        let tenant = tenant("sensitive-recovery");
+        let lock = state.lock(&tenant, "recover").await?;
+        let mut stored = record("pet", "stored");
+        stored.sensitive_attributes.push("id".to_string());
+        state.put(&tenant, &lock, &stored).await?;
+        let saved = record("pet", "saved");
+        unrecorded.save(&tenant, &absent(&saved))?;
+        assert_eq!(
+            unrecorded.list(&tenant)?[0].record.sensitive_attributes,
+            ["secret"]
+        );
+        unrecorded
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: overwrite_changed(),
+                },
+            )
+            .await?;
+        let recovered = state.list(&tenant).await?;
+        assert_eq!(recovered[0].state["id"], "saved");
+        assert_eq!(recovered[0].sensitive_attributes, ["id", "secret"]);
+        state.unlock(&tenant, &lock).await?;
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_recovery_metadata_defaults_only_when_absent()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut value = serde_json::to_value(FileResource::of(&record("pet", "saved")))?;
+        value
+            .as_object_mut()
+            .ok_or("recovery resource is not an object")?
+            .remove("sensitiveAttributes");
+        let legacy: FileResource = serde_json::from_value(value.clone())?;
+        assert!(legacy.into_record().sensitive_attributes.is_empty());
+        value["sensitiveAttributes"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<FileResource>(value).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn forced_legacy_file_recovery_retains_current_sensitivity()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let unrecorded = UnrecordedStore::at(root.path());
+        let state = MemoryStateStore::new();
+        let tenant = tenant("legacy-sensitive-recovery");
+        let lock = state.lock(&tenant, "recover").await?;
+        let mut stored = record("pet", "stored");
+        stored.sensitive_attributes.push("id".to_string());
+        state.put(&tenant, &lock, &stored).await?;
+        let before = state.list(&tenant).await?[0].clone();
+        let saved = record("pet", "saved");
+        let file = unrecorded.save(&tenant, &absent(&saved))?;
+        let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+        legacy["resource"]
+            .as_object_mut()
+            .ok_or("resource is not an object")?
+            .remove("sensitiveAttributes");
+        std::fs::write(&file, serde_json::to_vec(&legacy)?)?;
+        assert!(
+            unrecorded.list(&tenant)?[0]
+                .record
+                .sensitive_attributes
+                .is_empty()
+        );
+        unrecorded
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: overwrite_changed(),
+                },
+            )
+            .await?;
+        let after = state.list(&tenant).await?;
+        assert_eq!(after[0].state["id"], "saved");
+        assert_eq!(after[0].sensitive_attributes, ["id", "secret"]);
+        assert_eq!(after[0].generation, before.generation);
+        assert_eq!(after[0].serial, before.serial + 1);
+        assert!(!file.exists());
+        state.unlock(&tenant, &lock).await?;
+        Ok(())
     }
 
     #[tokio::test]

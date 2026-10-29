@@ -71,14 +71,18 @@ const PROBE_TABLE: &str = "cuenv_infrastructure_probe";
 
 /// The shipped migrations followed by a version that only creates
 /// [`PROBE_TABLE`].
-fn migrations_with_a_probe() -> [Migration; 2] {
+fn migrations_with_a_probe() -> [Migration; 3] {
     [
         Migration {
             version: MIGRATIONS[0].version,
             statements: MIGRATIONS[0].statements,
         },
         Migration {
-            version: INITIAL_SCHEMA_VERSION + 1,
+            version: MIGRATIONS[1].version,
+            statements: MIGRATIONS[1].statements,
+        },
+        Migration {
+            version: LATEST_SCHEMA_VERSION + 1,
             statements: &["CREATE TABLE cuenv_infrastructure_probe (value INTEGER NOT NULL)"],
         },
     ]
@@ -106,6 +110,7 @@ fn probe_record() -> ManagedResource {
         state: json!({"id": "pet"}),
         private: Vec::new(),
         dependencies: Vec::new(),
+        sensitive_attributes: vec!["id".into()],
         tainted: false,
         identity: None,
         serial: 0,
@@ -116,14 +121,30 @@ fn probe_record() -> ManagedResource {
 /// The body of [`a_migration_refuses_while_any_lock_is_held`].
 async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     let migrations = migrations_with_a_probe();
+    store.inner.migrate_to(&MIGRATIONS[..1]).await?;
+    store
+        .inner
+        .execute(Statement::new(
+            "INSERT INTO cuenv_infrastructure_resources \
+         (module_path, project, environment, resource_type, resource_name, provider, \
+          provider_source, schema_version, state_json, generation, created_at, updated_at) VALUES \
+         ('example.com/migration', 'web', '', 'random_pet', 'pet', 'random', \
+          'registry.terraform.io/hashicorp/random', 0, '{\"id\":\"pet\"}', \
+          '00000000-0000-0000-0000-000000000007', 'created', 'updated')",
+            Vec::new(),
+        ))
+        .await?;
     store.migrate().await?;
     let tenant = TenantKey::try_new("example.com/migration", "web")?;
+    let legacy = store.list(&tenant).await?.remove(0);
+    assert!(legacy.sensitive_attributes.is_empty());
+    assert_eq!(legacy.generation, uuid::Uuid::from_u128(7));
     let lock = store.lock(&tenant, "migration test").await?;
 
     // A run holds a lock: the migration refuses and changes nothing.
     let refused = store.inner.migrate_to(&migrations).await.unwrap_err();
     // The error names the lock that blocks it, wherever it is held.
-    let InfrastructureError::StateMigrationBlocked { version: 2, locks } = &refused else {
+    let InfrastructureError::StateMigrationBlocked { version: 3, locks } = &refused else {
         panic!("{refused:?}");
     };
     assert_eq!(locks.len(), 1, "{locks:?}");
@@ -136,21 +157,50 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     );
     // The same locks are listed, and released, without any project.
     assert_eq!(store.locks().await?, *locks);
-    assert_eq!(store.inner.schema_version().await?, INITIAL_SCHEMA_VERSION);
+    assert_eq!(store.inner.schema_version().await?, LATEST_SCHEMA_VERSION);
     assert!(
         !table_exists(store, PROBE_TABLE).await,
         "the refused migration must leave nothing behind"
     );
     // The run that holds the lock still writes into the shape it knows.
     store.put(&tenant, &lock, &probe_record()).await?;
-    assert_eq!(store.list(&tenant).await?.len(), 1);
+    let stored = store.list(&tenant).await?.remove(0);
+    assert!(stored.same_content(&probe_record()));
+    let changed = ManagedResource {
+        sensitive_attributes: Vec::new(),
+        ..stored.clone()
+    };
+    let update = ConditionalPut {
+        resource: &changed,
+        expected: RecordVersion::of(Some(&stored)),
+    };
+    store.put_if_unchanged(&tenant, &lock, &update).await?;
+    store.put_if_unchanged(&tenant, &lock, &update).await?;
+    assert!(
+        store.list(&tenant).await?[0]
+            .sensitive_attributes
+            .is_empty()
+    );
+    assert!(matches!(
+        store
+            .put_if_unchanged(
+                &tenant,
+                &lock,
+                &ConditionalPut {
+                    resource: &stored,
+                    expected: update.expected,
+                }
+            )
+            .await,
+        Err(InfrastructureError::StateChanged { .. })
+    ));
 
     // Several locks fence it too, and so does the lock of a tenant alone.
     let other = TenantKey::with_environment("example.com/migration", "web", "Dev")?;
     let other_lock = store.lock(&other, "migration test").await?;
     let both = store.inner.migrate_to(&migrations).await.unwrap_err();
     assert!(
-        matches!(&both, InfrastructureError::StateMigrationBlocked { version: 2, locks }
+        matches!(&both, InfrastructureError::StateMigrationBlocked { version: 3, locks }
             if locks.len() == 2 && locks.iter().any(|held| held.environment.as_deref() == Some("Dev"))),
         "{both:?}"
     );
@@ -159,7 +209,7 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     assert!(!store.unlock(&tenant, &lock).await?);
     assert!(matches!(
         store.inner.migrate_to(&migrations).await,
-        Err(InfrastructureError::StateMigrationBlocked { version: 2, .. })
+        Err(InfrastructureError::StateMigrationBlocked { version: 3, .. })
     ));
     // A lock of a project nothing evaluates is released by its tenant alone.
     let stale = store.locks().await?;
@@ -180,13 +230,13 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
         .await?;
     store.unlock(&tenant, &lock).await?;
     store.inner.migrate_to(&migrations).await?;
-    assert_eq!(store.inner.schema_version().await?, 2);
+    assert_eq!(store.inner.schema_version().await?, 3);
     assert!(table_exists(store, PROBE_TABLE).await);
     assert!(matches!(
         store.list(&tenant).await,
         Err(InfrastructureError::StateSchemaNewer {
-            found: 2,
-            supported: 1
+            found: 3,
+            supported: 2
         })
     ));
     assert!(matches!(
@@ -527,7 +577,8 @@ fn errors_about_statements_carrying_state_quote_only_codes() {
     assert!(!quoted.contains('\u{1b}'), "{quoted}");
 
     let body = BodyPrefix {
-        bytes: br#"{"message": "bad state_json \"hunter2\"", "code": "HTTP_BAD"}"#.to_vec(),
+        bytes: br#"{"message": "bad resource_state_json \"hunter2\"", "code": "HTTP_BAD"}"#
+            .to_vec(),
         truncated: false,
     };
     let described = describe_http_error(&HttpError {
@@ -556,6 +607,7 @@ fn corrupt_rows_are_reported_without_their_content() {
         SqlValue::Null,
         SqlValue::integer(1),
         SqlValue::text(&uuid::Uuid::from_u128(7).to_string()),
+        SqlValue::text("[]"),
     ];
     let error = row_to_resource(&row).unwrap_err();
     assert!(
@@ -563,7 +615,7 @@ fn corrupt_rows_are_reported_without_their_content() {
         "{error:?}"
     );
     let message = error.to_string();
-    assert!(message.contains("state_json"), "{message}");
+    assert!(message.contains("resource_state_json"), "{message}");
     assert!(message.contains("line 1"), "{message}");
     assert!(!message.contains("hunter2"), "{message}");
     row[5] = SqlValue::text("{}");
@@ -581,6 +633,45 @@ fn a_row_without_a_readable_address_still_gets_the_undecodable_error() {
         "{error:?}"
     );
     assert!(error.to_string().contains("resource_type"), "{error}");
+}
+
+#[test]
+fn sensitivity_metadata_must_be_a_present_json_string_array() {
+    let mut row = vec![
+        SqlValue::text("random_pet"),
+        SqlValue::text("pet"),
+        SqlValue::text("random"),
+        SqlValue::text("registry.terraform.io/hashicorp/random"),
+        SqlValue::integer(0),
+        SqlValue::text("{\"id\":\"secret-state\"}"),
+        SqlValue::Null,
+        SqlValue::text("[]"),
+        SqlValue::integer(0),
+        SqlValue::Null,
+        SqlValue::integer(1),
+        SqlValue::text(&uuid::Uuid::from_u128(7).to_string()),
+    ];
+    let missing = row_to_resource(&row).unwrap_err();
+    assert!(missing.to_string().contains("sensitive_attributes"));
+    for invalid in [
+        SqlValue::Null,
+        SqlValue::integer(1),
+        SqlValue::Unreadable,
+        SqlValue::text("null"),
+        SqlValue::text("\"secret-metadata\""),
+        SqlValue::text("[\"id\", {\"secret-metadata\": true}]"),
+        SqlValue::text("invalid-secret-json"),
+    ] {
+        row.truncate(12);
+        row.push(invalid);
+        let error = row_to_resource(&row).unwrap_err();
+        assert!(
+            matches!(&error, InfrastructureError::UndecodableRecord { problem, .. } if problem.contains("sensitive_attributes"))
+        );
+        assert!(!error.to_string().contains("secret"));
+    }
+    row[12] = SqlValue::text("[\"id\"]");
+    assert_eq!(row_to_resource(&row).unwrap().sensitive_attributes, ["id"]);
 }
 
 #[test]
@@ -935,10 +1026,12 @@ fn row_to_resource_reads_tainted_and_identity() {
             identity,
             SqlValue::integer(7),
             SqlValue::text(&uuid::Uuid::from_u128(7).to_string()),
+            SqlValue::text("[\"id\"]"),
         ]
     };
     let resource = row_to_resource(&row("1", SqlValue::text("{\"name\":\"a\"}"))).unwrap();
     assert!(resource.tainted);
+    assert_eq!(resource.sensitive_attributes, ["id"]);
     assert_eq!(resource.serial, 7);
     assert_eq!(resource.identity, Some(json!({"name": "a"})));
     let resource = row_to_resource(&row("0", SqlValue::Null)).unwrap();
@@ -1001,7 +1094,7 @@ async fn fresh_database_reads_and_newer_schema_against_a_server() {
         "reads and a refused lock create nothing"
     );
 
-    store.migrate().await.unwrap();
+    crate::state::sql::tests::stale_first_migrator(&store.inner).await;
     let lock = store.lock(&tenant(), "test").await.unwrap();
     store.unlock(&tenant(), &lock).await.unwrap();
 
@@ -1162,6 +1255,7 @@ async fn write_errors_never_quote_a_body_echoing_the_state() {
         state: json!({"result": "hunter2"}),
         private: Vec::new(),
         dependencies: Vec::new(),
+        sensitive_attributes: vec!["result".into()],
         tainted: false,
         identity: None,
         serial: 0,
@@ -1400,6 +1494,7 @@ fn stored_row(generation: &Value) -> Value {
         {"type": "null"},
         {"type": "integer", "value": "4"},
         generation,
+        {"type": "text", "value": "[\"id\"]"},
     ]])
 }
 
@@ -1417,6 +1512,7 @@ async fn reads_decode_records_without_migrating_anything() {
     let resources = store.list(&tenant()).await.unwrap();
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0].serial, 4);
+    assert_eq!(resources[0].sensitive_attributes, ["id"]);
     assert_eq!(resources[0].generation, uuid::Uuid::from_u128(9));
     assert!(
         statements
@@ -1504,6 +1600,7 @@ async fn every_state_statement_is_scoped_by_environment() {
             state: json!({"id": "pet"}),
             private: Vec::new(),
             dependencies: Vec::new(),
+            sensitive_attributes: Vec::new(),
             tainted: false,
             identity: None,
             serial: 0,
@@ -1971,7 +2068,7 @@ async fn addresses_are_read_from_the_key_columns_alone() {
             .lock()
             .unwrap()
             .iter()
-            .all(|sql| !sql.contains("state_json")),
+            .all(|sql| !sql.contains("resource_state_json")),
     );
 }
 
@@ -2028,7 +2125,7 @@ async fn layout_scenario(store: &Arc<TursoStateStore>) -> Result<()> {
 
     // A clean database migrates; then a migration that waits for a lock
     // holds new locks off, and gives up with the lock listed.
-    store.migrate().await?;
+    crate::state::sql::tests::completed_announcements(&store.inner).await;
     let tenant = tenant();
     let held = store.lock(&tenant, "stale").await?;
     let migrating = {
@@ -2041,7 +2138,7 @@ async fn layout_scenario(store: &Arc<TursoStateStore>) -> Result<()> {
     assert!(
         matches!(
             refused,
-            InfrastructureError::StateMigrationPending { version: 2 }
+            InfrastructureError::StateMigrationPending { version: 3 }
         ),
         "{refused:?}"
     );
@@ -2061,6 +2158,6 @@ async fn layout_scenario(store: &Arc<TursoStateStore>) -> Result<()> {
     tokio::time::sleep(Duration::from_millis(150)).await;
     store.unlock(&tenant, &held).await?;
     migrating.await.unwrap()?;
-    assert_eq!(store.inner.schema_version().await?, 2);
+    assert_eq!(store.inner.schema_version().await?, 3);
     Ok(())
 }

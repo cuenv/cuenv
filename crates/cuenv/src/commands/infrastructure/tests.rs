@@ -916,6 +916,7 @@ impl Harness {
 fn managed(address: &str) -> ManagedResource {
     let (resource_type, name) = address.split_once('.').unwrap();
     ManagedResource {
+        sensitive_attributes: Vec::new(),
         address: ResourceAddress::new(resource_type, name),
         provider: "random".to_string(),
         provider_source: "registry.terraform.io/hashicorp/random".to_string(),

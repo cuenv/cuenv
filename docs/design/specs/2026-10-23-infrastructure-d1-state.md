@@ -40,6 +40,23 @@ implementation instead of two copies of the locking logic.
   HTTP rules both follow: no redirects, bounded bodies, timeouts, transient
   classification, `Retry-After`.
 
+The shared SQL store now uses schema version 2, adding managed-resource
+`sensitive_attributes` metadata through a lock-fenced transactional migration from
+version 1. It adds an empty-list default for existing rows and atomically renames
+`state_json` to `resource_state_json`, leaving provider state and private bytes
+unchanged; migration 1 remains unchanged. The rename invalidates legacy SQL
+projections: a version-1 reader that already passed its version check fails closed
+if its old SELECT runs after migration. No compatibility view exposes the old
+projection. The metadata carries the union of provider-schema,
+inherited-reference and stored top-level sensitivity through refresh, import,
+failed updates and recovery, enabling fresh-process destroy/orphan masking of
+copied data-source secrets. Old records lack inferred provenance that could be
+reconstructed retroactively; runtime data source support had not been released.
+Values remain plaintext in managed state and recovery files. Earlier incompatible
+development layouts remain refused; they are distinct from the supported
+version-1 migration. The verification record below describes the original D1
+work, not validation of this later migration.
+
 ### What D1's API requires
 
 | D1 behaviour | Consequence |
