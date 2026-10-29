@@ -79,10 +79,10 @@ path.
   projects, environments, or state databases. Operators remain responsible
   for binding a remote object to only one state address.
 
-## Managed-resource output references
+## Managed-resource and data source output references
 
-A top-level resource argument may use a descriptor with exactly two string
-fields, `fromResource` and `attribute`:
+A top-level resource or data source argument may use a descriptor with exactly
+two string fields: `attribute` and one of `fromResource` or `fromDataSource`:
 
 ```cue
 configuration: {
@@ -94,23 +94,29 @@ configuration: {
 ```
 
 `fromResource` names a declared resource by its full `type.name` address;
-`attribute` names a top-level provider output. The source output and destination
-argument must have the same primitive type (string, number, or boolean), and
-the source output cannot be sensitive. Nested values, collections, unknown or
-null final values, data sources, and references into undeclared resources are
-not supported. References infer and persist the same dependency edges as
-`dependsOn`.
+`fromDataSource` names a declared read-only lookup by `type.name`. They are
+mutually exclusive, and `attribute` names a top-level provider output. The source
+output and destination argument must have the same primitive type (string,
+number, or boolean). Sensitive primitives are masked; known sensitive strings of
+at least four characters are registered for output redaction before validation
+and read calls, and before processing response diagnostics. Nested or collection
+selection, unknown or null final values, and undeclared sources are unsupported.
+References infer mixed resource/data edges; `dependsOn` names managed resources
+only. Managed ancestors reached through data are flattened into persisted managed
+dependencies for destroy ordering. Data results themselves have no state rows or
+recovery files, but copied managed arguments can persist in managed state.
 
 The descriptor remains supported alongside a native CUE selector such as
-`configuration.zone_id: infrastructure.resources.primary.outputs.id`. CUE
+`configuration.zone_id: infrastructure.resources.primary.outputs.id` or
+`configuration.ami: infrastructure.data.base.outputs.id`. CUE
 evaluates the selector and exports its canonical reference path even though the
 provider output is incomplete. The infrastructure command lowers that metadata
 to the same runtime reference used by the descriptor. It permits incompleteness
 only for recognized direct selectors and declared output placeholders; all
 other selected infrastructure values remain subject to concrete validation.
 
-Generated provider resource types expose eligible top-level primitive outputs
-under `outputs`. Untyped resources declare selected outputs explicitly, for
+Generated provider resource and data source types expose eligible top-level primitive outputs
+under `outputs`. Untyped declarations supply selected outputs explicitly, for
 example `outputs: {id: string}`. Such declarations identify the output and its
 primitive type; they are removed before provider configuration is decoded or
 sent. Defaults, literal values, refinements, and expressions over outputs are
@@ -118,8 +124,16 @@ not supported in this first selector form. Both syntaxes share provider schema
 compatibility, sensitivity checks, inferred dependencies, unknown-value
 handling, replacement planning, and apply semantics.
 
+Data source support (issue #545) adds fresh reads on every plan/apply invocation.
+Apply owns the results of its own planning reads across confirmation. A data read
+defers when any managed prerequisite changes, even with known identifiers, or a
+data prerequisite is deferred. A deferred-read failure during apply skips
+dependent work in the mixed graph; unrelated work can proceed. A data read
+failure during planning aborts the plan. Data inputs/results can contain
+collections, but their output namespace is scalar-only.
+
 When a producer's planned output is known, it participates in the consumer's
-plan. If it is unknown until the producer is applied, cuenv resolves it and
+plan. If it is unknown until the producer is applied or a deferred lookup is read, cuenv resolves it and
 replans the consumer immediately before applying it. A replacement required by
 the provider's initial plan remains a replacement even when the referenced
 value is unknown, so the confirmed action and dependency schedule include its
@@ -160,6 +174,20 @@ source, current resource schema version, provider private bytes, and the
 configured full dependency addresses. Use the existing generation and serial
 rules. A state write whose response is lost must produce a recovery record
 with a stable generation, just like other resource writes.
+
+Managed records also persist `sensitive_attributes: Vec<String>`: the union of
+provider-schema, inherited-reference and stored top-level sensitivity. Metadata
+follows import, refresh, failed updates and recovery so a later destroy/orphan
+plan in a fresh process masks copied data-source secrets. Both SQL backends use
+the fenced transactional schema-version-1-to-2 migration; old rows default to
+empty metadata, and `state_json` is atomically renamed to `resource_state_json`
+without rewriting provider state or private bytes. Migration 1 stays unchanged.
+The rename invalidates old SQL projections so version-1 readers that already
+passed their version check fail closed on a subsequent old SELECT; no
+compatibility view restores that projection. Old records have no
+inferred provenance to reconstruct retroactively, and runtime data source support
+had not been released. Sensitive values still remain plaintext in managed state
+and recovery files. Earlier incompatible development layouts remain refused.
 
 ## Implementation and review record
 
@@ -229,8 +257,8 @@ lifecycle suites with the fake provider and local state service. Run
 `cuenv task ci.schema-docs-check` for the schema, documentation, and skill
 updates. Fake-provider end-to-end cases cover import without apply, rejected
 import results and occupied addresses, dependency inference and no-op behavior
-for output references, unknown-output replacement scheduling, and refusing to
-flow sensitive outputs. The full
+for output references, unknown-output replacement scheduling, and flowing
+sensitive outputs masked and redacted. The full
 infrastructure end-to-end and CLI lifecycle suites still provide broader
 coverage when their provider and local state-service prerequisites are present.
 

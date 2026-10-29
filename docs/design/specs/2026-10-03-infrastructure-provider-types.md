@@ -201,28 +201,36 @@ label shadows the predeclared one for every reference in its struct
 The generated files contain constraints only, no `error()`, so they work with
 any CUE language version the consumer's module declares.
 
-Not generated (yet): data sources, computed outputs for references between
-resources, provider functions, ephemeral resources. They wait for engine
-support; types for things the engine cannot use would mislead.
+Runtime data source support (issue #545) adds one package per data source at
+`data/<type>/data_source.cue`, with `#DataSource`, closed `#Configuration` and
+scalar `#Outputs`. Resource packages also expose scalar `#Outputs`. Both kinds
+accept exclusive `fromResource`/`fromDataSource` descriptors and native direct
+output selectors in top-level scalar configuration arguments. Data inputs and
+results can contain collections, but output selection cannot. Provider functions
+and ephemeral resources remain ungenerated.
 
 ## Schema digest
 
 `sha256:<hex>` over a canonical JSON document of what the generated
-`#Configuration` definitions encode, for the provider block and every managed
-resource:
+`#Configuration` definitions encode, for the provider block, every managed
+resource and, when nonempty, the data source schemas:
 
 - per block: each attribute's cty type (protocol 6 nested attributes
   recursively, with their nesting), `required`/`optional`/`computed`,
   `sensitive`, `write_only`, `deprecated`; each nested block's nesting mode,
   `min_items`, `max_items` and block.
-- object keys sorted; resources sorted by type.
+- object keys sorted; resources and data sources sorted by type.
 - excluded: descriptions and deprecation messages (cosmetic), schema versions
   (state upgrades, not configuration), server capabilities, protocol version.
 
 The digest is a property of the schema, not of cuenv's renderer, so a cuenv
-upgrade that changes the rendered text does not invalidate it (it only makes
-`sync infrastructure --check` report the new text). A future change to what
-the digest covers must use a new prefix.
+upgrade that changes only the rendered text does not invalidate it (it only makes
+`sync infrastructure --check` report the new text). Data source support extends
+the canonical document with `data_sources` only when nonempty, retaining the
+`sha256:` prefix and preserving old digests for providers without data sources.
+An older pin for a provider with data sources must be refreshed with
+`cuenv infrastructure provider add <source>@<same-version>`. Sync verifies the
+locked digest and cannot repair that old pin.
 
 ## Lockfile
 
@@ -292,7 +300,6 @@ it did not write.
 - Local `path` providers: `provider add --executable`.
 - Generate only selected resources for very large providers (`hashicorp/aws`
   has about 1700 resource types).
-- `#Outputs` per resource and references between resources (requires
-  apply-time re-planning in the engine).
-- Data sources.
+- Nested and collection output selection (scalar resource/data outputs and
+  references are supported).
 - Verify the registry's GPG signature over `SHA256SUMS`.

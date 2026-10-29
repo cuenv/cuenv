@@ -148,7 +148,8 @@ pub(super) fn pending_in_other_environments(
 pub(super) async fn resources_in_other_environments(
     context: &CommandContext<'_>,
 ) -> Vec<OtherEnvironment> {
-    let environments_only = context.siblings.top_level.resource_count == 0;
+    let environments_only =
+        context.siblings.top_level.resources == 0 && context.siblings.top_level.data_sources == 0;
     let mut found = Vec::new();
     for (name, tenant) in context.siblings.declared() {
         let count = context

@@ -20,6 +20,8 @@
 //! attributes and blocks with computed children, JSON-encoded planned and
 //! upgraded states, semantic equality, creates that fail part way, deletes
 //! that fail or return the object, and creates that run until stopped.
+//! `fake_lookup` journals read-only data source calls, returns scalar outputs,
+//! and supports mutable results and sensitive error diagnostics.
 //!
 //! `installs_provider_from_registry` downloads from registry.terraform.io.
 
@@ -425,7 +427,7 @@ async fn generated_types_describe_real_provider_schemas() -> TestResult {
         .ok_or("no random_pet package")?;
     // Computed-only `id` is not configuration.
     assert!(
-        pet.contains("\tlength?: number | cuenv_schema.#InfrastructureOutputReference\n"),
+        pet.contains("\tlength?: number | {cuenv_schema.#InfrastructureOutputReference}\n"),
         "{pet}"
     );
     assert!(!pet.contains("\tid?:"), "{pet}");
@@ -467,6 +469,125 @@ async fn a_provider_whose_schema_differs_from_its_generated_types_is_refused() -
             ),
             (outcome, _) => return Err(format!("{digest}: unexpected {outcome:?}").into()),
         }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_generated_types_describe_configuration_and_scalar_outputs() -> TestResult
+{
+    use cuenv_infrastructure::cue_types::{self, ProviderRelease};
+    use cuenv_infrastructure::registry::ProviderSource;
+
+    let binary = environment_path("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?;
+    let (schema, _) = cue_types::load_schema(Path::new(&binary), &Cancellation::default()).await?;
+    let lookup = schema
+        .data_sources
+        .get("fake_lookup")
+        .ok_or("lookup schema missing")?;
+    assert!(lookup.block.attributes["secret_value"].sensitive);
+    let source = ProviderSource::parse("example.com/test/fake")?;
+    let generated = cue_types::render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "0.0.0",
+        },
+    )?;
+    assert_eq!(generated.data_source_types, ["fake_lookup"]);
+    let package = generated
+        .files
+        .get(Path::new("data/fake_lookup/data_source.cue"))
+        .ok_or("data source package missing")?;
+    for declaration in [
+        "#DataSource: {",
+        "#Configuration: {",
+        "#Outputs: {",
+        "type: \"fake_lookup\"",
+        "outputs: #Outputs",
+    ] {
+        assert!(package.contains(declaration), "{package}");
+    }
+    assert!(
+        package.contains("name!: string | {cuenv_schema.#InfrastructureOutputReference}"),
+        "{package}"
+    );
+    for output in [
+        "value: string",
+        "secret_value: string",
+        "length: number",
+        "found: bool",
+    ] {
+        assert!(package.contains(output), "{package}");
+    }
+    assert!(
+        !package.contains("value?:"),
+        "computed outputs must not become configuration: {package}"
+    );
+    Ok(())
+}
+
+/// The real Local provider uses protocol 5; the fake exercises protocol 6.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the Local provider (CUENV_INFRASTRUCTURE_TEST_LOCAL_PROVIDER)"]
+async fn local_data_source_protocol_five_reads_feed_managed_resources() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("source.txt");
+    let destination = directory.path().join("destination.txt");
+    let binary = environment_path("CUENV_INFRASTRUCTURE_TEST_LOCAL_PROVIDER")?;
+    let cancellation = Cancellation::default();
+    let client = cuenv_infrastructure::plugin::ProviderClient::launch(
+        &cuenv_infrastructure::plugin::LaunchOptions {
+            binary: Path::new(&binary),
+            withheld_environment_variables: &[],
+            provider_environment_variables: &BTreeMap::new(),
+            cancellation: &cancellation,
+        },
+    )
+    .await?;
+    assert_eq!(
+        client.protocol(),
+        cuenv_infrastructure::plugin::Protocol::Version5
+    );
+    let (schema, _) = client.schema().await?;
+    assert!(schema.data_sources.contains_key("local_file"));
+    client.shutdown().await;
+
+    let store = store().await?;
+    let tenant = TenantKey::try_new(
+        format!("example.com/local-data-{}", uuid::Uuid::new_v4()),
+        "web",
+    )?;
+    let _cleanup = TenantCleanup::new(&tenant);
+    let infrastructure: Infrastructure = serde_json::from_value(json!({
+        "state": {"turso": {"url": "http://unused"}},
+        "providers": {"local": {"source": "hashicorp/local", "path": binary}},
+        "data": {"input": {"type": "local_file", "configuration": {"filename": source}}},
+        "resources": {"output": {"type": "local_file", "configuration": {
+            "filename": destination,
+            "content": {"fromDataSource": "local_file.input", "attribute": "content"},
+        }}},
+    }))?;
+    for content in ["first read", "fresh read"] {
+        std::fs::write(&source, content)?;
+        let mut engine = InfrastructureEngine::new(EngineSetup {
+            tenant: tenant.clone(),
+            store: Arc::clone(&store),
+            infrastructure: infrastructure.clone(),
+            options: engine_options(directory.path(), &cancellation),
+        });
+        let lock = store.lock(&tenant, "local data source").await?;
+        let plan = engine.plan(PlanMode::Apply).await?;
+        engine
+            .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+            .await?;
+        store.unlock(&tenant, &lock).await?;
+        engine.shutdown().await;
+        assert_eq!(std::fs::read_to_string(&destination)?, content);
+        let rows = store.list(&tenant).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].address.to_string(), "local_file.output");
     }
     Ok(())
 }
@@ -524,6 +645,7 @@ async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestRe
             .with_backend_identity(&backend_identity)?;
         let lock = state.lock(&tenant, "generation recovery").await?;
         let original = cuenv_infrastructure::ManagedResource {
+            sensitive_attributes: Vec::new(),
             address: cuenv_infrastructure::ResourceAddress::new("random_pet", "pet"),
             provider: "random".into(),
             provider_source: "registry.terraform.io/hashicorp/random".into(),
@@ -633,6 +755,7 @@ async fn turso_store_round_trips_records() -> TestResult {
     let tenant = TenantKey::try_new(format!("example.com/store-{run}"), "web")?;
     let _cleanup = TenantCleanup::new(&tenant);
     let record = cuenv_infrastructure::ManagedResource {
+        sensitive_attributes: vec!["id".to_string()],
         address: cuenv_infrastructure::ResourceAddress::new("random_pet", "pet"),
         provider: "random".into(),
         provider_source: "registry.terraform.io/hashicorp/random".into(),
@@ -1106,15 +1229,29 @@ impl Fake {
         resources: &serde_json::Value,
         cancellation: &Cancellation,
     ) -> TestResult<InfrastructureEngine> {
-        let infrastructure: Infrastructure = serde_json::from_value(json!({
+        self.engine_configuration(&json!({"resources": resources}), cancellation)
+    }
+
+    fn engine_configuration(
+        &self,
+        configuration: &serde_json::Value,
+        cancellation: &Cancellation,
+    ) -> TestResult<InfrastructureEngine> {
+        let mut infrastructure = json!({
             "state": {"turso": {"url": "http://unused"}},
             "providers": {"fake": {
                 "source": "example.com/test/fake",
                 "path": self.binary,
                 "configuration": {"directory": self.directory.path().to_string_lossy()},
             }},
-            "resources": resources,
-        }))?;
+        });
+        for (name, value) in configuration
+            .as_object()
+            .ok_or("expected configuration object")?
+        {
+            infrastructure[name] = value.clone();
+        }
+        let infrastructure: Infrastructure = serde_json::from_value(infrastructure)?;
         Ok(InfrastructureEngine::new(EngineSetup {
             tenant: self.tenant.clone(),
             store: Arc::clone(&self.store),
@@ -1124,7 +1261,12 @@ impl Fake {
     }
 
     async fn plan(&self, resources: &serde_json::Value) -> TestResult<Plan> {
-        let mut engine = self.engine(resources, &Cancellation::default())?;
+        self.plan_configuration(&json!({"resources": resources}))
+            .await
+    }
+
+    async fn plan_configuration(&self, configuration: &serde_json::Value) -> TestResult<Plan> {
+        let mut engine = self.engine_configuration(configuration, &Cancellation::default())?;
         let plan = engine.plan(PlanMode::Apply).await;
         engine.shutdown().await;
         Ok(plan?)
@@ -1135,7 +1277,16 @@ impl Fake {
         resources: &serde_json::Value,
         mode: PlanMode,
     ) -> TestResult<Converged> {
-        let mut engine = self.engine(resources, &Cancellation::default())?;
+        self.converge_configuration(&json!({"resources": resources}), mode)
+            .await
+    }
+
+    async fn converge_configuration(
+        &self,
+        configuration: &serde_json::Value,
+        mode: PlanMode,
+    ) -> TestResult<Converged> {
+        let mut engine = self.engine_configuration(configuration, &Cancellation::default())?;
         let lock = self.store.lock(&self.tenant, "fake").await?;
         let planned = engine.plan(mode).await;
         let converged = match planned {
@@ -1204,6 +1355,519 @@ impl Fake {
             .find(|row| row.address.name == name)
             .ok_or_else(|| format!("{name} is not recorded"))?)
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_sources_are_read_fresh_without_persisting_rows() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = json!({
+        "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "outside"}}},
+    });
+    let mut engine = fake.engine_configuration(&configuration, &Cancellation::default())?;
+    for expected_reads in 1..=2 {
+        let plan = engine.plan(PlanMode::Apply).await?;
+        assert!(plan.changes.is_empty());
+        assert_eq!(
+            fake.journal().matches("lookup: Read name=outside").count(),
+            expected_reads
+        );
+        assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    }
+    engine.shutdown().await;
+    fake.converge_configuration(&configuration, PlanMode::Apply)
+        .await?
+        .applied?;
+    assert!(fake.journal().matches("lookup: Read name=outside").count() >= 3);
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_references_observe_remote_changes() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = json!({
+        "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "outside"}}},
+        "resources": {"consumer": {"type": "fake_plain", "configuration": {
+            "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+        }}},
+    });
+    fake.converge_configuration(&configuration, PlanMode::Apply)
+        .await?
+        .applied?;
+    assert_eq!(
+        fake.record("consumer").await?.state["name"],
+        "lookup:outside"
+    );
+    assert_eq!(fake.store.list(&fake.tenant).await?.len(), 1);
+
+    std::fs::write(fake.directory.path().join("lookup-value"), "remote-change")?;
+    let changed = fake
+        .converge_configuration(&configuration, PlanMode::Apply)
+        .await?;
+    assert_eq!(
+        actions(&changed.plan),
+        [("fake_plain.consumer".to_string(), Action::Update)]
+    );
+    changed.applied?;
+    assert_eq!(
+        fake.record("consumer").await?.state["name"],
+        "remote-change"
+    );
+    assert_eq!(fake.store.list(&fake.tenant).await?.len(), 1);
+    let unchanged = fake.plan_configuration(&configuration).await?;
+    assert_eq!(
+        actions(&unchanged),
+        [("fake_plain.consumer".to_string(), Action::NoOp)]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_resource_data_resource_chain_defers_reads_until_apply() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = json!({
+        "resources": {
+            "producer": {"type": "fake_plain", "configuration": {"name": "producer"}},
+            "consumer": {"type": "fake_plain", "configuration": {
+                "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+            }},
+        },
+        "data": {"lookup": {"type": "fake_lookup", "configuration": {
+            "name": {"fromResource": "fake_plain.producer", "attribute": "id"},
+        }}},
+    });
+    fake.plan_configuration(&configuration).await?;
+    assert!(!fake.journal().contains("lookup: Read"));
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    fake.converge_configuration(&configuration, PlanMode::Apply)
+        .await?
+        .applied?;
+    assert_eq!(
+        fake.record("consumer").await?.state["name"],
+        "lookup:plain-1"
+    );
+    assert_eq!(fake.store.list(&fake.tenant).await?.len(), 2);
+    let journal = fake.journal();
+    let producer = journal
+        .find("plain: Create name=producer")
+        .ok_or("producer was not created")?;
+    let lookup = journal
+        .find("lookup: Read name=plain-1")
+        .ok_or("lookup was not read")?;
+    let consumer = journal
+        .find("plain: Create name=lookup:plain-1")
+        .ok_or("consumer was not created")?;
+    assert!(producer < lookup && lookup < consumer, "{journal}");
+    // Only managed prerequisites belong in persisted dependency edges.
+    assert_eq!(
+        fake.record("consumer").await?.dependencies,
+        ["fake_plain.producer"]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_known_arguments_wait_for_changing_dependencies() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = |name: &str| {
+        json!({
+            "resources": {
+                "producer": {"type": "fake_plain", "configuration": {"name": name}},
+                "consumer": {"type": "fake_plain", "configuration": {
+                    "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+                }},
+            },
+            "data": {"lookup": {"type": "fake_lookup", "dependsOn": ["producer"],
+                "configuration": {"name": "known"}}},
+        })
+    };
+    fake.converge_configuration(&configuration("before"), PlanMode::Apply)
+        .await?
+        .applied?;
+    std::fs::write(fake.directory.path().join("lookup-value"), "after-change")?;
+    std::fs::write(fake.directory.path().join("journal.log"), "")?;
+    fake.plan_configuration(&configuration("after")).await?;
+    assert!(
+        !fake.journal().contains("lookup: Read"),
+        "known arguments must still wait for a changing dependency"
+    );
+    fake.converge_configuration(&configuration("after"), PlanMode::Apply)
+        .await?
+        .applied?;
+    let journal = fake.journal();
+    let producer = journal
+        .find("plain: Update name=after")
+        .ok_or("producer was not updated")?;
+    let lookup = journal
+        .find("lookup: Read name=known")
+        .ok_or("lookup was not read")?;
+    let consumer = journal
+        .find("plain: Update name=after-change")
+        .ok_or("consumer was not updated")?;
+    assert!(producer < lookup && lookup < consumer, "{journal}");
+    assert_eq!(fake.record("consumer").await?.state["name"], "after-change");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_waits_through_an_unchanged_managed_prerequisite() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = |name: &str| {
+        json!({
+            "resources": {
+                "ancestor": {"type": "fake_plain", "configuration": {"name": name}},
+                "unchanged": {"type": "fake_plain", "dependsOn": ["ancestor"],
+                    "configuration": {"name": "unchanged"}},
+                "consumer": {"type": "fake_plain", "configuration": {
+                    "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+                }},
+            },
+            "data": {"lookup": {"type": "fake_lookup", "dependsOn": ["unchanged"],
+                "configuration": {"name": "known"}}},
+        })
+    };
+    fake.converge_configuration(&configuration("before"), PlanMode::Apply)
+        .await?
+        .applied?;
+    std::fs::write(fake.directory.path().join("journal.log"), "")?;
+    let plan = fake.plan_configuration(&configuration("after")).await?;
+    assert_eq!(
+        plan.changes
+            .iter()
+            .find(|change| change.address.name == "unchanged")
+            .ok_or("unchanged prerequisite missing")?
+            .action,
+        Action::NoOp
+    );
+    assert!(
+        !fake.journal().contains("lookup: Read"),
+        "{}",
+        fake.journal()
+    );
+    fake.converge_configuration(&configuration("after"), PlanMode::Apply)
+        .await?
+        .applied?;
+    let journal = fake.journal();
+    let changed = journal
+        .find("plain: Update name=after")
+        .ok_or("ancestor not updated")?;
+    let read = journal
+        .find("lookup: Read name=known")
+        .ok_or("lookup not read")?;
+    assert!(changed < read, "{journal}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_deferred_read_runs_without_a_consumer() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = json!({
+        "resources": {"producer": {"type": "fake_plain", "configuration": {"name": "producer"}}},
+        "data": {"unused": {"type": "fake_lookup", "dependsOn": ["producer"],
+            "configuration": {"name": "unconsumed"}}},
+    });
+    let plan = fake.plan_configuration(&configuration).await?;
+    assert!(!fake.journal().contains("lookup: Read"));
+    assert_eq!(plan.changes.len(), 1);
+    fake.converge_configuration(&configuration, PlanMode::Apply)
+        .await?
+        .applied?;
+    let journal = fake.journal();
+    let producer = journal
+        .find("plain: Create name=producer")
+        .ok_or("producer not created")?;
+    let read = journal
+        .find("lookup: Read name=unconsumed")
+        .ok_or("unconsumed lookup not read")?;
+    assert!(producer < read, "{journal}");
+    assert_eq!(journal.matches("lookup: Read name=unconsumed").count(), 1);
+    assert_eq!(fake.store.list(&fake.tenant).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_managed_ancestry_survives_lookup_removal_for_destroy() -> TestResult {
+    let fake = Fake::new().await?;
+    std::fs::write(fake.directory.path().join("lookup-value"), "parent-a")?;
+    let configuration = json!({
+        "resources": {
+            "parent": {"type": "fake_ordered", "configuration": {"name": "parent-a"}},
+            "dependent": {"type": "fake_ordered", "configuration": {
+                "name": "dependent-a",
+                "parent_name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+            }},
+        },
+        "data": {"lookup": {"type": "fake_lookup", "dependsOn": ["parent"],
+            "configuration": {"name": "parent"}}},
+    });
+    fake.converge_configuration(&configuration, PlanMode::Apply)
+        .await?
+        .applied?;
+    assert_eq!(
+        fake.record("dependent").await?.dependencies,
+        ["fake_ordered.parent"]
+    );
+    std::fs::write(fake.directory.path().join("journal.log"), "")?;
+    let removed_lookup = json!({
+        "data": {"unused": {"type": "fake_lookup", "configuration": {"name": "invalid"}}},
+    });
+    fake.converge_configuration(&removed_lookup, PlanMode::Destroy)
+        .await?
+        .applied?;
+    let journal = fake.journal();
+    assert!(!journal.contains("lookup: Read"), "{journal}");
+    let dependent = journal
+        .find("ordered: Delete name=dependent-a")
+        .ok_or("dependent not deleted")?;
+    let parent = journal
+        .find("ordered: Delete name=parent-a")
+        .ok_or("parent not deleted")?;
+    assert!(dependent < parent, "{journal}");
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_completed_read_is_frozen_during_final_resource_replan() -> TestResult {
+    let fake = Fake::new().await?;
+    std::fs::write(fake.directory.path().join("lookup-value"), "dependent-a")?;
+    let configuration = json!({
+        "resources": {
+            "parent": {"type": "fake_ordered", "configuration": {"name": "parent-a"}},
+            "dependent": {"type": "fake_ordered", "configuration": {
+                "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+                "parent_name": {"fromResource": "fake_ordered.parent", "attribute": "id"},
+            }},
+        },
+        "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "outside"}}},
+    });
+    let mut engine = fake.engine_configuration(&configuration, &Cancellation::default())?;
+    let lock = fake.store.lock(&fake.tenant, "frozen lookup").await?;
+    let plan = engine.plan(PlanMode::Apply).await?;
+    // Simulate remote data changing while the operator confirms the plan.
+    std::fs::write(fake.directory.path().join("lookup-value"), "dependent-b")?;
+    let applied = engine
+        .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+        .await;
+    fake.store.unlock(&fake.tenant, &lock).await?;
+    engine.shutdown().await;
+    applied?;
+    assert_eq!(fake.record("dependent").await?.state["name"], "dependent-a");
+    assert_eq!(
+        fake.journal().matches("lookup: Read name=outside").count(),
+        1
+    );
+    let next = fake.plan_configuration(&configuration).await?;
+    assert_eq!(
+        next.changes
+            .iter()
+            .find(|change| change.address.name == "dependent")
+            .ok_or("dependent missing from next plan")?
+            .action,
+        Action::Replace
+    );
+    assert_eq!(
+        fake.journal().matches("lookup: Read name=outside").count(),
+        2
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_failure_skips_only_dependents_and_redacts_returned_secrets() -> TestResult
+{
+    let fake = Fake::new().await?;
+    fake.set_flag("lookup-error")?;
+    let configuration = json!({
+        "resources": {
+            "producer": {"type": "fake_plain", "configuration": {"name": "producer"}},
+            "consumer": {"type": "fake_plain", "configuration": {
+                "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+            }},
+            "unrelated": {"type": "fake_plain", "configuration": {"name": "unrelated"}},
+        },
+        "data": {"lookup": {"type": "fake_lookup", "dependsOn": ["producer"],
+            "configuration": {"name": "known"}}},
+    });
+    let converged = fake
+        .converge_configuration(&configuration, PlanMode::Apply)
+        .await?;
+    let error = converged.applied.expect_err("lookup error must fail apply");
+    assert!(error.to_string().contains("lookup failed"), "{error}");
+    assert_eq!(skipped_addresses(&error), ["fake_plain.consumer"]);
+    let secret = format!(
+        "lookup-secret-{}",
+        fake.directory
+            .path()
+            .file_name()
+            .ok_or("no directory name")?
+            .to_string_lossy()
+    );
+    assert!(!error.to_string().contains(&secret), "{error}");
+    assert!(!cuenv_events::redact(&secret).contains(&secret));
+    let rows = fake.store.list(&fake.tenant).await?;
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().any(|row| row.address.name == "producer"));
+    assert!(rows.iter().any(|row| row.address.name == "unrelated"));
+    assert!(!fake.journal().contains("plain: Create name=lookup:"));
+    Ok(())
+}
+
+/// Redaction must discover valid sensitive scalars even when a different field
+/// makes the provider's entire result fail schema-directed decoding.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_malformed_result_redacts_sensitive_diagnostics() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.set_flag("lookup-invalid-result")?;
+    fake.set_flag("lookup-error")?;
+    let secret = format!(
+        "lookup-secret-{}",
+        fake.directory
+            .path()
+            .file_name()
+            .ok_or("no directory name")?
+            .to_string_lossy()
+    );
+    // A unique fixture must not inherit registration from another test.
+    assert_eq!(cuenv_events::redact(&secret), secret);
+    let configuration = json!({
+        "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "malformed"}}},
+    });
+    let error = fake
+        .plan_configuration(&configuration)
+        .await
+        .expect_err("malformed provider state must fail planning");
+    assert!(
+        fake.journal()
+            .contains("lookup: ReadDataSource returned invalid length with sensitive scalar")
+    );
+    let rendered = error.to_string();
+    assert!(
+        !rendered.contains(&secret),
+        "malformed response leaked its sensitive value: {rendered}"
+    );
+    assert!(
+        !cuenv_events::redact(&secret).contains(&secret),
+        "valid sensitive scalar was not registered before rejecting malformed state"
+    );
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+/// The lookup's value is public in its own schema; only the destination makes
+/// it sensitive. Register that sensitivity before final ValidateResourceConfig.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_deferred_sensitive_destination_redacts_final_validation() -> TestResult {
+    let fake = Fake::new().await?;
+    let secret = format!("deferred-destination-secret-{}", uuid::Uuid::new_v4());
+    std::fs::write(fake.directory.path().join("lookup-value"), &secret)?;
+    fake.set_flag("fail-sensitive-validation")?;
+    assert_eq!(cuenv_events::redact(&secret), secret);
+    let configuration = json!({
+        "data": {"lookup": {"type": "fake_lookup", "dependsOn": ["producer"],
+            "configuration": {"name": "public-result"}}},
+        "resources": {
+            "producer": {"type": "fake_plain", "configuration": {"name": "producer"}},
+            "consumer": {"type": "fake_sensitive_input", "configuration": {
+                "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+            }},
+        },
+    });
+    let plan = fake.plan_configuration(&configuration).await?;
+    let consumer = plan
+        .changes
+        .iter()
+        .find(|change| change.address.name == "consumer")
+        .ok_or("consumer not planned")?;
+    assert_eq!(consumer.sensitive, ["name"]);
+    assert!(!fake.journal().contains("lookup: Read"));
+    let converged = fake
+        .converge_configuration(&configuration, PlanMode::Apply)
+        .await?;
+    let error = converged
+        .applied
+        .expect_err("known sensitive argument must fail final validation");
+    let rendered = error.to_string();
+    assert!(rendered.contains("sensitive input rejected"), "{rendered}");
+    assert!(
+        !rendered.contains(&secret),
+        "final validation leaked the sensitive destination: {rendered}"
+    );
+    assert!(!cuenv_events::redact(&secret).contains(&secret));
+    let journal = fake.journal();
+    let producer = journal
+        .find("plain: Create name=producer")
+        .ok_or("producer not created")?;
+    let lookup = journal
+        .find("lookup: Read name=public-result")
+        .ok_or("lookup not read")?;
+    let validation = journal
+        .find("sensitive_input: ValidateConfig rejected known name")
+        .ok_or("known argument not validated")?;
+    assert!(producer < lookup && lookup < validation, "{journal}");
+    assert!(!journal.contains("sensitive_input: Create"));
+    let rows = fake.store.list(&fake.tenant).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].address.name, "producer");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_validation_happens_before_reading() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = json!({
+        "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "invalid"}}},
+    });
+    let error = fake
+        .plan_configuration(&configuration)
+        .await
+        .expect_err("provider must validate data configuration");
+    assert!(error.to_string().contains("invalid lookup name"), "{error}");
+    assert!(!fake.journal().contains("lookup: Read"));
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_data_source_sensitive_outputs_mask_resource_plans() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = json!({
+        "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "private"}}},
+        "resources": {"consumer": {"type": "fake_plain", "configuration": {
+            "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "secret_value"},
+        }}},
+    });
+    let plan = fake.plan_configuration(&configuration).await?;
+    let consumer = plan
+        .changes
+        .iter()
+        .find(|change| change.address.name == "consumer")
+        .ok_or("consumer not planned")?;
+    assert_eq!(consumer.sensitive, ["name"]);
+    assert!(cuenv_infrastructure::render_plan(&plan).contains("+ name = (sensitive)"));
+    fake.converge_configuration(&configuration, PlanMode::Apply)
+        .await?
+        .applied?;
+    let record = fake.record("consumer").await?;
+    let secret = record.state["name"].as_str().ok_or("missing secret")?;
+    assert!(secret.starts_with("lookup-secret-"));
+    assert!(!cuenv_events::redact(secret).contains(secret));
+    assert!(!cuenv_infrastructure::render_plan(&plan).contains(secret));
+    assert_eq!(fake.store.list(&fake.tenant).await?.len(), 1);
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1489,7 +2153,7 @@ async fn referenced_replacement_orders_consumer_and_producer_in_one_apply() -> T
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
-async fn fake_sensitive_outputs_cannot_flow_through_references() -> TestResult {
+async fn fake_sensitive_outputs_flow_through_references_masked_and_redacted() -> TestResult {
     let fake = Fake::new().await?;
     let resources = json!({
         "secret": {"type": "fake_secret", "configuration": {"name": "private"}},
@@ -1503,17 +2167,26 @@ async fn fake_sensitive_outputs_cannot_flow_through_references() -> TestResult {
             },
         },
     });
-    let error = fake
-        .plan(&resources)
-        .await
-        .expect_err("sensitive output must be refused");
+    let plan = fake.plan(&resources).await?;
+    let consumer = plan
+        .changes
+        .iter()
+        .find(|change| change.address.name == "consumer")
+        .expect("consumer is planned");
+    assert_eq!(consumer.sensitive, ["name"]);
     assert!(
-        error
-            .to_string()
-            .contains("sensitive source attributes cannot be referenced yet"),
-        "{error}"
+        cuenv_infrastructure::render_plan(&plan).contains("+ name = (sensitive)"),
+        "{}",
+        cuenv_infrastructure::render_plan(&plan)
     );
-    assert!(!error.to_string().contains("arn:secret"));
+
+    fake.converge(&resources, PlanMode::Apply).await?.applied?;
+    let consumer = fake.record("consumer").await?;
+    assert_eq!(consumer.state["name"], "arn:secret");
+    assert!(!cuenv_events::redact("value arn:secret").contains("arn:secret"));
+
+    let replanned = fake.plan(&resources).await?;
+    assert!(!replanned.has_work(), "{:?}", actions(&replanned));
     Ok(())
 }
 

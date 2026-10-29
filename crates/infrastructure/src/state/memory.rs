@@ -266,11 +266,68 @@ mod tests {
             state: serde_json::json!({"id": name}),
             private: vec![1, 2, 3],
             dependencies: Vec::new(),
+            sensitive_attributes: Vec::new(),
             tainted: false,
             identity: None,
             serial: 0,
             generation: uuid::Uuid::nil(),
         }
+    }
+
+    #[tokio::test]
+    async fn sensitivity_defaults_and_metadata_only_updates_are_preserved() {
+        let store = MemoryStateStore::new();
+        let tenant = TenantKey::try_new("example.com/a", "web").unwrap();
+        let lock = store.lock(&tenant, "test").await.unwrap();
+        // Recovery records written before this field existed still decode.
+        let mut legacy = serde_json::to_value(resource("one")).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("sensitive_attributes");
+        let legacy: ManagedResource = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.sensitive_attributes.is_empty());
+        store.put(&tenant, &lock, &legacy).await.unwrap();
+        let initial = store.list(&tenant).await.unwrap().remove(0);
+        let sensitive = ManagedResource {
+            sensitive_attributes: vec!["id".into()],
+            ..initial.clone()
+        };
+        assert!(!initial.same_content(&sensitive));
+        let update = ConditionalPut {
+            resource: &sensitive,
+            expected: RecordVersion::of(Some(&initial)),
+        };
+        store
+            .put_if_unchanged(&tenant, &lock, &update)
+            .await
+            .unwrap();
+        store
+            .put_if_unchanged(&tenant, &lock, &update)
+            .await
+            .unwrap();
+        let stored = store.list(&tenant).await.unwrap().remove(0);
+        assert_eq!(stored.sensitive_attributes, ["id"]);
+        assert_eq!(stored.serial, 2);
+        assert!(matches!(
+            store
+                .put_if_unchanged(
+                    &tenant,
+                    &lock,
+                    &ConditionalPut {
+                        resource: &initial,
+                        expected: update.expected,
+                    }
+                )
+                .await,
+            Err(InfrastructureError::StateChanged { .. })
+        ));
+        store.put(&tenant, &lock, &legacy).await.unwrap();
+        assert!(
+            store.list(&tenant).await.unwrap()[0]
+                .sensitive_attributes
+                .is_empty()
+        );
     }
 
     #[tokio::test]

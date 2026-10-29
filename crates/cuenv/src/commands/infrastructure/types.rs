@@ -360,6 +360,7 @@ mod tests {
                 .collect(),
             schema_digest: format!("sha256:{}", "0".repeat(64)),
             resource_types: Vec::new(),
+            data_source_types: Vec::new(),
         }
     }
 
@@ -376,23 +377,37 @@ mod tests {
         let first = types(&[
             ("provider.cue", &generated("a")),
             ("resources/example_old/resource.cue", "old"),
+            ("data/example_old/data_source.cue", "old lookup"),
         ]);
-        assert_eq!(differences(&module, &first).unwrap().changed.len(), 2);
+        assert_eq!(differences(&module, &first).unwrap().changed.len(), 3);
         write(&module, &first).unwrap();
         assert!(differences(&module, &first).unwrap().is_empty());
 
         let second = types(&[
             ("provider.cue", &generated("b")),
             ("resources/example_new/resource.cue", "new"),
+            ("data/example_new/data_source.cue", "new lookup"),
         ]);
         let found = differences(&module, &second).unwrap();
-        assert_eq!(found.changed.len(), 2, "{found:?}");
+        assert_eq!(found.changed.len(), 3, "{found:?}");
         assert_eq!(
             found.removed,
-            [first.directory.join("resources/example_old/resource.cue")]
+            [
+                first.directory.join("data/example_old/data_source.cue"),
+                first.directory.join("resources/example_old/resource.cue"),
+            ]
         );
         write(&module, &second).unwrap();
         assert!(differences(&module, &second).unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(
+                root.path()
+                    .join(&second.directory)
+                    .join("data/example_new/data_source.cue")
+            )
+            .unwrap(),
+            "new lookup"
+        );
         assert!(
             !root
                 .path()

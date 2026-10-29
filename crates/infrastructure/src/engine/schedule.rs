@@ -884,6 +884,24 @@ impl<'schedule, 'plan> ScheduleRun<'schedule, 'plan> {
             address: operation.change.address.clone(),
             error,
         });
+        self.skip_dependents(node, on_event);
+    }
+
+    /// A non-managed operation failed. Its own identity belongs in the failure
+    /// list; managed consumers are skipped, never blamed for its provider error.
+    pub(super) fn record_read_failures(&mut self, failures: Vec<ChangeFailure>) {
+        self.failures.extend(failures);
+    }
+
+    /// A read prerequisite failed before this operation could run. Preserve the
+    /// same successor and replacement-half handling as a failed managed node,
+    /// without emitting Failed or manufacturing a managed-resource failure.
+    pub(super) fn blocked(&mut self, node: usize, on_event: &mut (dyn FnMut(ApplyEvent) + Send)) {
+        self.skip(node, on_event);
+        self.skip_dependents(node, on_event);
+    }
+
+    fn skip_dependents(&mut self, node: usize, on_event: &mut (dyn FnMut(ApplyEvent) + Send)) {
         let mut pending = vec![node];
         while let Some(current) = pending.pop() {
             let mut skipped: Vec<usize> = self.schedule.operations[current]
