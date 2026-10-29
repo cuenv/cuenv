@@ -415,15 +415,20 @@ Injects credential validation for the Infisical REST API
 - **Activates when:** the environment uses Infisical references (`secretsProvider: ["infisical"]`)
 - **Permissions:** `id-token: write`
 - **Parameters:** `#identityId` (default `"${INFISICAL_MACHINE_IDENTITY_ID}"`, the
-  repository secret), `#audience` (default `""`, GitHub's default audience)
+  repository secret; a literal may not contain a line break), `#audience`
+  (default `""`, GitHub's default audience)
 
 Opt-in companion to `#Infisical` for Pattern A, where cuenv resolves
 `#InfisicalSecret` references itself. The step requests the job's GitHub
 Actions ID token (with `#audience` when set), masks it, and writes
-`INFISICAL_AUTH_JWT` and `INFISICAL_MACHINE_IDENTITY_ID` to `$GITHUB_ENV`, so
-`cuenv secrets setup infisical` and the cuenv step log in with Infisical OIDC
-Auth. It runs as a plain shell step (`curl` and `jq`, both on GitHub-hosted
-runners), never through `cuenv exec`. The order in `ci.contributors` does not
+`INFISICAL_AUTH_JWT` and `INFISICAL_MACHINE_IDENTITY_ID` to `$GITHUB_ENV` in
+heredoc form with a random delimiter, so `cuenv secrets setup infisical` and
+the cuenv step log in with Infisical OIDC Auth. The step fails, without
+printing the value, if either value contains a line break. The JWT stays
+readable by later steps of the job until it expires. `cuenv ci` logs in before
+its first task, so the identity's access token TTL must cover the run. It
+runs as a plain shell step (`curl` and `jq`, both on GitHub-hosted runners),
+never through `cuenv exec`. The order in `ci.contributors` does not
 matter. On other providers the step fails because there is no Actions ID token
 endpoint.
 
@@ -448,7 +453,8 @@ Example: [`examples/ci-infisical-oidc`](https://github.com/cuenv/cuenv/tree/main
 - **Activates when:** always (add it only where you want it)
 - **Action:** [`Infisical/secrets-action@v1.0.18`](https://github.com/Infisical/secrets-action) with `method: oidc`
 - **Permissions:** `id-token: write`
-- **Parameters:** `#project` (required, `{slug: "..."}` or `{id: "..."}`),
+- **Parameters:** `#project` (required, exactly one of `{slug: "..."}` or
+  `{id: "..."}`; setting both fails `cuenv sync ci`),
   `#envSlug` (required), `#identityId` (default the
   `INFISICAL_MACHINE_IDENTITY_ID` secret), `#secretPath` (default `"/"`),
   `#recursive` (default `false`), `#domain` (default the action's
