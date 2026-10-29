@@ -72,6 +72,7 @@ closed:
 | project | `^[A-Za-z0-9][A-Za-z0-9._-]*$`. Never `.`, never `..`, no `..` anywhere in the name. |
 | environment | The `#InfrastructureName` regex, enforced in Rust. State-only commands accept undeclared `--env` values, so the schema alone does not cover this. |
 | environment set | No two declared environment names may differ only by case, because MinIO on a case-folding filesystem would merge them. |
+| package and project case | Rename detection and the uniqueness check compare package and project names case-insensitively, so two tenants that differ only by case in package or project are refused rather than folded into one key on MinIO. |
 
 Every allowed character is RFC 3986 unreserved, so segments are used
 verbatim. The request builder then asserts that `Url::path()` equals the
@@ -213,12 +214,12 @@ Deciding after an ambiguous response, by operation:
 | `addresses(tenant)` | One GET. Records are decoded as raw `Value`s, so one bad record cannot fail the listing. |
 | `put` / `put_if_unchanged` / `delete` | The write protocol. The record version is checked inside the body that is read. |
 | `put_many(tenant, lock, &[ManagedResource])` | New trait method, lock-fenced. The S3 store applies the whole slice in one write and is atomic; the default implementation loops over `put` and is documented as not atomic. |
-| `acquire_lock` | Write the marker (`If-None-Match: *`), run the vanished-state guard, then write `state.json` with the lock set (`If-Match`, or `If-None-Match: *` for a new tenant). If acquisition definitely fails, delete the marker. |
+| `acquire_lock` | Write the marker (`If-None-Match: *`), run the vanished-state guard, then write `state.json` with the lock set and, when the request carries an instance, `lastWriter` (`If-Match`, or `If-None-Match: *` for a new tenant). If acquisition definitely fails, delete the marker. |
 | `unlock` | Write a history snapshot if `serial` advanced since acquire. Clear the lock and set `lastReleased` (`If-Match`). Delete our marker. |
 | `force_unlock(tenant, id)` | GET, compare the id, then an `If-Match` write that clears the lock. Never touches records. |
 | `current_lock` | One GET. |
 | `locks()` | List `_locks/` (`encoding-type=url`), parse each key with the rules above, and GET the `state.json` built from the parsed segments. Report only locks that `state.json` confirms. Holder details come from `state.json`, never from the marker body. Stale markers are ignored. |
-| `owner` | One GET; returns `lastWriter`, information only. |
+| `last_writer` | One GET; returns `lastWriter`, information only. |
 | `recovery_identity()` | sha256 of `cuenv-infrastructure-s3-recovery-v1\0` + the normalised endpoint host + `/` + bucket + `/` + root. Region, addressing and credentials are excluded, so a laptop and CI agree. |
 
 ### Engine changes
@@ -301,23 +302,52 @@ lists the tenant's `history/` and reads the project's `_migration.json`.
 ## Ownership
 
 There is no ownership gate, on any backend. A tenant is identified by its key,
-and project names are unique within a module (see Uniqueness), so a second
+and project names are unique within the evaluated package (see Uniqueness),
+with the cross-package check kept for SQL, so a second
 instance cannot claim the same tenant.
 
-- **Every locked write records the writer.** `lastWriter` stores the writer's
-  instance (`<directory>:<package>`) and the time. It is information only.
+- **The writer is recorded at lock acquisition.** `LockRequest` gains
+  `instance: Option<&ProjectInstance>`. An evaluated command (`plan` does not
+  lock; `apply`, `destroy`, `import`, `state remove`, `state recover`,
+  `state migrate`) passes its instance, and acquisition records `lastWriter`
+  (`<directory>:<package>` and the time; nothing else, in particular no git
+  remote, because CI remote URLs can carry tokens).
+  - S3 records it in the acquiring body write.
+  - SQL records it inside the acquire transaction, in the existing owner
+    table.
+  - `unlock`, `force_unlock`, `state locks` and `state restore` pass `None`
+    and leave `lastWriter` unchanged, so a release from another directory
+    cannot blind rename detection.
+  - `state migrate` creates the target with the source's SQL owner row as
+    `lastWriter`. Only when the source has no owner row does the migrating
+    instance become `lastWriter`.
+- **`lastWriter` is untrusted stored text.** Control characters are stripped
+  before display. A planted value can at most cause a false rename refusal,
+  never a bypass.
+- **Skipped directories.** `state remove` and `state recover` evaluate only
+  their target, so they never see the module walk. They refuse a target inside
+  a directory the walk skips (`skipped_by_name`: `_x`, `.x`, `testdata`). This
+  needs no walk. Without the ownership gate, a stale copy such as `_old/web`
+  could otherwise delete live records.
 - **Plan shows it.** Plan prints `lastWriter`, with a note when it differs
   from the current instance. A moved directory is reported and never blocks.
 - **Rename detection uses it** (next section).
 - **Trait and type changes.**
   - `StateStore::claim_owner`, `OwnerClaimMode`, `TenantOwner::require` and
     `InfrastructureError::OwnedByAnotherInstance` are removed.
-  - The stores record `lastWriter` as part of every locked write.
-  - `owner()` becomes a read of `lastWriter`.
-  - The SQL owner table keeps its schema and is written as the last writer.
+  - `owner()` is renamed `last_writer()`.
+  - `state pull`, history snapshots and migration copies all emit
+    `lastWriter`; no text calls it an enforced owner.
+  - The SQL owner table keeps its schema and holds the last writer.
 - **`state adopt` is deprecated.** It is kept for one release as a no-op that
-  prints a deprecation notice, then removed. Its `#InfrastructureAction` name
-  (`state-adopt`) stays accepted for that release.
+  prints a deprecation notice, then removed. `state-adopt` stays an accepted,
+  ignored value of `#InfrastructureAction` permanently, because removing it
+  would make every configuration that lists it fail to evaluate, including on
+  the hook path.
+- **Mixed fleets.** Builds from 0.61 and earlier still enforce the old gate
+  against the SQL owner row, which new builds overwrite with the last writer.
+  A pinned older build may refuse with `OwnedByAnotherInstance` and suggest
+  `state adopt`. The release note says so.
 - **A copied repository that keeps the original module path,** used with the
   same bucket credential, shares the original's state. Docs say to change
   `module:` when copying a repository. The plan header shows the state
@@ -332,7 +362,12 @@ treats a `state.json` as a probable rename when all of these hold:
 
 - its `lastWriter` **directory** equals this instance's directory;
 - the module-wide evaluation the command already runs **no longer declares**
-  its (package, project, environment). The no-flag identity counts as
+  its (package, project, environment). When the hit is in another package,
+  the command evaluates that package before deciding. Its own evaluation
+  covers only the selected package, so without this a second package in the
+  same directory would look undeclared. If that package fails to evaluate, the
+  command refuses and names it; `--new-identity` gets past the refusal. A
+  broken package is never taken to mean "undeclared" or "declared". The no-flag identity counts as
   declared when the project has a top-level `infrastructure` configuration;
 - it holds **at least one record or a held lock**. Destroyed or never-applied
   tenants are ignored.
@@ -547,7 +582,7 @@ It then tombstones the target and releases the source fence.
 | --- | --- |
 | `state list` | header with the `s3://` location |
 | `state locks` | defaults to the current module (prefix `<module>/_`). `--all` lists every lock and prints the `--path`/`--package` needed to release each one. A 403 is reported as "credential is prefix-scoped". The help text no longer says "every project". |
-| `state pull` | new. Prints the tenant as JSON, built from trait reads (`list`, `owner`, `current_lock`) so it works on every backend. Help: the output contains plaintext provider secrets. |
+| `state pull` | new. Prints the tenant as JSON, built from trait reads (`list`, `last_writer`, `current_lock`) so it works on every backend. Help: the output contains plaintext provider secrets. |
 | `state adopt` | deprecated no-op for one release, then removed (see Ownership) |
 | `state restore` | new (see History and restore) |
 | `state migrate` | new (see Migration from SQL) |
@@ -558,28 +593,62 @@ It then tombstones the target and releases the source fence.
 
 ### Uniqueness
 
-Project names are unique within a module, across every package, for every
-project, compared case-insensitively. The check is `check_unique_name`,
-extended:
+**What a project is.** A project is an instance of the package cuenv
+evaluates (`cuenv` unless `--package` says otherwise) that discovery treats as
+a `#Project`; today, an instance with a `name` field. Instances in other CUE
+packages are never evaluated for this check and never count, even with a
+`name` field. A Kubernetes package with `name: "api"` beside a cuenv project
+named `api` is not a duplicate.
 
-- **It covers every project,** not only those with an `infrastructure`
-  block.
-- **Child directories in the same package inherit their parent's `name`.**
-  A child that inherits only the name is part of the parent project and is
-  not counted. A child that also inherits the `infrastructure` block is still
-  a conflict, as today, because it would share the parent's state.
-- **It runs fail-closed** in `plan`, `apply`, `destroy` and `import`.
-  `cuenv sync` and `cuenv ci` report violations. It never runs on the shell
-  hook path.
-- **Rollout.**
-  - Duplicates among infrastructure projects are an error, as today, now also
-    when the names differ only by case.
-  - Duplicates that involve a project without `infrastructure` are a warning
-    for one release, then an error.
-- **Release note:** two infrastructure projects whose names differ only by
-  case (`Web` and `web`) now fail with no warning release.
-- **Task discovery.** The `cuenv-task-discovery` name index then never sees
-  duplicates; its silent last-one-wins insert becomes an error.
+**The rule.** Within that package, project names are unique, compared
+case-insensitively. A same-package child directory inherits its parent's
+`name`:
+- a child that inherits only the name is part of the parent project and is
+  not counted;
+- a child that also inherits the `infrastructure` block is a conflict, as
+  today.
+
+**Where it runs:**
+- **A same-package instance that fails to evaluate** makes infrastructure
+  commands fail closed. The error names the instance and says that
+  `state list`, `unlock` and `state remove` still work, as today's help text
+  does.
+- **Infrastructure commands** (`plan`, `apply`, `destroy`, `import`) fail
+  closed only on a duplicate between two infrastructure projects. A duplicate
+  that involves a project without `infrastructure` is a warning there, so an
+  unrelated project can never block an emergency apply or destroy.
+- **`cuenv sync` and `cuenv ci`** report every duplicate: a warning for one
+  release, then an error. They skip instances that fail to evaluate rather
+  than failing. `crates/ci` already evaluates only the `cuenv` package and
+  skips failures, so one broken instance cannot break CI.
+- **The shell hook path** never runs the check.
+- **The SQL backends' key has no package.** For them, the existing check
+  across every package for instances with an `infrastructure` block stays,
+  because without the ownership gate nothing else would stop two packages'
+  infrastructure projects named `api` from sharing state. The S3 key includes
+  the package, so the S3 backend skips that cross-package walk, and a broken
+  unrelated package no longer blocks its plan.
+
+**Implementation.**
+- `check_unique_name` moves from the binary crate into a shared crate, so
+  sync and ci can call it, with fail-closed and skip-and-report modes.
+- The false doc comment on `ModuleResult::projects` in `cuengine` ("verified
+  via CUE unification") is corrected to describe the `name`-field detection.
+  `cuengine` gains no cuenv-specific logic.
+
+**Tests and release notes.**
+- Conformance tests: two packages differing only by case that declare the
+  same project (refused through the `tenant` check if MinIO folds their
+  keys); an unrelated package with a `name` field; a
+  non-infrastructure duplicate (warning in `apply`, reported by `ci`);
+  infrastructure duplicates differing by case (error); the SQL cross-package
+  infrastructure duplicate (error); `state remove` in a skipped-directory
+  copy (refused).
+- Release note: two infrastructure projects whose names differ only by case
+  (`Web` and `web`) now fail with no warning release.
+- **Task discovery.** The `cuenv-task-discovery` name index never sees
+  duplicates once the rule is an error. Its silent last-one-wins insert
+  becomes an error.
 
 ## Documentation
 
@@ -604,7 +673,10 @@ These pages need adding or updating:
   - **history and secrets:** history keeps rotated secrets for up to `history`
     further writes;
   - **credentials:** keep the state credential separate from provider
-    credentials. PR `plan` jobs hold the state credential;
+    credentials. PR `plan` jobs hold the state credential, and a PR author
+    controls `module:`, so bind prefix-scoped credentials to the repository
+    or CI identity (the OIDC subject), never to the checked-out `module:`
+    value;
   - **migration:** the migration flow and its fence caveat for older builds;
   - **R2:** keep r2.dev disabled and attach no custom domain to the state
     bucket;
@@ -624,8 +696,9 @@ new production dependencies, schema or CLI changes, and cross-crate behaviour.
 
 1. **Conformance suite.** A generic `StateStore` suite over Memory, the Turso
    fake and the D1 fake, including fence survival across SQL `migrate()`.
-2. **Keys and identity.** `object_key.rs`, module-wide case-insensitive
-   `check_unique_name` (warning for projects without `infrastructure`),
+2. **Keys and identity.** `object_key.rs`, `check_unique_name` moved to a
+   shared crate and extended (package-scoped, case-insensitive, warnings for
+   projects without `infrastructure`), the skipped-directory refusal,
    environment case checks, and removal of the ownership gate with
    `lastWriter` recording, on the SQL stores too.
 3. **Transport.** SigV4 (test vectors) and the S3 transport on `http.rs`,
@@ -667,7 +740,7 @@ user) ran five rounds. The final round was unanimous.
 | 3 | Two blocks. | Rename detection limited to identities no longer declared. Restore can re-create a vanished object. |
 | 4 | One block. | Destroyed tenants no longer count as renames. `--new-identity` added. |
 | 5 | Unanimous. | Notes folded into this spec. |
-| After review | Maintainer decision. | Ownership gate removed and project names made unique module-wide. The gate protected against a copied repository that keeps the original module path, but a copy with the same layout passed it, and anyone who can make that mistake usually holds the bucket credential. |
+| After review | Maintainer decision, then round 6. | Ownership gate removed and project names made unique module-wide. The gate protected against a copied repository that keeps the original module path, but a copy with the same layout passed it, and anyone who can make that mistake usually holds the bucket credential. Round 6: four approvals and one block ("project" was undefined, so unrelated CUE packages would collide). Fixed by scoping projects to the evaluated package. Round 7: four approvals and one block (a git remote in `lastWriter` can carry CI tokens), fixed by recording no remote. Round 8: unanimous. Rename detection now evaluates another package before calling its hit undeclared, and refuses when that package fails to evaluate. Also folded in: `lastWriter` set at lock acquisition only, the skipped-directory refusal for state commands, the infrastructure-only fail-closed scope, and `state-adopt` kept in the action enum. |
 
 ### Corrections to the starting brief
 
