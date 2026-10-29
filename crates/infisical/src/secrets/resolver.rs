@@ -5,11 +5,19 @@ use cuenv_secrets::http::{build_client, env_var, normalize_api_url};
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec};
 use reqwest::{Client, StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 const DEFAULT_API_URL: &str = "https://us.infisical.com";
 const TOKEN_REFRESH_SKEW_SECONDS: u64 = 60;
+
+/// Advice for when an access token minted with OIDC Auth stops working: the
+/// JWT that minted it (a GitHub Actions ID token lives about five minutes)
+/// cannot be expected to log in again.
+const OIDC_ACCESS_TOKEN_TTL_HINT: &str = "cuenv logs in with OIDC Auth once, while \
+     INFISICAL_AUTH_JWT is fresh, and does not log in again with the same JWT; raise the \
+     identity's Access Token TTL (access_token_ttl) so the access token outlives the whole run";
 
 /// Configuration for resolving a single Infisical secret.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,7 +119,9 @@ impl InfisicalConfig {
 /// access tokens.
 pub struct InfisicalResolver {
     client: Client,
-    cached_token: Mutex<Option<CachedToken>>,
+    /// Access tokens from logins, per API URL and identity. Entries are kept
+    /// after they expire so an expired OIDC login is reported, not retried.
+    cached_tokens: Mutex<HashMap<TokenCacheKey, CachedToken>>,
 }
 
 impl std::fmt::Debug for InfisicalResolver {
@@ -129,7 +139,7 @@ impl InfisicalResolver {
     pub fn try_new() -> Result<Self, SecretError> {
         Ok(Self {
             client: build_client("infisical")?,
-            cached_token: Mutex::new(None),
+            cached_tokens: Mutex::new(HashMap::new()),
         })
     }
 
@@ -152,14 +162,20 @@ impl InfisicalResolver {
         match AuthMode::from_env(name, config)? {
             AuthMode::Login(credentials) => {
                 let access_token = self.login_access_token(name, &credentials).await?;
+                let on_unauthorized = match credentials.method {
+                    LoginMethod::Universal { .. } => {
+                        OnUnauthorized::LogInAgain(credentials.cache_key())
+                    }
+                    LoginMethod::Oidc { .. } => OnUnauthorized::ReportOidcExpiry,
+                };
                 Ok(AuthHeader {
                     value: format!("Bearer {access_token}"),
-                    refreshable: true,
+                    on_unauthorized,
                 })
             }
             AuthMode::Token(token) => Ok(AuthHeader {
                 value: format!("Bearer {token}"),
-                refreshable: false,
+                on_unauthorized: OnUnauthorized::Fail,
             }),
         }
     }
@@ -170,13 +186,24 @@ impl InfisicalResolver {
         credentials: &LoginCredentials,
     ) -> Result<String, SecretError> {
         let key = credentials.cache_key();
-        let mut guard = self.cached_token.lock().await;
+        let mut guard = self.cached_tokens.lock().await;
 
-        if let Some(cached) = guard.as_ref()
-            && cached.key == key
-            && cached.expires_at > Instant::now()
-        {
-            return Ok(cached.access_token.clone());
+        if let Some(cached) = guard.get(&key) {
+            if cached.expires_at > Instant::now() {
+                return Ok(cached.access_token.clone());
+            }
+            // The JWT that minted this token was already exchanged once and
+            // has almost certainly expired since: logging in again with it
+            // would only fail with a less helpful error.
+            if matches!(credentials.method, LoginMethod::Oidc { .. }) {
+                return Err(SecretError::resolution_failed(
+                    name,
+                    format!(
+                        "the Infisical access token from the OIDC Auth login has expired; \
+                         {OIDC_ACCESS_TOKEN_TTL_HINT}"
+                    ),
+                ));
+            }
         }
 
         let response = self.login(name, credentials).await?;
@@ -184,11 +211,13 @@ impl InfisicalResolver {
         let access_token = response.access_token;
         // The access token is as powerful as the credentials that minted it.
         cuenv_events::register_secret(access_token.clone());
-        *guard = Some(CachedToken {
+        guard.insert(
             key,
-            access_token: access_token.clone(),
-            expires_at,
-        });
+            CachedToken {
+                access_token: access_token.clone(),
+                expires_at,
+            },
+        );
 
         Ok(access_token)
     }
@@ -256,9 +285,8 @@ impl InfisicalResolver {
         })
     }
 
-    async fn clear_cached_token(&self) {
-        let mut guard = self.cached_token.lock().await;
-        *guard = None;
+    async fn forget_cached_token(&self, key: &TokenCacheKey) {
+        self.cached_tokens.lock().await.remove(key);
     }
 
     async fn send_secret_request(
@@ -310,13 +338,71 @@ impl SecretResolver for InfisicalResolver {
         let mut auth = self.authorization_header(name, &config).await?;
         let mut response = self.send_secret_request(&config, &auth).await?;
 
-        if response.status() == StatusCode::UNAUTHORIZED && auth.refreshable {
-            self.clear_cached_token().await;
-            auth = self.authorization_header(name, &config).await?;
-            response = self.send_secret_request(&config, &auth).await?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            match &auth.on_unauthorized {
+                OnUnauthorized::LogInAgain(key) => {
+                    self.forget_cached_token(key).await;
+                    auth = self.authorization_header(name, &config).await?;
+                    response = self.send_secret_request(&config, &auth).await?;
+                }
+                OnUnauthorized::ReportOidcExpiry => {
+                    return Err(SecretError::resolution_failed(
+                        name,
+                        format!(
+                            "Infisical rejected the access token from the OIDC Auth login \
+                             (HTTP 401); it has probably expired or been revoked. \
+                             {OIDC_ACCESS_TOKEN_TTL_HINT}"
+                        ),
+                    ));
+                }
+                OnUnauthorized::Fail => {}
+            }
         }
 
         Self::parse_secret_response(name, response).await
+    }
+
+    /// With OIDC Auth, log in now once per login (API URL) that `specs` need.
+    ///
+    /// The JWT in `INFISICAL_AUTH_JWT` is short-lived (a GitHub Actions ID
+    /// token lasts about five minutes), while a run can resolve its first
+    /// secret much later; the access token obtained here is cached for the
+    /// rest of the process. Universal Auth and `INFISICAL_TOKEN` can log in
+    /// (or not at all) whenever needed, so they, like an auth configuration
+    /// error, are left to resolution.
+    async fn prepare(&self, specs: &[SecretSpec]) -> Result<(), SecretError> {
+        if InfisicalAuthMethod::from_process_env() != Ok(InfisicalAuthMethod::Oidc) {
+            return Ok(());
+        }
+        let mut logins = HashSet::new();
+        for spec in specs {
+            let config = Self::parse_config("infisical", spec)?;
+            // Errors name the first secret that needs this login.
+            let name = config.secret_name.as_str();
+            let AuthMode::Login(credentials) = AuthMode::from_env(name, &config)? else {
+                continue;
+            };
+            if !logins.insert(credentials.cache_key()) {
+                continue;
+            }
+            self.login_access_token(name, &credentials)
+                .await
+                .map_err(|e| {
+                    let reason = match e {
+                        SecretError::ResolutionFailed { message, .. } => message,
+                        other => other.to_string(),
+                    };
+                    SecretError::resolution_failed(
+                        name,
+                        format!(
+                            "Infisical OIDC Auth login at the start of the run failed \
+                             ({}): {reason}",
+                            credentials.api_url
+                        ),
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     fn provider_name(&self) -> &'static str {
@@ -327,7 +413,19 @@ impl SecretResolver for InfisicalResolver {
 #[derive(Clone)]
 struct AuthHeader {
     value: String,
-    refreshable: bool,
+    on_unauthorized: OnUnauthorized,
+}
+
+/// What a secret read does when Infisical answers HTTP 401.
+#[derive(Clone)]
+enum OnUnauthorized {
+    /// Universal Auth: drop this cached token and log in again with the
+    /// long-lived client secret.
+    LogInAgain(TokenCacheKey),
+    /// OIDC Auth: the JWT cannot be expected to log in again; explain.
+    ReportOidcExpiry,
+    /// A direct `INFISICAL_TOKEN`: report the HTTP status.
+    Fail,
 }
 
 enum AuthMode {
@@ -523,13 +621,13 @@ impl LoginCredentials {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum TokenPrincipal {
     Universal(String),
     Oidc(String),
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct TokenCacheKey {
     api_url: String,
     principal: TokenPrincipal,
@@ -537,7 +635,6 @@ struct TokenCacheKey {
 }
 
 struct CachedToken {
-    key: TokenCacheKey,
     access_token: String,
     expires_at: Instant,
 }
@@ -1066,6 +1163,222 @@ mod tests {
         );
         assert!(message.contains("INFISICAL_AUTH_JWT"), "{message}");
         assert!(!message.contains("expired.id.token"), "{message}");
+
+        server.await??;
+        Ok(())
+    }
+
+    const OIDC_ENV: [(&str, &str); 2] = [
+        ("INFISICAL_MACHINE_IDENTITY_ID", "identity-id"),
+        ("INFISICAL_AUTH_JWT", "github.id.token"),
+    ];
+
+    fn api_key_spec(api_url: &str) -> Result<SecretSpec, Box<dyn Error>> {
+        let mut config = InfisicalConfig::new("project", "prod", "API_KEY");
+        config.api_url = Some(api_url.to_string());
+        Ok(SecretSpec::new(serde_json::to_string(&config)?))
+    }
+
+    #[tokio::test]
+    async fn prepare_logs_in_with_oidc_once_for_the_whole_run() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        // One login, then two reads: resolution reuses the prepared token.
+        let (api_url, server) = spawn_server(vec![
+            MockResponse {
+                expected: r#"{"identityId":"identity-id","jwt":"github.id.token"}"#,
+                status: 200,
+                body: r#"{"accessToken":"oidc-token","expiresIn":7200,"accessTokenMaxTTL":7200,"tokenType":"Bearer"}"#,
+            },
+            MockResponse {
+                expected: "Bearer oidc-token",
+                status: 200,
+                body: r#"{"secret":{"secretValue":"first"}}"#,
+            },
+            MockResponse {
+                expected: "Bearer oidc-token",
+                status: 200,
+                body: r#"{"secret":{"secretValue":"second"}}"#,
+            },
+        ])
+        .await?;
+
+        let values = temp_env::async_with_vars(auth_env(&OIDC_ENV), async {
+            let resolver = InfisicalResolver::try_new()?;
+            let spec = api_key_spec(&api_url)?;
+            // Two specs on the same API URL need a single login.
+            resolver.prepare(&[spec.clone(), spec.clone()]).await?;
+            let first = resolver.resolve("API_KEY", &spec).await?;
+            let second = resolver.resolve("API_KEY", &spec).await?;
+            Ok::<_, Box<dyn Error>>((first, second))
+        })
+        .await?;
+        assert_eq!(values, ("first".to_string(), "second".to_string()));
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prepare_does_nothing_without_oidc() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        for set in [
+            vec![
+                ("INFISICAL_CLIENT_ID", "client-id"),
+                ("INFISICAL_CLIENT_SECRET", "client-secret"),
+            ],
+            vec![("INFISICAL_TOKEN", "direct-token")],
+            // Configuration errors are left to resolution.
+            vec![("INFISICAL_MACHINE_IDENTITY_ID", "identity-id")],
+            vec![],
+        ] {
+            // No server: any request would fail with a connection error.
+            temp_env::async_with_vars(auth_env(&set), async {
+                let resolver = InfisicalResolver::try_new()?;
+                resolver
+                    .prepare(&[api_key_spec("http://127.0.0.1:9")?])
+                    .await?;
+                Ok::<_, Box<dyn Error>>(())
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prepare_reports_a_failed_oidc_login() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let (api_url, server) = spawn_server(vec![MockResponse {
+            expected: "POST /api/v1/auth/oidc-auth/login",
+            status: 401,
+            body: r#"{"message":"jwt expired"}"#,
+        }])
+        .await?;
+
+        let result = temp_env::async_with_vars(auth_env(&OIDC_ENV), async {
+            let resolver = InfisicalResolver::try_new()?;
+            resolver.prepare(&[api_key_spec(&api_url)?]).await?;
+            Ok::<_, Box<dyn Error>>(())
+        })
+        .await;
+        let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(message.contains("'API_KEY'"), "{message}");
+        assert!(
+            message.contains("OIDC Auth login at the start of the run failed"),
+            "{message}"
+        );
+        assert!(message.contains("HTTP 401"), "{message}");
+        assert!(!message.contains("github.id.token"), "{message}");
+        assert_eq!(message.matches("Failed to resolve secret").count(), 1);
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oidc_unauthorized_read_does_not_log_in_again() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        // A second login would find no server response and fail differently.
+        let (api_url, server) = spawn_server(vec![
+            MockResponse {
+                expected: "POST /api/v1/auth/oidc-auth/login",
+                status: 200,
+                body: r#"{"accessToken":"oidc-token","expiresIn":7200,"accessTokenMaxTTL":7200,"tokenType":"Bearer"}"#,
+            },
+            MockResponse {
+                expected: "Bearer oidc-token",
+                status: 401,
+                body: r#"{"message":"token expired"}"#,
+            },
+        ])
+        .await?;
+
+        let result =
+            temp_env::async_with_vars(auth_env(&OIDC_ENV), resolve_api_key(Some(api_url))).await;
+        let message = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(message.contains("HTTP 401"), "{message}");
+        assert!(message.contains("access_token_ttl"), "{message}");
+        assert!(!message.contains("request failed"), "{message}");
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expired_oidc_access_token_is_reported_not_renewed() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        // expiresIn 0: the token is stale as soon as it is cached.
+        let (api_url, server) = spawn_server(vec![
+            MockResponse {
+                expected: "POST /api/v1/auth/oidc-auth/login",
+                status: 200,
+                body: r#"{"accessToken":"oidc-token","expiresIn":0,"accessTokenMaxTTL":0,"tokenType":"Bearer"}"#,
+            },
+            MockResponse {
+                expected: "Bearer oidc-token",
+                status: 200,
+                body: r#"{"secret":{"secretValue":"first"}}"#,
+            },
+        ])
+        .await?;
+
+        let (first, second) = temp_env::async_with_vars(auth_env(&OIDC_ENV), async {
+            let resolver = InfisicalResolver::try_new()?;
+            let spec = api_key_spec(&api_url)?;
+            let first = resolver.resolve("API_KEY", &spec).await?;
+            let second = resolver
+                .resolve("API_KEY", &spec)
+                .await
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            Ok::<_, Box<dyn Error>>((first, second))
+        })
+        .await?;
+        assert_eq!(first, "first");
+        assert!(second.contains("has expired"), "{second}");
+        assert!(second.contains("access_token_ttl"), "{second}");
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn universal_auth_logs_in_again_after_unauthorized() -> Result<(), Box<dyn Error>> {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let login = MockResponse {
+            expected: "POST /api/v1/auth/universal-auth/login",
+            status: 200,
+            body: r#"{"accessToken":"ua-token","expiresIn":7200,"accessTokenMaxTTL":7200,"tokenType":"Bearer"}"#,
+        };
+        let (api_url, server) = spawn_server(vec![
+            login,
+            MockResponse {
+                expected: "Bearer ua-token",
+                status: 401,
+                body: "{}",
+            },
+            MockResponse {
+                expected: "POST /api/v1/auth/universal-auth/login",
+                status: 200,
+                body: r#"{"accessToken":"ua-token","expiresIn":7200,"accessTokenMaxTTL":7200,"tokenType":"Bearer"}"#,
+            },
+            MockResponse {
+                expected: "Bearer ua-token",
+                status: 200,
+                body: r#"{"secret":{"secretValue":"ua-secret"}}"#,
+            },
+        ])
+        .await?;
+
+        let value = temp_env::async_with_vars(
+            auth_env(&[
+                ("INFISICAL_CLIENT_ID", "client-id"),
+                ("INFISICAL_CLIENT_SECRET", "client-secret"),
+            ]),
+            resolve_api_key(Some(api_url)),
+        )
+        .await?;
+        assert_eq!(value, "ua-secret");
 
         server.await??;
         Ok(())
