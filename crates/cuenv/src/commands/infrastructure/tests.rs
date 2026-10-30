@@ -14,7 +14,7 @@ use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, Infra
 use tokio::sync::mpsc;
 
 use super::confirm::{AnswerFuture, Answers, confirm};
-use super::dispatch::{CommandContext, EngineInputs, connect, dispatch};
+use super::dispatch::{CommandContext, EngineInputs, StoreScope, connect, dispatch};
 use super::evaluation::{self, EnvironmentSelection, NameCheck, Needs, TargetRequest, TopLevel};
 use super::guard::{GuardRequest, SelectionFacts, Siblings, guard_selection};
 use super::interrupts::{Interrupts, SignalSource};
@@ -83,6 +83,19 @@ fn d1_infrastructure(database_id: &str, token: &serde_json::Value) -> Infrastruc
     .unwrap()
 }
 
+/// The scope tests connect a store for.
+fn store_scope() -> StoreScope<'static> {
+    static INSTANCE: std::sync::LazyLock<ProjectInstance> =
+        std::sync::LazyLock::new(|| ProjectInstance::try_new("app", "cuenv").unwrap());
+    static TENANT: std::sync::LazyLock<TenantKey> = std::sync::LazyLock::new(|| {
+        TenantKey::try_new("example.com/infrastructure", "app").unwrap()
+    });
+    StoreScope {
+        instance: &INSTANCE,
+        tenant: &TENANT,
+    }
+}
+
 #[tokio::test]
 async fn d1_state_is_validated_before_any_secret_and_needs_its_token() {
     let unset =
@@ -100,7 +113,7 @@ async fn d1_state_is_validated_before_any_secret_and_needs_its_token() {
         resolve_state_token(InfrastructurePolicyAction::StateList, &infrastructure.state)
             .await
             .unwrap();
-    let Err(missing) = connect(&infrastructure, credential) else {
+    let Err(missing) = connect(&infrastructure.state, credential, &store_scope()) else {
         panic!("connected to D1 without a token");
     };
     let missing = missing.to_string();
@@ -122,8 +135,11 @@ async fn a_state_token_is_resolved_like_an_environment_variable() {
         resolve_state_token(InfrastructurePolicyAction::StateList, &infrastructure.state)
             .await
             .unwrap();
-    assert_eq!(credential.token.as_deref(), Some("resolved-d1-token"));
-    let store = connect(&infrastructure, credential).unwrap();
+    assert_eq!(
+        credential.values[0].value.as_deref(),
+        Some("resolved-d1-token")
+    );
+    let store = connect(&infrastructure.state, credential, &store_scope()).unwrap();
     assert!(store.recovery_identity().is_some());
 
     // Turso without a token connects (with a warning) for a local `sqld`.
@@ -134,15 +150,83 @@ async fn a_state_token_is_resolved_like_an_environment_variable() {
     let credential = resolve_state_token(InfrastructurePolicyAction::StateList, &turso.state)
         .await
         .unwrap();
-    assert_eq!(credential.token, None);
+    assert_eq!(credential.values[0].value, None);
     assert!(
-        credential
+        credential.values[0]
             .absence
             .contains("`infrastructure.state.turso.token`"),
         "{}",
-        credential.absence
+        credential.values[0].absence
     );
-    connect(&turso, credential).unwrap();
+    connect(&turso.state, credential, &store_scope()).unwrap();
+}
+
+#[tokio::test]
+async fn s3_state_is_validated_first_and_needs_both_keys() {
+    let s3 = |extra: serde_json::Value| -> Infrastructure {
+        let mut state = serde_json::json!({
+            "bucket": "acme-state",
+            "region": "auto",
+            "endpoint": "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
+            "accessKeyId": "access-key-id",
+            "secretAccessKey": {"cuenvPassthrough": true, "name": "CUENV_TEST_S3_SECRET_NEVER_SET"},
+        });
+        state
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(serde_json::json!({"state": {"s3": state}})).unwrap()
+    };
+    let infrastructure = s3(serde_json::json!({}));
+    validate_state_url(&infrastructure).unwrap();
+    for (extra, expected) in [
+        (
+            serde_json::json!({"endpoint": "http://minio.internal:9000"}),
+            "loopback",
+        ),
+        (
+            serde_json::json!({"bucket": "a.b", "addressing": "virtual-hosted"}),
+            "path addressing",
+        ),
+        (
+            serde_json::json!({"minWriteInterval": "1 second"}),
+            "minWriteInterval",
+        ),
+        (serde_json::json!({"root": "Upper"}), "root"),
+    ] {
+        let error = validate_state_url(&s3(extra.clone()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{extra}: {error}");
+    }
+
+    let credential =
+        resolve_state_token(InfrastructurePolicyAction::StateList, &infrastructure.state)
+            .await
+            .unwrap();
+    let Err(missing) = connect(&infrastructure.state, credential, &store_scope()) else {
+        panic!("connected to S3 without a secret access key");
+    };
+    let missing = missing.to_string();
+    assert!(
+        missing.contains(
+            "`infrastructure.state.s3.secretAccessKey` reads CUENV_TEST_S3_SECRET_NEVER_SET"
+        ),
+        "{missing}"
+    );
+
+    let complete =
+        s3(serde_json::json!({"secretAccessKey": "secret", "minWriteInterval": "250ms"}));
+    let credential = resolve_state_token(InfrastructurePolicyAction::StateList, &complete.state)
+        .await
+        .unwrap();
+    let store = connect(&complete.state, credential, &store_scope()).unwrap();
+    assert!(store.recovery_identity().is_some());
+    assert_eq!(
+        store.location(&store_scope().tenant.clone()).as_deref(),
+        Some("s3://acme-state/example.com/infrastructure/_cuenv/app/_default/state.json")
+    );
+    assert!(store.object_features().is_some());
 }
 
 #[test]
@@ -512,6 +596,71 @@ fn a_child_directory_inheriting_the_project_is_a_duplicate() {
     // must not suggest it.
     let help = error.help().unwrap();
     assert!(help.contains("different CUE package"), "{help}");
+}
+
+/// The project infrastructure with S3 state.
+const S3_INFRASTRUCTURE: &str = "infrastructure: {\n\
+     \tstate: s3: {bucket: \"state\", region: \"us-east-1\", endpoint: \"http://127.0.0.1:9000\", accessKeyId: \"a\", secretAccessKey: \"b\"}\n\
+     \tproviders: random: {source: \"hashicorp/random\", version: \"3.7.2\"}\n\
+     \tresources: pet: {type: \"random_pet\", configuration: length: 2}\n\
+     }\n";
+
+/// A module whose target project `app` keeps its state in S3.
+fn module_with_s3_target() -> tempfile::TempDir {
+    let directory = module_directory();
+    write(directory.path(), "cue.mod/module.cue", MODULE);
+    write(
+        directory.path(),
+        "app/env.cue",
+        &format!("package cuenv\n\nname: \"app\"\n{S3_INFRASTRUCTURE}"),
+    );
+    directory
+}
+
+#[test]
+fn project_names_are_unique_in_the_package_without_regard_to_case() {
+    for module in [module_with_target(), module_with_s3_target()] {
+        // Any project, with or without infrastructure.
+        write(
+            module.path(),
+            "other/env.cue",
+            "package cuenv\n\nname: \"App\"\n",
+        );
+        let error = evaluate(module.path(), NameCheck::WholeModule).unwrap_err();
+        assert_eq!(exit_code_for(&error), EXIT_CLI, "{error:?}");
+        let message = error.to_string();
+        assert!(message.contains("must be unique"), "{message}");
+        assert!(message.contains("'app', 'other'"), "{message}");
+    }
+}
+
+#[test]
+fn s3_state_scopes_projects_to_the_evaluated_package() {
+    let module = module_with_s3_target();
+    // Another package is not a project of this one, even with the same
+    // name and an infrastructure block: its state has its own key.
+    write(
+        module.path(),
+        "elsewhere/project.cue",
+        &format!("package deployment\n\nname: \"app\"\n{S3_INFRASTRUCTURE}"),
+    );
+    // A child directory inheriting the project's name is the same project.
+    write(module.path(), "app/child/env.cue", "package cuenv\n");
+    let target = evaluate(module.path(), NameCheck::WholeModule).unwrap();
+    assert_eq!(target.instance.as_str(), "app:cuenv");
+}
+
+#[test]
+fn repairs_refuse_a_project_copy_the_loader_skips() {
+    let directory = module_directory();
+    write_target(directory.path(), "app");
+    write_target(directory.path(), "_old/app");
+    let copy = directory.path().join("_old/app");
+    let error = evaluate_at(&copy, NameCheck::TargetNotSkipped).unwrap_err();
+    assert!(error.to_string().contains("copy of the project"), "{error}");
+    assert!(error.help().unwrap().contains("'_old' starts with '_'"));
+    assert!(evaluate_at(&copy, NameCheck::TargetOnly).is_ok());
+    assert!(evaluate(directory.path(), NameCheck::TargetNotSkipped).is_ok());
 }
 
 #[test]

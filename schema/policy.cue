@@ -1,10 +1,10 @@
 package schema
 
 // An infrastructure command that can be named in `allowInfrastructure`.
-// The names match the `cuenv infrastructure` subcommands: `state-list`,
-// `state-remove`, `state-recover` and `state-adopt` are the `state`
-// subcommands.
-#InfrastructureAction: "plan" | "apply" | "import" | "destroy" | "state-list" | "state-remove" | "state-recover" | "state-adopt" | "unlock"
+// The names match the `cuenv infrastructure` subcommands: the `state-` names
+// are the `state` subcommands. `state-adopt` is retired (the command does
+// nothing) and stays accepted so existing policies keep evaluating.
+#InfrastructureAction: "plan" | "apply" | "import" | "destroy" | "state-list" | "state-remove" | "state-recover" | "state-adopt" | "state-pull" | "state-restore" | "state-migrate" | "state-rename" | "unlock"
 
 // #Policy defines access control for environment variables
 #Policy: {

@@ -42,8 +42,8 @@ pub(super) struct ProviderEnvironmentInputs<'inputs> {
     /// Names of variables the project's configuration designates as
     /// credentials (the remote cache's token and header variables).
     pub(super) configured_credentials: &'inputs [String],
-    /// The variable the state token's passthrough reads, if any.
-    pub(super) token_variable: Option<&'inputs str>,
+    /// The variables the state credentials' passthroughs read.
+    pub(super) token_variables: &'inputs [&'inputs str],
 }
 
 /// The variable names to remove from the provider's environment after the
@@ -61,7 +61,12 @@ pub(super) fn withheld_environment_variables(
         .policy_withheld
         .iter()
         .cloned()
-        .chain(inputs.token_variable.map(str::to_string))
+        .chain(
+            inputs
+                .token_variables
+                .iter()
+                .map(|name| (*name).to_string()),
+        )
         .collect();
     match inputs.mode {
         ProviderEnvironment::Inherit => withheld.extend(
@@ -162,7 +167,7 @@ mod tests {
             provided,
             policy_withheld,
             configured_credentials: &[],
-            token_variable: Some("TURSO_AUTH_TOKEN"),
+            token_variables: &["TURSO_AUTH_TOKEN"],
         }
     }
 

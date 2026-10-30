@@ -20,9 +20,12 @@ use cuengine::{
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::cue::discovery::compute_relative_path;
 use cuenv_core::manifest::Project;
+use cuenv_core::module::{NamedProject, duplicate_names_error, duplicate_project_names};
 use cuenv_infrastructure::{ProjectInstance, TenantKey};
 use cuenv_manifest::environment::Env;
-use cuenv_manifest::manifest::{Infrastructure, InfrastructureSelectionError, ProviderEnvironment};
+use cuenv_manifest::manifest::{
+    Infrastructure, InfrastructureSelectionError, InfrastructureState, ProviderEnvironment,
+};
 
 use super::invocation::Invocation;
 use super::output_selectors::OutputSelectors;
@@ -35,11 +38,17 @@ pub(super) enum NameCheck {
     /// Evaluate every instance of every package in the module and refuse a
     /// duplicate name, an instance that does not evaluate, or a target the
     /// module-wide evaluation leaves out (`plan`, `apply`, `destroy`,
-    /// `state adopt`).
+    /// `import`, `state migrate`, `state rename`).
     WholeModule,
-    /// Evaluate only the target (`state list`, `state remove`,
-    /// `state recover`, `unlock`), so a broken sibling never blocks
-    /// inspecting, repairing or unlocking state.
+    /// Evaluate only the target, so a broken sibling never blocks
+    /// repairing state, but refuse a target in a directory the module-wide
+    /// loader skips (`state remove`, `state recover`, `state restore`): a
+    /// copy of a project there (`_old/app`, `.backup/app`) has the same
+    /// project name, so it would change the real project's state.
+    TargetNotSkipped,
+    /// Evaluate only the target (`state list`, `state locks`, `state pull`,
+    /// `state adopt`, `unlock`), so a broken sibling never blocks
+    /// inspecting or unlocking state.
     TargetOnly,
 }
 
@@ -259,12 +268,15 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     let instance = ProjectInstance::try_new(&relative_path, request.package)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
 
-    if request.name_check == NameCheck::WholeModule {
-        check_unique_name(&UniquenessCheck {
+    match request.name_check {
+        NameCheck::WholeModule => check_unique_name(&UniquenessCheck {
             module_root: &module.root,
             project_name: &project.name,
             target: &instance,
-        })?;
+            state: &infrastructure.state,
+        })?,
+        NameCheck::TargetNotSkipped => refuse_skipped_target(&instance, &project.name)?,
+        NameCheck::TargetOnly => {}
     }
 
     let module_path = cuenv_infrastructure::read_module_path(&module.root)
@@ -748,14 +760,29 @@ struct UniquenessCheck<'check> {
     module_root: &'check Path,
     project_name: &'check str,
     target: &'check ProjectInstance,
+    /// The state backend: the SQL backends key state without the package,
+    /// so for them a project name is checked across every package too.
+    state: &'check InfrastructureState,
 }
 
 /// The directory part of an instance identity.
 fn instance_directory(instance: &ProjectInstance) -> &str {
-    instance
-        .as_str()
-        .rsplit_once(':')
-        .map_or(".", |(directory, _)| directory)
+    instance.directory()
+}
+
+/// Refuse a target in a directory the module-wide loader skips by its name.
+fn refuse_skipped_target(target: &ProjectInstance, project_name: &str) -> Result<(), CliError> {
+    skipped_by_name(target).map_or(Ok(()), |skipped| {
+        Err(CliError::config_with_help(
+            format!(
+                "refusing to change the state of project '{}' from {target}: the module-wide \
+                 evaluation leaves that directory out, so this may be a copy of the project \
+                 whose name the real project also uses",
+                escape_control_characters(project_name)
+            ),
+            skipped_help(&skipped),
+        ))
+    })
 }
 
 /// Why the loader left out `skipped`, and what to do about it.
@@ -868,6 +895,32 @@ fn check_unique_name(check: &UniquenessCheck<'_>) -> Result<(), CliError> {
                     |skipped| skipped_help(&skipped),
                 ),
         ));
+    }
+
+    // Project names are unique in the evaluated package.
+    let package = check.target.package();
+    let named: Vec<(PathBuf, String)> = module
+        .instances
+        .iter()
+        .filter_map(|(key, summary)| {
+            let (directory, instance_package) = key.rsplit_once(':')?;
+            (instance_package == package)
+                .then(|| summary.name.clone())
+                .flatten()
+                .map(|name| (PathBuf::from(directory), name))
+        })
+        .collect();
+    let package_duplicates =
+        duplicate_project_names(named.iter().map(|(path, name)| NamedProject {
+            path: path.as_path(),
+            name: name.as_str(),
+        }));
+    if !package_duplicates.is_empty() {
+        return Err(CliError::from(duplicate_names_error(&package_duplicates)));
+    }
+    if matches!(check.state, InfrastructureState::S3(_)) {
+        // Object-store state is keyed by package too.
+        return Ok(());
     }
 
     let duplicates: Vec<&str> = module

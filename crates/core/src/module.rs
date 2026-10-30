@@ -14,6 +14,11 @@ use crate::tasks::SourceLocation;
 mod deserialize;
 mod task_refs;
 mod task_sources;
+mod unique_names;
+
+pub use unique_names::{
+    DuplicateProjectName, NamedProject, duplicate_names_error, duplicate_project_names,
+};
 
 use deserialize::detailed_deserialize_error;
 
@@ -86,7 +91,7 @@ impl ModuleEvaluation {
     /// # Arguments
     /// * `root` - Path to the CUE module root
     /// * `raw_instances` - Map of relative paths to evaluated JSON values
-    /// * `project_paths` - Paths verified to conform to `schema.#Project` via CUE unification
+    /// * `project_paths` - Paths of instances that declare a `name` field (projects)
     /// * `references` - Optional reference map for dependsOn resolution (extracted from CUE metadata)
     pub fn from_raw(
         root: PathBuf,
@@ -126,7 +131,7 @@ impl ModuleEvaluation {
             .into_iter()
             .map(|(path, mut value)| {
                 let path_buf = PathBuf::from(&path);
-                // Use CUE's schema verification instead of heuristic name check
+                // The engine reports an instance with a `name` field as a project.
                 let kind = if project_set.contains(path.as_str()) {
                     InstanceKind::Project
                 } else {

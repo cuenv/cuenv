@@ -44,9 +44,10 @@ pub use error::{
 pub use state::{
     AddressingChoice, ConditionalPut, Credentials, D1Configuration, D1StateStore, HistoryEntry,
     LastWriter, LockInformation, LockRequest, ManagedResource, ManifestEntry, MemoryStateStore,
-    MigrationManifest, ObjectStateFeatures, ObjectStateStore, ObjectStoreConfiguration,
-    ObjectTenant, RecordVersion, ResourceAddress, RestoreRequest, StateLock, StateStore,
-    StoredTenant, TenantImport, TenantLock, TursoConfiguration, TursoStateStore,
+    MigrationManifest, ObjectLocation, ObjectStateFeatures, ObjectStateStore,
+    ObjectStoreConfiguration, ObjectTenant, RecordVersion, ResourceAddress, RestoreRequest,
+    StateLock, StateStore, StoredTenant, TenantImport, TenantLock, TursoConfiguration,
+    TursoStateStore,
 };
 pub use tenant::{ProjectInstance, TenantKey, read_module_path};
 pub use unrecorded::{

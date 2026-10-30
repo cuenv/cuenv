@@ -53,9 +53,10 @@ import "strings"
 // instead of an ignored extra field.
 
 #Infrastructure: {
-	// Where managed resource state lives. One state database serves the
+	// Where managed resource state lives. One state backend serves the
 	// top-level configuration and every named environment; each has its own
-	// identity inside it (module path, project name and environment).
+	// identity inside it (module path, project name and environment, and
+	// for `s3` the CUE package too).
 	state!: {#InfrastructureState}
 
 	// Exactly one state backend. Presence is decided from the field names,
@@ -64,10 +65,24 @@ import "strings"
 	if state != _|_ {
 		let backends = [for field, _ in state {field}]
 		if len(backends) == 0 {
-			_unresolved: state: error("set one state backend: `turso` or `d1`")
+			_unresolved: state: error("set one state backend: `turso`, `d1` or `s3`")
 		}
 		if len(backends) > 1 {
-			_unresolved: state: error("set exactly one state backend, `turso` or `d1`, not both")
+			_unresolved: state: error("set exactly one state backend: `turso`, `d1` or `s3`")
+		}
+	}
+
+	// Where `cuenv infrastructure state migrate` copies this project's
+	// state to, while a migration is under way. Keep `state` naming the
+	// backend the state is in now; once every environment is migrated,
+	// make this the `state` and remove `migrateStateTo`. `plan` and `apply`
+	// warn while it is set.
+	migrateStateTo?: {#InfrastructureState}
+
+	if migrateStateTo != _|_ {
+		let targets = [for field, _ in migrateStateTo {field}]
+		if len(targets) != 1 {
+			_unresolved: migrateStateTo: error("set exactly one migration target: `turso`, `d1` or `s3`")
 		}
 	}
 
@@ -222,15 +237,78 @@ import "strings"
 
 #InfrastructureName: string & =~"^[a-zA-Z][a-zA-Z0-9_-]*$"
 
-// Exactly one state backend. Both keep the same tables, so a database
-// written through one is never read through the other by accident: each
-// backend names its own database.
+// Exactly one state backend. Turso and D1 keep the same tables, so a
+// database written through one is never read through the other by accident:
+// each backend names its own database. `s3` keeps one object per project and
+// environment in a bucket.
 #InfrastructureState: {
 	// A Turso (libSQL) database, or a local `sqld`.
 	turso?: {#TursoState}
 
 	// A Cloudflare D1 database, reached through the Cloudflare API.
 	d1?: {#D1State}
+
+	// An S3-compatible bucket: AWS S3, Cloudflare R2 or MinIO.
+	s3?: {#S3State}
+}
+
+// An S3-compatible bucket. Each project's state is one object,
+// `[<root>/]<module>/_<package>/<project>/<env | _default>/state.json`,
+// written with conditional requests, so the bucket needs no other service
+// for locking. Anyone who can read the bucket can read every project's
+// state, including provider secrets in plaintext, and anyone who can write
+// it can change every project's state: use one bucket (or one prefix-scoped
+// credential) per trust boundary.
+#S3State: {
+	// Bucket name: 3 to 63 lowercase letters, digits, dots and hyphens. A
+	// name with a dot needs path addressing.
+	bucket!: string & =~"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+
+	// Signing region, such as "eu-west-2". Cloudflare R2 uses "auto", and
+	// then `endpoint` is required.
+	region!: string & =~"^[a-z0-9-]+$"
+
+	// Endpoint URL: https:// with a host name or address and an optional
+	// port, or http:// only for a loopback host (localhost, 127.x.y.z,
+	// [::1]), since state holds provider secrets. No path, credentials,
+	// query or fragment. Defaults to https://s3.<region>.amazonaws.com. For
+	// R2: https://<ACCOUNT_ID>.r2.cloudflarestorage.com.
+	endpoint?: string & (=~_s3EncryptedEndpoint | =~_s3LoopbackEndpoint)
+
+	// Key prefix for every object of this configuration, so several
+	// configurations can share a bucket: lowercase segments separated by
+	// "/".
+	root?: string & =~"^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*$"
+
+	// How requests name the bucket. "auto" uses path style for an IP
+	// address, localhost or a bucket name with a dot, and virtual-hosted
+	// style otherwise.
+	addressing: *"auto" | "virtual-hosted" | "path"
+
+	// Credentials, written like a state token. No ambient credential chain
+	// is read: name `AWS_ACCESS_KEY_ID` and friends with #EnvPassthrough to
+	// use them.
+	accessKeyId!:     #InfrastructureStateToken
+	secretAccessKey!: #InfrastructureStateToken
+	sessionToken?:    #InfrastructureStateToken
+
+	// Least time between two writes of one project's state, such as "1s"
+	// or "250ms". Defaults to "1s" for R2, which accepts about one write
+	// per second to a key, and to none elsewhere.
+	minWriteInterval?: string & =~"^[0-9]+(ms|s)$"
+
+	// How many earlier versions of each project's state to keep, written
+	// when a lock that changed something is released. 0 keeps none and
+	// deletes those kept so far. Restore one with
+	// `cuenv infrastructure state restore`.
+	history: *10 | int & >=0 & <=1000
+
+	if addressing == "virtual-hosted" if bucket =~ "\\." {
+		_unresolved: addressing: error("a bucket name with a dot needs `addressing: \"path\"` (or \"auto\")")
+	}
+	if region == "auto" if endpoint == _|_ {
+		_unresolved: endpoint: error("`region: \"auto\"` (Cloudflare R2) needs `endpoint`")
+	}
 }
 
 #TursoState: {
@@ -277,8 +355,9 @@ import "strings"
 // interpolation of strings and secrets, or #EnvPassthrough with a `name` to
 // read that variable from cuenv's own environment (a CI secret, for
 // instance). Nothing is read from the environment unless it is named here.
-// Integers, booleans and policies do not apply to a token. One state database
-// serves the top level and every environment, so there is one token.
+// Integers, booleans and policies do not apply to a token. One state backend
+// serves the top level and every environment, so each credential is set
+// once.
 //
 // cuenv redacts the resolved token from all output and never passes it to a
 // provider; a passthrough variable is withheld from providers under its name.
@@ -309,6 +388,10 @@ _tursoHost:         "(\(_tursoName)|\(_tursoIPv4)|\\[\(_tursoIPv6)\\])"
 _tursoLoopback:     "((?i:localhost)|\(_tursoLoopback4)|\\[::1\\]|\\[(?i:::ffff:)\(_tursoLoopback4)\\])"
 _tursoEncryptedUrl: "^(?i:libsql|https|wss)://\(_tursoHost)\(_tursoPort)\(_tursoPath)$"
 _tursoLoopbackUrl:  "^(?i:http|ws)://\(_tursoLoopback)\(_tursoPort)\(_tursoPath)$"
+
+// The S3 endpoint reuses the Turso host grammar without a path.
+_s3EncryptedEndpoint: "^(?i:https)://\(_tursoHost)\(_tursoPort)/?$"
+_s3LoopbackEndpoint:  "^(?i:http)://((?i:localhost)|\(_tursoLoopback4)|\\[::1\\])\(_tursoPort)/?$"
 
 #InfrastructureProvider: {
 	// Registry source address: "namespace/type" or

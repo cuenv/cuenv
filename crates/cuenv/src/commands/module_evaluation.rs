@@ -1,6 +1,6 @@
 use super::{CommandExecutor, convert_engine_error, env_file, schema_compat};
 use crate::commands::module_utils::EvaluationMetadataBuilder;
-use cuengine::ModuleEvalOptions;
+use cuengine::{InstanceFailures, ModuleEvalOptions};
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
 use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, ModuleEvaluationInput, Result};
@@ -170,14 +170,15 @@ impl CommandExecutor {
     ///
     /// The Go bridge loads the module once and builds every package instance
     /// in a shared CUE context, skipping directories whose package does not
-    /// match or that fail to build (matching the per-directory fan-out
-    /// semantics).
+    /// match. An instance that fails to build fails the evaluation: a
+    /// project left out could not be checked for a duplicate name.
     fn evaluate_workspace_module_recursive(&self, module_root: &Path) -> Result<ModuleEvaluation> {
         let options = ModuleEvalOptions {
             recursive: true,
             with_meta: true,
             with_references: true,
             task_field: Some(TASK_FIELD.to_string()),
+            instance_failures: InstanceFailures::Fail,
             ..Default::default()
         };
 
@@ -297,6 +298,15 @@ impl CommandExecutor {
             let error_summary = format_eval_errors(&eval_errors);
             return Err(cuenv_core::Error::configuration(format!(
                 "No instances could be evaluated. All directories failed:\n{error_summary}"
+            )));
+        }
+        // Fail closed: a directory that does not evaluate could declare a
+        // project with a name another project uses.
+        if !eval_errors.is_empty() {
+            let error_summary = format_eval_errors(&eval_errors);
+            return Err(cuenv_core::Error::configuration(format!(
+                "cannot confirm that project names are unique in this module; these \
+                 directories fail to evaluate:\n{error_summary}"
             )));
         }
 

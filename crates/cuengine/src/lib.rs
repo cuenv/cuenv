@@ -465,7 +465,8 @@ pub struct ModuleResult {
     pub direct_references: std::collections::HashMap<String, Vec<DirectReference>>,
     /// Map of relative path to evaluated JSON value
     pub instances: std::collections::HashMap<String, serde_json::Value>,
-    /// Paths that conform to schema.#Project (verified via CUE unification)
+    /// Paths of instances that declare a `name` field. The engine detects
+    /// the field only; it does not unify instances with `schema.#Project`.
     #[serde(default)]
     pub projects: Vec<String>,
     /// Map of "path/field" to source location (only populated when `with_meta`: true)

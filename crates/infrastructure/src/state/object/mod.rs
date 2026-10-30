@@ -28,8 +28,8 @@ mod tests;
 
 pub use sigv4::Credentials;
 pub use store::{
-    AddressingChoice, ManifestEntry, MigrationManifest, ObjectStateStore, ObjectStoreConfiguration,
-    TenantImport,
+    AddressingChoice, ManifestEntry, MigrationManifest, ObjectLocation, ObjectStateStore,
+    ObjectStoreConfiguration, TenantImport,
 };
 
 use async_trait::async_trait;

@@ -23,10 +23,7 @@ impl LastWriter {
     /// root).
     #[must_use]
     pub fn directory(&self) -> &str {
-        self.instance
-            .as_str()
-            .rsplit_once(':')
-            .map_or(self.instance.as_str(), |(directory, _)| directory)
+        self.instance.directory()
     }
 }
 

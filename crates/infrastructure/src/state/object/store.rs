@@ -64,6 +64,21 @@ pub enum AddressingChoice {
     Path,
 }
 
+/// Where an object store keeps state, as configured.
+#[derive(Debug, Clone, Copy)]
+pub struct ObjectLocation<'location> {
+    /// Endpoint URL; the AWS endpoint of `region` when `None`.
+    pub endpoint: Option<&'location str>,
+    /// Bucket name.
+    pub bucket: &'location str,
+    /// Signing region.
+    pub region: &'location str,
+    /// Key prefix.
+    pub root: Option<&'location str>,
+    /// How requests name the bucket.
+    pub addressing: AddressingChoice,
+}
+
 /// Everything an [`ObjectStateStore`] needs.
 #[derive(Debug, Clone)]
 pub struct ObjectStoreConfiguration {
@@ -215,6 +230,29 @@ impl ObjectStateStore {
         Ok(url)
     }
 
+    /// Validate where the state lives, before any credential is resolved
+    /// or any request is made.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Configuration`] for an invalid bucket,
+    /// region, root or endpoint, or a bucket name with a dot and
+    /// virtual-hosted addressing.
+    pub fn validate_location(location: &ObjectLocation<'_>) -> Result<()> {
+        Self::validate_bucket(location.bucket)?;
+        Self::validate_region(location.region)?;
+        if let Some(root) = location.root {
+            validate_root(root)?;
+        }
+        Self::validate_endpoint(location.endpoint, location.region)?;
+        if location.addressing == AddressingChoice::VirtualHosted && location.bucket.contains('.') {
+            return Err(InfrastructureError::configuration(
+                "a bucket name containing '.' needs path addressing",
+            ));
+        }
+        Ok(())
+    }
+
     /// Build a store. Nothing is sent.
     ///
     /// # Errors
@@ -222,11 +260,13 @@ impl ObjectStateStore {
     /// Returns [`InfrastructureError::Configuration`] for an invalid
     /// configuration.
     pub fn try_new(configuration: ObjectStoreConfiguration) -> Result<Self> {
-        Self::validate_bucket(&configuration.bucket)?;
-        Self::validate_region(&configuration.region)?;
-        if let Some(root) = &configuration.root {
-            validate_root(root)?;
-        }
+        Self::validate_location(&ObjectLocation {
+            endpoint: configuration.endpoint.as_deref(),
+            bucket: &configuration.bucket,
+            region: &configuration.region,
+            root: configuration.root.as_deref(),
+            addressing: configuration.addressing,
+        })?;
         validate_package(&configuration.package)?;
         let endpoint =
             Self::validate_endpoint(configuration.endpoint.as_deref(), &configuration.region)?;
