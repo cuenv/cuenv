@@ -3,8 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    # Test-only packages that are not in the stable release yet (RustFS, the
-    # S3-compatible server the infrastructure end-to-end check runs against).
+    # Packages newer than the stable release: RustFS for infrastructure tests
+    # and cargo-zigbuild for compatibility with the current Rust toolchain.
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane/v0.21.1";
     advisory-db = {
@@ -630,7 +630,9 @@
           pname = "cuenv";
           inherit version;
           doCheck = false; # Tests run via cuenv task check, not nix build
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cargo-zigbuild ];
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            (pkgsUnstable.cargo-zigbuild.override { zig = pkgs.zig; })
+          ];
         } // (if pkgs.stdenv.isLinux then {
           # Linux: Use cargo-zigbuild for portable glibc 2.17 binaries
           auditable = false; # cargo-auditable passes --undefined which zig doesn't support

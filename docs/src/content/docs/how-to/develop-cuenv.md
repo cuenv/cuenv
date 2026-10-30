@@ -219,6 +219,11 @@ cargo build
 
 ## Release Process
 
+Linux release binaries use the pinned unstable `cargo-zigbuild` package from
+the flake inputs. Version 0.23.4 handles the Cortex-A53 linker flag emitted by
+the current Rust toolchain, which the stable package's Zig linker rejects. It
+filters that flag, so binaries do not receive its Cortex-A53 erratum mitigation.
+
 Releases are managed by cuenv's native release tooling:
 
 ### Automated Workflow
