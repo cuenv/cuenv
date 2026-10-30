@@ -627,6 +627,18 @@ fn infrastructure_command(
         }
     };
     let (path, package, action) = match subcommand {
+        InfrastructureCommands::Init { path } => {
+            return Command::Sync {
+                subcommand: Some("infrastructure".to_string()),
+                path,
+                package: "cuenv".to_string(),
+                mode: SyncMode::Write,
+                scope: SyncScope::Path,
+                show_diff: false,
+                ci_provider: None,
+                update_tools: None,
+            };
+        }
         InfrastructureCommands::Provider { subcommand, path } => {
             return Command::InfrastructureProvider {
                 path,

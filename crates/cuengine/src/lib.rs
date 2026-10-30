@@ -190,6 +190,7 @@ impl Drop for CStringPtr {
 #[link(name = "cue_bridge")]
 #[expect(unsafe_code, reason = "Required for Go bridge FFI declarations")]
 unsafe extern "C" {
+    fn cue_eval_file(file_path: *const c_char) -> *mut c_char;
     fn cue_eval_module(
         module_root: *const c_char,
         package_name: *const c_char,
@@ -209,6 +210,11 @@ unsafe extern "C" {
 }
 
 // Stub FFI for documentation builds - these satisfy the compiler but panic if called
+#[cfg(docsrs)]
+unsafe fn cue_eval_file(_: *const c_char) -> *mut c_char {
+    panic!("FFI not available in documentation builds")
+}
+
 #[cfg(docsrs)]
 unsafe fn cue_eval_module(_: *const c_char, _: *const c_char, _: *const c_char) -> *mut c_char {
     panic!("FFI not available in documentation builds")
@@ -962,6 +968,49 @@ fn process_bridge_json<T: DeserializeOwned>(
             format!("Failed to parse bridge response payload: {e}"),
         )
     })
+}
+
+/// Evaluate one CUE file using its original module and imports, without
+/// unifying other files in the same directory or ancestor directories.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be loaded, evaluated, or exported.
+pub fn evaluate_cue_file(file_path: &Path) -> Result<serde_json::Value> {
+    const FUNCTION_NAME: &str = "cue_eval_file";
+    let path = path_to_cstring(file_path, FUNCTION_NAME, "file path")?;
+    let timeout = module_eval_timeout()?;
+    let owned_path = file_path.to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        // Safety: the path is a valid C string and the returned string is
+        // owned by the caller and released by `bridge_owned_c_string`.
+        let result_ptr = {
+            #[expect(unsafe_code, reason = "Required to call the Go file-evaluation bridge")]
+            unsafe {
+                cue_eval_file(path.as_ptr())
+            }
+        };
+        let result = bridge_owned_c_string(result_ptr);
+        let evaluated = extract_ffi_string(&result, FUNCTION_NAME)
+            .and_then(|json| process_bridge_json(&json, &owned_path, FUNCTION_NAME));
+        let _ = sender.send(evaluated);
+    });
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err(Error::ffi(
+            FUNCTION_NAME,
+            format!(
+                "CUE file evaluation timed out after {}s for {}; set {EVAL_TIMEOUT_ENV_VAR} to a larger number of seconds to allow more time",
+                timeout.as_secs(),
+                file_path.display()
+            ),
+        )),
+        Err(RecvTimeoutError::Disconnected) => Err(Error::ffi(
+            FUNCTION_NAME,
+            "CUE file evaluation worker thread disconnected unexpectedly".to_string(),
+        )),
+    }
 }
 
 /// Read dependency version metadata from `cue.mod/module.cue`.

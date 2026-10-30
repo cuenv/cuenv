@@ -79,6 +79,30 @@ fn test_evaluate_cue_package_invalid_path() {
 }
 
 #[test]
+fn evaluate_cue_file_preserves_module_imports_and_isolates_siblings()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir_all(root.path().join("cue.mod"))?;
+    std::fs::create_dir_all(root.path().join("shared"))?;
+    std::fs::write(
+        root.path().join("cue.mod/module.cue"),
+        "module: \"example.org/rules@v0\"\nlanguage: version: \"v0.14.0\"\n",
+    )?;
+    std::fs::write(
+        root.path().join("shared/schema.cue"),
+        "package shared\n#Rules: {answer: 42}\n",
+    )?;
+    std::fs::write(root.path().join("env.cue"), "package cuenv\nanswer: 1\n")?;
+    let file = root.path().join(".rules.cue");
+    std::fs::write(
+        &file,
+        "package cuenv\nimport \"example.org/rules/shared\"\nshared.#Rules\n",
+    )?;
+    assert_eq!(evaluate_cue_file(&file)?, serde_json::json!({"answer": 42}));
+    Ok(())
+}
+
+#[test]
 fn test_evaluate_cue_package_invalid_package_name() {
     let temp_dir = TempDir::new().unwrap();
 

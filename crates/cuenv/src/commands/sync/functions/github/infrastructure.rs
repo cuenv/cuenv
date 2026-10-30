@@ -54,10 +54,70 @@ fn workflows(project: &Project) -> Result<Option<InfrastructureWorkflows>> {
         })
 }
 
+/// Export separate infrastructure leniently for workflow metadata and secret
+/// contributor discovery. Resource values need not be concrete here.
+fn infrastructure_configuration(
+    project: &ProjectInfo,
+    package: &str,
+) -> Result<Option<serde_json::Value>> {
+    let Some(locator) = load_locator(project, package)? else {
+        return Ok(project.config.infrastructure.clone());
+    };
+    if project.config.infrastructure.is_some() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "Project '{}' declares both inline infrastructure and .infrastructure.cue; choose one configuration",
+            project.config.name
+        )));
+    }
+    let options = cuengine::ModuleEvalOptions {
+        target_dir: Some(locator.directory.to_string_lossy().into_owned()),
+        export_paths: vec!["infrastructure".to_string()],
+        instance_failures: cuengine::InstanceFailures::Fail,
+        ..Default::default()
+    };
+    let evaluated =
+        cuengine::evaluate_module(&project.module_root, &locator.package, Some(&options)).map_err(
+            |error| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to read infrastructure workflows for project '{}': {error}",
+                    project.config.name
+                ))
+            },
+        )?;
+    let value = evaluated.instances.values().next().ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "Infrastructure package '{}' was not found in {}",
+            locator.package,
+            locator.directory.display()
+        ))
+    })?;
+    Ok(value.get("infrastructure").cloned())
+}
+
+fn project_workflows(
+    project: &ProjectInfo,
+    package: &str,
+) -> Result<Option<InfrastructureWorkflows>> {
+    let mut configuration = Project::new(&project.config.name);
+    configuration.infrastructure = infrastructure_configuration(project, package)?;
+    workflows(&configuration)
+}
+
+fn load_locator(
+    project: &ProjectInfo,
+    package: &str,
+) -> Result<Option<crate::commands::infrastructure::locator::Locator>> {
+    crate::commands::infrastructure::locator::load(&project.project_path)
+        .map(|locator| locator.filter(|locator| locator.project_package == package))
+        .map_err(|error| cuenv_core::Error::configuration(error.to_string()))
+}
+
 /// Workflow files of a project with infrastructure but without
 /// `infrastructure.workflows`, which an earlier sync may have written.
-pub(super) fn stale_workflows(project: &ProjectInfo) -> Result<Vec<String>> {
-    if project.config.infrastructure.is_none() || workflows(&project.config)?.is_some() {
+pub(super) fn stale_workflows(project: &ProjectInfo, package: &str) -> Result<Vec<String>> {
+    if (project.config.infrastructure.is_none() && load_locator(project, package)?.is_none())
+        || project_workflows(project, package)?.is_some()
+    {
         return Ok(Vec::new());
     }
     Ok([PLAN_PIPELINE, APPLY_PIPELINE]
@@ -79,7 +139,7 @@ pub(super) fn generate_workflows(
     project: &ProjectInfo,
     package: &str,
 ) -> Result<Vec<(String, String)>> {
-    let Some(workflows) = workflows(&project.config)? else {
+    let Some(workflows) = project_workflows(project, package)? else {
         return Ok(Vec::new());
     };
     if let Some(ci) = &project.config.ci {
@@ -101,7 +161,13 @@ pub(super) fn generate_workflows(
     let path = shell_quote(project_path.as_deref().unwrap_or("."));
     let sources = configuration_sources(project, package)?;
 
-    let plan_command = plan_command(&path, &project.config.name);
+    let package_argument = if package == "cuenv" {
+        String::new()
+    } else {
+        format!(" --package {}", shell_quote(package))
+    };
+    let command_path = format!("{path}{package_argument}");
+    let plan_command = plan_command(&path, &command_path, &project.config.name);
     let comment_steps: Vec<Step> = if workflows.plan.comment {
         vec![plan_comment_step(&project.config.name)]
     } else {
@@ -109,6 +175,7 @@ pub(super) fn generate_workflows(
     };
     let plan = generate_workflow(&WorkflowRequest {
         project,
+        package,
         project_path: project_path.as_deref(),
         sources: &sources,
         pipeline_name: PLAN_PIPELINE,
@@ -125,7 +192,9 @@ pub(super) fn generate_workflows(
         },
     })?;
 
-    let apply_command = format!("cuenv infrastructure apply --yes --path {path}");
+    let apply_command = format!(
+        "cuenv infra init --path {path} &&\ncuenv infrastructure apply --yes --path {command_path}"
+    );
     // Pushes and manual runs apply only the configured branch.
     let apply_if = (workflows.apply.on == InfrastructureApplyTrigger::Push).then(|| {
         // GitHub expression strings escape a quote by doubling it.
@@ -134,6 +203,7 @@ pub(super) fn generate_workflows(
     });
     let apply = generate_workflow(&WorkflowRequest {
         project,
+        package,
         project_path: project_path.as_deref(),
         sources: &sources,
         pipeline_name: APPLY_PIPELINE,
@@ -160,15 +230,53 @@ pub(super) fn generate_workflows(
 /// as the CUE loader resolves them: the project's own files, same-package
 /// files of ancestor directories, and every in-module package it imports.
 fn configuration_sources(project: &ProjectInfo, package: &str) -> Result<Vec<String>> {
-    cuengine::instance_sources(&project.module_root, &project.project_path, package)
-        .map(|sources| sources.files)
-        .map_err(|error| {
-            cuenv_core::Error::configuration(format!(
-                "Failed to list the CUE files of project '{}' for its infrastructure workflows: \
+    let mut sources = cuengine::instance_sources(
+        &project.module_root,
+        &project.project_path,
+        package,
+    )
+    .map(|sources| sources.files)
+    .map_err(|error| {
+        cuenv_core::Error::configuration(format!(
+            "Failed to list the CUE files of project '{}' for its infrastructure workflows: \
                  {error}",
-                project.config.name
-            ))
-        })
+            project.config.name
+        ))
+    })?;
+    if let Some(locator) = load_locator(project, package)? {
+        sources.extend(
+            cuengine::instance_sources(&project.module_root, &locator.directory, &locator.package)
+                .map_err(|error| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to list infrastructure CUE files for project '{}': {error}",
+                        project.config.name
+                    ))
+                })?
+                .files,
+        );
+        let directory = locator
+            .directory
+            .strip_prefix(&project.module_root)
+            .map_err(|_| {
+                cuenv_core::Error::configuration(
+                    "Infrastructure directory is outside the project's CUE module",
+                )
+            })?;
+        sources.push(if directory.as_os_str().is_empty() {
+            "**".to_string()
+        } else {
+            format!("{}/**", directory.to_string_lossy().replace('\\', "/"))
+        });
+        // Explicit-file evaluation does not yet expose the locator's transitive
+        // imports. Cover every CUE file, including dotfiles, rather than omit a
+        // dependency from the workflow triggers.
+        sources.push("**/*.cue".to_string());
+        sources.push("**/.infrastructure.cue".to_string());
+        sources.push("cuenv.lock".to_string());
+        sources.sort();
+        sources.dedup();
+    }
+    Ok(sources)
 }
 
 /// Quote a value for a POSIX shell command line.
@@ -222,11 +330,12 @@ fn apply_pipeline(apply: &InfrastructureApplyWorkflow) -> Pipeline {
 
 /// Run the plan, keep its output for the comment step and add it to the job
 /// summary, then exit with the plan's status.
-fn plan_command(path: &str, project_name: &str) -> String {
+fn plan_command(path: &str, command_path: &str, project_name: &str) -> String {
     format!(
         "set -o pipefail\n\
+         cuenv infra init --path {path} || exit $?\n\
          status=0\n\
-         cuenv infrastructure plan --path {path} 2>&1 | tee \"{PLAN_FILE}\" || status=$?\n\
+         cuenv infrastructure plan --path {command_path} 2>&1 | tee \"{PLAN_FILE}\" || status=$?\n\
          {{\n  \
            printf '### Infrastructure plan: `{project_name}`\\n\\n````diff\\n'\n  \
            cat \"{PLAN_FILE}\"\n  \
@@ -289,6 +398,7 @@ if (existing) {{
 
 struct WorkflowRequest<'a> {
     project: &'a ProjectInfo,
+    package: &'a str,
     project_path: Option<&'a str>,
     /// Configuration files whose changes trigger the workflow, in addition
     /// to the paths the compiler derives.
@@ -303,6 +413,7 @@ fn generate_workflow(request: &WorkflowRequest<'_>) -> Result<(String, String)> 
 
     let WorkflowRequest {
         project,
+        package,
         project_path,
         sources,
         pipeline_name,
@@ -312,6 +423,9 @@ fn generate_workflow(request: &WorkflowRequest<'_>) -> Result<(String, String)> 
 
     // The compiler derives triggers only for projects with a `ci` block.
     let mut config = project.config.clone();
+    // Contributor discovery must also see secret references used only by the
+    // separate infrastructure package (for example its state credential).
+    config.infrastructure = infrastructure_configuration(project, package)?;
     let github_config = config
         .ci
         .get_or_insert_with(CI::default)
@@ -509,6 +623,10 @@ mod tests {
         let run = plan_step["run"].as_str().ok_or("plan run")?;
         assert!(run.starts_with("set -o pipefail\n"), "{run}");
         assert!(
+            run.contains("cuenv infra init --path infrastructure/dns || exit $?\n"),
+            "{run}"
+        );
+        assert!(
             run.contains("cuenv infrastructure plan --path infrastructure/dns 2>&1 | tee"),
             "{run}"
         );
@@ -531,7 +649,7 @@ mod tests {
         let apply_step = step(&apply_steps, "Apply infrastructure").ok_or("apply step")?;
         assert_eq!(
             apply_step["run"],
-            "cuenv infrastructure apply --yes --path infrastructure/dns"
+            "cuenv infra init --path infrastructure/dns &&\ncuenv infrastructure apply --yes --path infrastructure/dns"
         );
         assert!(step(&apply_steps, "Comment infrastructure plan").is_none());
         Ok(())
@@ -626,6 +744,118 @@ mod tests {
     }
 
     #[test]
+    fn separate_infrastructure_projects_generate_workflows_and_cover_sources()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut fixture = project(&serde_json::json!({}));
+        fixture.info.config.infrastructure = None;
+        std::fs::write(
+            fixture.info.project_path.join(".infrastructure.cue"),
+            r#"package configuration
+directory: "../../stacks/dns"
+"package": "stack"
+"#,
+        )?;
+        let directory = fixture.info.module_root.join("stacks/dns");
+        std::fs::create_dir_all(&directory)?;
+        std::fs::write(
+            directory.join("main.cue"),
+            r#"package stack
+import "example.com/infra/shared"
+infrastructure: {
+    workflows: {}
+    state: d1: token: {resolver: "onepassword", ref: "op://vault/state/token"}
+    resources: pending: configuration: name: string
+    label: shared.name
+}
+"#,
+        )?;
+        fixture.info.config.ci = Some(serde_json::from_value(serde_json::json!({
+            "contributors": [{
+                "id": "secret-bootstrap",
+                "when": {"secretsProvider": ["onepassword"]},
+                "tasks": [{"id": "setup", "command": "echo", "args": ["prepare-state-secrets"], "priority": 10}]
+            }]
+        }))?);
+        let generated = generate_workflows(&fixture.info, "cuenv")?;
+        assert_eq!(generated.len(), 2);
+        for (_, yaml) in &generated {
+            assert!(yaml.contains("prepare-state-secrets"), "{yaml}");
+        }
+        let plan: serde_yaml::Value = serde_yaml::from_str(&generated[0].1)?;
+        let paths = plan["on"]["pull_request"]["paths"]
+            .as_sequence()
+            .ok_or("paths")?;
+        for source in [
+            "stacks/dns/**",
+            "**/*.cue",
+            "**/.infrastructure.cue",
+            "cuenv.lock",
+            "shared/shared.cue",
+        ] {
+            assert!(
+                paths.iter().any(|path| path.as_str() == Some(source)),
+                "{source}: {paths:?}"
+            );
+        }
+        assert!(stale_workflows(&fixture.info, "cuenv")?.is_empty());
+        std::fs::write(
+            directory.join("main.cue"),
+            "package stack\ninfrastructure: resources: pending: configuration: name: string\n",
+        )?;
+        assert!(generate_workflows(&fixture.info, "cuenv")?.is_empty());
+        assert_eq!(stale_workflows(&fixture.info, "cuenv")?.len(), 2);
+        fixture.info.config.infrastructure = Some(serde_json::json!({"workflows": {}}));
+        let ambiguous =
+            generate_workflows(&fixture.info, "cuenv").expect_err("ambiguous infrastructure");
+        assert!(ambiguous.to_string().contains("both inline infrastructure"));
+        fixture.info.config.infrastructure = None;
+        std::fs::write(
+            directory.join("main.cue"),
+            "package another\ninfrastructure: workflows: {}\n",
+        )?;
+        let missing = generate_workflows(&fixture.info, "cuenv").expect_err("missing package");
+        assert!(missing.to_string().contains("was not found"));
+        Ok(())
+    }
+
+    #[test]
+    fn locator_workflows_belong_to_the_explicit_project_package()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut fixture = project(&serde_json::json!({}));
+        fixture.info.config.infrastructure = None;
+        let directory = fixture.info.project_path.join("stack");
+        std::fs::create_dir(&directory)?;
+        std::fs::write(
+            directory.join("main.cue"),
+            "package stack\ninfrastructure: workflows: {}\n",
+        )?;
+        std::fs::write(
+            fixture.info.project_path.join("env.cue"),
+            "package operations\nname: \"dns\"\n",
+        )?;
+        std::fs::write(
+            fixture.info.project_path.join(".infrastructure.cue"),
+            r#"package configuration
+directory: "stack"
+"package": "stack"
+projectPackage: "operations"
+"#,
+        )?;
+        assert!(generate_workflows(&fixture.info, "cuenv")?.is_empty());
+        assert!(stale_workflows(&fixture.info, "cuenv")?.is_empty());
+        let generated = generate_workflows(&fixture.info, "operations")?;
+        assert_eq!(generated.len(), 2);
+        for (_, yaml) in generated {
+            assert!(yaml.contains("--package operations"), "{yaml}");
+            assert!(
+                !yaml.contains("init --path infrastructure/dns --package"),
+                "{yaml}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn paths_that_need_quoting_are_quoted() {
         assert_eq!(shell_quote("infrastructure/dns"), "infrastructure/dns");
         assert_eq!(shell_quote("my infra"), "'my infra'");
@@ -653,17 +883,17 @@ mod tests {
         let mut fixture = project(&serde_json::json!({}));
         let info = &mut fixture.info;
         info.config.name = "rawkode.academy".to_string();
-        assert!(stale_workflows(info)?.is_empty());
+        assert!(stale_workflows(info, "cuenv")?.is_empty());
         info.config.infrastructure = Some(serde_json::json!({"state": {}}));
         assert_eq!(
-            stale_workflows(info)?,
+            stale_workflows(info, "cuenv")?,
             [
                 "rawkodeacademy-infrastructure-plan.yml",
                 "rawkodeacademy-infrastructure-apply.yml"
             ]
         );
         info.config.infrastructure = None;
-        assert!(stale_workflows(info)?.is_empty());
+        assert!(stale_workflows(info, "cuenv")?.is_empty());
         Ok(())
     }
 }

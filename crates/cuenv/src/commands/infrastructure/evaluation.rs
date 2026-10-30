@@ -150,9 +150,49 @@ pub(super) struct Target {
 /// the same project name, an instance in the module cannot be evaluated, or
 /// the module-wide evaluation does not include the target.
 pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
-    let target_path = Path::new(request.path).canonicalize().map_err(|error| {
+    let project_path = Path::new(request.path).canonicalize().map_err(|error| {
         CliError::config(format!("cannot resolve path {}: {error}", request.path))
     })?;
+    let locator = super::locator::load(&project_path)?
+        .filter(|locator| locator.project_package == request.package);
+    let (target_path, package, project_fields) = if let Some(locator) = &locator {
+        if locator.package == request.package {
+            return Err(CliError::config(
+                "the infrastructure package must differ from the project package",
+            ));
+        }
+        let project = evaluate_path(PathEvaluation {
+            reference_evaluation: None,
+            target_path: &project_path,
+            package: request.package,
+            concrete_paths: vec!["name".to_string()],
+            export_paths: vec![
+                "name".to_string(),
+                "env".to_string(),
+                CACHE_PATH.to_string(),
+                "infrastructure".to_string(),
+            ],
+        })
+        .map_err(CliError::from)?;
+        let relative = compute_relative_path(&project_path, &project.root);
+        let fields = project
+            .get(Path::new(&relative))
+            .ok_or_else(|| CliError::config("the owning project could not be evaluated"))?
+            .value
+            .clone();
+        if fields.get("infrastructure").is_some() {
+            return Err(CliError::config(
+                "the project declares both inline infrastructure and .infrastructure.cue",
+            ));
+        }
+        (
+            locator.directory.clone(),
+            locator.package.as_str(),
+            Some(fields),
+        )
+    } else {
+        (project_path.clone(), request.package, None)
+    };
     // Only a command that needs the selected configuration requires it to be
     // concrete; state-only commands need `infrastructure.state` alone.
     let selected_path = request
@@ -194,14 +234,14 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     let mut module = evaluate_path(PathEvaluation {
         reference_evaluation: (request.needs == Needs::Configuration).then_some(scanning),
         target_path: &target_path,
-        package: request.package,
+        package,
         concrete_paths: concrete_paths.clone(),
         export_paths: export_paths.clone(),
     })
     .map_err(|error| {
         explain_concrete_failure(ConcreteFailure {
             target_path: &target_path,
-            package: request.package,
+            package,
             environment: request.environment,
             export_paths,
             error,
@@ -233,14 +273,14 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             module = evaluate_path(PathEvaluation {
                 reference_evaluation: Some(references),
                 target_path: &target_path,
-                package: request.package,
+                package,
                 concrete_paths,
                 export_paths: unselected_export_paths.clone(),
             })
             .map_err(|error| {
                 explain_concrete_failure(ConcreteFailure {
                     target_path: &target_path,
-                    package: request.package,
+                    package,
                     environment: request.environment,
                     export_paths: unselected_export_paths,
                     error,
@@ -249,7 +289,23 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         }
     }
     let relative_path = compute_relative_path(&target_path, &module.root);
-    let projection = project_target(&module, &target_path, &request)?;
+    if let Some(fields) = project_fields {
+        let instance = module
+            .instances
+            .get_mut(Path::new(&relative_path))
+            .ok_or_else(|| CliError::config("the infrastructure package could not be evaluated"))?;
+        let value = instance.value.as_object_mut().ok_or_else(|| {
+            CliError::config("the infrastructure package must evaluate to an object")
+        })?;
+        for field in ["name", "env", CACHE_PATH] {
+            value.remove(field);
+            if let Some(field_value) = fields.get(field) {
+                value.insert(field.to_string(), field_value.clone());
+            }
+        }
+    }
+    let projection_request = TargetRequest { package, ..request };
+    let projection = project_target(&module, &target_path, &projection_request)?;
     let ProjectedTarget {
         project,
         infrastructure,
@@ -269,7 +325,8 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         }
         Some(_) => EnvironmentSelection::NotDeclared,
     };
-    let instance = ProjectInstance::try_new(&relative_path, request.package)
+    let project_relative_path = compute_relative_path(&project_path, &module.root);
+    let instance = ProjectInstance::try_new(&project_relative_path, request.package)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
 
     match request.name_check {
@@ -306,7 +363,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         warnings: Vec::new(),
         remote_cache_credential_variables,
         project_environment: project.env,
-        project_directory: target_path,
+        project_directory: project_path,
     })
 }
 
@@ -739,10 +796,15 @@ fn module_instances(module_root: &Path) -> Result<ModuleInstances, cuengine::Cue
         .instances
         .iter()
         .map(|(key, value)| {
+            let normalized = normalized_key(key);
+            let (directory, package) = normalized.rsplit_once(':').unwrap_or((".", ""));
+            let locator = super::locator::load(&module_root.join(directory))
+                .map_err(|error| cuengine::CueEngineError::configuration(error.to_string()))?;
             let has_infrastructure = evaluation
                 .present
                 .get(key)
-                .is_some_and(|present| present.iter().any(|path| path == INFRASTRUCTURE_PATH));
+                .is_some_and(|present| present.iter().any(|path| path == INFRASTRUCTURE_PATH))
+                || locator.is_some_and(|locator| locator.project_package == package);
             let summary = InstanceSummary {
                 name: value
                     .get(NAME_PATH)
@@ -750,9 +812,9 @@ fn module_instances(module_root: &Path) -> Result<ModuleInstances, cuengine::Cue
                     .map(ToString::to_string),
                 has_infrastructure,
             };
-            (normalized_key(key), summary)
+            Ok((normalized, summary))
         })
-        .collect();
+        .collect::<Result<_, cuengine::CueEngineError>>()?;
     Ok(ModuleInstances {
         instances,
         skipped: evaluation.skipped_directories,
@@ -1003,6 +1065,141 @@ infrastructure: schema.#Infrastructure & {{
             needs: Needs::Configuration,
             environment,
         })
+    }
+
+    #[test]
+    fn separate_infrastructure_retains_project_identity_environment_and_selectors() -> TestResult {
+        let directory = native_fixture("")?;
+        std::fs::write(
+            directory.path().join("env.cue"),
+            "package cuenv\nname: \"native\"\nenv: TOKEN: \"project-token\"\n",
+        )?;
+        std::fs::write(
+            directory.path().join(".infrastructure.cue"),
+            "package config\ndirectory: \"infra\"\n\"package\": \"infrastructure\"\n",
+        )?;
+        std::fs::create_dir(directory.path().join("infra"))?;
+        std::fs::write(
+            directory.path().join("infra/stack.cue"),
+            r#"package infrastructure
+import "example.com/native/schema"
+infrastructure: schema.#Infrastructure & {
+ state: turso: url: "http://127.0.0.1:8080"
+ providers: fake: {source: "example/fake", path: "/not-started"}
+ resources: {
+  primary: {type: "fake_plain", outputs: id: string}
+  record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}
+ }
+}
+"#,
+        )?;
+        std::fs::write(
+            directory.path().join("other.cue"),
+            "package docs\nname: \"native\"\n",
+        )?;
+        let target = evaluate_native_fixture(directory.path(), None)?;
+        assert_eq!(target.tenant.project(), "native");
+        assert_eq!(target.instance.as_str(), ".:cuenv");
+        assert!(target.project_environment.is_some());
+        assert_eq!(
+            target.infrastructure.resources["primary"]
+                .output_types
+                .get("id"),
+            Some(&cuenv_manifest::manifest::InfrastructureOutputType::String)
+        );
+        assert_eq!(
+            target.infrastructure.resources["record"].configuration["name"]["fromResource"],
+            "fake_plain.primary"
+        );
+        let whole_module = evaluate(TargetRequest {
+            path: &directory.path().to_string_lossy(),
+            package: "cuenv",
+            name_check: NameCheck::WholeModule,
+            needs: Needs::Configuration,
+            environment: None,
+        })?;
+        assert_eq!(whole_module.instance.as_str(), ".:cuenv");
+        Ok(())
+    }
+
+    #[test]
+    fn separate_infrastructure_rejects_ambiguous_inline_configuration() -> TestResult {
+        let directory = native_fixture("")?;
+        std::fs::create_dir(directory.path().join("infra"))?;
+        std::fs::write(
+            directory.path().join(".infrastructure.cue"),
+            "package config\ndirectory: \"infra\"\n\"package\": \"infrastructure\"\n",
+        )?;
+        let result = evaluate_native_fixture(directory.path(), None);
+        assert!(
+            result
+                .err()
+                .is_some_and(|error| error.to_string().contains("both inline"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn locator_for_another_package_does_not_hide_inline_infrastructure() -> TestResult {
+        let directory = native_fixture("")?;
+        std::fs::write(
+            directory.path().join("env.cue"),
+            "package cuenv\nname: \"native\"\n",
+        )?;
+        std::fs::create_dir(directory.path().join("infra"))?;
+        std::fs::write(
+            directory.path().join(".infrastructure.cue"),
+            "package config\ndirectory: \"infra\"\n\"package\": \"infrastructure\"\n",
+        )?;
+        std::fs::write(
+            directory.path().join("operations.cue"),
+            r#"package operations
+name: "operations"
+infrastructure: {
+ state: turso: url: "http://127.0.0.1:8080"
+ providers: fake: {source: "example/fake", path: "/not-started"}
+}
+"#,
+        )?;
+        let target = evaluate(TargetRequest {
+            path: &directory.path().to_string_lossy(),
+            package: "operations",
+            name_check: NameCheck::WholeModule,
+            needs: Needs::Configuration,
+            environment: None,
+        })?;
+        assert_eq!(target.tenant.project(), "operations");
+        assert_eq!(target.instance.as_str(), ".:operations");
+        Ok(())
+    }
+
+    #[test]
+    fn separate_infrastructure_cannot_supply_the_project_environment() -> TestResult {
+        let directory = native_fixture("")?;
+        std::fs::write(
+            directory.path().join("env.cue"),
+            "package cuenv\nname: \"native\"\n",
+        )?;
+        std::fs::create_dir(directory.path().join("infra"))?;
+        std::fs::write(
+            directory.path().join(".infrastructure.cue"),
+            "package config\ndirectory: \"infra\"\n\"package\": \"infrastructure\"\n",
+        )?;
+        std::fs::write(
+            directory.path().join("infra/stack.cue"),
+            r#"package infrastructure
+env: BAD: "must-not-be-used"
+cache: remote: auth: bearerTokenEnv: "BAD_CACHE_TOKEN"
+infrastructure: {
+ state: turso: url: "http://127.0.0.1:8080"
+ providers: fake: {source: "example/fake", path: "/not-started"}
+}
+"#,
+        )?;
+        let target = evaluate_native_fixture(directory.path(), None)?;
+        assert!(target.project_environment.is_none());
+        assert!(target.remote_cache_credential_variables.is_empty());
+        Ok(())
     }
 
     #[test]

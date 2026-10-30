@@ -137,6 +137,9 @@ enum InterruptPolicy {
 /// owns interrupts.
 const fn interrupt_policy(cli: &cli::Cli) -> InterruptPolicy {
     match &cli.command {
+        Some(cli::Commands::Infrastructure {
+            subcommand: cli::InfrastructureCommands::Init { .. },
+        }) => InterruptPolicy::Process,
         Some(cli::Commands::Infrastructure { .. }) => InterruptPolicy::Command,
         _ => InterruptPolicy::Process,
     }

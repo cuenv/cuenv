@@ -1,210 +1,73 @@
-//! Shared utility for evaluating `.rules.cue` files in isolation.
-//!
-//! CUE ignores dotfiles during package loading, so `.rules.cue` cannot be
-//! evaluated directly within its parent directory. This module copies the
-//! content into a temporary directory as `package rules` and evaluates it
-//! there, avoiding unification with `env.cue` in the same folder.
+//! Evaluate `.rules.cue` independently while preserving its module imports.
 
 use std::path::Path;
 
 use cuenv_core::Result;
 use cuenv_core::manifest::DirectoryRules;
 
-/// Evaluate a `.rules.cue` file and return the parsed configuration.
-///
-/// The file is copied into a temporary directory with its package declaration
-/// rewritten to `package rules`, then evaluated in isolation via the CUE
-/// engine.
-///
-/// Because the isolated tempdir has no access to the parent module's schema
-/// packages, we strip `import` blocks and schema type constraint references
-/// (e.g. `rules.#DirectoryRules &`) so the file evaluates as plain CUE data.
-/// A minimal `cue.mod/module.cue` is also created since the Go bridge
-/// requires a module root.
+/// Evaluate a single rules file in its original module.
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be read, the temporary module cannot be
-/// created, or the CUE engine fails to evaluate the patched content into a
-/// [`DirectoryRules`] value (including unknown-field rejection by serde).
+/// Returns an error when the file, its imports, or its schema are invalid, or
+/// when its evaluated contents do not match the rules manifest.
 pub fn evaluate_rules_file(file_path: &Path) -> Result<DirectoryRules> {
-    let original = std::fs::read_to_string(file_path).map_err(|e| {
-        cuenv_core::Error::io_with_path("read .rules.cue", file_path.to_path_buf(), e)
-    })?;
-
-    let patched = prepare_isolated_cue(&original);
-
-    let tempdir = tempfile::tempdir()
-        .map_err(|e| cuenv_core::Error::io("create tempdir for .rules.cue eval", e))?;
-
-    // Create minimal cue.mod/module.cue required by the Go bridge
-    let cue_mod_dir = tempdir.path().join("cue.mod");
-    std::fs::create_dir_all(&cue_mod_dir).map_err(|e| {
-        cuenv_core::Error::io_with_path("create cue.mod dir", cue_mod_dir.clone(), e)
-    })?;
-    std::fs::write(
-        cue_mod_dir.join("module.cue"),
-        "module: \"cuenv.dev/rules-eval\"\nlanguage: version: \"v0.12.0\"\n",
-    )
-    .map_err(|e| {
-        cuenv_core::Error::io_with_path(
-            "write cue.mod/module.cue",
-            cue_mod_dir.join("module.cue"),
-            e,
-        )
-    })?;
-
-    let temp_path = tempdir.path().join("rules_eval.cue");
-    std::fs::write(&temp_path, patched).map_err(|e| {
-        cuenv_core::Error::io_with_path("write temp rules file", temp_path.clone(), e)
-    })?;
-
-    cuengine::evaluate_cue_package_typed(tempdir.path(), "rules").map_err(|e| {
+    let value = cuengine::evaluate_cue_file(file_path).map_err(|error| {
         cuenv_core::Error::configuration(format!(
-            "Failed to parse .rules.cue [isolated-eval] at {}: {}",
-            file_path.display(),
-            e
+            "Failed to evaluate .rules.cue at {}: {error}",
+            file_path.display()
+        ))
+    })?;
+    serde_json::from_value(value).map_err(|error| {
+        cuenv_core::Error::configuration(format!(
+            "Failed to parse .rules.cue at {}: {error}",
+            file_path.display()
         ))
     })
 }
 
-/// Transform `.rules.cue` content for isolated evaluation.
-///
-/// Strips the package declaration (replaced with `package rules`), import
-/// blocks, and schema type constraint references so the file can evaluate
-/// without its parent module's dependencies.
-///
-/// Enforcement boundary: because the `rules.#DirectoryRules` constraint is
-/// stripped here, the CUE schema's `close()` checks do NOT run on the `cuenv
-/// sync` path. The structural contract on this path is enforced solely by the
-/// `#[serde(deny_unknown_fields)]` attributes on the `DirectoryRules` types
-/// when the evaluated JSON is deserialized. The CUE `close()` checks only fire
-/// when a file is evaluated in-module (e.g. `cue vet`). Keep the serde
-/// attributes and the schema constraints in agreement.
-fn prepare_isolated_cue(source: &str) -> String {
-    let mut result = String::with_capacity(source.len());
-    result.push_str("package rules\n");
-
-    let mut in_import_block = false;
-    let mut skip_package = true;
-
-    for line in source.lines() {
-        let trimmed = line.trim();
-
-        // Skip the original package declaration (first occurrence)
-        if skip_package && trimmed.starts_with("package ") {
-            skip_package = false;
-            continue;
-        }
-
-        // Skip single-line imports: `import "..."`
-        if trimmed.starts_with("import \"") {
-            continue;
-        }
-
-        // Skip multi-line import blocks: `import ( ... )`
-        if trimmed.starts_with("import (") {
-            in_import_block = true;
-            continue;
-        }
-        if in_import_block {
-            if trimmed == ")" {
-                in_import_block = false;
-            }
-            continue;
-        }
-
-        // Strip schema type constraint references on their own line
-        // e.g. `rules.#DirectoryRules &` or `rules.#DirectoryRules`
-        if trimmed.starts_with("rules.#") {
-            // If the line is just the constraint (with optional trailing &),
-            // skip it entirely
-            let without_prefix =
-                trimmed.trim_start_matches(|c: char| c.is_alphanumeric() || c == '.' || c == '#');
-            let remainder = without_prefix.trim();
-            if remainder.is_empty() || remainder == "&" {
-                continue;
-            }
-        }
-
-        // For inline constraint like `rules.#DirectoryRules & {`, strip the
-        // constraint prefix, keeping only `{`
-        if trimmed.starts_with("rules.#")
-            && let Some(pos) = trimmed.find('&')
-        {
-            let after_amp = trimmed[pos + 1..].trim();
-            if !after_amp.is_empty() {
-                result.push_str(after_amp);
-                result.push('\n');
-                continue;
-            }
-        }
-
-        result.push_str(line);
-        result.push('\n');
-    }
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::evaluate_rules_file;
 
     #[test]
-    fn strips_import_and_constraint() {
-        let input = r#"package cuenv
-
-import "github.com/cuenv/cuenv/schema/rules"
-
-rules.#DirectoryRules & {
-    ignore: {
-        git: [".cache"]
-    }
-}
-"#;
-        let result = prepare_isolated_cue(input);
-        assert!(!result.contains("import"));
-        assert!(!result.contains("rules.#DirectoryRules"));
-        assert!(result.starts_with("package rules\n"));
-        assert!(result.contains("ignore:"));
-        assert!(result.contains('{'));
-    }
-
-    #[test]
-    fn strips_standalone_constraint() {
-        let input = r#"package examples
-
-import "github.com/cuenv/cuenv/schema/rules"
-
-rules.#DirectoryRules
-
-ignore: {
-    git: ["node_modules/"]
-}
-"#;
-        let result = prepare_isolated_cue(input);
-        assert!(!result.contains("import"));
-        assert!(!result.contains("rules.#DirectoryRules"));
-        assert!(result.contains("ignore:"));
-    }
-
-    #[test]
-    fn handles_multi_line_import_block() {
-        let input = r#"package test
-
-import (
-    "github.com/cuenv/cuenv/schema/rules"
-    "strings"
-)
-
-ignore: {
-    git: ["target/"]
-}
-"#;
-        let result = prepare_isolated_cue(input);
-        assert!(!result.contains("import"));
-        assert!(!result.contains("strings"));
-        assert!(result.contains("ignore:"));
+    fn evaluates_imports_and_schema_without_loading_the_project()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir_all(root.path().join("cue.mod"))?;
+        std::fs::create_dir_all(root.path().join("rules"))?;
+        std::fs::write(
+            root.path().join("cue.mod/module.cue"),
+            "module: \"example.org/rules@v0\"\nlanguage: version: \"v0.14.0\"\n",
+        )?;
+        std::fs::write(
+            root.path().join("rules/schema.cue"),
+            "package rules\n#DirectoryRules: {ignore: git: [\"target/\"]}\n",
+        )?;
+        std::fs::write(
+            root.path().join("env.cue"),
+            "package cuenv\nignore: git: [\"other/\"]\n",
+        )?;
+        let file = root.path().join(".rules.cue");
+        std::fs::write(
+            &file,
+            "package cuenv\nimport \"example.org/rules/rules\"\nrules.#DirectoryRules\n",
+        )?;
+        let result = evaluate_rules_file(&file)?;
+        assert_eq!(
+            result
+                .ignore
+                .as_ref()
+                .and_then(|ignore| ignore.get("git"))
+                .map(|entry| entry.patterns()),
+            Some(["target/".to_string()].as_slice())
+        );
+        std::fs::write(
+            &file,
+            "package cuenv\nimport \"example.org/rules/rules\"\nrules.#DirectoryRules & {ignore: git: [\"wrong/\"]}\n",
+        )?;
+        let failure = evaluate_rules_file(&file).expect_err("schema mismatch must fail");
+        assert!(failure.to_string().contains(".rules.cue"));
+        Ok(())
     }
 }

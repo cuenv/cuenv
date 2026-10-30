@@ -62,7 +62,7 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
     let mut stale_workflows: Vec<String> = Vec::new();
     for project in projects {
         all_workflows.extend(infrastructure::generate_workflows(project, package)?);
-        stale_workflows.extend(infrastructure::stale_workflows(project)?);
+        stale_workflows.extend(infrastructure::stale_workflows(project, package)?);
     }
 
     if hestia_enabled {

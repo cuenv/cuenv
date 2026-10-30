@@ -155,6 +155,9 @@ impl BridgeOutputs {
 
 fn emit_rerun_directives(manifest_dir: &Path) -> BuildResult<()> {
     // Track all Go source files and module files for rebuild detection.
+    // Track directory entries too: an added Go source must rebuild the archive
+    // even when it did not exist when the previous build script ran.
+    println!("cargo:rerun-if-changed={}", manifest_dir.display());
     for path in tracked_build_inputs(manifest_dir)? {
         println!("cargo:rerun-if-changed={}", path.display());
     }

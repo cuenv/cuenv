@@ -375,7 +375,7 @@ pub enum Commands {
                       change between releases, and it is not covered by the stability promises \
                       of the other commands. Do not rely on it for production infrastructure \
                       without reading the infrastructure how-to guide first.",
-        visible_alias = "i"
+        visible_aliases = ["i", "infra"]
     )]
     Infrastructure {
         /// Infrastructure subcommand to execute.

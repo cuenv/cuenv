@@ -76,6 +76,48 @@ struct Invocation<'a> {
     format: OutputFormat,
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real Random provider and Turso/sqld; see module documentation"]
+async fn moving_infrastructure_to_a_separate_package_preserves_state() -> TestResult {
+    let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
+        .canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let store = TursoStateStore::try_new(backend.clone())?;
+    let project = format!("separate-infrastructure-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    let lifecycle = Lifecycle::new(&provider, &backend, &project)?;
+    let created = lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(created["applied"]["create"], 3);
+    let before = store.list(&tenant).await?;
+    assert_eq!(before.len(), 3);
+
+    let (project_cue, infrastructure_cue) = lifecycle
+        .configuration
+        .split_once("infrastructure: {")
+        .ok_or("missing infrastructure declaration")?;
+    fs::write(lifecycle.directory.path().join("env.cue"), project_cue)?;
+    fs::create_dir(lifecycle.directory.path().join("infra"))?;
+    fs::write(
+        lifecycle.directory.path().join("infra/stack.cue"),
+        format!("package infrastructure\ninfrastructure: {{{infrastructure_cue}"),
+    )?;
+    fs::write(
+        lifecycle.directory.path().join(".infrastructure.cue"),
+        "package examples\ndirectory: \"infra\"\n\"package\": \"infrastructure\"\nprojectPackage: \"examples\"\n",
+    )?;
+
+    let plan = lifecycle.run(&["plan"])?;
+    assert_eq!(plan["summary"]["create"], 0);
+    assert_eq!(plan["summary"]["delete"], 0);
+    assert_eq!(store.list(&tenant).await?.len(), before.len());
+    lifecycle.run(&["destroy", "--yes"])?;
+    assert!(store.list(&tenant).await?.is_empty());
+    Ok(())
+}
+
 /// A temporary project directory holding a copy of the schema and a CUE module.
 fn prepare_directory() -> TestResult<tempfile::TempDir> {
     let directory = tempfile::Builder::new()
@@ -760,6 +802,120 @@ infrastructure: {{
     Ok(())
 }
 
+/// Init restores locked types from a verified local provider cache and refuses
+/// schema digest drift without evaluating the project or modifying the lock.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider; see module documentation"]
+async fn infrastructure_init_restores_locked_types_from_cached_provider() -> TestResult {
+    use cuenv_infrastructure::Cancellation;
+    use cuenv_infrastructure::cue_types::{self, ProviderRelease};
+    use cuenv_infrastructure::registry::{ProviderInstaller, ProviderSource, current_platform};
+    use sha2::{Digest, Sha256};
+
+    let provider =
+        PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let directory = prepare_directory()?;
+    // An unresolvable project ensures init never attempts project evaluation.
+    fs::write(
+        directory.path().join("env.cue"),
+        "package cuenv\nimport missing \"example.invalid/test/fake/resources/fake_plain\"\nname: missing.name\n",
+    )?;
+    let source = ProviderSource::parse("example.invalid/test/fake")?;
+    let version = "1.2.3";
+    let (schema, _) = cue_types::load_schema(&provider, &Cancellation::default()).await?;
+    let expected = cue_types::render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version,
+        },
+    )?;
+    let cache = directory.path().join("provider-cache");
+    let installation =
+        ProviderInstaller::try_new(cache.clone())?.install_directory(&source, version)?;
+    fs::create_dir_all(&installation)?;
+    let binary = installation.join("terraform-provider-fake");
+    fs::copy(&provider, &binary)?;
+    let binary_digest = hex::encode(Sha256::digest(fs::read(&binary)?));
+    let archive_digest = "a".repeat(64);
+    fs::write(
+        installation.join(".cuenv-provider.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "filename": "terraform-provider-fake",
+            "sha256": binary_digest,
+            "archive_sha256": archive_digest,
+            "source": source.to_string(),
+            "version": version,
+        }))?,
+    )?;
+    let platform = current_platform()?.to_string();
+    let lockfile = |schema_digest: &str| {
+        format!(
+            "version = 5\n[infrastructure_providers.\"{source}\"]\nversion = \"{version}\"\nschema_digest = \"{schema_digest}\"\n[infrastructure_providers.\"{source}\".platforms]\n{platform} = \"sha256:{archive_digest}\"\n"
+        )
+    };
+    let lock = lockfile(&expected.schema_digest);
+    fs::write(directory.path().join("cuenv.lock"), &lock)?;
+    let init = || -> Result<Output, std::io::Error> {
+        Command::new(env!("CARGO_BIN_EXE_cuenv"))
+            .current_dir(directory.path())
+            .env("TF_PLUGIN_CACHE_DIR", &cache)
+            .args(["infra", "init"])
+            .output()
+    };
+
+    let restored = init()?;
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("cuenv.lock"))?,
+        lock
+    );
+    for (relative, content) in &expected.files {
+        assert_eq!(
+            fs::read_to_string(directory.path().join(&expected.directory).join(relative))?,
+            *content
+        );
+    }
+    let ignore = fs::read_to_string(directory.path().join(".gitignore"))?;
+    let repeated = init()?;
+    assert!(
+        repeated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+    assert!(String::from_utf8_lossy(&repeated.stdout).contains("up to date"));
+    assert_eq!(
+        fs::read_to_string(directory.path().join(".gitignore"))?,
+        ignore
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("cuenv.lock"))?,
+        lock
+    );
+
+    // Digest drift must be refused without rewriting generated types or the pin.
+    let stale_lock = lockfile(&format!("sha256:{}", "b".repeat(64)));
+    fs::write(directory.path().join("cuenv.lock"), &stale_lock)?;
+    let stale = init()?;
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("schema digest differs"));
+    assert_eq!(
+        fs::read_to_string(directory.path().join("cuenv.lock"))?,
+        stale_lock
+    );
+    for (relative, content) in &expected.files {
+        assert_eq!(
+            fs::read_to_string(directory.path().join(&expected.directory).join(relative))?,
+            *content
+        );
+    }
+    Ok(())
+}
+
 /// Typed configuration end to end: CUE types generated from the provider
 /// binary into the module's `cue.mod/gen` type the project and a typed plan
 /// runs; a misspelled argument fails evaluation before any provider starts,
@@ -1102,6 +1258,9 @@ async fn data_source_only_cli_invocations_read_without_managed_state() -> TestRe
     let project = format!("data-only-{}", uuid::Uuid::new_v4());
     let tenant = TenantKey::try_new(MODULE, &project)?;
     let store = TursoStateStore::try_new(backend.clone())?;
+    // This read-only/data-only path does not create the state schema. Set it
+    // up explicitly instead of depending on another concurrent test to do so.
+    store.migrate().await?;
     let configuration = format!(
         r#"package examples
 import "github.com/cuenv/cuenv/schema"

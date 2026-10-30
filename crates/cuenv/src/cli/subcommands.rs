@@ -208,6 +208,13 @@ pub enum SecretsCommands {
 /// Infrastructure subcommands (Terraform provider plugins + Turso or D1 state).
 #[derive(Subcommand, Debug, Clone)]
 pub enum InfrastructureCommands {
+    /// Install pinned providers and regenerate their CUE types.
+    #[command(about = "Install pinned providers and regenerate their CUE types")]
+    Init {
+        /// Path inside the CUE module containing cuenv.lock.
+        #[arg(long, short = 'p', default_value = ".")]
+        path: String,
+    },
     /// Show the changes `apply` would make.
     #[command(about = "Show the changes `apply` would make")]
     Plan {
@@ -586,7 +593,7 @@ impl InfrastructureCommands {
             | Self::State { package, .. }
             | Self::Unlock { package, .. } => package,
             // Provider types are generated without evaluating CUE.
-            Self::Provider { .. } => "cuenv",
+            Self::Init { .. } | Self::Provider { .. } => "cuenv",
         }
     }
 }

@@ -450,6 +450,28 @@ impl CommandHandler for SyncHandler {
             ))
         };
 
+        // Provider types may be imported by the project we must inspect below.
+        // Restore them first, using only the module lockfile.
+        let bootstrap_output = if self.subcommand.is_none() && !sync_all {
+            Some(
+                registry
+                    .sync_provider(
+                        "infrastructure",
+                        sync::SyncRequest {
+                            path,
+                            package: &self.package,
+                            options: &options,
+                            scope: self.scope,
+                            executor,
+                        },
+                    )
+                    .await?
+                    .output,
+            )
+        } else {
+            None
+        };
+
         if self.subcommand.is_none() && !sync_all {
             let target_path = path.canonicalize().map_err(|e| {
                 cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e)
@@ -498,11 +520,15 @@ impl CommandHandler for SyncHandler {
                     )
                     .await?
                     .output;
-                return Ok([rules_output, vcs_output]
-                    .into_iter()
-                    .filter(|output| !output.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n\n"));
+                return Ok([
+                    bootstrap_output.unwrap_or_default(),
+                    rules_output,
+                    vcs_output,
+                ]
+                .into_iter()
+                .filter(|output| !output.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n"));
             }
         }
 
@@ -537,17 +563,22 @@ impl CommandHandler for SyncHandler {
         // `cue.mod/gen` from `cuenv.lock` without evaluating anything, and
         // every later provider evaluates the module (and caches the result),
         // which fails for projects that import types not written yet.
+        let providers: &[&str] = if bootstrap_output.is_some() {
+            &["rules", "vcs", "lock", "codegen", "ci", "git-hooks"]
+        } else {
+            &[
+                "infrastructure",
+                "rules",
+                "vcs",
+                "lock",
+                "codegen",
+                "ci",
+                "git-hooks",
+            ]
+        };
         let provider_output = registry
             .sync_selected(
-                &[
-                    "infrastructure",
-                    "rules",
-                    "vcs",
-                    "lock",
-                    "codegen",
-                    "ci",
-                    "git-hooks",
-                ],
+                providers,
                 sync::SyncRequest {
                     path,
                     package: &self.package,
@@ -558,7 +589,11 @@ impl CommandHandler for SyncHandler {
             )
             .await?;
 
-        Ok(provider_output)
+        Ok([bootstrap_output.unwrap_or_default(), provider_output]
+            .into_iter()
+            .filter(|output| !output.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"))
     }
 }
 
