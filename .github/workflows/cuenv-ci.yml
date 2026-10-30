@@ -8,61 +8,71 @@ on:
     - main
     paths:
     - .agents/skills/**
-    - .cargo/**
-    - .config/**
+    - .cargo/config.toml
+    - .cargo/config.toml/**
+    - .config/nextest.toml
+    - .config/nextest.toml/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.lock/**
     - Cargo.toml
     - Cargo.toml/**
-    - _tests/**
     - clippy.toml
     - clippy.toml/**
     - contrib/**
     - crates/**
     - cue.mod/**
+    - cue.mod/**/*.cue
     - deny.toml
     - deny.toml/**
     - env.cue
     - env.cue/**
-    - examples/**
+    - examples/**/*.cue
     - flake.lock
     - flake.lock/**
     - flake.nix
     - flake.nix/**
     - llms.txt
     - llms.txt/**
+    - nix/source-files.json
+    - nix/source-files.json/**
     - schema/**
+    - schema/**/*.cue
   pull_request:
     branches:
     - main
     paths:
     - .agents/skills/**
-    - .cargo/**
-    - .config/**
+    - .cargo/config.toml
+    - .cargo/config.toml/**
+    - .config/nextest.toml
+    - .config/nextest.toml/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.lock/**
     - Cargo.toml
     - Cargo.toml/**
-    - _tests/**
     - clippy.toml
     - clippy.toml/**
     - contrib/**
     - crates/**
     - cue.mod/**
+    - cue.mod/**/*.cue
     - deny.toml
     - deny.toml/**
     - env.cue
     - env.cue/**
-    - examples/**
+    - examples/**/*.cue
     - flake.lock
     - flake.lock/**
     - flake.nix
     - flake.nix/**
     - llms.txt
     - llms.txt/**
+    - nix/source-files.json
+    - nix/source-files.json/**
     - schema/**
+    - schema/**/*.cue
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true

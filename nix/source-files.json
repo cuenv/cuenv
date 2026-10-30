@@ -1,0 +1,23 @@
+{
+  "files": [
+    ".cargo/config.toml",
+    ".config/nextest.toml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "clippy.toml",
+    "deny.toml",
+    "env.cue",
+    "llms.txt",
+    "nix/source-files.json"
+  ],
+  "trees": [
+    ".agents/skills",
+    "contrib",
+    "crates"
+  ],
+  "cueTrees": [
+    "cue.mod",
+    "examples",
+    "schema"
+  ]
+}

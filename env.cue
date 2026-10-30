@@ -1,3 +1,5 @@
+@extern(embed)
+
 package cuenv
 
 import (
@@ -19,15 +21,17 @@ let _baseInputs = [
 	"crates/**",
 ]
 
-// Everything the flake's source filter passes to a check. A check run through
-// `cuenv task` sees only its inputs, so a tool configuration missing here
-// (clippy.toml, nextest's profiles, cargo's config) silently changes the
-// check rather than failing it.
-let _checkInputs = list.Concat([
+// The files the flake builds from. flake.nix reads the same list, so a task
+// that runs the flake in its exec root evaluates exactly the derivations a git
+// checkout does: same store paths, same binary-cache hits. `flake-source-check`
+// fails when the two drift.
+_flakeSourceFiles: _ @embed(file="nix/source-files.json")
+
+let _flakeInputs = list.Concat([
 	["flake.nix", "flake.lock"],
-	_baseInputs,
-	["_tests/**", "contrib/**", "examples/**", "schema/**", "cue.mod/**", ".agents/skills/**", "deny.toml", "env.cue"],
-	["clippy.toml", ".cargo/**", ".config/**", "llms.txt"],
+	_flakeSourceFiles.files,
+	[for tree in _flakeSourceFiles.trees {"\(tree)/**"}],
+	[for tree in _flakeSourceFiles.cueTrees {"\(tree)/**/*.cue"}],
 ])
 
 let _schemaDocsInputs = [
@@ -153,6 +157,7 @@ schema.#Project & {
 					_t.ci."sync-check",
 					_t.ci."schema-docs-check",
 					_t.ci."schema-compat",
+					_t.ci."flake-source-check",
 				]
 			}
 
@@ -238,6 +243,42 @@ schema.#Project & {
 				inputs: _schemaDocsInputs
 			}
 
+			// The flake's derivation paths as a task exec root sees them: only
+			// the declared inputs, no git metadata.
+			"flake-drv-paths": schema.#Task & {
+				hermetic: {passthrough: ["PATH"]}
+				command: "bash"
+				args: ["scripts/flake-drv-paths.sh", "target/flake-drv-paths/exec-root.txt"]
+				inputs: list.Concat([_flakeInputs, ["scripts/flake-drv-paths.sh"]])
+				outputs: ["target/flake-drv-paths/exec-root.txt"]
+			}
+
+			// Fails when a task that runs the flake would evaluate different
+			// derivations than the checkout: a file the flake reads that is
+			// missing from nix/source-files.json, or a source filter that
+			// depends on the directory's surroundings. Either one silently
+			// turns binary-cache hits into full rebuilds.
+			"flake-source-check": schema.#Task & {
+				// Evaluates the checkout itself, git metadata included.
+				hermetic: false
+				dependsOn: [_t.ci."flake-drv-paths"]
+				script: """
+					#!/usr/bin/env bash
+					set -euo pipefail
+
+					bash scripts/flake-drv-paths.sh target/flake-drv-paths/checkout.txt
+					if ! diff -u target/flake-drv-paths/checkout.txt target/flake-drv-paths/exec-root.txt; then
+					  echo "The flake evaluates differently in a task exec root than in the checkout." >&2
+					  echo "Either the flake reads a file nix/source-files.json does not list, or the" >&2
+					  echo "exec root picked up untracked or ignored files under a listed tree" >&2
+					  echo "(see git status --ignored); input globs do not consult .gitignore." >&2
+					  exit 1
+					fi
+					echo "Exec-root and checkout evaluations match."
+					"""
+				inputs: [{task: "ci.flake-drv-paths"}, "scripts/flake-drv-paths.sh"]
+			}
+
 			// Evaluates every example and tests/schema-compat fixture as a
 			// consumer module under each supported CUE release and language
 			// version. Installs the CUE releases with `go install`.
@@ -260,7 +301,7 @@ schema.#Project & {
 		check: schema.#Task & {
 			command: "nix"
 			args: ["flake", "check", "-L", "--accept-flake-config"]
-			inputs: _checkInputs
+			inputs: _flakeInputs
 		}
 
 		checks: {
@@ -269,43 +310,43 @@ schema.#Project & {
 			cuenv: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 
 			audit: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-audit", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 
 			bdd: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-bdd", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 
 			clippy: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-clippy", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 
 			deny: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-deny", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 
 			fmt: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-fmt", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 
 			doctest: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-doctest", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 
 			// Runs the ignored infrastructure suites against sqld and real/fake
@@ -313,13 +354,13 @@ schema.#Project & {
 			"infrastructure-e2e": schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-infrastructure-e2e", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 
 			nextest: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-nextest", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 		}
 
@@ -333,13 +374,13 @@ schema.#Project & {
 			clippy: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.aarch64-darwin.cuenv-clippy", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 
 			nextest: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.aarch64-darwin.cuenv-nextest", "-L", "--accept-flake-config"]
-				inputs: _checkInputs
+				inputs: _flakeInputs
 			}
 		}
 
@@ -490,30 +531,24 @@ schema.#Project & {
 				inputs: _baseInputs
 			}
 
+			// The release binary is the flake's `cuenv` package. Its inputs are
+			// the flake's own source list, so this evaluates to the store path
+			// the CI bootstrap job already built and pushed: the release
+			// substitutes that binary instead of compiling a second one.
 			build: schema.#Task & {
 				hermetic: {passthrough: ["PATH"]}
 				script: """
 					#!/usr/bin/env bash
 					set -euo pipefail
 
-					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
-					task_root="$PWD"
-					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
-					export HOME="$task_root/.cuenv-home"
-					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
-					export TMPDIR="$task_root/.cuenv-tmp"
-					export TMP="$TMPDIR"
-					export TEMP="$TMPDIR"
-
-					echo "Building release artifact from flake output..."
 					nix build .#cuenv -L --accept-flake-config
 					mkdir -p target/release
 					cp result/bin/cuenv target/release/cuenv
 
-					echo "Binary at: target/release/cuenv"
+					echo "Binary at: target/release/cuenv ($(readlink -f result))"
 					file target/release/cuenv
 					"""
-				inputs: list.Concat([_baseInputs, ["flake.nix", "flake.lock"]])
+				inputs: _flakeInputs
 				outputs: ["target/release/cuenv"]
 			}
 

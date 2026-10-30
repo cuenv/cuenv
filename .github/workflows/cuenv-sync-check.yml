@@ -8,13 +8,27 @@ on:
     - main
     paths:
     - .agents/skills/**
+    - .cargo/config.toml
+    - .cargo/config.toml/**
+    - .config/nextest.toml
+    - .config/nextest.toml/**
     - .github/workflows/cuenv-sync-check.yml
     - AGENTS.md
     - AGENTS.md/**
+    - Cargo.lock
+    - Cargo.lock/**
+    - Cargo.toml
+    - Cargo.toml/**
+    - clippy.toml
+    - clippy.toml/**
     - contrib/**
+    - crates/**
     - cue.mod/**
+    - cue.mod/**/*.cue
     - cuenv.lock
     - cuenv.lock/**
+    - deny.toml
+    - deny.toml/**
     - docs/design/specs/schema-coverage-matrix.md
     - docs/design/specs/schema-coverage-matrix.md/**
     - docs/src/content/docs/agents/**
@@ -31,29 +45,53 @@ on:
     - env.cue
     - env.cue/**
     - examples/**
+    - examples/**/*.cue
+    - flake.lock
+    - flake.lock/**
+    - flake.nix
+    - flake.nix/**
     - llms.txt
     - llms.txt/**
+    - nix/source-files.json
+    - nix/source-files.json/**
     - prompts/**
     - readme.md
     - readme.md/**
     - schema/**
+    - schema/**/*.cue
     - scripts/check-schema-compat.sh
     - scripts/check-schema-compat.sh/**
     - scripts/check-schema-docs.sh
     - scripts/check-schema-docs.sh/**
+    - scripts/flake-drv-paths.sh
+    - scripts/flake-drv-paths.sh/**
     - tests/schema-compat/**
   pull_request:
     branches:
     - main
     paths:
     - .agents/skills/**
+    - .cargo/config.toml
+    - .cargo/config.toml/**
+    - .config/nextest.toml
+    - .config/nextest.toml/**
     - .github/workflows/cuenv-sync-check.yml
     - AGENTS.md
     - AGENTS.md/**
+    - Cargo.lock
+    - Cargo.lock/**
+    - Cargo.toml
+    - Cargo.toml/**
+    - clippy.toml
+    - clippy.toml/**
     - contrib/**
+    - crates/**
     - cue.mod/**
+    - cue.mod/**/*.cue
     - cuenv.lock
     - cuenv.lock/**
+    - deny.toml
+    - deny.toml/**
     - docs/design/specs/schema-coverage-matrix.md
     - docs/design/specs/schema-coverage-matrix.md/**
     - docs/src/content/docs/agents/**
@@ -70,16 +108,26 @@ on:
     - env.cue
     - env.cue/**
     - examples/**
+    - examples/**/*.cue
+    - flake.lock
+    - flake.lock/**
+    - flake.nix
+    - flake.nix/**
     - llms.txt
     - llms.txt/**
+    - nix/source-files.json
+    - nix/source-files.json/**
     - prompts/**
     - readme.md
     - readme.md/**
     - schema/**
+    - schema/**/*.cue
     - scripts/check-schema-compat.sh
     - scripts/check-schema-compat.sh/**
     - scripts/check-schema-docs.sh
     - scripts/check-schema-docs.sh/**
+    - scripts/flake-drv-paths.sh
+    - scripts/flake-drv-paths.sh/**
     - tests/schema-compat/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -90,6 +138,7 @@ jobs:
       contents: read
       checks: write
       pull-requests: write
+      packages: write
       id-token: write
     name: cuenv-sync-check
     runs-on: namespace-profile-cuenv-linux-x86
