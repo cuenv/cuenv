@@ -707,13 +707,16 @@ fn the_recovery_identity_ignores_region_addressing_and_credentials() {
 }
 
 /// The conformance suite and the capability probe against a real
-/// S3-compatible server, such as MinIO:
+/// S3-compatible server. The `cuenv-infrastructure-e2e` flake check runs it
+/// against RustFS; by hand:
 ///
 /// ```sh
-/// docker run -p 9000:9000 minio/minio server /data
-/// mc mb local/cuenv-test
+/// RUSTFS_ACCESS_KEY=cuenv RUSTFS_SECRET_KEY=cuenv-secret \
+///   rustfs server --address 127.0.0.1:9000 /tmp/rustfs &
+/// curl --aws-sigv4 aws:amz:us-east-1:s3 --user cuenv:cuenv-secret \
+///   -X PUT http://127.0.0.1:9000/cuenv-test
 /// CUENV_TEST_S3_ENDPOINT=http://127.0.0.1:9000 CUENV_TEST_S3_BUCKET=cuenv-test \
-/// CUENV_TEST_S3_ACCESS_KEY_ID=minioadmin CUENV_TEST_S3_SECRET_ACCESS_KEY=minioadmin \
+/// CUENV_TEST_S3_ACCESS_KEY_ID=cuenv CUENV_TEST_S3_SECRET_ACCESS_KEY=cuenv-secret \
 ///   cargo test -p cuenv-infrastructure --lib -- --ignored against_a_real_server
 /// ```
 ///

@@ -3,6 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    # Test-only packages that are not in the stable release yet (RustFS, the
+    # S3-compatible server the infrastructure end-to-end check runs against).
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane/v0.21.1";
     advisory-db = {
       url = "github:RustSec/advisory-db";
@@ -28,7 +31,7 @@
     accept-flake-config = true;
   };
 
-  outputs = { self, nixpkgs, crane, advisory-db, flake-utils, rust-overlay, flake-schemas, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, crane, advisory-db, flake-utils, rust-overlay, flake-schemas, ... }:
     let
       systems = [
         "aarch64-darwin"
@@ -43,6 +46,7 @@
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
+        pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
 
         rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
@@ -378,8 +382,8 @@
 
         # The ignored suites need a libSQL server and real provider binaries, so
         # they are skipped by `cuenv-nextest`. This check provides them inside the
-        # Nix sandbox (loopback only, no network): sqld on free loopback ports, the
-        # fake provider and the hashicorp random, local and tfe providers from
+        # Nix sandbox (loopback only, no network): sqld and a RustFS S3 server on
+        # free loopback ports, the fake provider and the hashicorp random, local and tfe providers from
         # nixpkgs. `installs_provider_from_registry` is excluded because it
         # downloads from registry.terraform.io. Only ignored tests run here; the
         # rest of each crate's tests belong to `cuenv-nextest`.
@@ -422,6 +426,7 @@
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
             pkgs.curl
             pkgs.sqld
+            pkgsUnstable.rustfs
             fake-terraform-provider
             pkgs.terraform-providers.hashicorp_random
             pkgs.terraform-providers.hashicorp_local
@@ -434,11 +439,10 @@
             "--status-level pass"
             "--hide-progress-bar"
             "-E"
-            # Tests that need the network are left out: a registry download, a
-            # real Cloudflare D1 database and a real S3-compatible server (the
-            # D1 and S3 backends run here against in-process stand-ins in the
-            # default suite instead).
-            "'(package(cuenv-infrastructure) | (package(cuenv) & binary(infrastructure_lifecycle))) & not test(installs_provider_from_registry) & not test(lifecycle_against_d1) & not test(conforms_against_a_real_server)'"
+            # Tests that need the network are left out: a registry download, and
+            # a real Cloudflare D1 database (the D1 backend runs here against a
+            # SQLite-backed stand-in in the default suite instead).
+            "'(package(cuenv-infrastructure) | (package(cuenv) & binary(infrastructure_lifecycle))) & not test(installs_provider_from_registry) & not test(lifecycle_against_d1)'"
           ];
           preCheck = ''
             export HOME="$TMPDIR/home"
@@ -478,15 +482,15 @@
               return 1
             }
 
-            sqld_pids=""
-            stop_sqld() {
-              for pid in $sqld_pids; do
+            server_pids=""
+            stop_servers() {
+              for pid in $server_pids; do
                 kill "$pid" 2>/dev/null || true
               done
             }
             # Registered as a failure hook and called again in postCheck rather than
             # trapped on EXIT: a trap would replace stdenv's own exit handler.
-            failureHooks+=(stop_sqld)
+            failureHooks+=(stop_servers)
 
             # Each libSQL database that a suite requires to be otherwise unused gets
             # its own server; the shared one serves everything else.
@@ -496,7 +500,7 @@
               mkdir -p "$TMPDIR/sqld-$1"
               sqld --http-listen-addr "127.0.0.1:$port" --db-path "$TMPDIR/sqld-$1/data.sqld" \
                 > "$TMPDIR/sqld-$1.log" 2>&1 &
-              sqld_pids="$sqld_pids $!"
+              server_pids="$server_pids $!"
               for _ in $(seq 1 100); do
                 if curl --silent --fail "http://127.0.0.1:$port/health" > /dev/null; then
                   started_sqld_url="http://127.0.0.1:$port"
@@ -509,7 +513,7 @@
               return 1
             }
             # start_sqld runs in this shell (not a command substitution) so that the
-            # server's pid is recorded for stop_sqld.
+            # server's pid is recorded for stop_servers.
             start_sqld shared
             export CUENV_INFRASTRUCTURE_TEST_TURSO_URL="$started_sqld_url"
             start_sqld fresh
@@ -518,9 +522,42 @@
             export CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL="$started_sqld_url"
             start_sqld layout
             export CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL="$started_sqld_url"
+
+            # A real S3-compatible server for the object-storage conformance suite:
+            # conditional writes, ETags, listings and SigV4 against something other
+            # than cuenv's own fake.
+            s3_port="$(free_port)"
+            export CUENV_TEST_S3_ENDPOINT="http://127.0.0.1:$s3_port"
+            export CUENV_TEST_S3_BUCKET="cuenv-state"
+            export CUENV_TEST_S3_ACCESS_KEY_ID="cuenv-e2e"
+            export CUENV_TEST_S3_SECRET_ACCESS_KEY="cuenv-e2e-secret"
+            mkdir -p "$TMPDIR/rustfs"
+            RUSTFS_ACCESS_KEY="$CUENV_TEST_S3_ACCESS_KEY_ID" \
+              RUSTFS_SECRET_KEY="$CUENV_TEST_S3_SECRET_ACCESS_KEY" \
+              rustfs server --address "127.0.0.1:$s3_port" "$TMPDIR/rustfs" \
+              > "$TMPDIR/rustfs.log" 2>&1 &
+            server_pids="$server_pids $!"
+            # RustFS answers its health endpoint before its storage is ready (503
+            # on S3 requests), so readiness is the bucket's creation itself.
+            bucket_created=""
+            for _ in $(seq 1 150); do
+              if curl --silent --fail --output /dev/null \
+                --aws-sigv4 "aws:amz:us-east-1:s3" \
+                --user "$CUENV_TEST_S3_ACCESS_KEY_ID:$CUENV_TEST_S3_SECRET_ACCESS_KEY" \
+                --request PUT "$CUENV_TEST_S3_ENDPOINT/$CUENV_TEST_S3_BUCKET"; then
+                bucket_created=1
+                break
+              fi
+              sleep 0.2
+            done
+            if [ -z "$bucket_created" ]; then
+              echo "rustfs did not accept the bucket" >&2
+              cat "$TMPDIR/rustfs.log" >&2
+              exit 1
+            fi
           '';
           postCheck = ''
-            stop_sqld
+            stop_servers
           '';
           # The check's outcome is all that matters; installing its target
           # directory only adds a large artifact to the store and the cache.
