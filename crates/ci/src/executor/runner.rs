@@ -352,6 +352,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compiled_script_runs_as_written() {
+        use crate::compiler::Compiler;
+        use cuenv_core::manifest::Project;
+        use cuenv_core::tasks::{Task, TaskNode};
+
+        let mut project = Project::new("scripts");
+        project.tasks.insert(
+            "script".to_string(),
+            TaskNode::Task(Box::new(Task {
+                script: Some(
+                    "#!/usr/bin/env bash\nset -euo pipefail\necho first\necho second\n".to_string(),
+                ),
+                ..Default::default()
+            })),
+        );
+        let ir = Compiler::new(project).compile().unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
+        let result = runner.execute(&ir.tasks[0], BTreeMap::new()).await.unwrap();
+
+        assert!(result.success, "{}", result.stderr);
+        assert_eq!(
+            result.stdout.lines().collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+    }
+
+    #[tokio::test]
     async fn test_env_injection() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());

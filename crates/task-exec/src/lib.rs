@@ -44,7 +44,7 @@ pub use backend::{
     BackendFactory, HostBackend, TaskBackend, TaskExecutionContext, create_backend,
     create_backend_with_factory, should_use_dagger,
 };
-pub(crate) use command_ext::TaskCommandExt;
+pub use command_ext::TaskCommandExt;
 pub use executor::*;
 pub use graph::*;
 pub use index::{IndexedTask, TaskIndex, TaskPath, WorkspaceTask};
@@ -52,4 +52,4 @@ pub use output_refs::{
     OutputRefResolver, TaskOutputField, TaskOutputRef, has_output_refs, process_output_refs,
 };
 pub use process_registry::global_registry;
-pub(crate) use shell::TaskCommandSpec;
+pub use shell::TaskCommandSpec;
