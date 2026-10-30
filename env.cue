@@ -192,7 +192,7 @@ schema.#Project & {
 				}
 				tasks: [
 					{
-						task:   _t.cargo.build
+						task: _t.cargo.build
 						matrix: arch: ["linux-x64", "linux-arm64", "darwin-arm64"]
 					},
 					{
@@ -225,7 +225,9 @@ schema.#Project & {
 			type: "group"
 
 			"sync-check": schema.#Task & {
-				command: "cuenv"
+				// Runs the cuenv on the host PATH.
+				hermetic: false
+				command:  "cuenv"
 				args: ["sync", "--check"]
 				inputs: ["env.cue", "schema/**", "contrib/**", "cuenv.lock"]
 			}
@@ -559,7 +561,7 @@ schema.#Project & {
 				// Stage CI-downloaded binaries and explicitly pass release context.
 				hermetic: {passthrough: ["PATH"]}
 				env: {
-					TAG:      schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
+					TAG: schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
 					GH_TOKEN: schema.#EnvPassthrough & {name: "GITHUB_TOKEN"}
 				}
 				inputs: ["dist/*/cuenv"]
@@ -623,7 +625,7 @@ schema.#Project & {
 				hermetic: {passthrough: ["PATH"]}
 				dependsOn: [_t.publish.github]
 				env: {
-					TAG:      schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
+					TAG: schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
 					GH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
 				}
 				command: "bash"
