@@ -10,9 +10,11 @@ ledger, not a generated claim that source code passes terminal conformance.
 
 The report retains the original Linux qualification failures against
 `7ae087500bcde5c0c9f09cb9c50382e9220b3360` as historical executions and records
-new evidence against `b0694c0707a90dc93fdf01cbf8a658424be285ee` separately.
-The current revision is the head of
-[Rio PR #1927](https://github.com/raphamorim/rio/pull/1927). Every capability
+evidence against fork revision `b0694c0707a90dc93fdf01cbf8a658424be285ee`
+separately. The current pin is upstream commit
+`fb582f066a2df7f95055eedb513752adc8c5f6b8`, which incorporates the fork's
+fixes via [Rio PR #1930](https://github.com/raphamorim/rio/pull/1930).
+Previous passes are historical until repeated against this pin. Every capability
 has a decision outcome of `pass`, `fail`, or `unobservable`; a pass must cite a
 successful execution against the current engine revision.
 
@@ -27,9 +29,9 @@ but test linking failed on missing Linux xcb/xkbcommon/xkbcommon-x11 libraries.
 No full-app tests ran in that retry. These results do not establish a macOS app
 build or smoke pass.
 
-Those Linux results remain useful history, but they do not describe the new
+Those Linux results remain useful history, but they do not describe the current
 pin. On Apple Silicon macOS, the full app suite, serial real-PTY suite, and the
-formerly failing contention regression pass. The PTY suite covers input,
+formerly failing contention regression passed against the fork. The PTY suite covers input,
 bracketed paste, resize, final output plus exit status, Rio-owned history
 navigation, and bounded child reaping. Cargo still reports transitive
 future-incompatibility notices for `block` and `proc-macro-error2`; neither is a
@@ -42,12 +44,12 @@ final-output delivery and the paste round trip `fail`, with root-cause attributi
 Rio's `Machine::pty_read` appears able to discard buffered bytes if the terminal
 lock is unavailable and a subsequent Linux read returns EIO. This is a
 source-backed inference, not an instrumented execution trace. The repository's
-`host.rs::final_output_survives_snapshot_lock_contention` regression now passes
+`host.rs::final_output_survives_snapshot_lock_contention` regression passed
 in the ordinary suite against PR #1927 after failing through the earlier
 actual-module harness with the old pin.
 The sanitized command/output evidence lives at
 `apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt`.
-The current Apple Silicon evidence is recorded at
+The historical Apple Silicon evidence is recorded at
 `apps/cuetty/m0/evidence/2026-09-10-macos-rio-pr-1927.txt`.
 
 The original Rio `teletypewriter` revision had a source-inspected lifecycle blocker:

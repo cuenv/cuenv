@@ -126,6 +126,7 @@ CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
 `cueRegistry`. The CUE Registry path is implemented by the GitHub contributor
 and generated workflow action; it requires `id-token: write` and is intended
 for production release pipelines.
+
 Build-only note: the root and Cuetty app-local Nix flakes pin Rust `1.98.1`
 with matching `rust-overlay` locks. This compiler update changes no schema,
 CLI support status, or declared workspace MSRV; build and Clippy validation

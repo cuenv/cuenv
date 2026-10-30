@@ -1,12 +1,13 @@
 # Cuetty
 
 Cuetty is a deliberately narrow, usable GPUI terminal host for Cuenv. It is
-built around Rio revision `b0694c0707a90dc93fdf01cbf8a658424be285ee`, pinned
-from [Rio PR #1927](https://github.com/raphamorim/rio/pull/1927) for lossless
+built around upstream Rio revision `fb582f066a2df7f95055eedb513752adc8c5f6b8`,
+which includes [Rio PR #1930](https://github.com/raphamorim/rio/pull/1930) for
 final-output draining and ownership-safe Unix PTY teardown.
 
 The pin is intentional. Upgrade it only with a terminal correctness and
-live-interaction validation pass.
+live-interaction validation pass. Existing macOS qualification evidence applies
+to the previous fork revision and must be repeated for the upstream pin.
 
 ```text
 Rio PTY + VT state
@@ -51,6 +52,8 @@ window starts as shell level 1 even when the app was launched from a nested
 development shell. Subshells increment normally from there.
 
 ## Verification
+
+The app-local Nix environment includes `libxcb` for Linux linking.
 
 ```sh
 cargo fmt --check

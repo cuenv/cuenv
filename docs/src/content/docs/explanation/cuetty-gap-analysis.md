@@ -5,8 +5,8 @@ description: Gap analysis between Termy, Okena, and Cuetty
 
 This analysis compares Cuetty with the Termy and Okena reference projects.
 They are learning references, not vendored code. Cuetty's terminal engine is
-the pinned Rio revision `b0694c0707a90dc93fdf01cbf8a658424be285ee` from
-[Rio PR #1927](https://github.com/raphamorim/rio/pull/1927), hosted in a
+the pinned upstream Rio revision `fb582f066a2df7f95055eedb513752adc8c5f6b8` from
+[Rio PR #1930](https://github.com/raphamorim/rio/pull/1930), hosted in a
 Rust/GPUI application.
 
 For the deliberately narrower macOS path from a vanilla terminal workflow to

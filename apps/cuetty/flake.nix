@@ -145,6 +145,7 @@
             pkgs.openssl
             pkgs.vulkan-loader
             pkgs.wayland
+            pkgs.xorg.libxcb
             pkgs.xorg.libXcursor
             pkgs.xorg.libXi
             pkgs.xorg.libXrandr

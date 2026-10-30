@@ -8,15 +8,17 @@ standalone Rust desktop application using GPUI for the product shell and the
 pinned Rio terminal engine for terminal state, parsing, PTY integration, and
 semantic render frames.
 
-The direct-`rio-vt` qualification revision is:
+The direct-`rio-vt` revision is:
 
-`b0694c0707a90dc93fdf01cbf8a658424be285ee`
+`fb582f066a2df7f95055eedb513752adc8c5f6b8`
 
-That pin is intentional. It is the head of
-[Rio PR #1927](https://github.com/raphamorim/rio/pull/1927), which preserves
+That pin is intentional. It includes
+[Rio PR #1930](https://github.com/raphamorim/rio/pull/1930), which preserves
 final PTY output under terminal-lock contention and gives Unix child teardown
 an ownership-safe shutdown/reap contract. Cuetty uses public APIs available at
 this revision rather than private renderer or embedding APIs.
+The recorded macOS qualification applies to the previous fork revision;
+qualification of this upstream pin remains pending.
 
 The original proof of concept used `librio` at
 `b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1`. The M0 implementation migrates to
