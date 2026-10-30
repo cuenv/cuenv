@@ -28,7 +28,10 @@ use super::key::{
     parse_state_key, validate_package, validate_root,
 };
 use super::sigv4::Credentials;
-use super::{HistoryEntry, ObjectStateFeatures, ObjectTenant, RestoreRequest, StoredTenant};
+use super::{
+    HistoryEntry, LockDetails, ObjectStateFeatures, ObjectTenant, RestoreRequest, StateSize,
+    StoredTenant,
+};
 use crate::error::{InfrastructureError, Result, strip_control_characters};
 use crate::state::{
     ConditionalPut, LastWriter, LockInformation, LockRequest, ManagedResource, RecordVersion,
@@ -838,6 +841,10 @@ pub struct ManifestEntry {
     pub status: String,
     /// The migration identifier.
     pub migration: String,
+    /// The target's serial when the migration committed: a rollback
+    /// refuses when the target changed since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committed_serial: Option<u64>,
 }
 
 /// A project's migration manifest.
@@ -1120,38 +1127,22 @@ impl StateStore for ObjectStateStore {
     }
 
     async fn locks(&self) -> Result<Vec<TenantLock>> {
-        self.ensure_not_public().await?;
-        let prefix = markers_prefix(self.root.as_deref(), None)?;
-        let mut paths: Vec<(TenantPath, String)> = self
-            .list_keys(&prefix)
+        self.locks_under(None).await
+    }
+
+    async fn environments(&self, module_path: &str, project: &str) -> Result<Vec<Option<String>>> {
+        let path = self.path(&TenantKey::try_new(module_path, project)?)?;
+        let mut environments: Vec<Option<String>> = self
+            .list_keys(&path.project_prefix())
             .await?
             .iter()
-            .filter_map(|key| parse_marker_key(self.root.as_deref(), key))
+            .filter_map(|key| parse_state_key(self.root.as_deref(), key))
+            .filter(|found| found.project() == project && found.package() == self.package)
+            .map(|found| found.environment().map(ToString::to_string))
             .collect();
-        paths.sort_by_key(|path| path.0.state_key());
-        paths.dedup_by(|left, right| left.0 == right.0);
-        let mut locks = Vec::new();
-        for (path, _) in paths {
-            // The marker only says where to look; `state.json` is the
-            // authority, and holder details come from it alone.
-            let Ok(Some((document, _))) = self.read(&path).await else {
-                continue;
-            };
-            let Some(lock) = document.lock else {
-                continue;
-            };
-            locks.push(TenantLock {
-                module_path: path.module_path().to_string(),
-                package: Some(path.package().to_string()),
-                project: path.project().to_string(),
-                environment: path.environment().map(ToString::to_string),
-                lock: lock.information(),
-            });
-        }
-        locks.sort_by(|left, right| {
-            (&left.lock.acquired_at, left.label()).cmp(&(&right.lock.acquired_at, right.label()))
-        });
-        Ok(locks)
+        environments.sort();
+        environments.dedup();
+        Ok(environments)
     }
 
     async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {
@@ -1341,6 +1332,45 @@ impl ObjectStateStore {
         )))
     }
 
+    /// The locks held under `module` (every lock when `None`), found
+    /// through their markers and confirmed in `state.json`. A module's
+    /// listing stays inside `_locks/<module>/_`, so prefix-scoped
+    /// credentials can list it.
+    async fn locks_under(&self, module: Option<&str>) -> Result<Vec<TenantLock>> {
+        self.ensure_not_public().await?;
+        let prefix = markers_prefix(self.root.as_deref(), module)?;
+        let mut paths: Vec<(TenantPath, String)> = self
+            .list_keys(&prefix)
+            .await?
+            .iter()
+            .filter_map(|key| parse_marker_key(self.root.as_deref(), key))
+            .collect();
+        paths.sort_by_key(|path| path.0.state_key());
+        paths.dedup_by(|left, right| left.0 == right.0);
+        let mut locks = Vec::new();
+        for (path, _) in paths {
+            // The marker only says where to look; `state.json` is the
+            // authority, and holder details come from it alone.
+            let Ok(Some((document, _))) = self.read(&path).await else {
+                continue;
+            };
+            let Some(lock) = document.lock else {
+                continue;
+            };
+            locks.push(TenantLock {
+                module_path: path.module_path().to_string(),
+                package: Some(path.package().to_string()),
+                project: path.project().to_string(),
+                environment: path.environment().map(ToString::to_string),
+                lock: lock.information(),
+            });
+        }
+        locks.sort_by(|left, right| {
+            (&left.lock.acquired_at, left.label()).cmp(&(&right.lock.acquired_at, right.label()))
+        });
+        Ok(locks)
+    }
+
     /// The size of the tenant's `state.json` in bytes, `None` when absent.
     ///
     /// # Errors
@@ -1496,7 +1526,9 @@ impl ObjectStateFeatures for ObjectStateStore {
             let Some(path) = parse_state_key(self.root.as_deref(), &key) else {
                 continue;
             };
-            let Ok(Some((document, _))) = self.read(&path).await else {
+            // A tenant that cannot be read fails the listing: rename
+            // detection never treats an unreadable tenant as absent.
+            let Some((document, _)) = self.read(&path).await? else {
                 continue;
             };
             if document.tombstone.is_some() {
@@ -1516,6 +1548,42 @@ impl ObjectStateFeatures for ObjectStateStore {
             });
         }
         Ok(tenants)
+    }
+
+    async fn size(&self, tenant: &TenantKey) -> Result<Option<StateSize>> {
+        Ok(self.state_size(tenant).await?.map(|bytes| StateSize {
+            bytes,
+            limit: MAXIMUM_STATE_BYTES,
+        }))
+    }
+
+    async fn lock_details(&self, tenant: &TenantKey) -> Result<Option<LockDetails>> {
+        let path = self.path(tenant)?;
+        Ok(self
+            .read(&path)
+            .await?
+            .and_then(|(document, _)| document.lock)
+            .map(|lock| LockDetails {
+                cuenv_version: strip_control_characters(&lock.cuenv_version),
+                last_change: lock.last_change.map(|change| {
+                    strip_control_characters(&format!(
+                        "{} {} at {}",
+                        change.action, change.address, change.at
+                    ))
+                }),
+            }))
+    }
+
+    async fn module_locks(&self, module_path: &str) -> Result<Vec<TenantLock>> {
+        self.locks_under(Some(module_path)).await
+    }
+
+    async fn awaiting_migration(&self, tenant: &TenantKey) -> Result<bool> {
+        let path = self.path(tenant)?;
+        Ok(self
+            .read_manifest(&path)
+            .await?
+            .is_some_and(|manifest| manifest.lists(&path)))
     }
 
     async fn history(&self, tenant: &TenantKey) -> Result<Vec<HistoryEntry>> {

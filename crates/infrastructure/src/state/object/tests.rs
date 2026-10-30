@@ -87,7 +87,7 @@ fn document(server: &FakeS3, key: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn conforms_to_the_state_store_contract() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     store.migrate().await.unwrap();
     crate::state::conformance::conforms(&store).await;
@@ -95,7 +95,7 @@ async fn conforms_to_the_state_store_contract() {
 
 #[tokio::test]
 async fn the_layout_matches_the_specification() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let root = ProjectInstance::try_new("services/web", "cuenv").unwrap();
     let lock = take(&store, Some(&root)).await;
@@ -149,7 +149,7 @@ async fn the_layout_matches_the_specification() {
 
 #[tokio::test]
 async fn every_write_changes_serial_and_writer() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let key = "example.com/infra/_cuenv/web/_default/state.json";
     let lock = take(&store, None).await;
@@ -168,7 +168,7 @@ async fn every_write_changes_serial_and_writer() {
 
 #[tokio::test]
 async fn a_lost_response_is_resolved_by_reading_the_writer_back() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let lock = take(&store, None).await;
     server.fault("PUT", "state.json", FaultAction::DropAfterApply);
@@ -201,7 +201,7 @@ async fn a_lost_response_is_resolved_by_reading_the_writer_back() {
 
 #[tokio::test]
 async fn conflicts_and_rate_limits_are_retried_and_a_lost_lock_is_never_written_through() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let lock = take(&store, None).await;
     server.fault(
@@ -242,7 +242,7 @@ async fn conflicts_and_rate_limits_are_retried_and_a_lost_lock_is_never_written_
 
 #[tokio::test]
 async fn a_vanished_state_object_is_never_recreated_from_empty() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let lock = take(&store, None).await;
     store
@@ -295,7 +295,7 @@ async fn a_vanished_state_object_is_never_recreated_from_empty() {
 
 #[tokio::test]
 async fn restore_rewinds_records_with_fresh_generations_and_keeps_serials_rising() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let lock = take(&store, None).await;
     store
@@ -349,7 +349,7 @@ async fn restore_rewinds_records_with_fresh_generations_and_keeps_serials_rising
 
 #[tokio::test]
 async fn history_is_pruned_by_numeric_serial() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     for value in ["a", "b", "c", "d", "e"] {
         let lock = take(&store, None).await;
@@ -380,7 +380,7 @@ async fn history_is_pruned_by_numeric_serial() {
 
 #[tokio::test]
 async fn a_lock_without_changes_writes_no_history() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let lock = take(&store, None).await;
     store.unlock(&tenant(), &lock).await.unwrap();
@@ -389,7 +389,7 @@ async fn a_lock_without_changes_writes_no_history() {
 
 #[tokio::test]
 async fn stale_markers_are_ignored_and_markers_never_name_a_lock_by_themselves() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     server.put_object(
         BUCKET,
@@ -408,7 +408,7 @@ async fn stale_markers_are_ignored_and_markers_never_name_a_lock_by_themselves()
 
 #[tokio::test]
 async fn locks_are_listed_across_packages() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let ops = ObjectStateStore::try_new(configuration(&server, "ops")).unwrap();
     let cuenv = store(&server);
     let _ops_lock = take(&ops, None).await;
@@ -426,7 +426,7 @@ async fn locks_are_listed_across_packages() {
 
 #[tokio::test]
 async fn the_probe_refuses_stores_that_ignore_conditions_or_serve_the_public() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     store(&server).migrate().await.unwrap();
     assert!(
         server
@@ -436,25 +436,25 @@ async fn the_probe_refuses_stores_that_ignore_conditions_or_serve_the_public() {
         "probe objects are deleted"
     );
 
-    let careless = FakeS3::start().await;
+    let careless = FakeS3::start().await.unwrap();
     careless.ignore_conditions();
     let error = store(&careless).migrate().await.unwrap_err();
     assert!(error.to_string().contains("capability check"), "{error}");
 
-    let public = FakeS3::start().await;
+    let public = FakeS3::start().await.unwrap();
     public.make_public();
     let error = store(&public).migrate().await.unwrap_err();
     assert!(error.to_string().contains("public"), "{error}");
 
     // A rate-limited probe is retried, never read as "conditions ignored".
-    let limited = FakeS3::start().await;
+    let limited = FakeS3::start().await.unwrap();
     limited.fault("PUT", ".probe-", FaultAction::Status(429, String::new()));
     store(&limited).migrate().await.unwrap();
 }
 
 #[tokio::test]
 async fn planted_and_newer_documents_are_refused() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let other = TenantKey::try_new("example.com/infra", "api").unwrap();
     let key = path("cuenv", &tenant()).state_key();
@@ -472,7 +472,7 @@ async fn planted_and_newer_documents_are_refused() {
 
 #[tokio::test]
 async fn a_newer_write_format_is_never_written_over() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let key = path("cuenv", &tenant()).state_key();
     let mut newer = super::document::StateDocument::new(&path("cuenv", &tenant()), 1);
@@ -499,7 +499,7 @@ async fn a_newer_write_format_is_never_written_over() {
 
 #[tokio::test]
 async fn rename_moves_state_and_leaves_a_tombstone() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let lock = take(&store, None).await;
     store
@@ -554,7 +554,7 @@ async fn rename_moves_state_and_leaves_a_tombstone() {
 
 #[tokio::test]
 async fn tenants_lists_every_package_of_the_module_for_rename_detection() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let cuenv = store(&server);
     let root = ProjectInstance::try_new("web", "cuenv").unwrap();
     let lock = take(&cuenv, Some(&root)).await;
@@ -590,7 +590,7 @@ async fn tenants_lists_every_package_of_the_module_for_rename_detection() {
 
 #[tokio::test]
 async fn errors_never_carry_the_endpoint_or_a_credential() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store = store(&server);
     let lock = take(&store, None).await;
     server.fault(
@@ -657,7 +657,7 @@ fn configuration_is_validated_before_anything_is_sent() {
 
 #[tokio::test]
 async fn r2_endpoints_pace_writes_to_one_key() {
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let mut paced = configuration(&server, "cuenv");
     paced.minimum_write_interval = Some(Duration::from_millis(300));
     let store = ObjectStateStore::try_new(paced).unwrap();
@@ -704,4 +704,65 @@ fn the_recovery_identity_ignores_region_addressing_and_credentials() {
         local("us-east-1", AddressingChoice::Auto, "a"),
         local("auto", AddressingChoice::Path, "b")
     );
+}
+
+/// The conformance suite and the capability probe against a real
+/// S3-compatible server, such as MinIO:
+///
+/// ```sh
+/// docker run -p 9000:9000 minio/minio server /data
+/// mc mb local/cuenv-test
+/// CUENV_TEST_S3_ENDPOINT=http://127.0.0.1:9000 CUENV_TEST_S3_BUCKET=cuenv-test \
+/// CUENV_TEST_S3_ACCESS_KEY_ID=minioadmin CUENV_TEST_S3_SECRET_ACCESS_KEY=minioadmin \
+///   cargo test -p cuenv-infrastructure --lib -- --ignored against_a_real_server
+/// ```
+///
+/// Each run writes under a fresh random root, so it can share a bucket.
+#[tokio::test]
+#[ignore = "needs an S3-compatible server: set CUENV_TEST_S3_ENDPOINT, CUENV_TEST_S3_BUCKET, CUENV_TEST_S3_ACCESS_KEY_ID and CUENV_TEST_S3_SECRET_ACCESS_KEY"]
+async fn conforms_against_a_real_server() {
+    let variable = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("set {name}"));
+    let root = format!("cuenv-test-{}", uuid::Uuid::new_v4().simple());
+    let store = ObjectStateStore::try_new(ObjectStoreConfiguration {
+        endpoint: Some(variable("CUENV_TEST_S3_ENDPOINT")),
+        bucket: variable("CUENV_TEST_S3_BUCKET"),
+        region: std::env::var("CUENV_TEST_S3_REGION").unwrap_or_else(|_| "us-east-1".into()),
+        root: Some(root),
+        addressing: AddressingChoice::Auto,
+        credentials: Credentials {
+            access_key_id: variable("CUENV_TEST_S3_ACCESS_KEY_ID"),
+            secret_access_key: variable("CUENV_TEST_S3_SECRET_ACCESS_KEY"),
+            session_token: std::env::var("CUENV_TEST_S3_SESSION_TOKEN").ok(),
+        },
+        package: "cuenv".into(),
+        history: 3,
+        minimum_write_interval: None,
+        probe_tenant: Some(TenantKey::try_new("example.com/conformance", "web").unwrap()),
+    })
+    .unwrap();
+    store.migrate().await.unwrap();
+    crate::state::conformance::conforms(&store).await;
+}
+
+#[tokio::test]
+async fn a_modules_locks_are_listed_under_its_own_prefix() {
+    let server = FakeS3::start().await.unwrap();
+    let store = store(&server);
+    let _ours = take(&store, None).await;
+    let other = TenantKey::try_new("example.com/other", "web").unwrap();
+    store
+        .acquire_lock(
+            &other,
+            &LockRequest {
+                lock: &StateLock::generate(),
+                holder: "test",
+                instance: None,
+            },
+        )
+        .await
+        .unwrap();
+    let locks = store.module_locks("example.com/infra").await.unwrap();
+    assert_eq!(locks.len(), 1);
+    assert_eq!(locks[0].module_path, "example.com/infra");
+    assert_eq!(store.locks().await.unwrap().len(), 2);
 }

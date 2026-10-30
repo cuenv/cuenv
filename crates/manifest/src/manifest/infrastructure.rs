@@ -433,8 +433,9 @@ pub enum InfrastructureState {
     Turso(TursoState),
     /// Cloudflare D1 database, reached through the Cloudflare API.
     D1(D1State),
-    /// An S3-compatible bucket: AWS S3, Cloudflare R2 or MinIO.
-    S3(S3State),
+    /// An S3-compatible bucket: AWS S3, Cloudflare R2 or MinIO. Boxed: it
+    /// is much larger than the database variants.
+    S3(Box<S3State>),
 }
 
 /// One credential of a state backend: where it is configured and its value.

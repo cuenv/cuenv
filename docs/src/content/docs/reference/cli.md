@@ -504,10 +504,14 @@ covered by the stability promises of the other commands.
 
 ```bash
 cuenv infrastructure plan    [OPTIONS]
-cuenv infrastructure apply   [OPTIONS] [--yes] [--allow-separate-state]
-cuenv infrastructure destroy [OPTIONS] [--yes]
-cuenv infrastructure state   [list | locks | remove <ADDRESS> | recover [--force] [--accept-backend] | adopt] [OPTIONS]
-cuenv infrastructure unlock  [OPTIONS] [--module <MODULE>] [--project <PROJECT>] [LOCK_IDENTIFIER]
+cuenv infrastructure apply   [OPTIONS] [--yes] [--allow-separate-state] [--new-identity]
+cuenv infrastructure destroy [OPTIONS] [--yes] [--new-identity]
+cuenv infrastructure import  <ADDRESS> <IDENTIFIER> [OPTIONS] [--new-identity]
+cuenv infrastructure state   [list | locks [--all] | pull | remove <ADDRESS> | recover [--force] [--accept-backend] | adopt] [OPTIONS]
+cuenv infrastructure state   restore [--serial <N>] [--yes] [OPTIONS]
+cuenv infrastructure state   rename [--from-project <P>] [--from-package <K>] [--from-env <E> | --from-no-env] [OPTIONS]
+cuenv infrastructure state   migrate [--all] [--upgrade-source] [--rollback [--copy-back]] [OPTIONS]
+cuenv infrastructure unlock  [OPTIONS] [--module <MODULE>] [--project <PROJECT>] [--migration-fence] [LOCK_IDENTIFIER]
 cuenv infrastructure provider add <SOURCE>@<VERSION> [-p <PATH>]
 cuenv infrastructure provider remove <SOURCE> [-p <PATH>]
 ```
@@ -658,15 +662,49 @@ that work from the state recorded at that moment:
   of an old layout, and refuses otherwise.
 
 The state commands need only `infrastructure.state`, so `state list`,
-`state locks`, `state remove`, `state recover`, `state adopt` and `unlock` work
-for an environment that is no longer declared (with a warning) and while the
-providers and resources are incomplete. When the state database holds no
-records, lock, owner or saved unrecorded change for the `--env` name, and the
+`state locks`, `state pull`, `state remove`, `state recover`, `state restore`
+and `unlock` work for an environment that is no longer declared (with a
+warning) and while the providers and resources are incomplete. When the state
+backend holds no records, lock, last writer or saved unrecorded change for the
+`--env` name, and the
 project does not declare it, they refuse instead (exit code `2`, listing the
 declared environments): a mistyped name is not a removed environment. They
 still fail when the project does not evaluate at all (see below). Every
 command named in an error or hint carries the run's `--env`, `-p` and
 `--package`.
+
+**State subcommands:**
+
+- `state list` prints the records, and with S3 state the object's
+  `s3://bucket/key` (`stateLocation` in JSON). `plan`, `apply` and `destroy`
+  print the location on standard error and in their JSON result.
+- `state locks` lists the locks held for the evaluated project's CUE module;
+  `--all` lists every lock the backend holds. Each entry names the command
+  that releases it (with S3 state, including the lock's `--package`).
+- `state pull` prints the project's records, lock and last writer as JSON in
+  both output formats. **The output contains provider secrets in plaintext.**
+- `state restore` (S3 state) shows a history snapshot, asks, and writes it
+  back as a new version; `--serial` picks the snapshot (the newest by
+  default), `--yes` skips the prompt. It refuses while unrecorded changes are
+  pending.
+- `state rename` (S3 state) moves the state recorded under another project
+  name, package or environment of this module to the evaluated project's
+  identity and leaves a tombstone at the old key. It never overwrites.
+- `state migrate` copies the state to the backend
+  `infrastructure.migrateStateTo` names (S3 only), leaving a `migrated-<id>`
+  fence lock on the source. `--all` migrates every environment the source
+  holds state for; `--upgrade-source` upgrades an older SQL source schema
+  first; `--rollback` releases the fences and tombstones the copies, refusing
+  when a copy changed, unless `--copy-back` copies those changes back first.
+- `state adopt` is deprecated and does nothing.
+- `unlock <id>` prints the holder, its age and, with S3 state, the cuenv
+  version and last change before releasing. It refuses a migration fence
+  without `--migration-fence`.
+- `--new-identity` (`apply`, `destroy`, `import`): with S3 state, these
+  refuse to start an identity empty when state last written from the same
+  directory exists under an identity the configuration no longer declares (a
+  probable rename); the flag starts the new identity anyway. `plan` reports a
+  probable rename and carries on.
 
 **Provider environment and policy:** provider processes inherit the cuenv
 process environment minus the credentials of cuenv's secret resolvers
@@ -686,24 +724,29 @@ On Linux cuenv also makes itself non-dumpable at startup so a provider cannot
 read its `/proc/<pid>/environ`. See
 [Manage infrastructure](/how-to/infrastructure/#provider-environment).
 
-**Project name uniqueness:** state is keyed by the CUE module path and the
-project name, so `plan`, `apply`, `destroy` and `state adopt` evaluate every
-instance of every CUE package in the module first (exporting only each
-instance's `name` and whether it has an `infrastructure` block). They refuse
-to run when another instance declares the same project name together with an
-`infrastructure` block (exit code `2`), when any instance fails to evaluate
-(exit code `3`; the error names each failing instance as
-`<directory>:<package>`), because a broken instance could hide a duplicate,
-and when the module-wide evaluation does not include the project itself
-(exit code `2`). CUE's `./...` pattern leaves out directories whose name
-starts with `.` or `_`, directories named `testdata` and nested modules, so a
-project inside one of them could not be checked; the error names the
-directory and why it is left out. A directory below a project inherits its
-`name` and `infrastructure` in CUE and cannot set another `name` in the same
-package, so it counts as a duplicate: put its files in a different CUE
-package or move them out from under the project. `state list`,
-`state remove`, `state recover` and `unlock` evaluate only the project, so
-they keep working while a sibling is broken. Only `plan`, `apply` and
+**Project name uniqueness:** project names are unique in the evaluated
+CUE package, compared without regard to case. `plan`, `apply`, `destroy`,
+`import`, `state migrate` and `state rename` evaluate every instance of every
+CUE package in the module first (exporting only each instance's `name` and
+whether it has an `infrastructure` block) and refuse a duplicate in the
+evaluated package (exit code `2`). An instance in another package is not a
+project of this one; a child directory that inherits its parent's `name` is
+part of the parent project. With Turso or D1 state, whose key has no package,
+they also refuse another instance in any package that declares the same name
+together with an `infrastructure` block, including a child directory that
+inherits both. They refuse when any instance fails to evaluate (exit code
+`3`; the error names each failing instance as `<directory>:<package>`),
+because a broken instance could hide a duplicate, and when the module-wide
+evaluation does not include the project itself (exit code `2`). CUE's `./...`
+pattern leaves out directories whose name starts with `.` or `_`, directories
+named `testdata` and nested modules, so a project inside one of them could
+not be checked; the error names the directory and why it is left out.
+`state list`, `state pull`, `state remove`, `state recover`, `state restore`
+and `unlock` evaluate only the project, so they keep working while a sibling
+is broken; `state remove`, `state recover` and `state restore` refuse a project
+in a directory the module walk leaves out. Workspace-wide `cuenv sync` and
+`cuenv ci` refuse duplicate project names too, and fail when a directory does
+not evaluate. Only `plan`, `apply` and
 `destroy` require the selected `infrastructure` configuration to be concrete;
 the state commands require only `infrastructure.state`. Other commands keep
 infrastructure as raw configuration, so unused incomplete named environments
@@ -822,14 +865,16 @@ control characters removed.
 | `2`   | Configuration error: a duplicate project name, a project the module-wide evaluation leaves out, an unknown `--env` name, a run refused for acting on the wrong state identity (see Environment selection), an unknown `state remove` address, `unlock <identifier>` that matches no lock, a state URL the Rust parser rejects, `--json` without `--yes`, a prompt without a terminal | `config`                     |
 | `3`   | CUE evaluation error, including an instance in the module that fails to evaluate, and a secret that cannot be resolved (the error names the variable)                                                                                                                                                                                                                                | `eval`                       |
 | `4`   | Concurrent activity; retrying later can succeed: the state is locked by another run, a schema migration is blocked by held locks or waiting for them, or `unlock` named a lock that is not the current one                                                                                                                                                                                                                                            | `infrastructure_locked`      |
-| `5`   | Any other infrastructure failure: provider, state store, apply, another instance owning the state, unrecorded changes pending or unusable, a recovery that would overwrite a newer record, a change that was not recorded, a lock that could not be released                                                                                                                         | `infrastructure`             |
+| `5`   | Any other infrastructure failure: provider, state store, apply, unrecorded changes pending or unusable, a recovery that would overwrite a newer record, a change that was not recorded, a lock that could not be released                                                                                                                         | `infrastructure`             |
 | `130` | Interrupted by a signal; everything applied is recorded. The lock is released, or the error says it was not and how to release it                                                                                                                                                                                                                                                    | `infrastructure_interrupted` |
 
-The state backend's token is `infrastructure.state.<backend>.token`, one for
-every environment. It is a literal, a secret, an interpolation or an explicit
-`#EnvPassthrough` (required for D1), and nothing is read from the environment
-unless it is named there. It is redacted and never passed to provider
-processes, and a passthrough variable is withheld from them too. Provider downloads
+The state backend's token is `infrastructure.state.<backend>.token` (S3:
+`accessKeyId`, `secretAccessKey` and the optional `sessionToken`), one for
+every environment. Each is a literal, a secret, an interpolation or an
+explicit `#EnvPassthrough` (required for D1), and nothing is read from the
+environment unless it is named there: S3 reads no ambient AWS credential
+chain. They are redacted and never passed to provider processes, and a
+passthrough variable is withheld from them too. Provider downloads
 are cached in `TF_PLUGIN_CACHE_DIR` when set. Logs of the infrastructure
 engine follow `--level` like the rest of cuenv.
 

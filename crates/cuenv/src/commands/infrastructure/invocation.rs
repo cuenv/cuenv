@@ -94,12 +94,15 @@ impl Invocation {
     /// The command that releases `lock`, whichever project holds it: it names
     /// the lock's own module, project and environment, and carries this run's
     /// `-p` and `--package`, because those only select the project whose
-    /// `infrastructure.state` says which database to reach.
+    /// `infrastructure.state` says which backend to reach. An object store's
+    /// lock names its own package instead, which that store keys state by.
     #[must_use]
     pub(super) fn unlock_command(&self, lock: &TenantLock) -> String {
         Self {
             environment: lock.environment.clone(),
             unlock_scope: UnlockScope::default(),
+            // An object store keys locks by package too: name the lock's.
+            package: lock.package.clone().unwrap_or_else(|| self.package.clone()),
             ..self.clone()
         }
         .command(&format!(

@@ -5,13 +5,16 @@ use cuenv_infrastructure::{
     ApplyContext, ApplyEvent, InfrastructureEngine, InfrastructureError, Plan, PlanMode, StateLock,
 };
 
-use super::action::ConfirmationPolicy;
+use super::action::{ConfirmationPolicy, Identity};
 use super::confirm::confirm;
 use super::dispatch::{CommandContext, EngineInputs, engine_setup, note_last_writer};
 use super::failure::{failure, printable_text};
 use super::interrupts::{Interrupts, interrupted_after_completion};
 use super::invocation::Invocation;
 use super::lock::under_lock;
+use super::object_state::{
+    RenameCheck, RenameResponse, check_rename, refuse_full_state, refuse_unmigrated,
+};
 use super::output;
 use super::output::{Converged, Output};
 use super::run::parse_resource_address;
@@ -23,6 +26,7 @@ pub(super) async fn plan(
     inputs: EngineInputs,
 ) -> Result<(), CliError> {
     note_last_writer(context).await?;
+    before_change(context, &inputs, Identity::Detect, RenameResponse::Report).await?;
     let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
     // Planning honours the interrupt itself: providers are asked to stop
     // and the next resource is not planned.
@@ -31,6 +35,9 @@ pub(super) async fn plan(
     let plan = result.map_err(|error| failure(&error, context.invocation))?;
     context.interrupts.check()?;
     context.output.plan(&plan);
+    context
+        .output
+        .state_location(context.store.location(context.tenant).as_deref());
     Ok(())
 }
 
@@ -40,6 +47,35 @@ pub(super) struct ImportRequest<'command, 'context> {
     pub(super) inputs: EngineInputs,
     pub(super) address: &'command str,
     pub(super) identifier: &'command str,
+    pub(super) identity: Identity,
+}
+
+/// The checks before a run that may create a tenant's state: a migration
+/// under way, a tenant not migrated yet, and a probable rename.
+async fn before_change(
+    context: &CommandContext<'_>,
+    inputs: &EngineInputs,
+    identity: Identity,
+    response: RenameResponse,
+) -> Result<(), CliError> {
+    if let Some(target) = &inputs.infrastructure.migrate_state_to {
+        emit_stderr!(format!(
+            "warning: `migrateStateTo` names {} state: a migration is under way. Once `{}` has \
+             copied every environment, make it the `state` and remove `migrateStateTo`",
+            target.backend(),
+            context.invocation.command("state migrate --all")
+        ));
+    }
+    refuse_unmigrated(context).await?;
+    check_rename(
+        context,
+        &RenameCheck {
+            project_directory: &inputs.project_directory,
+            identity,
+            response,
+        },
+    )
+    .await
 }
 
 /// Import a provider resource while holding the tenant lock.
@@ -49,8 +85,10 @@ pub(super) async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliErro
         inputs,
         address,
         identifier,
+        identity,
     } = request;
     let target = parse_resource_address(address)?;
+    before_change(context, &inputs, identity, RenameResponse::Refuse).await?;
     let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
     let importing = &mut engine;
     let result = under_lock(context, "import", |lock| async move {
@@ -76,6 +114,7 @@ pub(super) async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliErro
 pub(super) struct Convergence<'run> {
     pub(super) mode: PlanMode,
     pub(super) confirmation: ConfirmationPolicy,
+    pub(super) identity: Identity,
     pub(super) context: &'run CommandContext<'run>,
 }
 
@@ -85,16 +124,25 @@ pub(super) async fn converge(
     convergence: &Convergence<'_>,
     inputs: EngineInputs,
 ) -> Result<(), CliError> {
-    let Convergence { mode, context, .. } = *convergence;
+    let Convergence {
+        mode,
+        context,
+        identity,
+        ..
+    } = *convergence;
+    note_last_writer(context).await?;
+    before_change(context, &inputs, identity, RenameResponse::Refuse).await?;
     let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
     let planning = &mut engine;
-    note_last_writer(context).await?;
     let result = under_lock(context, output::operation_name(mode), |lock| async move {
         let plan = planning
             .plan(mode)
             .await
             .map_err(|error| failure(&error, context.invocation))?;
         context.interrupts.check()?;
+        if mode == PlanMode::Apply {
+            refuse_full_state(context, &plan).await?;
+        }
         context.output.preview(&plan);
         if plan.has_work() && convergence.confirmation == ConfirmationPolicy::Prompt {
             confirm(mode, context).await?;
@@ -108,7 +156,11 @@ pub(super) async fn converge(
             invocation: context.invocation,
             interrupts: context.interrupts,
         })
-        .await
+        .await?;
+        context
+            .output
+            .state_location(context.store.location(context.tenant).as_deref());
+        Ok(())
     })
     .await;
     engine.shutdown().await;

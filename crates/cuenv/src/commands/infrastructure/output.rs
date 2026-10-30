@@ -10,14 +10,17 @@
 //! values, and text read from the state store is stripped of control
 //! characters.
 
+use std::fmt::Write as _;
 use std::io::Write;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use cuenv_events::{emit_stderr, emit_stdout};
 use cuenv_infrastructure::{
-    LockInformation, ManagedResource, Plan, PlanMode, PlanSummary, ResourceAddress, TenantKey,
-    TenantLock, strip_control_characters,
+    HistoryEntry, LastWriter, LockDetails, LockInformation, ManagedResource, ObjectTenant, Plan,
+    PlanMode, PlanSummary, ResourceAddress, TenantKey, TenantLock, strip_control_characters,
 };
+
+use super::action::MigrationDirection;
 use serde_json::{Value, json};
 
 use super::evaluation::escape_control_characters;
@@ -221,6 +224,7 @@ impl Output {
                 .map(|held| {
                     json!({
                         "module": held.module_path,
+                        "package": held.package,
                         "project": held.project,
                         "environment": held.environment,
                         "lockIdentifier": held.lock.lock_identifier,
@@ -234,11 +238,11 @@ impl Output {
             return;
         }
         if locks.is_empty() {
-            emit_stdout!("No locks are held in the state database.");
+            emit_stdout!("No locks are held in the state backend.");
             return;
         }
         emit_stdout!(format!(
-            "{} lock(s) held in the state database. Release one only after confirming its run \
+            "{} lock(s) held in the state backend. Release one only after confirming its run \
              is gone.",
             locks.len()
         ));
@@ -381,8 +385,188 @@ impl Output {
         emit_stdout!(format!("Nothing to adopt for {}.", tenant_label(tenant)));
     }
 
-    /// Managed resources recorded for a tenant.
-    pub(super) fn state(&self, tenant: &TenantKey, resources: &[ManagedResource]) {
+    /// Where the run's state lives, when the backend has an address to
+    /// show: a line on standard error, and in JSON mode the
+    /// `stateLocation` field of the result produced so far.
+    pub(super) fn state_location(&self, location: Option<&str>) {
+        let Some(location) = location else {
+            return;
+        };
+        let location = strip_control_characters(location);
+        emit_stderr!(format!("State: {location}"));
+        if self.is_json() {
+            self.gate.amend("stateLocation", Value::String(location));
+        }
+    }
+
+    /// `state pull`: the tenant's state as JSON, in both formats.
+    pub(super) fn pulled(&self, pulled: &Pulled<'_>) {
+        let writer = pulled.writer.map(|writer| {
+            json!({
+                "instance": strip_control_characters(writer.instance.as_str()),
+                "recordedAt": strip_control_characters(&writer.recorded_at),
+            })
+        });
+        let lock = pulled.lock.map(|lock| {
+            json!({
+                "lockIdentifier": strip_control_characters(&lock.lock_identifier),
+                "holder": strip_control_characters(&lock.holder),
+                "acquiredAt": strip_control_characters(&lock.acquired_at),
+            })
+        });
+        let document = json!({
+            "tenant": tenant_identity(pulled.tenant),
+            "environment": pulled.tenant.environment(),
+            "stateLocation": pulled.location,
+            "lastWriter": writer,
+            "lock": lock,
+            "records": serde_json::to_value(pulled.records).unwrap_or(Value::Null),
+        });
+        if self.is_json() {
+            self.envelope(document);
+            return;
+        }
+        emit_stdout!(serde_json::to_string_pretty(&document).unwrap_or_default());
+    }
+
+    /// The snapshot `state restore` is about to write back, on standard
+    /// error in both formats.
+    pub(super) fn restore_preview(
+        tenant: &TenantKey,
+        entry: &HistoryEntry,
+        location: Option<&str>,
+    ) {
+        let addresses = entry
+            .addresses
+            .iter()
+            .fold(String::new(), |mut lines, address| {
+                let _ = write!(lines, "\n  {}", strip_control_characters(address));
+                lines
+            });
+        emit_stderr!(format!(
+            "Restoring {} at {} to serial {} (written by cuenv {}), with {} record(s):{}",
+            tenant_label(tenant),
+            location.map_or_else(|| "its backend".to_string(), strip_control_characters),
+            entry.serial,
+            strip_control_characters(&entry.written_by),
+            entry.addresses.len(),
+            addresses
+        ));
+    }
+
+    /// What `state restore` wrote back.
+    pub(super) fn restored(&self, tenant: &TenantKey, entry: &HistoryEntry) {
+        if self.is_json() {
+            self.envelope(json!({
+                "tenant": tenant_identity(tenant),
+                "environment": tenant.environment(),
+                "restoredSerial": entry.serial,
+                "addresses": entry
+                    .addresses
+                    .iter()
+                    .map(|address| strip_control_characters(address))
+                    .collect::<Vec<_>>(),
+            }));
+            return;
+        }
+        emit_stdout!(format!(
+            "Restored {} to the version of serial {} ({} record(s)). Run `plan` to see how the \
+             real objects differ from it.",
+            tenant_label(tenant),
+            entry.serial,
+            entry.addresses.len()
+        ));
+    }
+
+    /// What `state rename` moved.
+    pub(super) fn renamed(&self, renamed: &Renamed<'_>) {
+        let identity = |tenant: &ObjectTenant| {
+            json!({
+                "package": tenant.package,
+                "tenant": tenant_identity(&tenant.tenant),
+                "environment": tenant.tenant.environment(),
+            })
+        };
+        if self.is_json() {
+            self.envelope(json!({
+                "from": identity(renamed.from),
+                "to": identity(renamed.to),
+                "stateLocation": renamed.location,
+            }));
+            return;
+        }
+        emit_stdout!(format!(
+            "Moved the state of {} (package {}) to {} (package {}){}.",
+            tenant_label(&renamed.from.tenant),
+            escape_control_characters(&renamed.from.package),
+            tenant_label(&renamed.to.tenant),
+            escape_control_characters(&renamed.to.package),
+            renamed
+                .location
+                .as_deref()
+                .map_or_else(String::new, |location| format!(
+                    " at {}",
+                    strip_control_characters(location)
+                ))
+        ));
+    }
+
+    /// What `state migrate` did.
+    pub(super) fn migrated(&self, report: &MigrationReport) {
+        let verb = match report.direction {
+            MigrationDirection::Forward => "migrated",
+            MigrationDirection::Rollback | MigrationDirection::CopyBack => "rolled back",
+        };
+        if self.is_json() {
+            self.envelope(json!({
+                "migration": report.migration,
+                "direction": verb,
+                "tenants": report
+                    .tenants
+                    .iter()
+                    .map(|migrated| json!({
+                        "tenant": tenant_identity(&migrated.tenant),
+                        "environment": migrated.tenant.environment(),
+                        "stateLocation": migrated.location,
+                    }))
+                    .collect::<Vec<_>>(),
+            }));
+            return;
+        }
+        if report.tenants.is_empty() {
+            emit_stdout!(format!("Nothing was {verb}."));
+            return;
+        }
+        for migrated in &report.tenants {
+            emit_stdout!(format!(
+                "{verb} {}{}",
+                tenant_label(&migrated.tenant),
+                migrated
+                    .location
+                    .as_deref()
+                    .map_or_else(String::new, |location| format!(
+                        " ({})",
+                        strip_control_characters(location)
+                    ))
+            ));
+        }
+        if report.direction == MigrationDirection::Forward {
+            emit_stdout!(format!(
+                "Migration {} done. Make `migrateStateTo` the `state` and remove \
+                 `migrateStateTo` once every environment is migrated.",
+                report.migration
+            ));
+        }
+    }
+
+    /// Managed resources recorded for a tenant, and where its state lives
+    /// when the backend has an address to show.
+    pub(super) fn state(
+        &self,
+        tenant: &TenantKey,
+        resources: &[ManagedResource],
+        location: Option<&str>,
+    ) {
         if self.is_json() {
             let rows: Vec<Value> = resources
                 .iter()
@@ -399,9 +583,13 @@ impl Output {
             self.envelope(json!({
                 "tenant": tenant_identity(tenant),
                 "environment": tenant.environment(),
+                "stateLocation": location,
                 "resources": rows,
             }));
             return;
+        }
+        if let Some(location) = location {
+            emit_stdout!(format!("State: {}", strip_control_characters(location)));
         }
         if resources.is_empty() {
             emit_stdout!(format!("No managed resources for {}", tenant_label(tenant)));
@@ -434,6 +622,8 @@ impl Output {
                     "lockIdentifier": lock.lock_identifier,
                     "holder": lock.holder,
                     "acquiredAt": lock.acquired_at,
+                    "cuenvVersion": report.details.map(|details| details.cuenv_version.clone()),
+                    "lastChange": report.details.and_then(|details| details.last_change.clone()),
                 })),
                 "released": matches!(report.outcome, LockOutcome::Released),
             }));
@@ -443,11 +633,12 @@ impl Output {
         match (lock, report.outcome) {
             (None, _) => emit_stdout!(format!("{tenant} is not locked")),
             (Some(lock), LockOutcome::Shown) => emit_stdout!(format!(
-                "{tenant} is locked by '{}' since {} (lock {}).\n\
+                "{tenant} is locked by '{}' since {} (lock {}){}.\n\
                  Confirm that run is gone, then release it with `{}`.",
                 lock.holder,
                 lock.acquired_at,
                 lock.lock_identifier,
+                details_phrase(report.details),
                 report
                     .unlock_command
                     .as_deref()
@@ -600,6 +791,51 @@ pub(super) struct LockReport<'report> {
     /// The command that releases the lock shown, naming this run's
     /// environment and project.
     pub(super) unlock_command: Option<String>,
+    /// What an object store records about the lock besides.
+    pub(super) details: Option<&'report LockDetails>,
+}
+
+/// The lock details for a sentence: the cuenv version and the last change.
+fn details_phrase(details: Option<&LockDetails>) -> String {
+    details.map_or_else(String::new, |details| {
+        format!(
+            ", taken by cuenv {}{}",
+            details.cuenv_version,
+            details.last_change.as_deref().map_or_else(
+                || ", no change written yet".to_string(),
+                |change| format!(", last change: {change}")
+            )
+        )
+    })
+}
+
+/// `state pull`'s document.
+pub(super) struct Pulled<'pulled> {
+    pub(super) tenant: &'pulled TenantKey,
+    pub(super) location: Option<String>,
+    pub(super) records: &'pulled [ManagedResource],
+    pub(super) writer: Option<&'pulled LastWriter>,
+    pub(super) lock: Option<&'pulled LockInformation>,
+}
+
+/// What `state rename` moved.
+pub(super) struct Renamed<'renamed> {
+    pub(super) from: &'renamed ObjectTenant,
+    pub(super) to: &'renamed ObjectTenant,
+    pub(super) location: Option<String>,
+}
+
+/// One tenant `state migrate` migrated or rolled back.
+pub(super) struct MigratedTenant {
+    pub(super) tenant: TenantKey,
+    pub(super) location: Option<String>,
+}
+
+/// What `state migrate` did.
+pub(super) struct MigrationReport {
+    pub(super) migration: String,
+    pub(super) direction: MigrationDirection,
+    pub(super) tenants: Vec<MigratedTenant>,
 }
 
 fn warnings(plan: &Plan) {

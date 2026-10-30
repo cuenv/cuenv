@@ -20,18 +20,22 @@ Schema version 1 databases migrate in place to version 2. Incompatible earlier d
 | `cuenv infrastructure destroy`                | `cuenv i destroy`       | Delete every managed resource the project owns                          |
 | `cuenv infrastructure import <address> <id>`  | `cuenv i import`        | Refresh and record one existing provider resource                       |
 | `cuenv infrastructure state list`             | `cuenv i state`         | List managed resources recorded for the project (`list` is the default) |
-| `cuenv infrastructure state locks`            | `cuenv i state locks`   | List every lock in the state database, for every project                |
+| `cuenv infrastructure state locks`            | `cuenv i state locks`   | List the locks held for this CUE module (`--all`: every lock)           |
+| `cuenv infrastructure state pull`             | `cuenv i state pull`    | Print the project's state as JSON (contains plaintext secrets)          |
 | `cuenv infrastructure state remove <address>` | `cuenv i state remove`  | Forget one managed resource without deleting it                         |
 | `cuenv infrastructure state recover`          | `cuenv i state recover` | Record changes that could not be recorded earlier                       |
-| `cuenv infrastructure state adopt`            | `cuenv i state adopt`   | Make this instance the owner of the project's state                     |
+| `cuenv infrastructure state restore`          | `cuenv i state restore` | Write an earlier version of the state back (S3 state)                   |
+| `cuenv infrastructure state rename`           | `cuenv i state rename`  | Move state recorded under another identity to this project (S3 state)   |
+| `cuenv infrastructure state migrate`          | `cuenv i state migrate` | Copy the state to the backend `migrateStateTo` names                    |
+| `cuenv infrastructure state adopt`            | `cuenv i state adopt`   | Deprecated; does nothing                                                |
 | `cuenv infrastructure unlock`                 | `cuenv i unlock`        | Show who holds the lock, or release it by identifier                    |
 | `cuenv infrastructure provider add <source>@<version>` | `cuenv i provider add` | Generate CUE types for a provider release and pin it in `cuenv.lock` |
 | `cuenv infrastructure provider remove <source>` | `cuenv i provider remove` | Delete a provider's generated types and its pin                    |
 | `cuenv sync infrastructure`                   |                         | Regenerate every pinned provider's types (`--check` fails on drift)     |
 
-`apply` also takes `--allow-separate-state` (see [Moving between identities](#moving-between-identities)), and `unlock` takes `--module` and `--project` to act on the lock of a project that is not the one being evaluated (see [Stale locks](#when-things-go-wrong)).
+`apply` also takes `--allow-separate-state` (see [Moving between identities](#moving-between-identities)). `apply`, `destroy` and `import` take `--new-identity` (see [Renames and moves](#renames-and-moves)). `unlock` takes `--module` and `--project` to act on the lock of a project that is not the one being evaluated (see [Stale locks](#when-things-go-wrong)), and `--migration-fence` to release the lock a migration leaves on its source.
 
-`i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. Every subcommand honours the global `--json` flag and then prints exactly one JSON document on standard output (events go to standard error); `apply` and `destroy` require `--yes` with `--json`.
+`i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. Every subcommand honours the global `--json` flag and then prints exactly one JSON document on standard output (events go to standard error); `apply`, `destroy` and `state restore` require `--yes` with `--json`.
 
 `import` takes the provider's opaque import identifier. Declare the resource first, select the desired environment with `--env` when needed, then run for example `cuenv i import cloudflare_record.www <provider-specific-id>`. cuenv asks the provider to import one object, refreshes it, and records the refreshed state without calling the provider's apply operation. Review the suggested `plan` command afterward; it includes the same environment, path and package selection. The provider defines the identifier format. Sensitive import identifiers are registered for output redaction and are not included in cuenv's own output or trace fields.
 
@@ -233,7 +237,7 @@ cuenv i apply --env Staging -p . --package cuenv --yes
 
 Without `--env`, cuenv uses the top-level `infrastructure.providers`, `infrastructure.resources` and `infrastructure.data` configuration and the base `env` values. An unknown name fails before connecting to the state backend or starting a provider, and the error lists the declared environments. Names are case-sensitive, and an infrastructure environment name is a letter followed by letters, digits, `_` or `-` (`env.environment` overlays accept any name, but only names of that form can also be infrastructure environments).
 
-Each named environment has its own state identity, lock, owner and recovery records, even though every environment uses the one `infrastructure.state` backend. This keeps `Dev` and `Staging` from planning or deleting one another's resources. Explicit `--env default` is a named identity, separate from the no-flag identity.
+Each named environment has its own state identity, lock, last writer and recovery records, even though every environment uses the one `infrastructure.state` backend. This keeps `Dev` and `Staging` from planning or deleting one another's resources. Explicit `--env default` is a named identity, separate from the no-flag identity.
 
 All environments share **one state database and one authentication token**: `state` is declared once, above `environments`, and an environment cannot override it. Anyone who holds the token can read and write the records of every environment, so this is a naming boundary, not a security boundary (see [How state is keyed](#how-state-is-keyed)). A per-environment `state` is a follow-up; until then, use separate projects, each with its own database, when environments need separate tokens.
 
@@ -245,11 +249,11 @@ State is not moved automatically. The identity without `--env` and each named en
 - **A run without `--env` that would create what an environment already records.** The mirror of the previous case: when top-level `resources` and `environments` coexist, `apply` without `--env` refuses when it would create a resource whose address (`type.name`) is recorded for a declared environment and not yet recorded without `--env`. Otherwise both identities would claim the same real object, and a later `destroy --env NAME` would delete the object the top-level configuration manages. The error names the environments and up to three of the addresses. `plan` only warns, and `destroy` never refuses. Its options mirror the ones above: keep those resources in the environment (declare them there, not at the top level); free their addresses first, either by deleting the objects with `cuenv i destroy --env NAME` (everything that environment records is deleted) or by forgetting the records with `cuenv i state remove <address> --env NAME` (the real objects are not touched); or, when the top-level resources should manage separate objects that happen to share the addresses, run `apply --allow-separate-state` without `--env`.
 - **No `--env` when only environments are declared.** When `infrastructure.environments` is declared without top-level `resources`, `apply` refuses and `plan` warns, because the run would report "no changes" or plan to delete whatever is recorded without `--env`. The exception is a nonempty top-level `data` map with no recorded no-flag managed resources: those lookups can run. `destroy` without `--env` remains the way out of an old layout when resources are still recorded there and top-level providers can delete them. Moving resources into `environments` is therefore: move the declaration, run `cuenv i destroy` without `--env` to delete the old objects, then `cuenv i apply --env NAME`; or keep the objects by running `cuenv i state remove <address>` for each and adopting them under `NAME` yourself.
 
-Renaming an environment, or removing it from the configuration, strands its state: `--env OLD` can no longer select a configuration, so `plan`, `apply` and `destroy` cannot act on it (their error says that `state remove` forgets the records without touching the real objects, and that restoring the environment's configuration lets `destroy` run). **Destroy an environment's resources before renaming or removing it.** The state commands (`state list`, `state remove`, `state recover`, `state adopt` and `unlock`) still work for an environment that is no longer declared: they need only `infrastructure.state`, print a warning, and use the state recorded under that name. A mistyped name is told apart from a removed environment by the state itself: when the state database holds no records, lock, owner or saved unrecorded change for the name, the command refuses (exit code `2`) and lists the declared environments instead of reporting an empty result. Without `--env`, `state list`, `unlock` and `state recover` also mention the declared environments (resources recorded for each, held locks, unrecorded changes) as notes on standard error and, with `--json`, in the result as `otherEnvironments`; every command cuenv suggests in an error carries the `--env`, `-p` and `--package` of the run that failed.
+Renaming an environment, or removing it from the configuration, strands its state: `--env OLD` can no longer select a configuration, so `plan`, `apply` and `destroy` cannot act on it (their error says that `state remove` forgets the records without touching the real objects, and that restoring the environment's configuration lets `destroy` run). **Destroy an environment's resources before renaming or removing it.** The state commands (`state list`, `state pull`, `state remove`, `state recover`, `state restore` and `unlock`) still work for an environment that is no longer declared: they need only `infrastructure.state`, print a warning, and use the state recorded under that name. A mistyped name is told apart from a removed environment by the state itself: when the state backend holds no records, lock, last writer or saved unrecorded change for the name, the command refuses (exit code `2`) and lists the declared environments instead of reporting an empty result. Without `--env`, `state list`, `unlock` and `state recover` also mention the declared environments (resources recorded for each, held locks, unrecorded changes) as notes on standard error and, with `--json`, in the result as `otherEnvironments`; every command cuenv suggests in an error carries the `--env`, `-p` and `--package` of the run that failed.
 
 ## Project environment values and secrets
 
-Plan, apply and destroy resolve the selected project environment through cuenv's normal runtime secret resolvers. Existing `#OnePasswordRef`, `#InfisicalSecret`, `#AwsSecret`, `#GcpSecret` and `#ExecSecret` values can be placed in `env` or a named overlay, and the resolved values are passed to provider processes as environment variables. State-only commands (`state list`, `state remove`, `state recover`, `state adopt` and `unlock`) resolve only the configured backend token, so an unavailable provider credential does not prevent listing, recovery or unlocking state.
+Plan, apply and destroy resolve the selected project environment through cuenv's normal runtime secret resolvers. Existing `#OnePasswordRef`, `#InfisicalSecret`, `#AwsSecret`, `#GcpSecret` and `#ExecSecret` values can be placed in `env` or a named overlay, and the resolved values are passed to provider processes as environment variables. State-only commands (`state list`, `state pull`, `state remove`, `state recover`, `state restore`, `state rename` and `unlock`) resolve only the configured backend credentials, so an unavailable provider credential does not prevent listing, recovery or unlocking state.
 
 Use `allowInfrastructure` to restrict a value to the actions that may use it:
 
@@ -260,7 +264,7 @@ DEPLOY_TOKEN: {
 }
 ```
 
-- The names are `plan`, `apply`, `import`, `destroy`, `state-list`, `state-remove`, `state-recover`, `state-adopt` and `unlock` (`#InfrastructureAction`). Any other name fails evaluation, and so does a misspelled field such as `allowInfrastucture`.
+- The names are `plan`, `apply`, `import`, `destroy`, `state-list`, `state-remove`, `state-recover`, `state-pull`, `state-restore`, `state-migrate`, `state-rename`, `unlock` and the retired `state-adopt` (`#InfrastructureAction`). Any other name fails evaluation, and so does a misspelled field such as `allowInfrastucture`.
 - A variable that has policies is available to an infrastructure action only when some policy lists that action. `allowTasks` and `allowExec` do not grant it: a variable that was reachable from infrastructure commands before it carried only `allowTasks` is now withheld from them.
 - Policy filtering happens before any secret is retrieved. A variable the policy denies is also removed from the environment the provider inherits, so a same-named host variable cannot bypass the policy.
 - A secret that cannot be resolved fails the command with an error that names the variable. The error never quotes the secret command's own error output, because a failing command can print the secret or the credentials it was given.
@@ -314,12 +318,34 @@ State is multi-tenant by construction. Every record is keyed by:
 | Environment   | the global `--env` selector; empty without `--env`           | `Dev`                      |
 | Address       | resource `type` and its name in the selected `resources` map | `random_pet.server`        |
 
-cuenv refuses to run without a CUE module path, and `plan`, `apply` and `destroy` refuse to run when another instance anywhere in the module — any directory, any CUE package — has the same `name` and an `infrastructure` block; otherwise the two would share state and each would plan to delete the other's resources. CUE instances in the same package inherit fields from their parent directories, so a child directory shares its parent's `name` (it cannot set its own) and, if it inherits the `infrastructure` block too, is a conflict; put the child in a different CUE package or move its files. The check evaluates every instance in the module and fails closed: if any instance cannot be evaluated, the command stops and names it, and a target the module walk cannot see (a directory starting with `_` or `.`, a `testdata` directory, a nested module) is refused with the reason.
+With S3 state the CUE package is part of the key too (see [S3-compatible object storage](#s3-compatible-object-storage)).
 
-The state database also records which instance (`<directory>:<package>`) owns each project and environment, claimed by the first `apply` or `destroy`. Any other instance using the same module path, project name and environment — another checkout, a nested module, a copied directory — is refused until you move ownership explicitly with `cuenv i state adopt`, run from the instance that should own it. `plan`, `apply` and `destroy` check the owner as soon as the state store is connected, before any of the project's secrets is resolved (an `#ExecSecret` runs a command, and nothing should run for a refused run); only the state backend's token is resolved first. `state remove` and `state recover` with pending changes check the recorded owner while holding the lock; even `state recover --force` requires ownership. They do not claim previously unowned state. `state list`, `unlock` and empty recovery skip ownership checks. State operations other than `state adopt`, and `unlock`, skip the module-wide name check so a broken sibling does not prevent access. Moving a project to a different module or renaming it starts from empty state.
+### Project names are unique
+
+A project is a `#Project` instance in the package cuenv evaluates (`cuenv`, or the `--package` given): an instance with a `name` field. Project names are unique in that package, compared without regard to case: `web` and `Web` are the same name. Instances in other CUE packages are not projects of this package. A child directory in the same package inherits its parent's `name` and is part of the parent project, not a second one.
+
+Every command that evaluates the whole module enforces it: `plan`, `apply`, `destroy`, `import`, `state migrate`, `state rename`, workspace-wide `cuenv sync` and `cuenv ci`. Each fails closed: an instance that cannot be evaluated stops the command and is named, because it could declare a duplicate; a target the module walk cannot see (a directory starting with `_` or `.`, a `testdata` directory, a nested module) is refused with the reason. `state list`, `state pull`, `state remove`, `state recover`, `state restore` and `unlock` evaluate only their target, so a broken sibling never blocks them; `state remove`, `state recover` and `state restore` refuse a target inside a directory the walk skips, so a stale copy such as `_old/web` cannot change the live project's state. The shell hook never runs the check.
+
+With Turso or D1 state the key has no package, so those backends also refuse, as before, any instance in any package that has the same `name` and an `infrastructure` block (and so a child directory that inherits both).
+
+### Last writer
+
+Taking the lock records the instance (`<directory>:<package>`) that took it, and when, as the state's last writer. It is information, never a gate: the state belongs to the project, wherever its directory is. `plan` prints a note when the last writer was another directory. `unlock`, `state locks` and `state restore` leave it unchanged. Nothing else is recorded, in particular no git remote, because CI remote URLs can carry tokens. `state adopt`, which used to move ownership, does nothing now and prints a deprecation warning; `state-adopt` stays an accepted policy action.
+
+### Renames and moves
+
+- **Moving a project's directory needs nothing.** The key does not contain the directory.
+- **Renaming a project, its package or an environment** gives it a new key, which would start empty and create every resource again. With S3 state, `apply`, `destroy` and `import` look for that before creating a tenant: state last written from this directory, under an identity the configuration no longer declares, that holds records or a lock. They refuse, name the old identity, its record count and its location, and offer:
+  - the same project: `cuenv i state rename --from-project OLD` (and `--from-package`, `--from-env` or `--from-no-env` as needed) moves the state and leaves a tombstone at the old key;
+  - retiring the old identity: `state remove <address>` selecting it, or declaring it again and running `destroy`;
+  - a separate project on purpose: `--new-identity`, once. It skips this check only; after the first write the tenant exists and the check no longer runs. Do not add it to CI permanently.
+
+  `plan` reports a probable rename and carries on. When the old identity is in another package of the same directory, that package is evaluated first; if it does not evaluate, the command refuses rather than guess.
+- **Not detected:** a renamed module path, and a project renamed and moved to another directory in the same change. Database backends do not detect renames at all.
+- **Copying a repository** that keeps the original `module:` and uses the same credentials shares the original's state. Change `module:` when you copy a repository. The plan header shows where the state lives, and every plan lists its deletions; there is no other guard.
 
 :::caution[Tenancy is a naming boundary, not a security boundary]
-The module path is declared by the project itself. Anyone holding a database token can read or write every tenant in that database, including every named environment of a project. For isolation between teams or customers, give each tenant its own database and token (a Turso database, or a D1 database with a token scoped to it).
+The module path is declared by the project itself. Anyone holding a database token can read or write every tenant in that database, including every named environment of a project, and anyone holding a bucket credential can read or write every tenant under its prefix. For isolation between teams or customers, give each tenant its own database and token, or its own bucket or prefix-scoped credential.
 :::
 
 ## Typed configuration
@@ -488,13 +514,13 @@ CLOUDFLARE_D1_API_TOKEN=<token with D1 Edit> \
 cuenv exec -- cargo test -p cuenv-infrastructure --lib -- --ignored lifecycle_against_d1
 ```
 
-## Configure the state database
+## Configure the state backend
 
-`infrastructure.state` names exactly one backend: `turso` or `d1`. Both keep the same tables and behave the same way: locking, compare and swap, ownership, migrations and recovery are one implementation over SQLite, and only the transport differs. Naming neither, or both, fails evaluation.
+`infrastructure.state` names exactly one backend: `turso`, `d1` or `s3`. Turso and D1 keep the same tables and behave the same way: locking, compare and swap, migrations and recovery are one implementation over SQLite, and only the transport differs. `s3` keeps one object per project and environment in a bucket. Naming none, or more than one, fails evaluation.
 
 ### The state token
 
-Each backend takes one `token`, written like a project environment variable: any `#Secret`, a literal, or an interpolation of both. One database serves the top level and every environment, so the token does not change with `--env`. Nothing is read from the environment unless the configuration names it.
+Turso and D1 take one `token`; S3 takes `accessKeyId`, `secretAccessKey` and an optional `sessionToken`. Each is written like a project environment variable: any `#Secret`, a literal, or an interpolation of both. One backend serves the top level and every environment, so credentials do not change with `--env`. Nothing is read from the environment unless the configuration names it: S3 reads no ambient AWS credential chain (no `AWS_*` variables, no `~/.aws`, no instance metadata).
 
 - In CI, where the token arrives as an environment variable, name it explicitly: `token: schema.#EnvPassthrough & {name: "CLOUDFLARE_D1_API_TOKEN"}`. The variable is withheld from provider processes. Do not pass through `CLOUDFLARE_API_TOKEN` if the Cloudflare provider needs it, because the provider would lose its credential.
 - The token is resolved before anything else (state commands resolve nothing else), redacted from all output, never written to state and never passed to a provider. Integers, booleans and policies are rejected.
@@ -527,7 +553,99 @@ infrastructure: state: d1: {
 - Recovery files bind to a hash of the account and database IDs.
 - Transient D1 errors that Cloudflare documents as retryable (a lost network connection, a reset database, a transient issue on a remote node), as well as timeouts, 5xx and 429, are retried with backoff. An overloaded database is not retried, as Cloudflare asks. Error messages never name the account or database: Cloudflare's own messages have both IDs replaced.
 
-### What both backends share
+### S3-compatible object storage
+
+```cue
+// Cloudflare R2
+infrastructure: state: s3: {
+	bucket:          "acme-cuenv-state"
+	region:          "auto"
+	endpoint:        "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com"
+	accessKeyId:     schema.#OnePasswordRef & {ref: "op://platform/r2-state/access-key-id"}
+	secretAccessKey: schema.#OnePasswordRef & {ref: "op://platform/r2-state/secret-access-key"}
+}
+
+// AWS S3, with credentials from a CI OIDC exchange
+infrastructure: state: s3: {
+	bucket:          "acme-cuenv-state"
+	region:          "eu-west-2"
+	accessKeyId:     schema.#EnvPassthrough & {name: "AWS_ACCESS_KEY_ID"}
+	secretAccessKey: schema.#EnvPassthrough & {name: "AWS_SECRET_ACCESS_KEY"}
+	sessionToken:    schema.#EnvPassthrough & {name: "AWS_SESSION_TOKEN"}
+}
+
+// MinIO on this machine
+infrastructure: state: s3: {
+	bucket:          "state"
+	region:          "us-east-1"
+	endpoint:        "http://127.0.0.1:9000"
+	accessKeyId:     "minioadmin"
+	secretAccessKey: "minioadmin"
+}
+```
+
+Each project and environment is one object:
+
+```
+[<root>/]<module>/_<package>/<project>/<env | _default>/state.json
+[<root>/]<module>/_<package>/<project>/<env | _default>/history/<serial>.json
+[<root>/]<module>/_<package>/<project>/_migration.json
+[<root>/]_locks/<module>/_<package>/<project>/<env | _default>/<lock id>.json
+```
+
+- **Fields.** `bucket` and `region` are required (`auto` for R2, which then needs `endpoint`). `endpoint` defaults to `https://s3.<region>.amazonaws.com`; it must be `https://`, or `http://` only for a loopback host, with no path, credentials, query or fragment. `root` prefixes every key, so several configurations can share a bucket. `addressing` is `auto` (path style for an IP address, `localhost` or a bucket name with a dot; virtual-hosted otherwise), `virtual-hosted` or `path`. `minWriteInterval` spaces writes to one project's state (`"1s"` by default on R2, which accepts about one write per second to a key; none elsewhere). `history` (default `10`) is how many earlier versions to keep.
+- **Locking.** Every write is a conditional PUT on the ETag of the version whose lock it checked, so checking the lock and writing are one atomic step, as in the databases. A run that lost its lock can never write. The objects under `_locks/` only let `state locks` find locks; the lock itself lives in `state.json`.
+- **The bucket is checked before the first write of a run.** A write command writes and deletes a few random objects under its own prefix to confirm that the store honours conditional requests and returns strong ETags, and every command refuses a bucket that serves its state to unsigned requests. A store that ignores conditions would let two runs overwrite each other, so it is refused. On R2 the public check cannot see public access through `r2.dev` or a custom domain: keep `r2.dev` disabled and attach no custom domain to the state bucket.
+- **History and restore.** When a run that changed the state releases its lock, the version it leaves is copied to `history/`, and the oldest copies beyond `history` are deleted. `cuenv i state restore [--serial N] [--yes]` shows a version (its serial, the cuenv version that wrote it and its addresses), asks, and writes it back as a new version with fresh record generations; it refuses while unrecorded changes are pending. Never copy a history object over `state.json` by hand: it would bring back that version's lock and an old ETag. History keeps rotated provider secrets for up to `history` further writes; `history: 0` keeps none and deletes those kept so far.
+- **A vanished `state.json` is never recreated empty.** cuenv never deletes `state.json`: `destroy` leaves an empty one, and `state rename` leaves a tombstone. When it is missing but history or a migration record exists, every write refuses ("state vanished") and names `state restore`, the only command that recreates it. A listing that fails is a refusal too, never "new".
+- **Size.** `state.json` is capped at 16 MiB. `apply` refuses to create resources once the state is within 10% of the cap.
+- **Errors** never quote the endpoint or a credential, and recovery files bind to a hash of the endpoint host, bucket and root.
+
+:::caution[Bucket access is state access]
+Anyone who can read the bucket can read every project's state, including provider secrets in plaintext; anyone who can write it has apply authority over every project. Use one bucket per trust boundary, or prefix-scoped credentials. PR `plan` jobs hold the state credential, and a pull request controls `module:`, so bind a prefix-scoped credential to the repository or CI identity (the OIDC subject), never to the checked-out `module:` value. Keep the state credential separate from provider credentials.
+:::
+
+**Least privilege on AWS.** A project needs, under `<root>/<module>/_*` and `<root>/_locks/<module>/_*`: `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on the objects, and `s3:ListBucket` on the bucket with an `s3:prefix` condition covering both prefixes. Read-only commands (`plan`, `state list`, `state pull`, `state locks`) need only `GetObject` and `ListBucket`. On R2, create temporary credentials with the same prefixes. These recipes have not yet been verified end to end against real AWS and R2.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::acme-cuenv-state/github.com/acme/platform/_*",
+        "arn:aws:s3:::acme-cuenv-state/_locks/github.com/acme/platform/_*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::acme-cuenv-state",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": ["github.com/acme/platform/_*", "_locks/github.com/acme/platform/_*"]
+        }
+      }
+    }
+  ]
+}
+```
+
+**Backups and lifecycle rules.** On AWS, enable bucket versioning with an expiry for noncurrent versions. R2 has no versioning: `history` is the only backup. Never apply an age-based expiry to `state.json` or `_migration.json`; expire `history/` only, if at all. To purge a destroyed project, delete its prefix by hand.
+
+### Migrate between backends
+
+1. Keep `state` naming the backend the state is in, and add the new one as `infrastructure: migrateStateTo: s3: {…}` (only S3 targets are supported). While it is set, `plan` and `apply` warn.
+2. Run `cuenv i state migrate --all` (or `--env NAME` for one environment, or neither for the identity without `--env`). `--all` takes the environments from the source's records, so it includes environments the configuration no longer declares. For each one it refuses pending unrecorded changes, takes the source lock as a fence (`migrated-<id>`, kept for good), creates the target with the source's records and last writer, reads it back and compares, then commits. It records each project in `_migration.json`; a rerun continues the same migration.
+3. Make the target the `state` and remove `migrateStateTo`. With S3 state, `plan` and `apply` refuse a project the migration record still lists as not migrated.
+
+`unlock` refuses a fence without `--migration-fence`. Builds older than this release do release a fence when asked, so upgrade every machine and CI job that runs against the source before migrating; on Turso you can enforce a minimum version in CI. A source database on an older schema is refused unless `--upgrade-source` is given, which upgrades it (projects pinned to older cuenv on that database then stop working).
+
+`cuenv i state migrate --rollback` releases the fences and tombstones the copies; it refuses when a copy changed since the migration, and `--rollback --copy-back` copies those changes back to the source first.
+
+### What Turso and D1 share
 
 - cuenv creates and migrates its tables right before any command takes the lock. There is one table family, `cuenv_infrastructure_resources`, `cuenv_infrastructure_locks` and `cuenv_infrastructure_owners`, plus `cuenv_infrastructure_pending_migration` (see below) and `cuenv_infrastructure_migrations`, which records the schema version. Every row is keyed by module path, project name and environment; the environment is empty for a run without `--env`, and a named environment is a separate identity with no fallback to or from the no-flag one. Resource rows carry a generation (a UUID that is replaced when an address is deleted and created again) and a serial. Other commands (`plan`, `state list`, `unlock`, `state recover` with nothing to recover) never create or migrate tables, so they work with a read-only token and report empty state for a fresh database. A database whose schema is newer than the running cuenv is refused rather than misread.
 - The schema is at version 2. A transactional migration from version 1 stores effective sensitive attribute names alongside each managed record and renames the SQL state column to prevent old clients from reading new values without their sensitivity metadata; provider state and private bytes are unchanged. A migration refuses to run while any run holds a lock (checked inside its transaction), so an apply never writes into a half-migrated shape. A migration that finds locks held waits up to 30 seconds for them (announcing itself in `cuenv_infrastructure_pending_migration`, so no new lock is taken meanwhile; the announcement expires after a minute if the migrating process dies), then fails with every blocking lock listed: module, project, environment, lock identifier, holder and age. That failure exits `4` with JSON code `infrastructure_locked` and `blockingLocks`, and its help names the command that releases each lock. A stale lock can be found with `cuenv i state locks` and released with `cuenv i unlock <lock identifier> --module <module path> --project <project> [--env <name>]`, without evaluating that project.
@@ -682,7 +800,7 @@ A replacement whose old object was destroyed but whose new object was not create
 - **Changed state backend.** Recovery files bind to a hash of the backend: the normalized Turso URL (`localhost`, `127.0.0.1` and `[::1]` count as the same backend, since they can only reach this machine on the same port), or the D1 account and database IDs. Recovery refuses a file saved for a different backend, or without a binding, and names the file. `--force` does not override that. After inspecting the saved object and both backends, run `cuenv i state recover --accept-backend`. The two flags are independent: `--force` overrides a changed stored record only, `--accept-backend` overrides a backend mismatch only, and each is decided file by file.
 - **Provider executable busy.** Linux refuses to start a program that some process still has open for writing (`Text file busy`). A provider cuenv has just installed can be in that state for a moment when another process was started while the file was being written, so cuenv retries the launch for about a second before reporting the error.
 - **Lost provider response during interruption.** If the apply RPC ends without a response, cuenv names the resource whose outcome is unknown. Inspect the provider before retrying: the operation may have changed infrastructure without returning state to record.
-- **Exit codes.** `1` you declined the confirmation, `2` configuration (including a duplicate project name and the refusals described in [Moving between identities](#moving-between-identities)), `3` evaluation (including any instance in the module that cannot be evaluated, and a secret that cannot be resolved), `4` another run holds the lock, or a schema migration is blocked by held locks or waiting for them (retry later), `5` other infrastructure failures (including state owned by another instance), `130` interrupted. JSON error codes are `infrastructure`, `infrastructure_locked`, `infrastructure_cancelled` and `infrastructure_interrupted`; every error document carries `help`, and lock-related ones carry `lockIdentifier` and `lockReleased`.
+- **Exit codes.** `1` you declined the confirmation, `2` configuration (including a duplicate project name and the refusals described in [Moving between identities](#moving-between-identities)), `3` evaluation (including any instance in the module that cannot be evaluated, and a secret that cannot be resolved), `4` another run holds the lock, or a schema migration is blocked by held locks or waiting for them (retry later), `5` other infrastructure failures, `130` interrupted. JSON error codes are `infrastructure`, `infrastructure_locked`, `infrastructure_cancelled` and `infrastructure_interrupted`; every error document carries `help`, and lock-related ones carry `lockIdentifier` and `lockReleased`.
 
 ## Current limitations
 
@@ -691,8 +809,9 @@ A replacement whose old object was destroyed but whose new object was not create
 - **Dynamic-typed attributes** round-trip as tuples and objects rather than their original list, set or map types.
 - No nested or collection output references, `moved` blocks, saved plan files or `--target`. Data sources support scalar output references, including deferred reads. Import accepts only one string identifier and one returned resource; structured provider identities and multi-resource import are not supported.
 - Replacement is always destroy-then-create; operations run one at a time.
-- **No `state move`.** Records cannot be moved between the no-flag identity and a named environment, or between environment names; see [Moving between identities](#moving-between-identities).
-- **One state database for all environments.** `state` cannot be overridden per environment.
+- **No `state move`.** Single records cannot be moved between identities; see [Moving between identities](#moving-between-identities). With S3 state, `state rename` moves a whole identity's state.
+- **One state backend for all environments.** `state` cannot be overridden per environment.
+- **S3 state is experimental.** It has been tested against an in-process stand-in that implements the conditional-request semantics, not yet against real AWS S3, R2 or MinIO; `history`, `restore`, `rename` and rename detection exist for S3 only.
 - **Semantic errors are fail-closed.** A mistake the schema's checks report (see [the schema reference](/reference/cue-schema/#checks)) in _any_ environment, selected or not, is a CUE evaluation error (exit code `3`) and fails every command that evaluates the project, including ordinary `cuenv env`, `cuenv task`, `cuenv sync` and `cuenv fmt` runs and the shell hook (`cuenv export --shell`, which runs on every prompt). State-only commands (`state list`, `unlock` and the others) fail too, even though they need only the state backend: fix the configuration first.
 - Provider version constraints and GPG signature verification are not implemented. Lockfile pinning needs `cuenv infrastructure provider add`; providers without a pin are verified against the registry's own checksum only.
 - **Typed configuration** covers managed resources and provider blocks only; local `path` providers cannot be typed yet.

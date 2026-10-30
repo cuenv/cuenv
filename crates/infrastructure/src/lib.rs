@@ -43,13 +43,18 @@ pub use error::{
 };
 pub use state::{
     AddressingChoice, ConditionalPut, Credentials, D1Configuration, D1StateStore, HistoryEntry,
-    LastWriter, LockInformation, LockRequest, ManagedResource, ManifestEntry, MemoryStateStore,
-    MigrationManifest, ObjectLocation, ObjectStateFeatures, ObjectStateStore,
-    ObjectStoreConfiguration, ObjectTenant, RecordVersion, ResourceAddress, RestoreRequest,
-    StateLock, StateStore, StoredTenant, TenantImport, TenantLock, TursoConfiguration,
-    TursoStateStore,
+    LastWriter, LockDetails, LockInformation, LockRequest, MIGRATION_FENCE_PREFIX, ManagedResource,
+    ManifestEntry, MemoryStateStore, MigrationManifest, ObjectLocation, ObjectStateFeatures,
+    ObjectStateStore, ObjectStoreConfiguration, ObjectTenant, RecordVersion, ResourceAddress,
+    RestoreRequest, StateLock, StateSize, StateStore, StoredTenant, TenantImport, TenantLock,
+    TursoConfiguration, TursoStateStore,
 };
 pub use tenant::{ProjectInstance, TenantKey, read_module_path};
+
+/// The in-process fake S3 server, for tests of crates that drive the
+/// object store.
+#[cfg(any(test, feature = "fake-s3"))]
+pub use state::object::fake;
 pub use unrecorded::{
     BackendMismatch, ChangedRecord, RecoverOptions, RecoverOverrides, UnrecordedRecord,
     UnrecordedStore,

@@ -26,6 +26,7 @@ mod memory;
 pub mod object;
 mod resource;
 mod sql;
+pub use sql::MIGRATION_FENCE_PREFIX;
 mod store;
 mod turso;
 mod writer;
@@ -34,9 +35,9 @@ pub use d1::{D1Configuration, D1StateStore};
 pub use lock::{LockInformation, LockRequest, StateLock, TenantLock};
 pub use memory::MemoryStateStore;
 pub use object::{
-    AddressingChoice, Credentials, HistoryEntry, ManifestEntry, MigrationManifest, ObjectLocation,
-    ObjectStateFeatures, ObjectStateStore, ObjectStoreConfiguration, ObjectTenant, RestoreRequest,
-    StoredTenant, TenantImport,
+    AddressingChoice, Credentials, HistoryEntry, LockDetails, ManifestEntry, MigrationManifest,
+    ObjectLocation, ObjectStateFeatures, ObjectStateStore, ObjectStoreConfiguration, ObjectTenant,
+    RestoreRequest, StateSize, StoredTenant, TenantImport,
 };
 pub use resource::{ConditionalPut, ManagedResource, RecordVersion, ResourceAddress};
 pub use store::StateStore;

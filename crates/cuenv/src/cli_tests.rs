@@ -93,7 +93,8 @@ fn test_command_conversion() {
 #[test]
 fn test_infrastructure_command_conversion() {
     use crate::commands::infrastructure::{
-        ConfirmationPolicy, InfrastructureAction, SeparateState, StateAction, UnlockScope,
+        ConfirmationPolicy, FenceRelease, Identity, InfrastructureAction, LockListing,
+        SeparateState, StateAction, UnlockScope,
     };
 
     let cli = Cli::try_parse_from(["cuenv", "i", "destroy", "--yes", "-p", "infra"]).unwrap();
@@ -105,7 +106,8 @@ fn test_infrastructure_command_conversion() {
     assert_eq!(
         action,
         InfrastructureAction::Destroy {
-            confirmation: ConfirmationPolicy::AssumeYes
+            confirmation: ConfirmationPolicy::AssumeYes,
+            identity: Identity::Detect,
         }
     );
 
@@ -121,6 +123,7 @@ fn test_infrastructure_command_conversion() {
         InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::AssumeYes,
             separate_state: SeparateState::Refuse,
+            identity: Identity::Detect,
         }
     );
     assert_eq!(
@@ -128,6 +131,7 @@ fn test_infrastructure_command_conversion() {
         InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::Prompt,
             separate_state: SeparateState::Allow,
+            identity: Identity::Detect,
         }
     );
     // Only `apply` creates, so only it has the flag.
@@ -200,7 +204,7 @@ fn test_infrastructure_command_conversion() {
         state_action(&["cuenv", "i", "state", "locks", "-p", "infra"]),
         (
             "infra".to_string(),
-            InfrastructureAction::State(StateAction::Locks)
+            InfrastructureAction::State(StateAction::Locks(LockListing::Module))
         )
     );
     assert_eq!(
@@ -220,6 +224,7 @@ fn test_infrastructure_command_conversion() {
         InfrastructureAction::Unlock {
             lock_identifier: Some("abc".to_string()),
             scope: UnlockScope::default(),
+            fence: FenceRelease::Refuse,
         }
     );
     let cli = Cli::try_parse_from([
@@ -244,6 +249,7 @@ fn test_infrastructure_command_conversion() {
                 module_path: Some("example.com/m".to_string()),
                 project: Some("api".to_string()),
             },
+            fence: FenceRelease::Refuse,
         }
     );
 }

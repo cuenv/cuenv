@@ -36,8 +36,8 @@ pub(super) fn refuse_unconfirmable(
     }
     if output.is_json() {
         return Err(CliError::config_with_help(
-            "--json needs --yes for apply and destroy: the confirmation prompt cannot share \
-             standard output with the JSON result",
+            "--json needs --yes for apply, destroy and state restore: the confirmation prompt \
+             cannot share standard output with the JSON result",
             format!(
                 "Review `{} --json` first, then run with --yes.",
                 invocation.command("plan")
@@ -102,17 +102,12 @@ impl Answers for TerminalAnswers {
 /// Identifier of the confirmation prompt in prompt events.
 pub(super) const PROMPT_IDENTIFIER: &str = "infrastructure-confirmation";
 
-/// The error for a plan that was not confirmed.
-pub(super) fn cancelled(mode: PlanMode, reason: &str) -> CliError {
+/// The error for an operation that was not confirmed.
+pub(super) fn cancelled_operation(operation: &str, reason: &str) -> CliError {
     CliError::infrastructure(
-        format!(
-            "{} cancelled: {reason}; nothing was applied",
-            output::operation_name(mode)
-        ),
+        format!("{operation} cancelled: {reason}; nothing was applied"),
         Some(
-            "Answer 'yes' at the prompt to apply the plan shown, or pass --yes to apply without \
-             the prompt."
-                .to_string(),
+            "Answer 'yes' at the prompt to go ahead, or pass --yes to skip the prompt.".to_string(),
         ),
         InfrastructureFailureKind::Cancelled,
     )
@@ -122,14 +117,24 @@ pub(super) fn cancelled(mode: PlanMode, reason: &str) -> CliError {
 /// `yes` confirms; any other answer, the end of input, or an unreadable
 /// answer cancels, and an interrupt stops the run.
 pub(super) async fn confirm(mode: PlanMode, context: &CommandContext<'_>) -> Result<(), CliError> {
-    cuenv_events::emit_prompt_requested!(
-        PROMPT_IDENTIFIER,
+    confirm_operation(
+        context,
+        output::operation_name(mode),
         match mode {
             PlanMode::Apply => "Type 'yes' to apply these changes:",
             PlanMode::Destroy => "Type 'yes' to destroy every resource listed above:",
         },
-        Vec::<String>::new()
-    );
+    )
+    .await
+}
+
+/// Ask `question`; only `yes` confirms `operation`.
+pub(super) async fn confirm_operation(
+    context: &CommandContext<'_>,
+    operation: &str,
+    question: &str,
+) -> Result<(), CliError> {
+    cuenv_events::emit_prompt_requested!(PROMPT_IDENTIFIER, question, Vec::<String>::new());
     let answer = context
         .interrupts
         .until_interrupted(context.answers.read())
@@ -141,12 +146,15 @@ pub(super) async fn confirm(mode: PlanMode, context: &CommandContext<'_>) -> Res
             if answer == "yes" {
                 Ok(())
             } else {
-                Err(cancelled(mode, "the answer was not 'yes'"))
+                Err(cancelled_operation(operation, "the answer was not 'yes'"))
             }
         }
-        Ok(None) => Err(cancelled(mode, "standard input ended without an answer")),
-        Err(error) => Err(cancelled(
-            mode,
+        Ok(None) => Err(cancelled_operation(
+            operation,
+            "standard input ended without an answer",
+        )),
+        Err(error) => Err(cancelled_operation(
+            operation,
             &format!("the answer could not be read ({error})"),
         )),
     }

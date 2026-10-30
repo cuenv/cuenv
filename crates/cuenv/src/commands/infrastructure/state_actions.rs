@@ -3,8 +3,11 @@
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    BackendMismatch, RecoverOptions, RecoverOverrides, UnrecordedStore, strip_control_characters,
+    BackendMismatch, MIGRATION_FENCE_PREFIX, RecoverOptions, RecoverOverrides, UnrecordedStore,
+    strip_control_characters,
 };
+
+use super::action::FenceRelease;
 
 use super::dispatch::CommandContext;
 use super::failure::failure;
@@ -183,6 +186,7 @@ pub(super) fn adopt(context: &CommandContext<'_>) {
 pub(super) async fn unlock(
     context: &CommandContext<'_>,
     lock_identifier: Option<&str>,
+    fence: FenceRelease,
 ) -> Result<(), CliError> {
     let tenant = context.tenant;
     let current = context
@@ -190,6 +194,12 @@ pub(super) async fn unlock(
         .current_lock(tenant)
         .await
         .map_err(|error| failure(&error, context.invocation))?;
+    // What an object store adds (the cuenv version, the last change), for
+    // whoever decides whether the run is gone. Best effort.
+    let details = match (&current, context.store.object_features()) {
+        (Some(_), Some(features)) => features.lock_details(tenant).await.ok().flatten(),
+        _ => None,
+    };
     let (Some(current), Some(lock_identifier)) = (current.as_ref(), lock_identifier) else {
         if let Some(lock_identifier) = lock_identifier {
             return Err(unmatched_lock(context, lock_identifier).await);
@@ -204,12 +214,40 @@ pub(super) async fn unlock(
                     strip_control_characters(&lock.lock_identifier)
                 ))
             }),
+            details: details.as_ref(),
         });
         context
             .output
             .other_environments(&locks_in_other_environments(context).await);
         return Ok(());
     };
+    if lock_identifier.starts_with(MIGRATION_FENCE_PREFIX) && fence == FenceRelease::Refuse {
+        return Err(CliError::config_with_help(
+            format!(
+                "{} is a migration fence: its state was migrated to another backend, and the \
+                 lock keeps writes off this copy; nothing was released",
+                strip_control_characters(lock_identifier)
+            ),
+            format!(
+                "To undo the migration, run `{}`. To release the fence anyway (writes here will \
+                 not reach the migrated state), add --migration-fence.",
+                context.invocation.command("state migrate --rollback")
+            ),
+        ));
+    }
+    if let Some(details) = &details {
+        emit_stderr!(format!(
+            "Releasing lock {} held by '{}' since {}{}, taken by cuenv {}; last change: {}",
+            strip_control_characters(lock_identifier),
+            strip_control_characters(&current.holder),
+            strip_control_characters(&current.acquired_at),
+            current
+                .age_description()
+                .map_or_else(String::new, |age| format!(" ({age} ago)")),
+            details.cuenv_version,
+            details.last_change.as_deref().unwrap_or("none")
+        ));
+    }
     let released = context
         .store
         .force_unlock(tenant, lock_identifier)
@@ -241,6 +279,7 @@ pub(super) async fn unlock(
         lock: Some(current),
         outcome: LockOutcome::Released,
         unlock_command: None,
+        details: details.as_ref(),
     });
     Ok(())
 }

@@ -25,6 +25,8 @@ mod holder;
 mod interrupts;
 mod invocation;
 mod lock;
+mod migrate;
+mod object_state;
 mod output;
 mod output_selectors;
 mod provider;
@@ -43,8 +45,9 @@ use self::run::run;
 use crate::cli::CliError;
 
 pub use self::action::{
-    ConfirmationPolicy, InfrastructureAction, InfrastructureOptions, SeparateState, StateAction,
-    UnlockScope,
+    ConfirmationPolicy, FenceRelease, Identity, InfrastructureAction, InfrastructureOptions,
+    LockListing, MigrateRequest, MigrationDirection, MigrationScope, RenameSource, SeparateState,
+    SourceEnvironment, SourceUpgrade, StateAction, UnlockScope,
 };
 pub use self::provider::{ProviderAction, execute_provider};
 

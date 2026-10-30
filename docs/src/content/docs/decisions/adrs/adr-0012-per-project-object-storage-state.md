@@ -252,9 +252,10 @@ The module path is the identity. Keeping it unique, for example by changing
   - the vanished-state guard;
   - restore;
   - fence survival across SQL migrations.
-- An ignored end-to-end test runs against MinIO. A verification record against
-  real R2 and AWS S3 is added to the spec before the backend leaves
-  experimental status.
+- An ignored end-to-end test runs the conformance suite against any
+  S3-compatible server, such as MinIO. A verification record against real R2
+  and AWS S3 is added to the spec before the backend leaves experimental
+  status; the spec's Verification section says what has run so far.
 
 Implementation spec:
 `docs/design/specs/2026-10-29-infrastructure-object-storage-state.md`.

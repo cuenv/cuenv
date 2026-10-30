@@ -236,6 +236,23 @@ impl StateStore for MemoryStateStore {
         Ok(matches)
     }
 
+    async fn environments(&self, module_path: &str, project: &str) -> Result<Vec<Option<String>>> {
+        let contents = self.contents()?;
+        let mut environments: Vec<Option<String>> = contents
+            .rows
+            .iter()
+            .filter(|(_, rows)| !rows.is_empty())
+            .map(|(tenant, _)| tenant)
+            .chain(contents.locks.keys())
+            .chain(contents.writers.keys())
+            .filter(|tenant| tenant.module_path() == module_path && tenant.project() == project)
+            .map(|tenant| tenant.environment().map(str::to_string))
+            .collect();
+        environments.sort();
+        environments.dedup();
+        Ok(environments)
+    }
+
     async fn last_writer(&self, tenant: &TenantKey) -> Result<Option<LastWriter>> {
         Ok(self.contents()?.writers.get(tenant).cloned())
     }

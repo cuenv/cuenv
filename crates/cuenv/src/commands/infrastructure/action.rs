@@ -32,10 +32,118 @@ pub enum StateAction {
         /// state backend (`--accept-backend`).
         overrides: RecoverOverrides,
     },
-    /// Make this project's CUE instance the owner of its state.
+    /// Retired: does nothing. State follows a project wherever its
+    /// directory moves.
     Adopt,
-    /// List every lock held in the state database, for every project.
-    Locks,
+    /// List the locks held in the state backend.
+    Locks(LockListing),
+    /// Print the tenant's state as JSON (plaintext provider secrets).
+    Pull,
+    /// Write a history snapshot back as the tenant's state.
+    Restore {
+        /// The snapshot serial; the newest when `None`.
+        serial: Option<u64>,
+        /// Whether to ask before restoring.
+        confirmation: ConfirmationPolicy,
+    },
+    /// Copy the tenant's state to the `migrateStateTo` backend, or roll a
+    /// migration back.
+    Migrate(MigrateRequest),
+    /// Move another identity's state to the evaluated project's identity.
+    Rename(RenameSource),
+}
+
+/// Which locks `state locks` lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockListing {
+    /// The locks of the evaluated project's CUE module.
+    Module,
+    /// Every lock the backend holds (`--all`).
+    All,
+}
+
+/// Whether `apply`, `destroy` and `import` check for a renamed identity
+/// before creating a tenant's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Identity {
+    /// Refuse when state written from this directory exists under an
+    /// identity the configuration no longer declares.
+    Detect,
+    /// Start the new identity's state anyway (`--new-identity`).
+    New,
+}
+
+/// Whether `unlock` may release a migration fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FenceRelease {
+    /// Refuse a `migrated-` lock.
+    Refuse,
+    /// Release it (`--migration-fence`).
+    Allow,
+}
+
+/// Which identity `state rename` moves state from. Unset parts are the
+/// evaluated project's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameSource {
+    /// Project name the state is recorded under.
+    pub project: Option<String>,
+    /// CUE package the state is recorded under.
+    pub package: Option<String>,
+    /// Environment the state is recorded under.
+    pub environment: SourceEnvironment,
+}
+
+/// The environment `state rename` moves state from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceEnvironment {
+    /// The run's selected environment (or none).
+    Selected,
+    /// The named environment (`--from-env`).
+    Named(String),
+    /// The identity without `--env` (`--from-no-env`).
+    Unselected,
+}
+
+/// What `state migrate` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigrateRequest {
+    /// Which tenants.
+    pub scope: MigrationScope,
+    /// Forward, or back.
+    pub direction: MigrationDirection,
+    /// Whether the SQL source may be upgraded to the current schema first.
+    pub source_upgrade: SourceUpgrade,
+}
+
+/// The tenants `state migrate` works on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationScope {
+    /// The selected environment (or the identity without `--env`).
+    Selected,
+    /// Every environment the source holds (`--all`).
+    All,
+}
+
+/// Which way `state migrate` goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationDirection {
+    /// Copy the source to the target and fence the source.
+    Forward,
+    /// Release the source fence and tombstone the target, refusing when the
+    /// target changed since the migration (`--rollback`).
+    Rollback,
+    /// Copy the target's changes back first (`--rollback --copy-back`).
+    CopyBack,
+}
+
+/// Whether `state migrate` may upgrade an older SQL source schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceUpgrade {
+    /// Refuse an older source schema.
+    Refuse,
+    /// Upgrade it (`--upgrade-source`).
+    Allow,
 }
 
 /// Whether `apply --env NAME` may create resources whose addresses the
@@ -81,6 +189,8 @@ pub enum InfrastructureAction {
         /// Whether to create resources the project also has recorded
         /// without `--env`.
         separate_state: SeparateState,
+        /// Whether to check for a renamed identity.
+        identity: Identity,
     },
     /// Record one provider resource that already exists.
     Import {
@@ -88,11 +198,15 @@ pub enum InfrastructureAction {
         address: String,
         /// Opaque identifier accepted by the provider's import implementation.
         identifier: String,
+        /// Whether to check for a renamed identity.
+        identity: Identity,
     },
     /// Delete every managed resource of the project.
     Destroy {
         /// Whether to ask before destroying.
         confirmation: ConfirmationPolicy,
+        /// Whether to check for a renamed identity.
+        identity: Identity,
     },
     /// Inspect or repair recorded state.
     State(StateAction),
@@ -102,6 +216,8 @@ pub enum InfrastructureAction {
         lock_identifier: Option<String>,
         /// Which project's lock to act on.
         scope: UnlockScope,
+        /// Whether a migration fence may be released.
+        fence: FenceRelease,
     },
 }
 
@@ -114,13 +230,17 @@ impl InfrastructureAction {
             Self::Apply { .. } => InfrastructurePolicyAction::Apply,
             Self::Import { .. } => InfrastructurePolicyAction::Import,
             Self::Destroy { .. } => InfrastructurePolicyAction::Destroy,
-            // Listing the locks of the whole database is listing state.
-            Self::State(StateAction::List | StateAction::Locks) => {
+            // Listing the locks of the backend is listing state.
+            Self::State(StateAction::List | StateAction::Locks(_)) => {
                 InfrastructurePolicyAction::StateList
             }
             Self::State(StateAction::Remove { .. }) => InfrastructurePolicyAction::StateRemove,
             Self::State(StateAction::Recover { .. }) => InfrastructurePolicyAction::StateRecover,
             Self::State(StateAction::Adopt) => InfrastructurePolicyAction::StateAdopt,
+            Self::State(StateAction::Pull) => InfrastructurePolicyAction::StatePull,
+            Self::State(StateAction::Restore { .. }) => InfrastructurePolicyAction::StateRestore,
+            Self::State(StateAction::Migrate(_)) => InfrastructurePolicyAction::StateMigrate,
+            Self::State(StateAction::Rename(_)) => InfrastructurePolicyAction::StateRename,
             Self::Unlock { .. } => InfrastructurePolicyAction::Unlock,
         }
     }
@@ -140,13 +260,21 @@ impl InfrastructureAction {
     /// directory the module-wide loader skips.
     pub(super) const fn name_check(&self) -> NameCheck {
         match self {
-            Self::Plan | Self::Apply { .. } | Self::Import { .. } | Self::Destroy { .. } => {
+            Self::Plan
+            | Self::Apply { .. }
+            | Self::Import { .. }
+            | Self::Destroy { .. }
+            | Self::State(StateAction::Migrate(_) | StateAction::Rename(_)) => {
                 NameCheck::WholeModule
             }
-            Self::State(StateAction::Remove { .. } | StateAction::Recover { .. }) => {
-                NameCheck::TargetNotSkipped
-            }
-            Self::State(StateAction::List | StateAction::Locks | StateAction::Adopt)
+            Self::State(
+                StateAction::Remove { .. }
+                | StateAction::Recover { .. }
+                | StateAction::Restore { .. },
+            ) => NameCheck::TargetNotSkipped,
+            Self::State(
+                StateAction::List | StateAction::Locks(_) | StateAction::Adopt | StateAction::Pull,
+            )
             | Self::Unlock { .. } => NameCheck::TargetOnly,
         }
     }
@@ -165,7 +293,9 @@ impl InfrastructureAction {
     /// Whether the action asks for confirmation.
     pub(super) const fn confirmation(&self) -> ConfirmationPolicy {
         match self {
-            Self::Apply { confirmation, .. } | Self::Destroy { confirmation } => *confirmation,
+            Self::Apply { confirmation, .. }
+            | Self::Destroy { confirmation, .. }
+            | Self::State(StateAction::Restore { confirmation, .. }) => *confirmation,
             Self::Plan | Self::Import { .. } | Self::State(_) | Self::Unlock { .. } => {
                 ConfirmationPolicy::AssumeYes
             }

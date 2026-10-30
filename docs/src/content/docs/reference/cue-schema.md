@@ -955,7 +955,8 @@ infrastructure: {
 
 | Field          | Type                                                     | Required | Description                                                         |
 | -------------- | -------------------------------------------------------- | -------- | ------------------------------------------------------------------- |
-| `state`        | `#InfrastructureState`                                   | Yes      | State backend (`turso` or `d1`), shared by the top level and every environment |
+| `state`        | `#InfrastructureState`                                   | Yes      | State backend (`turso`, `d1` or `s3`), shared by the top level and every environment |
+| `migrateStateTo` | `#InfrastructureState`                                 | No       | The backend `cuenv infrastructure state migrate` copies the state to (S3 only); `plan` and `apply` warn while it is set |
 | `environments` | `{[#InfrastructureName]: #InfrastructureConfiguration}`  | No       | Complete configurations selected with `--env NAME`                  |
 | `providers`, `resources`, `data`, `providerEnvironment` | see [`#InfrastructureConfiguration`](#infrastructureconfiguration) | No | The top-level configuration, used without `--env` |
 | `workflows`    | `#InfrastructureWorkflows`                               | No       | CI workflows that `cuenv sync ci` emits, for `ci.providers`, to plan and apply the top-level configuration |
@@ -1161,8 +1162,9 @@ Exactly one field must be set.
 | ------- | ------------- | -------- | ------------------------------------------------- |
 | `turso` | `#TursoState` | One of   | Remote Turso (libSQL) database, or a local `sqld` |
 | `d1`    | `#D1State`    | One of   | Cloudflare D1 database, through the Cloudflare API |
+| `s3`    | `#S3State`    | One of   | S3-compatible bucket: AWS S3, Cloudflare R2 or MinIO (experimental) |
 
-Both backends share SQL schema version 2. A lock-fenced, transactional migration
+The two database backends share SQL schema version 2. A lock-fenced, transactional migration
 from version 1 adds managed-resource sensitivity metadata, defaulting existing
 rows to an empty list, and atomically renames `state_json` to
 `resource_state_json` without changing provider state or private bytes. Migration
@@ -1197,6 +1199,36 @@ infrastructure: state: d1: {
 | `databaseId` | `string` | Yes      | D1 database ID (not its name): a lowercase UUID, as `wrangler d1 list` prints it |
 | `token`      | `#InfrastructureStateToken` | Yes | Cloudflare API token with D1 Edit access |
 
+### #S3State
+
+```cue
+infrastructure: state: s3: {
+    bucket:          "acme-cuenv-state"
+    region:          "auto"
+    endpoint:        "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com"
+    accessKeyId:     schema.#OnePasswordRef & {ref: "op://platform/r2-state/access-key-id"}
+    secretAccessKey: schema.#OnePasswordRef & {ref: "op://platform/r2-state/secret-access-key"}
+}
+```
+
+| Field              | Type                        | Required | Description |
+| ------------------ | --------------------------- | -------- | ----------- |
+| `bucket`           | `string`                    | Yes      | 3 to 63 lowercase letters, digits, dots and hyphens; a dot needs path addressing |
+| `region`           | `string`                    | Yes      | Signing region; `auto` for R2, which then needs `endpoint` |
+| `endpoint`         | `string`                    | No       | `https://` with a host and optional port, or `http://` for a loopback host only; no path, credentials, query or fragment. Defaults to `https://s3.<region>.amazonaws.com` |
+| `root`             | `string`                    | No       | Key prefix: lowercase segments separated by `/` |
+| `addressing`       | `"auto"` \| `"virtual-hosted"` \| `"path"` | No (default `"auto"`) | How requests name the bucket |
+| `accessKeyId`      | `#InfrastructureStateToken` | Yes      | Access key ID |
+| `secretAccessKey`  | `#InfrastructureStateToken` | Yes      | Secret access key |
+| `sessionToken`     | `#InfrastructureStateToken` | No       | Session token of temporary credentials |
+| `minWriteInterval` | `string`                    | No       | Least time between writes of one project's state, such as `"1s"` or `"250ms"` (default `"1s"` on R2) |
+| `history`          | `int` (0 to 1000)           | No (default `10`) | Earlier versions of each project's state to keep |
+
+Each project and environment is one object,
+`[<root>/]<module>/_<package>/<project>/<env | _default>/state.json`, written
+with conditional requests. See
+[S3-compatible object storage](/how-to/infrastructure/#s3-compatible-object-storage).
+
 ### #TursoState
 
 | Field          | Type     | Required | Description                                                  |
@@ -1206,9 +1238,10 @@ infrastructure: state: d1: {
 
 ### #InfrastructureStateToken
 
-A state backend's authentication token, written like a project environment
-variable. One state database serves the top level and every environment
-(rows are keyed by environment), so there is one token. Nothing is read from
+A state backend's credential (the Turso and D1 `token`, the S3 keys),
+written like a project environment variable. One state backend serves the top
+level and every environment (state is keyed by environment), so each
+credential is set once. Nothing is read from
 the environment unless the configuration names it.
 
 | Form | Example |
@@ -1787,12 +1820,14 @@ The names accepted by `allowInfrastructure`, one per `cuenv infrastructure`
 command:
 
 ```cue
-#InfrastructureAction: "plan" | "apply" | "destroy" | "state-list" |
-    "state-remove" | "state-recover" | "state-adopt" | "unlock"
+#InfrastructureAction: "plan" | "apply" | "import" | "destroy" |
+    "state-list" | "state-remove" | "state-recover" | "state-adopt" |
+    "state-pull" | "state-restore" | "state-migrate" | "state-rename" | "unlock"
 ```
 
-`state-list`, `state-remove`, `state-recover` and `state-adopt` are the
-`state` subcommands. Any other name fails evaluation
+The `state-` names are the `state` subcommands. `state-adopt` names the
+retired `state adopt`, which does nothing, and stays accepted so existing
+policies keep evaluating. Any other name fails evaluation
 (`allowInfrastructure: ["deploy"]`) and deserialization (`unknown variant`).
 Plan, apply and destroy resolve the project's variables and pass the allowed
 ones to provider processes; a denied variable is also removed from the

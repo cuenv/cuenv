@@ -13,17 +13,21 @@ use cuenv_infrastructure::{
     strip_control_characters,
 };
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;
-use cuenv_manifest::manifest::{Infrastructure, InfrastructureState, S3Addressing, S3State};
+use cuenv_manifest::manifest::{
+    Infrastructure, InfrastructurePolicyAction, InfrastructureState, S3Addressing, S3State,
+};
 
-use super::action::{InfrastructureAction, StateAction};
+use super::action::{InfrastructureAction, LockListing, MigrateRequest, StateAction};
 use super::apply::{Convergence, ImportRequest, converge, import, plan};
 use super::confirm::Answers;
 use super::failure::failure;
 use super::guard::{Siblings, tenant_label};
 use super::interrupts::Interrupts;
 use super::invocation::Invocation;
+use super::migrate::{MigrationRun, migrate};
+use super::object_state::{Restore, pull, rename, restore};
 use super::output::Output;
-use super::resolve::StateCredential;
+use super::resolve::{StateCredential, resolve_state_token};
 use super::state_actions::{
     adopt, recover, remove_resource, resources_in_other_environments, unlock,
 };
@@ -73,20 +77,68 @@ pub(super) async fn dispatch(
                 .until_interrupted(context.store.list(context.tenant))
                 .await?
                 .map_err(|error| failure(&error, context.invocation))?;
-            context.output.state(context.tenant, &resources);
+            context.output.state(
+                context.tenant,
+                &resources,
+                context.store.location(context.tenant).as_deref(),
+            );
             context
                 .output
                 .other_environments(&resources_in_other_environments(context).await);
             Ok(())
         }
-        InfrastructureAction::State(StateAction::Locks) => {
-            let locks = context
-                .interrupts
-                .until_interrupted(context.store.locks())
-                .await?
-                .map_err(|error| failure(&error, context.invocation))?;
+        InfrastructureAction::State(StateAction::Locks(listing)) => {
+            let module = context.tenant.module_path();
+            let listed = match (listing, context.store.object_features()) {
+                (LockListing::Module, Some(features)) => {
+                    context
+                        .interrupts
+                        .until_interrupted(features.module_locks(module))
+                        .await?
+                }
+                _ => {
+                    context
+                        .interrupts
+                        .until_interrupted(context.store.locks())
+                        .await?
+                }
+            };
+            let mut locks = listed.map_err(|error| {
+                let failed = failure(&error, context.invocation);
+                if *listing == LockListing::All && error.to_string().contains("AccessDenied") {
+                    failed.with_help(
+                        "The state credential is probably prefix-scoped to some modules: list \
+                         this module's locks without --all.",
+                    )
+                } else {
+                    failed
+                }
+            })?;
+            if *listing == LockListing::Module {
+                locks.retain(|held| held.module_path == module);
+            }
             context.output.locks(&locks, context.invocation);
             Ok(())
+        }
+        InfrastructureAction::State(StateAction::Pull) => pull(context).await,
+        InfrastructureAction::State(StateAction::Restore {
+            serial,
+            confirmation,
+        }) => {
+            restore(
+                context,
+                &Restore {
+                    unrecorded: &unrecorded_store(&inputs, context)?,
+                    serial: *serial,
+                    confirmation: *confirmation,
+                },
+            )
+            .await
+        }
+        InfrastructureAction::State(StateAction::Rename(source)) => rename(context, source).await,
+        InfrastructureAction::State(StateAction::Migrate(request)) => {
+            // Boxed: the migration's future is large and runs once.
+            Box::pin(migrate_state(context, &inputs, *request)).await
         }
         InfrastructureAction::State(StateAction::Remove { address }) => {
             remove_resource(context, address).await
@@ -99,42 +151,55 @@ pub(super) async fn dispatch(
             Ok(())
         }
         InfrastructureAction::Unlock {
-            lock_identifier, ..
+            lock_identifier,
+            fence,
+            ..
         } => {
             context
                 .interrupts
-                .until_interrupted(unlock(context, lock_identifier.as_deref()))
+                .until_interrupted(unlock(context, lock_identifier.as_deref(), *fence))
                 .await?
         }
         InfrastructureAction::Plan => plan(context, inputs).await,
         InfrastructureAction::Import {
             address,
             identifier,
+            identity,
         } => {
             import(ImportRequest {
                 context,
                 inputs,
                 address,
                 identifier,
+                identity: *identity,
             })
             .await
         }
-        InfrastructureAction::Apply { confirmation, .. } => {
+        InfrastructureAction::Apply {
+            confirmation,
+            identity,
+            ..
+        } => {
             converge(
                 &Convergence {
                     mode: PlanMode::Apply,
                     confirmation: *confirmation,
+                    identity: *identity,
                     context,
                 },
                 inputs,
             )
             .await
         }
-        InfrastructureAction::Destroy { confirmation } => {
+        InfrastructureAction::Destroy {
+            confirmation,
+            identity,
+        } => {
             converge(
                 &Convergence {
                     mode: PlanMode::Destroy,
                     confirmation: *confirmation,
+                    identity: *identity,
                     context,
                 },
                 inputs,
@@ -142,6 +207,48 @@ pub(super) async fn dispatch(
             .await
         }
     }
+}
+
+/// `state migrate`: connect the `migrateStateTo` store and migrate.
+async fn migrate_state(
+    context: &CommandContext<'_>,
+    inputs: &EngineInputs,
+    request: MigrateRequest,
+) -> Result<(), CliError> {
+    let Some(target) = &inputs.infrastructure.migrate_state_to else {
+        return Err(CliError::config_with_help(
+            "`state migrate` needs `infrastructure.migrateStateTo`, naming the backend to copy \
+             the state to",
+            "Keep `state` naming the backend the state is in now, and add \
+             `migrateStateTo: s3: {...}`.",
+        ));
+    };
+    let InfrastructureState::S3(s3) = target else {
+        return Err(CliError::config(format!(
+            "`state migrate` copies state to S3 only; `migrateStateTo` names {}",
+            target.backend()
+        )));
+    };
+    let credential = resolve_state_token(InfrastructurePolicyAction::StateMigrate, target).await?;
+    let store = connect_object_store(
+        s3,
+        &credential,
+        &StoreScope {
+            instance: context.instance,
+            tenant: context.tenant,
+        },
+    )
+    .map_err(|error| failure(&error, context.invocation))?;
+    migrate(
+        context,
+        &MigrationRun {
+            target: &store,
+            unrecorded: &unrecorded_store(inputs, context)?,
+            source_label: inputs.infrastructure.state.backend().to_string(),
+            request,
+        },
+    )
+    .await
 }
 
 /// The provider releases the `cuenv.lock` of the CUE module holding
@@ -236,48 +343,52 @@ pub(super) fn connect(
                 api_token,
             })?))
         }
-        InfrastructureState::S3(s3) => {
-            let required = |field: &str| -> cuenv_infrastructure::Result<String> {
-                let resolved = credential.get(field);
-                resolved
-                    .and_then(|resolved| resolved.value.clone())
-                    .ok_or_else(|| {
-                        let absence = resolved.map_or_else(
-                            || format!("`{field}` is not configured"),
-                            |resolved| resolved.absence.clone(),
-                        );
-                        InfrastructureError::configuration(format!(
-                            "{absence}; S3 state needs an access key ID and a secret access key"
-                        ))
-                    })
-            };
-            let credentials = Credentials {
-                access_key_id: required(S3State::ACCESS_KEY_ID_FIELD)?,
-                secret_access_key: required(S3State::SECRET_ACCESS_KEY_FIELD)?,
-                session_token: credential
-                    .get(S3State::SESSION_TOKEN_FIELD)
-                    .and_then(|resolved| resolved.value.clone()),
-            };
-            Ok(Arc::new(ObjectStateStore::try_new(
-                ObjectStoreConfiguration {
-                    endpoint: s3.endpoint.clone(),
-                    bucket: s3.bucket.clone(),
-                    region: s3.region.clone(),
-                    root: s3.root.clone(),
-                    addressing: object_location(s3).addressing,
-                    credentials,
-                    package: scope.instance.package().to_string(),
-                    history: s3.history,
-                    minimum_write_interval: s3
-                        .min_write_interval
-                        .as_deref()
-                        .map(parse_write_interval)
-                        .transpose()?,
-                    probe_tenant: Some(scope.tenant.clone()),
-                },
-            )?))
-        }
+        InfrastructureState::S3(s3) => Ok(Arc::new(connect_object_store(s3, &credential, scope)?)),
     }
+}
+
+/// Build the object store an `s3` block names.
+pub(super) fn connect_object_store(
+    s3: &S3State,
+    credential: &StateCredential,
+    scope: &StoreScope<'_>,
+) -> cuenv_infrastructure::Result<ObjectStateStore> {
+    let required = |field: &str| -> cuenv_infrastructure::Result<String> {
+        let resolved = credential.get(field);
+        resolved
+            .and_then(|resolved| resolved.value.clone())
+            .ok_or_else(|| {
+                let absence = resolved.map_or_else(
+                    || format!("`{field}` is not configured"),
+                    |resolved| resolved.absence.clone(),
+                );
+                InfrastructureError::configuration(format!(
+                    "{absence}; S3 state needs an access key ID and a secret access key"
+                ))
+            })
+    };
+    ObjectStateStore::try_new(ObjectStoreConfiguration {
+        endpoint: s3.endpoint.clone(),
+        bucket: s3.bucket.clone(),
+        region: s3.region.clone(),
+        root: s3.root.clone(),
+        addressing: object_location(s3).addressing,
+        credentials: Credentials {
+            access_key_id: required(S3State::ACCESS_KEY_ID_FIELD)?,
+            secret_access_key: required(S3State::SECRET_ACCESS_KEY_FIELD)?,
+            session_token: credential
+                .get(S3State::SESSION_TOKEN_FIELD)
+                .and_then(|resolved| resolved.value.clone()),
+        },
+        package: scope.instance.package().to_string(),
+        history: s3.history,
+        minimum_write_interval: s3
+            .min_write_interval
+            .as_deref()
+            .map(parse_write_interval)
+            .transpose()?,
+        probe_tenant: Some(scope.tenant.clone()),
+    })
 }
 
 /// Where an `s3` state block keeps state.
