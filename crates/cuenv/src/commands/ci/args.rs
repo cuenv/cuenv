@@ -11,6 +11,10 @@ pub struct CiArgs {
     #[arg(long, short = 'p', value_name = "NAME")]
     pub pipeline: Option<String>,
 
+    /// Run every task in the selected pipelines without affected-task filtering.
+    #[arg(long, conflicts_with = "export")]
+    pub all: bool,
+
     /// Export format instead of running.
     ///
     /// When specified, outputs pipeline YAML to stdout (or file with --output).
@@ -119,10 +123,32 @@ impl std::fmt::Display for ExportFormat {
 mod tests {
     use super::*;
 
+    #[derive(clap::Parser)]
+    struct ParseCiArgs {
+        #[command(flatten)]
+        ci: CiArgs,
+    }
+
+    #[test]
+    fn all_flag_is_opt_in_and_conflicts_with_export() {
+        use clap::Parser;
+        assert!(!ParseCiArgs::try_parse_from(["cuenv"]).unwrap().ci.all);
+        assert!(
+            ParseCiArgs::try_parse_from(["cuenv", "--all", "--pipeline", "verify"])
+                .unwrap()
+                .ci
+                .all
+        );
+        assert!(
+            ParseCiArgs::try_parse_from(["cuenv", "--all", "--export", "github-actions"]).is_err()
+        );
+    }
+
     #[test]
     fn test_pipeline_name_default() {
         let args = CiArgs {
             pipeline: None,
+            all: false,
             export: None,
             output: None,
             filter_matrix: vec![],
@@ -140,6 +166,7 @@ mod tests {
     fn test_pipeline_name_explicit() {
         let args = CiArgs {
             pipeline: Some("release".to_string()),
+            all: false,
             export: None,
             output: None,
             filter_matrix: vec![],
@@ -157,6 +184,7 @@ mod tests {
     fn test_effective_jobs_default() {
         let args = CiArgs {
             pipeline: None,
+            all: false,
             export: None,
             output: None,
             filter_matrix: vec![],
@@ -175,6 +203,7 @@ mod tests {
     fn test_effective_jobs_explicit() {
         let args = CiArgs {
             pipeline: None,
+            all: false,
             export: None,
             output: None,
             filter_matrix: vec![],

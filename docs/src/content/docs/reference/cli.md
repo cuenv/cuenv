@@ -938,6 +938,7 @@ cuenv ci [OPTIONS]
 - `-o, --output <PATH>`: Write exported YAML to a file instead of stdout.
 - `-j, --jobs <N>`: Maximum parallel task DAG jobs. `0` uses host parallelism.
 - `--from <REF>`: Base ref to compare against (branch name or commit SHA) for affected detection.
+- `--all`: Run every named task in the selected project/pipeline scope, regardless of changed inputs. Keeps the real provider event, environment, hooks, dependencies and CI executor. Rejects empty/missing scope, unresolved task references, inline/matrix pipeline entries, and combination with `--export`.
 - `--dry-run`: Show what would be executed without running it.
 - `-e, --environment <NAME>`: Environment for secrets resolution.
 - `--filter-matrix <KEY=VALUE>`: Reserved for local runner matrix filtering. Currently rejected; use `cuenv sync ci` for provider-native matrix workflows.

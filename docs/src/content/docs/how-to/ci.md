@@ -140,6 +140,21 @@ path. On a pull request it can skip tasks whose inputs did not change, using
 cuenv ci --from origin/main
 ```
 
+For a complete verification run, bypass affected-task filtering explicitly:
+
+```bash
+cuenv ci --pipeline verify --path apps/web --all
+```
+
+`--all` keeps the selected project/pipeline scope, provider event, hooks,
+environment, task runtime, dependencies and failure behavior. It does not
+change the event into a release or use the separate `cuenv task` executor.
+Every pipeline entry must be a named task reference; unsupported inline/matrix
+entries, missing projects/pipelines, empty task lists and unresolved names fail.
+Without `--all`, affected-task behavior stays unchanged. `--all --dry-run` only
+plans execution; it does not certify that tasks ran. Export already includes
+all pipeline tasks and cannot be combined with `--all`.
+
 Detection is **inputs-driven**: cuenv compares the files matched by each task's
 `inputs` globs against the diff from the base ref. A task with **no `inputs`
 always runs** (cuenv cannot prove it is unaffected). If `--from` is omitted,
@@ -226,6 +241,7 @@ provider. The full flag set (verified against
 | `--export <FORMAT>` | Export pipeline YAML to stdout instead of running. `FORMAT` is `buildkite`, `gitlab`, `github-actions`, or `circleci`. |
 | `-o, --output <PATH>` | Write exported YAML to a file instead of stdout. |
 | `--from <REF>` | Base ref for affected-task detection. |
+| `--all` | Run every named task in the selected scope without changing provider context; cannot combine with export. |
 | `-j, --jobs <N>` | Max parallel DAG jobs (`0` = host parallelism, the default). |
 | `--dry-run` | Show what would run without executing. |
 | `-e, --environment <NAME>` | Environment used for secret resolution. |
