@@ -11,6 +11,7 @@ use crate::discovery::evaluate_module_from_cwd;
 use crate::provider::CIProvider;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus};
 use chrono::{DateTime, Utc};
+use cuenv_core::ci::PipelineTask;
 use cuenv_core::manifest::Project;
 use cuenv_core::{DryRun, Result};
 use cuenv_task_exec::TaskIndex;
@@ -28,12 +29,24 @@ use super::task_execution::{
     PipelineTaskResults, PipelineTasksRequest, execute_pipeline_tasks, project_env_vars,
 };
 
+/// Which tasks to select within the requested project and pipeline scope.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TaskSelection {
+    /// Select tasks affected by the provider's changed files.
+    #[default]
+    Affected,
+    /// Select every declared named pipeline task.
+    All,
+}
+
 /// Request for running CI pipelines from the executor.
 pub struct RunCiRequest {
     /// CI provider used for context, changed files, and reporting.
     pub provider: Arc<dyn CIProvider>,
     /// Whether to skip actual task execution.
     pub dry_run: DryRun,
+    /// Whether task selection uses changed files or all declared tasks.
+    pub task_selection: TaskSelection,
     /// Optional pipeline name to run.
     pub specific_pipeline: Option<String>,
     /// Optional environment override for secrets resolution.
@@ -55,6 +68,7 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
     let RunCiRequest {
         provider,
         dry_run,
+        task_selection,
         specific_pipeline,
         environment,
         path_filter,
@@ -69,12 +83,18 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
     cuenv_events::emit_ci_changed_files!(changed_files.len());
 
     let Some(discovered) = load_ci_projects(path_filter.as_deref())? else {
-        return Ok(());
+        return match task_selection {
+            TaskSelection::Affected => Ok(()),
+            TaskSelection::All => Err(cuenv_core::Error::configuration(
+                "No CI projects match the requested --all scope",
+            )),
+        };
     };
 
     let failures = run_ci_projects(CiProjectRunRequest {
         provider: provider.as_ref(),
         dry_run,
+        task_selection,
         specific_pipeline: specific_pipeline.as_deref(),
         environment: environment.as_deref(),
         context,
@@ -173,6 +193,7 @@ fn build_project_lookup(
 struct CiProjectRunRequest<'a> {
     provider: &'a dyn CIProvider,
     dry_run: DryRun,
+    task_selection: TaskSelection,
     specific_pipeline: Option<&'a str>,
     environment: Option<&'a str>,
     context: &'a crate::context::CIContext,
@@ -187,6 +208,7 @@ async fn run_ci_projects(
     let CiProjectRunRequest {
         provider,
         dry_run,
+        task_selection,
         specific_pipeline,
         environment,
         context,
@@ -205,6 +227,7 @@ async fn run_ci_projects(
         if let Some(plan) = plan_project_pipeline(ProjectPipelinePlanRequest {
             project_path,
             config,
+            task_selection,
             requested_pipeline: specific_pipeline,
             requested_environment: environment,
             context,
@@ -283,6 +306,7 @@ async fn prepare_secret_providers(
 struct ProjectPipelinePlanRequest<'a> {
     project_path: &'a Path,
     config: &'a Project,
+    task_selection: TaskSelection,
     requested_pipeline: Option<&'a str>,
     requested_environment: Option<&'a str>,
     context: &'a crate::context::CIContext,
@@ -290,6 +314,7 @@ struct ProjectPipelinePlanRequest<'a> {
     project_map: &'a ProjectDependencyMap,
 }
 
+#[derive(Debug)]
 struct ProjectPipelinePlan {
     pipeline_name: String,
     tasks_to_run: Vec<String>,
@@ -304,6 +329,7 @@ fn plan_project_pipeline(
         config,
         requested_pipeline,
         requested_environment,
+        task_selection,
         context,
         changed_files,
         project_map,
@@ -334,7 +360,11 @@ fn plan_project_pipeline(
         .map(|task| task.task_name().to_string())
         .collect();
 
-    let tasks_to_run = if context.event == "release" {
+    if task_selection == TaskSelection::All {
+        validate_all_pipeline_tasks(pipeline, config)?;
+    }
+
+    let tasks_to_run = if task_selection == TaskSelection::All || context.event == "release" {
         pipeline_task_names
     } else {
         compute_affected_tasks(
@@ -356,6 +386,27 @@ fn plan_project_pipeline(
         tasks_to_run,
         environment,
     }))
+}
+
+fn validate_all_pipeline_tasks(
+    pipeline: &cuenv_core::ci::Pipeline,
+    config: &Project,
+) -> Result<()> {
+    if pipeline.tasks.is_empty() {
+        return Err(cuenv_core::Error::configuration(
+            "Requested --all pipeline has no tasks",
+        ));
+    }
+    let index = TaskIndex::build(&config.tasks)?;
+    for task in &pipeline.tasks {
+        let PipelineTask::Simple(reference) = task else {
+            return Err(cuenv_core::Error::configuration(
+                "--all requires named task references; inline and matrix pipeline entries are unsupported",
+            ));
+        };
+        index.resolve(reference.task_name())?;
+    }
+    Ok(())
 }
 
 fn format_pipeline_failures(failures: &[(String, cuenv_core::Error)]) -> String {
@@ -491,6 +542,110 @@ fn pipeline_duration_ms(started_at: DateTime<Utc>, completed_at: DateTime<Utc>) 
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    fn selection_project() -> Project {
+        serde_json::from_value(serde_json::json!({
+            "name": "fixture",
+            "ci": {"pipelines": {"verify": {"tasks": [
+                {"_name": "unchanged"}, {"_name": "changed"}, {"_name": "always"}
+            ]}}},
+            "tasks": {
+                "unchanged": {"command": "true", "inputs": ["other.txt"]},
+                "changed": {"command": "true", "inputs": ["changed.txt"]},
+                "always": {"command": "true"}
+            }
+        }))
+        .unwrap()
+    }
+
+    fn plan_selection(
+        config: &Project,
+        selection: TaskSelection,
+    ) -> Result<Option<ProjectPipelinePlan>> {
+        let context = crate::context::CIContext {
+            provider: "github".into(),
+            event: "merge_group".into(),
+            ref_name: "queue/candidate".into(),
+            base_ref: Some("main".into()),
+            sha: "candidate".into(),
+        };
+        let result = plan_project_pipeline(ProjectPipelinePlanRequest {
+            project_path: Path::new("/workspace"),
+            config,
+            task_selection: selection,
+            requested_pipeline: Some("verify"),
+            requested_environment: None,
+            context: &context,
+            changed_files: &[PathBuf::from("changed.txt")],
+            project_map: &HashMap::new(),
+        });
+        assert_eq!(context.event, "merge_group");
+        assert_eq!(context.sha, "candidate");
+        result
+    }
+
+    #[test]
+    fn all_selection_runs_unchanged_and_no_input_tasks_without_changing_context() {
+        let config = selection_project();
+        let plan = plan_selection(&config, TaskSelection::All)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.tasks_to_run, ["unchanged", "changed", "always"]);
+    }
+
+    #[test]
+    fn default_selection_keeps_affected_filtering() {
+        let config = selection_project();
+        let plan = plan_selection(&config, TaskSelection::Affected)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.tasks_to_run, ["changed", "always"]);
+    }
+
+    #[test]
+    fn all_selection_rejects_empty_and_unresolved_pipelines() {
+        let mut config = selection_project();
+        config
+            .ci
+            .as_mut()
+            .unwrap()
+            .pipelines
+            .get_mut("verify")
+            .unwrap()
+            .tasks
+            .clear();
+        assert!(
+            plan_selection(&config, TaskSelection::All)
+                .unwrap_err()
+                .to_string()
+                .contains("has no tasks")
+        );
+        let mut config = selection_project();
+        config.tasks.remove("unchanged");
+        assert!(plan_selection(&config, TaskSelection::All).is_err());
+    }
+
+    #[test]
+    fn all_selection_rejects_inline_task_fallback_names() {
+        let mut config = selection_project();
+        config
+            .ci
+            .as_mut()
+            .unwrap()
+            .pipelines
+            .get_mut("verify")
+            .unwrap()
+            .tasks = serde_json::from_value(
+            serde_json::json!([{"command": "false", "description": "changed"}]),
+        )
+        .unwrap();
+        assert!(
+            plan_selection(&config, TaskSelection::All)
+                .unwrap_err()
+                .to_string()
+                .contains("named task references")
+        );
+    }
 
     #[test]
     fn pipeline_duration_ms_returns_elapsed_milliseconds() {

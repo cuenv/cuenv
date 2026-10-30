@@ -8,7 +8,7 @@
 use super::args::CiArgs;
 use crate::providers::detect_ci_provider;
 use cuenv_ci::discovery::find_cue_module_root;
-use cuenv_ci::executor::{RunCiRequest, run_ci};
+use cuenv_ci::executor::{RunCiRequest, TaskSelection, run_ci};
 use cuenv_core::Result;
 
 /// Execute runner mode - run the pipeline.
@@ -28,6 +28,11 @@ pub async fn execute_runner(args: &CiArgs) -> Result<()> {
     run_ci(RunCiRequest {
         provider,
         dry_run: args.dry_run.into(),
+        task_selection: if args.all {
+            TaskSelection::All
+        } else {
+            TaskSelection::Affected
+        },
         specific_pipeline: args.pipeline.clone(),
         environment: args.environment.clone(),
         path_filter: effective_path,
@@ -125,6 +130,7 @@ mod tests {
     fn ci_args() -> CiArgs {
         CiArgs {
             pipeline: None,
+            all: false,
             export: None,
             output: None,
             filter_matrix: Vec::new(),
