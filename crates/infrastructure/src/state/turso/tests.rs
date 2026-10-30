@@ -17,8 +17,7 @@ use crate::state::sql::{
     migration_outcome, row_to_resource, tenant_arguments,
 };
 use crate::state::{
-    ConditionalPut, ManagedResource, OwnerClaim, OwnerClaimMode, RecordVersion, ResourceAddress,
-    StateLock, StateStore,
+    ConditionalPut, ManagedResource, RecordVersion, ResourceAddress, StateLock, StateStore,
 };
 use crate::tenant::{ProjectInstance, TenantKey};
 
@@ -1086,7 +1085,7 @@ async fn fresh_database_reads_and_newer_schema_against_a_server() {
 
     assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
     assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
-    assert_eq!(store.owner(&tenant()).await.unwrap(), None);
+    assert_eq!(store.last_writer(&tenant()).await.unwrap(), None);
     assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
     assert!(store.lock(&tenant(), "test").await.is_err());
     assert!(
@@ -1112,7 +1111,7 @@ async fn fresh_database_reads_and_newer_schema_against_a_server() {
         store.current_lock(&tenant()).await.err(),
         store.lock(&tenant(), "test").await.err(),
         store.force_unlock(&tenant(), "any").await.err(),
-        store.owner(&tenant()).await.err(),
+        store.last_writer(&tenant()).await.err(),
     ];
     drop_state_tables(&store).await;
     for refusal in refusals {
@@ -1422,7 +1421,7 @@ async fn reads_on_a_database_without_cuenv_tables_are_empty_and_change_nothing()
     assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
     assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
     assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
-    assert_eq!(store.owner(&tenant()).await.unwrap(), None);
+    assert_eq!(store.last_writer(&tenant()).await.unwrap(), None);
     let statements = statements.lock().unwrap().clone();
     assert_eq!(statements.len(), 4, "{statements:?}");
     assert!(
@@ -1454,7 +1453,7 @@ async fn every_operation_refuses_a_newer_schema() {
             .await
             .unwrap_err()
             .to_string(),
-        store.owner(&tenant()).await.unwrap_err().to_string(),
+        store.last_writer(&tenant()).await.unwrap_err().to_string(),
     ];
     for message in messages {
         assert!(
@@ -1633,14 +1632,8 @@ async fn every_state_statement_is_scoped_by_environment() {
         );
         let instance = ProjectInstance::try_new(".", "web").unwrap();
         store
-            .claim_owner(
-                &tenant,
-                &lock,
-                &OwnerClaim {
-                    instance: &instance,
-                    mode: OwnerClaimMode::IfUnowned,
-                },
-            )
+            .inner
+            .record_writer(&tenant, &lock, &instance)
             .await
             .unwrap();
         assert!(store.current_lock(&tenant).await.unwrap().is_none());

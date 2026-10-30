@@ -5,10 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cuenv_infrastructure::{
-    ChangedRecord, ConditionalPut, InfrastructureError, LockInformation, LockRequest,
-    ManagedResource, MemoryStateStore, OwnerClaim, OwnerClaimMode, ProjectInstance, RecordVersion,
-    RecoverOverrides, ResourceAddress, StateLock, StateStore, TenantKey, TenantOwner,
-    UnrecordedStore,
+    ChangedRecord, ConditionalPut, InfrastructureError, LastWriter, LockInformation, LockRequest,
+    ManagedResource, MemoryStateStore, ProjectInstance, RecordVersion, RecoverOverrides,
+    ResourceAddress, StateLock, StateStore, TenantKey, UnrecordedStore,
 };
 use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, InfrastructureState};
@@ -633,7 +632,6 @@ struct CountingStore {
     inner: MemoryStateStore,
     migrations: AtomicUsize,
     acquisitions: AtomicUsize,
-    owner_locks: Mutex<Vec<Option<LockInformation>>>,
 }
 
 #[async_trait]
@@ -717,19 +715,11 @@ impl StateStore for CountingStore {
         self.inner.addresses(tenant).await
     }
 
-    async fn owner(&self, tenant: &TenantKey) -> cuenv_infrastructure::Result<Option<TenantOwner>> {
-        let lock = self.inner.current_lock(tenant).await?;
-        self.owner_locks.lock().unwrap().push(lock);
-        self.inner.owner(tenant).await
-    }
-
-    async fn claim_owner(
+    async fn last_writer(
         &self,
         tenant: &TenantKey,
-        lock: &StateLock,
-        claim: &OwnerClaim<'_>,
-    ) -> cuenv_infrastructure::Result<TenantOwner> {
-        self.inner.claim_owner(tenant, lock, claim).await
+    ) -> cuenv_infrastructure::Result<Option<LastWriter>> {
+        self.inner.last_writer(tenant).await
     }
 }
 
@@ -887,29 +877,37 @@ impl Harness {
         }
     }
 
-    /// Store records and an owner as another run would have left them.
-    async fn seed(&self, resources: &[&str], owner: Option<&ProjectInstance>) {
-        let lock = self.store.lock(&self.tenant, "seed").await.unwrap();
+    /// Store records as another run would have left them, written from
+    /// `writer` when one is given.
+    async fn seed(&self, resources: &[&str], writer: Option<&ProjectInstance>) {
+        let lock = StateLock::generate();
+        self.store
+            .acquire_lock(
+                &self.tenant,
+                &LockRequest {
+                    lock: &lock,
+                    holder: "seed",
+                    instance: writer,
+                },
+            )
+            .await
+            .unwrap();
         for address in resources {
             self.store
                 .put(&self.tenant, &lock, &managed(address))
                 .await
                 .unwrap();
         }
-        if let Some(owner) = owner {
-            self.store
-                .claim_owner(
-                    &self.tenant,
-                    &lock,
-                    &OwnerClaim {
-                        instance: owner,
-                        mode: OwnerClaimMode::Transfer,
-                    },
-                )
-                .await
-                .unwrap();
-        }
         self.store.unlock(&self.tenant, &lock).await.unwrap();
+    }
+
+    /// The instance that last wrote the tenant's state.
+    async fn last_writer(&self) -> Option<ProjectInstance> {
+        self.store
+            .last_writer(&self.tenant)
+            .await
+            .unwrap()
+            .map(|writer| writer.instance)
     }
 }
 
@@ -1011,7 +1009,7 @@ async fn writes_upgrade_the_tables_first_and_release_the_lock() {
 }
 
 #[tokio::test]
-async fn apply_claims_ownership_under_its_first_lock() {
+async fn apply_records_the_last_writer_under_its_lock() {
     let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
     harness
         .run(InfrastructureAction::Apply {
@@ -1020,8 +1018,7 @@ async fn apply_claims_ownership_under_its_first_lock() {
         })
         .await
         .unwrap();
-    let owner = harness.store.owner(&harness.tenant).await.unwrap().unwrap();
-    assert_eq!(owner.instance, harness.instance);
+    assert_eq!(harness.last_writer().await, Some(harness.instance.clone()));
     assert!(harness.current_lock().await.is_none());
     let result = harness.result();
     assert_eq!(result["operation"], "apply");
@@ -1095,13 +1092,15 @@ async fn an_interrupted_no_work_apply_reports_failure_and_releases_the_lock() {
 }
 
 #[tokio::test]
-async fn another_owner_is_refused_until_adopted() {
+async fn a_moved_project_keeps_its_state_and_becomes_its_last_writer() {
     let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
     let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
     harness.seed(&[], Some(&other)).await;
 
+    // Planning reads only: the last writer stays.
+    harness.run(InfrastructureAction::Plan).await.unwrap();
+    assert_eq!(harness.last_writer().await, Some(other.clone()));
     for action in [
-        InfrastructureAction::Plan,
         InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::AssumeYes,
             separate_state: SeparateState::Refuse,
@@ -1110,36 +1109,34 @@ async fn another_owner_is_refused_until_adopted() {
             confirmation: ConfirmationPolicy::AssumeYes,
         },
     ] {
-        let error = harness.run(action.clone()).await.unwrap_err();
-        assert_eq!(exit_code_for(&error), EXIT_INFRASTRUCTURE, "{action:?}");
-        assert!(error.to_string().contains("_staging/app:cuenv"), "{error}");
-        assert!(error.help().unwrap().contains("state adopt"), "{error:?}");
+        harness.run(action.clone()).await.unwrap();
         assert!(harness.current_lock().await.is_none(), "{action:?}");
+        assert_eq!(
+            harness.last_writer().await,
+            Some(harness.instance.clone()),
+            "{action:?}"
+        );
     }
-    // The owner was kept.
-    assert_eq!(
-        harness
-            .store
-            .owner(&harness.tenant)
-            .await
-            .unwrap()
-            .unwrap()
-            .instance,
-        other
-    );
+}
 
+#[tokio::test]
+async fn state_adopt_is_retired_and_changes_nothing() {
+    let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
+    harness.seed(&["random_pet.pet"], Some(&other)).await;
+    let acquisitions = harness.acquisitions();
     harness
         .run(InfrastructureAction::State(StateAction::Adopt))
         .await
         .unwrap();
-    let adopted = harness.result();
-    assert_eq!(adopted["previousOwner"]["instance"], "_staging/app:cuenv");
-    assert_eq!(adopted["owner"]["instance"], "app:cuenv");
-    harness.run(InfrastructureAction::Plan).await.unwrap();
+    let result = harness.result();
+    assert_eq!(result["changed"], false);
+    assert_eq!(harness.acquisitions(), acquisitions, "no lock is taken");
+    assert_eq!(harness.last_writer().await, Some(other));
 }
 
 #[tokio::test]
-async fn state_remove_checks_the_owner_under_lock_until_adopted() {
+async fn state_remove_and_recover_work_from_a_moved_directory() {
     for environment in [None, Some("Dev")] {
         let mut harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
         if let Some(environment) = environment {
@@ -1148,81 +1145,15 @@ async fn state_remove_checks_the_owner_under_lock_until_adopted() {
                     .unwrap();
         }
         let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
-        harness.seed(&["random_pet.pet"], Some(&other)).await;
+        harness
+            .seed(&["random_pet.pet", "random_pet.cat"], Some(&other))
+            .await;
         let before = harness.store.list(&harness.tenant).await.unwrap();
-        let action = InfrastructureAction::State(StateAction::Remove {
-            address: "random_pet.pet".to_string(),
-        });
-
-        let error = harness.run(action.clone()).await.unwrap_err();
-        assert_eq!(exit_code_for(&error), EXIT_INFRASTRUCTURE);
-        assert!(error.to_string().contains("_staging/app:cuenv"), "{error}");
-        assert!(error.help().unwrap().contains("state adopt"), "{error:?}");
-        let owner_lock = harness.counting.owner_locks.lock().unwrap()[0]
-            .clone()
+        let pet = before
+            .iter()
+            .find(|record| record.address.name == "pet")
             .unwrap();
-        assert_eq!(
-            lock_of(&error),
-            Some(&LockStatus {
-                identifier: owner_lock.lock_identifier,
-                released: true,
-            })
-        );
-        assert!(harness.current_lock().await.is_none());
-        assert_eq!(harness.store.list(&harness.tenant).await.unwrap(), before);
-        assert_eq!(
-            harness
-                .store
-                .owner(&harness.tenant)
-                .await
-                .unwrap()
-                .unwrap()
-                .instance,
-            other
-        );
-
-        // Reading and inspecting the lock remain available from a moved instance.
-        harness
-            .run(InfrastructureAction::State(StateAction::List))
-            .await
-            .unwrap();
-        harness
-            .run(InfrastructureAction::Unlock {
-                lock_identifier: None,
-                scope: UnlockScope::default(),
-            })
-            .await
-            .unwrap();
-        harness
-            .run(InfrastructureAction::State(StateAction::Adopt))
-            .await
-            .unwrap();
-        harness.run(action).await.unwrap();
-        assert!(
-            harness
-                .store
-                .list(&harness.tenant)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(harness.current_lock().await.is_none());
-    }
-}
-
-#[tokio::test]
-async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
-    for environment in [None, Some("Dev")] {
-        let mut harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
-        if let Some(environment) = environment {
-            harness.tenant =
-                TenantKey::with_environment("example.com/infrastructure", "app", environment)
-                    .unwrap();
-        }
-        let other = ProjectInstance::try_new("_staging/app", "cuenv").unwrap();
-        harness.seed(&["random_pet.pet"], Some(&other)).await;
-        let before = harness.store.list(&harness.tenant).await.unwrap();
-        let mut saved = before[0].clone();
+        let mut saved = pet.clone();
         saved.state = serde_json::json!({"id": "recovered"});
         let unrecorded = UnrecordedStore::at(harness.directory.path().join("unrecorded"));
         unrecorded
@@ -1230,56 +1161,11 @@ async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
                 &harness.tenant,
                 &ConditionalPut {
                     resource: &saved,
-                    expected: RecordVersion::of(Some(&before[0])),
+                    expected: RecordVersion::of(Some(pet)),
                 },
             )
             .unwrap();
-        let pending = unrecorded.list(&harness.tenant).unwrap();
 
-        for overrides in [RecoverOverrides::default(), overwrite_changed()] {
-            let error = harness
-                .run(InfrastructureAction::State(StateAction::Recover {
-                    overrides,
-                }))
-                .await
-                .unwrap_err();
-            assert_eq!(exit_code_for(&error), EXIT_INFRASTRUCTURE);
-            assert!(error.help().unwrap().contains("state adopt"), "{error:?}");
-            let owner_lock = harness
-                .counting
-                .owner_locks
-                .lock()
-                .unwrap()
-                .last()
-                .cloned()
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                lock_of(&error),
-                Some(&LockStatus {
-                    identifier: owner_lock.lock_identifier,
-                    released: true,
-                })
-            );
-            assert!(harness.current_lock().await.is_none());
-            assert_eq!(harness.store.list(&harness.tenant).await.unwrap(), before);
-            assert_eq!(unrecorded.list(&harness.tenant).unwrap(), pending);
-        }
-        assert_eq!(
-            harness
-                .store
-                .owner(&harness.tenant)
-                .await
-                .unwrap()
-                .unwrap()
-                .instance,
-            other
-        );
-
-        harness
-            .run(InfrastructureAction::State(StateAction::Adopt))
-            .await
-            .unwrap();
         harness
             .run(InfrastructureAction::State(StateAction::Recover {
                 overrides: RecoverOverrides::default(),
@@ -1287,8 +1173,18 @@ async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
             .await
             .unwrap();
         let recorded = harness.store.list(&harness.tenant).await.unwrap();
-        assert!(recorded[0].same_content(&saved));
+        assert!(recorded.iter().any(|record| record.same_content(&saved)));
         assert!(unrecorded.list(&harness.tenant).unwrap().is_empty());
+        assert_eq!(harness.last_writer().await, Some(harness.instance.clone()));
+
+        harness
+            .run(InfrastructureAction::State(StateAction::Remove {
+                address: "random_pet.cat".to_string(),
+            }))
+            .await
+            .unwrap();
+        let remaining = harness.store.list(&harness.tenant).await.unwrap();
+        assert_eq!(remaining.len(), 1);
         assert!(harness.current_lock().await.is_none());
     }
 }
@@ -1564,23 +1460,11 @@ impl StateStore for UnreleasableStore {
         Ok(Vec::new())
     }
 
-    async fn owner(
+    async fn last_writer(
         &self,
         _tenant: &TenantKey,
-    ) -> cuenv_infrastructure::Result<Option<TenantOwner>> {
+    ) -> cuenv_infrastructure::Result<Option<LastWriter>> {
         Ok(None)
-    }
-
-    async fn claim_owner(
-        &self,
-        _tenant: &TenantKey,
-        _lock: &StateLock,
-        claim: &OwnerClaim<'_>,
-    ) -> cuenv_infrastructure::Result<TenantOwner> {
-        Ok(TenantOwner {
-            instance: claim.instance.clone(),
-            claimed_at: "2026-09-28T00:00:00Z".to_string(),
-        })
     }
 
     async fn unlock(
@@ -2739,17 +2623,6 @@ fn every_repair_hint_carries_the_selected_environment_and_project() {
         !text.contains("`cuenv infrastructure state recover`"),
         "a hint without the flags: {text}"
     );
-    let owned = InfrastructureError::OwnedByAnotherInstance {
-        tenant: "t".to_string(),
-        owner: "a:cuenv".to_string(),
-        instance: "b:cuenv".to_string(),
-    };
-    let error = super::failure(&owned, &invocation);
-    let text = format!("{error} {}", error.help().unwrap());
-    assert!(
-        text.contains(&format!("cuenv infrastructure state adopt {flags}")),
-        "{text}"
-    );
     // The library errors name no command; the help carries the exact one.
     let unrecorded = InfrastructureError::UnrecordedChange {
         address: "random_pet.pet".to_string(),
@@ -3105,6 +2978,7 @@ fn tenant_lock(project: &str, environment: Option<&str>) -> cuenv_infrastructure
         module_path: "example.com/other".to_string(),
         project: project.to_string(),
         environment: environment.map(str::to_string),
+        package: None,
         lock: LockInformation {
             lock_identifier: format!("lock-{project}"),
             holder: "apply by ci".to_string(),

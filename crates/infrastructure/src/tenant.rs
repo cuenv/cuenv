@@ -103,10 +103,9 @@ impl fmt::Display for TenantKey {
 /// The CUE instance a project was evaluated from, as
 /// `<directory relative to the module root>:<package>`.
 ///
-/// A tenant's state records which instance owns it (see
-/// [`crate::state::TenantOwner`]), so a second instance declaring the same
-/// project name (in a directory the module loader skips, a nested module
-/// with the same module path, or another package) cannot act on it.
+/// A tenant's state records the instance that last took its lock to change
+/// it ([`crate::state::LastWriter`]), for information and rename detection
+/// only.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProjectInstance(String);
 

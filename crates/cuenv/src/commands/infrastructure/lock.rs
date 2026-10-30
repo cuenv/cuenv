@@ -15,7 +15,8 @@ use super::interrupts::HeldLock;
 use super::invocation::Invocation;
 use crate::cli::{CliError, InfrastructureFailureKind, LockStatus};
 
-/// Take the project's lock, run `work` with it, and release it.
+/// Take the project's lock, run `work` with it, and release it. Taking it
+/// records this CUE instance as the state's last writer.
 ///
 /// Creates or upgrades the state tables first: every write happens here,
 /// and only here. The lock identifier is chosen and registered with the
@@ -52,6 +53,7 @@ where
             &LockRequest {
                 lock: &lock,
                 holder: &holder,
+                instance: Some(context.instance),
             },
         )
         .await;

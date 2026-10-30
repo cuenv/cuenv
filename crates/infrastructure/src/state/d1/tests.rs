@@ -7,8 +7,8 @@ use super::*;
 use crate::state::fake_server::{FakeServer, fake_server, fake_server_with_headers};
 use crate::state::sql::{LATEST_SCHEMA_VERSION, MIGRATIONS, Migration, MigrationWait, RetryPolicy};
 use crate::state::{
-    ConditionalPut, ManagedResource, OwnerClaim, OwnerClaimMode, RecordVersion, ResourceAddress,
-    StateLock, StateStore,
+    ConditionalPut, LockRequest, ManagedResource, RecordVersion, ResourceAddress, StateLock,
+    StateStore,
 };
 use crate::tenant::{ProjectInstance, TenantKey};
 
@@ -208,13 +208,22 @@ fn cell(value: rusqlite::types::ValueRef<'_>) -> Value {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
+async fn conforms_to_the_state_store_contract() {
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    let store = store_at(&server);
+    store.migrate().await.unwrap();
+    crate::state::conformance::conforms(&store).await;
+}
+
+#[tokio::test]
 async fn reads_before_any_migration_are_empty_and_create_nothing() {
     let database = EmulatedD1::new();
     let server = database.serve().await;
     let store = store_at(&server);
     assert!(store.list(&tenant()).await.unwrap().is_empty());
     assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
-    assert_eq!(store.owner(&tenant()).await.unwrap(), None);
+    assert_eq!(store.last_writer(&tenant()).await.unwrap(), None);
     assert!(store.locks().await.unwrap().is_empty());
     assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
     assert!(store.lock(&tenant(), "test").await.is_err());
@@ -254,7 +263,7 @@ async fn version_two_preserves_existing_rows_and_owners_while_fencing_old_reader
         .unwrap();
     let rows = database.query("SELECT * FROM cuenv_infrastructure_resources");
     let locks = store.locks().await.unwrap();
-    let owner = store.owner(&tenant()).await.unwrap();
+    let owner = store.last_writer(&tenant()).await.unwrap();
     assert!(
         store
             .list(&tenant())
@@ -273,13 +282,13 @@ async fn version_two_preserves_existing_rows_and_owners_while_fencing_old_reader
         rows
     );
     assert_eq!(store.locks().await.unwrap(), locks);
-    assert_eq!(store.owner(&tenant()).await.unwrap(), owner);
+    assert_eq!(store.last_writer(&tenant()).await.unwrap(), owner);
 
     assert!(store.force_unlock(&tenant(), "old-lock").await.unwrap());
     store.migrate().await.unwrap();
     store.migrate().await.unwrap();
     assert_eq!(store.inner.schema_version().await.unwrap(), 2);
-    assert_eq!(store.owner(&tenant()).await.unwrap(), owner);
+    assert_eq!(store.last_writer(&tenant()).await.unwrap(), owner);
     let mut migrated = database.query("SELECT * FROM cuenv_infrastructure_resources");
     assert_eq!(migrated[0].pop(), Some(json!("[]")));
     assert_eq!(migrated, rows);
@@ -664,33 +673,40 @@ async fn writes_are_fenced_by_the_lock_and_by_the_stored_version() {
     assert_eq!(current.state, json!({"id": "pet", "length": 3}));
     assert_eq!(current.serial, 2);
 
-    // Ownership is claimed once and transferred explicitly.
+    // A lock taken by an instance records it as the last writer; a lock
+    // taken without one keeps the recorded writer.
+    store.unlock(&tenant(), &lock).await.unwrap();
     let instance = ProjectInstance::try_new(".", "web").unwrap();
-    let copy = ProjectInstance::try_new("_copy", "web").unwrap();
-    let claim = |instance, mode| OwnerClaim { instance, mode };
-    let owner = store
-        .claim_owner(
-            &tenant(),
-            &lock,
-            &claim(&instance, OwnerClaimMode::IfUnowned),
-        )
-        .await
-        .unwrap();
-    assert_eq!(owner.instance, instance);
-    let kept = store
-        .claim_owner(&tenant(), &lock, &claim(&copy, OwnerClaimMode::IfUnowned))
-        .await
-        .unwrap();
-    assert_eq!(kept.instance, instance);
-    let transferred = store
-        .claim_owner(&tenant(), &lock, &claim(&copy, OwnerClaimMode::Transfer))
-        .await
-        .unwrap();
-    assert_eq!(transferred.instance, copy);
-    assert_eq!(
-        store.owner(&tenant()).await.unwrap().unwrap().instance,
-        copy
-    );
+    let moved = ProjectInstance::try_new("services/web", "web").unwrap();
+    for (writer, expected) in [
+        (Some(&instance), &instance),
+        (None, &instance),
+        (Some(&moved), &moved),
+    ] {
+        let taken = StateLock::generate();
+        store
+            .acquire_lock(
+                &tenant(),
+                &LockRequest {
+                    lock: &taken,
+                    holder: "test",
+                    instance: writer,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            &store
+                .last_writer(&tenant())
+                .await
+                .unwrap()
+                .unwrap()
+                .instance,
+            expected
+        );
+        store.unlock(&tenant(), &taken).await.unwrap();
+    }
+    let lock = store.lock(&tenant(), "test").await.unwrap();
 
     // A lock left behind is listed and released by its identifier.
     let locks = store.locks().await.unwrap();

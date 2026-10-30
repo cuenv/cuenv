@@ -917,8 +917,7 @@ fn sync_directory(_directory: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::state::{
-        LockInformation, LockRequest, MemoryStateStore, OwnerClaim, TenantOwner,
-        TursoConfiguration, TursoStateStore,
+        LockInformation, LockRequest, MemoryStateStore, TursoConfiguration, TursoStateStore,
     };
 
     /// Only the backend binding is overridden.
@@ -1016,17 +1015,11 @@ mod tests {
             self.inner.force_unlock(tenant, lock_identifier).await
         }
 
-        async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
-            self.inner.owner(tenant).await
-        }
-
-        async fn claim_owner(
+        async fn last_writer(
             &self,
             tenant: &TenantKey,
-            lock: &StateLock,
-            claim: &OwnerClaim<'_>,
-        ) -> Result<TenantOwner> {
-            self.inner.claim_owner(tenant, lock, claim).await
+        ) -> Result<Option<crate::state::LastWriter>> {
+            self.inner.last_writer(tenant).await
         }
     }
 

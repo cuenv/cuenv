@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{InfrastructureError, Result};
-use crate::tenant::TenantKey;
+use crate::tenant::{ProjectInstance, TenantKey};
 
 /// An acquired state lock. Every write must present it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +56,12 @@ pub struct LockRequest<'request> {
     pub lock: &'request StateLock,
     /// Description of the holder (command, user, host, process).
     pub holder: &'request str,
+    /// The CUE instance taking the lock to change state, recorded as the
+    /// tenant's last writer ([`crate::state::LastWriter`]) together with the
+    /// lock. `None` (unlocking, restoring, listing) leaves the recorded last
+    /// writer unchanged, so a lock taken from another directory cannot
+    /// replace it.
+    pub instance: Option<&'request ProjectInstance>,
 }
 
 /// Who holds a tenant's lock.
@@ -100,6 +106,9 @@ impl LockInformation {
 pub struct TenantLock {
     /// CUE module path of the locked tenant.
     pub module_path: String,
+    /// CUE package of the locked tenant, for stores whose keys carry it;
+    /// `None` for the SQL stores, whose keys do not.
+    pub package: Option<String>,
     /// Project name of the locked tenant.
     pub project: String,
     /// Named environment of the locked tenant; `None` for the identity of a

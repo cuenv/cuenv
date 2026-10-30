@@ -39,7 +39,7 @@ pub(super) async fn run(
     )?;
     let target = evaluate_target(options, interrupts).await?;
     preflight(&options.action, &target, &invocation)?;
-    let resolved = resolve(&options.action, &target, &invocation).await?;
+    let resolved = resolve(&options.action, &target).await?;
     let facts = SelectionFacts::of(&target, &options.action);
     let Target {
         tenant,

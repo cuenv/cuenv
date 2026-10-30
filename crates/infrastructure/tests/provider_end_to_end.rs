@@ -32,9 +32,9 @@ use std::time::Duration;
 
 use cuenv_infrastructure::{
     Action, ApplyContext, ApplyEvent, Cancellation, ConditionalPut, EngineOptions, EngineSetup,
-    InfrastructureEngine, InfrastructureError, LockRequest, MemoryStateStore, OwnerClaim,
-    OwnerClaimMode, Plan, PlanMode, PlanSummary, ProjectInstance, RecordVersion, StateLock,
-    StateStore, TenantKey, TursoConfiguration, TursoStateStore,
+    InfrastructureEngine, InfrastructureError, LockRequest, MemoryStateStore, Plan, PlanMode,
+    PlanSummary, ProjectInstance, RecordVersion, StateLock, StateStore, TenantKey,
+    TursoConfiguration, TursoStateStore,
 };
 use cuenv_manifest::manifest::Infrastructure;
 use serde_json::json;
@@ -777,6 +777,7 @@ async fn turso_store_round_trips_records() -> TestResult {
             &LockRequest {
                 lock: &chosen,
                 holder: "round trip",
+                instance: None,
             },
         )
         .await?;
@@ -865,39 +866,40 @@ async fn turso_store_round_trips_records() -> TestResult {
     ));
     store.delete(&tenant, &lock, &absent.address).await?;
 
-    // The owner record is claimed once and transferred explicitly.
+    // A lock taken by an instance records it as the last writer; a lock
+    // taken without one keeps it.
     let root = ProjectInstance::try_new(".", "web")?;
-    let copy = ProjectInstance::try_new("_copy", "web")?;
-    assert_eq!(store.owner(&tenant).await?, None);
-    let claim = |instance, mode| OwnerClaim { instance, mode };
-    let owner = store
-        .claim_owner(&tenant, &lock, &claim(&root, OwnerClaimMode::IfUnowned))
-        .await?;
-    assert_eq!(owner.instance, root);
-    let kept = store
-        .claim_owner(&tenant, &lock, &claim(&copy, OwnerClaimMode::IfUnowned))
-        .await?;
-    assert_eq!(kept.instance, root);
-    assert!(kept.require(&tenant, &copy).is_err());
-    let adopted = store
-        .claim_owner(&tenant, &lock, &claim(&copy, OwnerClaimMode::Transfer))
-        .await?;
-    assert_eq!(adopted.instance, copy);
-    assert_eq!(
-        store.owner(&tenant).await?.ok_or("no owner")?.instance,
-        copy
-    );
+    let moved = ProjectInstance::try_new("services/web", "web")?;
+    assert_eq!(store.last_writer(&tenant).await?, None);
+    store.unlock(&tenant, &lock).await?;
+    for (writer, expected) in [(Some(&root), &root), (None, &root), (Some(&moved), &moved)] {
+        let taken = StateLock::generate();
+        store
+            .acquire_lock(
+                &tenant,
+                &LockRequest {
+                    lock: &taken,
+                    holder: "test",
+                    instance: writer,
+                },
+            )
+            .await?;
+        assert_eq!(
+            &store
+                .last_writer(&tenant)
+                .await?
+                .ok_or("no writer")?
+                .instance,
+            expected
+        );
+        store.unlock(&tenant, &taken).await?;
+    }
+    let lock = store.lock(&tenant, "test").await?;
 
     store.delete(&tenant, &lock, &updated.address).await?;
     store.unlock(&tenant, &lock).await?;
     assert!(matches!(
         store.put(&tenant, &lock, &updated).await,
-        Err(InfrastructureError::LockLost { .. })
-    ));
-    assert!(matches!(
-        store
-            .claim_owner(&tenant, &lock, &claim(&root, OwnerClaimMode::Transfer))
-            .await,
         Err(InfrastructureError::LockLost { .. })
     ));
     assert!(store.list(&tenant).await?.is_empty());

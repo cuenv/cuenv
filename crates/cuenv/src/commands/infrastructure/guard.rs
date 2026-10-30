@@ -477,8 +477,8 @@ pub(super) fn environment_claims_refusal(
 /// A state-only command that selected an environment the project does not
 /// declare: it may be one removed from the configuration, whose state still
 /// exists and can be listed, unlocked and cleaned up, or a mistyped name. It
-/// is told apart by the state: warn when the store has rows, a lock, an owner
-/// or a saved change for it, refuse (naming the declared environments)
+/// is told apart by the state: warn when the store has rows, a lock, a last
+/// writer or a saved change for it, refuse (naming the declared environments)
 /// otherwise.
 pub(super) async fn guard_environment_known(
     context: &CommandContext<'_>,
@@ -495,9 +495,9 @@ pub(super) async fn guard_environment_known(
         .until_interrupted(context.store.current_lock(tenant))
         .await?
         .map_err(|error| failure(&error, context.invocation))?;
-    let owner = context
+    let writer = context
         .interrupts
-        .until_interrupted(context.store.owner(tenant))
+        .until_interrupted(context.store.last_writer(tenant))
         .await?
         .map_err(|error| failure(&error, context.invocation))?;
     let saved_changes = unrecorded_store(inputs, context)
@@ -507,7 +507,7 @@ pub(super) async fn guard_environment_known(
     let environment = evaluation::escape_control_characters(tenant.environment().unwrap_or(""));
     let declared =
         evaluation::declared_environments_phrase(&context.siblings.declared_environments);
-    if !recorded.is_empty() || lock.is_some() || owner.is_some() || saved_changes {
+    if !recorded.is_empty() || lock.is_some() || writer.is_some() || saved_changes {
         emit_stderr!(format!(
             "warning: project '{}' no longer declares infrastructure environment '{environment}'; \
              using the state recorded for it ({declared})",
@@ -518,7 +518,7 @@ pub(super) async fn guard_environment_known(
     Err(CliError::config_with_help(
         format!(
             "project '{}' has no infrastructure environment named '{environment}', and no \
-             state, lock, owner or unrecorded change is recorded for that name",
+             state, lock or unrecorded change is recorded for that name",
             tenant.project()
         ),
         format!(
