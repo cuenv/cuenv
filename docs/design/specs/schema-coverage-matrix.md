@@ -129,6 +129,9 @@ substitute them from the binary cache. `ci.flake-source-check` in the
 These tasks use cuenv's writable hermetic task `HOME`; host `HOME` remains
 excluded.
 
+CLI note: project discovery (`cuenv ci`, `cuenv sync`) accepts file attributes
+such as `@extern(embed)` or `@if(tag)` before an `env.cue` package clause.
+
 CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
 `cueRegistry`. The CUE Registry path is implemented by the GitHub contributor
 and generated workflow action; it requires `id-token: write` and is intended
