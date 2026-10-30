@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    D1StateStore, ResourceAddress, TenantKey, TursoStateStore, declared_resource,
+    D1StateStore, ObjectStateStore, ResourceAddress, TenantKey, TursoStateStore, declared_resource,
     strip_control_characters, validate_configuration,
 };
-use cuenv_manifest::manifest::{Infrastructure, InfrastructureState};
+use cuenv_manifest::manifest::{Infrastructure, InfrastructureState, S3State};
 
 use super::action::{InfrastructureAction, InfrastructureOptions, UnlockScope};
 use super::confirm::{PromptSetting, TerminalAnswers, refuse_unconfirmable};
@@ -171,8 +171,8 @@ pub(super) fn parse_resource_address(address: &str) -> Result<ResourceAddress, C
     })
 }
 
-/// Validate the state backend's address (the Turso URL, or the D1 account and
-/// database identifiers) before any secret is resolved: nothing is sent and no
+/// Validate the state backend's address (the Turso URL, the D1 account and
+/// database identifiers, or the S3 bucket, region, endpoint and root) before any secret is resolved: nothing is sent and no
 /// client is built, so a mistake never costs a call to a secret provider. (The
 /// address is validated again when the store is created.)
 pub(super) fn validate_state_url(infrastructure: &Infrastructure) -> Result<(), CliError> {
@@ -181,8 +181,33 @@ pub(super) fn validate_state_url(infrastructure: &Infrastructure) -> Result<(), 
         InfrastructureState::D1(d1) => {
             D1StateStore::validate_identifiers(&d1.account_id, &d1.database_id)
         }
+        InfrastructureState::S3(s3) => validate_object_location(s3),
     }
-    .map_err(|error| failure(&error, &Invocation::default()))
+    .map_err(|error| failure(&error, &Invocation::default()))?;
+    if let Some(target) = &infrastructure.migrate_state_to {
+        validate_state_backend(target).map_err(|error| failure(&error, &Invocation::default()))?;
+    }
+    Ok(())
+}
+
+/// Validate a migration target the way [`validate_state_url`] validates the
+/// state backend.
+fn validate_state_backend(state: &InfrastructureState) -> cuenv_infrastructure::Result<()> {
+    match state {
+        InfrastructureState::Turso(turso) => TursoStateStore::validate_url(&turso.url),
+        InfrastructureState::D1(d1) => {
+            D1StateStore::validate_identifiers(&d1.account_id, &d1.database_id)
+        }
+        InfrastructureState::S3(s3) => validate_object_location(s3),
+    }
+}
+
+fn validate_object_location(s3: &S3State) -> cuenv_infrastructure::Result<()> {
+    ObjectStateStore::validate_location(&super::dispatch::object_location(s3))?;
+    if let Some(interval) = &s3.min_write_interval {
+        super::dispatch::parse_write_interval(interval)?;
+    }
+    Ok(())
 }
 
 /// Evaluate the target on a thread of its own. CUE evaluation cannot be

@@ -34,7 +34,7 @@ pub use d1::{D1Configuration, D1StateStore};
 pub use lock::{LockInformation, LockRequest, StateLock, TenantLock};
 pub use memory::MemoryStateStore;
 pub use object::{
-    AddressingChoice, Credentials, HistoryEntry, ManifestEntry, MigrationManifest,
+    AddressingChoice, Credentials, HistoryEntry, ManifestEntry, MigrationManifest, ObjectLocation,
     ObjectStateFeatures, ObjectStateStore, ObjectStoreConfiguration, ObjectTenant, RestoreRequest,
     StoredTenant, TenantImport,
 };

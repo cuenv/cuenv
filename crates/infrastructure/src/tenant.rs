@@ -166,6 +166,20 @@ impl ProjectInstance {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The directory relative to the module root (`.` for the root).
+    #[must_use]
+    pub fn directory(&self) -> &str {
+        self.0
+            .rsplit_once(':')
+            .map_or(self.0.as_str(), |(directory, _)| directory)
+    }
+
+    /// The CUE package.
+    #[must_use]
+    pub fn package(&self) -> &str {
+        self.0.rsplit_once(':').map_or("", |(_, package)| package)
+    }
 }
 
 impl fmt::Display for ProjectInstance {

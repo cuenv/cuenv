@@ -29,6 +29,15 @@ pub struct Infrastructure {
     /// top-level configuration and every named environment.
     pub state: InfrastructureState,
 
+    /// Where `cuenv infrastructure state migrate` copies the state to. While
+    /// it is set, `plan` and `apply` warn that a migration is under way.
+    #[serde(
+        default,
+        rename = "migrateStateTo",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub migrate_state_to: Option<InfrastructureState>,
+
     /// Provider plugins, keyed by local provider name (for example `random`).
     #[serde(default)]
     pub providers: BTreeMap<String, InfrastructureProvider>,
@@ -208,8 +217,16 @@ pub enum InfrastructurePolicyAction {
     StateRemove,
     /// `cuenv infrastructure state recover`.
     StateRecover,
-    /// `cuenv infrastructure state adopt`.
+    /// `cuenv infrastructure state adopt` (retired; does nothing).
     StateAdopt,
+    /// `cuenv infrastructure state pull`.
+    StatePull,
+    /// `cuenv infrastructure state restore`.
+    StateRestore,
+    /// `cuenv infrastructure state migrate`.
+    StateMigrate,
+    /// `cuenv infrastructure state rename`.
+    StateRename,
     /// `cuenv infrastructure unlock`.
     Unlock,
 }
@@ -227,6 +244,10 @@ impl InfrastructurePolicyAction {
             Self::StateRemove => "state-remove",
             Self::StateRecover => "state-recover",
             Self::StateAdopt => "state-adopt",
+            Self::StatePull => "state-pull",
+            Self::StateRestore => "state-restore",
+            Self::StateMigrate => "state-migrate",
+            Self::StateRename => "state-rename",
             Self::Unlock => "unlock",
         }
     }
@@ -295,6 +316,7 @@ impl Infrastructure {
     pub fn for_environment(&self, name: &str) -> Option<Self> {
         self.environments.get(name).map(|configuration| Self {
             state: self.state.clone(),
+            migrate_state_to: self.migrate_state_to.clone(),
             providers: configuration.providers.clone(),
             resources: configuration.resources.clone(),
             data: configuration.data.clone(),
@@ -411,26 +433,81 @@ pub enum InfrastructureState {
     Turso(TursoState),
     /// Cloudflare D1 database, reached through the Cloudflare API.
     D1(D1State),
+    /// An S3-compatible bucket: AWS S3, Cloudflare R2 or MinIO.
+    S3(S3State),
+}
+
+/// One credential of a state backend: where it is configured and its value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StateCredentialField<'state> {
+    /// The configuration field, for messages, such as
+    /// `infrastructure.state.s3.accessKeyId`.
+    pub field: &'static str,
+    /// The configured value; `None` when the field is optional and unset.
+    pub token: Option<&'state StateToken>,
 }
 
 impl InfrastructureState {
-    /// The backend's authentication token. One database serves every
-    /// environment, so there is one token. `None` only for a Turso database
-    /// configured without one.
+    /// The authentication token of a database backend. One database serves
+    /// every environment, so there is one token. `None` for a Turso
+    /// database configured without one, and for S3, which has several
+    /// credentials (see [`Self::credentials`]).
     #[must_use]
     pub const fn token(&self) -> Option<&StateToken> {
         match self {
             Self::Turso(turso) => turso.token.as_ref(),
             Self::D1(d1) => Some(&d1.token),
+            Self::S3(_) => None,
         }
     }
 
-    /// Where the token is configured, for messages.
+    /// Where the token of a database backend is configured, for messages;
+    /// for S3, the backend's block.
     #[must_use]
     pub const fn token_field(&self) -> &'static str {
         match self {
             Self::Turso(_) => "infrastructure.state.turso.token",
             Self::D1(_) => "infrastructure.state.d1.token",
+            Self::S3(_) => "infrastructure.state.s3",
+        }
+    }
+
+    /// Every credential the backend is configured with, in a fixed order.
+    #[must_use]
+    pub fn credentials(&self) -> Vec<StateCredentialField<'_>> {
+        match self {
+            Self::Turso(turso) => vec![StateCredentialField {
+                field: "infrastructure.state.turso.token",
+                token: turso.token.as_ref(),
+            }],
+            Self::D1(d1) => vec![StateCredentialField {
+                field: "infrastructure.state.d1.token",
+                token: Some(&d1.token),
+            }],
+            Self::S3(s3) => vec![
+                StateCredentialField {
+                    field: S3State::ACCESS_KEY_ID_FIELD,
+                    token: Some(&s3.access_key_id),
+                },
+                StateCredentialField {
+                    field: S3State::SECRET_ACCESS_KEY_FIELD,
+                    token: Some(&s3.secret_access_key),
+                },
+                StateCredentialField {
+                    field: S3State::SESSION_TOKEN_FIELD,
+                    token: s3.session_token.as_ref(),
+                },
+            ],
+        }
+    }
+
+    /// The backend's name, as it is written in `infrastructure.state`.
+    #[must_use]
+    pub const fn backend(&self) -> &'static str {
+        match self {
+            Self::Turso(_) => "turso",
+            Self::D1(_) => "d1",
+            Self::S3(_) => "s3",
         }
     }
 }
@@ -548,6 +625,77 @@ pub struct D1State {
     /// Cloudflare API token with D1 Edit access; the API refuses every
     /// request without one.
     pub token: StateToken,
+}
+
+/// How requests name an S3 bucket.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum S3Addressing {
+    /// Path style for an IP address, `localhost` or a bucket name with a
+    /// dot; virtual-hosted otherwise.
+    #[default]
+    Auto,
+    /// `https://<bucket>.<endpoint host>/<key>`.
+    VirtualHosted,
+    /// `https://<endpoint host>/<bucket>/<key>`.
+    Path,
+}
+
+/// S3-compatible bucket settings (AWS S3, Cloudflare R2, MinIO).
+///
+/// Based on `#S3State` in schema/infrastructure.cue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct S3State {
+    /// Bucket name.
+    pub bucket: String,
+
+    /// Signing region; `auto` for R2.
+    pub region: String,
+
+    /// Endpoint URL; `https://s3.<region>.amazonaws.com` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+
+    /// Key prefix every object of this configuration lives under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+
+    /// How requests name the bucket.
+    #[serde(default)]
+    pub addressing: S3Addressing,
+
+    /// Access key ID.
+    pub access_key_id: StateToken,
+
+    /// Secret access key.
+    pub secret_access_key: StateToken,
+
+    /// Session token of temporary credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<StateToken>,
+
+    /// Least time between two writes of one tenant's state, such as `1s`
+    /// or `250ms`. Defaults to `1s` on R2 endpoints and none elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_write_interval: Option<String>,
+
+    /// How many earlier versions of each tenant's state to keep.
+    #[serde(default = "S3State::default_history")]
+    pub history: u32,
+}
+
+impl S3State {
+    /// Where the access key ID is configured.
+    pub const ACCESS_KEY_ID_FIELD: &'static str = "infrastructure.state.s3.accessKeyId";
+    /// Where the secret access key is configured.
+    pub const SECRET_ACCESS_KEY_FIELD: &'static str = "infrastructure.state.s3.secretAccessKey";
+    /// Where the session token is configured.
+    pub const SESSION_TOKEN_FIELD: &'static str = "infrastructure.state.s3.sessionToken";
+
+    const fn default_history() -> u32 {
+        10
+    }
 }
 
 /// A Terraform provider plugin.

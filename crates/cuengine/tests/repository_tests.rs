@@ -661,10 +661,10 @@ fn a_task_passthrough_written_as_a_struct_literal_is_not_ambiguous() -> TestResu
 #[test]
 fn state_names_exactly_one_backend() -> TestResult {
     for (state, expected) in [
-        ("state: {}", "set one state backend: `turso` or `d1`"),
+        ("state: {}", "set one state backend: `turso`, `d1` or `s3`"),
         (
             "state: {turso: url: \"libsql://db.turso.io\", d1: {accountId: \"0123456789abcdef0123456789abcdef\", databaseId: \"0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9\"}}",
-            "set exactly one state backend, `turso` or `d1`, not both",
+            "set exactly one state backend: `turso`, `d1` or `s3`",
         ),
     ] {
         let message = SchemaFixture::new(&infrastructure(&[state, PROVIDER]))?.error()?;
@@ -678,6 +678,117 @@ fn state_names_exactly_one_backend() -> TestResult {
     .error()?;
     assert!(message.contains("`url` must be libsql://"), "{message}");
     assert!(!message.contains("state backend"), "{message}");
+    Ok(())
+}
+
+/// An R2 state block with literal credentials.
+const S3_STATE: &str = "state: s3: {bucket: \"acme-state\", region: \"auto\", \
+                        endpoint: \"https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com\", \
+                        accessKeyId: \"key\", secretAccessKey: {cuenvPassthrough: true, name: \"R2_SECRET\"}}";
+
+#[test]
+fn s3_state_evaluates_with_defaults_and_several_credentials() -> TestResult {
+    use cuenv_core::manifest::{InfrastructureState, S3Addressing};
+    let declared =
+        declared_infrastructure(&SchemaFixture::new(&infrastructure(&[S3_STATE, PROVIDER]))?)?;
+    let InfrastructureState::S3(s3) = &declared.state else {
+        return Err(format!("expected s3 state, got {:?}", declared.state).into());
+    };
+    assert_eq!(s3.addressing, S3Addressing::Auto);
+    assert_eq!(s3.history, 10);
+    assert_eq!(s3.root, None);
+    let fields: Vec<&str> = declared
+        .state
+        .credentials()
+        .iter()
+        .filter(|credential| credential.token.is_some())
+        .map(|credential| credential.field)
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "infrastructure.state.s3.accessKeyId",
+            "infrastructure.state.s3.secretAccessKey"
+        ]
+    );
+
+    // MinIO on loopback over http, path addressing, a root and history off.
+    let declared = declared_infrastructure(&SchemaFixture::new(&infrastructure(&[
+        "state: s3: {bucket: \"state.local\", region: \"us-east-1\", endpoint: \"http://127.0.0.1:9000\", root: \"team/infra\", addressing: \"path\", accessKeyId: \"a\", secretAccessKey: \"b\", sessionToken: \"c\", minWriteInterval: \"250ms\", history: 0}",
+        PROVIDER,
+    ]))?)?;
+    let InfrastructureState::S3(s3) = &declared.state else {
+        return Err("expected s3 state".into());
+    };
+    assert_eq!(s3.history, 0);
+    assert_eq!(s3.min_write_interval.as_deref(), Some("250ms"));
+    assert!(s3.session_token.is_some());
+    Ok(())
+}
+
+#[test]
+fn s3_state_rejects_unsafe_or_malformed_settings() -> TestResult {
+    let base =
+        "bucket: \"acme-state\", region: \"eu-west-2\", accessKeyId: \"a\", secretAccessKey: \"b\"";
+    for (extra, expected) in [
+        ("endpoint: \"http://minio.internal:9000\"", "endpoint"),
+        ("endpoint: \"https://user:pass@host\"", "endpoint"),
+        ("endpoint: \"https://host/path\"", "endpoint"),
+        ("root: \"Team\"", "root"),
+        ("root: \"a/../b\"", "root"),
+        ("minWriteInterval: \"1 second\"", "minWriteInterval"),
+        ("history: -1", "history"),
+        ("addressing: \"dns\"", "addressing"),
+        ("accessKey: \"x\"", "accessKey"),
+    ] {
+        let message = SchemaFixture::new(&infrastructure(&[
+            &format!("state: s3: {{{base}, {extra}}}"),
+            PROVIDER,
+        ]))?
+        .error()?;
+        assert!(message.contains(expected), "{extra}: {message}");
+    }
+    for (state, expected) in [
+        (
+            "state: s3: {bucket: \"a.b.c\", region: \"eu-west-2\", addressing: \"virtual-hosted\", accessKeyId: \"a\", secretAccessKey: \"b\"}",
+            "needs `addressing: \"path\"`",
+        ),
+        (
+            "state: s3: {bucket: \"acme\", region: \"auto\", accessKeyId: \"a\", secretAccessKey: \"b\"}",
+            "needs `endpoint`",
+        ),
+        (
+            "state: s3: {bucket: \"Acme\", region: \"eu-west-2\", accessKeyId: \"a\", secretAccessKey: \"b\"}",
+            "bucket",
+        ),
+        (
+            "state: s3: {bucket: \"acme\", region: \"eu-west-2\", accessKeyId: \"a\"}",
+            "secretAccessKey",
+        ),
+    ] {
+        let message = SchemaFixture::new(&infrastructure(&[state, PROVIDER]))?.error()?;
+        assert!(message.contains(expected), "{state}: {message}");
+    }
+    Ok(())
+}
+
+#[test]
+fn migrate_state_to_names_exactly_one_target() -> TestResult {
+    let declared = declared_infrastructure(&SchemaFixture::new(&infrastructure(&[
+        STATE,
+        &format!("migrateStateTo: {}", S3_STATE.trim_start_matches("state: ")),
+        PROVIDER,
+    ]))?)?;
+    assert!(matches!(
+        declared.migrate_state_to,
+        Some(cuenv_core::manifest::InfrastructureState::S3(_))
+    ));
+    let message =
+        SchemaFixture::new(&infrastructure(&[STATE, "migrateStateTo: {}", PROVIDER]))?.error()?;
+    assert!(
+        message.contains("exactly one migration target"),
+        "{message}"
+    );
     Ok(())
 }
 
@@ -985,6 +1096,10 @@ fn every_infrastructure_action_name_is_accepted() -> TestResult {
         "state-remove",
         "state-recover",
         "state-adopt",
+        "state-pull",
+        "state-restore",
+        "state-migrate",
+        "state-rename",
         "unlock",
     ];
     let list = names

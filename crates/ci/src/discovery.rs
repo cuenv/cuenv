@@ -35,7 +35,8 @@ pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 /// - Current directory cannot be determined
 /// - Not inside a CUE module (no `cue.mod/` found)
 /// - No env.cue files with matching package found
-/// - CUE evaluation fails
+/// - CUE evaluation fails, for any directory
+/// - Two projects share a name (compared case-insensitively)
 ///
 /// # Example
 /// ```ignore
@@ -131,6 +132,15 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
             "No instances could be evaluated. All directories failed:\n{error_summary}"
         )));
     }
+    // Fail closed: a directory that does not evaluate could declare a
+    // project with a name another project uses.
+    if !eval_errors.is_empty() {
+        let error_summary = format_eval_errors(&eval_errors);
+        return Err(cuenv_core::Error::configuration(format!(
+            "cannot confirm that project names are unique in this module; these directories \
+             fail to evaluate:\n{error_summary}"
+        )));
+    }
 
     // Convert meta to reference map for dependsOn resolution
     let references = if all_meta.is_empty() {
@@ -144,12 +154,9 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
         )
     };
 
-    Ok(ModuleEvaluation::from_raw(
-        module_root,
-        all_instances,
-        all_projects,
-        references,
-    ))
+    let module = ModuleEvaluation::from_raw(module_root, all_instances, all_projects, references);
+    module.require_unique_project_names()?;
+    Ok(module)
 }
 
 #[cfg(test)]

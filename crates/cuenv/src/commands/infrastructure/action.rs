@@ -134,22 +134,19 @@ impl InfrastructureAction {
         }
     }
 
-    /// Plans, changes and ownership transfers check the project name
-    /// across the whole module; inspecting and repairing state and unlocking
-    /// must keep working when a sibling instance is broken.
+    /// Plans and changes check the project name across the whole module;
+    /// inspecting and repairing state and unlocking must keep working when
+    /// a sibling instance is broken, but repairs refuse a project copy in a
+    /// directory the module-wide loader skips.
     pub(super) const fn name_check(&self) -> NameCheck {
         match self {
-            Self::Plan
-            | Self::Apply { .. }
-            | Self::Import { .. }
-            | Self::Destroy { .. }
-            | Self::State(StateAction::Adopt) => NameCheck::WholeModule,
-            Self::State(
-                StateAction::List
-                | StateAction::Locks
-                | StateAction::Remove { .. }
-                | StateAction::Recover { .. },
-            )
+            Self::Plan | Self::Apply { .. } | Self::Import { .. } | Self::Destroy { .. } => {
+                NameCheck::WholeModule
+            }
+            Self::State(StateAction::Remove { .. } | StateAction::Recover { .. }) => {
+                NameCheck::TargetNotSkipped
+            }
+            Self::State(StateAction::List | StateAction::Locks | StateAction::Adopt)
             | Self::Unlock { .. } => NameCheck::TargetOnly,
         }
     }

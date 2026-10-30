@@ -3,15 +3,17 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    D1Configuration, D1StateStore, EngineOptions, EngineSetup, InfrastructureError, PlanMode,
+    AddressingChoice, Credentials, D1Configuration, D1StateStore, EngineOptions, EngineSetup,
+    InfrastructureError, ObjectLocation, ObjectStateStore, ObjectStoreConfiguration, PlanMode,
     ProjectInstance, StateStore, TenantKey, TursoConfiguration, TursoStateStore, UnrecordedStore,
     strip_control_characters,
 };
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;
-use cuenv_manifest::manifest::{Infrastructure, InfrastructureState};
+use cuenv_manifest::manifest::{Infrastructure, InfrastructureState, S3Addressing, S3State};
 
 use super::action::{InfrastructureAction, StateAction};
 use super::apply::{Convergence, ImportRequest, converge, import, plan};
@@ -192,15 +194,24 @@ pub(super) fn unrecorded_store(
     }
 }
 
+/// What a connection is for: the CUE instance whose package an object store
+/// keys state by, and the tenant whose prefix its checks use.
+pub(super) struct StoreScope<'scope> {
+    pub(super) instance: &'scope ProjectInstance,
+    pub(super) tenant: &'scope TenantKey,
+}
+
 /// Connect to the state store. Nothing is sent yet: reads never create
-/// tables, and [`under_lock`] creates or upgrades them before any write.
+/// tables, and [`under_lock`] creates or upgrades them (or, for an object
+/// store, checks the bucket's conditional requests) before any write.
 pub(super) fn connect(
-    infrastructure: &Infrastructure,
+    state: &InfrastructureState,
     credential: StateCredential,
+    scope: &StoreScope<'_>,
 ) -> cuenv_infrastructure::Result<Arc<dyn StateStore>> {
-    let StateCredential { token, absence } = credential;
-    match &infrastructure.state {
+    match state {
         InfrastructureState::Turso(turso) => {
+            let (token, absence) = single_token(credential);
             if token.is_none() {
                 emit_stderr!(format!(
                     "warning: {absence}; connecting to Turso without an authentication token"
@@ -213,6 +224,7 @@ pub(super) fn connect(
         }
         // The Cloudflare API refuses every request without a token.
         InfrastructureState::D1(d1) => {
+            let (token, absence) = single_token(credential);
             let api_token = token.ok_or_else(|| {
                 InfrastructureError::configuration(format!(
                     "{absence}; D1 state needs a Cloudflare API token with D1 Edit access"
@@ -224,7 +236,95 @@ pub(super) fn connect(
                 api_token,
             })?))
         }
+        InfrastructureState::S3(s3) => {
+            let required = |field: &str| -> cuenv_infrastructure::Result<String> {
+                let resolved = credential.get(field);
+                resolved
+                    .and_then(|resolved| resolved.value.clone())
+                    .ok_or_else(|| {
+                        let absence = resolved.map_or_else(
+                            || format!("`{field}` is not configured"),
+                            |resolved| resolved.absence.clone(),
+                        );
+                        InfrastructureError::configuration(format!(
+                            "{absence}; S3 state needs an access key ID and a secret access key"
+                        ))
+                    })
+            };
+            let credentials = Credentials {
+                access_key_id: required(S3State::ACCESS_KEY_ID_FIELD)?,
+                secret_access_key: required(S3State::SECRET_ACCESS_KEY_FIELD)?,
+                session_token: credential
+                    .get(S3State::SESSION_TOKEN_FIELD)
+                    .and_then(|resolved| resolved.value.clone()),
+            };
+            Ok(Arc::new(ObjectStateStore::try_new(
+                ObjectStoreConfiguration {
+                    endpoint: s3.endpoint.clone(),
+                    bucket: s3.bucket.clone(),
+                    region: s3.region.clone(),
+                    root: s3.root.clone(),
+                    addressing: object_location(s3).addressing,
+                    credentials,
+                    package: scope.instance.package().to_string(),
+                    history: s3.history,
+                    minimum_write_interval: s3
+                        .min_write_interval
+                        .as_deref()
+                        .map(parse_write_interval)
+                        .transpose()?,
+                    probe_tenant: Some(scope.tenant.clone()),
+                },
+            )?))
+        }
     }
+}
+
+/// Where an `s3` state block keeps state.
+pub(super) fn object_location(s3: &S3State) -> ObjectLocation<'_> {
+    ObjectLocation {
+        endpoint: s3.endpoint.as_deref(),
+        bucket: &s3.bucket,
+        region: &s3.region,
+        root: s3.root.as_deref(),
+        addressing: match s3.addressing {
+            S3Addressing::Auto => AddressingChoice::Auto,
+            S3Addressing::VirtualHosted => AddressingChoice::VirtualHosted,
+            S3Addressing::Path => AddressingChoice::Path,
+        },
+    }
+}
+
+/// The token of a database backend, and why it is missing.
+fn single_token(credential: StateCredential) -> (Option<String>, String) {
+    credential.values.into_iter().next().map_or_else(
+        || (None, "no state token is configured".to_string()),
+        |resolved| (resolved.value, resolved.absence),
+    )
+}
+
+/// Parse `minWriteInterval`: a whole number of milliseconds (`250ms`) or
+/// seconds (`1s`).
+pub(super) fn parse_write_interval(text: &str) -> cuenv_infrastructure::Result<Duration> {
+    let invalid = || {
+        InfrastructureError::configuration(format!(
+            "`infrastructure.state.s3.minWriteInterval` must be a whole number of `ms` or `s`, \
+             such as \"250ms\" or \"1s\", not \"{}\"",
+            strip_control_characters(text)
+        ))
+    };
+    let (digits, unit) = text
+        .strip_suffix("ms")
+        .map(|digits| (digits, Duration::from_millis as fn(u64) -> Duration))
+        .or_else(|| {
+            text.strip_suffix('s')
+                .map(|digits| (digits, Duration::from_secs as fn(u64) -> Duration))
+        })
+        .ok_or_else(invalid)?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    digits.parse::<u64>().map(unit).map_err(|_| invalid())
 }
 
 /// Say where the project's state was last written from, when that was

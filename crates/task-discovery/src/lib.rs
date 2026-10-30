@@ -59,7 +59,17 @@ impl TaskDiscovery {
     /// Add a pre-loaded project to the discovery
     ///
     /// This is useful when you already have a Project manifest loaded.
-    pub fn add_project(&mut self, project_root: PathBuf, manifest: Project) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DiscoveryError::DuplicateProject`] when another project
+    /// already uses the name, compared case-insensitively: project names are
+    /// unique, and a task reference must name exactly one project.
+    pub fn add_project(
+        &mut self,
+        project_root: PathBuf,
+        manifest: Project,
+    ) -> Result<(), DiscoveryError> {
         let env_cue_path = project_root.join("env.cue");
         let project = DiscoveredProject {
             env_cue_path,
@@ -70,9 +80,22 @@ impl TaskDiscovery {
         // Build name index
         let name = manifest.name.trim();
         if !name.is_empty() {
+            if let Some(existing) = self
+                .name_index
+                .iter()
+                .find(|(indexed, _)| indexed.to_lowercase() == name.to_lowercase())
+                .map(|(_, existing)| existing)
+            {
+                return Err(DiscoveryError::DuplicateProject {
+                    name: name.to_string(),
+                    first: existing.project_root.clone(),
+                    second: project.project_root,
+                });
+            }
             self.name_index.insert(name.to_string(), project.clone());
         }
         self.projects.push(project);
+        Ok(())
     }
 
     /// Resolve a TaskRef to its actual task definition
@@ -269,6 +292,18 @@ pub enum DiscoveryError {
     #[error("Failed to index tasks in {0}: {1}")]
     TaskIndexError(PathBuf, String),
 
+    #[error(
+        "Project name '{name}' is used by both {} and {}; project names must be unique \
+         (compared without regard to case)",
+        .first.display(),
+        .second.display()
+    )]
+    DuplicateProject {
+        name: String,
+        first: PathBuf,
+        second: PathBuf,
+    },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -388,7 +423,9 @@ mod tests {
             }),
         );
 
-        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+        discovery
+            .add_project(PathBuf::from("/tmp/proj"), manifest)
+            .unwrap();
 
         let matcher = TaskMatcher {
             labels: Some(vec!["projen".into()]),
@@ -418,7 +455,9 @@ mod tests {
         // Project with empty name should still be added to projects list
         // but not to the name index
         let manifest = Project::new("");
-        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+        discovery
+            .add_project(PathBuf::from("/tmp/proj"), manifest)
+            .unwrap();
 
         assert_eq!(discovery.projects().len(), 1);
         assert!(discovery.get_project("").is_none()); // Empty names not indexed
@@ -430,7 +469,9 @@ mod tests {
 
         // Project with whitespace-only name should not be indexed
         let manifest = Project::new("   ");
-        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+        discovery
+            .add_project(PathBuf::from("/tmp/proj"), manifest)
+            .unwrap();
 
         assert_eq!(discovery.projects().len(), 1);
         assert!(discovery.get_project("   ").is_none());
@@ -441,7 +482,9 @@ mod tests {
         let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
 
         let manifest = Project::new("my-project");
-        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+        discovery
+            .add_project(PathBuf::from("/tmp/proj"), manifest)
+            .unwrap();
 
         assert_eq!(discovery.projects().len(), 1);
         let project = discovery.get_project("my-project");
@@ -484,7 +527,9 @@ mod tests {
         let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
 
         let manifest = Project::new("my-project");
-        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+        discovery
+            .add_project(PathBuf::from("/tmp/proj"), manifest)
+            .unwrap();
 
         let task_ref = TaskRef {
             ref_: "#my-project:nonexistent".to_string(),
@@ -512,7 +557,9 @@ mod tests {
                 max_concurrency: None,
             }),
         );
-        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+        discovery
+            .add_project(PathBuf::from("/tmp/proj"), manifest)
+            .unwrap();
 
         let task_ref = TaskRef {
             ref_: "#my-project:group-task".to_string(),
@@ -538,7 +585,9 @@ mod tests {
                 ..Default::default()
             })),
         );
-        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+        discovery
+            .add_project(PathBuf::from("/tmp/proj"), manifest)
+            .unwrap();
 
         let task_ref = TaskRef {
             ref_: "#my-project:build".to_string(),
@@ -572,7 +621,9 @@ mod tests {
                 ..Default::default()
             })),
         );
-        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+        discovery
+            .add_project(PathBuf::from("/tmp/proj"), manifest)
+            .unwrap();
 
         let matcher = TaskMatcher {
             labels: None,
@@ -607,7 +658,9 @@ mod tests {
                 ..Default::default()
             })),
         );
-        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+        discovery
+            .add_project(PathBuf::from("/tmp/proj"), manifest)
+            .unwrap();
 
         // Match tasks with both "ci" and "test" labels
         let matcher = TaskMatcher {
@@ -776,5 +829,25 @@ mod tests {
         };
 
         assert!(matched.project_name.is_none());
+    }
+
+    #[test]
+    fn a_reused_project_name_is_refused() {
+        let project = |name: &str| Project {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+        discovery
+            .add_project(PathBuf::from("/tmp/a"), project("web"))
+            .unwrap();
+        let error = discovery
+            .add_project(PathBuf::from("/tmp/b"), project("Web"))
+            .unwrap_err();
+        assert!(matches!(error, DiscoveryError::DuplicateProject { .. }));
+        assert!(error.to_string().contains("/tmp/a"), "{error}");
+        discovery
+            .add_project(PathBuf::from("/tmp/c"), project("api"))
+            .unwrap();
     }
 }

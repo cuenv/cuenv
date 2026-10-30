@@ -30,7 +30,7 @@ pub use infrastructure::{
     InfrastructureOutputReference, InfrastructureOutputType, InfrastructurePlanWorkflow,
     InfrastructurePolicyAction, InfrastructureProvider, InfrastructureSelectionError,
     InfrastructureState, InfrastructureWorkflows, ManagedResourceDeclaration, ProviderEnvironment,
-    StateToken, TursoState,
+    S3Addressing, S3State, StateCredentialField, StateToken, TursoState,
 };
 pub use project::Project;
 pub use rules::*;

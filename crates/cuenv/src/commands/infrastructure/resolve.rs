@@ -10,7 +10,7 @@ use cuenv_manifest::manifest::{
 };
 
 use super::action::InfrastructureAction;
-use super::dispatch::connect;
+use super::dispatch::{StoreScope, connect};
 use super::evaluation::Target;
 use super::failure::failure;
 use super::invocation::Invocation;
@@ -54,15 +54,25 @@ pub(super) async fn resolve(
         Vec::new()
     };
     let state = &target.infrastructure.state;
-    let token_variable = state
-        .token()
-        .and_then(StateToken::passthrough_variable)
-        .map(str::to_string);
+    let token_variables: Vec<String> = state
+        .credentials()
+        .iter()
+        .filter_map(|credential| credential.token)
+        .filter_map(StateToken::passthrough_variable)
+        .map(str::to_string)
+        .collect();
     // The state backend's credentials are resolved first and on their own:
     // the store is connected before any other project secret is resolved.
     let credential = resolve_state_token(policy_name, state).await?;
-    let store = connect(&target.infrastructure, credential)
-        .map_err(|error| failure(&error, &Invocation::default()))?;
+    let store = connect(
+        state,
+        credential,
+        &StoreScope {
+            instance: &target.instance,
+            tenant: &target.tenant,
+        },
+    )
+    .map_err(|error| failure(&error, &Invocation::default()))?;
     let (resolved_variables, secrets) = resolve_environment_variables(
         policy_name,
         &environment_variables_for_action(action, &project_environment_variables),
@@ -73,7 +83,7 @@ pub(super) async fn resolve(
     // reaches a provider either.
     let mut provider_environment_variables: BTreeMap<String, String> = resolved_variables
         .into_iter()
-        .filter(|(name, _)| Some(name) != token_variable.as_ref())
+        .filter(|(name, _)| !token_variables.contains(name))
         .collect();
     let provided: Vec<String> = provider_environment_variables.keys().cloned().collect();
     // The remote cache's credentials are named by the project's configuration.
@@ -101,13 +111,16 @@ pub(super) async fn resolve(
             provided: &provided,
             policy_withheld: &policy_withheld,
             configured_credentials: &target.remote_cache_credential_variables,
-            token_variable: token_variable.as_deref(),
+            token_variables: &token_variables
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
         })
     } else {
         Vec::new()
     };
     // Withheld whatever the action, so an engine never hands it on.
-    withheld_environment_variables.extend(token_variable);
+    withheld_environment_variables.extend(token_variables);
     withheld_environment_variables.sort();
     withheld_environment_variables.dedup();
     Ok(Resolved {
@@ -182,51 +195,85 @@ pub(super) fn secret_failure(variable: &str, error: cuenv_core::Error) -> CliErr
     )
 }
 
-/// The state backend's token, resolved, and what to say when there is none.
-#[derive(Debug)]
+/// The state backend's credentials, resolved: one token for Turso and D1,
+/// an access key ID, a secret access key and an optional session token for
+/// S3. Every value is registered for redaction.
 pub(super) struct StateCredential {
-    pub(super) token: Option<String>,
-    /// Why `token` is `None`, naming the configuration field.
+    pub(super) values: Vec<ResolvedCredential>,
+}
+
+/// One resolved credential.
+pub(super) struct ResolvedCredential {
+    /// The configuration field it comes from.
+    pub(super) field: &'static str,
+    /// The value; `None` when unset or empty.
+    pub(super) value: Option<String>,
+    /// Why `value` is `None`, naming the configuration field.
     pub(super) absence: String,
 }
 
-/// Resolve the state token: read a passthrough variable from the cuenv
-/// process environment, or resolve a literal, secret or interpolation like a
-/// project environment variable. Every resolved secret part and the token
-/// itself are registered for redaction before anything is connected.
+impl StateCredential {
+    /// The credential configured at `field`.
+    pub(super) fn get(&self, field: &str) -> Option<&ResolvedCredential> {
+        self.values
+            .iter()
+            .find(|credential| credential.field == field)
+    }
+}
+
+/// Resolve the state backend's credentials: read a passthrough variable
+/// from the cuenv process environment, or resolve a literal, secret or
+/// interpolation like a project environment variable. Every resolved secret
+/// part and every credential is registered for redaction before anything
+/// is connected.
 pub(super) async fn resolve_state_token(
     action: InfrastructurePolicyAction,
     state: &InfrastructureState,
 ) -> Result<StateCredential, CliError> {
-    let field = state.token_field().to_string();
-    let (token, absence) = match state.token() {
-        None => (None, format!("no state token is configured (`{field}`)")),
+    let mut values = Vec::new();
+    for credential in state.credentials() {
+        values.push(resolve_credential(action, credential.field, credential.token).await?);
+    }
+    Ok(StateCredential { values })
+}
+
+async fn resolve_credential(
+    action: InfrastructurePolicyAction,
+    field: &'static str,
+    token: Option<&StateToken>,
+) -> Result<ResolvedCredential, CliError> {
+    let (value, absence) = match token {
+        None => (None, format!("`{field}` is not configured")),
         Some(StateToken::Passthrough { name }) => (
             std::env::var(name).ok(),
             format!("`{field}` reads {name}, which is not set or is empty"),
         ),
         Some(StateToken::Value(value)) => {
-            let single = HashMap::from([(field.clone(), value.clone())]);
+            let single = HashMap::from([(field.to_string(), value.clone())]);
             let (mut values, secrets) =
                 cuenv_core::environment::Environment::resolve_for_infrastructure_with_secrets(
                     action, &single,
                 )
                 .await
-                .map_err(|error| state_token_failure(&field, error))?;
+                .map_err(|error| state_token_failure(field, error))?;
             cuenv_events::register_secrets(secrets);
             (
-                values.remove(&field),
+                values.remove(field),
                 format!("`{field}` resolved to an empty value"),
             )
         }
     };
-    let token = token.filter(|token| !token.is_empty());
-    // Redact the token from every output from here on, including provider
+    let value = value.filter(|value| !value.is_empty());
+    // Redact the value from every output from here on, including provider
     // and store errors that might echo it.
-    if let Some(token) = &token {
-        cuenv_events::register_secret(token.clone());
+    if let Some(value) = &value {
+        cuenv_events::register_secret(value.clone());
     }
-    Ok(StateCredential { token, absence })
+    Ok(ResolvedCredential {
+        field,
+        value,
+        absence,
+    })
 }
 
 /// The error for a state token whose secret could not be resolved, a failure

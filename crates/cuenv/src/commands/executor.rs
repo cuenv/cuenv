@@ -157,6 +157,7 @@ impl CommandExecutor {
         if !guard.contains_key(&module_root) {
             schema_compat::warn_for_module(&module_root)?;
             let module = self.evaluate_workspace_module(&module_root)?;
+            module.require_unique_project_names()?;
             guard.insert(module_root.clone(), module);
         }
 
