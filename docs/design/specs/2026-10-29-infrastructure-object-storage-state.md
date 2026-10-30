@@ -429,21 +429,18 @@ named `rename` because Terraform's `state mv` moves addresses.
 - **reqwest with the existing `state/http.rs` rules:** no redirects, bounded
   bodies, timeouts, transient classification and `Retry-After`. 409 and AWS's
   404 on `If-Match` are classified as described in the write protocol.
-- **SigV4, hand-written** on the `hmac` and `sha2` crates already in the
-  lockfile:
+- **SigV4 through `aws-sigv4`,** AWS's own signer, adapted in
+  `state/object/sigv4.rs`:
   - header authentication only;
   - `x-amz-content-sha256` over the full payload;
-  - canonical URI equal to the asserted request path;
-  - checked against the AWS SigV4 test-suite vectors.
-
-  `aws-sigv4` was rejected: it brings in four aws-smithy and credential crates
-  plus `time`.
-- **A minimal hand-written XML reader** (`state/object/xml.rs`) parses
-  ListObjectsV2 responses and error bodies only: the elements cuenv reads,
-  the five predefined entities, no DTDs, no other entities. Bodies are
-  bounded. Listings are capped in pages and total keys, and every key must
-  start with the requested prefix and parse. (The plan named `quick-xml`; see
-  [Implementation](#implementation).)
+  - single percent-encoding and no path normalisation, so the canonical URI
+    is exactly the path sent;
+  - checked against the S3 documentation's examples and botocore vectors.
+- **XML through `quick-xml`** (`state/object/xml.rs`, serde deserialisation)
+  for ListObjectsV2 responses and error bodies only. `quick-xml` resolves no
+  DTDs or external entities. Bodies are bounded. A listing that does not
+  parse is an error, never an empty listing. Listings are capped in pages and
+  total keys, and every key must start with the requested prefix and parse.
 - **Headers:** no `x-amz-checksum-*`, and no `x-amz-server-side-encryption`
   (R2 rejects it). `x-amz-content-sha256` already gives payload integrity.
 - **Addressing:** `auto` uses path style for an IP or `localhost` host, or
@@ -711,8 +708,13 @@ document.
 The first implementation (one pull request for all phases) differs from the
 plan above as follows.
 
-- **XML.** A hand-written reader instead of `quick-xml`: the two documents
-  cuenv reads need a few elements, and the reader adds no dependency.
+- **SigV4 and XML.** `aws-sigv4` and `quick-xml`, as planned. `aws-sigv4` and
+  its smithy crates are held at the 1.3 line (`aws-sigv4` 1.3.8), the newest
+  that supports the workspace MSRV of Rust 1.90; later releases need 1.94.
+- **Real-server check.** The conformance suite runs against RustFS in the
+  `cuenv-infrastructure-e2e` flake check, not MinIO, which nixpkgs no longer
+  packages. RustFS comes from a `nixpkgs-unstable` input used for nothing
+  else, because the stable release does not package it yet.
 - **SQL last writer.** Recorded by a fenced upsert right after acquisition
   rather than inside the acquire transaction. The SQL acquire statement is
   shared by Turso and D1, and D1 binds parameters only in single-statement
@@ -751,12 +753,19 @@ Run so far:
 - SigV4 against the S3 documentation's GET Object, PUT Object and List
   Objects examples and botocore 1.43 vectors (session token, R2 host, path
   style with a continuation token).
+- The conformance suite and the capability probe (conditional writes, strong
+  ETags, the unsigned-read refusal) against RustFS 1.0.3, a real
+  S3-compatible server, on loopback with path addressing. This runs in the
+  `cuenv-infrastructure-e2e` flake check on every change. RustFS answers
+  `If-None-Match: *` on an existing object and `If-Match` on a stale ETag
+  with 412, and `If-Match` on a missing object with 404, as AWS does.
 - The CLI commands (rename detection, `state rename`, `state restore`,
   `state pull`, `state migrate` forward, rerun, rollback and copy-back, the
   fence refusal) over the fake.
 
-Not yet run: anything against real AWS S3, Cloudflare R2 or MinIO, including
-the sequential-write 429 question on R2 and the least-privilege recipes. The
+Not yet run: anything against real AWS S3 or Cloudflare R2, including
+virtual-hosted addressing over TLS, the sequential-write 429 question on R2
+and the least-privilege recipes. The
 ignored test `conforms_against_a_real_server` runs the suite against any
 S3-compatible server. The backend stays experimental until this section
 records those runs.

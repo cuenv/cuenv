@@ -183,8 +183,8 @@ The module path is the identity. Keeping it unique, for example by changing
 
 ### Transport
 
-- **reqwest with the shared `state/http.rs` rules,** and SigV4 header signing
-  written on the existing `hmac` and `sha2` crates.
+- **reqwest with the shared `state/http.rs` rules,** SigV4 header signing
+  through `aws-sigv4`, and `quick-xml` for the S3 responses.
 - **No presigned URLs, and no ambient AWS credential chain.** Credentials come
   only from CUE, through `#InfrastructureStateToken`.
 - **A capability probe** confirms the store honours conditional writes,
@@ -252,8 +252,8 @@ The module path is the identity. Keeping it unique, for example by changing
   - the vanished-state guard;
   - restore;
   - fence survival across SQL migrations.
-- An ignored end-to-end test runs the conformance suite against any
-  S3-compatible server, such as MinIO. A verification record against real R2
+- An end-to-end test runs the conformance suite against any S3-compatible
+  server; the infrastructure end-to-end flake check runs it against RustFS. A verification record against real R2
   and AWS S3 is added to the spec before the backend leaves experimental
   status; the spec's Verification section says what has run so far.
 

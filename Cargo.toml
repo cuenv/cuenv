@@ -181,6 +181,12 @@ oci-distribution = { version = "0.11", default-features = false, features = ["ru
 
 # Common utilities shared across member crates
 hex = "0.4"
+percent-encoding = "2.3"
+
+# S3-compatible object storage: request signing and XML responses
+aws-credential-types = "1.2.11"
+aws-sigv4 = { version = "1.3.8", default-features = false, features = ["sign-http", "http1"] }
+quick-xml = { version = "0.42", features = ["serialize"] }
 walkdir = "2.5"
 globset = "0.4"
 ignore = "0.4"
