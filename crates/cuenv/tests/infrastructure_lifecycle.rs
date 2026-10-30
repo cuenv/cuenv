@@ -488,6 +488,9 @@ async fn named_environment_passes_an_exec_secret_to_the_provider() -> TestResult
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let store = TursoStateStore::try_new(backend.clone())?;
+    // The shared database may be fresh, or another test may be migrating it
+    // through version 1 right now: read only once it is current.
+    store.migrate().await?;
     let project = format!("random-secret-lifecycle-{}", uuid::Uuid::new_v4());
     let tenant = TenantKey::with_environment(MODULE, &project, "dev")?;
     // A fresh project name means the no-flag namespace holds no rows to migrate.
