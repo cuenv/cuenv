@@ -180,7 +180,11 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         Needs::Configuration => "infrastructure",
         Needs::StateOnly => "infrastructure.state",
     };
-    let export_paths = exported_paths(infrastructure_path);
+    let mut export_paths = exported_paths(infrastructure_path);
+    // `state migrate` is state-only too, and reads its target from here.
+    if request.needs == Needs::StateOnly {
+        export_paths.push("infrastructure.migrateStateTo".to_string());
+    }
     let scanning = OutputSelectors {
         instance_path: ".",
         references: &std::collections::HashMap::new(),
@@ -1183,6 +1187,31 @@ environments: {
         );
         assert_eq!(selected.top_level, top.top_level);
         assert!(evaluate_native_fixture(directory.path(), Some("unused")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn state_only_commands_keep_the_migration_target() -> TestResult {
+        let directory = native_fixture(
+            r#"migrateStateTo: s3: {
+ bucket: "state"
+ region: "auto"
+ endpoint: "https://example.r2.cloudflarestorage.com"
+ accessKeyId: "id"
+ secretAccessKey: "secret"
+}"#,
+        )?;
+        let state = evaluate(TargetRequest {
+            path: &directory.path().to_string_lossy(),
+            package: "cuenv",
+            name_check: NameCheck::TargetOnly,
+            needs: Needs::StateOnly,
+            environment: None,
+        })?;
+        assert!(matches!(
+            state.infrastructure.migrate_state_to,
+            Some(InfrastructureState::S3(_))
+        ));
         Ok(())
     }
 
