@@ -574,13 +574,13 @@ infrastructure: state: s3: {
 	sessionToken:    schema.#EnvPassthrough & {name: "AWS_SESSION_TOKEN"}
 }
 
-// MinIO on this machine
+// A local S3-compatible server, such as RustFS or MinIO
 infrastructure: state: s3: {
 	bucket:          "state"
 	region:          "us-east-1"
 	endpoint:        "http://127.0.0.1:9000"
-	accessKeyId:     "minioadmin"
-	secretAccessKey: "minioadmin"
+	accessKeyId:     "rustfsadmin"
+	secretAccessKey: "rustfsadmin"
 }
 ```
 
