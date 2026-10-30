@@ -507,7 +507,7 @@ impl ObjectStateStore {
     async fn create(&self, path: &TenantPath, mut document: StateDocument) -> Result<bool> {
         let key = path.state_key();
         let writer = Self::nonce();
-        document.writer = writer.clone();
+        document.writer.clone_from(&writer);
         document.written_by = written_by();
         let body = encode_bounded(&document, &key)?;
         let mut last_failure = String::new();
