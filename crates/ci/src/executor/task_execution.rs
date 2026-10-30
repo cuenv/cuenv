@@ -454,7 +454,6 @@ async fn compile_and_execute_ir(
         apply_task_env(&mut env, &ir_task.env);
 
         apply_tool_activation_steps(&mut env, &activation_steps);
-        ensure_current_exe_on_path(&mut env);
         ensure_home_env(&mut env);
 
         let mut task_to_run = ir_task.clone();
@@ -487,24 +486,6 @@ async fn compile_and_execute_ir(
         duration_ms,
         captures: HashMap::new(),
     })
-}
-
-fn ensure_current_exe_on_path(env: &mut BTreeMap<String, String>) {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let Some(exe_dir) = exe.parent() else {
-        return;
-    };
-
-    let exe_dir_str = exe_dir.to_string_lossy();
-    if let Some(existing_path) = env.get("PATH") {
-        if !existing_path.contains(exe_dir_str.as_ref()) {
-            env.insert("PATH".to_string(), format!("{exe_dir_str}:{existing_path}"));
-        }
-    } else {
-        env.insert("PATH".to_string(), exe_dir_str.to_string());
-    }
 }
 
 fn ensure_home_env(env: &mut BTreeMap<String, String>) {
