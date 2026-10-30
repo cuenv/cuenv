@@ -201,6 +201,16 @@ const SELECT_RESOURCE: &str = "SELECT resource_type, resource_name, provider, pr
      WHERE module_path = ? AND project = ? AND environment = ? \
      AND resource_type = ? AND resource_name = ?";
 
+/// Every environment of a project that holds a record, a lock or an owner
+/// row (the last writer).
+const SELECT_ENVIRONMENTS: &str = "SELECT environment FROM cuenv_infrastructure_resources \
+     WHERE module_path = ? AND project = ? \
+     UNION SELECT environment FROM cuenv_infrastructure_locks \
+     WHERE module_path = ? AND project = ? \
+     UNION SELECT environment FROM cuenv_infrastructure_owners \
+     WHERE module_path = ? AND project = ? \
+     ORDER BY environment";
+
 const SELECT_OWNER: &str = "SELECT instance, claimed_at FROM cuenv_infrastructure_owners \
      WHERE module_path = ? AND project = ? AND environment = ?";
 
@@ -1059,6 +1069,34 @@ impl<T: SqlTransport> SqlStateStore<T> {
             .collect())
     }
 
+    pub(super) async fn environments(
+        &self,
+        module_path: &str,
+        project: &str,
+    ) -> Result<Vec<Option<String>>> {
+        if self.stored_version().await? == 0 {
+            return Ok(Vec::new());
+        }
+        let result = self
+            .execute(Statement::new(
+                SELECT_ENVIRONMENTS,
+                [module_path, project]
+                    .repeat(3)
+                    .into_iter()
+                    .map(SqlValue::text)
+                    .collect(),
+            ))
+            .await?;
+        Ok(result
+            .rows
+            .iter()
+            .filter_map(|row| row.first().and_then(SqlValue::as_text))
+            .map(|environment| {
+                (environment != NO_ENVIRONMENT).then(|| strip_control_characters(environment))
+            })
+            .collect())
+    }
+
     pub(super) async fn addresses(&self, tenant: &TenantKey) -> Result<Vec<ResourceAddress>> {
         if self.stored_version().await? == 0 {
             return Ok(Vec::new());
@@ -1253,6 +1291,15 @@ macro_rules! sql_state_store {
                 lock_identifier: &str,
             ) -> crate::error::Result<bool> {
                 self.inner.force_unlock(tenant, lock_identifier).await
+            }
+
+            #[tracing::instrument(skip_all)]
+            async fn environments(
+                &self,
+                module_path: &str,
+                project: &str,
+            ) -> crate::error::Result<Vec<Option<String>>> {
+                self.inner.environments(module_path, project).await
             }
 
             #[tracing::instrument(skip_all, fields(tenant = %tenant))]
@@ -1753,6 +1800,13 @@ impl Failure {
 // Migrations
 // ---------------------------------------------------------------------------
 
+/// The identifier prefix of a migration fence.
+///
+/// `state migrate` leaves this lock on a migrated SQL tenant to fence off
+/// older builds' writes; schema migrations ignore it, and `unlock` refuses it
+/// without `--migration-fence`.
+pub const MIGRATION_FENCE_PREFIX: &str = "migrated-";
+
 /// What SQLite says when the fence's `abs` of the smallest integer overflows.
 const FENCE_ERROR: &str = "integer overflow";
 
@@ -1797,6 +1851,10 @@ impl MigrationTransaction {
             // (0 or 1) is subtracted from -(2^63 - 1). The count keeps the
             // expression from being folded into a constant that would fail
             // whether or not a lock exists.
+            // A migration fence (`state migrate` holds the source lock for
+            // good, with an identifier starting `migrated-`) is not a run
+            // between two writes, and the schema change keeps its row, so it
+            // does not hold the upgrade back.
             // Only an unapplied migration needs the fence: another client
             // may have committed this version and acquired a current-schema
             // lock since our initial version read. Let the existing-object
@@ -1807,7 +1865,8 @@ impl MigrationTransaction {
                 format!(
                     "SELECT abs(-9223372036854775807 - MIN(COUNT(*), 1)) \
                      FROM cuenv_infrastructure_locks \
-                     WHERE ({SELECT_SCHEMA_VERSION}) < {version}"
+                     WHERE lock_identifier NOT LIKE '{MIGRATION_FENCE_PREFIX}%' \
+                     AND ({SELECT_SCHEMA_VERSION}) < {version}"
                 ),
                 Vec::new(),
             ));

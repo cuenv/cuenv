@@ -390,8 +390,8 @@ async fn random_provider_create_edit_destroy_stack() -> TestResult {
         "plan wrote resources"
     );
     assert!(
-        store.owner(&tenant).await?.is_none(),
-        "plan claimed ownership"
+        store.last_writer(&tenant).await?.is_none(),
+        "plan recorded a last writer"
     );
 
     let created = lifecycle.run(&["apply", "--yes"])?;
@@ -685,12 +685,11 @@ async fn the_remote_cache_credential_never_reaches_a_provider() -> TestResult {
     Ok(())
 }
 
-/// A project whose name another CUE instance owns (it was moved) is refused
-/// before any of its secrets is resolved: an exec secret runs a command, and
-/// nothing should run for a run that is going to be refused.
+/// A project moved to another directory keeps its state: the key has no
+/// directory, and the last writer is information only.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a real Random provider and Turso/sqld; see module documentation"]
-async fn a_project_owned_by_another_instance_is_refused_before_any_secret_runs() -> TestResult {
+async fn a_moved_project_keeps_its_state() -> TestResult {
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
     let backend = TursoConfiguration {
@@ -733,33 +732,28 @@ infrastructure: {{
     let root = directory.path().to_path_buf();
     let lifecycle = Lifecycle::from_configuration(directory, configuration.clone(), &backend)?;
 
-    // The first run claims the state for the instance at the module root,
-    // and its secret runs.
     lifecycle.run(&["apply", "--yes"])?;
-    assert!(marker.exists(), "the secret did not run for the owner");
-    fs::remove_file(&marker)?;
+    assert!(marker.exists(), "the project's secret did not run");
 
-    // The project moves to another directory under the same name.
+    // The project moves to another directory under the same name: it keeps
+    // its state, plans no change, and becomes the last writer.
     fs::create_dir_all(root.join("moved"))?;
     fs::write(root.join("moved/env.cue"), &configuration)?;
     fs::remove_file(root.join("env.cue"))?;
-    let output = lifecycle.execute(&["apply", "--yes", "-p", "moved"], &[])?;
-    let printed = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    let moved = lifecycle.run(&["apply", "--yes", "-p", "moved"])?;
+    assert!(moved["applied"].is_null(), "{moved}");
+    let store = TursoStateStore::try_new(backend.clone())?;
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    assert_eq!(
+        store
+            .last_writer(&tenant)
+            .await?
+            .ok_or("no last writer")?
+            .instance
+            .as_str(),
+        "moved:examples"
     );
-    assert!(!output.status.success(), "{printed}");
-    assert!(printed.contains("owned by the CUE instance"), "{printed}");
-    assert!(
-        !marker.exists(),
-        "a secret ran for a run that was refused: {printed}"
-    );
-
-    // Back where it was, the owner can destroy what it created.
-    fs::remove_dir_all(root.join("moved"))?;
-    fs::write(root.join("env.cue"), &configuration)?;
-    lifecycle.run(&["destroy", "--yes"])?;
+    lifecycle.run(&["destroy", "--yes", "-p", "moved"])?;
     Ok(())
 }
 

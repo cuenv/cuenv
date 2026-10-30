@@ -334,6 +334,32 @@ async fn version_two_preserves_existing_rows_and_owners_while_fencing_old_reader
 }
 
 #[tokio::test]
+async fn a_migration_fence_survives_and_does_not_block_a_schema_migration() {
+    let database = EmulatedD1::new();
+    let server = database.serve().await;
+    let store = store_at(&server);
+    store.inner.migrate_to(&MIGRATIONS[..1]).await.unwrap();
+    database
+        .database
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO cuenv_infrastructure_locks VALUES \
+         ('example.com/d1', 'web', '', 'migrated-0123', 'migrated to s3://state/x', 'acquired');",
+        )
+        .unwrap();
+    store.migrate().await.unwrap();
+    assert_eq!(store.inner.schema_version().await.unwrap(), 2);
+    let fence = store.current_lock(&tenant()).await.unwrap().unwrap();
+    assert_eq!(fence.lock_identifier, "migrated-0123");
+    // The fence still refuses every write that does not hold it.
+    assert!(matches!(
+        store.lock(&tenant(), "old-build").await,
+        Err(InfrastructureError::Locked { .. })
+    ));
+}
+
+#[tokio::test]
 async fn a_version_one_reader_paused_before_select_cannot_read_version_two_state() {
     // The exact projection used by the version-one client, without metadata.
     const VERSION_ONE_SELECT: &str = "SELECT resource_type, resource_name, provider, provider_source, \

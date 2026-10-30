@@ -229,6 +229,20 @@ pub async fn conforms(store: &dyn StateStore) {
     // Another environment's lock is its own.
     let dev_lock = take(store, &dev, None).await.unwrap();
     assert_eq!(store.current_lock(&tenant).await.unwrap(), None);
+    assert_eq!(
+        store
+            .environments("example.com/conformance", "web")
+            .await
+            .unwrap(),
+        [None, Some("Dev".to_string())]
+    );
+    assert!(
+        store
+            .environments("example.com/conformance", "api")
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(store.locks().await.unwrap().len(), 1);
     store.unlock(&dev, &dev_lock).await.unwrap();
     assert!(store.locks().await.unwrap().is_empty());

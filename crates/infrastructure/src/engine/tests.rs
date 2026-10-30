@@ -2411,7 +2411,7 @@ async fn consecutive_refreshes_are_written_to_an_object_store_at_once() {
         AddressingChoice, Credentials, ObjectStateStore, ObjectStoreConfiguration,
     };
     let directory = tempfile::tempdir().unwrap();
-    let server = FakeS3::start().await;
+    let server = FakeS3::start().await.unwrap();
     let store: Arc<dyn StateStore> = Arc::new(
         ObjectStateStore::try_new(ObjectStoreConfiguration {
             endpoint: Some(server.endpoint.clone()),

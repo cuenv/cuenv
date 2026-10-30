@@ -260,6 +260,14 @@ pub enum InfrastructureCommands {
             help = "With --env: create resources whose addresses are also recorded without --env, as separate objects"
         )]
         allow_separate_state: bool,
+        /// Start state for this identity although state written from this
+        /// directory exists under an identity the configuration no longer
+        /// declares (a probable rename).
+        #[arg(
+            long,
+            help = "Start state for this identity even though state written from this directory exists under an undeclared identity (a probable rename)"
+        )]
+        new_identity: bool,
     },
     /// Record an existing provider resource in managed state.
     #[command(about = "Import an existing provider resource into managed state")]
@@ -285,6 +293,14 @@ pub enum InfrastructureCommands {
             default_value = "cuenv"
         )]
         package: String,
+        /// Start state for this identity although state written from this
+        /// directory exists under an identity the configuration no longer
+        /// declares (a probable rename).
+        #[arg(
+            long,
+            help = "Start state for this identity even though state written from this directory exists under an undeclared identity (a probable rename)"
+        )]
+        new_identity: bool,
     },
     /// Delete every managed resource the project owns.
     #[command(about = "Delete every managed resource the project owns")]
@@ -312,6 +328,14 @@ pub enum InfrastructureCommands {
             help = "Destroy without an interactive confirmation"
         )]
         yes: bool,
+        /// Start state for this identity although state written from this
+        /// directory exists under an identity the configuration no longer
+        /// declares (a probable rename).
+        #[arg(
+            long,
+            help = "Start state for this identity even though state written from this directory exists under an undeclared identity (a probable rename)"
+        )]
+        new_identity: bool,
     },
     /// Inspect and repair recorded state (`list` when no subcommand is given).
     #[command(about = "Inspect and repair recorded state (`list` when no subcommand is given)")]
@@ -373,6 +397,12 @@ pub enum InfrastructureCommands {
             help = "Name of the project whose lock to show or release, instead of the evaluated project's"
         )]
         project: Option<String>,
+        /// Release a lock `state migrate` left on migrated SQL state.
+        #[arg(
+            long,
+            help = "Allow releasing a migration fence (a `migrated-` lock that keeps writes off migrated SQL state)"
+        )]
+        migration_fence: bool,
         /// Path to directory containing CUE files.
         #[arg(
             long,
@@ -422,9 +452,96 @@ pub enum InfrastructureStateCommands {
     /// List managed resources recorded in state (the default).
     #[command(about = "List managed resources recorded in state (the default)")]
     List,
-    /// List every lock held in the state database, for every project.
-    #[command(about = "List every lock held in the state database, for every project")]
-    Locks,
+    /// List the locks held in the state backend for this CUE module.
+    #[command(about = "List the locks held in the state backend for this CUE module")]
+    Locks {
+        /// List every lock the backend holds, with the options that release
+        /// each one.
+        #[arg(
+            long,
+            help = "List every lock the state backend holds, not only this module's"
+        )]
+        all: bool,
+    },
+    /// Print the project's recorded state as JSON.
+    #[command(
+        about = "Print the project's recorded state as JSON",
+        long_about = "Print the project's recorded state as JSON: every record, the lock and the \
+                      last writer. The output contains provider secrets in plaintext."
+    )]
+    Pull,
+    /// Write an earlier version of the project's state back (S3 state).
+    #[command(about = "Write an earlier version of the project's state back (S3 state)")]
+    Restore {
+        /// Serial of the history snapshot to restore; the newest by default.
+        #[arg(
+            long,
+            help = "Serial of the history snapshot to restore; the newest by default"
+        )]
+        serial: Option<u64>,
+        /// Restore without an interactive confirmation.
+        #[arg(
+            long,
+            short = 'y',
+            help = "Restore without an interactive confirmation"
+        )]
+        yes: bool,
+    },
+    /// Copy the project's state to the `migrateStateTo` backend.
+    #[command(
+        about = "Copy the project's state to the backend named by `infrastructure.migrateStateTo`"
+    )]
+    Migrate {
+        /// Migrate every environment the source holds state for.
+        #[arg(
+            long,
+            help = "Migrate every environment the source holds state for, declared or not"
+        )]
+        all: bool,
+        /// Upgrade an older SQL source to the current schema first.
+        #[arg(
+            long,
+            help = "Upgrade an older SQL source to the current schema first (projects pinned to older cuenv on that database stop working)"
+        )]
+        upgrade_source: bool,
+        /// Undo a migration: release the source fence and retire the copy.
+        #[arg(
+            long,
+            help = "Undo a migration: release the source fence and retire the target copy"
+        )]
+        rollback: bool,
+        /// With --rollback: copy changes made to the target back to the
+        /// source first.
+        #[arg(
+            long,
+            requires = "rollback",
+            help = "With --rollback: copy changes made in the target back to the source first"
+        )]
+        copy_back: bool,
+    },
+    /// Move state recorded under another identity to this project (S3 state).
+    #[command(
+        about = "Move state recorded under another project name, package or environment to this project (S3 state)"
+    )]
+    Rename {
+        /// Project name the state is recorded under.
+        #[arg(long, help = "Project name the state is recorded under")]
+        from_project: Option<String>,
+        /// CUE package the state is recorded under.
+        #[arg(long, help = "CUE package the state is recorded under")]
+        from_package: Option<String>,
+        /// Environment the state is recorded under; the selected one by
+        /// default.
+        #[arg(
+            long,
+            conflicts_with = "from_no_env",
+            help = "Environment the state is recorded under; the selected one by default"
+        )]
+        from_env: Option<String>,
+        /// The state is recorded for the identity without --env.
+        #[arg(long, help = "The state is recorded for the identity without --env")]
+        from_no_env: bool,
+    },
     /// Forget one managed resource without touching the real object.
     #[command(about = "Forget one managed resource without touching the real object")]
     Remove {
@@ -450,9 +567,9 @@ pub enum InfrastructureStateCommands {
         )]
         accept_backend: bool,
     },
-    /// Make this project's CUE instance the owner of its state.
+    /// Deprecated: does nothing.
     #[command(
-        about = "Make this project's CUE instance (directory and package) the owner of its state"
+        about = "Deprecated: does nothing; a project's state follows it wherever its directory moves"
     )]
     Adopt,
 }

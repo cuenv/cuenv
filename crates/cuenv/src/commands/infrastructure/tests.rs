@@ -24,8 +24,8 @@ use super::output::{Finish, Output};
 use super::resolve::{environment_variables_for_action, resolve_state_token};
 use super::run::{run, validate_state_url};
 use super::{
-    ConfirmationPolicy, InfrastructureAction, InfrastructureOptions, SeparateState, StateAction,
-    UnlockScope,
+    ConfirmationPolicy, FenceRelease, Identity, InfrastructureAction, InfrastructureOptions,
+    LockListing, SeparateState, StateAction, UnlockScope,
 };
 use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
@@ -234,6 +234,7 @@ fn import_uses_the_provider_configuration_and_import_policy() {
     let action = InfrastructureAction::Import {
         address: "cloudflare_record.www".to_string(),
         identifier: "provider-secret-id".to_string(),
+        identity: Identity::Detect,
     };
     assert_eq!(action.policy_name(), InfrastructurePolicyAction::Import);
     assert!(action.uses_provider_environment());
@@ -870,6 +871,14 @@ impl StateStore for CountingStore {
     ) -> cuenv_infrastructure::Result<Option<LastWriter>> {
         self.inner.last_writer(tenant).await
     }
+
+    async fn environments(
+        &self,
+        module_path: &str,
+        project: &str,
+    ) -> cuenv_infrastructure::Result<Vec<Option<String>>> {
+        self.inner.environments(module_path, project).await
+    }
 }
 
 /// What the scripted prompt does when asked.
@@ -939,6 +948,20 @@ impl Harness {
     fn new(format: OutputFormat, script: Script) -> Self {
         let counting = Arc::new(CountingStore::default());
         let store: Arc<dyn StateStore> = counting.clone();
+        Self::over(format, script, (counting, store))
+    }
+
+    /// A harness over `store` instead of the counting memory store (whose
+    /// counters then stay at zero).
+    fn with_store(format: OutputFormat, script: Script, store: Arc<dyn StateStore>) -> Self {
+        Self::over(format, script, (Arc::new(CountingStore::default()), store))
+    }
+
+    fn over(
+        format: OutputFormat,
+        script: Script,
+        (counting, store): (Arc<CountingStore>, Arc<dyn StateStore>),
+    ) -> Self {
         let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
         let output = Output::new(format);
         let (signals, receiver) = mpsc::unbounded_channel();
@@ -1094,6 +1117,7 @@ async fn reads_never_create_or_upgrade_tables_and_take_no_lock() {
         InfrastructureAction::Unlock {
             lock_identifier: None,
             scope: UnlockScope::default(),
+            fence: FenceRelease::Refuse,
         },
         InfrastructureAction::State(StateAction::Recover {
             overrides: RecoverOverrides::default(),
@@ -1112,6 +1136,7 @@ async fn reads_never_create_or_upgrade_tables_and_take_no_lock() {
         .run(InfrastructureAction::Unlock {
             lock_identifier: Some("stale".to_string()),
             scope: UnlockScope::default(),
+            fence: FenceRelease::Refuse,
         })
         .await
         .unwrap_err();
@@ -1164,6 +1189,7 @@ async fn apply_records_the_last_writer_under_its_lock() {
         .run(InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::AssumeYes,
             separate_state: SeparateState::Refuse,
+            identity: Identity::Detect,
         })
         .await
         .unwrap();
@@ -1181,6 +1207,7 @@ async fn nothing_to_apply_asks_nothing() {
         .run(InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::Prompt,
             separate_state: SeparateState::Refuse,
+            identity: Identity::Detect,
         })
         .await
         .unwrap();
@@ -1253,9 +1280,11 @@ async fn a_moved_project_keeps_its_state_and_becomes_its_last_writer() {
         InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::AssumeYes,
             separate_state: SeparateState::Refuse,
+            identity: Identity::Detect,
         },
         InfrastructureAction::Destroy {
             confirmation: ConfirmationPolicy::AssumeYes,
+            identity: Identity::Detect,
         },
     ] {
         harness.run(action.clone()).await.unwrap();
@@ -1534,6 +1563,7 @@ async fn unlock_with_another_identifier_is_a_lock_failure() {
         .run(InfrastructureAction::Unlock {
             lock_identifier: Some("stale".to_string()),
             scope: UnlockScope::default(),
+            fence: FenceRelease::Refuse,
         })
         .await
         .unwrap_err();
@@ -1808,9 +1838,11 @@ async fn an_invalid_state_url_fails_before_any_secret_resolver_runs_for_every_ac
         InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::AssumeYes,
             separate_state: SeparateState::Refuse,
+            identity: Identity::Detect,
         },
         InfrastructureAction::Destroy {
             confirmation: ConfirmationPolicy::AssumeYes,
+            identity: Identity::Detect,
         },
         InfrastructureAction::State(StateAction::List),
         InfrastructureAction::State(StateAction::Remove {
@@ -1823,6 +1855,7 @@ async fn an_invalid_state_url_fails_before_any_secret_resolver_runs_for_every_ac
         InfrastructureAction::Unlock {
             lock_identifier: None,
             scope: UnlockScope::default(),
+            fence: FenceRelease::Refuse,
         },
     ] {
         let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
@@ -1957,12 +1990,14 @@ fn apply_action() -> InfrastructureAction {
     InfrastructureAction::Apply {
         confirmation: ConfirmationPolicy::AssumeYes,
         separate_state: SeparateState::Refuse,
+        identity: Identity::Detect,
     }
 }
 
 fn destroy_action() -> InfrastructureAction {
     InfrastructureAction::Destroy {
         confirmation: ConfirmationPolicy::AssumeYes,
+        identity: Identity::Detect,
     }
 }
 
@@ -2220,6 +2255,7 @@ async fn an_environment_creating_what_the_unselected_identity_records_is_refused
     case.guard(&InfrastructureAction::Apply {
         confirmation: ConfirmationPolicy::AssumeYes,
         separate_state: SeparateState::Allow,
+        identity: Identity::Detect,
     })
     .await
     .unwrap();
@@ -2301,6 +2337,7 @@ async fn a_run_without_env_creating_what_an_environment_records_is_refused() {
     case.guard(&InfrastructureAction::Apply {
         confirmation: ConfirmationPolicy::AssumeYes,
         separate_state: SeparateState::Allow,
+        identity: Identity::Detect,
     })
     .await
     .unwrap();
@@ -2371,6 +2408,7 @@ async fn a_mistyped_environment_is_refused_but_a_removed_one_with_state_is_used(
         InfrastructureAction::Unlock {
             lock_identifier: None,
             scope: UnlockScope::default(),
+            fence: FenceRelease::Refuse,
         },
     ] {
         let error = case.guard(&action).await.unwrap_err();
@@ -2384,15 +2422,18 @@ async fn a_mistyped_environment_is_refused_but_a_removed_one_with_state_is_used(
     }
     // The whole database, and another project's lock, do not depend on the
     // evaluated project's environments.
-    case.guard(&InfrastructureAction::State(StateAction::Locks))
-        .await
-        .unwrap();
+    case.guard(&InfrastructureAction::State(StateAction::Locks(
+        LockListing::Module,
+    )))
+    .await
+    .unwrap();
     case.guard(&InfrastructureAction::Unlock {
         lock_identifier: None,
         scope: UnlockScope {
             module_path: None,
             project: Some("other".to_string()),
         },
+        fence: FenceRelease::Refuse,
     })
     .await
     .unwrap();
@@ -2484,6 +2525,7 @@ async fn other_environments_reach_the_json_result_of_unlock() {
         &InfrastructureAction::Unlock {
             lock_identifier: None,
             scope: UnlockScope::default(),
+            fence: FenceRelease::Refuse,
         },
         &context,
         harness.inputs(),
@@ -2858,6 +2900,7 @@ async fn unlock_with_an_identifier_that_matches_no_lock_fails_and_names_where_it
         &InfrastructureAction::Unlock {
             lock_identifier: Some(lock.lock_identifier.clone()),
             scope: UnlockScope::default(),
+            fence: FenceRelease::Refuse,
         },
         &context,
         harness.inputs(),
@@ -2880,6 +2923,7 @@ async fn unlock_with_an_identifier_that_matches_no_lock_fails_and_names_where_it
         &InfrastructureAction::Unlock {
             lock_identifier: Some("nowhere".to_string()),
             scope: UnlockScope::default(),
+            fence: FenceRelease::Refuse,
         },
         &context,
         harness.inputs(),
@@ -2977,7 +3021,7 @@ async fn recovering_without_env_mentions_pending_changes_of_declared_environment
 fn json_results_carry_the_environment_in_its_own_field() {
     let output = Output::new(OutputFormat::Json);
     let dev = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
-    output.state(&dev, &[]);
+    output.state(&dev, &[], None);
     let Finish::Report(Some(payload)) = output.finish() else {
         panic!("expected a result");
     };
@@ -2986,7 +3030,7 @@ fn json_results_carry_the_environment_in_its_own_field() {
 
     let output = Output::new(OutputFormat::Json);
     let unselected = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
-    output.state(&unselected, &[]);
+    output.state(&unselected, &[], None);
     let Finish::Report(Some(payload)) = output.finish() else {
         panic!("expected a result");
     };
@@ -3254,9 +3298,22 @@ fn schema_and_file_problems_get_help_that_fits_them() {
 async fn state_locks_lists_every_tenants_lock_and_unlock_names_a_project_that_need_not_evaluate() {
     let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
     let other = TenantKey::with_environment("example.com/other", "gone", "Prod").unwrap();
+    harness.store.lock(&other, "apply by ci").await.unwrap();
+    // By default only this module's locks are listed.
+    harness
+        .run(InfrastructureAction::State(StateAction::Locks(
+            LockListing::Module,
+        )))
+        .await
+        .unwrap();
+    assert!(harness.result()["locks"].as_array().unwrap().is_empty());
+    // `--all` lists every lock of the backend.
+    let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
     let held = harness.store.lock(&other, "apply by ci").await.unwrap();
     harness
-        .run(InfrastructureAction::State(StateAction::Locks))
+        .run(InfrastructureAction::State(StateAction::Locks(
+            LockListing::All,
+        )))
         .await
         .unwrap();
     let result = harness.result();
@@ -3287,6 +3344,7 @@ async fn state_locks_lists_every_tenants_lock_and_unlock_names_a_project_that_ne
                 module_path: Some("example.com/other".to_string()),
                 project: Some("gone".to_string()),
             },
+            fence: FenceRelease::Refuse,
         },
         &context,
         harness.inputs(),
@@ -3331,3 +3389,5 @@ fn an_unlock_scope_replaces_only_what_it_names() {
         .is_err()
     );
 }
+
+mod object;

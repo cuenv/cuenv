@@ -105,7 +105,7 @@ pub(super) async fn guard_selection(
         | InfrastructureAction::Destroy { .. } => guard_identity(context, request).await,
         // Whole database, or another project's tenant: nothing of the
         // evaluated project's environments applies.
-        InfrastructureAction::State(StateAction::Locks) => Ok(()),
+        InfrastructureAction::State(StateAction::Locks(_)) => Ok(()),
         InfrastructureAction::Unlock { scope, .. } if scope.is_named() => Ok(()),
         InfrastructureAction::State(_) | InfrastructureAction::Unlock { .. } => {
             guard_environment_known(context, request).await

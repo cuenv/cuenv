@@ -44,6 +44,11 @@ zip = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[features]
+default = []
+# The in-process fake S3 server, for other crates' tests.
+fake-s3 = []
+
 [dev-dependencies]
 rusqlite = { workspace = true }
 tempfile = { workspace = true }

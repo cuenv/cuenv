@@ -16,8 +16,8 @@
 
 pub mod client;
 pub mod document;
-#[cfg(test)]
-pub(crate) mod fake;
+#[cfg(any(test, feature = "fake-s3"))]
+pub mod fake;
 pub mod key;
 pub mod sigv4;
 pub mod store;
@@ -34,7 +34,7 @@ pub use store::{
 
 use async_trait::async_trait;
 
-use super::lock::StateLock;
+use super::lock::{StateLock, TenantLock};
 use super::writer::LastWriter;
 use crate::error::Result;
 use crate::tenant::TenantKey;
@@ -81,6 +81,27 @@ pub struct RestoreRequest<'request> {
     pub lock: &'request StateLock,
 }
 
+/// What an object store records about a held lock beyond
+/// [`super::LockInformation`]. Untrusted stored text, control characters
+/// removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockDetails {
+    /// The cuenv version that took the lock.
+    pub cuenv_version: String,
+    /// The last record the lock holder wrote: `put` or `delete`, the
+    /// address and when.
+    pub last_change: Option<String>,
+}
+
+/// The size of a tenant's state object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateSize {
+    /// Bytes of `state.json`.
+    pub bytes: usize,
+    /// The largest `state.json` the store writes.
+    pub limit: usize,
+}
+
 /// The package-qualified identity of a tenant in an object store, for
 /// operations that cross packages (renames).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +118,20 @@ pub struct ObjectTenant {
 pub trait ObjectStateFeatures: Send + Sync {
     /// Every tenant stored under `module_path`, in every package.
     async fn tenants(&self, module_path: &str) -> Result<Vec<StoredTenant>>;
+
+    /// The size of the tenant's state object; `None` when it is absent.
+    async fn size(&self, tenant: &TenantKey) -> Result<Option<StateSize>>;
+
+    /// Whether the project's migration manifest lists the tenant as not yet
+    /// migrated (its state is still in the source backend).
+    async fn awaiting_migration(&self, tenant: &TenantKey) -> Result<bool>;
+
+    /// The locks held for the projects of `module_path`, listed under that
+    /// module's prefix only.
+    async fn module_locks(&self, module_path: &str) -> Result<Vec<TenantLock>>;
+
+    /// More about the lock the tenant holds, if any.
+    async fn lock_details(&self, tenant: &TenantKey) -> Result<Option<LockDetails>>;
 
     /// The tenant's history snapshots, oldest first.
     async fn history(&self, tenant: &TenantKey) -> Result<Vec<HistoryEntry>>;

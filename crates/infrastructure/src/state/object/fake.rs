@@ -1,5 +1,6 @@
-//! An in-process S3 stand-in for tests: path-style requests over HTTP/1.1,
-//! conditional PUTs (`If-None-Match: *`, `If-Match`) with strong ETags,
+//! An in-process S3 stand-in for tests.
+//!
+//! It serves path-style requests over HTTP/1.1, conditional PUTs (`If-None-Match: *`, `If-Match`) with strong ETags,
 //! GET, DELETE and paginated `ListObjectsV2`, plus injectable faults
 //! (statuses and responses dropped before or after the request is applied)
 //! and a mode that ignores conditions, for the capability probe.
@@ -69,12 +70,12 @@ pub struct FakeS3 {
 impl FakeS3 {
     /// Start a server on a free loopback port.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when no port can be bound (tests only).
-    pub async fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    /// Returns an error when no loopback port can be bound.
+    pub async fn start() -> std::io::Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
         let inner = Arc::new(Mutex::new(Inner {
             page_size: 2,
             ..Inner::default()
@@ -85,11 +86,14 @@ impl FakeS3 {
                 tokio::spawn(answer(stream, Arc::clone(&shared)));
             }
         });
-        Self { endpoint, inner }
+        Ok(Self { endpoint, inner })
     }
 
     fn inner(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap()
+        // A test that panicked while holding the lock left consistent data.
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Queue a fault for the next matching request.

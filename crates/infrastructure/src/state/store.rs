@@ -169,6 +169,25 @@ pub trait StateStore: Send + Sync {
         Ok(())
     }
 
+    /// The environments of the project `module_path`/`project` that hold
+    /// records, a lock or a last writer: `None` stands for the identity
+    /// without `--env`. Sorted, `None` first. `state migrate --all` reads it,
+    /// so it includes environments the configuration no longer declares.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot be read, or cannot list
+    /// environments (the default).
+    async fn environments(
+        &self,
+        _module_path: &str,
+        _project: &str,
+    ) -> Result<Vec<Option<String>>> {
+        Err(crate::error::InfrastructureError::state(
+            "this state store cannot list a project's environments",
+        ))
+    }
+
     /// Where the tenant's state lives, for display (`s3://bucket/key`).
     /// `None` for stores that have no such address to show.
     fn location(&self, _tenant: &TenantKey) -> Option<String> {

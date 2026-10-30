@@ -145,6 +145,7 @@ assert_cmd = "2.2.2"
 predicates = "3.1.4"
 which = "8.0.2"
 cuenv-task-graph = { workspace = true }
+cuenv-infrastructure = { workspace = true, features = ["fake-s3"] }
 
 [build-dependencies]
 chrono = { workspace = true }

@@ -607,10 +607,25 @@ fn infrastructure_command(
 ) -> Command {
     use super::{InfrastructureProviderCommands, InfrastructureStateCommands};
     use crate::commands::infrastructure::{
-        ConfirmationPolicy, InfrastructureAction, ProviderAction, SeparateState, StateAction,
-        UnlockScope,
+        ConfirmationPolicy, FenceRelease, Identity, InfrastructureAction, LockListing,
+        MigrateRequest, MigrationDirection, MigrationScope, ProviderAction, RenameSource,
+        SeparateState, SourceEnvironment, SourceUpgrade, StateAction, UnlockScope,
     };
     use cuenv_infrastructure::{BackendMismatch, ChangedRecord, RecoverOverrides};
+    let identity = |new_identity: bool| {
+        if new_identity {
+            Identity::New
+        } else {
+            Identity::Detect
+        }
+    };
+    let confirmation = |yes: bool| {
+        if yes {
+            ConfirmationPolicy::AssumeYes
+        } else {
+            ConfirmationPolicy::Prompt
+        }
+    };
     let (path, package, action) = match subcommand {
         InfrastructureCommands::Provider { subcommand, path } => {
             return Command::InfrastructureProvider {
@@ -633,20 +648,18 @@ fn infrastructure_command(
             package,
             yes,
             allow_separate_state,
+            new_identity,
         } => (
             path,
             package,
             InfrastructureAction::Apply {
-                confirmation: if yes {
-                    ConfirmationPolicy::AssumeYes
-                } else {
-                    ConfirmationPolicy::Prompt
-                },
+                confirmation: confirmation(yes),
                 separate_state: if allow_separate_state {
                     SeparateState::Allow
                 } else {
                     SeparateState::Refuse
                 },
+                identity: identity(new_identity),
             },
         ),
         InfrastructureCommands::Import {
@@ -654,23 +667,27 @@ fn infrastructure_command(
             identifier,
             path,
             package,
+            new_identity,
         } => (
             path,
             package,
             InfrastructureAction::Import {
                 address,
                 identifier,
+                identity: identity(new_identity),
             },
         ),
-        InfrastructureCommands::Destroy { path, package, yes } => (
+        InfrastructureCommands::Destroy {
+            path,
+            package,
+            yes,
+            new_identity,
+        } => (
             path,
             package,
             InfrastructureAction::Destroy {
-                confirmation: if yes {
-                    ConfirmationPolicy::AssumeYes
-                } else {
-                    ConfirmationPolicy::Prompt
-                },
+                confirmation: confirmation(yes),
+                identity: identity(new_identity),
             },
         ),
         InfrastructureCommands::State {
@@ -682,7 +699,54 @@ fn infrastructure_command(
             package,
             InfrastructureAction::State(match subcommand {
                 None | Some(InfrastructureStateCommands::List) => StateAction::List,
-                Some(InfrastructureStateCommands::Locks) => StateAction::Locks,
+                Some(InfrastructureStateCommands::Locks { all }) => StateAction::Locks(if all {
+                    LockListing::All
+                } else {
+                    LockListing::Module
+                }),
+                Some(InfrastructureStateCommands::Pull) => StateAction::Pull,
+                Some(InfrastructureStateCommands::Restore { serial, yes }) => {
+                    StateAction::Restore {
+                        serial,
+                        confirmation: confirmation(yes),
+                    }
+                }
+                Some(InfrastructureStateCommands::Migrate {
+                    all,
+                    upgrade_source,
+                    rollback,
+                    copy_back,
+                }) => StateAction::Migrate(MigrateRequest {
+                    scope: if all {
+                        MigrationScope::All
+                    } else {
+                        MigrationScope::Selected
+                    },
+                    direction: match (rollback, copy_back) {
+                        (false, _) => MigrationDirection::Forward,
+                        (true, false) => MigrationDirection::Rollback,
+                        (true, true) => MigrationDirection::CopyBack,
+                    },
+                    source_upgrade: if upgrade_source {
+                        SourceUpgrade::Allow
+                    } else {
+                        SourceUpgrade::Refuse
+                    },
+                }),
+                Some(InfrastructureStateCommands::Rename {
+                    from_project,
+                    from_package,
+                    from_env,
+                    from_no_env,
+                }) => StateAction::Rename(RenameSource {
+                    project: from_project,
+                    package: from_package,
+                    environment: match (from_env, from_no_env) {
+                        (Some(name), _) => SourceEnvironment::Named(name),
+                        (None, true) => SourceEnvironment::Unselected,
+                        (None, false) => SourceEnvironment::Selected,
+                    },
+                }),
                 Some(InfrastructureStateCommands::Remove { address }) => {
                     StateAction::Remove { address }
                 }
@@ -712,6 +776,7 @@ fn infrastructure_command(
             lock_identifier,
             module,
             project,
+            migration_fence,
         } => (
             path,
             package,
@@ -720,6 +785,11 @@ fn infrastructure_command(
                 scope: UnlockScope {
                     module_path: module,
                     project,
+                },
+                fence: if migration_fence {
+                    FenceRelease::Allow
+                } else {
+                    FenceRelease::Refuse
                 },
             },
         ),

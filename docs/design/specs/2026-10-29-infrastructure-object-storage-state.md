@@ -3,8 +3,9 @@
 Status: **proposed**. The decision record is
 [ADR-0012](../../src/content/docs/decisions/adrs/adr-0012-per-project-object-storage-state.md),
 and the issue is #548. `cuenv infrastructure` remains experimental. This
-document specifies how the backend is built. Its last section records the
-review that produced it.
+document specifies how the backend is built. The section
+[Implementation](#implementation) records where the implementation differs
+from the plan below; the last section records the review that produced it.
 
 ## Goal
 
@@ -59,7 +60,7 @@ infrastructure: state: s3: {
 and holds the package. `TenantLock` gains `package: Option<String>`, which the
 SQL stores set to `None`.
 
-### Validation (`state/object_key.rs`)
+### Validation (`state/object/key.rs`)
 
 Every segment is checked before any request is built, and failures fail
 closed:
@@ -312,8 +313,10 @@ instance cannot claim the same tenant.
   (`<directory>:<package>` and the time; nothing else, in particular no git
   remote, because CI remote URLs can carry tokens).
   - S3 records it in the acquiring body write.
-  - SQL records it inside the acquire transaction, in the existing owner
-    table.
+  - SQL records it in the existing owner table, with a fenced upsert run
+    right after the lock is taken (the upsert only writes while the lock
+    row is this run's; if it fails, the lock is released and the run
+    fails). See [Implementation](#implementation).
   - `unlock`, `force_unlock`, `state locks` and `state restore` pass `None`
     and leave `lastWriter` unchanged, so a release from another directory
     cannot blind rename detection.
@@ -401,7 +404,13 @@ Conformance tests:
 - a package rename (detected);
 - a project rename (detected).
 
-### `cuenv infrastructure state rename --to-project P [--to-package K] [--to-env E]`
+### `cuenv infrastructure state rename [--from-project P] [--from-package K] [--from-env E | --from-no-env]`
+
+The command runs from the renamed configuration and names the identity the
+state is recorded under; the destination is the evaluated identity. (The plan
+had `--to-*` flags run from the old identity, which no longer evaluates once
+the configuration is renamed; see [Implementation](#implementation).)
+
 
 1. Lock the source.
 2. Create the destination with `If-None-Match: *`, locked by the rename id,
@@ -429,10 +438,12 @@ named `rename` because Terraform's `state mv` moves addresses.
 
   `aws-sigv4` was rejected: it brings in four aws-smithy and credential crates
   plus `time`.
-- **`quick-xml`** parses ListObjectsV2 responses and error bodies only. Bodies
-  are bounded, DTDs are not processed, it is checked by `deny.toml`, and the
-  `cargo tree` delta goes in the PR. Listings are capped in pages and total
-  keys, and every key must start with the requested prefix and parse.
+- **A minimal hand-written XML reader** (`state/object/xml.rs`) parses
+  ListObjectsV2 responses and error bodies only: the elements cuenv reads,
+  the five predefined entities, no DTDs, no other entities. Bodies are
+  bounded. Listings are capped in pages and total keys, and every key must
+  start with the requested prefix and parse. (The plan named `quick-xml`; see
+  [Implementation](#implementation).)
 - **Headers:** no `x-amz-checksum-*`, and no `x-amz-server-side-encryption`
   (R2 rejects it). `x-amz-content-sha256` already gives payload integrity.
 - **Addressing:** `auto` uses path style for an IP or `localhost` host, or
@@ -580,7 +591,7 @@ It then tombstones the target and releases the source fence.
 | Command | Change |
 | --- | --- |
 | `state list` | header with the `s3://` location |
-| `state locks` | defaults to the current module (prefix `<module>/_`). `--all` lists every lock and prints the `--path`/`--package` needed to release each one. A 403 is reported as "credential is prefix-scoped". The help text no longer says "every project". |
+| `state locks` | defaults to the current module (prefix `<module>/_`). `--all` lists every lock with its package and the command that releases it. A 403 is reported as "credential is prefix-scoped". The help text no longer says "every project". |
 | `state pull` | new. Prints the tenant as JSON, built from trait reads (`list`, `last_writer`, `current_lock`) so it works on every backend. Help: the output contains plaintext provider secrets. |
 | `state adopt` | deprecated no-op for one release, then removed (see Ownership) |
 | `state restore` | new (see History and restore) |
@@ -695,11 +706,60 @@ new production dependencies, schema or CLI changes, and cross-crate behaviour.
 The backend stays experimental until phase 8's verification record is in this
 document.
 
+## Implementation
+
+The first implementation (one pull request for all phases) differs from the
+plan above as follows.
+
+- **XML.** A hand-written reader instead of `quick-xml`: the two documents
+  cuenv reads need a few elements, and the reader adds no dependency.
+- **SQL last writer.** Recorded by a fenced upsert right after acquisition
+  rather than inside the acquire transaction. The SQL acquire statement is
+  shared by Turso and D1, and D1 binds parameters only in single-statement
+  requests; the upsert writes only while the lock row is the caller's.
+- **`state rename` flags.** `--from-project`, `--from-package`, `--from-env`
+  and `--from-no-env`, run from the renamed configuration (the plan's `--to-*`
+  form needed the old identity to evaluate, which it no longer does after the
+  rename). Rename detection prints exactly this command.
+- **`state locks --all`** prints the lock's `--package`, not a `--path`: a
+  lock records no directory.
+- **`StateStore::environments`** (new) lists the environments a project
+  holds state for, for `state migrate --all`; it defaults to an error for
+  stores that cannot list.
+- **`ObjectStateFeatures`** also offers `size`, `awaiting_migration` and
+  `lock_details` (the cuenv version and last change `unlock` prints).
+- **Rename detection** reads the tenant's own size first, so the common case
+  (an existing tenant) costs one request; it lists the module only for a new
+  tenant. Database backends do not detect renames.
+- **Size check** refuses an `apply` whose plan creates or replaces anything
+  once the state is at 90% of the cap.
+- **Workspace evaluation** (`cuenv sync`, `cuenv ci`) fails closed: the
+  recursive evaluation now uses `InstanceFailures::Fail`, and the per-directory
+  fallback fails when any directory does not evaluate.
+- **Fake S3** is exported behind the `fake-s3` feature so the CLI's
+  tests drive the commands over it.
+
 ## Verification
 
-Not yet run. To be filled in as in the D1 spec: what was probed against real
-R2, AWS S3 and MinIO, what the conformance suite covers, and what was not
-verified.
+Run so far:
+
+- The conformance suite (`state/conformance.rs`) against the memory store,
+  the D1 stand-in and the object store over the in-process fake S3, which
+  implements `If-Match`/`If-None-Match`, strong ETags, 404, 409, 412 and 429,
+  responses dropped before or after the write applies, unsigned access and a
+  mode that ignores conditions.
+- SigV4 against the S3 documentation's GET Object, PUT Object and List
+  Objects examples and botocore 1.43 vectors (session token, R2 host, path
+  style with a continuation token).
+- The CLI commands (rename detection, `state rename`, `state restore`,
+  `state pull`, `state migrate` forward, rerun, rollback and copy-back, the
+  fence refusal) over the fake.
+
+Not yet run: anything against real AWS S3, Cloudflare R2 or MinIO, including
+the sequential-write 429 question on R2 and the least-privilege recipes. The
+ignored test `conforms_against_a_real_server` runs the suite against any
+S3-compatible server. The backend stays experimental until this section
+records those runs.
 
 ## Review record
 
