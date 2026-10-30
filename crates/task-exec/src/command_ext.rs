@@ -9,9 +9,14 @@ use crate::{ScriptShell, Task, TaskCommandSpec};
 use cuenv_core::{Error, Result};
 
 /// Execution-side extension methods for [`Task`].
-pub(crate) trait TaskCommandExt {
+pub trait TaskCommandExt {
     /// Build the executable invocation for this task using the provided
     /// command resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `shellOptions` are set for a script shell that
+    /// does not support them.
     fn command_spec<F>(&self, resolve_command: F) -> Result<TaskCommandSpec>
     where
         F: FnMut(&str) -> String;

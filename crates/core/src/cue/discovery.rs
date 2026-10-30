@@ -141,7 +141,9 @@ pub fn detect_package_name(path: &Path) -> Result<Option<String>> {
     for line in cleaned.lines() {
         let trimmed = line.trim();
 
-        if trimmed.is_empty() {
+        // File attributes such as `@extern(embed)` or `@if(tag)` may precede
+        // the package clause.
+        if trimmed.is_empty() || trimmed.starts_with('@') {
             continue;
         }
 
@@ -405,6 +407,19 @@ package cuenv // inline
     fn detect_package_name_finds_package() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "// comment\npackage cuenv // inline\n\nenv: {{}}").unwrap();
+
+        let package = detect_package_name(Path::new(file.path())).unwrap();
+        assert_eq!(package, Some("cuenv".to_string()));
+    }
+
+    #[test]
+    fn detect_package_name_skips_file_attributes() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "@extern(embed)\n@if(ci)\n\npackage cuenv\n\nenv: {{}}"
+        )
+        .unwrap();
 
         let package = detect_package_name(Path::new(file.path())).unwrap();
         assert_eq!(package, Some("cuenv".to_string()));

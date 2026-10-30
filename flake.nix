@@ -198,71 +198,36 @@
           };
         };
 
-        # Source filtering for Rust builds
-        # Uses Crane's filterCargoSources for proper cache invalidation
-        # See: https://crane.dev/faq/constant-rebuilds.html
-        src = pkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter = path: type:
-            let
-              baseName = builtins.baseNameOf path;
-              # Use Crane's built-in filter for Rust/Cargo files (.rs, .toml, Cargo.lock)
-              isCargoSource = craneLib.filterCargoSources path type;
-              # Include all files in crates/ (Rust code, Go bridge, test fixtures)
-              isInCratesDir = builtins.match ".*/crates/.*" path != null || baseName == "crates";
-              isInContribDir = builtins.match ".*/contrib/.*" path != null || baseName == "contrib";
-              # CUE files needed for tests (schema definitions, examples, module config)
-              isCueFile = pkgs.lib.hasSuffix ".cue" path;
-              isInSchemaDir = builtins.match ".*/schema/.*" path != null || baseName == "schema";
-              isInExamplesDir = builtins.match ".*/examples/.*" path != null || baseName == "examples";
-              isInCueModDir = builtins.match ".*/cue\\.mod/.*" path != null || baseName == "cue.mod";
-              isInTestsDir = builtins.match ".*/_tests/.*" path != null || baseName == "_tests";
-              isAgentsRootDir = baseName == ".agents";
-              isAgentsSkillsRoot = builtins.match ".*/\\.agents/skills" path != null;
-              isInAgentsSkillsDir = builtins.match ".*/\\.agents/skills/.*" path != null;
-              isLlmsTxt = baseName == "llms.txt";
-              isEnvCue = baseName == "env.cue";
-              isDenyToml = baseName == "deny.toml";
-
-              # We must include the directories themselves so the filter recurses into them
-              isDir = type == "directory";
-              isAllowedDir =
-                (
-                  isInSchemaDir
-                  || isInExamplesDir
-                  || isInCueModDir
-                  || isInTestsDir
-                  || isInContribDir
-                  || isAgentsRootDir
-                  || isAgentsSkillsRoot
-                  || isInAgentsSkillsDir
-                )
-                && isDir;
-            in
-            isCargoSource ||
-            isInCratesDir ||
-            isInContribDir ||
-            isInAgentsSkillsDir ||
-            isLlmsTxt ||
-            isEnvCue ||
-            isDenyToml ||
-            isAllowedDir ||
-            isInTestsDir ||
-            ((isInSchemaDir || isInExamplesDir || isInCueModDir) && isCueFile);
+        # The files every Rust derivation builds from, as an explicit fileset.
+        # Membership depends only on nix/source-files.json, never on what else
+        # sits in the directory: a git checkout and a `cuenv task` exec root
+        # holding the same files evaluate to the same store paths, so one
+        # build serves both through the binary cache. env.cue embeds the same
+        # list as those tasks' inputs, and `flake-source-check` proves it.
+        sourceFiles = builtins.fromJSON (builtins.readFile ./nix/source-files.json);
+        fs = pkgs.lib.fileset;
+        toRepoPath = relative: ./. + "/${relative}";
+        sourceFileset = fs.unions (
+          map toRepoPath (sourceFiles.files ++ sourceFiles.trees)
+          ++ map (tree: fs.fileFilter (file: file.hasExt "cue") (toRepoPath tree)) sourceFiles.cueTrees
+        );
+        #
+        # Crane looks for manifests and lockfiles in a filtered source's
+        # original directory rather than the filtered tree
+        # (ipetkov/crane#46), which would bring back any Cargo project that
+        # happens to sit in the checkout. A plain store path of the fileset
+        # leaves it nothing else to find.
+        toCraneSource = fileset: builtins.path {
+          name = "source";
+          path = fs.toSource {
+            root = ./.;
+            inherit fileset;
+          };
         };
-
-        # Strict source filtering for dependencies (Cargo.toml/lock only)
-        # This ensures cargoArtifacts are cached even when source code changes
-        srcArtifacts = pkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter = path: type:
-            let
-              baseName = builtins.baseNameOf path;
-              isCargoMetadata = baseName == "Cargo.toml" || baseName == "Cargo.lock";
-              isCargoConfig = baseName == "config.toml" && builtins.match ".*/\\.cargo/.*" path != null;
-            in
-            isCargoMetadata || isCargoConfig;
-        };
+        # Dependency builds take it too: crane reduces it to manifests,
+        # lockfiles and stub targets, so their artifacts stay cached when
+        # source code changes.
+        src = toCraneSource sourceFileset;
 
         # Bridge setup helper
         setupBridge = ''
@@ -306,7 +271,6 @@
         # Keep dependency-only derivations aligned with downstream cargo flags.
         # Mixing workspace-wide and package-specific scopes forces Cargo to rebuild.
         cargoArtifactsArgs = {
-          src = srcArtifacts;
           preBuild = "";
           buildInputs = platformBuildInputs;
         };

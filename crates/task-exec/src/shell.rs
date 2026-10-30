@@ -6,7 +6,7 @@
 
 /// A fully-resolved process invocation for a task.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TaskCommandSpec {
+pub struct TaskCommandSpec {
     /// Executable path or command name to spawn.
     pub program: String,
     /// Command-line arguments for the program.

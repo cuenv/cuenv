@@ -409,11 +409,13 @@ do not present it as a finished pipeline.
   full tracked tree is preserved, including public `contrib/` packages and
   symlinks. Registry authentication is written under the runner's `HOME`, which
   `publish.cue` explicitly passes along with `XDG_CONFIG_HOME`; its CUE cache
-  and temporary directories stay inside the task workspace. The `cargo.build`
-  and `cross.linux` tasks invoke Nix with task-local `HOME`, `XDG_CACHE_HOME`,
-  and temporary directories, then remove them on exit. Nix therefore has a
-  writable fetcher cache while the host `HOME` remains excluded from hermetic
-  tasks. `docs.deploy`
+  and temporary directories stay inside the task workspace. `cargo.build`
+  runs `nix build .#cuenv` with the flake's own source list as its inputs
+  (see below), so it evaluates to the store path the workflow's `build.cuenv`
+  job already built and pushed to the binary cache, and substitutes it rather
+  than compiling a second copy. Nix uses the writable `HOME` cuenv gives every
+  hermetic task, so its fetcher and evaluation caches survive between runs
+  while the host `HOME` stays excluded. `docs.deploy`
   consumes the `docs.build` output, declares Wrangler's config and locked Bun
   workspace files, and installs from `bun.lock` before using the local
   Wrangler binary. Build tasks should list every workspace manifest and source
@@ -423,6 +425,33 @@ do not present it as a finished pipeline.
 The authoritative per-definition status lives in the
 [schema status page](/reference/schema/status/) and the schema coverage matrix.
 When in doubt, that matrix wins over this guide.
+
+### One build per platform
+
+A task that runs the flake runs it in an exec root holding only the task's
+declared inputs, with no Git metadata, so Nix sees a path flake rather than
+the Git checkout the CI bootstrap job built. The two produce the same store
+paths only when the flake's source is the same set of files in both.
+`nix/source-files.json` is that set: `flake.nix` turns it into an explicit
+`lib.fileset` for every Rust derivation, and `env.cue` embeds it as the inputs
+of every task that runs the flake. To change what the flake builds from, edit
+that file and nothing else.
+
+Two details keep the set exact. The fileset names files and trees, never a
+predicate over whatever happens to be in the directory. And crane receives
+the filtered tree as a plain store path, because for a filtered source it
+looks for manifests and lockfiles in the unfiltered directory, which would
+pull in any other Cargo project in the checkout.
+
+`ci.flake-source-check` runs in the `sync-check` pipeline and proves the
+contract: it evaluates the derivation path of every package and check in an
+exec root (`ci.flake-drv-paths`) and in the checkout, and fails if any
+differ. Before this, `cargo.build` evaluated a different `cuenv` and
+`cuenv-deps` than the bootstrap job and recompiled both on every release
+platform. Locally the check also fails when a listed tree holds untracked or
+ignored files, such as a `target/` directory under `crates/`, because task
+input globs do not consult `.gitignore`; those files reach the exec root and
+change the hashes there too.
 
 ## A realistic workflow
 

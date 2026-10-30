@@ -121,9 +121,16 @@ schema digest; no-data digests are unchanged. Existing older pins for providers
 with data sources require `cuenv infrastructure provider add <source>@<same-version>`;
 sync cannot repin them.
 
-CI note: Release tasks that invoke Nix create task-local writable `HOME`,
-`XDG_CACHE_HOME`, and temporary directories, and remove them on exit. Host
-`HOME` remains excluded from hermetic tasks.
+CI note: Tasks that run the repository flake (`cargo.build`, `checks.*`,
+`darwin.*`) take `nix/source-files.json`, the flake's explicit source list, as
+their inputs, so they evaluate the same store paths as the CI bootstrap job and
+substitute them from the binary cache. `ci.flake-source-check` in the
+`sync-check` pipeline fails when exec-root and checkout evaluations differ.
+These tasks use cuenv's writable hermetic task `HOME`; host `HOME` remains
+excluded.
+
+CLI note: project discovery (`cuenv ci`, `cuenv sync`) accepts file attributes
+such as `@extern(embed)` or `@if(tag)` before an `env.cue` package clause.
 
 CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
 `cueRegistry`. The CUE Registry path is implemented by the GitHub contributor

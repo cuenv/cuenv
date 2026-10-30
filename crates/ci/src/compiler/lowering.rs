@@ -6,6 +6,7 @@ use crate::ir::{
     SecretConfig, Task as IrTask,
 };
 use cuenv_core::tasks::{Task, TaskGroup, TaskNode};
+use cuenv_task_exec::TaskCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 impl Compiler {
@@ -207,19 +208,21 @@ impl Compiler {
             let mut cmd = vec![task.command.clone()];
             cmd.extend(task.args.clone());
             cmd
-        } else if let Some(script) = &task.script {
-            // For scripts, we need to use shell mode
-            // Note: This is a simplified approach; full implementation would
-            // need to handle shebang parsing for polyglot scripts
-            vec!["/bin/sh".to_string(), "-c".to_string(), script.clone()]
+        } else if task.script.is_some() {
+            // The invocation `cuenv task` runs: the task's script shell (bash
+            // unless configured) with its shellOptions applied.
+            let spec = task.command_spec(str::to_string).map_err(|error| {
+                CompilerError::InvalidTaskStructure(format!("Task '{id}': {error}"))
+            })?;
+            std::iter::once(spec.program).chain(spec.args).collect()
         } else {
             return Err(CompilerError::InvalidTaskStructure(format!(
                 "Task '{id}' has neither command nor script"
             )));
         };
 
-        // Determine shell mode
-        let shell = task.shell.is_some() || task.script.is_some();
+        // A script's invocation already names its shell.
+        let shell = task.shell.is_some() && task.script.is_none();
 
         // Convert environment variables (filter out complex JSON values)
         let env: BTreeMap<String, String> = task

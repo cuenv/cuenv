@@ -138,9 +138,11 @@ fn test_compile_script_task() {
     let ir = compiler.compile().unwrap();
 
     assert_eq!(ir.tasks.len(), 1);
-    assert!(ir.tasks[0].shell);
-    assert_eq!(ir.tasks[0].command[0], "/bin/sh");
-    assert_eq!(ir.tasks[0].command[1], "-c");
+    assert!(!ir.tasks[0].shell);
+    assert_eq!(
+        ir.tasks[0].command,
+        vec!["bash", "-c", "echo 'Running script'\nls -la"]
+    );
 }
 
 #[test]
