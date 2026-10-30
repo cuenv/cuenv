@@ -19,13 +19,17 @@ cuenv-events = { workspace = true }
 cuenv-manifest = { workspace = true }
 
 async-trait = { workspace = true }
+aws-credential-types = { workspace = true }
+aws-sigv4 = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 hyper-util = { workspace = true }
+percent-encoding = { workspace = true }
 prost = { workspace = true }
+quick-xml = { workspace = true }
 reqwest = { workspace = true }
 rmpv = { workspace = true }
 rustls = { workspace = true }

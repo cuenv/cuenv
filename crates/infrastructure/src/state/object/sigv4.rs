@@ -1,23 +1,33 @@
-//! AWS Signature Version 4 for S3 requests, header authentication only.
+//! AWS Signature Version 4 for S3 requests, header authentication only,
+//! through `aws-sigv4`, AWS's own signer.
 //!
-//! Written on the `hmac` and `sha2` crates already in the workspace instead
-//! of `aws-sigv4`, which would bring in the aws-smithy and credential crates.
-//! Every request signs its full payload (`x-amz-content-sha256`); presigned
-//! (query) authentication is never used. The tests check the signer against
-//! signatures computed by botocore, AWS's own implementation, including the
-//! S3 documentation's examples.
+//! This module adapts the store's requests to it: S3 signs the path as sent
+//! (single percent-encoding, no `.`/`..` normalisation) and every request
+//! signs its full payload (`x-amz-content-sha256`). Presigned (query)
+//! authentication is never used. The tests check the result against the S3
+//! documentation's examples and signatures computed by botocore.
 
 use std::fmt;
-use std::fmt::Write as _;
+use std::time::SystemTime;
 
-use chrono::{DateTime, Utc};
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::{Digest, Sha256};
+use aws_sigv4::http_request::{
+    PayloadChecksumKind, PercentEncodingMode, SignableBody, SignableRequest, SignatureLocation,
+    SigningSettings, UriPathNormalizationMode, sign as sign_request,
+};
+use aws_sigv4::sign::v4;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
-type HmacSha256 = Hmac<Sha256>;
+use crate::error::{InfrastructureError, Result};
 
-/// The algorithm name in the `Authorization` header.
-const ALGORITHM: &str = "AWS4-HMAC-SHA256";
+/// Bytes SigV4 encodes: everything but unreserved characters.
+const ENCODED: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
+/// [`ENCODED`] without `/`, for object keys in a path.
+const ENCODED_PATH: &AsciiSet = &ENCODED.remove(b'/');
 
 /// Static or temporary credentials. `Debug` never shows a value.
 #[derive(Clone)]
@@ -62,60 +72,33 @@ impl Credentials {
 pub struct SigningRequest<'request> {
     /// HTTP method, upper case.
     pub method: &'request str,
-    /// The `Host` header value (`host` or `host:port`).
-    pub host: &'request str,
-    /// The canonical URI: the request path, each segment already
-    /// URI-encoded exactly once.
-    pub path: &'request str,
-    /// Query parameters, not encoded.
-    pub query: &'request [(String, String)],
+    /// The full request URL exactly as sent: path segments and query
+    /// already encoded with [`uri_encode`] and [`canonical_query`].
+    pub url: &'request str,
     /// Further headers to sign, as sent.
     pub headers: &'request [(String, String)],
-    /// Hex SHA-256 of the payload.
-    pub payload_sha256: &'request str,
+    /// The payload.
+    pub body: &'request [u8],
     /// When the request is signed.
-    pub time: DateTime<Utc>,
+    pub time: SystemTime,
     /// Signing region (`auto` for R2).
     pub region: &'request str,
 }
 
-/// The headers a signed request carries, `Authorization` last.
+/// The headers a signed request carries besides its own.
 pub type SignedHeaders = Vec<(String, String)>;
-
-/// Hex SHA-256 of `bytes`.
-#[must_use]
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
-fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(key)
-        .unwrap_or_else(|_| unreachable!("HMAC accepts keys of any length"));
-    mac.update(data);
-    mac.finalize().into_bytes().to_vec()
-}
 
 /// URI-encode `value` as SigV4 requires: unreserved characters stay, every
 /// other byte becomes `%XX` (upper case); `/` stays only when
 /// `keep_slash`.
 #[must_use]
 pub fn uri_encode(value: &str, keep_slash: bool) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'_' | b'.' | b'~')
-            || (keep_slash && byte == b'/')
-        {
-            encoded.push(char::from(byte));
-        } else {
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
+    let set = if keep_slash { ENCODED_PATH } else { ENCODED };
+    utf8_percent_encode(value, set).to_string()
 }
 
-/// The canonical query string: names and values encoded, sorted by name
-/// then value.
+/// The query string: names and values encoded, sorted by name then value,
+/// which is also the canonical form SigV4 signs.
 #[must_use]
 pub fn canonical_query(query: &[(String, String)]) -> String {
     let mut pairs: Vec<(String, String)> = query
@@ -130,96 +113,55 @@ pub fn canonical_query(query: &[(String, String)]) -> String {
         .join("&")
 }
 
-/// Trim a header value and collapse runs of spaces, as SigV4 requires.
-fn canonical_value(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The headers that are signed (lower-case names, sorted) for `request`,
-/// including the ones the signer adds.
-fn headers_to_sign(
-    request: &SigningRequest<'_>,
-    credentials: &Credentials,
-    amz_date: &str,
-) -> Vec<(String, String)> {
-    let mut headers: Vec<(String, String)> = request
-        .headers
-        .iter()
-        .map(|(name, value)| (name.to_ascii_lowercase(), canonical_value(value)))
-        .collect();
-    headers.push(("host".to_string(), request.host.to_string()));
-    headers.push((
-        "x-amz-content-sha256".to_string(),
-        request.payload_sha256.to_string(),
-    ));
-    headers.push(("x-amz-date".to_string(), amz_date.to_string()));
-    if let Some(token) = &credentials.session_token {
-        headers.push(("x-amz-security-token".to_string(), token.clone()));
-    }
-    headers.sort();
-    headers
-}
-
-/// The canonical request of `request`.
-fn canonical_request(request: &SigningRequest<'_>, headers: &[(String, String)]) -> String {
-    let canonical_headers = headers
-        .iter()
-        .fold(String::new(), |mut lines, (name, value)| {
-            let _ = writeln!(lines, "{name}:{value}");
-            lines
-        });
-    let signed: Vec<&str> = headers.iter().map(|(name, _)| name.as_str()).collect();
-    format!(
-        "{}\n{}\n{}\n{canonical_headers}\n{}\n{}",
-        request.method,
-        request.path,
-        canonical_query(request.query),
-        signed.join(";"),
-        request.payload_sha256
-    )
-}
-
 /// Sign `request`. Returns the headers to send besides the request's own:
 /// `x-amz-content-sha256`, `x-amz-date`, `x-amz-security-token` (with a
-/// session token) and `Authorization`.
-#[must_use]
-pub fn sign(request: &SigningRequest<'_>, credentials: &Credentials) -> SignedHeaders {
-    let amz_date = request.time.format("%Y%m%dT%H%M%SZ").to_string();
-    let date = request.time.format("%Y%m%d").to_string();
-    let headers = headers_to_sign(request, credentials, &amz_date);
-    let canonical = canonical_request(request, &headers);
-    let scope = format!("{date}/{}/s3/aws4_request", request.region);
-    let string_to_sign = format!(
-        "{ALGORITHM}\n{amz_date}\n{scope}\n{}",
-        sha256_hex(canonical.as_bytes())
-    );
-    let key = [date.as_str(), request.region, "s3", "aws4_request"]
-        .iter()
-        .fold(
-            format!("AWS4{}", credentials.secret_access_key).into_bytes(),
-            |key, part| hmac(&key, part.as_bytes()),
-        );
-    let signature = hex::encode(hmac(&key, string_to_sign.as_bytes()));
-    let signed_names: Vec<&str> = headers.iter().map(|(name, _)| name.as_str()).collect();
-    let mut added = vec![
-        (
-            "x-amz-content-sha256".to_string(),
-            request.payload_sha256.to_string(),
-        ),
-        ("x-amz-date".to_string(), amz_date),
-    ];
-    if let Some(token) = &credentials.session_token {
-        added.push(("x-amz-security-token".to_string(), token.clone()));
-    }
-    added.push((
-        "authorization".to_string(),
-        format!(
-            "{ALGORITHM} Credential={}/{scope}, SignedHeaders={}, Signature={signature}",
-            credentials.access_key_id,
-            signed_names.join(";")
-        ),
-    ));
-    added
+/// session token) and `authorization`.
+///
+/// # Errors
+///
+/// Returns [`InfrastructureError::State`] when the request cannot be signed
+/// (a URL or header the signer rejects). The message names neither the URL
+/// nor a credential.
+pub fn sign(request: &SigningRequest<'_>, credentials: &Credentials) -> Result<SignedHeaders> {
+    let identity = aws_credential_types::Credentials::new(
+        credentials.access_key_id.clone(),
+        credentials.secret_access_key.clone(),
+        credentials.session_token.clone(),
+        None,
+        "cuenv",
+    )
+    .into();
+    let mut settings = SigningSettings::default();
+    settings.percent_encoding_mode = PercentEncodingMode::Single;
+    settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
+    settings.uri_path_normalization_mode = UriPathNormalizationMode::Disabled;
+    settings.signature_location = SignatureLocation::Headers;
+    let params = v4::SigningParams::builder()
+        .identity(&identity)
+        .region(request.region)
+        .name("s3")
+        .time(request.time)
+        .settings(settings)
+        .build()
+        .map_err(|_| InfrastructureError::state("object storage: invalid signing parameters"))?
+        .into();
+    let signable = SignableRequest::new(
+        request.method,
+        request.url,
+        request
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+        SignableBody::Bytes(request.body),
+    )
+    .map_err(|_| InfrastructureError::state("object storage: the request URL cannot be signed"))?;
+    let (instructions, _) = sign_request(signable, &params)
+        .map_err(|_| InfrastructureError::state("object storage: the request cannot be signed"))?
+        .into_parts();
+    Ok(instructions
+        .headers()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect())
 }
 
 #[cfg(test)]
@@ -234,10 +176,26 @@ mod tests {
         }
     }
 
-    fn time() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2013-05-24T00:00:00Z")
+    fn time() -> SystemTime {
+        // 2013-05-24T00:00:00Z, the S3 documentation's example time.
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_369_353_600)
+    }
+
+    fn url(host: &str, path: &str, query: &[(String, String)]) -> String {
+        let query = canonical_query(query);
+        if query.is_empty() {
+            format!("https://{host}{path}")
+        } else {
+            format!("https://{host}{path}?{query}")
+        }
+    }
+
+    fn authorization(signed: &SignedHeaders) -> &str {
+        signed
+            .iter()
+            .find(|(name, _)| name == "authorization")
+            .map(|(_, value)| value.as_str())
             .unwrap()
-            .with_timezone(&Utc)
     }
 
     fn pairs(values: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -261,22 +219,20 @@ mod tests {
     fn signature(case: &Case<'_>) -> String {
         let query = pairs(case.query);
         let headers = pairs(case.headers);
-        let payload = sha256_hex(case.body.as_bytes());
+        let url = url(case.host, case.path, &query);
         let signed = sign(
             &SigningRequest {
                 method: case.method,
-                host: case.host,
-                path: case.path,
-                query: &query,
+                url: &url,
                 headers: &headers,
-                payload_sha256: &payload,
+                body: case.body.as_bytes(),
                 time: time(),
                 region: case.region,
             },
             &credentials(case.token),
-        );
-        let authorization = &signed.last().unwrap().1;
-        authorization
+        )
+        .unwrap();
+        authorization(&signed)
             .rsplit_once("Signature=")
             .unwrap()
             .1
@@ -386,36 +342,57 @@ mod tests {
 
     #[test]
     fn the_authorization_header_names_the_scope_and_signed_headers() {
-        let payload = sha256_hex(b"");
         let signed = sign(
             &SigningRequest {
                 method: "GET",
-                host: "examplebucket.s3.amazonaws.com",
-                path: "/test.txt",
-                query: &[],
+                url: "https://examplebucket.s3.amazonaws.com/test.txt",
                 headers: &pairs(&[("Range", "bytes=0-9")]),
-                payload_sha256: &payload,
+                body: b"",
                 time: time(),
                 region: "us-east-1",
             },
             &credentials(Some("token")),
-        );
-        let names: Vec<&str> = signed.iter().map(|(name, _)| name.as_str()).collect();
+        )
+        .unwrap();
+        let mut names: Vec<&str> = signed.iter().map(|(name, _)| name.as_str()).collect();
+        names.sort_unstable();
         assert_eq!(
             names,
             [
+                "authorization",
                 "x-amz-content-sha256",
                 "x-amz-date",
                 "x-amz-security-token",
-                "authorization"
             ]
         );
-        let authorization = &signed[3].1;
-        assert!(authorization.starts_with(
+        assert!(authorization(&signed).starts_with(
             "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, \
              SignedHeaders=host;range;x-amz-content-sha256;x-amz-date;x-amz-security-token, \
              Signature="
         ));
+    }
+
+    #[test]
+    fn dot_segments_are_signed_as_sent() {
+        // S3 keys may hold `.` segments; the signer must not normalise them
+        // away, or it signs a different path than the one sent.
+        let sign_path = |path: &str| {
+            let url = format!("https://examplebucket.s3.amazonaws.com{path}");
+            let signed = sign(
+                &SigningRequest {
+                    method: "GET",
+                    url: &url,
+                    headers: &[],
+                    body: b"",
+                    time: time(),
+                    region: "us-east-1",
+                },
+                &credentials(None),
+            )
+            .unwrap();
+            authorization(&signed).to_string()
+        };
+        assert_ne!(sign_path("/a/./b"), sign_path("/a/b"));
     }
 
     #[test]

@@ -271,7 +271,10 @@ fn apply(inner: &mut Inner, request: &Request) -> Reply {
                 .collect();
             let page: Vec<&String> = matching.iter().skip(start).take(inner.page_size).collect();
             let truncated = start + page.len() < matching.len();
-            let mut xml = String::from("<?xml version=\"1.0\"?><ListBucketResult>");
+            let mut xml = String::from(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+                 <ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+            );
             for key in page {
                 let _ = write!(
                     xml,

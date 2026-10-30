@@ -9,10 +9,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::Utc;
 use reqwest::{Method, StatusCode, Url};
 
-use super::sigv4::{Credentials, SigningRequest, sha256_hex, sign, uri_encode};
+use super::sigv4::{Credentials, SigningRequest, canonical_query, sign, uri_encode};
 use super::xml;
 use crate::error::{InfrastructureError, Result, strip_control_characters};
 use crate::state::http::{
@@ -170,9 +169,8 @@ impl S3Client {
             })
     }
 
-    /// The URL of `key` (or of the bucket for `None`) and the encoded path
-    /// it must have.
-    fn url(&self, key: Option<&str>) -> Result<(Url, String)> {
+    /// The URL of `key` (or of the bucket for `None`).
+    fn url(&self, key: Option<&str>) -> Result<Url> {
         let mut url = self.access.endpoint.clone();
         let encoded_key = key.map_or_else(String::new, |key| uri_encode(key, true));
         let path = match self.access.addressing {
@@ -201,7 +199,7 @@ impl S3Client {
                 strip_control_characters(key.unwrap_or_default())
             )));
         }
-        Ok((url, path))
+        Ok(url)
     }
 
     /// Send one signed request.
@@ -213,28 +211,21 @@ impl S3Client {
         headers: &[(String, String)],
         body: Vec<u8>,
     ) -> Result<std::result::Result<reqwest::Response, reqwest::Error>> {
-        let (mut url, path) = self.url(key)?;
+        let mut url = self.url(key)?;
         if !query.is_empty() {
-            url.set_query(Some(&super::sigv4::canonical_query(query)));
+            url.set_query(Some(&canonical_query(query)));
         }
-        let host = match url.port() {
-            Some(port) => format!("{}:{port}", url.host_str().unwrap_or_default()),
-            None => url.host_str().unwrap_or_default().to_string(),
-        };
-        let payload = sha256_hex(&body);
         let signed = sign(
             &SigningRequest {
                 method: method.as_str(),
-                host: &host,
-                path: &path,
-                query,
+                url: url.as_str(),
                 headers,
-                payload_sha256: &payload,
-                time: Utc::now(),
+                body: &body,
+                time: std::time::SystemTime::now(),
                 region: &self.access.region,
             },
             &self.access.credentials,
-        );
+        )?;
         let mut request = self.http.request(method, url);
         for (name, value) in headers.iter().chain(signed.iter()) {
             request = request.header(name.as_str(), value.as_str());
@@ -484,7 +475,13 @@ impl S3Client {
                     return Ok(Err(S3Failure::Ambiguous(self.redact(&failure.message))));
                 }
             };
-            let page = xml::parse_list(&String::from_utf8_lossy(&body));
+            // A listing that does not parse must never read as an empty one:
+            // the vanished-state guard and migration decide on what it holds.
+            let Ok(page) = xml::parse_list(&String::from_utf8_lossy(&body)) else {
+                return Ok(Err(S3Failure::Permanent(
+                    "the listing response is not a ListObjectsV2 result".to_string(),
+                )));
+            };
             keys.extend(page.keys.into_iter().filter(|key| key.starts_with(prefix)));
             if keys.len() > MAXIMUM_LISTED_KEYS {
                 return Ok(Err(S3Failure::Permanent(format!(
@@ -509,7 +506,7 @@ impl S3Client {
     /// Returns a configuration error for a key that does not survive URL
     /// building.
     pub async fn readable_without_credentials(&self, key: &str) -> Result<Attempt<bool>> {
-        let (url, _) = self.url(Some(key))?;
+        let url = self.url(Some(key))?;
         match self.http.get(url).send().await {
             Ok(response) => Ok(Ok(response.status().is_success())),
             Err(error) => Ok(Err(self.transport(error))),
