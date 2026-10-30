@@ -99,11 +99,11 @@ impl Listener {
         // The parser invokes this while holding the terminal lock. Never
         // acquire that lock here, including when answering terminal queries.
         match event {
-            RioEvent::Title(title) | RioEvent::TitleWithSubtitle(title, _) => {
+            RioEvent::Title(_, title) | RioEvent::TitleWithSubtitle(title, _) => {
                 self.bridge.control(ControlEvent::Title(title));
             }
             RioEvent::ResetTitle => self.bridge.control(ControlEvent::Title(String::new())),
-            RioEvent::Bell => self.bridge.control(ControlEvent::Bell),
+            RioEvent::Bell(_) => self.bridge.control(ControlEvent::Bell),
             RioEvent::ClipboardStore(_, text) => self.bridge.clipboard_write(text),
             // Deny OSC 52 reads by default. Printing an escape sequence must
             // not grant applications access to the user's system clipboard.
@@ -406,7 +406,7 @@ impl TerminalSession for RioTerminalSession {
         }
         // Own the returned Machine until its PTY has completed Rio's bounded
         // shutdown and reap path, without joining on the GPUI thread. The
-        // pinned PR #1927 lifecycle fix retires reaped PIDs before signalling
+        // upstream PR #1930 lifecycle fix retires reaped PIDs before signalling
         // and escalates a running child from SIGHUP to SIGKILL after its grace
         // period. This does not guarantee termination of every descendant
         // process which independently detached from the PTY session.
@@ -455,8 +455,8 @@ mod tests {
             writer: Arc::new(Mutex::new(None)),
             size: Arc::new(Mutex::new(WindowSize::default())),
         };
-        listener.dispatch(RioEvent::Title("shell".into()));
-        listener.dispatch(RioEvent::Bell);
+        listener.dispatch(RioEvent::Title(0, "shell".into()));
+        listener.dispatch(RioEvent::Bell(0));
         listener.dispatch(RioEvent::ChildExited(0, Some(1792)));
         listener.dispatch(RioEvent::CloseTerminal(0));
         assert_eq!(

@@ -34,7 +34,7 @@ function readEvidence(path) {
 assert.equal(report.format_version, 1);
 assert.equal(report.milestone, 'M0');
 assert.equal(report.engine.package, 'rio-vt');
-assert.equal(report.engine.revision, 'b0694c0707a90dc93fdf01cbf8a658424be285ee');
+assert.equal(report.engine.revision, 'fb582f066a2df7f95055eedb513752adc8c5f6b8');
 assert.equal(report.engine.rust_toolchain, '1.98.1');
 assert.equal(report.control.revision, 'b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1');
 assert(Array.isArray(report.executions));

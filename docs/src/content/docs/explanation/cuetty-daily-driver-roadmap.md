@@ -160,11 +160,14 @@ run has happened. No daily-driver or full Unicode acceptance is claimed.
 
 #### Implementation checkpoint: 10 September 2026
 
-Cuetty is pinned to `b0694c0707a90dc93fdf01cbf8a658424be285ee`, the
+At this checkpoint Cuetty was pinned to `b0694c0707a90dc93fdf01cbf8a658424be285ee`, the
 head of [Rio PR #1927](https://github.com/raphamorim/rio/pull/1927). The change
 fixes the two Rio-owned blockers found at the earlier qualification revision:
 buffered final output now survives terminal-lock contention, and Unix PTY
 shutdown retires/reaps the owned child without signalling a recycled PID.
+The pin has since moved to upstream commit `fb582f066a2df7f95055eedb513752adc8c5f6b8`,
+which incorporates those changes in [Rio PR #1930](https://github.com/raphamorim/rio/pull/1930).
+The macOS evidence below remains historical until repeated against that pin.
 
 On Apple Silicon macOS, the formerly failing contention regression and the
 serial real-PTY input, paste, resize, final-output/exit-status, and bounded-reap

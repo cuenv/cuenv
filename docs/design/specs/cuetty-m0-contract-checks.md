@@ -57,13 +57,15 @@ keeps its PTY private and exposes no public disarm or owned-child teardown
 operation. A workaround that intentionally leaked child allocations was
 rejected.
 
-Cuetty now pins `b0694c0707a90dc93fdf01cbf8a658424be285ee` from
-[Rio PR #1927](https://github.com/raphamorim/rio/pull/1927). That revision gives
+Cuetty now pins upstream `fb582f066a2df7f95055eedb513752adc8c5f6b8` from
+[Rio PR #1930](https://github.com/raphamorim/rio/pull/1930), which incorporated
+the earlier fork's fix. That revision gives
 the PTY owner an idempotent shutdown operation, retires reaped PIDs before any
 signal, escalates from SIGHUP after a bounded grace period, and waits to reap.
 Cuetty requests shutdown and joins the returned machine off the GPUI thread.
 The `real_session_close_eventually_reaps_the_child` fixture observes that the
-owned child disappears within its five-second test bound.
+owned child disappears within its five-second test bound on the previous fork
+revision; that evidence must be repeated against the upstream pin.
 
 ### Final-output delivery regression
 
@@ -88,7 +90,7 @@ not a PID-reuse claim.
 
 The ordinary host test
 `final_output_survives_snapshot_lock_contention` preserves this regression.
-It passes at the pinned PR revision on Apple Silicon macOS and remains in the
+It passed at the previous fork revision on Apple Silicon macOS and remains in the
 default suite so a future dependency update cannot silently reintroduce the
 loss. It does not use `should_panic` or count reproduction as a pass.
 All host PTY tests share a test-only serialization guard to avoid unrelated

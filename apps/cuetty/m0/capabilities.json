@@ -18,8 +18,8 @@
       ],
       "gap_owner": "validation",
       "id": "public_api_build",
-      "notes": "The complete app compiled, linked, and ran 162 unit tests plus 4 public rio-vt contract tests on Apple Silicon macOS at the current Rio revision. All-target, all-feature Clippy passed with warnings denied. Earlier Linux build blockers are retained as historical runs against the old revision. Cargo reports transitive future-incompatibility notices for block and proc-macro-error2.",
-      "outcome": "pass",
+      "notes": "The complete app compiled, linked, and ran 162 unit tests plus 4 public rio-vt contract tests on Apple Silicon macOS at the previous fork revision. All-target, all-feature Clippy passed with warnings denied. Earlier Linux build blockers are retained as historical runs against the old revision. Cargo reports transitive future-incompatibility notices for block and proc-macro-error2. This evidence predates the upstream pin; current-revision qualification is pending.",
+      "outcome": "unobservable",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -27,7 +27,7 @@
           "symbol": "impl TerminalSession for RioTerminalSession"
         }
       ],
-      "status": "verified"
+      "status": "implemented_partially_validated"
     },
     {
       "execution_ids": [
@@ -38,8 +38,8 @@
       ],
       "gap_owner": "validation",
       "id": "pty_output_resize",
-      "notes": "The explicit serial real-PTY suite passed on Apple Silicon macOS at the current Rio revision, including output and grid/child resize. Historical Linux executions against the old pin are retained separately.",
-      "outcome": "pass",
+      "notes": "The explicit serial real-PTY suite passed on Apple Silicon macOS at the previous fork revision, including output and grid/child resize. Historical Linux executions against the old pin are retained separately. This evidence predates the upstream pin; current-revision qualification is pending.",
+      "outcome": "unobservable",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -54,7 +54,7 @@
           "path": "apps/cuetty/tests/fixtures/m0-pty-child.sh"
         }
       ],
-      "status": "verified"
+      "status": "implemented_partially_validated"
     },
     {
       "execution_ids": [
@@ -68,8 +68,8 @@
       ],
       "gap_owner": "validation",
       "id": "final_output_child_status",
-      "notes": "Rio PR #1927 preserves buffered PTY bytes through terminal-lock contention and drains them before publishing Close. The formerly failing contention regression now passes in the ordinary macOS suite, and the explicit real-PTY test preserves final output plus exit status. Old-pin Linux failures remain as historical executions.",
-      "outcome": "pass",
+      "notes": "Rio PR #1927 preserves buffered PTY bytes through terminal-lock contention and drains them before publishing Close. The formerly failing contention regression now passes in the ordinary macOS suite, and the explicit real-PTY test preserves final output plus exit status. Old-pin Linux failures remain as historical executions. This evidence predates the upstream pin; current-revision qualification is pending.",
+      "outcome": "unobservable",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -81,7 +81,7 @@
           "symbol": "final_output_survives_snapshot_lock_contention"
         }
       ],
-      "status": "verified"
+      "status": "implemented_partially_validated"
     },
     {
       "execution_ids": [
@@ -89,8 +89,8 @@
       ],
       "gap_owner": "validation",
       "id": "bounded_teardown",
-      "notes": "Rio PR #1927 provides an ownership-safe, idempotent bounded shutdown and reap path. Cuetty's explicit real-PTY test closes twice and observes the child PID become unavailable within five seconds on Apple Silicon macOS.",
-      "outcome": "pass",
+      "notes": "Rio PR #1927 provides an ownership-safe, idempotent bounded shutdown and reap path. Cuetty's explicit real-PTY test closes twice and observes the child PID become unavailable within five seconds on Apple Silicon macOS. This evidence predates the upstream pin; current-revision qualification is pending.",
+      "outcome": "unobservable",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -98,7 +98,7 @@
           "symbol": "fn close(&mut self)"
         }
       ],
-      "status": "verified"
+      "status": "implemented_partially_validated"
     },
     {
       "execution_ids": [
@@ -219,8 +219,8 @@
       ],
       "gap_owner": "validation",
       "id": "bracketed_paste",
-      "notes": "The explicit serial real-PTY suite passed the bracketed-paste round trip on Apple Silicon macOS at the current Rio revision. Encoder unit tests also preserve text and prevent terminator injection. Old-pin Linux delivery failures remain as historical executions.",
-      "outcome": "pass",
+      "notes": "The explicit serial real-PTY suite passed the bracketed-paste round trip on Apple Silicon macOS at the previous fork revision. Encoder unit tests also preserve text and prevent terminator injection. Old-pin Linux delivery failures remain as historical executions. This evidence predates the upstream pin; current-revision qualification is pending.",
+      "outcome": "unobservable",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -232,7 +232,7 @@
           "symbol": "real_session_paste_obeys_live_bracketed_mode"
         }
       ],
-      "status": "verified"
+      "status": "implemented_partially_validated"
     },
     {
       "execution_ids": [],
@@ -385,8 +385,8 @@
       ],
       "gap_owner": "cuetty_host",
       "id": "top_level_shell_environment",
-      "notes": "Cuetty supplies SHLVL=0 at the PTY boundary so the spawned login shell initializes at level 1 rather than inheriting the development launcher's nesting. Subshells increment from that clean base.",
-      "outcome": "pass",
+      "notes": "Cuetty supplies SHLVL=0 at the PTY boundary so the spawned login shell initializes at level 1 rather than inheriting the development launcher's nesting. Subshells increment from that clean base. This evidence predates the upstream pin; current-revision qualification is pending.",
+      "outcome": "unobservable",
       "required_for_m0": false,
       "source_evidence": [
         {
@@ -394,7 +394,7 @@
           "symbol": "real_session_normalizes_inherited_shell_level"
         }
       ],
-      "status": "verified"
+      "status": "implemented_partially_validated"
     },
     {
       "execution_ids": [],
@@ -444,8 +444,8 @@
   },
   "engine": {
     "package": "rio-vt",
-    "repository": "https://github.com/rawkode/rio",
-    "revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
+    "repository": "https://github.com/raphamorim/rio",
+    "revision": "fb582f066a2df7f95055eedb513752adc8c5f6b8",
     "rust_toolchain": "1.98.1"
   },
   "executions": [
