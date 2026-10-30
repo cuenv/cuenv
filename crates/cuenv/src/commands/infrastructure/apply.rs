@@ -7,7 +7,7 @@ use cuenv_infrastructure::{
 
 use super::action::ConfirmationPolicy;
 use super::confirm::confirm;
-use super::dispatch::{CommandContext, EngineInputs, claim_ownership, engine_setup, require_owner};
+use super::dispatch::{CommandContext, EngineInputs, engine_setup, note_last_writer};
 use super::failure::{failure, printable_text};
 use super::interrupts::{Interrupts, interrupted_after_completion};
 use super::invocation::Invocation;
@@ -22,7 +22,7 @@ pub(super) async fn plan(
     context: &CommandContext<'_>,
     inputs: EngineInputs,
 ) -> Result<(), CliError> {
-    require_owner(context).await?;
+    note_last_writer(context).await?;
     let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
     // Planning honours the interrupt itself: providers are asked to stop
     // and the next resource is not planned.
@@ -42,8 +42,7 @@ pub(super) struct ImportRequest<'command, 'context> {
     pub(super) identifier: &'command str,
 }
 
-/// Import a provider resource while holding the tenant lock and after
-/// confirming this CUE instance owns the state.
+/// Import a provider resource while holding the tenant lock.
 pub(super) async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliError> {
     let ImportRequest {
         context,
@@ -55,7 +54,6 @@ pub(super) async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliErro
     let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
     let importing = &mut engine;
     let result = under_lock(context, "import", |lock| async move {
-        claim_ownership(context, &lock).await?;
         let warnings = importing
             .import(&target, identifier, &lock)
             .await
@@ -81,7 +79,7 @@ pub(super) struct Convergence<'run> {
     pub(super) context: &'run CommandContext<'run>,
 }
 
-/// `apply` and `destroy`: take the lock, claim ownership, plan, confirm
+/// `apply` and `destroy`: take the lock, plan, confirm
 /// while holding the lock (unless `--yes`), apply exactly that plan.
 pub(super) async fn converge(
     convergence: &Convergence<'_>,
@@ -90,8 +88,8 @@ pub(super) async fn converge(
     let Convergence { mode, context, .. } = *convergence;
     let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
     let planning = &mut engine;
+    note_last_writer(context).await?;
     let result = under_lock(context, output::operation_name(mode), |lock| async move {
-        claim_ownership(context, &lock).await?;
         let plan = planning
             .plan(mode)
             .await

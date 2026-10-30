@@ -3,8 +3,9 @@
 use async_trait::async_trait;
 
 use super::lock::{LockInformation, LockRequest, StateLock, TenantLock};
-use super::owner::{OwnerClaim, TenantOwner};
+use super::object::ObjectStateFeatures;
 use super::resource::{ConditionalPut, ManagedResource, ResourceAddress};
+use super::writer::LastWriter;
 use crate::error::Result;
 use crate::tenant::TenantKey;
 
@@ -99,6 +100,7 @@ pub trait StateStore: Send + Sync {
             &LockRequest {
                 lock: &lock,
                 holder,
+                instance: None,
             },
         )
         .await
@@ -143,19 +145,40 @@ pub trait StateStore: Send + Sync {
     /// Returns `false` when no lock with that identifier is held.
     async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool>;
 
-    /// The instance that owns the tenant's state, if one is recorded.
+    /// The instance that last acquired the tenant's lock to change its
+    /// state, if one is recorded. Information only: it never refuses a run.
     ///
-    /// Never migrates: a store that was never migrated has no owner recorded.
-    async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>>;
+    /// Never migrates: a store that was never migrated has none recorded.
+    async fn last_writer(&self, tenant: &TenantKey) -> Result<Option<LastWriter>>;
 
-    /// Record `claim.instance` as the tenant's owner, as `claim.mode`
-    /// allows, and return the owner recorded afterwards (the existing one,
-    /// when [`OwnerClaimMode::IfUnowned`] finds one). Fenced by `lock` like
-    /// [`StateStore::put`].
-    async fn claim_owner(
+    /// Insert or replace several managed resources, fenced by `lock` like
+    /// [`StateStore::put`]. A store that can write them in one request does
+    /// so atomically; this default writes them one at a time and is not
+    /// atomic. The engine uses it for refreshed records only: a refresh
+    /// created nothing, so a record lost with a failed write is refreshed
+    /// again by the next run.
+    async fn put_many(
         &self,
         tenant: &TenantKey,
         lock: &StateLock,
-        claim: &OwnerClaim<'_>,
-    ) -> Result<TenantOwner>;
+        resources: &[ManagedResource],
+    ) -> Result<()> {
+        for resource in resources {
+            self.put(tenant, lock, resource).await?;
+        }
+        Ok(())
+    }
+
+    /// Where the tenant's state lives, for display (`s3://bucket/key`).
+    /// `None` for stores that have no such address to show.
+    fn location(&self, _tenant: &TenantKey) -> Option<String> {
+        None
+    }
+
+    /// Operations only an object store offers: history, restore, rename
+    /// detection, renaming and migration manifests. `None` for every other
+    /// store.
+    fn object_features(&self) -> Option<&dyn ObjectStateFeatures> {
+        None
+    }
 }

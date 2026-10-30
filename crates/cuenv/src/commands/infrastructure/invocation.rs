@@ -163,6 +163,7 @@ mod tests {
             module_path: "example.com/other".to_string(),
             project: "api".to_string(),
             environment: None,
+            package: None,
             lock: cuenv_infrastructure::LockInformation {
                 lock_identifier: "lock-2".to_string(),
                 holder: "ci".to_string(),

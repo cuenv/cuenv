@@ -32,7 +32,6 @@ pub(super) struct Resolved {
 pub(super) async fn resolve(
     action: &InfrastructureAction,
     target: &Target,
-    invocation: &Invocation,
 ) -> Result<Resolved, CliError> {
     let project_environment_variables =
         target
@@ -59,15 +58,11 @@ pub(super) async fn resolve(
         .token()
         .and_then(StateToken::passthrough_variable)
         .map(str::to_string);
-    // Only the state backend's token is resolved before the state store is
-    // asked who owns the project: a secret is a command or a call to a secret
-    // provider, and nothing should run for a run the owner check refuses.
+    // The state backend's credentials are resolved first and on their own:
+    // the store is connected before any other project secret is resolved.
     let credential = resolve_state_token(policy_name, state).await?;
     let store = connect(&target.infrastructure, credential)
         .map_err(|error| failure(&error, &Invocation::default()))?;
-    if action.uses_provider_environment() {
-        refuse_another_owner(store.as_ref(), target, invocation).await?;
-    }
     let (resolved_variables, secrets) = resolve_environment_variables(
         policy_name,
         &environment_variables_for_action(action, &project_environment_variables),
@@ -119,25 +114,6 @@ pub(super) async fn resolve(
         store,
         provider_environment_variables,
         withheld_environment_variables,
-    })
-}
-
-/// Refuse a project whose state another CUE instance owns, before any of the
-/// project's secrets is resolved. Reads only; the owner is checked again under
-/// the lock where the run writes.
-pub(super) async fn refuse_another_owner(
-    store: &dyn StateStore,
-    target: &Target,
-    invocation: &Invocation,
-) -> Result<(), CliError> {
-    let owner = store
-        .owner(&target.tenant)
-        .await
-        .map_err(|error| failure(&error, invocation))?;
-    owner.map_or(Ok(()), |owner| {
-        owner
-            .require(&target.tenant, &target.instance)
-            .map_err(|error| failure(&error, invocation))
     })
 }
 

@@ -1,17 +1,16 @@
-//! The `state` subcommands and lock maintenance: remove, recover, adopt and
-//! unlock.
+//! The `state` subcommands and lock maintenance: remove, recover, unlock
+//! and the retired `state adopt`.
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    BackendMismatch, OwnerClaim, OwnerClaimMode, RecoverOptions, RecoverOverrides, UnrecordedStore,
-    strip_control_characters,
+    BackendMismatch, RecoverOptions, RecoverOverrides, UnrecordedStore, strip_control_characters,
 };
 
-use super::dispatch::{CommandContext, require_owner};
+use super::dispatch::CommandContext;
 use super::failure::failure;
 use super::guard::tenant_label;
 use super::lock::under_lock;
-use super::output::{Adoption, Finding, LockOutcome, LockReport, OtherEnvironment};
+use super::output::{Finding, LockOutcome, LockReport, OtherEnvironment};
 use crate::cli::{CliError, InfrastructureFailureKind, LockStatus};
 
 /// `state remove`: forget one resource under the lock (a fenced delete).
@@ -20,7 +19,6 @@ pub(super) async fn remove_resource(
     address: &str,
 ) -> Result<(), CliError> {
     under_lock(context, "state remove", |lock| async move {
-        require_owner(context).await?;
         // The addresses alone are read, so a record whose content cannot be
         // decoded can still be named and forgotten.
         let recorded = context
@@ -79,7 +77,6 @@ pub(super) async fn recover(
         return Ok(());
     }
     let result = under_lock(context, "state recover", |lock| async move {
-        require_owner(context).await?;
         if overrides.backend == BackendMismatch::Accept {
             let pending = unrecorded
                 .list(context.tenant)
@@ -171,34 +168,11 @@ pub(super) async fn resources_in_other_environments(
     found
 }
 
-/// `state adopt`: make this instance the owner of the tenant's state.
-pub(super) async fn adopt(context: &CommandContext<'_>) -> Result<(), CliError> {
-    under_lock(context, "state adopt", |lock| async move {
-        let previous = context
-            .store
-            .owner(context.tenant)
-            .await
-            .map_err(|error| failure(&error, context.invocation))?;
-        let owner = context
-            .store
-            .claim_owner(
-                context.tenant,
-                &lock,
-                &OwnerClaim {
-                    instance: context.instance,
-                    mode: OwnerClaimMode::Transfer,
-                },
-            )
-            .await
-            .map_err(|error| failure(&error, context.invocation))?;
-        context.output.adopted(&Adoption {
-            tenant: context.tenant,
-            previous: previous.as_ref(),
-            owner: &owner,
-        });
-        Ok(())
-    })
-    .await
+/// `state adopt`: retired. Project names are unique, so a project's state
+/// follows it to any directory; there is no owner to transfer. Kept so
+/// scripts and policies naming it keep working; it changes nothing.
+pub(super) fn adopt(context: &CommandContext<'_>) {
+    context.output.adoption_retired(context.tenant);
 }
 
 /// `unlock`: show the lock, or release the one named. Naming another lock

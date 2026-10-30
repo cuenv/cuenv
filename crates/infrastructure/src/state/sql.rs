@@ -42,8 +42,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use super::{
-    ConditionalPut, LockInformation, LockRequest, ManagedResource, OwnerClaim, OwnerClaimMode,
-    RecordVersion, ResourceAddress, StateLock, TenantLock, TenantOwner,
+    ConditionalPut, LastWriter, LockInformation, LockRequest, ManagedResource, RecordVersion,
+    ResourceAddress, StateLock, TenantLock,
 };
 use crate::error::{
     InfrastructureError, Result, describe_json_error, json_error_category, strip_control_characters,
@@ -545,8 +545,8 @@ impl<T: SqlTransport> SqlStateStore<T> {
             .transpose()
     }
 
-    /// Read the tenant's owner row, with retries.
-    async fn read_owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
+    /// Read the tenant's last writer (the owner table's row), with retries.
+    async fn read_writer(&self, tenant: &TenantKey) -> Result<Option<LastWriter>> {
         let result = self
             .execute(Statement::new(SELECT_OWNER, tenant_arguments(tenant)))
             .await?;
@@ -556,9 +556,9 @@ impl<T: SqlTransport> SqlStateStore<T> {
                     .and_then(SqlValue::as_text)
                     .unwrap_or("unknown")
             };
-            TenantOwner {
+            LastWriter {
                 instance: ProjectInstance::from_stored(field(0)),
-                claimed_at: strip_control_characters(field(1)),
+                recorded_at: strip_control_characters(field(1)),
             }
         }))
     }
@@ -892,6 +892,31 @@ impl<T: SqlTransport> SqlStateStore<T> {
         tenant: &TenantKey,
         request: &LockRequest<'_>,
     ) -> Result<StateLock> {
+        let lock = self.acquire_lock_row(tenant, request).await?;
+        if let Some(instance) = request.instance
+            && let Err(error) = self.record_writer(tenant, &lock, instance).await
+        {
+            // A lock whose last writer could not be recorded is released
+            // again: the caller sees a failed acquisition, never a lock it
+            // does not know it holds.
+            if let Err(release) = self.unlock(tenant, &lock).await {
+                return Err(InfrastructureError::state(format!(
+                    "{error}; the state lock for {tenant} was acquired as {} and could not be \
+                     released ({release}); release that lock by its identifier",
+                    lock.lock_identifier
+                )));
+            }
+            return Err(error);
+        }
+        Ok(lock)
+    }
+
+    /// Insert the lock row; see [`Self::acquire_lock`].
+    async fn acquire_lock_row(
+        &self,
+        tenant: &TenantKey,
+        request: &LockRequest<'_>,
+    ) -> Result<StateLock> {
         request.lock.validate()?;
         let holder = request.holder;
         // Every write needs the lock, so this is where writes fail closed on
@@ -1082,35 +1107,32 @@ impl<T: SqlTransport> SqlStateStore<T> {
         Ok(released.affected_row_count > 0)
     }
 
-    pub(super) async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
+    pub(super) async fn last_writer(&self, tenant: &TenantKey) -> Result<Option<LastWriter>> {
         if self.stored_version().await? == 0 {
-            // Never migrated: no owner can be recorded.
+            // Never migrated: no writer can be recorded.
             return Ok(None);
         }
-        self.read_owner(tenant).await
+        self.read_writer(tenant).await
     }
 
-    pub(super) async fn claim_owner(
+    /// Record `instance` as the tenant's last writer, fenced by `lock`: a
+    /// writer whose lock was taken away cannot record itself.
+    pub(super) async fn record_writer(
         &self,
         tenant: &TenantKey,
         lock: &StateLock,
-        claim: &OwnerClaim<'_>,
-    ) -> Result<TenantOwner> {
-        let conflict = match claim.mode {
-            OwnerClaimMode::IfUnowned => "DO NOTHING",
-            OwnerClaimMode::Transfer => {
-                "DO UPDATE SET instance = excluded.instance, claimed_at = excluded.claimed_at"
-            }
-        };
+        instance: &ProjectInstance,
+    ) -> Result<()> {
         let mut arguments = tenant_arguments(tenant);
-        arguments.push(SqlValue::text(claim.instance.as_str()));
+        arguments.push(SqlValue::text(instance.as_str()));
         arguments.push(SqlValue::text(&now()));
         arguments.extend(lock_arguments(tenant, lock));
         let written = self
             .execute(Statement::new(
                 format!(
                     "INSERT INTO cuenv_infrastructure_owners ({TENANT_KEY}, instance, claimed_at) \
-                     SELECT ?, ?, ?, ?, ? WHERE {LOCK_HELD} ON CONFLICT ({TENANT_KEY}) {conflict}"
+                     SELECT ?, ?, ?, ?, ? WHERE {LOCK_HELD} ON CONFLICT ({TENANT_KEY}) \
+                     DO UPDATE SET instance = excluded.instance, claimed_at = excluded.claimed_at"
                 ),
                 arguments,
             ))
@@ -1118,9 +1140,7 @@ impl<T: SqlTransport> SqlStateStore<T> {
         if written.affected_row_count == 0 && !self.holds(tenant, lock).await? {
             return Err(lock_lost(tenant, lock));
         }
-        self.read_owner(tenant).await?.ok_or_else(|| {
-            InfrastructureError::state(format!("the owner record of {tenant} was not written"))
-        })
+        Ok(())
     }
 }
 
@@ -1236,24 +1256,11 @@ macro_rules! sql_state_store {
             }
 
             #[tracing::instrument(skip_all, fields(tenant = %tenant))]
-            async fn owner(
+            async fn last_writer(
                 &self,
                 tenant: &crate::tenant::TenantKey,
-            ) -> crate::error::Result<Option<crate::state::TenantOwner>> {
-                self.inner.owner(tenant).await
-            }
-
-            #[tracing::instrument(
-                skip_all,
-                fields(tenant = %tenant, instance = %claim.instance, mode = ?claim.mode)
-            )]
-            async fn claim_owner(
-                &self,
-                tenant: &crate::tenant::TenantKey,
-                lock: &crate::state::StateLock,
-                claim: &crate::state::OwnerClaim<'_>,
-            ) -> crate::error::Result<crate::state::TenantOwner> {
-                self.inner.claim_owner(tenant, lock, claim).await
+            ) -> crate::error::Result<Option<crate::state::LastWriter>> {
+                self.inner.last_writer(tenant).await
             }
         }
     };
@@ -1381,6 +1388,7 @@ fn row_to_tenant_lock(row: &[SqlValue]) -> TenantLock {
     };
     TenantLock {
         module_path: field(0),
+        package: None,
         project: field(1),
         environment: Some(field(2)).filter(|environment| !environment.is_empty()),
         lock: LockInformation {

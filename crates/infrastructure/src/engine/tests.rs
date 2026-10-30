@@ -2405,6 +2405,66 @@ async fn apply_writes_refresh_only_records_under_the_lock() {
 }
 
 #[tokio::test]
+async fn consecutive_refreshes_are_written_to_an_object_store_at_once() {
+    use crate::state::object::fake::FakeS3;
+    use crate::state::object::{
+        AddressingChoice, Credentials, ObjectStateStore, ObjectStoreConfiguration,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let server = FakeS3::start().await;
+    let store: Arc<dyn StateStore> = Arc::new(
+        ObjectStateStore::try_new(ObjectStoreConfiguration {
+            endpoint: Some(server.endpoint.clone()),
+            bucket: "state".into(),
+            region: "us-east-1".into(),
+            root: None,
+            addressing: AddressingChoice::Auto,
+            credentials: Credentials {
+                access_key_id: "access".into(),
+                secret_access_key: "secret".into(),
+                session_token: None,
+            },
+            package: "cuenv".into(),
+            history: 0,
+            minimum_write_interval: None,
+            probe_tenant: None,
+        })
+        .unwrap(),
+    );
+    let mut engine = engine(Arc::clone(&store), directory.path());
+    let pet = store_planned_record(store.as_ref(), "pet").await;
+    let cat = store_planned_record(store.as_ref(), "cat").await;
+    let lock = store.lock(&tenant(), "test").await.unwrap();
+    let writes = |server: &FakeS3| {
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.method == "PUT" && request.key.ends_with("state.json"))
+            .count()
+    };
+    let before = writes(&server);
+    let mut events = Vec::new();
+    engine
+        .apply(
+            &plan_of(vec![pet, cat]),
+            ApplyContext { lock: &lock },
+            &mut |event| events.push(event),
+        )
+        .await
+        .unwrap();
+    assert_eq!(writes(&server) - before, 1, "one write for both records");
+    assert_eq!(events.len(), 2);
+    assert!(
+        store
+            .list(&tenant())
+            .await
+            .unwrap()
+            .iter()
+            .all(|record| record.state == json!({"id": "refreshed"}))
+    );
+}
+
+#[tokio::test]
 async fn failed_refresh_only_writes_are_plain_state_errors() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
@@ -2608,17 +2668,8 @@ impl StateStore for FailingWrites {
         self.inner.force_unlock(tenant, lock_identifier).await
     }
 
-    async fn owner(&self, tenant: &TenantKey) -> Result<Option<crate::state::TenantOwner>> {
-        self.inner.owner(tenant).await
-    }
-
-    async fn claim_owner(
-        &self,
-        tenant: &TenantKey,
-        lock: &StateLock,
-        claim: &crate::state::OwnerClaim<'_>,
-    ) -> Result<crate::state::TenantOwner> {
-        self.inner.claim_owner(tenant, lock, claim).await
+    async fn last_writer(&self, tenant: &TenantKey) -> Result<Option<crate::state::LastWriter>> {
+        self.inner.last_writer(tenant).await
     }
 }
 

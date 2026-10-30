@@ -42,9 +42,11 @@ pub use error::{
     strip_control_characters_except_newlines,
 };
 pub use state::{
-    ConditionalPut, D1Configuration, D1StateStore, LockInformation, LockRequest, ManagedResource,
-    MemoryStateStore, OwnerClaim, OwnerClaimMode, RecordVersion, ResourceAddress, StateLock,
-    StateStore, TenantLock, TenantOwner, TursoConfiguration, TursoStateStore,
+    AddressingChoice, ConditionalPut, Credentials, D1Configuration, D1StateStore, HistoryEntry,
+    LastWriter, LockInformation, LockRequest, ManagedResource, ManifestEntry, MemoryStateStore,
+    MigrationManifest, ObjectStateFeatures, ObjectStateStore, ObjectStoreConfiguration,
+    ObjectTenant, RecordVersion, ResourceAddress, RestoreRequest, StateLock, StateStore,
+    StoredTenant, TenantImport, TenantLock, TursoConfiguration, TursoStateStore,
 };
 pub use tenant::{ProjectInstance, TenantKey, read_module_path};
 pub use unrecorded::{

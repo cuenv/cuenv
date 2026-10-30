@@ -156,15 +156,6 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
                     .to_string(),
             ),
         ),
-        InfrastructureError::OwnedByAnotherInstance { .. } => (
-            InfrastructureFailureKind::Failed,
-            Some(format!(
-                "Each project's state belongs to one CUE instance (directory and package). If \
-                 this instance should manage it now (for example, the project moved), run \
-                 `{}` here; otherwise give this project a different `name`.",
-                invocation.command("state adopt")
-            )),
-        ),
         InfrastructureError::StateFromNewerProvider { .. } => (
             InfrastructureFailureKind::Failed,
             Some(

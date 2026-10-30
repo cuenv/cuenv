@@ -1260,6 +1260,7 @@ impl InfrastructureEngine {
         execution: &mut Execution<'_, '_, '_>,
     ) -> Result<()> {
         let schedule = execution.run.schedule();
+        let mut refreshed: Vec<ManagedResource> = Vec::new();
         for (index, scheduled) in schedule.operations.iter().enumerate() {
             if execution.run.is_skipped(index) {
                 execution
@@ -1300,20 +1301,18 @@ impl InfrastructureEngine {
             if operation.kind == OperationKind::Refresh
                 && let Some(record) = &change.refreshed_record
             {
-                self.store
-                    .put(&self.tenant, execution.lock, record)
-                    .await
-                    .map_err(|error| naming_address(error, &change.address))?;
+                // Refreshed records are written together, before the next
+                // operation that changes something, so an object store
+                // writes its state document once for a run of refreshes.
                 execution
                     .rows
                     .insert(change.address.clone(), record.clone());
-                (execution.on_event)(ApplyEvent::Refreshed {
-                    address: change.address.clone(),
-                });
+                refreshed.push(record.clone());
                 execution.run.finished(index);
                 execution.data_sources.finished(&change.address);
                 continue;
             }
+            self.record_refreshed(execution, &mut refreshed).await?;
             // A replacement starts with its delete and finishes with its
             // create, which may be some operations later.
             if operation.starts_change() {
@@ -1369,6 +1368,7 @@ impl InfrastructureEngine {
             }
             execution.run.failed(index, error, execution.on_event);
         }
+        self.record_refreshed(execution, &mut refreshed).await?;
         let reads = self
             .read_ready_data_sources(
                 runner,
@@ -1399,6 +1399,29 @@ impl InfrastructureEngine {
                     .entry(read.address.clone())
                     .or_insert_with(|| "a prerequisite did not complete".to_string());
             }
+        }
+        Ok(())
+    }
+
+    /// Write the refreshed records gathered since the last write, in one
+    /// call, then report each one as refreshed.
+    async fn record_refreshed(
+        &self,
+        execution: &mut Execution<'_, '_, '_>,
+        refreshed: &mut Vec<ManagedResource>,
+    ) -> Result<()> {
+        if refreshed.is_empty() {
+            return Ok(());
+        }
+        let records = std::mem::take(refreshed);
+        self.store
+            .put_many(&self.tenant, execution.lock, &records)
+            .await
+            .map_err(|error| naming_addresses(error, &records))?;
+        for record in records {
+            (execution.on_event)(ApplyEvent::Refreshed {
+                address: record.address,
+            });
         }
         Ok(())
     }
@@ -2818,12 +2841,22 @@ fn check_upgraded(address: &ResourceAddress, upgraded: &Value) -> Result<()> {
     Ok(())
 }
 
-/// A state store failure writing the record of `address`, naming it.
-fn naming_address(error: InfrastructureError, address: &ResourceAddress) -> InfrastructureError {
+/// A state store failure writing refreshed records, naming their addresses.
+fn naming_addresses(
+    error: InfrastructureError,
+    records: &[ManagedResource],
+) -> InfrastructureError {
     match error {
-        InfrastructureError::State(message) => InfrastructureError::State(format!(
-            "recording the refreshed state of {address}: {message}"
-        )),
+        InfrastructureError::State(message) => {
+            let addresses: Vec<String> = records
+                .iter()
+                .map(|record| record.address.to_string())
+                .collect();
+            InfrastructureError::State(format!(
+                "recording the refreshed state of {}: {message}",
+                addresses.join(", ")
+            ))
+        }
         other => other,
     }
 }

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use cuenv_events::{emit_stderr, emit_stdout};
 use cuenv_infrastructure::{
     LockInformation, ManagedResource, Plan, PlanMode, PlanSummary, ResourceAddress, TenantKey,
-    TenantLock, TenantOwner, strip_control_characters,
+    TenantLock, strip_control_characters,
 };
 use serde_json::{Value, json};
 
@@ -364,42 +364,21 @@ impl Output {
         ));
     }
 
-    /// An ownership transfer by `state adopt`.
-    pub(super) fn adopted(&self, adoption: &Adoption<'_>) {
-        let owner_json = |owner: &TenantOwner| {
-            json!({
-                "instance": strip_control_characters(owner.instance.as_str()),
-                "claimedAt": strip_control_characters(&owner.claimed_at),
-            })
-        };
+    /// `state adopt`, which no longer does anything.
+    pub(super) fn adoption_retired(&self, tenant: &TenantKey) {
+        emit_stderr!(
+            "warning: `state adopt` is deprecated and does nothing: project names are unique, so \
+             a project's state follows it to any directory"
+        );
         if self.is_json() {
             self.envelope(json!({
-                "tenant": tenant_identity(adoption.tenant),
-                "environment": adoption.tenant.environment(),
-                "previousOwner": adoption.previous.map(owner_json),
-                "owner": owner_json(adoption.owner),
+                "tenant": tenant_identity(tenant),
+                "environment": tenant.environment(),
+                "changed": false,
             }));
             return;
         }
-        let owner = strip_control_characters(adoption.owner.instance.as_str());
-        match adoption.previous {
-            None => emit_stdout!(format!(
-                "{} had no owner; {owner} now owns its state.",
-                tenant_label(adoption.tenant)
-            )),
-            Some(previous) if previous.instance == adoption.owner.instance => {
-                emit_stdout!(format!(
-                    "{owner} already owns the state of {}.",
-                    tenant_label(adoption.tenant)
-                ));
-            }
-            Some(previous) => emit_stdout!(format!(
-                "Ownership of {} moved from {} (since {}) to {owner}.",
-                tenant_label(adoption.tenant),
-                strip_control_characters(previous.instance.as_str()),
-                strip_control_characters(&previous.claimed_at)
-            )),
-        }
+        emit_stdout!(format!("Nothing to adopt for {}.", tenant_label(tenant)));
     }
 
     /// Managed resources recorded for a tenant.
@@ -598,17 +577,6 @@ pub(super) struct Converged<'result> {
     pub(super) plan: &'result Plan,
     /// Counts of applied changes; `None` when there was nothing to apply.
     pub(super) applied: Option<PlanSummary>,
-}
-
-/// An ownership transfer.
-#[derive(Debug)]
-pub(super) struct Adoption<'adoption> {
-    /// Tenant whose owner changed.
-    pub(super) tenant: &'adoption TenantKey,
-    /// The owner before, if any.
-    pub(super) previous: Option<&'adoption TenantOwner>,
-    /// The owner now.
-    pub(super) owner: &'adoption TenantOwner,
 }
 
 /// Whether `unlock` only showed the lock or released it.

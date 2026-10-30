@@ -10,7 +10,7 @@ homepage.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Infrastructure as code for cuenv: drives Terraform provider plugins over gRPC with multi-tenant Turso or D1 state"
+description = "Infrastructure as code for cuenv: drives Terraform provider plugins over gRPC with multi-tenant Turso, D1 or S3-compatible object-storage state"
 # The Go fake provider only serves the ignored end-to-end tests.
 exclude = ["tests/fake_provider"]
 
@@ -23,6 +23,7 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
 hex = { workspace = true }
+hmac = { workspace = true }
 hyper-util = { workspace = true }
 prost = { workspace = true }
 reqwest = { workspace = true }

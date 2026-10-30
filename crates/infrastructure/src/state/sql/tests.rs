@@ -116,6 +116,7 @@ async fn acquire_lock<T: SqlTransport>(store: &SqlStateStore<T>, tenant: &Tenant
             &LockRequest {
                 lock: &StateLock::generate(),
                 holder: "after migration",
+                instance: None,
             },
         )
         .await

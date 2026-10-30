@@ -226,20 +226,6 @@ pub enum InfrastructureError {
         address: String,
     },
 
-    /// Another CUE instance owns the tenant's state.
-    #[error(
-        "{tenant} is owned by the CUE instance {owner}, not {instance}; refusing to act on its \
-         state. If {instance} is now the right owner, transfer ownership to it"
-    )]
-    OwnedByAnotherInstance {
-        /// Tenant whose state is owned.
-        tenant: String,
-        /// The recorded owner instance.
-        owner: String,
-        /// The instance that tried to act.
-        instance: String,
-    },
-
     /// A stored record was written with a schema version newer than the
     /// provider now in use knows; handing it over would silently downgrade
     /// it.
@@ -572,6 +558,7 @@ mod tests {
     fn a_blocked_migration_names_every_lock_that_blocks_it() {
         let held = |project: &str, environment: Option<&str>| TenantLock {
             module_path: "example.com/app".into(),
+            package: None,
             project: project.into(),
             environment: environment.map(ToString::to_string),
             lock: crate::state::LockInformation {
@@ -631,6 +618,7 @@ mod tests {
                 version: 2,
                 locks: vec![TenantLock {
                     module_path: "example.com/app".into(),
+                    package: None,
                     project: "web".into(),
                     environment: Some("Dev".into()),
                     lock: crate::state::LockInformation {
@@ -646,11 +634,6 @@ mod tests {
             },
             InfrastructureError::StateSchemaConflict {
                 problem: "it holds tables".into(),
-            },
-            InfrastructureError::OwnedByAnotherInstance {
-                tenant: "tenant".into(),
-                owner: "a".into(),
-                instance: "b".into(),
             },
             InfrastructureError::UnrecordedChangesPending {
                 tenant: "tenant".into(),

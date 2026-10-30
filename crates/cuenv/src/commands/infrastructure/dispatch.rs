@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    D1Configuration, D1StateStore, EngineOptions, EngineSetup, InfrastructureError, OwnerClaim,
-    OwnerClaimMode, PlanMode, ProjectInstance, StateLock, StateStore, TenantKey,
-    TursoConfiguration, TursoStateStore, UnrecordedStore,
+    D1Configuration, D1StateStore, EngineOptions, EngineSetup, InfrastructureError, PlanMode,
+    ProjectInstance, StateStore, TenantKey, TursoConfiguration, TursoStateStore, UnrecordedStore,
+    strip_control_characters,
 };
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;
 use cuenv_manifest::manifest::{Infrastructure, InfrastructureState};
@@ -17,7 +17,7 @@ use super::action::{InfrastructureAction, StateAction};
 use super::apply::{Convergence, ImportRequest, converge, import, plan};
 use super::confirm::Answers;
 use super::failure::failure;
-use super::guard::Siblings;
+use super::guard::{Siblings, tenant_label};
 use super::interrupts::Interrupts;
 use super::invocation::Invocation;
 use super::output::Output;
@@ -92,7 +92,10 @@ pub(super) async fn dispatch(
         InfrastructureAction::State(StateAction::Recover { overrides }) => {
             recover(context, &unrecorded_store(&inputs, context)?, *overrides).await
         }
-        InfrastructureAction::State(StateAction::Adopt) => adopt(context).await,
+        InfrastructureAction::State(StateAction::Adopt) => {
+            adopt(context);
+            Ok(())
+        }
         InfrastructureAction::Unlock {
             lock_identifier, ..
         } => {
@@ -224,39 +227,26 @@ pub(super) fn connect(
     }
 }
 
-/// Refuse to act on state another CUE instance owns. Reads only.
-pub(super) async fn require_owner(context: &CommandContext<'_>) -> Result<(), CliError> {
-    let owner = context
+/// Say where the project's state was last written from, when that was
+/// another directory: the project moved, or another checkout with the same
+/// module path wrote it. Reads only; nothing is refused, since project names
+/// are unique and the state belongs to the project, not to a directory.
+pub(super) async fn note_last_writer(context: &CommandContext<'_>) -> Result<(), CliError> {
+    let writer = context
         .interrupts
-        .until_interrupted(context.store.owner(context.tenant))
+        .until_interrupted(context.store.last_writer(context.tenant))
         .await?
         .map_err(|error| failure(&error, context.invocation))?;
-    owner.map_or(Ok(()), |owner| {
-        owner
-            .require(context.tenant, context.instance)
-            .map_err(|error| failure(&error, context.invocation))
-    })
-}
-
-/// Under the lock: record this instance as the owner when the state has
-/// none, and refuse when another instance owns it.
-pub(super) async fn claim_ownership(
-    context: &CommandContext<'_>,
-    lock: &StateLock,
-) -> Result<(), CliError> {
-    let owner = context
-        .store
-        .claim_owner(
-            context.tenant,
-            lock,
-            &OwnerClaim {
-                instance: context.instance,
-                mode: OwnerClaimMode::IfUnowned,
-            },
-        )
-        .await
-        .map_err(|error| failure(&error, context.invocation))?;
-    owner
-        .require(context.tenant, context.instance)
-        .map_err(|error| failure(&error, context.invocation))
+    if let Some(writer) = writer
+        && writer.instance != *context.instance
+    {
+        emit_stderr!(format!(
+            "note: the state of {} was last written from {} ({}); this run is {}",
+            tenant_label(context.tenant),
+            strip_control_characters(writer.instance.as_str()),
+            strip_control_characters(&writer.recorded_at),
+            strip_control_characters(context.instance.as_str())
+        ));
+    }
+    Ok(())
 }

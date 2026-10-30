@@ -6,8 +6,8 @@ use std::sync::{Mutex, MutexGuard};
 use async_trait::async_trait;
 
 use super::{
-    ConditionalPut, LockInformation, LockRequest, ManagedResource, OwnerClaim, OwnerClaimMode,
-    RecordVersion, ResourceAddress, StateLock, StateStore, TenantLock, TenantOwner,
+    ConditionalPut, LastWriter, LockInformation, LockRequest, ManagedResource, RecordVersion,
+    ResourceAddress, StateLock, StateStore, TenantLock,
 };
 use crate::error::{InfrastructureError, Result};
 use crate::tenant::TenantKey;
@@ -18,7 +18,7 @@ type Rows = HashMap<TenantKey, BTreeMap<ResourceAddress, ManagedResource>>;
 struct Contents {
     rows: Rows,
     locks: HashMap<TenantKey, LockInformation>,
-    owners: HashMap<TenantKey, TenantOwner>,
+    writers: HashMap<TenantKey, LastWriter>,
 }
 
 impl Contents {
@@ -185,6 +185,15 @@ impl StateStore for MemoryStateStore {
                 acquired_at: chrono::Utc::now().to_rfc3339(),
             },
         );
+        if let Some(instance) = request.instance {
+            contents.writers.insert(
+                tenant.clone(),
+                LastWriter {
+                    instance: instance.clone(),
+                    recorded_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+        }
         Ok(request.lock.clone())
     }
 
@@ -203,6 +212,7 @@ impl StateStore for MemoryStateStore {
             .iter()
             .map(|(tenant, lock)| TenantLock {
                 module_path: tenant.module_path().to_string(),
+                package: None,
                 project: tenant.project().to_string(),
                 environment: tenant.environment().map(ToString::to_string),
                 lock: lock.clone(),
@@ -226,29 +236,8 @@ impl StateStore for MemoryStateStore {
         Ok(matches)
     }
 
-    async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
-        Ok(self.contents()?.owners.get(tenant).cloned())
-    }
-
-    async fn claim_owner(
-        &self,
-        tenant: &TenantKey,
-        lock: &StateLock,
-        claim: &OwnerClaim<'_>,
-    ) -> Result<TenantOwner> {
-        let mut contents = self.contents()?;
-        require_lock(&contents, tenant, lock)?;
-        if claim.mode == OwnerClaimMode::IfUnowned
-            && let Some(existing) = contents.owners.get(tenant)
-        {
-            return Ok(existing.clone());
-        }
-        let owner = TenantOwner {
-            instance: claim.instance.clone(),
-            claimed_at: chrono::Utc::now().to_rfc3339(),
-        };
-        contents.owners.insert(tenant.clone(), owner.clone());
-        Ok(owner)
+    async fn last_writer(&self, tenant: &TenantKey) -> Result<Option<LastWriter>> {
+        Ok(self.contents()?.writers.get(tenant).cloned())
     }
 }
 
@@ -272,6 +261,11 @@ mod tests {
             serial: 0,
             generation: uuid::Uuid::nil(),
         }
+    }
+
+    #[tokio::test]
+    async fn conforms_to_the_state_store_contract() {
+        crate::state::conformance::conforms(&MemoryStateStore::default()).await;
     }
 
     #[tokio::test]
@@ -355,8 +349,24 @@ mod tests {
         let root = ProjectInstance::try_new(".", "web").unwrap();
         let copy = ProjectInstance::try_new("copy", "web").unwrap();
         let legacy_lock = store.lock(&legacy, "legacy").await.unwrap();
-        let dev_lock = store.lock(&dev, "dev").await.unwrap();
-        let staging_lock = store.lock(&staging, "staging").await.unwrap();
+        let take = |tenant, instance| {
+            let store = &store;
+            async move {
+                let lock = StateLock::generate();
+                store
+                    .acquire_lock(
+                        tenant,
+                        &LockRequest {
+                            lock: &lock,
+                            holder: "test",
+                            instance: Some(instance),
+                        },
+                    )
+                    .await
+            }
+        };
+        let dev_lock = take(&dev, &root).await.unwrap();
+        let staging_lock = take(&staging, &copy).await.unwrap();
         let record = resource("same");
 
         store.put(&legacy, &legacy_lock, &record).await.unwrap();
@@ -383,31 +393,15 @@ mod tests {
         assert_eq!(store.list(&legacy).await.unwrap()[0].serial, 1);
         assert_eq!(store.list(&staging).await.unwrap()[0].serial, 1);
 
-        store
-            .claim_owner(
-                &dev,
-                &dev_lock,
-                &OwnerClaim {
-                    instance: &root,
-                    mode: OwnerClaimMode::IfUnowned,
-                },
-            )
-            .await
-            .unwrap();
-        store
-            .claim_owner(
-                &staging,
-                &staging_lock,
-                &OwnerClaim {
-                    instance: &copy,
-                    mode: OwnerClaimMode::IfUnowned,
-                },
-            )
-            .await
-            .unwrap();
-        assert!(store.owner(&legacy).await.unwrap().is_none());
-        assert_eq!(store.owner(&dev).await.unwrap().unwrap().instance, root);
-        assert_eq!(store.owner(&staging).await.unwrap().unwrap().instance, copy);
+        assert!(store.last_writer(&legacy).await.unwrap().is_none());
+        assert_eq!(
+            store.last_writer(&dev).await.unwrap().unwrap().instance,
+            root
+        );
+        assert_eq!(
+            store.last_writer(&staging).await.unwrap().unwrap().instance,
+            copy
+        );
         assert!(
             !store
                 .force_unlock(&staging, &dev_lock.lock_identifier)
@@ -473,6 +467,7 @@ mod tests {
                 &LockRequest {
                     lock: &chosen,
                     holder: "test",
+                    instance: None,
                 },
             )
             .await
@@ -497,6 +492,7 @@ mod tests {
                     &LockRequest {
                         lock: &invalid,
                         holder: "test",
+                        instance: None,
                     },
                 )
                 .await
@@ -560,44 +556,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owners_are_claimed_once_and_transferred_explicitly_under_the_lock() {
+    async fn the_last_writer_is_recorded_with_the_lock_and_kept_without_an_instance() {
         let store = MemoryStateStore::new();
         let tenant = TenantKey::try_new("example.com/a", "web").unwrap();
         let root = ProjectInstance::try_new(".", "web").unwrap();
-        let copy = ProjectInstance::try_new("_copy", "web").unwrap();
-        assert!(store.owner(&tenant).await.unwrap().is_none());
-        let not_held = StateLock::generate();
-        assert!(matches!(
-            store
-                .claim_owner(
-                    &tenant,
-                    &not_held,
-                    &OwnerClaim {
-                        instance: &root,
-                        mode: OwnerClaimMode::IfUnowned,
-                    },
-                )
-                .await,
-            Err(InfrastructureError::LockLost { .. })
-        ));
-        let lock = store.lock(&tenant, "test").await.unwrap();
-        let claim = |instance, mode| OwnerClaim { instance, mode };
-        let owner = store
-            .claim_owner(&tenant, &lock, &claim(&root, OwnerClaimMode::IfUnowned))
-            .await
-            .unwrap();
-        assert_eq!(owner.instance, root);
-        let kept = store
-            .claim_owner(&tenant, &lock, &claim(&copy, OwnerClaimMode::IfUnowned))
-            .await
-            .unwrap();
-        assert_eq!(kept.instance, root);
-        let transferred = store
-            .claim_owner(&tenant, &lock, &claim(&copy, OwnerClaimMode::Transfer))
-            .await
-            .unwrap();
-        assert_eq!(transferred.instance, copy);
-        assert_eq!(store.owner(&tenant).await.unwrap().unwrap().instance, copy);
+        let moved = ProjectInstance::try_new("services/web", "web").unwrap();
+        assert!(store.last_writer(&tenant).await.unwrap().is_none());
+        let acquire = |instance: Option<&ProjectInstance>| {
+            let store = &store;
+            let tenant = &tenant;
+            let instance = instance.cloned();
+            async move {
+                let lock = StateLock::generate();
+                store
+                    .acquire_lock(
+                        tenant,
+                        &LockRequest {
+                            lock: &lock,
+                            holder: "test",
+                            instance: instance.as_ref(),
+                        },
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+        let lock = acquire(Some(&root)).await;
+        store.unlock(&tenant, &lock).await.unwrap();
+        assert_eq!(
+            store.last_writer(&tenant).await.unwrap().unwrap().instance,
+            root
+        );
+        // A lock taken without an instance (unlock, restore) keeps it.
+        let lock = acquire(None).await;
+        store.unlock(&tenant, &lock).await.unwrap();
+        assert_eq!(
+            store.last_writer(&tenant).await.unwrap().unwrap().instance,
+            root
+        );
+        // A moved directory simply becomes the last writer; nothing refuses.
+        let lock = acquire(Some(&moved)).await;
+        store.unlock(&tenant, &lock).await.unwrap();
+        assert_eq!(
+            store.last_writer(&tenant).await.unwrap().unwrap().instance,
+            moved
+        );
     }
 
     #[tokio::test]
