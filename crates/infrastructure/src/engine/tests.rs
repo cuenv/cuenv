@@ -3556,7 +3556,7 @@ fn malformed_data_results_withhold_diagnostics_even_with_a_valid_sensitive_sibli
             diagnostics: vec![Diagnostic {
                 severity: severity as i32,
                 summary: format!("untrusted diagnostic echoes {secret}"),
-                detail: secret.to_string(),
+                detail: secret.clone(),
                 attribute: None,
             }],
             deferred: None,
