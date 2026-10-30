@@ -42,7 +42,8 @@ fn is_copied_directory(name: &str) -> bool {
 }
 
 /// Copy every `.cue` file below `source` (and all of `cue.mod`) to
-/// `destination`, keeping relative paths.
+/// `destination`, keeping relative paths, along with the files those CUE
+/// files embed.
 fn copy_cue_files(source: &Path, destination: &Path) -> TestResult {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
@@ -60,7 +61,30 @@ fn copy_cue_files(source: &Path, destination: &Path) -> TestResult {
         {
             fs::create_dir_all(destination)?;
             fs::copy(&path, destination.join(name.as_ref()))?;
+            if !source.ends_with("cue.mod") {
+                copy_embedded_files(&path, source, destination)?;
+            }
         }
+    }
+    Ok(())
+}
+
+/// Copy the files a CUE file embeds with `@embed(file="...")`, resolved
+/// against its directory. `env.cue` embeds the flake's source list.
+fn copy_embedded_files(cue_file: &Path, source: &Path, destination: &Path) -> TestResult {
+    const EMBED: &str = "@embed(file=\"";
+    let contents = fs::read_to_string(cue_file)?;
+    for (start, _) in contents.match_indices(EMBED) {
+        let rest = &contents[start + EMBED.len()..];
+        let Some(end) = rest.find('"') else {
+            continue;
+        };
+        let embedded = &rest[..end];
+        let target = destination.join(embedded);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source.join(embedded), target)?;
     }
     Ok(())
 }
