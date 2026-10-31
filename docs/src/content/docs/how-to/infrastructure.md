@@ -15,6 +15,7 @@ Schema version 1 databases migrate in place to version 2. Incompatible earlier d
 
 | Command                                       | Short form              | What it does                                                            |
 | --------------------------------------------- | ----------------------- | ----------------------------------------------------------------------- |
+| `cuenv infrastructure init`                   | `cuenv infra init`      | Restore pinned provider binaries and generated CUE types                |
 | `cuenv infrastructure plan`                   | `cuenv i plan`          | Refresh recorded resources and show what `apply` would change           |
 | `cuenv infrastructure apply`                  | `cuenv i apply`         | Lock, plan, confirm, apply                                              |
 | `cuenv infrastructure destroy`                | `cuenv i destroy`       | Delete every managed resource the project owns                          |
@@ -35,9 +36,39 @@ Schema version 1 databases migrate in place to version 2. Incompatible earlier d
 
 `apply` also takes `--allow-separate-state` (see [Moving between identities](#moving-between-identities)). `apply`, `destroy` and `import` take `--new-identity` (see [Renames and moves](#renames-and-moves)). `unlock` takes `--module` and `--project` to act on the lock of a project that is not the one being evaluated (see [Stale locks](#when-things-go-wrong)), and `--migration-fence` to release the lock a migration leaves on its source.
 
-`i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. Every subcommand honours the global `--json` flag and then prints exactly one JSON document on standard output (events go to standard error); `apply`, `destroy` and `state restore` require `--yes` with `--json`.
+`i` and `infra` are aliases for `infrastructure`. Infrastructure operations honour the global `--json` flag; `apply`, `destroy` and `state restore` require `--yes` with `--json`.
 
 `import` takes the provider's opaque import identifier. Declare the resource first, select the desired environment with `--env` when needed, then run for example `cuenv i import cloudflare_record.www <provider-specific-id>`. cuenv asks the provider to import one object, refreshes it, and records the refreshed state without calling the provider's apply operation. Review the suggested `plan` command afterward; it includes the same environment, path and package selection. The provider defines the identifier format. Sensitive import identifiers are registered for output redaction and are not included in cuenv's own output or trace fields.
+
+## Separate infrastructure package
+
+Keep the project and its `env` in `env.cue`, and select a separate package with `.infrastructure.cue` in the project directory:
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#InfrastructureLocator & {
+    directory: "infra"
+    "package": "infrastructure"
+}
+```
+
+Put the `infrastructure` block in that directory's named package, for example `infra/stack.cue`:
+
+```cue
+package infrastructure
+
+import "github.com/cuenv/cuenv/schema"
+
+infrastructure: schema.#Infrastructure & {
+    state: turso: url: "http://127.0.0.1:8080"
+    providers: random: {source: "hashicorp/random", version: "3.9.1"}
+}
+```
+
+The directory is relative to the project and must be in the same CUE module. Use a package name distinct from the project package. The locator belongs to the `cuenv` project package by default; set `projectPackage` to the owning package when using another one. Infrastructure commands load the project's selected environment, policies and cache credential protections, then evaluate this package. The state identity remains tied to the owning project and its package. Existing inline infrastructure remains supported, but a project cannot use both forms at once. Run `cuenv infra init` after cloning, before evaluating a package that imports generated provider types, including before `cuenv sync ci`. A local provider `path` remains relative to the project directory.
 
 ## Import and connect resources
 
@@ -372,7 +403,7 @@ cue.mod/gen/registry.terraform.io/hashicorp/random/
 
 Nothing is published or fetched from a CUE registry, and `cue.mod/module.cue` is untouched: CUE resolves imports from `cue.mod/gen` on its own. Your CUE files are not changed either; the command prints the imports to add.
 
-Commit `cuenv.lock`, not the generated types. Like managed [codegen](/how-to/codegen/) files, the provider directories are listed in a `cuenv infrastructure` section of the module's `.gitignore`, and `cuenv sync` recreates them from `cuenv.lock`. Run it after cloning and after pulling a lock change, as you would for codegen: until it has run, every command that evaluates the project — `cuenv task`, `cuenv env`, the shell hook, `cue` and the CUE language server — fails with `cannot find package "registry.terraform.io/..."`. The first `cuenv sync` downloads each pinned provider (or takes it from the plugin cache) to read its schema.
+Commit `cuenv.lock`, not the generated types. Like managed [codegen](/how-to/codegen/) files, the provider directories are listed in a `cuenv infrastructure` section of the module's `.gitignore`. Run `cuenv infra init` after cloning or pulling a lock change to install the pinned providers and regenerate their types. It reads the lockfile without evaluating project CUE and neither changes the pins nor accesses state. Until it has run, every command that evaluates a project importing the missing types — `cuenv task`, `cuenv env`, the shell hook, `cue` and the CUE language server — fails with `cannot find package "registry.terraform.io/..."`. Init downloads each pinned provider (or takes it from the plugin cache) to read its schema.
 
 `<source>` is `namespace/type` or `hostname/namespace/type` (a hostname with a port cannot be an import path and is refused); `<version>` is an exact version. `--path` selects a directory inside the CUE module when you are not in it.
 

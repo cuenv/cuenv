@@ -12,6 +12,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `schema/formatters.cue` for `cuenv fmt`.
 - `crates/cuenv/src/commands/fmt.rs` for file discovery and formatter dispatch; shared formatter runners live under `crates/cuenv/src/commands/sync/formatters.rs`.
 - `schema/rules/*` for `.rules.cue` ignore, editorconfig, and owners behavior.
+- `.rules.cue` is evaluated as an isolated CUE file in its module, with real imports and schema constraints. Do not strip imports or constraints.
 - `crates/editorconfig/src/section.rs` owns editorconfig section/value modeling; `builder.rs` owns file rendering and write/dry-run behavior; `result.rs` and `error.rs` own generated-file status and errors.
 - There is no top-level `owners` or `ignore` field on `#Project`; ownership and ignore files come only from `.rules.cue` (`schema/rules/*`).
 - `crates/ignore/src/lib.rs` for ignore file generation and `crates/ignore/src/sections.rs` for managed ignore-file sections.

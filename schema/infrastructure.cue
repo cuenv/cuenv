@@ -2,6 +2,14 @@ package schema
 
 import "strings"
 
+// A project-local .infrastructure.cue file selects the separately evaluated
+// infrastructure package. The directory is relative to the project directory.
+#InfrastructureLocator: {
+	directory!: string & !=""
+	"package"!: string & !=""
+	projectPackage?: string & !=""
+}
+
 // =============================================================================
 // Infrastructure — infrastructure as code through Terraform provider plugins
 // =============================================================================

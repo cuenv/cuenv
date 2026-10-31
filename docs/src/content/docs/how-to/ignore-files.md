@@ -41,6 +41,10 @@ cuenv sync
 This generates `.gitignore` and `.dockerignore` in the same directory as the
 `.rules.cue` file.
 
+cuenv evaluates the rules file independently of neighboring project files,
+using its CUE module and imports. Imported definitions and their schema
+constraints therefore apply to the generated rules.
+
 ## Commands
 
 Generate or update all rules-managed files:

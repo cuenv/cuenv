@@ -499,10 +499,11 @@ behavior, flags and state layout can change between releases, and it is not
 covered by the stability promises of the other commands.
 :::
 
-`cuenv i` is the short form of `cuenv infrastructure` (for example
-`cuenv i apply`).
+`cuenv i` and `cuenv infra` are short forms of `cuenv infrastructure` (for example
+`cuenv i apply` and `cuenv infra init`).
 
 ```bash
+cuenv infrastructure init    [-p <PATH>]
 cuenv infrastructure plan    [OPTIONS]
 cuenv infrastructure apply   [OPTIONS] [--yes] [--allow-separate-state] [--new-identity]
 cuenv infrastructure destroy [OPTIONS] [--yes] [--new-identity]
@@ -516,6 +517,9 @@ cuenv infrastructure provider add <SOURCE>@<VERSION> [-p <PATH>]
 cuenv infrastructure provider remove <SOURCE> [-p <PATH>]
 ```
 
+- `init`: install each provider pinned in the containing CUE module's `cuenv.lock`
+  and regenerate its CUE types. It verifies the archive and schema digests,
+  does not change the lockfile, and does not evaluate CUE or access state.
 - `provider add`: install the provider release, generate CUE types from its
   schema into the CUE module's `cue.mod/gen/<hostname>/<namespace>/<type>`
   (one package for the provider, one per resource type, listed in `.gitignore`), and pin version,

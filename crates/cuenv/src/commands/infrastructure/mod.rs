@@ -24,6 +24,7 @@ mod guard;
 mod holder;
 mod interrupts;
 mod invocation;
+pub(crate) mod locator;
 mod lock;
 mod migrate;
 mod object_state;
