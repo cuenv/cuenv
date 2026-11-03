@@ -71,6 +71,10 @@ impl<'name> ConfigurationScope<'name> {
 /// `infrastructure.environments.dev.resources.pet.dependsOn[0]`. Call this
 /// before resolving provider secrets or opening a state backend. The engine
 /// repeats the validation as defense in depth before planning.
+/// Descriptor meaning requires provider schemas: descriptor-derived edges and
+/// scalar contracts are checked by the engine's schema phase before any
+/// provider configuration or resource/data call, rather than guessed here from
+/// ordinary object keys.
 ///
 /// `environment` is the environment the configuration was selected from, if
 /// any, and only changes the paths in the messages.
@@ -92,7 +96,8 @@ pub fn validate_configuration(
     check_resources(infrastructure, &scope, &mut problems);
     check_data_sources(infrastructure, &scope, &mut problems);
     if problems.is_empty()
-        && let Err(error) = data_sources::DeclarationGraph::new(infrastructure)
+        && let Err(error) =
+            data_sources::DeclarationGraph::with_references(infrastructure, &BTreeMap::new())
     {
         problems.push(format!(
             "{} / {}: {}",
@@ -156,7 +161,6 @@ fn check_resources(
     let resources = scope.resources();
     let providers = scope.providers();
     let declared: BTreeSet<&String> = infrastructure.resources.keys().collect();
-    let mut references = BTreeMap::new();
     for (name, declaration) in &infrastructure.resources {
         let path = format!("{resources}.{name}");
         let provider_name = declaration.provider_name();
@@ -183,22 +187,13 @@ fn check_resources(
                 ));
             }
         }
-        match ConfigurationReferences::extract(&declaration.configuration) {
-            Ok(resource_references) => {
-                for reference in resource_references.references() {
-                    if data_sources::declaration(infrastructure, &reference.source).is_none() {
-                        problems.push(format!(
-                            "{path}.configuration.{}.{}: source '{}' is not declared in this configuration",
-                            reference.destination_attribute, reference.source.descriptor_field(), reference.source
-                        ));
-                    }
-                }
-                references.insert(name.clone(), resource_references);
-            }
-            Err(error) => problems.push(format!("{path}.configuration: {}", detail(error))),
-        }
     }
-    check_cycles(&infrastructure.resources, &references, &resources, problems);
+    check_cycles(
+        &infrastructure.resources,
+        &BTreeMap::new(),
+        &resources,
+        problems,
+    );
 }
 
 fn check_data_sources(
@@ -225,16 +220,6 @@ fn check_data_sources(
                     "{path}.dependsOn[{index}]: unknown managed resource '{dependency}'"
                 ));
             }
-        }
-        match ConfigurationReferences::extract(&declaration.configuration) {
-            Ok(references) => {
-                for reference in references.references() {
-                    if data_sources::declaration(infrastructure, &reference.source).is_none() {
-                        problems.push(format!("{path}.configuration.{}.{}: source '{}' is not declared in this configuration", reference.destination_attribute, reference.source.descriptor_field(), reference.source));
-                    }
-                }
-            }
-            Err(error) => problems.push(format!("{path}: {}", detail(error))),
         }
     }
 }

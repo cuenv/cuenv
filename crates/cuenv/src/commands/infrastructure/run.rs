@@ -50,6 +50,7 @@ pub(super) async fn run(
         declared_environments,
         top_level,
         project_directory,
+        configuration_evaluator,
         ..
     } = target;
     let mut siblings = Siblings {
@@ -88,6 +89,10 @@ pub(super) async fn run(
     };
     let inputs = EngineInputs {
         infrastructure,
+        configuration_evaluator: configuration_evaluator.map(|evaluator| {
+            evaluator
+                as std::sync::Arc<dyn cuenv_infrastructure::references::ConfigurationEvaluator>
+        }),
         locked_providers,
         project_directory,
         provider_environment_variables: resolved.provider_environment_variables,

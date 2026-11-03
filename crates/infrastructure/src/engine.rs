@@ -31,13 +31,14 @@
 //! are decoded and re-encoded, which is lossless because JSON cannot carry
 //! unknown values.
 //!
-//! Top-level scalar arguments may reference other managed resource outputs.
-//! Known outputs participate in the initial plan; values produced by a
-//! create are resolved after their dependencies apply, and a newly discovered
+//! Scalar arguments, including nested object and ordered collection elements,
+//! may reference declared scalar outputs of managed resources or data sources.
+//! Known outputs participate in the initial plan; values produced by a create
+//! are resolved after their dependencies apply, and a newly discovered
 //! replacement is refused until a fresh plan can show it. Imports refresh one
-//! provider result before recording it. Data sources, saved plans, and
-//! parallel applies are not supported. `create_before_destroy` is not
-//! supported: a replacement is always destroy, then create.
+//! provider result before recording it. Saved plans and parallel applies are
+//! not supported. `create_before_destroy` is not supported: a replacement is
+//! always destroy, then create.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
@@ -61,7 +62,12 @@ use crate::plugin::{
     ApplyRequest, LaunchOptions, PlanRequest, ProviderClient, redact_provider_text,
 };
 use crate::protocol::{self, Diagnostic, Severity};
-use crate::references::{ConfigurationReferences, ResourceOutputReference, SourceAddress};
+#[cfg(test)]
+use crate::references::ConfigurationSpecialization;
+use crate::references::{
+    ConfigurationEvaluator, ConfigurationReferences, OutputIdentity, ReferenceOrigin,
+    ResourceOutputReference, SourceAddress,
+};
 use crate::registry::{
     ProviderInstaller, ProviderSource, current_platform, default_cache_directory,
 };
@@ -74,6 +80,7 @@ use crate::type_system::{self, PathStep, Type, Value};
 use crate::unrecorded::UnrecordedStore;
 
 mod data_sources;
+mod evaluation;
 mod schedule;
 mod sensitivity;
 mod validation;
@@ -84,7 +91,8 @@ use data_sources::{
 };
 use schedule::{Aftermath, ApplyOperation, OperationKind, Schedule, ScheduleRun};
 use sensitivity::{
-    SensitiveProviderValue, register_stored_values, resource_sensitivity, sensitive_provider_value,
+    SensitiveProviderValue, register_stored_values, register_typed_attributes,
+    resource_sensitivity, sensitive_provider_value,
 };
 use validation::ConfigurationScope;
 
@@ -272,6 +280,8 @@ pub struct Plan {
     /// The values themselves are never stored in the plan. It is part of the
     /// plan's digest, so two plans made with other provider variables differ.
     environment_identity: [u8; 32],
+    /// Immutable evaluator identity used to prepare this plan.
+    configuration_evaluation: Option<ConfigurationEvaluation>,
 }
 
 /// Counts of planned actions.
@@ -299,7 +309,9 @@ pub struct PlanSummary {
 /// and after values (unknowns included), the replacement paths, the record
 /// stored when the plan was made, and the refreshed record apply would
 /// write. Any write to a stored record between two plans changes the
-/// digest.
+/// digest. Native CUE plans also bind the evaluator instance: two plans
+/// from the same binding can be compared, while independently bound CUE
+/// snapshots intentionally produce different digests.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PlanDigest(String);
 
@@ -356,7 +368,7 @@ impl Plan {
     #[must_use]
     pub fn digest(&self) -> PlanDigest {
         let mut digest = DigestWriter::default();
-        digest.field(b"cuenv infrastructure plan digest 3");
+        digest.field(b"cuenv infrastructure plan digest 4");
         digest.field(self.tenant.module_path().as_bytes());
         digest.field(self.tenant.project().as_bytes());
         match self.tenant.environment() {
@@ -367,6 +379,13 @@ impl Plan {
             None => digest.tag(0),
         }
         digest.field(&self.environment_identity);
+        match &self.configuration_evaluation {
+            Some(binding) => {
+                digest.tag(1);
+                digest.field(&binding.identity);
+            }
+            None => digest.tag(0),
+        }
         digest.count(self.changes.len());
         for change in &self.changes {
             digest.field(change.address.resource_type.as_bytes());
@@ -389,9 +408,7 @@ impl Plan {
             }
             digest.count(change.references.references().len());
             for reference in change.references.references() {
-                digest.field(reference.destination_attribute.as_bytes());
-                digest.field(reference.source.to_string().as_bytes());
-                digest.field(reference.attribute.as_bytes());
+                digest.reference(reference);
             }
             digest.record(change.stored.as_ref());
             digest.record(change.refreshed_record.as_ref());
@@ -411,6 +428,32 @@ struct DigestWriter {
 }
 
 impl DigestWriter {
+    fn reference(&mut self, reference: &ResourceOutputReference) {
+        self.field(reference.source.to_string().as_bytes());
+        self.field(reference.attribute.as_bytes());
+        self.tag(match reference.origin {
+            ReferenceOrigin::Descriptor => 0,
+            ReferenceOrigin::Native(_) => 1,
+        });
+        self.count(reference.destination.steps().len());
+        for step in reference.destination.steps() {
+            match step {
+                PathStep::Attribute(name) => {
+                    self.tag(0);
+                    self.field(name.as_bytes());
+                }
+                PathStep::Key(key) => {
+                    self.tag(1);
+                    self.field(key.as_bytes());
+                }
+                PathStep::Index(index) => {
+                    self.tag(2);
+                    self.field(&index.to_be_bytes());
+                }
+            }
+        }
+    }
+
     fn count(&mut self, count: usize) {
         self.hasher
             .update(u64::try_from(count).unwrap_or(u64::MAX).to_be_bytes());
@@ -630,6 +673,21 @@ struct LoadedProvider {
     client: ProviderClient,
     schema: ProviderSchema,
     source: String,
+    configured: bool,
+}
+
+#[derive(Clone)]
+struct ConfigurationEvaluation {
+    evaluator: Arc<dyn ConfigurationEvaluator>,
+    identity: [u8; 16],
+}
+
+impl fmt::Debug for ConfigurationEvaluation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ConfigurationEvaluation")
+            .finish_non_exhaustive()
+    }
 }
 
 /// Plans and applies an `infrastructure` configuration for one tenant.
@@ -641,6 +699,7 @@ pub struct InfrastructureEngine {
     providers: BTreeMap<String, LoadedProvider>,
     /// Effective sensitivity for this plan, including reference propagation.
     output_sensitivity: BTreeMap<SourceAddress, Vec<String>>,
+    configuration_evaluation: Option<ConfigurationEvaluation>,
 }
 
 impl fmt::Debug for InfrastructureEngine {
@@ -682,7 +741,6 @@ struct ReferencedReplan<'step> {
 struct ResolveReferenceConfiguration<'step> {
     change: &'step ResourceChange,
     destination_block: &'step Block,
-    prepared: &'step Value,
     rows: &'step BTreeMap<ResourceAddress, ManagedResource>,
     data_sources: &'step BTreeMap<ResourceAddress, Value>,
 }
@@ -699,6 +757,20 @@ struct ReferenceValueInput<'read> {
     reference: &'read ResourceOutputReference,
     rows: &'read BTreeMap<ResourceAddress, ManagedResource>,
     data_sources: &'read BTreeMap<ResourceAddress, Value>,
+}
+
+struct ConfigurationInput<'input> {
+    consumer: &'input SourceAddress,
+    declaration: &'input ManagedResourceDeclaration,
+    references: &'input ConfigurationReferences,
+    block: &'input Block,
+    phase: ConfigurationPhase,
+}
+
+#[derive(Clone, Copy)]
+enum ConfigurationPhase {
+    Planning,
+    Apply,
 }
 
 struct DataSourceReadContext<'read> {
@@ -751,6 +823,252 @@ impl InfrastructureEngine {
             options: setup.options,
             providers: BTreeMap::new(),
             output_sensitivity: BTreeMap::new(),
+            configuration_evaluation: None,
+        }
+    }
+
+    /// Bind one immutable native CUE evaluator to future plans. Replacing this
+    /// binding invalidates plans produced with an earlier snapshot.
+    pub fn set_configuration_evaluator(&mut self, evaluator: Arc<dyn ConfigurationEvaluator>) {
+        self.configuration_evaluation = Some(ConfigurationEvaluation {
+            evaluator,
+            identity: *uuid::Uuid::new_v4().as_bytes(),
+        });
+    }
+
+    fn declaration_block(&self, source: &SourceAddress) -> Result<&Block> {
+        let declaration =
+            data_sources::declaration(&self.infrastructure, source).ok_or_else(|| {
+                InfrastructureError::configuration(format!("{source} is not declared"))
+            })?;
+        let provider = self.loaded(declaration.provider_name())?;
+        Ok(&match source {
+            SourceAddress::Resource(address) => resource_schema(
+                provider,
+                declaration.provider_name(),
+                &address.resource_type,
+            )?,
+            SourceAddress::DataSource(address) => {
+                data_source_schema(provider, &address.resource_type)?
+            }
+        }
+        .block)
+    }
+
+    fn classified_graph(&self) -> Result<DeclarationGraph> {
+        let mut classified = BTreeMap::new();
+        let native = self
+            .configuration_evaluation
+            .as_ref()
+            .map(|binding| binding.evaluator.references())
+            .unwrap_or_default();
+        for reference in native {
+            if data_sources::declaration(&self.infrastructure, &reference.consumer).is_none()
+                || data_sources::declaration(&self.infrastructure, &reference.source).is_none()
+            {
+                return Err(InfrastructureError::configuration(
+                    "native CUE reference names an undeclared source or consumer",
+                ));
+            }
+        }
+        for source in self.declaration_sources() {
+            let declaration = data_sources::declaration(&self.infrastructure, &source)
+                .ok_or_else(|| InfrastructureError::configuration("declaration disappeared"))?;
+            let references: Vec<_> = native
+                .iter()
+                .filter(|reference| reference.consumer == source)
+                .cloned()
+                .collect();
+            classified.insert(
+                source.clone(),
+                ConfigurationReferences::extract_with_schema(
+                    &declaration.configuration,
+                    self.declaration_block(&source)?,
+                    &references,
+                )?,
+            );
+        }
+        DeclarationGraph::with_references(&self.infrastructure, &classified)
+    }
+
+    fn declaration_sources(&self) -> Vec<SourceAddress> {
+        self.infrastructure
+            .resources
+            .iter()
+            .map(|(name, declaration)| {
+                SourceAddress::Resource(ResourceAddress::new(&declaration.resource_type, name))
+            })
+            .chain(self.infrastructure.data.iter().map(|(name, declaration)| {
+                SourceAddress::DataSource(ResourceAddress::new(&declaration.resource_type, name))
+            }))
+            .collect()
+    }
+
+    async fn prepare_declarations(
+        &mut self,
+        warnings: &mut Vec<String>,
+    ) -> Result<DeclarationGraph> {
+        let names: BTreeSet<_> = self
+            .declaration_sources()
+            .iter()
+            .filter_map(|source| data_sources::declaration(&self.infrastructure, source))
+            .map(|declaration| declaration.provider_name().to_string())
+            .collect();
+        for name in names {
+            self.ensure_provider_schema(&name, warnings).await?;
+        }
+        let graph = self.classified_graph()?;
+        for source in &graph.order {
+            let declaration = data_sources::declaration(&self.infrastructure, source)
+                .ok_or_else(|| InfrastructureError::configuration("declaration disappeared"))?;
+            let block = self.declaration_block(source)?;
+            let references = graph.references.get(source).ok_or_else(|| {
+                InfrastructureError::configuration("reference graph is incomplete")
+            })?;
+            self.validate_output_references(source.address(), references, block)?;
+            self.prepare_configuration(
+                ConfigurationInput {
+                    consumer: source,
+                    declaration,
+                    references,
+                    block,
+                    phase: ConfigurationPhase::Planning,
+                },
+                |_| Ok(Value::Unknown),
+            )
+            .await?;
+        }
+        Ok(graph)
+    }
+
+    async fn prepare_configuration(
+        &self,
+        input: ConfigurationInput<'_>,
+        mut resolver: impl FnMut(&ResourceOutputReference) -> Result<Value>,
+    ) -> Result<Value> {
+        let mut values: BTreeMap<OutputIdentity, Value> = BTreeMap::new();
+        let mut sources = BTreeMap::new();
+        let mut deferred = Vec::new();
+        for reference in input.references.references() {
+            let output = OutputIdentity {
+                source: reference.source.clone(),
+                attribute: reference.attribute.clone(),
+            };
+            let value = match values.get(&output) {
+                Some(value) => value.clone(),
+                None => resolver(reference)?,
+            };
+            if !value.is_unknown()
+                && !input
+                    .block
+                    .reference_destination(&reference.destination)?
+                    .accepts(&value)
+            {
+                return Err(reference_error(
+                    input.consumer.address(),
+                    reference,
+                    "output must match the destination's concrete scalar type",
+                ));
+            }
+            if let ReferenceOrigin::Native(native) = &reference.origin {
+                if value.is_unknown() {
+                    deferred.push(native.clone());
+                } else {
+                    sources.insert(output.clone(), value.clone());
+                }
+            }
+            values.insert(output, value);
+        }
+        let has_native = input
+            .references
+            .references()
+            .iter()
+            .any(|reference| matches!(reference.origin, ReferenceOrigin::Native(_)));
+        let configuration = match &self.configuration_evaluation {
+            Some(binding) if has_native => {
+                self.ensure_not_stopped()?;
+                let evaluator = Arc::clone(&binding.evaluator);
+                let expected_deferred = deferred.clone();
+                let specialized = evaluation::specialize(
+                    evaluation::Specialization {
+                        evaluator,
+                        consumer: input.consumer.clone(),
+                        sources,
+                        deferred,
+                    },
+                    self.cancellation(),
+                )
+                .await?;
+                self.ensure_not_stopped()?;
+                let expected: BTreeSet<_> = expected_deferred.iter().collect();
+                let returned: BTreeSet<_> = specialized.unresolved.iter().collect();
+                if expected != returned || specialized.unresolved.len() != expected_deferred.len() {
+                    return Err(InfrastructureError::configuration(
+                        "CUE specialization returned inconsistent unknown source provenance",
+                    ));
+                }
+                specialized.configuration
+            }
+            None if has_native => {
+                return Err(InfrastructureError::configuration(
+                    "native references require an immutable CUE evaluator",
+                ));
+            }
+            Some(_) | None => input.declaration.configuration.clone(),
+        };
+        let projected = serde_json::Value::Object(configuration.clone());
+        for reference in input
+            .references
+            .references()
+            .iter()
+            .filter(|reference| matches!(reference.origin, ReferenceOrigin::Native(_)))
+        {
+            let output = OutputIdentity {
+                source: reference.source.clone(),
+                attribute: reference.attribute.clone(),
+            };
+            let Some(value) = values.get(&output).filter(|value| !value.is_unknown()) else {
+                continue;
+            };
+            let destination = input.block.reference_destination(&reference.destination)?;
+            let projected_value =
+                reference
+                    .destination
+                    .json_value(&projected)
+                    .ok_or_else(|| {
+                        reference_error(
+                            input.consumer.address(),
+                            reference,
+                            "native projection is missing",
+                        )
+                    })?;
+            let decoded =
+                Value::from_configuration_json(projected_value, destination.value_type())?;
+            if !type_system::semantically_equal(&decoded, value, destination.value_type()) {
+                return Err(reference_error(
+                    input.consumer.address(),
+                    reference,
+                    "native projection does not match its source",
+                ));
+            }
+        }
+        let prepared = input
+            .references
+            .prepare(&configuration, &input.block.implied_type())?;
+        let resolve = |reference: &ResourceOutputReference| {
+            values
+                .get(&OutputIdentity {
+                    source: reference.source.clone(),
+                    attribute: reference.attribute.clone(),
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    reference_error(input.consumer.address(), reference, "was not resolved")
+                })
+        };
+        match input.phase {
+            ConfigurationPhase::Planning => input.references.resolve_planned(&prepared, resolve),
+            ConfigurationPhase::Apply => input.references.resolve(&prepared, resolve),
         }
     }
 
@@ -879,6 +1197,7 @@ impl InfrastructureEngine {
         }
 
         let mut warnings = Vec::new();
+        let graph = self.prepare_declarations(&mut warnings).await?;
         let provider_name = declaration.provider_name().to_string();
         let sensitive = self
             .import_sensitivity(
@@ -979,8 +1298,7 @@ impl InfrastructureEngine {
             )));
         }
         check_upgraded(address, &state)?;
-        let dependencies = DeclarationGraph::new(&self.infrastructure)?
-            .managed_dependencies(&SourceAddress::Resource(address.clone()));
+        let dependencies = graph.managed_dependencies(&SourceAddress::Resource(address.clone()));
         let record = ManagedResource {
             address: address.clone(),
             provider: provider_name,
@@ -1038,7 +1356,14 @@ impl InfrastructureEngine {
             PlanMode::Apply => self.infrastructure.resources.clone(),
             PlanMode::Destroy => BTreeMap::new(),
         };
-        let graph = DeclarationGraph::new(&self.infrastructure)?;
+        let graph = match mode {
+            PlanMode::Apply => self.prepare_declarations(&mut warnings).await?,
+            // Destroy uses persisted dependencies and never reads current data
+            // sources. An unrelated provider need not start to delete state.
+            PlanMode::Destroy => {
+                DeclarationGraph::with_references(&self.infrastructure, &BTreeMap::new())?
+            }
+        };
         let declared_addresses: BTreeSet<ResourceAddress> = declared
             .iter()
             .map(|(name, declaration)| ResourceAddress::new(&declaration.resource_type, name))
@@ -1095,7 +1420,10 @@ impl InfrastructureEngine {
             };
             let change = self.plan_resource(&input, &mut warnings).await?;
             // Before any consumer can copy them into its configuration.
-            register_sensitive_values(&change);
+            register_typed_sensitive_values(
+                &change,
+                &self.declaration_block(source)?.implied_type(),
+            );
             self.output_sensitivity
                 .insert(source.clone(), change.sensitive.clone());
             if change.action.changes_infrastructure()
@@ -1125,6 +1453,7 @@ impl InfrastructureEngine {
             environment_identity: environment_identity(
                 &self.options.provider_environment_variables,
             ),
+            configuration_evaluation: self.configuration_evaluation.clone(),
         })
     }
 
@@ -1171,6 +1500,19 @@ impl InfrastructureEngine {
         if plan.tenant != self.tenant {
             return Err(InfrastructureError::configuration(
                 "plan belongs to a different tenant",
+            ));
+        }
+        if plan
+            .configuration_evaluation
+            .as_ref()
+            .map(|binding| binding.identity)
+            != self
+                .configuration_evaluation
+                .as_ref()
+                .map(|binding| binding.identity)
+        {
+            return Err(InfrastructureError::configuration(
+                "plan belongs to a different immutable CUE snapshot",
             ));
         }
         let rows = self.require_current(plan).await?;
@@ -1531,7 +1873,7 @@ impl InfrastructureEngine {
         if let Some(row) = &change.stored {
             register_stored_values(row, &change.sensitive);
         }
-        register_sensitive_values(change);
+        register_typed_sensitive_values(change, &value_type);
         // The stored version every write replaces, for saving a record the
         // store cannot take.
         let version = operation.expected;
@@ -1608,7 +1950,7 @@ impl InfrastructureEngine {
                     },
                 )
                 .await?;
-            register_attributes(&returned, &change.sensitive);
+            register_typed_attributes(&returned, &change.sensitive, &value_type);
             let problem = apply_result_problem(&ApplyResult {
                 address: &change.address,
                 kind: step.kind,
@@ -1752,7 +2094,7 @@ impl InfrastructureEngine {
             data_sources,
             on_event,
         } = input;
-        let prepared = change.reference_configuration.as_ref().ok_or_else(|| {
+        change.reference_configuration.as_ref().ok_or_else(|| {
             InfrastructureError::configuration(format!(
                 "{} has output references but no prepared configuration",
                 change.address
@@ -1764,7 +2106,6 @@ impl InfrastructureEngine {
                 ResolveReferenceConfiguration {
                     change,
                     destination_block: &schema.block,
-                    prepared,
                     rows,
                     data_sources,
                 },
@@ -1775,8 +2116,8 @@ impl InfrastructureEngine {
             on_event(ApplyEvent::Warning(warning));
         }
         let configuration = schema.block.normalize_configuration(configuration);
-        register_attributes(&configuration, &change.sensitive);
         let value_type = schema.block.implied_type();
+        register_typed_attributes(&configuration, &change.sensitive, &value_type);
         let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
         let provider = self.loaded(&change.provider)?;
         self.ensure_not_stopped()?;
@@ -1933,7 +2274,6 @@ impl InfrastructureEngine {
         let ResolveReferenceConfiguration {
             change,
             destination_block,
-            prepared,
             rows,
             data_sources,
         } = input;
@@ -1951,13 +2291,29 @@ impl InfrastructureEngine {
                     warnings,
                 )
                 .await?;
-            outputs.insert(reference.destination_attribute.as_str(), value);
+            outputs.insert(reference.destination.clone(), value);
         }
-        change.references.resolve(prepared, |reference| {
-            outputs
-                .remove(reference.destination_attribute.as_str())
-                .ok_or_else(|| reference_error(&change.address, reference, "was not resolved"))
-        })
+        let consumer = SourceAddress::Resource(change.address.clone());
+        let declaration =
+            data_sources::declaration(&self.infrastructure, &consumer).ok_or_else(|| {
+                InfrastructureError::configuration("resource declaration disappeared")
+            })?;
+        self.prepare_configuration(
+            ConfigurationInput {
+                consumer: &consumer,
+                declaration,
+                references: &change.references,
+                block: destination_block,
+                phase: ConfigurationPhase::Apply,
+            },
+            |reference| {
+                outputs
+                    .get(&reference.destination)
+                    .cloned()
+                    .ok_or_else(|| reference_error(&change.address, reference, "was not resolved"))
+            },
+        )
+        .await
     }
 
     /// The recorded value of one source output, upgraded to the provider's
@@ -2107,30 +2463,23 @@ impl InfrastructureEngine {
         let block = &schema.block;
         let value_type = block.implied_type();
 
-        let configuration = if input.references.references().is_empty() {
-            Value::from_configuration_json(
-                &serde_json::Value::Object(declaration.configuration.clone()),
-                &value_type,
-            )
-        } else {
-            input
-                .references
-                .prepare(&declaration.configuration, &value_type)
-        }
-        .map_err(|error| InfrastructureError::configuration(format!("{address}: {error}")))?;
         // Check schema compatibility before any source output is copied
         // into this configuration.
         let sensitive_destinations =
             self.validate_output_references(&address, &input.references, block)?;
-        let configuration = if input.references.references().is_empty() {
-            configuration
-        } else {
-            input
-                .references
-                .resolve_planned(&configuration, |reference| {
-                    planned_output(input.planned_outputs, reference)
-                })?
-        };
+        let consumer = SourceAddress::Resource(address.clone());
+        let configuration = self
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: &consumer,
+                    declaration,
+                    references: &input.references,
+                    block,
+                    phase: ConfigurationPhase::Planning,
+                },
+                |reference| planned_output(input.planned_outputs, reference),
+            )
+            .await?;
         let configuration = block.normalize_configuration(configuration);
         let mut sensitive = masked_attributes(block, sensitive_destinations);
         if let Some(row) = input.stored {
@@ -2139,7 +2488,7 @@ impl InfrastructureEngine {
             sensitive.dedup();
             register_stored_values(row, &sensitive);
         }
-        register_attributes(&configuration, &sensitive);
+        register_typed_attributes(&configuration, &sensitive, &value_type);
         let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
         let diagnostics = provider
             .client
@@ -2427,7 +2776,11 @@ impl InfrastructureEngine {
         })
     }
 
-    async fn ensure_provider(&mut self, name: &str, warnings: &mut Vec<String>) -> Result<()> {
+    async fn ensure_provider_schema(
+        &mut self,
+        name: &str,
+        warnings: &mut Vec<String>,
+    ) -> Result<()> {
         self.ensure_not_stopped()?;
         if self.providers.contains_key(name) {
             return Ok(());
@@ -2474,35 +2827,6 @@ impl InfrastructureEngine {
                 &schema,
             )?;
 
-            let value_type = schema.provider.block.implied_type();
-            let configuration = schema.provider.block.normalize_configuration(
-                Value::from_configuration_json(
-                    &serde_json::Value::Object(declaration.configuration.clone()),
-                    &value_type,
-                )
-                .map_err(|error| {
-                    InfrastructureError::configuration(format!("provider '{name}': {error}"))
-                })?,
-            );
-            let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
-            self.ensure_not_stopped()?;
-            let diagnostics = client
-                .validate_provider_configuration(configuration_bytes.clone())
-                .await?;
-            self.ensure_not_stopped()?;
-            check_diagnostics(
-                &format!("validate provider '{name}'"),
-                &diagnostics,
-                warnings,
-            )?;
-            self.ensure_not_stopped()?;
-            let diagnostics = client.configure(configuration_bytes).await?;
-            self.ensure_not_stopped()?;
-            check_diagnostics(
-                &format!("configure provider '{name}'"),
-                &diagnostics,
-                warnings,
-            )?;
             Ok::<_, InfrastructureError>(schema)
         }
         .await;
@@ -2521,8 +2845,71 @@ impl InfrastructureEngine {
                 client,
                 schema,
                 source: source.to_string(),
+                configured: false,
             },
         );
+        Ok(())
+    }
+
+    async fn ensure_provider(&mut self, name: &str, warnings: &mut Vec<String>) -> Result<()> {
+        self.ensure_provider_schema(name, warnings).await?;
+        if self.loaded(name)?.configured {
+            return Ok(());
+        }
+        let initialized = async {
+            let provider = self.loaded(name)?;
+            let declaration = self.infrastructure.providers.get(name).ok_or_else(|| {
+                InfrastructureError::configuration("provider declaration disappeared")
+            })?;
+            let block = &provider.schema.provider.block;
+            let value_type = block.implied_type();
+            let raw_configuration = Value::from_configuration_json(
+                &serde_json::Value::Object(declaration.configuration.clone()),
+                &Type::Dynamic,
+            )?;
+            register_attributes(&raw_configuration, &block.sensitive_attributes());
+            let configuration = block.normalize_configuration(
+                Value::from_configuration_json(
+                    &serde_json::Value::Object(declaration.configuration.clone()),
+                    &value_type,
+                )
+                .map_err(|error| {
+                    InfrastructureError::configuration(format!("provider '{name}': {error}"))
+                })?,
+            );
+            let bytes = type_system::to_message_pack(&configuration, &value_type)?;
+            // Low-level callers can supply provider credentials directly.
+            // Register them before validation/configuration RPCs can echo them.
+            register_typed_attributes(&configuration, &block.sensitive_attributes(), &value_type);
+            self.ensure_not_stopped()?;
+            let diagnostics = provider
+                .client
+                .validate_provider_configuration(bytes.clone())
+                .await?;
+            self.ensure_not_stopped()?;
+            check_diagnostics(
+                &format!("validate provider '{name}'"),
+                &diagnostics,
+                warnings,
+            )?;
+            let diagnostics = provider.client.configure(bytes).await?;
+            self.ensure_not_stopped()?;
+            check_diagnostics(
+                &format!("configure provider '{name}'"),
+                &diagnostics,
+                warnings,
+            )
+        }
+        .await;
+        if let Err(error) = initialized {
+            if let Some(provider) = self.providers.remove(name) {
+                provider.client.shutdown().await;
+            }
+            return Err(error);
+        }
+        if let Some(provider) = self.providers.get_mut(name) {
+            provider.configured = true;
+        }
         Ok(())
     }
 
@@ -2813,8 +3200,8 @@ fn applied_value(
     value_type: &Type,
     context: &str,
 ) -> Result<Value> {
-    match provider_value(response.new_state.as_ref(), value_type) {
-        Ok((returned, _)) => Ok(returned),
+    match decode_provider_value(response.new_state.as_ref(), value_type) {
+        Ok(returned) => Ok(returned),
         Err(decode_error) => {
             check_diagnostics(context, &response.diagnostics, &mut Vec::new())?;
             Err(decode_error)
@@ -3096,6 +3483,17 @@ async fn upgrade_state(
             json_error_category(&error)
         ))
     })?;
+    if row.schema_version == schema.version {
+        // UpgradeResourceState accepts raw JSON and provider codecs can round
+        // or underflow its numbers. Check with the known schema before sending.
+        let stored = type_system::from_json_bytes(&state_json, &value_type)?;
+        let _ = type_system::to_message_pack(&stored, &value_type)?;
+    } else {
+        // The old schema is unavailable. A numeric-looking string may be our
+        // lossless numeric state representation, so check it conservatively
+        // instead of risking silent corruption during a schema upgrade.
+        validate_historical_state_numbers(&row.state, 0)?;
+    }
     let upgrade = provider
         .client
         .upgrade_resource_state(&row.address.resource_type, row.schema_version, state_json)
@@ -3112,6 +3510,37 @@ async fn upgrade_state(
     )?;
     check_upgraded(&row.address, &upgraded)?;
     Ok((upgraded, upgraded_bytes))
+}
+
+fn validate_historical_state_numbers(value: &serde_json::Value, depth: usize) -> Result<()> {
+    if depth >= 128 {
+        return Err(InfrastructureError::state(
+            "stored state nesting exceeds the supported depth",
+        ));
+    }
+    match value {
+        serde_json::Value::Number(number) => {
+            let value = Value::Number(number.clone().into());
+            let _ = type_system::to_message_pack(&value, &Type::Number)?;
+        }
+        serde_json::Value::String(text) => {
+            if let Ok(number) = text.parse::<type_system::Number>() {
+                let _ = type_system::to_message_pack(&Value::Number(number), &Type::Number)?;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                validate_historical_state_numbers(item, depth + 1)?;
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for item in fields.values() {
+                validate_historical_state_numbers(item, depth + 1)?;
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) => {}
+    }
+    Ok(())
 }
 
 /// A stored record's state in the provider's current schema: decoded
@@ -3338,26 +3767,44 @@ fn resource_schema<'provider>(
     })
 }
 
-/// Decode a provider value and produce the MessagePack to send it back
-/// with. MessagePack from the provider is kept verbatim; JSON (which
-/// Terraform also accepts) is decoded and re-encoded. Absent or empty is
-/// null.
+/// Decode a provider value without preparing another provider request.
+/// Absent or empty values are null.
+fn decode_provider_value(
+    value: Option<&protocol::DynamicValue>,
+    value_type: &Type,
+) -> Result<Value> {
+    match value {
+        Some(dynamic_value) if !dynamic_value.message_pack.is_empty() => {
+            type_system::from_message_pack(&dynamic_value.message_pack, value_type)
+        }
+        Some(dynamic_value) if !dynamic_value.json.is_empty() => {
+            type_system::from_json_bytes(&dynamic_value.json, value_type)
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+/// Decode a value and prepare its bytes for a subsequent provider call. Apply
+/// responses use decode_provider_value instead: a successful mutation must be
+/// recorded even when its returned number cannot safely be sent back later.
 fn provider_value(
     value: Option<&protocol::DynamicValue>,
     value_type: &Type,
 ) -> Result<(Value, Vec<u8>)> {
-    match value {
-        Some(dynamic_value) if !dynamic_value.message_pack.is_empty() => Ok((
-            type_system::from_message_pack(&dynamic_value.message_pack, value_type)?,
-            dynamic_value.message_pack.clone(),
-        )),
-        Some(dynamic_value) if !dynamic_value.json.is_empty() => {
-            let decoded = type_system::from_json_bytes(&dynamic_value.json, value_type)?;
-            let bytes = type_system::to_message_pack(&decoded, value_type)?;
-            Ok((decoded, bytes))
+    let decoded = decode_provider_value(value, value_type)?;
+    let bytes = match value {
+        Some(dynamic_value) if !dynamic_value.message_pack.is_empty() => {
+            // Keep provider bytes to preserve unknown refinements, but check
+            // every decoded number before reusing them in another request.
+            let _ = type_system::to_message_pack(&decoded, value_type)?;
+            dynamic_value.message_pack.clone()
         }
-        _ => Ok((Value::Null, NULL_MESSAGE_PACK.to_vec())),
-    }
+        Some(dynamic_value) if !dynamic_value.json.is_empty() => {
+            type_system::to_message_pack(&decoded, value_type)?
+        }
+        _ => NULL_MESSAGE_PACK.to_vec(),
+    };
+    Ok((decoded, bytes))
 }
 
 fn is_error(diagnostic: &Diagnostic) -> bool {
@@ -3446,19 +3893,12 @@ impl OutputReferenceCheck<'_> {
             declared_type,
         } = *self;
         let destination_attribute = destination_block
-            .attributes
-            .get(&reference.destination_attribute)
-            .filter(|attribute| {
-                attribute.nested.is_none()
-                    && attribute.presence != crate::schema::Presence::Computed
-                    && !attribute.write_only
-                    && is_scalar(&attribute.value_type)
-            })
-            .ok_or_else(|| {
+            .reference_destination(&reference.destination)
+            .map_err(|_| {
                 reference_error(
                     destination,
                     reference,
-                    "destination must be a settable top-level scalar argument",
+                    "destination must be a settable scalar path",
                 )
             })?;
         let source_attribute = source_block
@@ -3490,7 +3930,7 @@ impl OutputReferenceCheck<'_> {
                 ));
             }
         }
-        if source_attribute.value_type != destination_attribute.value_type {
+        if &source_attribute.value_type != destination_attribute.value_type() {
             return Err(reference_error(
                 destination,
                 reference,
@@ -3548,6 +3988,12 @@ fn register_sensitive_values(change: &ResourceChange) {
     }
 }
 
+fn register_typed_sensitive_values(change: &ResourceChange, value_type: &Type) {
+    for value in [&change.before, &change.after] {
+        register_typed_attributes(value, &change.sensitive, value_type);
+    }
+}
+
 fn register_value_strings(value: &Value) {
     match value {
         Value::String(text) => cuenv_events::register_secret(text.clone()),
@@ -3577,7 +4023,7 @@ fn reference_error(
 ) -> InfrastructureError {
     InfrastructureError::configuration(format!(
         "resource {destination} configuration.{}: output {}.{} {reason}",
-        reference.destination_attribute, reference.source, reference.attribute
+        reference.destination, reference.source, reference.attribute
     ))
 }
 
@@ -3639,6 +4085,9 @@ pub fn render_plan(plan: &Plan) -> String {
             "read during plan"
         };
         let _ = writeln!(rendered, "  <= data.{} ({timing})", read.address);
+        for path in sensitive_reference_paths(&read.references, &read.sensitive) {
+            let _ = writeln!(rendered, "      # {path} = (sensitive)");
+        }
     }
     for change in &plan.changes {
         let label = match change.action {
@@ -3674,6 +4123,9 @@ pub fn render_plan(plan: &Plan) -> String {
             rendered.push_str(&line);
             rendered.push('\n');
         }
+        for path in sensitive_reference_paths(&change.references, &change.sensitive) {
+            let _ = writeln!(rendered, "      # {path} = (sensitive)");
+        }
     }
     let summary = plan.summary();
     let _ = writeln!(
@@ -3688,6 +4140,43 @@ pub fn render_plan(plan: &Plan) -> String {
         summary.unchanged
     );
     rendered
+}
+
+/// Describe nested reference locations without exposing their values or map
+/// keys. Ordinary event redaction still applies, including historical secrets
+/// whose text happens to equal a fixed schema field label.
+fn sensitive_reference_paths(
+    references: &ConfigurationReferences,
+    sensitive: &[String],
+) -> BTreeSet<String> {
+    references
+        .references()
+        .iter()
+        .filter(|reference| {
+            reference.destination.steps().len() > 1
+                && sensitive.contains(&reference.destination_attribute)
+        })
+        .map(|reference| {
+            let mut rendered = String::new();
+            for step in reference.destination.steps() {
+                match step {
+                    PathStep::Attribute(name) => {
+                        if !rendered.is_empty() {
+                            rendered.push('.');
+                        }
+                        rendered.push_str(
+                            &crate::references::DestinationPath::attribute(name).to_string(),
+                        );
+                    }
+                    PathStep::Key(_) => rendered.push_str("[<hidden key>]"),
+                    PathStep::Index(index) => {
+                        let _ = write!(rendered, "[{index}]");
+                    }
+                }
+            }
+            rendered
+        })
+        .collect()
 }
 
 fn attribute_lines(change: &ResourceChange) -> Vec<String> {

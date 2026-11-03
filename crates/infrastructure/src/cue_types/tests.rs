@@ -194,17 +194,17 @@ import (
 }
 
 #Configuration: {
-	keepers?: {[string]: string}
+	keepers?: {[string]: string | {cuenv_schema.#InfrastructureOutputReference}}
 	// The length (in words) of the pet name.
 	length?: number | {cuenv_schema.#InfrastructureOutputReference}
 	// Deprecated: Use `separator`.
 	prefix?: string | {cuenv_schema.#InfrastructureOutputReference}
 	rule!: [...{
 		"for"?: {
-			cidr!: string
-			ports!: [number, number]
+			cidr!: string | {cuenv_schema.#InfrastructureOutputReference}
+			ports!: [number | {cuenv_schema.#InfrastructureOutputReference}, number | {cuenv_schema.#InfrastructureOutputReference}]
 		}
-		port!: number
+		port!: number | {cuenv_schema.#InfrastructureOutputReference}
 	}] & list.MinItems(1) & list.MaxItems(3)
 	// The provider chooses a value when this is not set.
 	separator?: string | {cuenv_schema.#InfrastructureOutputReference}
@@ -435,6 +435,7 @@ fn labels_that_are_not_plain_identifiers_are_quoted() {
     // A `number` field would shadow the predeclared type `number`.
     assert_eq!(label("number"), "\"number\"");
     assert_eq!(label("list"), "\"list\"");
+    assert_eq!(label("cuenv_schema"), "\"cuenv_schema\"");
 }
 
 #[test]
@@ -463,7 +464,7 @@ fn protocol_six_nested_attributes_are_rendered_recursively() {
     package.configuration(&block);
     assert_eq!(
         package.body,
-        "#Configuration: {\n\ttags?: {[string]: {\n\t\tname!: string\n\t}}\n}\n"
+        "#Configuration: {\n\ttags?: {[string]: {\n\t\tname!: string | {cuenv_schema.#InfrastructureOutputReference}\n\t}}\n}\n"
     );
 }
 
@@ -504,6 +505,299 @@ const INFRASTRUCTURE_SCHEMA: [(&str, &str); 4] = [
 fn write_infrastructure_schema(directory: &Path) -> TestResult {
     for (name, contents) in INFRASTRUCTURE_SCHEMA {
         std::fs::write(directory.join(name), contents)?;
+    }
+    Ok(())
+}
+
+fn generated_cue_module(types: &GeneratedTypes) -> TestResult<tempfile::TempDir> {
+    let directory = tempfile::tempdir()?;
+    initialize_cue_module(directory.path())?;
+    std::fs::write(
+        directory.path().join("cue.mod/module.cue"),
+        "module: \"github.com/cuenv/cuenv\"\nlanguage: version: \"v0.14.1\"\n",
+    )?;
+    let shared_schema = directory.path().join("schema");
+    std::fs::create_dir_all(&shared_schema)?;
+    write_infrastructure_schema(&shared_schema)?;
+    for (path, contents) in &types.files {
+        let path = directory.path().join(&types.directory).join(path);
+        std::fs::create_dir_all(path.parent().ok_or("generated path has no parent")?)?;
+        std::fs::write(path, contents)?;
+    }
+    Ok(directory)
+}
+
+fn reference_shape_block() -> Block {
+    let mut block = Block::default();
+    block.attributes.insert(
+        "output_token".to_string(),
+        attribute(Type::String, Presence::Computed),
+    );
+    for (name, value_type) in [
+        ("sequence", Type::List(Box::new(Type::String))),
+        ("mapping", Type::Map(Box::new(Type::String))),
+        ("pair", Type::Tuple(vec![Type::String, Type::Number])),
+        (
+            "object",
+            Type::Object(BTreeMap::from([
+                ("token".to_string(), Type::String),
+                ("sibling".to_string(), Type::Boolean),
+            ])),
+        ),
+        (
+            "unordered",
+            Type::Set(Box::new(Type::Object(BTreeMap::from([(
+                "token".to_string(),
+                Type::String,
+            )])))),
+        ),
+        ("unordered_strings", Type::Set(Box::new(Type::String))),
+    ] {
+        block
+            .attributes
+            .insert(name.to_string(), attribute(value_type, Presence::Optional));
+    }
+    let mut write_only = attribute(Type::String, Presence::Optional);
+    write_only.write_only = true;
+    let children = BTreeMap::from([
+        (
+            "token".to_string(),
+            attribute(Type::String, Presence::Required),
+        ),
+        (
+            "sibling".to_string(),
+            attribute(Type::String, Presence::Required),
+        ),
+        (
+            "computed".to_string(),
+            attribute(Type::String, Presence::Computed),
+        ),
+        ("write_only".to_string(), write_only),
+    ]);
+    for (name, nesting) in [
+        ("nested_object", Nesting::Single),
+        ("nested_group", Nesting::Group),
+        ("nested_sequence", Nesting::List),
+        ("nested_mapping", Nesting::Map),
+        ("nested_unordered", Nesting::Set),
+    ] {
+        block.attributes.insert(
+            name.to_string(),
+            Attribute {
+                nested: Some(NestedAttributes {
+                    attributes: children.clone(),
+                    nesting,
+                }),
+                ..attribute(Type::Dynamic, Presence::Optional)
+            },
+        );
+        block.blocks.insert(
+            format!("{name}_block"),
+            NestedBlock {
+                block: Block {
+                    attributes: children.clone(),
+                    ..Block::default()
+                },
+                nesting,
+                minimum_items: 0,
+                maximum_items: 0,
+            },
+        );
+    }
+    block
+}
+
+#[test]
+#[ignore = "requires the CUE command"]
+fn generated_nested_references_accept_stable_scalar_paths_and_reject_set_paths() -> TestResult {
+    let shape = Schema {
+        version: 0,
+        block: reference_shape_block(),
+    };
+    let schema = ProviderSchema {
+        provider: shape.clone(),
+        resources: HashMap::from([("example_shapes".to_string(), shape.clone())]),
+        data_sources: HashMap::from([("example_shapes".to_string(), shape)]),
+        capabilities: ProviderCapabilities::default(),
+    };
+    let source = source();
+    let types = render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "1.2.3",
+        },
+    )?;
+    let directory = generated_cue_module(&types)?;
+    for kind in [
+        ConfigurationKind::Provider,
+        ConfigurationKind::Resource,
+        ConfigurationKind::DataSource,
+    ] {
+        let (import_path, package) = match kind {
+            ConfigurationKind::Provider => (types.provider_import(), types.package_name.as_str()),
+            ConfigurationKind::Resource => {
+                (types.resource_import("example_shapes"), "example_shapes")
+            }
+            ConfigurationKind::DataSource => {
+                (types.data_source_import("example_shapes"), "example_shapes")
+            }
+        };
+        for reference in [
+            r#"{fromResource: "example_shapes.producer", attribute: "token"}"#,
+            r#"{fromDataSource: "example_shapes.producer", attribute: "token"}"#,
+        ] {
+            let mut examples = vec![
+                (format!("{{sequence: [{reference}, \"ordinary\"]}}"), true),
+                (
+                    format!("{{mapping: {{\"key.with[punctuation]\": {reference}}}}}"),
+                    true,
+                ),
+                (format!("{{pair: [{reference}, {reference}]}}"), true),
+                (
+                    format!("{{object: {{token: {reference}, sibling: true}}}}"),
+                    true,
+                ),
+                (format!("{{unordered: [{{token: {reference}}}]}}"), false),
+                (format!("{{unordered_strings: [{reference}]}}"), false),
+                (format!("{{sequence: {reference}}}"), false),
+                (format!("{{pair: {reference}}}"), false),
+                (format!("{{object: {reference}}}"), false),
+            ];
+            for suffix in ["", "_block"] {
+                for (name, value, accepted) in [
+                    (
+                        "nested_object",
+                        format!("{{token: {reference}, sibling: \"ordinary\"}}"),
+                        true,
+                    ),
+                    (
+                        "nested_group",
+                        format!("{{token: {reference}, sibling: \"ordinary\"}}"),
+                        true,
+                    ),
+                    (
+                        "nested_sequence",
+                        format!("[{{token: {reference}, sibling: \"ordinary\"}}]"),
+                        true,
+                    ),
+                    (
+                        "nested_mapping",
+                        format!(
+                            "{{\"key.with[punctuation]\": {{token: {reference}, sibling: \"ordinary\"}}}}"
+                        ),
+                        true,
+                    ),
+                    (
+                        "nested_unordered",
+                        format!("[{{token: {reference}, sibling: \"ordinary\"}}]"),
+                        false,
+                    ),
+                    (
+                        "nested_object",
+                        format!(
+                            "{{token: \"literal\", sibling: \"ordinary\", computed: {reference}}}"
+                        ),
+                        false,
+                    ),
+                    (
+                        "nested_object",
+                        format!(
+                            "{{token: \"literal\", sibling: \"ordinary\", write_only: {reference}}}"
+                        ),
+                        false,
+                    ),
+                    ("nested_object", reference.to_string(), false),
+                ] {
+                    examples.push((format!("{{{name}{suffix}: {value}}}"), accepted));
+                }
+            }
+            for (configuration, accepted) in examples {
+                std::fs::write(
+                    directory.path().join("test.cue"),
+                    format!(
+                        "package test\nimport {import_path}\nvalue: {package}.#Configuration & {configuration}\n"
+                    ),
+                )?;
+                let output = cue_export(directory.path())?;
+                assert_eq!(
+                    output.status.success(),
+                    accepted && kind != ConfigurationKind::Provider,
+                    "{configuration}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+        // Literal values below sets remain usable; only reference traversal is
+        // excluded. This also proves the provider package still renders them.
+        std::fs::write(
+            directory.path().join("test.cue"),
+            format!(
+                "package test\nimport {import_path}\nvalue: {package}.#Configuration & {{unordered: [{{token: \"literal\"}}], nested_unordered: [{{token: \"literal\", sibling: \"ordinary\"}}]}}\n"
+            ),
+        )?;
+        let output = cue_export(directory.path())?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the CUE command"]
+fn generated_native_selectors_keep_nested_scalar_configuration_typed() -> TestResult {
+    let shape = Schema {
+        version: 0,
+        block: reference_shape_block(),
+    };
+    let schema = ProviderSchema {
+        provider: Schema {
+            version: 0,
+            block: Block::default(),
+        },
+        resources: HashMap::from([("example_shapes".to_string(), shape.clone())]),
+        data_sources: HashMap::from([("example_shapes".to_string(), shape)]),
+        capabilities: ProviderCapabilities::default(),
+    };
+    let source = source();
+    let types = render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "1.2.3",
+        },
+    )?;
+    let directory = generated_cue_module(&types)?;
+    for (import_path, definition) in [
+        (types.resource_import("example_shapes"), "#Resource"),
+        (types.data_source_import("example_shapes"), "#DataSource"),
+    ] {
+        std::fs::write(
+            directory.path().join("test.cue"),
+            format!(
+                r#"
+package test
+import {import_path}
+producer: example_shapes.{definition} & {{configuration: {{}}, outputs: output_token: "native-output"}}
+consumer: example_shapes.{definition} & {{configuration: {{
+    nested_object: {{token: producer.outputs.output_token, sibling: "ordinary"}}
+}}}}
+value: consumer.configuration
+"#
+            ),
+        )?;
+        let output = cue_export(directory.path())?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(value["nested_object"]["token"], "native-output");
+        assert_eq!(value["nested_object"]["sibling"], "ordinary");
     }
     Ok(())
 }
@@ -567,7 +861,7 @@ fn output_reference_schema_is_closed_and_requires_an_address_and_attribute() -> 
 
 #[test]
 #[ignore = "requires the CUE command"]
-fn generated_references_are_limited_to_top_level_primitive_arguments() -> TestResult {
+fn generated_references_accept_nested_primitive_arguments() -> TestResult {
     let mut schema = provider_schema();
     let resource = schema
         .resources
@@ -611,7 +905,7 @@ fn generated_references_are_limited_to_top_level_primitive_arguments() -> TestRe
         (ConfigurationKind::Provider, format!("{{api_key: {reference}}}"), false),
         (ConfigurationKind::Resource, r#"{rule: [{port: 80}], length: 2, separator: "-", enabled: true}"#.to_string(), true),
         (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], separator: {reference}, length: {reference}, enabled: {reference}}}"), true),
-        (ConfigurationKind::Resource, format!("{{rule: [{{port: {reference}}}]}}"), false),
+        (ConfigurationKind::Resource, format!("{{rule: [{{port: {reference}}}]}}"), true),
         (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], labels: {reference}}}"), false),
         (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], id: {reference}}}"), false),
         (ConfigurationKind::Resource, format!("{{rule: [{{port: 80}}], token: {reference}}}"), false),
@@ -621,7 +915,7 @@ fn generated_references_are_limited_to_top_level_primitive_arguments() -> TestRe
         (ConfigurationKind::Resource, r#"{rule: [{port: 80}], separator: {fromResource: "cloudflare_zone.primary", fromDataSource: "cloudflare_zone.primary", attribute: "id"}}"#.to_string(), false),
         (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], separator: {reference}}}"), true),
         (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], separator: {data_reference}, length: {data_reference}, enabled: {data_reference}}}"), true),
-        (ConfigurationKind::DataSource, format!("{{rule: [{{port: {data_reference}}}]}}"), false),
+        (ConfigurationKind::DataSource, format!("{{rule: [{{port: {data_reference}}}]}}"), true),
         (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], labels: {data_reference}}}"), false),
         (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], id: {data_reference}}}"), false),
         (ConfigurationKind::DataSource, format!("{{rule: [{{port: 80}}], token: {data_reference}}}"), false),

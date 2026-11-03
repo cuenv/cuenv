@@ -17,6 +17,18 @@ pub enum InfrastructureError {
     #[error("infrastructure configuration error: {0}")]
     Configuration(String),
 
+    /// An immutable configuration worker timed out or could not be started.
+    /// This stops the run rather than treating the consumer as an isolated
+    /// provider diagnostic, because unfinished evaluation must not authorize
+    /// further changes.
+    #[error("CUE configuration evaluation for {consumer} {reason}")]
+    ConfigurationEvaluation {
+        /// Resource or data source being evaluated, without values.
+        consumer: String,
+        /// A fixed, value-free description of the failure.
+        reason: &'static str,
+    },
+
     /// Failure encoding or decoding Terraform values.
     #[error("value codec error: {0}")]
     Codec(String),

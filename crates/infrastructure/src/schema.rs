@@ -219,6 +219,23 @@ impl Nesting {
 }
 
 impl Block {
+    /// Validate a scalar reference destination against the complete schema.
+    ///
+    /// Unlike the implied cty type, this retains computed and write-only flags
+    /// on every protocol 6 nested attribute along the path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error for an absent or incompatible path, a
+    /// computed-only or write-only ancestor or leaf, traversal through a set or
+    /// unresolved dynamic type, or a nonscalar destination.
+    pub fn reference_destination(
+        &self,
+        path: &crate::references::DestinationPath,
+    ) -> Result<crate::references::ReferenceDestination> {
+        crate::references::ReferenceDestination::for_path(self, path)
+    }
+
     /// The cty object type values of this block are encoded against.
     #[must_use]
     pub fn implied_type(&self) -> Type {

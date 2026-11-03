@@ -16,6 +16,7 @@
 
 mod action;
 mod apply;
+mod configuration_evaluator;
 mod confirm;
 mod dispatch;
 mod evaluation;

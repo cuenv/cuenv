@@ -9,9 +9,9 @@ use crate::state::{ConditionalPut, ManagedResource, RecordVersion, StateLock};
 use crate::type_system::{Type, Value};
 
 use super::{
-    DeclarationGraph, InfrastructureEngine, ResourceAddress, ResourceChange, SourceAddress,
-    applied_value, data_source_schema, data_sources, masked_attributes, provider_value,
-    register_attributes, resource_schema,
+    InfrastructureEngine, ResourceAddress, ResourceChange, SourceAddress, applied_value,
+    data_source_schema, data_sources, decode_provider_value, masked_attributes, provider_value,
+    register_attributes, register_value_strings, resource_schema,
 };
 
 pub(super) struct ImportSensitivity<'input> {
@@ -48,12 +48,11 @@ impl InfrastructureEngine {
                 &format!("apply {}", retained.change.address),
             )
         } else {
-            sensitive_provider_value(SensitiveProviderValue {
+            sensitive_applied_value(SensitiveProviderValue {
                 value: input.response.new_state.as_ref(),
                 value_type: input.value_type,
                 sensitive,
             })
-            .map(|(value, _)| value)
         };
         if decoded.is_err() {
             self.retain_failed_sensitivity(retained).await?;
@@ -89,7 +88,7 @@ impl InfrastructureEngine {
         warnings: &mut Vec<String>,
     ) -> Result<Vec<String>> {
         self.output_sensitivity.clear();
-        let graph = DeclarationGraph::new(&self.infrastructure)?;
+        let graph = self.classified_graph()?;
         let target = SourceAddress::Resource(input.address.clone());
         let mut needed = BTreeSet::new();
         let mut pending = vec![target.clone()];
@@ -219,6 +218,61 @@ fn register_json_strings(value: &serde_json::Value) {
     }
 }
 
+/// Register current values using their provider schema. Fixed object field
+/// labels are schema metadata; map keys and dynamic shapes can contain secrets.
+/// Historical and malformed values keep the conservative, untyped registration.
+pub(super) fn register_typed_attributes(value: &Value, sensitive: &[String], value_type: &Type) {
+    let Type::Object(attributes) = value_type else {
+        register_attributes(value, sensitive);
+        return;
+    };
+    for name in sensitive {
+        if let Some(value) = value.attribute(name) {
+            match attributes.get(name) {
+                Some(value_type) => register_typed_strings(value, value_type),
+                None => register_value_strings(value),
+            }
+        }
+    }
+}
+
+fn register_typed_strings(value: &Value, value_type: &Type) {
+    match (value, value_type) {
+        (Value::Object(values), Type::Object(attributes)) => {
+            for (name, value) in values {
+                if let Some(value_type) = attributes.get(name) {
+                    register_typed_strings(value, value_type);
+                } else {
+                    cuenv_events::register_secret(name.clone());
+                    register_value_strings(value);
+                }
+            }
+        }
+        (Value::Object(values), Type::Map(element)) => {
+            for (name, value) in values {
+                cuenv_events::register_secret(name.clone());
+                register_typed_strings(value, element);
+            }
+        }
+        (Value::List(values), Type::List(element) | Type::Set(element)) => {
+            for value in values {
+                register_typed_strings(value, element);
+            }
+        }
+        (Value::List(values), Type::Tuple(elements)) => {
+            for (index, value) in values.iter().enumerate() {
+                match elements.get(index) {
+                    Some(value_type) => register_typed_strings(value, value_type),
+                    None => register_value_strings(value),
+                }
+            }
+        }
+        // In particular, a Typed(Object) inside Dynamic is runtime data, not
+        // static schema metadata. Do not use its labels to bypass registration.
+        _ => register_value_strings(value),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct SensitiveProviderValue<'value> {
     pub(super) value: Option<&'value DynamicValue>,
@@ -232,15 +286,29 @@ pub(super) struct SensitiveProviderValue<'value> {
 pub(super) fn sensitive_provider_value(
     input: SensitiveProviderValue<'_>,
 ) -> Result<(Value, Vec<u8>)> {
-    let decoded = provider_value(input.value, input.value_type).map_err(|_| {
-        // A schema mismatch in an unrelated field need not stop us protecting
-        // well-formed sensitive siblings. This is best effort only: malformed
-        // wire data can still prevent extraction, so diagnostics stay withheld.
-        register_raw_provider_values(input);
-        InfrastructureError::plugin("provider returned an undecodable value; diagnostics withheld because response values could be sensitive")
-    })?;
-    register_attributes(&decoded.0, input.sensitive);
+    let decoded =
+        provider_value(input.value, input.value_type).map_err(|_| sensitive_decode_error(input))?;
+    register_typed_attributes(&decoded.0, input.sensitive, input.value_type);
     Ok(decoded)
+}
+
+/// A completed mutation needs only decoding and redaction before recording;
+/// a later attempt to send this state may independently fail closed.
+fn sensitive_applied_value(input: SensitiveProviderValue<'_>) -> Result<Value> {
+    let decoded = decode_provider_value(input.value, input.value_type)
+        .map_err(|_| sensitive_decode_error(input))?;
+    register_typed_attributes(&decoded, input.sensitive, input.value_type);
+    Ok(decoded)
+}
+
+fn sensitive_decode_error(input: SensitiveProviderValue<'_>) -> InfrastructureError {
+    // A schema mismatch in an unrelated field need not stop us protecting
+    // well-formed sensitive siblings. This is best effort only: malformed
+    // wire data can still prevent extraction, so diagnostics stay withheld.
+    register_raw_provider_values(input);
+    InfrastructureError::plugin(
+        "provider returned an undecodable value; diagnostics withheld because response values could be sensitive",
+    )
 }
 
 fn register_raw_provider_values(input: SensitiveProviderValue<'_>) {

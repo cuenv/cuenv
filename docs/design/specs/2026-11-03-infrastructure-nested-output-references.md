@@ -1,7 +1,7 @@
 # Nested infrastructure output references
 
-Status: design and experiments in progress. The behavior described as a goal
-below is not yet implemented.
+Status: implementation and experiments in progress. The behavior described as
+a goal below is not yet fully validated.
 
 ## Problem
 
@@ -87,9 +87,85 @@ permanent bridge tests must also cover shared imports, numeric precision,
 snapshot ownership, safe diagnostics and repeated-specialization cost.
 
 A fake provider with a single nested consumer attribute has also reproduced
-the current limitation: an ordinary literal configuration passed, while five
+the current limitation: an ordinary literal configuration passed, while six
 nested descriptor cases failed with `config.token: expected string, got an
 object`. No live Cloudflare service was used.
+
+An additional experiment showed that CUE can hide an output reference inside a
+conditional, comprehension, dynamic label or index when a constraint narrows
+the source to a concrete value. These structural uses need explicit fail-closed
+checks; inspecting only the evaluated leaves is insufficient.
+
+The official Cloudflare 5.28.1 provider was tested with a loopback-only fake
+API and synthetic credentials. An in-progress engine successfully passed the
+token to the sink, preserved the create-only token when later reads omitted
+it, and replaced the sink when the token changed. A separate synthetic error
+revealed a missing provider-credential redaction registration; with the local
+fix, the provider error test masks both the copied token and the provider
+credential. These experiments do not establish behavior against a live
+Cloudflare account.
+
+Terraform's Go codecs decode numbers with finite precision. Experiments found
+that very large distinct integers can collapse to the same value and that a
+large integral float can change on a provider decode/encode round trip. Numeric
+values therefore use an infrastructure-local exact decimal representation;
+unsafe provider-bound values fail before the call instead of rounding silently.
+Values received from a provider remain recordable even when they cannot later
+be sent safely. State uses a typed numeric string where ordinary JSON cannot
+preserve the value, and cannot repair state rounded by older cuenv versions.
+The interoperability fixture exercises the protocol 5 and 6 codecs and typed
+JSON state with vendored dependencies in the Linux infrastructure E2E check.
+
+The opt-in `BenchmarkFrozenImportedGraph` exercises one 64-entry consumer with
+192 reference leaves and a 35-instance import graph (9,255 source bytes). One
+local run of 24 specializations after global dependency checks were added
+measured 218.5 ms and 300.1 MB allocated per call, with no increase in retained
+heap after garbage collection. The benchmark does not supply the complete
+reference and source scope used in production, and is not a multi-consumer plan
+benchmark or a peak-RSS measurement. A plan can specialize each native consumer
+more than once. Rebuilding and checking the graph per consumer can be expensive;
+measure full planning at larger scales before
+claiming that this approach scales to large stacks. Initial evaluation and each
+runtime specialization have bounded waiting and bounded worker admission, but
+an abandoned Go evaluation can retain memory and values until it finishes or
+the process exits; these limits do not forcibly cancel CUE.
+
+A separate bridge-only experiment used the full reference scope for consumers
+with three references each and a 35-instance import graph. It executed three
+sequential specializations per consumer to model unknown preflight, unknown
+planning and known apply. Median results over three runs were:
+
+| Consumers | Seconds | Cumulative allocation |
+| ---: | ---: | ---: |
+| 1 | 0.039 | 0.046 GB |
+| 8 | 0.859 | 1.188 GB |
+| 32 | 11.542 | 16.011 GB |
+| 64 | 46.337 | 62.085 GB |
+
+A second in-progress source snapshot reproduced 45.8 seconds and 62.1 GB at
+64 consumers. A prepared capability now reuses only the original snapshot's
+verified reference and dependency analysis. Every specialization still builds
+a fresh CUE context, fills its own values and validates the resulting instance.
+Three paired runs of the same workload, including initial freeze, inspection,
+validation and preparation, measured these medians:
+
+| Consumers | Fully checked | Prepared | Fully checked allocation | Prepared allocation |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 11.726 s | 1.121 s | 16.356 GB | 0.805 GB |
+| 64 | 45.546 s | 2.906 s | 62.759 GB | 1.875 GB |
+
+The CLI's additional bootstrap inspection was not included in either variant.
+These figures are allocation churn, not peak RSS or end-to-end CLI timing, and
+do not prove linear scaling. Run the opt-in experiment with:
+
+```sh
+CUENV_FROZEN_SCALING=1 GOMAXPROCS=4 SCALING_LAYERS=32 SCALING_REPETITIONS=3 \
+  go -C crates/cuengine test -timeout 30m -run '^TestScalingReviewProductionScope$' -count=1 -v
+```
+
+Set `CUENV_FROZEN_SCALING_VARIANT=prepared` to measure the prepared path with
+the same fixture. `setup_ms` and `setup_allocated_bytes` include preparation;
+add them to the three phase measurements when comparing totals.
 
 ## Proof and integration gates
 

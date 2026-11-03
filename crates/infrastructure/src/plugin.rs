@@ -2007,7 +2007,23 @@ mod tests {
             }
         }
         let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        // Keep two dispatchers registered so tracing-core rebuilds shared callsite
+        // interest from both, instead of a foreign thread's default subscriber.
+        let _other_dispatch = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
         let _guard = tracing::subscriber::set_default(CapturedTracing(captured.clone()));
+        // Parallel drains can register this shared callsite before the capture.
+        // Prime it explicitly, then discard those events before the race check.
+        spawn_log_drain(
+            "stand-in".into(),
+            b"metadata warmup\n".as_slice(),
+            ProviderLog::default(),
+        )
+        .await
+        .unwrap();
+        captured.lock().unwrap().clear();
+        std::thread::spawn(tracing::callsite::rebuild_interest_cache)
+            .join()
+            .unwrap();
         let output: &'static [u8] = b"panic: project-secret-123\n[DEBUG] project-secret-123\n";
         spawn_log_drain("stand-in".into(), output, ProviderLog::default())
             .await

@@ -21,13 +21,13 @@ const (
 
 // writeCueModule creates a CUE module in a temporary directory. files maps a
 // slash-separated path relative to the module root to its contents.
-func writeCueModule(t *testing.T, files map[string]string) string {
+func writeCueModule(t testing.TB, files map[string]string) string {
 	t.Helper()
 	return writeCueModuleAt(t, t.TempDir(), files)
 }
 
 // writeCueModuleAt creates a CUE module rooted at moduleRoot.
-func writeCueModuleAt(t *testing.T, moduleRoot string, files map[string]string) string {
+func writeCueModuleAt(t testing.TB, moduleRoot string, files map[string]string) string {
 	t.Helper()
 	allFiles := map[string]string{
 		"cue.mod/module.cue": fmt.Sprintf("module: %q\nlanguage: version: \"v0.14.1\"\n", testModulePath+"@v0"),

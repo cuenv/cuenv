@@ -42,37 +42,7 @@ impl OutputSelectors<'_> {
         }
     }
 
-    pub(super) fn evaluation(&self, project: &Value) -> Result<ReferenceEvaluation, CliError> {
-        let root = self.root();
-        let mut options = self.scanning();
-        for namespace in ["resources", "data"] {
-            if let Some(declarations) = project
-                .pointer(&pointer(&root))
-                .and_then(|configuration| configuration.get(namespace))
-                .and_then(Value::as_object)
-            {
-                for (name, declaration) in declarations {
-                    if declaration.get("outputs").is_some() {
-                        let mut outputs = root.clone();
-                        outputs.extend([
-                            namespace.to_string(),
-                            name.clone(),
-                            "outputs".to_string(),
-                        ]);
-                        options.abstract_paths.push(quoted_path(&outputs));
-                    }
-                }
-            }
-        }
-        for reference in self.selected_references()? {
-            options
-                .deferred
-                .insert(reference.path.clone(), reference.target.clone());
-        }
-        Ok(options)
-    }
-
-    fn selected_references(&self) -> Result<Vec<&DirectReference>, CliError> {
+    pub(super) fn selected_references(&self) -> Result<Vec<&DirectReference>, CliError> {
         let root = self.root();
         let mut selected = Vec::new();
         for reference in self
@@ -90,7 +60,7 @@ impl OutputSelectors<'_> {
                 || target[..root.len()] != root
                 || !is_declaration_namespace(&target[root.len()])
                 || target[root.len() + 2] != "outputs"
-                || destination.len() != root.len() + 4
+                || destination.len() < root.len() + 4
                 || destination[..root.len()] != root
                 || !is_declaration_namespace(&destination[root.len()])
                 || destination[root.len() + 2] != "configuration"
@@ -99,7 +69,7 @@ impl OutputSelectors<'_> {
                 // alias another output: every namespace field declares one
                 // real provider attribute.
                 return Err(CliError::config(format!(
-                    "{}: output selectors require a whole top-level resource or data source argument and one top-level scalar output in the selected infrastructure configuration",
+                    "{}: output selectors require a resource or data source configuration argument and one top-level scalar output in the selected infrastructure configuration",
                     reference.path
                 )));
             }

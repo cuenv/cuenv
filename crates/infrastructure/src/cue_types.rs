@@ -63,13 +63,21 @@ pub const DATA_SOURCE_FILE_NAME: &str = "data_source.cue";
 /// Prefix of every schema digest.
 pub const SCHEMA_DIGEST_PREFIX: &str = "sha256:";
 
-/// Predeclared identifiers, and the `list` import, that generated types
+/// Predeclared identifiers and package imports that generated types
 /// refer to. A field with one of these names is written with a quoted label:
 /// an identifier label would shadow the predeclared one for every reference
 /// in the same struct (`length!: number` next to a `number` attribute), but
 /// a quoted label cannot be referenced.
-const REFERENCED_IDENTIFIERS: &[&str] =
-    &["bool", "number", "string", "int", "float", "bytes", "list"];
+const REFERENCED_IDENTIFIERS: &[&str] = &[
+    "bool",
+    "number",
+    "string",
+    "int",
+    "float",
+    "bytes",
+    "list",
+    "cuenv_schema",
+];
 
 /// CUE keywords, which are quoted when used as labels.
 const KEYWORDS: &[&str] = &[
@@ -469,6 +477,43 @@ enum ConfigurationKind {
     DataSource,
 }
 
+/// Reference destinations need stable field names or list/tuple positions.
+/// Provider configuration and every descendant of a set remain literal-only.
+#[derive(Clone, Copy)]
+enum ReferenceSupport {
+    Allowed,
+    Forbidden,
+}
+
+#[derive(Clone, Copy)]
+struct TypeContext {
+    depth: usize,
+    references: ReferenceSupport,
+}
+
+impl TypeContext {
+    const fn child(self) -> Self {
+        Self {
+            depth: self.depth + 1,
+            ..self
+        }
+    }
+
+    const fn without_references(self) -> Self {
+        Self {
+            references: ReferenceSupport::Forbidden,
+            ..self
+        }
+    }
+
+    const fn nested(self, nesting: Nesting) -> Self {
+        match nesting {
+            Nesting::Set => self.without_references(),
+            _ => self,
+        }
+    }
+}
+
 impl Package {
     fn new(release: &str, subject: &str, configuration_kind: ConfigurationKind) -> Self {
         let header = [
@@ -533,7 +578,16 @@ impl Package {
     }
 
     fn configuration(&mut self, block: &Block) {
-        let value = self.block_struct(block, 0);
+        let context = TypeContext {
+            depth: 0,
+            references: match self.configuration_kind {
+                ConfigurationKind::Provider => ReferenceSupport::Forbidden,
+                ConfigurationKind::Resource | ConfigurationKind::DataSource => {
+                    ReferenceSupport::Allowed
+                }
+            },
+        };
+        let value = self.block_struct(block, context);
         self.line(0, &format!("#Configuration: {value}"));
     }
 
@@ -558,7 +612,14 @@ impl Package {
                         "// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.",
                     );
                 }
-                self.field(1, &label(name), &type_expression(&attribute.value_type, 1));
+                let value = self.type_expression(
+                    &attribute.value_type,
+                    TypeContext {
+                        depth: 1,
+                        references: ReferenceSupport::Forbidden,
+                    },
+                );
+                self.field(1, &label(name), &value);
             }
         }
         self.line(0, "}");
@@ -566,25 +627,25 @@ impl Package {
 
     /// The struct a block's configuration is written as, opening at the
     /// current position and closing at `depth`.
-    fn block_struct(&mut self, block: &Block, depth: usize) -> String {
+    fn block_struct(&mut self, block: &Block, context: TypeContext) -> String {
         let mut fields = Fields::default();
         for (name, attribute) in &block.attributes {
-            if let Some(field) = self.attribute_field(name, attribute, depth + 1) {
+            if let Some(field) = self.attribute_field(name, attribute, context.child()) {
                 fields.0.insert(name.clone(), field);
             }
         }
         for (name, nested) in &block.blocks {
-            let field = self.nested_block_field(name, nested, depth + 1);
+            let field = self.nested_block_field(name, nested, context.child());
             fields.0.insert(name.clone(), field);
         }
-        fields.render(depth)
+        fields.render(context.depth)
     }
 
     fn attribute_field(
         &mut self,
         name: &str,
         attribute: &Attribute,
-        depth: usize,
+        context: TypeContext,
     ) -> Option<Field> {
         if attribute.write_only || attribute.presence == Presence::Computed {
             return None;
@@ -596,21 +657,10 @@ impl Package {
         if attribute.sensitive {
             notes.push("Sensitive: plans show it as (sensitive).");
         }
-        let mut value = match &attribute.nested {
-            Some(nested) => self.nested_attributes(nested, depth),
-            None => type_expression(&attribute.value_type, depth),
+        let value = match &attribute.nested {
+            Some(nested) => self.nested_attributes(nested, context),
+            None => self.type_expression(&attribute.value_type, context),
         };
-        if self.configuration_kind != ConfigurationKind::Provider
-            && depth == 1
-            && attribute.nested.is_none()
-            && matches!(
-                attribute.value_type,
-                Type::String | Type::Number | Type::Boolean
-            )
-        {
-            value.push_str(" | {cuenv_schema.#InfrastructureOutputReference}");
-            self.uses_output_reference = true;
-        }
         Some(Field {
             comments: documentation_lines(&attribute.documentation, &notes),
             label: label(name),
@@ -623,14 +673,15 @@ impl Package {
         })
     }
 
-    fn nested_attributes(&mut self, nested: &NestedAttributes, depth: usize) -> String {
+    fn nested_attributes(&mut self, nested: &NestedAttributes, context: TypeContext) -> String {
+        let context = context.nested(nested.nesting);
         let mut fields = Fields::default();
         for (name, attribute) in &nested.attributes {
-            if let Some(field) = self.attribute_field(name, attribute, depth + 1) {
+            if let Some(field) = self.attribute_field(name, attribute, context.child()) {
                 fields.0.insert(name.clone(), field);
             }
         }
-        let object = fields.render(depth);
+        let object = fields.render(context.depth);
         match nested.nesting {
             Nesting::Single | Nesting::Group => object,
             Nesting::List | Nesting::Set => format!("[...{object}]"),
@@ -638,8 +689,13 @@ impl Package {
         }
     }
 
-    fn nested_block_field(&mut self, name: &str, nested: &NestedBlock, depth: usize) -> Field {
-        let object = self.block_struct(&nested.block, depth);
+    fn nested_block_field(
+        &mut self,
+        name: &str,
+        nested: &NestedBlock,
+        context: TypeContext,
+    ) -> Field {
+        let object = self.block_struct(&nested.block, context.nested(nested.nesting));
         let required = nested.minimum_items > 0 && nested.nesting != Nesting::Group;
         let value = match nested.nesting {
             Nesting::Single | Nesting::Group => object,
@@ -662,6 +718,60 @@ impl Package {
             label: label(name),
             marker: if required { '!' } else { '?' },
             value,
+        }
+    }
+
+    /// Render only settable scalar leaves as descriptor destinations. Container
+    /// shape and set identity stay governed by the provider's actual cty type.
+    fn type_expression(&mut self, value_type: &Type, context: TypeContext) -> String {
+        match value_type {
+            Type::Boolean => self.scalar_expression("bool", context),
+            Type::Number => self.scalar_expression("number", context),
+            Type::String => self.scalar_expression("string", context),
+            Type::Dynamic => "_".to_string(),
+            Type::List(element) => format!("[...{}]", self.type_expression(element, context)),
+            Type::Set(element) => format!(
+                "[...{}]",
+                self.type_expression(element, context.without_references())
+            ),
+            Type::Map(element) => {
+                format!("{{[string]: {}}}", self.type_expression(element, context))
+            }
+            Type::Tuple(elements) => format!(
+                "[{}]",
+                elements
+                    .iter()
+                    .map(|element| self.type_expression(element, context))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            // A raw cty object requires all its fields. Unlike nested attribute
+            // schemas, it has no per-child computed or write-only metadata.
+            Type::Object(attributes) => {
+                let mut fields = Fields::default();
+                for (name, attribute_type) in attributes {
+                    fields.0.insert(
+                        name.clone(),
+                        Field {
+                            comments: Vec::new(),
+                            label: label(name),
+                            marker: '!',
+                            value: self.type_expression(attribute_type, context.child()),
+                        },
+                    );
+                }
+                fields.render(context.depth)
+            }
+        }
+    }
+
+    fn scalar_expression(&mut self, expression: &str, context: TypeContext) -> String {
+        match context.references {
+            ReferenceSupport::Allowed => {
+                self.uses_output_reference = true;
+                format!("{expression} | {{cuenv_schema.#InfrastructureOutputReference}}")
+            }
+            ReferenceSupport::Forbidden => expression.to_string(),
         }
     }
 }
@@ -703,44 +813,6 @@ impl Fields {
         output.push_str(&"\t".repeat(depth));
         output.push('}');
         output
-    }
-}
-
-/// The CUE expression for a cty type, for a value at `depth`.
-fn type_expression(value_type: &Type, depth: usize) -> String {
-    match value_type {
-        Type::Boolean => "bool".to_string(),
-        Type::Number => "number".to_string(),
-        Type::String => "string".to_string(),
-        Type::Dynamic => "_".to_string(),
-        Type::List(element) | Type::Set(element) => {
-            format!("[...{}]", type_expression(element, depth))
-        }
-        Type::Map(element) => format!("{{[string]: {}}}", type_expression(element, depth)),
-        Type::Tuple(elements) => format!(
-            "[{}]",
-            elements
-                .iter()
-                .map(|element| type_expression(element, depth))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        // Terraform requires every attribute of an object type.
-        Type::Object(attributes) => {
-            let mut fields = Fields::default();
-            for (name, attribute_type) in attributes {
-                fields.0.insert(
-                    name.clone(),
-                    Field {
-                        comments: Vec::new(),
-                        label: label(name),
-                        marker: '!',
-                        value: type_expression(attribute_type, depth + 1),
-                    },
-                );
-            }
-            fields.render(depth)
-        }
     }
 }
 

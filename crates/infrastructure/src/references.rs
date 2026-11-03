@@ -1,8 +1,9 @@
 //! Concrete configuration descriptors for references to resource outputs.
 //!
-//! Only a whole, top-level scalar argument can be a reference. Provider schema
-//! compatibility, dependency ordering and sensitivity belong to the engine;
-//! this module parses descriptors and replaces their configuration positions.
+//! Scalar destinations may be nested inside provider objects, maps and ordered
+//! collections. Provider schema compatibility, dependency ordering and
+//! sensitivity belong to the engine; this module classifies references and
+//! replaces their exact configuration positions.
 
 use cuenv_manifest::manifest::{InfrastructureDataSourceReference, InfrastructureOutputReference};
 use serde_json::{Map, Value as Json};
@@ -10,6 +11,18 @@ use serde_json::{Map, Value as Json};
 use crate::error::{InfrastructureError, Result};
 use crate::state::ResourceAddress;
 use crate::type_system::{Type, Value};
+
+mod destination;
+mod discovery;
+mod evaluation;
+mod path;
+
+pub use destination::ReferenceDestination;
+pub use evaluation::{
+    ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization, NativeReference,
+    OutputIdentity, SpecializedConfiguration,
+};
+pub use path::DestinationPath;
 
 /// Identity of an output producer. Data sources never have managed state addresses.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -48,15 +61,28 @@ impl std::fmt::Display for SourceAddress {
     }
 }
 
-/// One resource output used by a top-level configuration argument.
+/// One top-level resource or data output used by a configuration argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceOutputReference {
-    /// Argument of the consuming resource that receives the output.
+    /// Top-level argument containing the receiving scalar.
     pub destination_attribute: String,
+    /// Exact schema-classified position of the consuming scalar.
+    pub destination: DestinationPath,
+    /// Descriptor or native CUE provenance, retained independently of values.
+    pub origin: ReferenceOrigin,
     /// Full address of the resource that supplies the output.
     pub source: SourceAddress,
     /// Top-level attribute to read from that resource's output.
     pub attribute: String,
+}
+
+/// How a reference entered provider configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReferenceOrigin {
+    /// An explicit, schema-classified descriptor object.
+    Descriptor,
+    /// A direct selector in the original frozen CUE instance.
+    Native(NativeReference),
 }
 
 /// Parsed references, without configuration values or resolved outputs.
@@ -116,6 +142,8 @@ impl ConfigurationReferences {
             }
             references.push(ResourceOutputReference {
                 destination_attribute: destination_attribute.clone(),
+                destination: DestinationPath::attribute(destination_attribute.clone()),
+                origin: ReferenceOrigin::Descriptor,
                 source,
                 attribute,
             });
@@ -140,30 +168,38 @@ impl ConfigurationReferences {
     /// a destination is not a declared scalar attribute, or ordinary arguments
     /// do not conform to the supplied configuration type.
     pub fn prepare(&self, configuration: &Map<String, Json>, value_type: &Type) -> Result<Value> {
-        let descriptors = configuration
-            .values()
-            .filter(|value| is_descriptor(value))
-            .count();
-        if descriptors != self.references.len()
-            || self.references.iter().any(|reference| {
-                !configuration
-                    .get(&reference.destination_attribute)
-                    .is_some_and(is_descriptor)
+        let descriptors = Self::descriptors_for_type(configuration, value_type)?;
+        let json = Json::Object(configuration.clone());
+        let expected: Vec<_> = self
+            .references
+            .iter()
+            .filter(|reference| {
+                matches!(reference.origin, ReferenceOrigin::Descriptor)
+                    || reference
+                        .destination
+                        .json_value(&json)
+                        .is_some_and(is_descriptor)
             })
-        {
+            .map(|reference| {
+                let mut descriptor = reference.clone();
+                descriptor.origin = ReferenceOrigin::Descriptor;
+                descriptor
+            })
+            .collect();
+        if descriptors.references != expected {
             return Err(InfrastructureError::configuration(
                 "resource output references changed after extraction",
             ));
         }
-        let mut ordinary = configuration.clone();
-        let Type::Object(attributes) = value_type else {
+        let ordinary = configuration.clone();
+        let Type::Object(_) = value_type else {
             return Err(InfrastructureError::configuration(
                 "resource configuration must have an object type",
             ));
         };
         for reference in &self.references {
             if !matches!(
-                attributes.get(&reference.destination_attribute),
+                value_type.at_path(reference.destination.steps()),
                 Some(Type::Boolean | Type::Number | Type::String)
             ) {
                 return Err(problem(
@@ -171,16 +207,18 @@ impl ConfigurationReferences {
                     "references require a declared scalar destination attribute",
                 ));
             }
-            ordinary.insert(reference.destination_attribute.clone(), Json::Null);
         }
-        let mut prepared = Value::from_configuration_json(&Json::Object(ordinary), value_type)?;
-        let Value::Object(arguments) = &mut prepared else {
-            return Err(InfrastructureError::configuration(
-                "resource configuration must decode as an object",
-            ));
-        };
+        let mut ordinary = Json::Object(ordinary);
         for reference in &self.references {
-            arguments.insert(reference.destination_attribute.clone(), Value::Unknown);
+            reference
+                .destination
+                .replace_json(&mut ordinary, Json::Null)?;
+        }
+        let mut prepared = Value::from_configuration_json(&ordinary, value_type)?;
+        for reference in &self.references {
+            reference
+                .destination
+                .replace_value(&mut prepared, Value::Unknown)?;
         }
         Ok(prepared)
     }
@@ -222,8 +260,9 @@ impl ConfigurationReferences {
     #[must_use]
     pub fn has_unknown_destination(&self, configuration: &Value) -> bool {
         self.references.iter().any(|reference| {
-            configuration
-                .attribute(&reference.destination_attribute)
+            reference
+                .destination
+                .value(configuration)
                 .is_some_and(Value::is_unknown)
         })
     }
@@ -235,20 +274,12 @@ impl ConfigurationReferences {
         mut resolver: impl FnMut(&ResourceOutputReference) -> Result<Value>,
     ) -> Result<Value> {
         let mut configuration = prepared.clone();
-        let Value::Object(arguments) = &mut configuration else {
+        if !matches!(configuration.untyped(), Value::Object(_)) {
             return Err(InfrastructureError::configuration(
                 "resource configuration must be an object before resolving references",
             ));
-        };
+        }
         for reference in &self.references {
-            let destination = arguments
-                .get_mut(&reference.destination_attribute)
-                .ok_or_else(|| {
-                    problem(
-                        &reference.destination_attribute,
-                        "reference destination is missing from configuration",
-                    )
-                })?;
             let value = resolver(reference)?;
             if unknown_outputs == UnknownOutputs::Keep && value.is_unknown() {
                 continue;
@@ -262,7 +293,9 @@ impl ConfigurationReferences {
                     "resource output must resolve to a concrete, non-null scalar value",
                 ));
             }
-            *destination = value;
+            reference
+                .destination
+                .replace_value(&mut configuration, value)?;
         }
         Ok(configuration)
     }
@@ -333,6 +366,8 @@ mod tests {
             references.references(),
             &[ResourceOutputReference {
                 destination_attribute: "zone_id".to_string(),
+                destination: DestinationPath::attribute("zone_id"),
+                origin: ReferenceOrigin::Descriptor,
                 source: SourceAddress::Resource(ResourceAddress::new("cloudflare_zone", "primary")),
                 attribute: "id".to_string(),
             }]

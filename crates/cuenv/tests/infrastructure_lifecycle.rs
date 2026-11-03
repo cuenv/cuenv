@@ -1094,6 +1094,117 @@ infrastructure: {{
     Ok(())
 }
 
+/// Both forms reach a generated nested provider attribute through the real CLI.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn generated_nested_token_references_plan_and_apply_through_cli() -> TestResult {
+    use cuenv_infrastructure::Cancellation;
+    use cuenv_infrastructure::cue_types::{self, ProviderRelease};
+    use cuenv_infrastructure::registry::ProviderSource;
+
+    let provider =
+        PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let directory = prepare_directory()?;
+    let (schema, _) = cue_types::load_schema(&provider, &Cancellation::default()).await?;
+    let source = ProviderSource::parse("example.com/test/fake")?;
+    let types = cue_types::render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "0.0.0",
+        },
+    )?;
+    for (relative, content) in &types.files {
+        let path = directory.path().join(&types.directory).join(relative);
+        fs::create_dir_all(path.parent().ok_or("generated file has no parent")?)?;
+        fs::write(path, content)?;
+    }
+    let project = format!("nested-token-lifecycle-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    let store = TursoStateStore::try_new(backend.clone())?;
+    let configuration = format!(
+        r#"package examples
+import (
+ "github.com/cuenv/cuenv/schema"
+ "example.com/test/fake:fake_provider"
+ "example.com/test/fake/resources/fake_token_source"
+ "example.com/test/fake/resources/fake_token_consumer"
+)
+schema.#Project
+name: {project}
+infrastructure: {{
+ state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
+ providers: fake: {{
+  source: "example.com/test/fake"
+  path: {provider}
+  schemaDigest: {digest}
+  configuration: fake_provider.#Configuration & {{directory: {directory}}}
+ }}
+ resources: {{
+  producer: fake_token_source.#Resource & {{configuration: name: "first"}}
+  native: fake_token_consumer.#Resource & {{configuration: config: {{
+   label: "native"
+   token: infrastructure.resources.producer.outputs.token
+  }}}}
+  descriptor: fake_token_consumer.#Resource & {{configuration: config: {{
+   label: "descriptor"
+   token: {{fromResource: "fake_token_source.producer", attribute: "token"}}
+  }}}}
+ }}
+}}
+"#,
+        project = serde_json::to_string(&project)?,
+        url = serde_json::to_string(&backend.url)?,
+        provider = serde_json::to_string(&provider)?,
+        digest = serde_json::to_string(&types.schema_digest)?,
+        directory = serde_json::to_string(directory.path())?,
+    );
+    let lifecycle = Lifecycle::from_configuration(directory, configuration, &backend)?;
+    let preview = lifecycle.execute_text(&["plan"])?;
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let preview_text = String::from_utf8_lossy(&preview.stdout);
+    assert!(
+        preview_text.contains("config.token = (sensitive)"),
+        "{preview_text}"
+    );
+    assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["create"], 3);
+    let rows = store.list(&tenant).await?;
+    let producer = rows
+        .iter()
+        .find(|row| row.address.name == "producer")
+        .ok_or("producer missing")?;
+    let token = producer.state["token"].as_str().ok_or("token missing")?;
+    for name in ["native", "descriptor"] {
+        let consumer = rows
+            .iter()
+            .find(|row| row.address.name == name)
+            .ok_or("consumer missing")?;
+        assert_eq!(consumer.state["config"]["token"], token);
+        assert_eq!(consumer.dependencies, ["fake_token_source.producer"]);
+        assert_eq!(consumer.sensitive_attributes, ["config"]);
+    }
+    assert!(!lifecycle.transcript()?.contains(token));
+    let journal = fs::read_to_string(lifecycle.directory.path().join("journal.log"))?;
+    let source_create = journal
+        .find("token_source: Create")
+        .ok_or("producer was not created")?;
+    let sink_create = journal
+        .find("token_consumer: Create")
+        .ok_or("consumer was not created")?;
+    assert!(source_create < sink_create);
+    assert_eq!(lifecycle.run(&["plan"])?["summary"]["unchanged"], 3);
+    lifecycle.run(&["destroy", "--yes"])?;
+    Ok(())
+}
+
 /// Generated data source packages must type actual CUE inputs, and native and
 /// descriptor references must both resolve fresh lookup results through the CLI.
 #[tokio::test(flavor = "multi_thread")]

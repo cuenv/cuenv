@@ -6,11 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cuenv_events::emit_stderr;
+use cuenv_infrastructure::references::ConfigurationEvaluator;
 use cuenv_infrastructure::{
     AddressingChoice, Credentials, D1Configuration, D1StateStore, EngineOptions, EngineSetup,
-    InfrastructureError, ObjectLocation, ObjectStateStore, ObjectStoreConfiguration, PlanMode,
-    ProjectInstance, StateStore, TenantKey, TursoConfiguration, TursoStateStore, UnrecordedStore,
-    strip_control_characters,
+    InfrastructureEngine, InfrastructureError, ObjectLocation, ObjectStateStore,
+    ObjectStoreConfiguration, PlanMode, ProjectInstance, StateStore, TenantKey, TursoConfiguration,
+    TursoStateStore, UnrecordedStore, strip_control_characters,
 };
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;
 use cuenv_manifest::manifest::{
@@ -52,6 +53,7 @@ pub(super) struct CommandContext<'context> {
 /// What an engine is built from, besides the context.
 pub(super) struct EngineInputs {
     pub(super) infrastructure: Infrastructure,
+    pub(super) configuration_evaluator: Option<Arc<dyn ConfigurationEvaluator>>,
     /// Provider releases the CUE module's `cuenv.lock` pins.
     pub(super) locked_providers: BTreeMap<String, LockedInfrastructureProvider>,
     pub(super) project_directory: PathBuf,
@@ -280,6 +282,18 @@ pub(super) fn engine_setup(context: &CommandContext<'_>, inputs: EngineInputs) -
             locked_providers: inputs.locked_providers,
         },
     }
+}
+
+pub(super) fn engine(
+    context: &CommandContext<'_>,
+    mut inputs: EngineInputs,
+) -> InfrastructureEngine {
+    let evaluator = inputs.configuration_evaluator.take();
+    let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
+    if let Some(evaluator) = evaluator {
+        engine.set_configuration_evaluator(evaluator);
+    }
+    engine
 }
 
 pub(super) fn unrecorded_store(

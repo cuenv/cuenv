@@ -6,6 +6,8 @@ import (
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/format"
+	"cuelang.org/go/cue/parser"
 	"cuelang.org/go/cue/token"
 )
 
@@ -62,6 +64,9 @@ func directReferenceDepth(value, instance cue.Value, depth int) ([]string, error
 	dereferenced := cue.Dereference(value)
 	if dereferenced != value {
 		return directReferenceDepth(dereferenced, instance, depth+1)
+	}
+	if openBoundSliceSource(value) != nil {
+		return nil, nil
 	}
 	operation, operands := value.Expr()
 	if operation != cue.AndOp {
@@ -144,6 +149,22 @@ func primitiveDeclaration(value cue.Value) string {
 // Callers can reject those explicitly instead of treating a narrowed reference
 // as a literal value after CUE evaluation.
 func expressionReferences(value, instance cue.Value, depth int) ([][]string, error) {
+	paths, err := expressionReferencePaths(value, instance, depth)
+	if err != nil {
+		return nil, err
+	}
+	var references [][]string
+	for _, path := range paths {
+		if labels := regularLabels(path); labels != nil {
+			references = append(references, labels)
+		}
+	}
+	return references, nil
+}
+
+// expressionReferencePaths preserves list selectors for generic specialization;
+// the older descriptor API above continues to accept only ordinary field paths.
+func expressionReferencePaths(value, instance cue.Value, depth int) ([]cue.Path, error) {
 	if depth > 32 {
 		return nil, fmt.Errorf("CUE reference nesting exceeds 32 levels")
 	}
@@ -152,26 +173,28 @@ func expressionReferences(value, instance cue.Value, depth int) ([][]string, err
 		if root != instance {
 			return nil, nil
 		}
-		nested, err := expressionReferences(root.LookupPath(path), instance, depth+1)
+		nested, err := expressionReferencePaths(root.LookupPath(path), instance, depth+1)
 		if err != nil {
 			return nil, err
 		}
 		if len(nested) > 0 {
 			return nested, nil
 		}
-		labels := regularLabels(path)
-		if labels == nil {
+		if typedPath(path) == nil {
 			return nil, nil
 		}
-		return [][]string{labels}, nil
+		return []cue.Path{path}, nil
 	}
 	dereferenced := cue.Dereference(value)
 	if dereferenced != value {
-		return expressionReferences(dereferenced, instance, depth+1)
+		return expressionReferencePaths(dereferenced, instance, depth+1)
+	}
+	if slice := openBoundSliceSource(value); slice != nil {
+		return inspectRawReferencePaths(rawReferenceInspection{value: value, instance: instance, expression: slice, depth: depth + 1, originalSource: true})
 	}
 	operation, operands := value.Expr()
 	if operation == cue.NoOp {
-		return rawExpressionReferences(value, instance, depth+1)
+		return rawExpressionReferencePaths(value, instance, depth+1)
 	}
 	if operation == cue.OrOp {
 		// Non-defaulted disjunction operands retain their evaluated scopes.
@@ -185,13 +208,13 @@ func expressionReferences(value, instance cue.Value, depth int) ([][]string, err
 			return !hasDefault
 		}, nil)
 		if hasDefault {
-			return rawExpressionReferences(value, instance, depth+1)
+			return rawExpressionReferencePaths(value, instance, depth+1)
 		}
 	}
-	var references [][]string
+	var references []cue.Path
 	for _, operand := range operands {
 
-		found, err := expressionReferences(operand, instance, depth+1)
+		found, err := expressionReferencePaths(operand, instance, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -200,17 +223,56 @@ func expressionReferences(value, instance cue.Value, depth int) ([][]string, err
 	return references, nil
 }
 
+// The pinned evaluator's Expr constructs operands for absent slice bounds and
+// panics on the nil operand. Inspect retained source in its original scope,
+// without inventing bounds or replacing CUE's own evaluation of the slice.
+func openBoundSliceSource(value cue.Value) *ast.SliceExpr {
+	node := value.Source()
+	for {
+		switch source := node.(type) {
+		case *ast.Field:
+			node = source.Value
+		case *ast.ParenExpr:
+			node = source.X
+		case *ast.Alias:
+			node = source.Expr
+		case *ast.SliceExpr:
+			if source.Low == nil || source.High == nil {
+				return source
+			}
+			return nil
+		default:
+			return nil
+		}
+	}
+}
+
 // Expr can simplify a defaulted union to NoOp, hiding its non-default arms.
 // Raw syntax retains those arms. Rebuild only individual reference expressions
 // in their original CUE scope and ask ReferencePath again; syntax alone never
 // authorizes lowering or supplies a target path.
-func rawExpressionReferences(value, instance cue.Value, depth int) ([][]string, error) {
-	if depth > 32 {
-		return nil, fmt.Errorf("CUE reference nesting exceeds 32 levels")
-	}
+func rawExpressionReferencePaths(value, instance cue.Value, depth int) ([]cue.Path, error) {
 	expression, err := referenceExpression(value.Syntax(cue.Raw()))
 	if err != nil {
 		return nil, err
+	}
+	if (value.Kind() == cue.StructKind || value.Kind() == cue.ListKind) && !rawHasAlternatives(expression) {
+		return nil, nil
+	}
+	return inspectRawReferencePaths(rawReferenceInspection{value: value, instance: instance, expression: expression, depth: depth})
+}
+
+type rawReferenceInspection struct {
+	value, instance cue.Value
+	expression      ast.Expr
+	depth           int
+	originalSource  bool
+}
+
+func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error) {
+	value, instance, expression, depth := request.value, request.instance, request.expression, request.depth
+	if depth > 32 {
+		return nil, fmt.Errorf("CUE reference nesting exceeds 32 levels")
 	}
 	// Expr also exposes standalone predeclared operands from imported schemas.
 	// Rebuilding one in the value's scope can bind it to a quoted provider
@@ -225,20 +287,81 @@ func rawExpressionReferences(value, instance cue.Value, depth int) ([][]string, 
 			}
 		}
 	}
-	if (value.Kind() == cue.StructKind || value.Kind() == cue.ListKind) && !rawHasAlternatives(expression) {
-		return nil, nil
-	}
-	var references [][]string
+	var references []cue.Path
 	bindings := make(map[string]bool)
+	boundValues := make(referenceBindings)
+	allowContainers := 0
 	resolve := func(expression ast.Expr) cue.Value {
+		resolutionScope := value
+		if request.originalSource {
+			base := expression
+			for {
+				switch node := base.(type) {
+				case *ast.SelectorExpr:
+					base = node.X
+				case *ast.IndexExpr:
+					base = node.X
+				default:
+					goto originalBinding
+				}
+			}
+		originalBinding:
+			if identifier, ok := base.(*ast.Ident); ok && identifier.Scope != nil {
+				resolvedScope, err := originalBindingScope(value, instance, identifier.Scope)
+				if err != nil {
+					return value.Context().CompileString("_|_")
+				}
+				resolutionScope = resolvedScope
+			}
+			// Original AST identifiers are bound to their source-file nodes,
+			// which BuildExpr cannot transplant into another AST. Reparse only
+			// the expression being resolved and let CUE bind it in the original
+			// value scope. Imported identifiers were excluded by their resolved
+			// ImportSpec before reaching this function.
+			encoded, err := format.Node(expression)
+			if err != nil {
+				return value.Context().CompileString("_|_")
+			}
+			parsed, err := parser.ParseExpr("", encoded)
+			if err != nil {
+				return value.Context().CompileString("_|_")
+			}
+			expression = parsed
+		}
 		wrapper := ast.NewStruct(ast.NewString(""), expression)
-		resolved := value.Context().BuildExpr(wrapper, cue.Scope(value))
+		resolved := value.Context().BuildExpr(wrapper, cue.Scope(resolutionScope))
 		if err := resolved.Err(); err != nil {
 			return resolved
 		}
 		return resolved.LookupPath(cue.MakePath(cue.Str("")))
 	}
 	var visit func(ast.Expr) error
+	bind := func(name string, expression ast.Expr) error {
+		values, bound := boundValues.selectValues(expression, resolve)
+		if !bound {
+			resolved := resolve(expression)
+			if resolved.Err() == nil {
+				values, bound = []cue.Value{originalReferenceValue(resolved, instance)}, true
+			}
+		}
+		allowBindingContainer := bound && plainReference(expression)
+		if allowBindingContainer {
+			allowContainers++
+		}
+		before := len(references)
+		err := visit(expression)
+		if allowBindingContainer {
+			allowContainers--
+		}
+		if err != nil {
+			return err
+		}
+		bindings[name] = request.originalSource || resolve(expression).Validate(cue.Concrete(true), cue.Final()) == nil || len(references) == before
+		if bound {
+			boundValues[name] = values
+		}
+		return nil
+	}
 	var visitLabel func(ast.Label) error
 	visitLabel = func(label ast.Label) error {
 		switch label := label.(type) {
@@ -286,36 +409,58 @@ func rawExpressionReferences(value, instance cue.Value, depth int) ([][]string, 
 			return visit(expression.Ret)
 		case *ast.Comprehension:
 			previous := bindings
+			previousValues := boundValues
 			bindings = make(map[string]bool, len(previous))
+			boundValues = make(referenceBindings, len(previousValues))
 			for name, safe := range previous {
 				bindings[name] = safe
 			}
-			defer func() { bindings = previous }()
+			for name, values := range previousValues {
+				boundValues[name] = values
+			}
+			defer func() { bindings, boundValues = previous, previousValues }()
 			for _, clause := range expression.Clauses {
 				switch clause := clause.(type) {
 				case *ast.ForClause:
 					before := len(references)
-					if err := visit(clause.Source); err != nil {
+					allowSourceContainer := plainReference(clause.Source)
+					if allowSourceContainer {
+						allowContainers++
+					}
+					err := visit(clause.Source)
+					if allowSourceContainer {
+						allowContainers--
+					}
+					if err != nil {
 						return err
 					}
 					source := resolve(clause.Source)
+					collections, bound := boundValues.selectValues(clause.Source, resolve)
+					if !bound {
+						collections = []cue.Value{source}
+					}
+					var keys, values []cue.Value
+					for _, collection := range collections {
+						iterationKeys, iterationValues := iterationBindings(collection, instance)
+						keys, values = append(keys, iterationKeys...), append(values, iterationValues...)
+					}
 					safe := source.Validate(cue.Concrete(true), cue.Final()) == nil || len(references) == before
 					if clause.Key != nil {
 						bindings[clause.Key.Name] = true
+						boundValues[clause.Key.Name] = keys
 					}
 					if clause.Value != nil {
 						bindings[clause.Value.Name] = safe
+						boundValues[clause.Value.Name] = values
 					}
 				case *ast.IfClause:
 					if err := visit(clause.Condition); err != nil {
 						return err
 					}
 				case *ast.LetClause:
-					before := len(references)
-					if err := visit(clause.Expr); err != nil {
+					if err := bind(clause.Ident.Name, clause.Expr); err != nil {
 						return err
 					}
-					bindings[clause.Ident.Name] = resolve(clause.Expr).Validate(cue.Concrete(true), cue.Final()) == nil || len(references) == before
 				case *ast.TryClause:
 					before := len(references)
 					if err := visit(clause.Expr); err != nil {
@@ -336,6 +481,13 @@ func rawExpressionReferences(value, instance cue.Value, depth int) ([][]string, 
 			}
 			return nil
 		case *ast.BinaryExpr:
+			_, leftBottom := expression.X.(*ast.BottomLit)
+			_, rightBottom := expression.Y.(*ast.BottomLit)
+			presence := (leftBottom && plainReference(expression.Y) || rightBottom && plainReference(expression.X)) && (expression.Op == token.EQL || expression.Op == token.NEQ)
+			if presence {
+				allowContainers++
+				defer func() { allowContainers-- }()
+			}
 			if err := visit(expression.X); err != nil {
 				return err
 			}
@@ -354,6 +506,10 @@ func rawExpressionReferences(value, instance cue.Value, depth int) ([][]string, 
 		case *ast.CallExpr:
 			if err := visit(expression.Fun); err != nil {
 				return err
+			}
+			if identifier, ok := expression.Fun.(*ast.Ident); ok && identifier.Name == "len" && identifier.Node == nil && len(expression.Args) == 1 && plainReference(expression.Args[0]) {
+				allowContainers++
+				defer func() { allowContainers-- }()
 			}
 			for _, argument := range expression.Args {
 				if err := visit(argument); err != nil {
@@ -376,7 +532,7 @@ func rawExpressionReferences(value, instance cue.Value, depth int) ([][]string, 
 						return err
 					}
 				case *ast.LetClause:
-					if err := visit(declaration.Expr); err != nil {
+					if err := bind(declaration.Ident.Name, declaration.Expr); err != nil {
 						return err
 					}
 				case *ast.Attribute:
@@ -415,6 +571,17 @@ func rawExpressionReferences(value, instance cue.Value, depth int) ([][]string, 
 				}
 			}
 		bindingRoot:
+			if _, identifier := base.(*ast.Ident); !identifier {
+				// A computed base (for example a builtin call returning a
+				// list) is not a native selector. Inspect its inputs in place;
+				// rebuilding the whole call would lose imports and loop binds.
+				switch selected := expression.(type) {
+				case *ast.IndexExpr:
+					return visit(selected.X)
+				case *ast.SelectorExpr:
+					return visit(selected.X)
+				}
+			}
 			if identifier, ok := base.(*ast.Ident); ok {
 				// An imported package cannot reference this instance. Its binding
 				// comes from CUE's resolved AST, not the identifier spelling.
@@ -422,18 +589,62 @@ func rawExpressionReferences(value, instance cue.Value, depth int) ([][]string, 
 				if _, imported := identifier.Node.(*ast.ImportSpec); imported {
 					return nil
 				}
+				if values, bound := boundValues.selectValues(expression, resolve); bound {
+					for _, operand := range values {
+						if request.originalSource && allowContainers == 0 && (operand.Kind() == cue.StructKind || operand.Kind() == cue.ListKind) && operand.Validate(cue.Concrete(true)) != nil {
+							return fmt.Errorf("CUE control uses an incomplete bound container")
+						}
+						found, err := expressionReferencePaths(operand, instance, depth+1)
+						if err != nil {
+							return err
+						}
+						references = append(references, found...)
+						path := operand.Path()
+						if len(path.Selectors()) > 0 && instance.LookupPath(path) == operand {
+							references = append(references, path)
+						}
+					}
+					return nil
+				}
+				if _, bound := boundValues[identifier.Name]; bound {
+					return fmt.Errorf("CUE control binding selector could not be resolved")
+				}
 				if safe, bound := bindings[identifier.Name]; bound {
 					if safe {
 						return nil
 					}
-					return fmt.Errorf("CUE reference extraction cannot inspect a reference through an incomplete comprehension binding")
+					return fmt.Errorf("CUE reference extraction cannot inspect an incomplete comprehension binding")
+				}
+				if binding, ok := identifier.Node.(*ast.LetClause); ok && request.originalSource {
+					bindingScope, err := originalBindingScope(value, instance, identifier.Scope)
+					if err != nil {
+						return err
+					}
+					found, err := inspectRawReferencePaths(rawReferenceInspection{value: bindingScope, instance: instance, expression: binding.Expr, depth: depth + 1, originalSource: true})
+					if err != nil {
+						return err
+					}
+					references = append(references, found...)
+					return nil
 				}
 			}
 			// The empty label has no identifier spelling, so the wrapper
 			// cannot shadow names used by the original expression.
 			operand := resolve(expression)
 			if err := operand.Err(); err != nil {
+				if identifier, ok := expression.(*ast.Ident); ok && request.originalSource && identifier.Scope != nil {
+					bindingScope, scopeErr := originalBindingScope(value, instance, identifier.Scope)
+					selector := cue.Str(identifier.Name)
+					if scopeErr == nil && !bindingScope.LookupPath(cue.MakePath(selector)).Exists() && bindingScope.LookupPath(cue.MakePath(selector.Optional())).Exists() {
+						// Absent optional fields cannot be filled. Native CUE still
+						// evaluates their presence guards and enclosing controls.
+						return nil
+					}
+				}
 				return fmt.Errorf("CUE reference extraction from unsimplified expression failed: %w", err)
+			}
+			if request.originalSource && allowContainers == 0 && (operand.Kind() == cue.StructKind || operand.Kind() == cue.ListKind) && operand.Validate(cue.Concrete(true)) != nil {
+				return fmt.Errorf("CUE control uses an incomplete container")
 			}
 			// Resolve identifiers before deciding they are plain predeclared
 			// expressions. Fields and lets can shadow every predeclared name.
@@ -445,7 +656,7 @@ func rawExpressionReferences(value, instance cue.Value, depth int) ([][]string, 
 					}
 				}
 			}
-			found, err := expressionReferences(operand, instance, depth+1)
+			found, err := expressionReferencePaths(operand, instance, depth+1)
 			if err != nil {
 				return err
 			}

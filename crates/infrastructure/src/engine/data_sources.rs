@@ -15,12 +15,14 @@ use crate::schema::Schema;
 use crate::state::{ManagedResource, ResourceAddress};
 use crate::type_system::{self, Type, Value};
 
-use super::sensitivity::{SensitiveProviderValue, sensitive_provider_value};
+use super::sensitivity::{
+    SensitiveProviderValue, register_typed_attributes, sensitive_provider_value,
+};
 use super::{
-    Action, ApplyEvent, DataSourceReadContext, DigestWriter, InfrastructureEngine, LoadedProvider,
-    OperationFailure, OperationRunner, Plan, ReferenceValueInput, check_diagnostics,
-    declared_resource, masked_attributes, reference_error, register_value_strings,
-    topological_order,
+    Action, ApplyEvent, ConfigurationInput, ConfigurationPhase, DataSourceReadContext,
+    DigestWriter, InfrastructureEngine, LoadedProvider, OperationFailure, OperationRunner, Plan,
+    ReferenceValueInput, check_diagnostics, declared_resource, masked_attributes, reference_error,
+    register_value_strings, topological_order,
 };
 
 /// One data source read by this invocation, or deferred until apply.
@@ -58,9 +60,7 @@ impl DataSourcePlan {
         }
         digest.count(self.references.references().len());
         for reference in self.references.references() {
-            digest.field(reference.source.to_string().as_bytes());
-            digest.field(reference.attribute.as_bytes());
-            digest.field(reference.destination_attribute.as_bytes());
+            digest.reference(reference);
         }
     }
 }
@@ -83,7 +83,22 @@ pub(super) fn declaration<'declaration>(
 }
 
 impl DeclarationGraph {
+    #[cfg(test)]
     pub(super) fn new(infrastructure: &Infrastructure) -> Result<Self> {
+        Self::build(infrastructure, None)
+    }
+
+    pub(super) fn with_references(
+        infrastructure: &Infrastructure,
+        references: &BTreeMap<SourceAddress, ConfigurationReferences>,
+    ) -> Result<Self> {
+        Self::build(infrastructure, Some(references))
+    }
+
+    fn build(
+        infrastructure: &Infrastructure,
+        classified: Option<&BTreeMap<SourceAddress, ConfigurationReferences>>,
+    ) -> Result<Self> {
         let mut references = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
         for (source, declared) in infrastructure
@@ -102,7 +117,10 @@ impl DeclarationGraph {
                 )
             }))
         {
-            let parsed = ConfigurationReferences::extract(&declared.configuration)?;
+            let parsed = match classified {
+                Some(references) => references.get(&source).cloned().unwrap_or_default(),
+                None => ConfigurationReferences::extract(&declared.configuration)?,
+            };
             let mut prerequisites = BTreeSet::new();
             for name in &declared.depends_on {
                 let managed = infrastructure.resources.get(name).ok_or_else(|| {
@@ -280,15 +298,23 @@ impl InfrastructureEngine {
             .cloned()
             .unwrap_or_default();
         let value_type = schema.block.implied_type();
-        let configuration = references.prepare(&declared.configuration, &value_type)?;
         let sensitive_destinations =
             self.validate_output_references(input.source.address(), &references, &schema.block)?;
-        let configuration = references.resolve_planned(&configuration, |reference| {
-            planned_output(input.outputs, reference)
-        })?;
+        let configuration = self
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: input.source,
+                    declaration: &declared,
+                    references: &references,
+                    block: &schema.block,
+                    phase: ConfigurationPhase::Planning,
+                },
+                |reference| planned_output(input.outputs, reference),
+            )
+            .await?;
         let configuration = schema.block.normalize_configuration(configuration);
         let sensitive = masked_attributes(&schema.block, sensitive_destinations);
-        register_attributes(&configuration, &sensitive);
+        register_typed_attributes(&configuration, &sensitive, &value_type);
         self.ensure_not_stopped()?;
         let diagnostics = provider
             .client
@@ -331,7 +357,7 @@ impl InfrastructureEngine {
         let provider = self.loaded(&read.provider)?;
         let schema = data_source_schema(provider, &read.address.resource_type)?;
         let value_type = schema.block.implied_type();
-        register_attributes(configuration, &read.sensitive);
+        register_typed_attributes(configuration, &read.sensitive, &value_type);
         self.ensure_not_stopped()?;
         let response = provider
             .client
@@ -452,18 +478,36 @@ impl InfrastructureEngine {
                     &mut warnings,
                 )
                 .await?;
-            outputs.insert(reference.destination_attribute.clone(), value);
+            outputs.insert(reference.destination.clone(), value);
         }
-        let configuration = read.references.resolve(&read.configuration, |reference| {
-            outputs
-                .get(&reference.destination_attribute)
-                .cloned()
-                .ok_or_else(|| reference_error(&read.address, reference, "was not resolved"))
-        })?;
         let provider = self.loaded(&read.provider)?;
         let schema = data_source_schema(provider, &read.address.resource_type)?;
+        let consumer = SourceAddress::DataSource(read.address.clone());
+        let declared = declaration(&self.infrastructure, &consumer).ok_or_else(|| {
+            InfrastructureError::configuration("data source declaration disappeared")
+        })?;
+        let configuration = self
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: &consumer,
+                    declaration: declared,
+                    references: &read.references,
+                    block: &schema.block,
+                    phase: ConfigurationPhase::Apply,
+                },
+                |reference| {
+                    outputs.get(&reference.destination).cloned().ok_or_else(|| {
+                        reference_error(&read.address, reference, "was not resolved")
+                    })
+                },
+            )
+            .await?;
         let configuration = schema.block.normalize_configuration(configuration);
-        register_attributes(&configuration, &read.sensitive);
+        register_typed_attributes(
+            &configuration,
+            &read.sensitive,
+            &schema.block.implied_type(),
+        );
         self.ensure_not_stopped()?;
         let diagnostics = provider
             .client
