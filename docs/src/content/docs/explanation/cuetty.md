@@ -73,6 +73,8 @@ The current usable slice includes:
   every newly-created session starts in `$HOME`,
   split shortcuts are rejected with a visible notice until pane/session
   allocation is implemented, and the UI never presents a fake terminal pane.
+  Application shortcuts written as Cmd-* use Command on macOS and Ctrl-Shift
+  on Linux, so plain Ctrl chords such as Ctrl-C always reach the shell.
 - A fixed 56px right-side vertical tab rail. It shows tab ordinals with stable
   path-name tooltips and deliberately has no resize or expand mode.
 - A session-only Settings destination with transactional Apply, Cancel, and
@@ -94,8 +96,43 @@ inherited from parent directories and any `.cue` filename may provide the
 package. A directory without package `cuetty` is neutral. Standalone packages
 are evaluated in the exact directory; imports that require a module context
 fail through normal CUE evaluation. A matching package may provide a
-single-line `banner` and a quoted `border: "#RRGGBB"`; for
-example `border: "#ff0000"` draws a thin selected-pane and tab accent.
+single-line `banner` and a quoted `rail: "#RRGGBB"`. The banner supplies the
+tab tooltip; for example, `rail: "#ff0000"` tints the tab rail while that tab
+is active. Terminal panes are never framed, and the former `border` field is
+rejected as unknown. `titlebar: false` hides the Cuetty title strip while that
+tab is active and lets the terminal extend to the top of the window; it
+defaults to `true`. A hidden strip removes the window drag region, and on macOS
+the traffic lights float over the terminal's top-left corner.
+
+The cuenv repository includes a root `cuetty.cue` with a `cuenv` banner and a
+Catppuccin Mocha blue rail. It applies while the shell is in the repository
+root; subdirectories can provide their own `package cuetty` configuration.
+When using the CUE CLI at the root, select the package explicitly, for example
+`cue export .:cuetty` or `cue export .:cuenv`.
+
+### Global configuration
+
+Cuetty also evaluates package `cuetty` in `$XDG_CONFIG_HOME/cuetty`, falling
+back to `~/.config/cuetty` when `XDG_CONFIG_HOME` is unset or relative. As with
+directory configuration, any `.cue` filename may provide the package; there is
+no fixed `config.cue`. The global package is CUE-unified with the active
+directory's package by the evaluator (`cuengine`'s `unify` option), not merged
+by Cuetty. Unification means a concrete global value conflicts with a
+different directory value, so global values meant to be overridden are written
+as defaults:
+
+```cue
+package cuetty
+
+rail:     *"#89b4fa" | string
+titlebar: *false | bool
+```
+
+A directory without package `cuetty` uses the global package alone. A
+conflict or an invalid global package is reported like any invalid matching
+configuration and keeps the last good presentation. The global directory is
+watched alongside the active directory when it exists; one created later is
+picked up on the next directory change.
 
 Directory and module-metadata changes are watched natively. Evaluation and
 validation occur off the GPUI thread. Invalid matching CUE keeps the last

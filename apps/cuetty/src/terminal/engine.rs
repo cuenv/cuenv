@@ -12,8 +12,8 @@ use super::settings::SettingsDraft;
 use super::sizing::CellSize;
 use super::workspace_shell::{ShellAction, ShellError, WorkspaceShell, WorkspaceShortcut};
 use crate::integrations::cuenv::{
-    BorderColor, ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation,
-    NativeCuenvProvider, TaskEvaluation,
+    ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation,
+    NativeCuenvProvider, RailColor, TaskEvaluation, TitlebarVisibility,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, TabId};
 use gpui::{
@@ -865,6 +865,35 @@ fn sidebar_tab_label(label: &str) -> String {
         .to_string()
 }
 
+/// Modifier chord that addresses Cuetty itself instead of the shell.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AppChord {
+    Primary,
+    Alternate,
+}
+
+/// Resolves Cuetty's application chord without stealing shell control keys.
+///
+/// GPUI's `secondary()` is Control off macOS, which would swallow Ctrl-C,
+/// Ctrl-D, and friends. macOS uses Command (Shift for the alternate form);
+/// other platforms use Ctrl-Shift (Alt for the alternate form), matching
+/// conventional Linux terminals.
+fn app_chord(modifiers: gpui::Modifiers) -> Option<AppChord> {
+    let (base, alternate) = if cfg!(target_os = "macos") {
+        (modifiers.platform && !modifiers.control, modifiers.shift)
+    } else {
+        (
+            modifiers.control && modifiers.shift && !modifiers.platform,
+            modifiers.alt,
+        )
+    };
+    base.then_some(if alternate {
+        AppChord::Alternate
+    } else {
+        AppChord::Primary
+    })
+}
+
 fn terminal_key_input(key: &str, key_char: Option<&str>) -> Option<KeyInput> {
     match key {
         "enter" => Some(KeyInput::Enter),
@@ -1494,16 +1523,14 @@ impl TerminalView {
     }
 
     fn workspace_shortcut(key: &str, modifiers: gpui::Modifiers) -> Option<WorkspaceShortcut> {
-        if !modifiers.secondary() {
-            return None;
-        }
-        match (modifiers.shift, key.to_ascii_lowercase().as_str()) {
+        let chord = app_chord(modifiers)?;
+        match (chord, key.to_ascii_lowercase().as_str()) {
             (_, "t") => Some(WorkspaceShortcut::NewTab),
             (_, "w") => Some(WorkspaceShortcut::CloseTab),
-            (false, "d") => Some(WorkspaceShortcut::SplitHorizontal),
-            (true, "d") => Some(WorkspaceShortcut::SplitVertical),
-            (_, "]") => Some(WorkspaceShortcut::FocusNext),
-            (_, "[") => Some(WorkspaceShortcut::FocusPrevious),
+            (AppChord::Primary, "d") => Some(WorkspaceShortcut::SplitHorizontal),
+            (AppChord::Alternate, "d") => Some(WorkspaceShortcut::SplitVertical),
+            (_, "]" | "}") => Some(WorkspaceShortcut::FocusNext),
+            (_, "[" | "{") => Some(WorkspaceShortcut::FocusPrevious),
             _ => None,
         }
     }
@@ -1611,7 +1638,7 @@ impl TerminalView {
     fn key(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
-        if modifiers.secondary() && key.eq_ignore_ascii_case("k") {
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("k") {
             self.toggle_task_palette();
             cx.notify();
             return;
@@ -1651,7 +1678,7 @@ impl TerminalView {
                 return;
             }
         }
-        if modifiers.secondary() && key.eq_ignore_ascii_case("f") {
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("f") {
             if let Some(state) = self.active_state_mut() {
                 state.interaction.enter_search(&state.frame);
             }
@@ -1681,7 +1708,7 @@ impl TerminalView {
             }
             return;
         }
-        if modifiers.secondary() && key.eq_ignore_ascii_case("c") {
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("c") {
             if let Some(text) = self
                 .active_state()
                 .and_then(|state| state.interaction.copy(&state.frame))
@@ -1690,7 +1717,7 @@ impl TerminalView {
             }
             return;
         }
-        if modifiers.secondary() && key.eq_ignore_ascii_case("v") {
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("v") {
             if let Some(item) = cx.read_from_clipboard()
                 && let Some(text) = item.text()
                 && let Some(state) = self.active_state_mut()
@@ -1792,19 +1819,6 @@ impl TerminalView {
                 .get(&tab.focused)
                 .and_then(|state| state.cuenv.presentation.banner.clone())
                 .unwrap_or_else(|| sidebar_tab_label(&label));
-            let tab_border = self
-                .registry
-                .sessions
-                .get(&tab.focused)
-                .and_then(|state| state.cuenv.presentation.border)
-                .map(|BorderColor(red, green, blue)| gpui::rgb(gpui_rgb(Rgb(red, green, blue))))
-                .unwrap_or_else(|| {
-                    gpui::rgb(gpui_rgb(if selected {
-                        theme.cursor
-                    } else {
-                        theme.title_surface
-                    }))
-                });
             let number = format!("{:02}", index + 1);
             let mut tab_button = div()
                 .id(("cuetty-rail-tab", tab_id.get()))
@@ -1829,7 +1843,7 @@ impl TerminalView {
                     .items_center()
                     .justify_center()
                     .rounded(px(8.0))
-                    .when(selected, |this| this.bg(tab_border))
+                    .when(selected, |this| this.bg(gpui::rgb(gpui_rgb(theme.cursor))))
                     .text_center()
                     .text_size(px(12.0))
                     .font_weight(if selected {
@@ -1867,13 +1881,21 @@ impl TerminalView {
         let has_tasks = self
             .active_state()
             .is_some_and(|state| !state.cuenv.tasks.is_empty());
+        // A matching `package cuetty` tints the rail for the active tab;
+        // terminal content itself is never framed.
+        let rail_background = self
+            .active_state()
+            .and_then(|state| state.cuenv.presentation.rail)
+            .map_or(theme.title_surface, |RailColor(red, green, blue)| {
+                Rgb(red, green, blue)
+            });
         let mut rail = div()
             .relative()
             .size_full()
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .bg(chrome_glass_color(theme.title_surface))
+            .bg(chrome_glass_color(rail_background))
             .border_l_1()
             .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
             .child(tabs);
@@ -2581,6 +2603,16 @@ impl TerminalView {
                     .child(content),
             )
             .child(div().w(px(TAB_RAIL_WIDTH)).flex_shrink_0().child(sidebar));
+        let titlebar_visibility = self
+            .active_state()
+            .map(|state| state.cuenv.presentation.titlebar)
+            .unwrap_or_default();
+        let shell = div().size_full().flex().flex_col();
+        if titlebar_visibility == TitlebarVisibility::Hidden {
+            // The terminal grid is resized from its measured bounds, so it
+            // reclaims the strip's height without extra arithmetic here.
+            return shell.child(workspace).into_any_element();
+        }
         let titlebar = div()
             .h(px(SHELL_TITLEBAR_HEIGHT))
             .w_full()
@@ -2611,13 +2643,7 @@ impl TerminalView {
                     .h_full()
                     .window_control_area(WindowControlArea::Drag),
             );
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(titlebar)
-            .child(workspace)
-            .into_any_element()
+        shell.child(titlebar).child(workspace).into_any_element()
     }
 }
 
@@ -2663,7 +2689,6 @@ impl Render for TerminalView {
         let frame = state.frame.clone();
         let interaction = state.interaction.clone();
         let pane_error = state.error.clone();
-        let pane_presentation = state.cuenv.presentation.clone();
         let measured = Arc::clone(&state.measured_bounds);
         let viewport_bounds = Arc::clone(&state.viewport_bounds);
         let entity = cx.weak_entity();
@@ -2824,17 +2849,6 @@ impl Render for TerminalView {
                 );
                 terminal_surface = terminal_surface.child(viewport);
             }
-        }
-        if let Some(BorderColor(red, green, blue)) = pane_presentation.border {
-            // Absolute decoration intentionally consumes no terminal layout space.
-            terminal_surface = terminal_surface.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .border_1()
-                    .border_color(gpui::rgb(gpui_rgb(Rgb(red, green, blue))))
-                    .into_any_element(),
-            );
         }
         if let Some(task_sidebar) = self.render_task_sidebar(&theme, cx) {
             terminal_surface = terminal_surface.child(task_sidebar);
@@ -3103,6 +3117,58 @@ mod tests {
         assert_eq!(sidebar_tab_label("/"), "/");
         assert_eq!(sidebar_tab_label("build"), "build");
         assert_eq!(sidebar_tab_label("sleep 5 ~/Code/cuenv"), "cuenv");
+    }
+
+    #[test]
+    fn shell_control_chords_are_never_app_shortcuts() {
+        let control = gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        assert_eq!(app_chord(control), None);
+        for key in ["c", "d", "f", "k", "t", "v", "w"] {
+            assert_eq!(TerminalView::workspace_shortcut(key, control), None);
+        }
+    }
+
+    #[test]
+    fn app_chords_follow_the_platform_convention() {
+        let (primary, alternate) = if cfg!(target_os = "macos") {
+            let primary = gpui::Modifiers {
+                platform: true,
+                ..Default::default()
+            };
+            (
+                primary,
+                gpui::Modifiers {
+                    shift: true,
+                    ..primary
+                },
+            )
+        } else {
+            let primary = gpui::Modifiers {
+                control: true,
+                shift: true,
+                ..Default::default()
+            };
+            (
+                primary,
+                gpui::Modifiers {
+                    alt: true,
+                    ..primary
+                },
+            )
+        };
+        assert_eq!(app_chord(primary), Some(AppChord::Primary));
+        assert_eq!(app_chord(alternate), Some(AppChord::Alternate));
+        assert_eq!(
+            TerminalView::workspace_shortcut("d", primary),
+            Some(WorkspaceShortcut::SplitHorizontal)
+        );
+        assert_eq!(
+            TerminalView::workspace_shortcut("d", alternate),
+            Some(WorkspaceShortcut::SplitVertical)
+        );
     }
 
     #[test]

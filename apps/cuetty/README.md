@@ -118,7 +118,10 @@ tab clicks.
 
 This POC exposes one GPUI terminal surface per tab, with an independent live
 Rio session behind each tab. Cmd-T creates a new session; Cmd-W closes only the
-active tab/session and closes the window when it is the final tab. Cmd-D and
+active tab/session and closes the window when it is the final tab. Shortcuts
+shown as Cmd-* use Command on macOS and Ctrl-Shift on Linux (Ctrl-Shift-Alt for
+the Cmd-Shift-* forms), so plain Ctrl chords such as Ctrl-C, Ctrl-D, and Ctrl-W
+always reach the shell. Cmd-D and
 Cmd-Shift-D report that split panes are unavailable; they never create a fake
 terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse
 selection and the current literal visible-frame search hit are painted directly
@@ -163,14 +166,26 @@ module context fail through the normal CUE error path.
 package cuetty
 
 banner: "Welcome to Cuetty"
-border: "#ff0000"
+rail: "#ff0000"
+titlebar: false
 ```
 
-`banner` is a bounded single line and `border` must be a quoted `#RRGGBB`
-colour. Rio reports shell CWD changes through its public working-directory API;
+`banner` is a bounded single line and `rail` must be a quoted `#RRGGBB`
+colour that tints the tab rail while that tab is active. Terminal panes are
+never framed; the legacy `border` field is rejected. `titlebar: false` hides
+the Cuetty title strip while that tab is active so the terminal extends to the
+top of the window; it defaults to `true`. With the strip hidden there is no
+drag region, and on macOS the traffic lights float over the terminal's top-left
+corner. Rio reports shell CWD changes through its public working-directory API;
 Cuetty re-evaluates and rebinds its native directory watcher after `cd`.
 Malformed matching configuration retains the last valid presentation and shows
-an integration notice. CUE evaluation never runs on the GPUI thread.
+an integration notice.
+
+A global `package cuetty` in `$XDG_CONFIG_HOME/cuetty` (or `~/.config/cuetty`),
+in any `.cue` file, is CUE-unified beneath each directory's package, or applies
+alone where a directory has none. Write overridable global values as CUE
+defaults, for example `rail: *"#89b4fa" | string`; a concrete conflict is an
+invalid configuration. CUE evaluation never runs on the GPUI thread.
 
 When the same directory contains an evaluable `package cuenv`, Cuetty also
 discovers its `tasks` map. The task button in the fixed right rail opens a

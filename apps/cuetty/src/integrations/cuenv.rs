@@ -4,28 +4,40 @@
 //! validated representation, so configuration cannot reach a renderer or a
 //! session directly.
 
-use cuengine::ModuleEvalOptions;
+use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub const PACKAGE: &str = "cuetty";
 pub const PROJECT_PACKAGE: &str = "cuenv";
+/// Directory below the XDG config home that holds the global `cuetty` package.
+const GLOBAL_CONFIG_DIR: &str = "cuetty";
 const MAX_BANNER_BYTES: usize = 120;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CuettyPresentation {
     pub banner: Option<String>,
-    pub border: Option<BorderColor>,
+    pub rail: Option<RailColor>,
+    pub titlebar: TitlebarVisibility,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BorderColor(pub u8, pub u8, pub u8);
+pub struct RailColor(pub u8, pub u8, pub u8);
 
-impl BorderColor {
-    pub fn hex(self) -> String {
-        format!("#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
+/// Whether Cuetty draws its title strip above the terminal.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TitlebarVisibility {
+    #[default]
+    Shown,
+    Hidden,
+}
+
+impl From<bool> for TitlebarVisibility {
+    fn from(shown: bool) -> Self {
+        if shown { Self::Shown } else { Self::Hidden }
     }
 }
 
@@ -67,7 +79,9 @@ struct CuettyDto {
     #[serde(default)]
     banner: Option<String>,
     #[serde(default)]
-    border: Option<String>,
+    rail: Option<String>,
+    #[serde(default)]
+    titlebar: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,12 +164,21 @@ impl CuenvPaneState {
 pub struct ConfigSource {
     pub module_root: Option<PathBuf>,
     pub target_dir: PathBuf,
+    /// Directory whose `package cuetty` is unified beneath every
+    /// directory's configuration.
+    pub global_dir: Option<PathBuf>,
 }
 
 impl ConfigSource {
-    /// Select configuration from the shell's current working directory.
-    /// Any `.cue` file in that directory may provide package `cuetty`.
+    /// Select configuration from the shell's current working directory,
+    /// unified with the global package under the XDG config home.
     pub fn from_cwd(start: &Path) -> Result<Self, String> {
+        Self::in_dir(start).map(|source| source.with_global_dir(global_config_dir()))
+    }
+
+    /// Select configuration from exactly one directory, without a global
+    /// layer. Any `.cue` file in that directory may provide package `cuetty`.
+    pub fn in_dir(start: &Path) -> Result<Self, String> {
         let start = start
             .canonicalize()
             .map_err(|error| format!("cannot resolve terminal working directory: {error}"))?;
@@ -170,33 +193,53 @@ impl ConfigSource {
         Ok(Self {
             module_root: nearest_module_root(&start),
             target_dir: start,
+            global_dir: None,
         })
     }
 
+    #[must_use]
+    pub fn with_global_dir(mut self, global_dir: Option<PathBuf>) -> Self {
+        self.global_dir = global_dir;
+        self
+    }
+
+    /// The global directory when it currently exists. It is resolved on
+    /// every evaluation so creating it later takes effect on the next reload.
+    fn existing_global_dir(&self) -> Option<PathBuf> {
+        self.global_dir
+            .as_deref()
+            .filter(|dir| dir.is_dir())
+            .and_then(|dir| dir.canonicalize().ok())
+    }
+
+    /// Evaluates the directory's `package cuetty` unified with the global
+    /// one. CUE unification applies: conflicting concrete values fail, so a
+    /// global value meant to be overridden is written as a default
+    /// (`rail: *"#89b4fa" | string`). Without a directory package the
+    /// global package applies alone.
     pub fn evaluate(&self) -> Evaluation {
-        let module_root = self.module_root.as_deref().unwrap_or(&self.target_dir);
-        let options = ModuleEvalOptions {
-            recursive: false,
-            package_name: Some(PACKAGE.into()),
-            target_dir: Some(self.target_dir.to_string_lossy().into_owned()),
-            ..Default::default()
-        };
-        let module = match cuengine::evaluate_module(module_root, PACKAGE, Some(&options)) {
-            Ok(module) => module,
-            Err(error) => {
-                return Evaluation::Invalid(format!("Cuetty CUE evaluation failed: {error}"));
+        let global = self.existing_global_dir();
+        let unify = global
+            .iter()
+            .map(|dir| UnifySource {
+                dir: dir.to_string_lossy().into_owned(),
+                module_root: nearest_module_root(dir)
+                    .map(|root| root.to_string_lossy().into_owned()),
+            })
+            .collect();
+        let local = evaluate_cuetty_instance(&self.target_dir, self.module_root.as_deref(), unify);
+        let value = match (local, &global) {
+            (Ok(None), Some(global)) => {
+                evaluate_cuetty_instance(global, nearest_module_root(global).as_deref(), Vec::new())
             }
+            (local, _) => local,
         };
-        let Some(value) = module
-            .instances
-            .get(".")
-            .or_else(|| module.instances.values().next())
-        else {
-            // The public Cuenv evaluator found no instance for package
-            // `cuetty` in this exact directory. No presentation applies.
-            return Evaluation::Absent;
-        };
-        parse_value(value.clone())
+        match value {
+            Ok(Some(value)) => parse_value(value),
+            // No `package cuetty` in this directory or the global one.
+            Ok(None) => Evaluation::Absent,
+            Err(error) => Evaluation::Invalid(error),
+        }
     }
 
     pub fn evaluate_tasks(&self) -> TaskEvaluation {
@@ -222,6 +265,54 @@ impl ConfigSource {
         };
         parse_tasks(value)
     }
+}
+
+/// Evaluates `package cuetty` in exactly `target_dir`, unified with `unify`.
+/// `Ok(None)` means the directory holds no such package.
+fn evaluate_cuetty_instance(
+    target_dir: &Path,
+    module_root: Option<&Path>,
+    unify: Vec<UnifySource>,
+) -> Result<Option<serde_json::Value>, String> {
+    let options = ModuleEvalOptions {
+        recursive: false,
+        package_name: Some(PACKAGE.into()),
+        target_dir: Some(target_dir.to_string_lossy().into_owned()),
+        unify,
+        ..Default::default()
+    };
+    let module =
+        cuengine::evaluate_module(module_root.unwrap_or(target_dir), PACKAGE, Some(&options))
+            .map_err(|error| format!("Cuetty CUE evaluation failed: {error}"))?;
+    Ok(module
+        .instances
+        .get(".")
+        .or_else(|| module.instances.values().next())
+        .cloned())
+}
+
+/// `$XDG_CONFIG_HOME/cuetty`, falling back to `~/.config/cuetty`.
+pub fn global_config_dir() -> Option<PathBuf> {
+    global_config_dir_from(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn global_config_dir_from(
+    xdg_config_home: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
+    // The XDG spec requires an absolute path; relative values are ignored.
+    xdg_config_home
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            home.map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(".config"))
+        })
+        .map(|config| config.join(GLOBAL_CONFIG_DIR))
 }
 
 fn nearest_module_root(start: &Path) -> Option<PathBuf> {
@@ -252,26 +343,33 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         }
         value => value,
     };
-    let border = match dto.border {
+    let rail = match dto.rail {
         Some(value) => match parse_color(&value) {
             Ok(color) => Some(color),
             Err(error) => return Evaluation::Invalid(error),
         },
         None => None,
     };
-    Evaluation::Valid(CuettyPresentation { banner, border })
+    Evaluation::Valid(CuettyPresentation {
+        banner,
+        rail,
+        titlebar: dto
+            .titlebar
+            .map(TitlebarVisibility::from)
+            .unwrap_or_default(),
+    })
 }
 
-fn parse_color(value: &str) -> Result<BorderColor, String> {
+fn parse_color(value: &str) -> Result<RailColor, String> {
     let bytes = value.as_bytes();
     if bytes.len() != 7 || bytes[0] != b'#' {
-        return Err("border must use quoted #RRGGBB syntax".into());
+        return Err("rail must use quoted #RRGGBB syntax".into());
     }
     let channel = |from| {
         u8::from_str_radix(&value[from..from + 2], 16)
-            .map_err(|_| "border must use quoted #RRGGBB syntax".to_string())
+            .map_err(|_| "rail must use quoted #RRGGBB syntax".to_string())
     };
-    Ok(BorderColor(channel(1)?, channel(3)?, channel(5)?))
+    Ok(RailColor(channel(1)?, channel(3)?, channel(5)?))
 }
 
 fn parse_tasks(value: &serde_json::Value) -> TaskEvaluation {
@@ -441,6 +539,14 @@ impl ConfigWatcher {
                     .map_err(|error| format!("cannot watch Cuetty module metadata: {error}"))?;
             }
         }
+        if let Some(global_dir) = source
+            .existing_global_dir()
+            .filter(|dir| *dir != source.target_dir)
+        {
+            watcher
+                .watch(&global_dir, RecursiveMode::NonRecursive)
+                .map_err(|error| format!("cannot watch global Cuetty configuration: {error}"))?;
+        }
         Ok(Self {
             _watcher: watcher,
             error,
@@ -484,12 +590,37 @@ mod tests {
     #[test]
     fn validates_v1_presentation() {
         assert_eq!(
-            parse_value(serde_json::json!({"banner": "Welcome to Cuetty", "border": "#ff0000"})),
+            parse_value(serde_json::json!({"banner": "Welcome to Cuetty", "rail": "#ff0000"})),
             Evaluation::Valid(CuettyPresentation {
                 banner: Some("Welcome to Cuetty".into()),
-                border: Some(BorderColor(255, 0, 0))
+                rail: Some(RailColor(255, 0, 0)),
+                titlebar: TitlebarVisibility::Shown,
             })
         );
+    }
+
+    #[test]
+    fn titlebar_defaults_to_shown_and_can_be_hidden() {
+        let presentation = |value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.titlebar,
+            other => panic!("unexpected evaluation: {other:?}"),
+        };
+        assert_eq!(
+            presentation(serde_json::json!({})),
+            TitlebarVisibility::Shown
+        );
+        assert_eq!(
+            presentation(serde_json::json!({"titlebar": true})),
+            TitlebarVisibility::Shown
+        );
+        assert_eq!(
+            presentation(serde_json::json!({"titlebar": false})),
+            TitlebarVisibility::Hidden
+        );
+        assert!(matches!(
+            parse_value(serde_json::json!({"titlebar": "no"})),
+            Evaluation::Invalid(_)
+        ));
     }
 
     #[test]
@@ -501,7 +632,8 @@ mod tests {
             generation_a,
             Evaluation::Valid(CuettyPresentation {
                 banner: Some("A".into()),
-                border: Some(BorderColor(255, 0, 0)),
+                rail: Some(RailColor(255, 0, 0)),
+                titlebar: TitlebarVisibility::Shown,
             })
         ));
         assert!(state.observe_cwd(PathBuf::from("/b")));
@@ -510,7 +642,8 @@ mod tests {
             generation_a,
             Evaluation::Valid(CuettyPresentation {
                 banner: Some("late A".into()),
-                border: None,
+                rail: None,
+                titlebar: TitlebarVisibility::Shown,
             })
         ));
     }
@@ -522,7 +655,8 @@ mod tests {
         let generation = state.begin_source();
         let presentation = CuettyPresentation {
             banner: Some("A".into()),
-            border: None,
+            rail: None,
+            titlebar: TitlebarVisibility::Shown,
         };
         assert!(state.apply(generation, Evaluation::Valid(presentation.clone())));
         assert!(state.apply(generation, Evaluation::Invalid("broken".into())));
@@ -537,7 +671,8 @@ mod tests {
         let first_generation = state.begin_source();
         let presentation = CuettyPresentation {
             banner: Some("A".into()),
-            border: Some(BorderColor(255, 0, 0)),
+            rail: Some(RailColor(255, 0, 0)),
+            titlebar: TitlebarVisibility::Shown,
         };
         assert!(state.apply(first_generation, Evaluation::Valid(presentation.clone())));
 
@@ -608,7 +743,12 @@ mod tests {
             Evaluation::Invalid(_)
         ));
         assert!(matches!(
-            parse_value(serde_json::json!({"border": "red"})),
+            parse_value(serde_json::json!({"rail": "red"})),
+            Evaluation::Invalid(_)
+        ));
+        // Pane borders were retired in favour of the rail colour.
+        assert!(matches!(
+            parse_value(serde_json::json!({"border": "#ff0000"})),
             Evaluation::Invalid(_)
         ));
     }
@@ -634,10 +774,10 @@ mod tests {
         .unwrap();
         std::fs::write(
             target.join("terminal.cue"),
-            "package cuetty\nbanner: \"Welcome to Cuetty\"\nborder: \"#ff0000\"\n",
+            "package cuetty\nbanner: \"Welcome to Cuetty\"\nrail: \"#ff0000\"\n",
         )
         .unwrap();
-        let source = ConfigSource::from_cwd(&target).unwrap();
+        let source = ConfigSource::in_dir(&target).unwrap();
         assert!(matches!(source.evaluate(), Evaluation::Valid(_)));
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -652,9 +792,101 @@ mod tests {
             "package cuetty\nbanner: \"Hi\"\n",
         )
         .unwrap();
-        let source = ConfigSource::from_cwd(&root).unwrap();
+        let source = ConfigSource::in_dir(&root).unwrap();
         assert!(matches!(source.evaluate(), Evaluation::Valid(_)));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A directory and a global directory, each holding `package cuetty`
+    /// sources (`None` leaves that directory without the package).
+    fn layered_source(
+        name: &str,
+        local: Option<&str>,
+        global: Option<&str>,
+    ) -> (PathBuf, ConfigSource) {
+        let root = std::env::temp_dir().join(format!("cuetty-cue-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (local_dir, global_dir) = (root.join("project"), root.join("config/cuetty"));
+        for (dir, body) in [(&local_dir, local), (&global_dir, global)] {
+            std::fs::create_dir_all(dir).unwrap();
+            if let Some(body) = body {
+                std::fs::write(
+                    dir.join("any-name.cue"),
+                    format!("package cuetty\n{body}\n"),
+                )
+                .unwrap();
+            }
+        }
+        let source = ConfigSource::in_dir(&local_dir)
+            .unwrap()
+            .with_global_dir(Some(global_dir));
+        (root, source)
+    }
+
+    #[test]
+    fn global_package_unifies_beneath_directory_package() {
+        let (root, source) = layered_source(
+            "layered",
+            Some("rail: \"#ff0000\""),
+            Some("rail: *\"#89b4fa\" | string\ntitlebar: false\nbanner: \"global\""),
+        );
+        assert_eq!(
+            source.evaluate(),
+            Evaluation::Valid(CuettyPresentation {
+                banner: Some("global".into()),
+                rail: Some(RailColor(255, 0, 0)),
+                titlebar: TitlebarVisibility::Hidden,
+            })
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn global_package_applies_alone_without_a_directory_package() {
+        let (root, source) = layered_source("global-only", None, Some("titlebar: false"));
+        assert!(matches!(
+            source.evaluate(),
+            Evaluation::Valid(CuettyPresentation {
+                titlebar: TitlebarVisibility::Hidden,
+                ..
+            })
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn conflicting_global_and_directory_values_are_invalid() {
+        let (root, source) = layered_source(
+            "conflict",
+            Some("rail: \"#ff0000\""),
+            Some("rail: \"#89b4fa\""),
+        );
+        assert!(matches!(source.evaluate(), Evaluation::Invalid(_)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_global_directory_is_neutral() {
+        let (root, source) = layered_source("no-global", Some("banner: \"local\""), None);
+        let source = source.with_global_dir(Some(root.join("does-not-exist")));
+        assert!(matches!(source.evaluate(), Evaluation::Valid(_)));
+        let (empty_root, empty) = layered_source("neither", None, None);
+        assert_eq!(empty.evaluate(), Evaluation::Absent);
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(empty_root).unwrap();
+    }
+
+    #[test]
+    fn global_config_dir_follows_xdg_with_home_fallback() {
+        assert_eq!(
+            global_config_dir_from(Some("/xdg".into()), Some("/home/me".into())),
+            Some(PathBuf::from("/xdg/cuetty"))
+        );
+        assert_eq!(
+            global_config_dir_from(Some("relative".into()), Some("/home/me".into())),
+            Some(PathBuf::from("/home/me/.config/cuetty"))
+        );
+        assert_eq!(global_config_dir_from(None, None), None);
     }
 
     #[test]
@@ -667,7 +899,7 @@ mod tests {
             "package unrelated\nvalue: \"not cuetty\"\n",
         )
         .unwrap();
-        let source = ConfigSource::from_cwd(&root).unwrap();
+        let source = ConfigSource::in_dir(&root).unwrap();
         let evaluation = source.evaluate();
         assert!(matches!(evaluation, Evaluation::Absent));
         assert!(matches!(source.evaluate_tasks(), TaskEvaluation::Absent));
@@ -691,7 +923,7 @@ mod tests {
             "package cuetty\nbanner: \"Parent\"\n",
         )
         .unwrap();
-        let source = ConfigSource::from_cwd(&child).unwrap();
+        let source = ConfigSource::in_dir(&child).unwrap();
         let evaluation = source.evaluate();
         assert!(matches!(evaluation, Evaluation::Absent));
         std::fs::remove_dir_all(root).unwrap();
@@ -706,12 +938,8 @@ mod tests {
             "module: \"example.test/cuetty-invalid\"\nlanguage: version: \"v0.14.1\"\n",
         )
         .unwrap();
-        std::fs::write(
-            root.join("terminal.cue"),
-            "package cuetty\nborder: #ff0000\n",
-        )
-        .unwrap();
-        let source = ConfigSource::from_cwd(&root).unwrap();
+        std::fs::write(root.join("terminal.cue"), "package cuetty\nrail: #ff0000\n").unwrap();
+        let source = ConfigSource::in_dir(&root).unwrap();
         assert!(matches!(source.evaluate(), Evaluation::Invalid(_)));
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -731,7 +959,7 @@ mod tests {
             "package cuetty\nbanner: \"unterminated\n",
         )
         .unwrap();
-        let source = ConfigSource::from_cwd(&root).unwrap();
+        let source = ConfigSource::in_dir(&root).unwrap();
         assert!(matches!(source.evaluate(), Evaluation::Invalid(_)));
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -753,7 +981,7 @@ mod tests {
             "package unrelated\nbanner: \"unterminated\n",
         )
         .unwrap();
-        let source = ConfigSource::from_cwd(&root).unwrap();
+        let source = ConfigSource::in_dir(&root).unwrap();
         let evaluation = source.evaluate();
         assert!(matches!(evaluation, Evaluation::Absent));
         std::fs::remove_dir_all(root).unwrap();
@@ -777,7 +1005,7 @@ mod tests {
             "package unrelated\nbanner: \"unterminated\n",
         )
         .unwrap();
-        let source = ConfigSource::from_cwd(&root).unwrap();
+        let source = ConfigSource::in_dir(&root).unwrap();
         assert!(matches!(
             source.evaluate(),
             Evaluation::Valid(CuettyPresentation {
@@ -806,7 +1034,7 @@ mod tests {
             "package cuetty\nbanner: \"unterminated\n",
         )
         .unwrap();
-        let source = ConfigSource::from_cwd(&root).unwrap();
+        let source = ConfigSource::in_dir(&root).unwrap();
         assert!(matches!(source.evaluate(), Evaluation::Invalid(_)));
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -818,7 +1046,7 @@ mod tests {
             .parent()
             .and_then(Path::parent)
             .expect("cuetty lives below the repository root");
-        let source = ConfigSource::from_cwd(root).expect("repository CUE source");
+        let source = ConfigSource::in_dir(root).expect("repository CUE source");
         let TaskEvaluation::Valid(tasks) = source.evaluate_tasks() else {
             panic!("repository package cuenv should evaluate into a task catalog");
         };
