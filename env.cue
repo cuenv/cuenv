@@ -564,7 +564,13 @@ schema.#Project & {
 					cd docs
 					output="$(bunx --no-install wrangler preview --name "pr-$pr" --message "PR #$pr" --json)"
 					printf '%s\\n' "$output"
-					url="$(jq -er '.preview.urls[0]' <<<"$output")"
+					# Wrangler prints upload progress to stdout before the JSON.
+					json="$(sed -n '/^{/,$p' <<<"$output")"
+					if ! url="$(jq -er '.preview.urls[0] // empty' <<<"$json")"; then
+						echo "Preview pr-$pr has no URL. Enable Preview URLs on the Worker" >&2
+						echo "(preview_urls in wrangler.jsonc takes effect on wrangler deploy)." >&2
+						exit 1
+					fi
 
 					marker="<!-- cuenv-docs-preview -->"
 					body="$(printf '%s\\n**Docs preview:** %s\\n' "$marker" "$url")"
