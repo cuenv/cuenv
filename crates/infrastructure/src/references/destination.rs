@@ -28,7 +28,7 @@ impl ReferenceDestination {
             let step = cursor.selector_step(selector);
             let path = DestinationPath::try_from({
                 let mut prefix = steps.clone();
-                prefix.push(step.clone());
+                prefix.push(cursor.diagnostic_step(&step));
                 prefix
             })?;
             cursor = cursor
@@ -70,13 +70,18 @@ impl ReferenceDestination {
     }
 
     pub(crate) fn for_path(block: &Block, path: &DestinationPath) -> Result<Self> {
-        let cursor = path.steps().iter().try_fold(
-            Cursor {
-                shape: Shape::Block(block),
-                sensitive: false,
-            },
-            |cursor, step| cursor.select(step).map_err(|reason| path.problem(reason)),
-        )?;
+        let mut cursor = Cursor {
+            shape: Shape::Block(block),
+            sensitive: false,
+        };
+        let mut diagnostic_steps = Vec::new();
+        for step in path.steps() {
+            diagnostic_steps.push(cursor.diagnostic_step(step));
+            let diagnostic = DestinationPath::try_from(diagnostic_steps.clone())?;
+            cursor = cursor
+                .select(step)
+                .map_err(|reason| diagnostic.problem(reason))?;
+        }
         let value_type = match cursor.shape {
             Shape::Type(value_type @ (Type::Boolean | Type::Number | Type::String)) => {
                 value_type.clone()
@@ -127,6 +132,38 @@ impl<'schema> Cursor<'schema> {
                 _ => PathStep::Attribute(name.clone()),
             },
             _ => PathStep::Attribute(name.clone()),
+        }
+    }
+
+    // A field selector is only safe to display after the schema recognizes it.
+    // Scalar, dynamic and collection shapes cannot classify arbitrary labels.
+    fn diagnostic_step(self, step: &PathStep) -> PathStep {
+        match step {
+            PathStep::Attribute(name) if !self.has_schema_attribute(name) => {
+                PathStep::Attribute("<hidden field>".into())
+            }
+            _ => step.clone(),
+        }
+    }
+
+    fn has_schema_attribute(self, name: &str) -> bool {
+        match self.shape {
+            Shape::Block(block) => {
+                block.attributes.contains_key(name) || block.blocks.contains_key(name)
+            }
+            Shape::Attributes(attributes) => attributes.contains_key(name),
+            Shape::Type(Type::Object(attributes)) => attributes.contains_key(name),
+            Shape::NestedAttributes(nested)
+                if matches!(nested.nesting, Nesting::Single | Nesting::Group) =>
+            {
+                nested.attributes.contains_key(name)
+            }
+            Shape::NestedBlock(nested)
+                if matches!(nested.nesting, Nesting::Single | Nesting::Group) =>
+            {
+                nested.block.attributes.contains_key(name) || nested.block.blocks.contains_key(name)
+            }
+            _ => false,
         }
     }
 
@@ -279,6 +316,81 @@ mod tests {
         }
         steps.push(PathStep::Attribute("leaf".into()));
         DestinationPath::try_from(steps)
+    }
+
+    #[test]
+    fn schema_errors_hide_unregistered_map_keys() -> Result<()> {
+        let key = format!("unregistered-map-key-{}", uuid::Uuid::new_v4());
+        let mut parent = nested_attribute(Nesting::Map);
+        parent
+            .nested
+            .as_mut()
+            .unwrap()
+            .attributes
+            .get_mut("leaf")
+            .unwrap()
+            .write_only = true;
+        let block = block_with(parent);
+        let selectors = vec![
+            ConfigurationSelector::Field("argument".into()),
+            ConfigurationSelector::Field(key.clone()),
+            ConfigurationSelector::Field("leaf".into()),
+        ];
+        let classified_error = DestinationPath::from_selectors(&block, &selectors).unwrap_err();
+        let path = DestinationPath::try_from(vec![
+            PathStep::Attribute("argument".into()),
+            PathStep::Key(key.clone()),
+            PathStep::Attribute("leaf".into()),
+        ])?;
+        let checked_error = block.reference_destination(&path).unwrap_err();
+        for error in [classified_error, checked_error] {
+            let error = error.to_string();
+            assert!(
+                error.contains("configuration.argument[<hidden key>].leaf"),
+                "{error}"
+            );
+            assert!(!error.contains(&key), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unclassified_selector_diagnostics_do_not_echo_unknown_fields() -> Result<()> {
+        let key = format!("unregistered-selector-{}", uuid::Uuid::new_v4());
+        for value_type in [
+            Type::Dynamic,
+            Type::String,
+            Type::List(Box::new(Type::String)),
+            Type::Set(Box::new(Type::String)),
+            Type::Tuple(vec![Type::String]),
+            Type::Object(BTreeMap::new()),
+        ] {
+            let block = block_with(attribute(value_type));
+            let selectors = [
+                ConfigurationSelector::Field("argument".into()),
+                ConfigurationSelector::Field(key.clone()),
+            ];
+            let path = DestinationPath::try_from(vec![
+                PathStep::Attribute("argument".into()),
+                PathStep::Attribute(key.clone()),
+            ])?;
+            for error in [
+                DestinationPath::from_selectors(&block, &selectors).unwrap_err(),
+                block.reference_destination(&path).unwrap_err(),
+            ] {
+                let error = error.to_string();
+                assert!(error.contains("configuration.argument"), "{error}");
+                assert!(!error.contains(&key), "{error}");
+            }
+        }
+        let error = DestinationPath::from_selectors(
+            &Block::default(),
+            &[ConfigurationSelector::Field(key.clone())],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!error.contains(&key), "{error}");
+        Ok(())
     }
 
     #[test]

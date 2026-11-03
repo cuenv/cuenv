@@ -1,4 +1,4 @@
-//! Lower selected native CUE output selectors into the established descriptors.
+//! Preserve native CUE output declarations and clear their projected values.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -70,13 +70,13 @@ impl OutputSelectors<'_> {
                 // real provider attribute.
                 return Err(CliError::config(format!(
                     "{}: output selectors require a resource or data source configuration argument and one top-level scalar output in the selected infrastructure configuration",
-                    reference.path
+                    diagnostic_path(&reference.labels)
                 )));
             }
             if !reference.supported || output_type(&reference.primitive_type).is_none() {
                 return Err(CliError::config(format!(
                     "{}: output selectors support direct references and primitive type conjunctions; output declarations must be bare string, number or bool types without defaults or refinements",
-                    reference.path
+                    diagnostic_path(&reference.labels)
                 )));
             }
             selected.push(reference);
@@ -94,23 +94,16 @@ impl OutputSelectors<'_> {
             let source = project
                 .pointer(&pointer(&reference.target[..root.len() + 2]))
                 .ok_or_else(|| CliError::config("output selector source is not declared"))?;
-            let source_type = source
+            source
                 .get("type")
                 .and_then(Value::as_str)
                 .ok_or_else(|| CliError::config("output selector source type is not concrete"))?;
-            let source_field = if namespace == "data" {
-                "fromDataSource"
-            } else {
-                "fromResource"
-            };
-            let descriptor = serde_json::json!({
-                (source_field): format!("{source_type}.{producer}"),
-                "attribute": attribute,
-            });
             let destination = project
                 .pointer_mut(&pointer(&reference.labels))
                 .ok_or_else(|| CliError::config("output selector destination is missing"))?;
-            *destination = descriptor;
+            // Reference identity stays with the immutable evaluator; this
+            // projected value is only a placeholder for the provider input.
+            *destination = Value::Null;
             let primitive = output_type(&reference.primitive_type)
                 .ok_or_else(|| CliError::config("output selector declaration is not primitive"))?;
             declarations
@@ -135,6 +128,69 @@ impl OutputSelectors<'_> {
         }
         Ok(declarations)
     }
+}
+
+/// Render only known structural labels. Before loading the provider schema,
+/// any user-provided label can be a sensitive map key, including an identifier
+/// that happens to look like an ordinary attribute name.
+pub(super) fn diagnostic_path(labels: &[String]) -> String {
+    let Some(first) = labels.first().map(String::as_str) else {
+        return "CUE value".to_string();
+    };
+    let mut parts = Vec::new();
+    let mut index = 1;
+    match first {
+        "infrastructure" => {
+            parts.push("infrastructure");
+            if labels
+                .get(index)
+                .is_some_and(|label| label == "environments")
+            {
+                parts.push("environments");
+                index += 1;
+                if labels.get(index).is_some() {
+                    parts.push("<environment>");
+                    index += 1;
+                }
+            }
+            if let Some(namespace) = labels.get(index).map(String::as_str) {
+                let declaration = match namespace {
+                    "providers" => Some("<provider>"),
+                    "resources" => Some("<resource>"),
+                    "data" => Some("<data source>"),
+                    _ => None,
+                };
+                if let Some(declaration) = declaration {
+                    parts.push(namespace);
+                    index += 1;
+                    if labels.get(index).is_some() {
+                        parts.push(declaration);
+                        index += 1;
+                    }
+                    if labels
+                        .get(index)
+                        .is_some_and(|label| label == "configuration")
+                    {
+                        parts.push("configuration");
+                        index += 1;
+                    }
+                } else if matches!(
+                    namespace,
+                    "state" | "migrateStateTo" | "workflows" | "providerEnvironment"
+                ) {
+                    parts.push(namespace);
+                    index += 1;
+                }
+            }
+        }
+        "name" | "env" | "cache" => parts.push(first),
+        _ => return "CUE value".to_string(),
+    }
+    parts.extend(std::iter::repeat_n(
+        "<value>",
+        labels.len().saturating_sub(index),
+    ));
+    parts.join(".")
 }
 
 fn is_output_namespace(labels: &[String]) -> bool {
@@ -188,4 +244,83 @@ fn quoted_path(labels: &[String]) -> String {
         .map(|label| Value::String(label.clone()).to_string())
         .collect::<Vec<_>>()
         .join(".")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selector_errors_never_display_user_supplied_labels() {
+        for (target, supported) in [
+            (
+                vec![
+                    "infrastructure",
+                    "environments",
+                    "private-environment",
+                    "resources",
+                    "producer",
+                    "outputs",
+                    "id",
+                    "nested",
+                ],
+                true,
+            ),
+            (
+                vec![
+                    "infrastructure",
+                    "environments",
+                    "private-environment",
+                    "resources",
+                    "producer",
+                    "outputs",
+                    "id",
+                ],
+                false,
+            ),
+        ] {
+            let labels: Vec<String> = [
+                "infrastructure",
+                "environments",
+                "private-environment",
+                "resources",
+                "private-resource",
+                "configuration",
+                "private-attribute",
+                "sensitive-map-key",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            let reference = DirectReference {
+                path: "private-resource.private-attribute.sensitive-map-key".to_string(),
+                labels,
+                target: target.into_iter().map(str::to_owned).collect(),
+                primitive_type: "string".to_string(),
+                supported,
+            };
+            let references = HashMap::from([(".".to_string(), vec![reference])]);
+            let selector = OutputSelectors {
+                instance_path: ".",
+                references: &references,
+                environment: Some("private-environment"),
+            };
+            let message = selector
+                .selected_references()
+                .expect_err("invalid selector must fail")
+                .to_string();
+            assert!(
+                message.contains("infrastructure.environments.<environment>.resources.<resource>.configuration.<value>.<value>"),
+                "{message}"
+            );
+            for private in [
+                "private-environment",
+                "private-resource",
+                "private-attribute",
+                "sensitive-map-key",
+            ] {
+                assert!(!message.contains(private), "{message}");
+            }
+        }
+    }
 }

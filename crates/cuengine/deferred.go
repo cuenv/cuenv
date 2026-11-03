@@ -163,7 +163,7 @@ func expressionReferences(value, instance cue.Value, depth int) ([][]string, err
 }
 
 // expressionReferencePaths preserves list selectors for generic specialization;
-// the older descriptor API above continues to accept only ordinary field paths.
+// the field-only reference inspection above accepts ordinary field paths.
 func expressionReferencePaths(value, instance cue.Value, depth int) ([]cue.Path, error) {
 	if depth > 32 {
 		return nil, fmt.Errorf("CUE reference nesting exceeds 32 levels")
@@ -259,6 +259,20 @@ func rawExpressionReferencePaths(value, instance cue.Value, depth int) ([]cue.Pa
 	if (value.Kind() == cue.StructKind || value.Kind() == cue.ListKind) && !rawHasAlternatives(expression) {
 		return nil, nil
 	}
+	// Some Expr operands become bottom solely because CUE discarded their
+	// iteration scope. Reinspect their original syntax with those bindings;
+	// ordinary valid operands retain their existing evaluated scopes.
+	if value.Err() != nil {
+		if original, ok := value.Source().(ast.Expr); ok {
+			if controls := structuralAncestors(instance.BuildInstance())[original]; len(controls) > 0 {
+				scoped, err := expressionWithIterationBindings(original, controls)
+				if err != nil {
+					return nil, err
+				}
+				return inspectRawReferencePaths(rawReferenceInspection{value: value, instance: instance, expression: scoped, depth: depth, originalSource: true})
+			}
+		}
+	}
 	return inspectRawReferencePaths(rawReferenceInspection{value: value, instance: instance, expression: expression, depth: depth})
 }
 
@@ -288,7 +302,7 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 		}
 	}
 	var references []cue.Path
-	bindings := make(map[string]bool)
+	bindings := make(map[referenceBindingName]bool)
 	boundValues := make(referenceBindings)
 	allowContainers := 0
 	resolve := func(expression ast.Expr) cue.Value {
@@ -336,7 +350,7 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 		return resolved.LookupPath(cue.MakePath(cue.Str("")))
 	}
 	var visit func(ast.Expr) error
-	bind := func(name string, expression ast.Expr) error {
+	bind := func(name string, expression ast.Expr, declaration ast.Node) error {
 		values, bound := boundValues.selectValues(expression, resolve)
 		if !bound {
 			resolved := resolve(expression)
@@ -356,9 +370,12 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 		if err != nil {
 			return err
 		}
-		bindings[name] = request.originalSource || resolve(expression).Validate(cue.Concrete(true), cue.Final()) == nil || len(references) == before
+		safe := request.originalSource || resolve(expression).Validate(cue.Concrete(true), cue.Final()) == nil || len(references) == before
+		bindings[referenceBindingName{name, declaration}] = safe
+		bindings[referenceBindingName{name, nil}] = safe
 		if bound {
-			boundValues[name] = values
+			boundValues[referenceBindingName{name, declaration}] = values
+			boundValues[referenceBindingName{name, nil}] = values
 		}
 		return nil
 	}
@@ -410,7 +427,7 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 		case *ast.Comprehension:
 			previous := bindings
 			previousValues := boundValues
-			bindings = make(map[string]bool, len(previous))
+			bindings = make(map[referenceBindingName]bool, len(previous))
 			boundValues = make(referenceBindings, len(previousValues))
 			for name, safe := range previous {
 				bindings[name] = safe
@@ -423,7 +440,7 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 				switch clause := clause.(type) {
 				case *ast.ForClause:
 					before := len(references)
-					allowSourceContainer := plainReference(clause.Source)
+					allowSourceContainer := plainIterationSource(clause.Source)
 					if allowSourceContainer {
 						allowContainers++
 					}
@@ -439,26 +456,32 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 					if !bound {
 						collections = []cue.Value{source}
 					}
-					var keys, values []cue.Value
-					for _, collection := range collections {
-						iterationKeys, iterationValues := iterationBindings(collection, instance)
-						keys, values = append(keys, iterationKeys...), append(values, iterationValues...)
+					keys, values, literal := boundValues.literalIterationBindings(clause.Source, resolve)
+					if !literal {
+						for _, collection := range collections {
+							iterationKeys, iterationValues := iterationBindings(collection, instance)
+							keys, values = append(keys, iterationKeys...), append(values, iterationValues...)
+						}
 					}
 					safe := source.Validate(cue.Concrete(true), cue.Final()) == nil || len(references) == before
 					if clause.Key != nil {
-						bindings[clause.Key.Name] = true
-						boundValues[clause.Key.Name] = keys
+						bindings[referenceBindingName{clause.Key.Name, clause.Key}] = true
+						bindings[referenceBindingName{clause.Key.Name, nil}] = true
+						boundValues[referenceBindingName{clause.Key.Name, clause.Key}] = keys
+						boundValues[referenceBindingName{clause.Key.Name, nil}] = keys
 					}
 					if clause.Value != nil {
-						bindings[clause.Value.Name] = safe
-						boundValues[clause.Value.Name] = values
+						bindings[referenceBindingName{clause.Value.Name, clause.Value}] = safe
+						bindings[referenceBindingName{clause.Value.Name, nil}] = safe
+						boundValues[referenceBindingName{clause.Value.Name, clause.Value}] = values
+						boundValues[referenceBindingName{clause.Value.Name, nil}] = values
 					}
 				case *ast.IfClause:
 					if err := visit(clause.Condition); err != nil {
 						return err
 					}
 				case *ast.LetClause:
-					if err := bind(clause.Ident.Name, clause.Expr); err != nil {
+					if err := bind(clause.Ident.Name, clause.Expr, clause.Ident); err != nil {
 						return err
 					}
 				case *ast.TryClause:
@@ -467,7 +490,9 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 						return err
 					}
 					if clause.Ident != nil {
-						bindings[clause.Ident.Name] = resolve(clause.Expr).Validate(cue.Concrete(true), cue.Final()) == nil || len(references) == before
+						safe := resolve(clause.Expr).Validate(cue.Concrete(true), cue.Final()) == nil || len(references) == before
+						bindings[referenceBindingName{clause.Ident.Name, clause.Ident}] = safe
+						bindings[referenceBindingName{clause.Ident.Name, nil}] = safe
 					}
 				default:
 					return fmt.Errorf("CUE reference extraction cannot inspect comprehension clause %T", clause)
@@ -518,6 +543,16 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 			}
 			return nil
 		case *ast.StructLit:
+			previous, previousValues := bindings, boundValues
+			bindings = make(map[referenceBindingName]bool, len(previous))
+			boundValues = make(referenceBindings, len(previousValues))
+			for name, safe := range previous {
+				bindings[name] = safe
+			}
+			for name, values := range previousValues {
+				boundValues[name] = values
+			}
+			defer func() { bindings, boundValues = previous, previousValues }()
 			for _, declaration := range expression.Elts {
 				switch declaration := declaration.(type) {
 				case *ast.Field:
@@ -532,7 +567,7 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 						return err
 					}
 				case *ast.LetClause:
-					if err := bind(declaration.Ident.Name, declaration.Expr); err != nil {
+					if err := bind(declaration.Ident.Name, declaration.Expr, declaration); err != nil {
 						return err
 					}
 				case *ast.Attribute:
@@ -589,6 +624,24 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 				if _, imported := identifier.Node.(*ast.ImportSpec); imported {
 					return nil
 				}
+				// A local field can shadow an iteration variable. Its resolved
+				// AST identity, rather than its spelling, selects that value.
+				if request.originalSource {
+					key := bindingName(identifier)
+					if _, exists := boundValues[key]; !exists {
+						if field, ok := identifier.Node.(ast.Expr); ok && len(structuralAncestors(instance.BuildInstance())[identifier.Scope]) > 0 {
+							selected, bound := boundValues.selectValues(field, resolve)
+							if !bound {
+								resolved := resolve(field)
+								if resolved.Err() != nil {
+									return fmt.Errorf("CUE shadowing field could not be resolved")
+								}
+								selected = []cue.Value{originalReferenceValue(resolved, instance)}
+							}
+							boundValues[key] = selected
+						}
+					}
+				}
 				if values, bound := boundValues.selectValues(expression, resolve); bound {
 					for _, operand := range values {
 						if request.originalSource && allowContainers == 0 && (operand.Kind() == cue.StructKind || operand.Kind() == cue.ListKind) && operand.Validate(cue.Concrete(true)) != nil {
@@ -606,10 +659,10 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 					}
 					return nil
 				}
-				if _, bound := boundValues[identifier.Name]; bound {
+				if _, bound := boundValues[bindingName(identifier)]; bound {
 					return fmt.Errorf("CUE control binding selector could not be resolved")
 				}
-				if safe, bound := bindings[identifier.Name]; bound {
+				if safe, bound := bindings[bindingName(identifier)]; bound {
 					if safe {
 						return nil
 					}

@@ -301,16 +301,14 @@ impl Type {
                 "number" => Ok(Self::Number),
                 "string" => Ok(Self::String),
                 "dynamic" => Ok(Self::Dynamic),
-                other => Err(InfrastructureError::codec(format!(
-                    "unknown cty primitive '{other}'"
-                ))),
+                _ => Err(InfrastructureError::codec("unknown cty primitive type")),
             },
             Json::Array(parts) => {
                 let kind = parts.first().and_then(Json::as_str).ok_or_else(|| {
                     InfrastructureError::codec("cty type array must start with a kind")
                 })?;
                 let argument = parts.get(1).ok_or_else(|| {
-                    InfrastructureError::codec(format!("cty '{kind}' type missing argument"))
+                    InfrastructureError::codec("cty type is missing its argument")
                 })?;
                 match kind {
                     "list" => Ok(Self::List(Box::new(Self::from_json(argument)?))),
@@ -343,14 +341,28 @@ impl Type {
                                 .collect::<Result<_>>()?,
                         ))
                     }
-                    other => Err(InfrastructureError::codec(format!(
-                        "unknown cty type kind '{other}'"
-                    ))),
+                    _ => Err(InfrastructureError::codec("unknown cty type kind")),
                 }
             }
-            other => Err(InfrastructureError::codec(format!(
-                "unsupported cty type specification: {other}"
-            ))),
+            _ => Err(InfrastructureError::codec(
+                "unsupported cty type specification",
+            )),
+        }
+    }
+
+    /// A value-free type label for diagnostics, including dynamic types whose
+    /// object field names may originate in provider data.
+    const fn diagnostic_kind(&self) -> &'static str {
+        match self {
+            Self::Boolean => "bool",
+            Self::Number => "number",
+            Self::String => "string",
+            Self::Dynamic => "dynamic",
+            Self::List(_) => "list",
+            Self::Set(_) => "set",
+            Self::Map(_) => "map",
+            Self::Object(_) => "object",
+            Self::Tuple(_) => "tuple",
         }
     }
 
@@ -857,7 +869,7 @@ fn from_configuration_json(
             let object = json.as_object().ok_or_else(|| mismatch("map", path))?;
             let mut converted = BTreeMap::new();
             for (key, element_json) in object {
-                path.push(key.clone());
+                path.push("<hidden key>".into());
                 converted.insert(
                     key.clone(),
                     from_configuration_json(element_json, element_type, path)?,
@@ -868,9 +880,9 @@ fn from_configuration_json(
         }
         Type::Object(attributes) => {
             let object = json.as_object().ok_or_else(|| mismatch("object", path))?;
-            if let Some(extra) = object.keys().find(|key| !attributes.contains_key(*key)) {
+            if object.keys().any(|key| !attributes.contains_key(key)) {
                 return Err(InfrastructureError::configuration(format!(
-                    "{}: unsupported argument '{extra}'",
+                    "{}: unsupported argument '<hidden field>'",
                     path_string(path)
                 )));
             }
@@ -985,7 +997,7 @@ fn to_state_json(value: &Value, value_type: &Type) -> Result<serde_json::Value> 
         (mismatched, expected_type) => Err(InfrastructureError::codec(format!(
             "a {} value does not conform to type {}",
             mismatched.kind(),
-            expected_type.to_json()
+            expected_type.diagnostic_kind()
         ))),
     }
 }
@@ -1078,13 +1090,13 @@ fn encode(value: &Value, value_type: &Type) -> Result<rmpv::Value> {
                 .collect::<Result<_>>()?,
         )),
         (Value::Object(attributes), Type::Object(attribute_types)) => {
-            if let Some(extra) = attributes
+            if attributes
                 .keys()
-                .find(|name| !attribute_types.contains_key(*name))
+                .any(|name| !attribute_types.contains_key(name))
             {
-                return Err(InfrastructureError::codec(format!(
-                    "unexpected attribute '{extra}'"
-                )));
+                return Err(InfrastructureError::codec(
+                    "unexpected attribute '<hidden field>'",
+                ));
             }
             Ok(MessagePack::Map(
                 attribute_types
@@ -1102,7 +1114,7 @@ fn encode(value: &Value, value_type: &Type) -> Result<rmpv::Value> {
         (mismatched, expected_type) => Err(InfrastructureError::codec(format!(
             "a {} value does not conform to type {}",
             mismatched.kind(),
-            expected_type.to_json()
+            expected_type.diagnostic_kind()
         ))),
     }
 }
@@ -1341,7 +1353,7 @@ fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
             for (raw_key, raw_attribute) in entries {
                 let key = map_key(raw_key)?;
                 let attribute_type = attribute_types.get(&key).ok_or_else(|| {
-                    InfrastructureError::codec(format!("unexpected attribute '{key}'"))
+                    InfrastructureError::codec("unexpected attribute '<hidden field>'")
                 })?;
                 decoded.insert(key, decode(raw_attribute, attribute_type)?);
             }
@@ -1350,7 +1362,7 @@ fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
         (other, expected_type) => Err(InfrastructureError::codec(format!(
             "a MessagePack {} does not match type {}",
             message_pack_kind(other),
-            expected_type.to_json()
+            expected_type.diagnostic_kind()
         ))),
     }
 }
@@ -1448,7 +1460,7 @@ fn from_state_json(json: &serde_json::Value, value_type: &Type) -> Result<Value>
         InfrastructureError::codec(format!(
             "found {} in JSON where type {} was expected",
             json_kind(json),
-            value_type.to_json()
+            value_type.diagnostic_kind()
         ))
     };
     match (value_type, json) {
@@ -1485,13 +1497,10 @@ fn from_state_json(json: &serde_json::Value, value_type: &Type) -> Result<Value>
             .collect::<Result<_>>()
             .map(Value::Object),
         (Type::Object(attribute_types), Json::Object(entries)) => {
-            if let Some(extra) = entries
-                .keys()
-                .find(|key| !attribute_types.contains_key(*key))
-            {
-                return Err(InfrastructureError::codec(format!(
-                    "unexpected attribute '{extra}'"
-                )));
+            if entries.keys().any(|key| !attribute_types.contains_key(key)) {
+                return Err(InfrastructureError::codec(
+                    "unexpected attribute '<hidden field>'",
+                ));
             }
             attribute_types
                 .iter()
@@ -1982,9 +1991,50 @@ mod tests {
         let error =
             Value::from_configuration_json(&json!({"nope": 1}), &object_type()).unwrap_err();
         assert!(
-            error.to_string().contains("unsupported argument 'nope'"),
+            error
+                .to_string()
+                .contains("unsupported argument '<hidden field>'"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn unclassified_configuration_diagnostics_hide_map_keys_and_unknown_fields() {
+        use rmpv::Value as MessagePack;
+        let key = format!("unregistered-key-{}", uuid::Uuid::new_v4());
+        let value_type = Type::Object(BTreeMap::from([(
+            "config".into(),
+            Type::Map(Box::new(Type::Object(BTreeMap::from([(
+                "leaf".into(),
+                Type::Number,
+            )])))),
+        )]));
+        let invalid = json!({"config": {&key: {"leaf": []}}});
+        let error = Value::from_configuration_json(&invalid, &value_type)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("config.<hidden key>.leaf"), "{error}");
+        assert!(!error.contains(&key), "{error}");
+        let extra = json!({"config": {"ordinary": {&key: 1}}});
+        let error = Value::from_configuration_json(&extra, &value_type)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported argument"), "{error}");
+        assert!(!error.contains(&key), "{error}");
+        assert!(!error.contains("ordinary"), "{error}");
+        let object_type = Type::Object(BTreeMap::new());
+        let object = Value::Object(BTreeMap::from([(key.clone(), Value::Null)]));
+        let packed = MessagePack::Map(vec![(
+            MessagePack::String(key.clone().into()),
+            MessagePack::Nil,
+        )]);
+        for error in [
+            encode(&object, &object_type).unwrap_err(),
+            decode(&packed, &object_type).unwrap_err(),
+            from_state_json(&json!({&key: null}), &object_type).unwrap_err(),
+        ] {
+            assert!(!error.to_string().contains(&key), "{error}");
+        }
     }
 
     #[test]
@@ -2039,6 +2089,39 @@ mod tests {
         )
         .unwrap();
         bytes
+    }
+
+    #[test]
+    fn dynamic_type_errors_do_not_expose_provider_supplied_labels() {
+        let secret = format!("private-dynamic-key-{}", uuid::Uuid::new_v4());
+        let concrete = json!(["object", {&secret: "string"}]);
+        let invalid_json = json!({"type": concrete, "value": true});
+        let invalid_pack = dynamic_message_pack(&concrete, rmpv::Value::Boolean(true));
+        let invalid_value = Value::typed(
+            Type::Object(BTreeMap::from([(secret.clone(), Type::String)])),
+            Value::List(Vec::new()),
+        );
+        let errors = [
+            from_json_bytes(&serde_json::to_vec(&invalid_json).unwrap(), &Type::Dynamic)
+                .unwrap_err(),
+            from_message_pack(&invalid_pack, &Type::Dynamic).unwrap_err(),
+            invalid_value.to_state_json(&Type::Dynamic).unwrap_err(),
+            to_message_pack(&invalid_value, &Type::Dynamic).unwrap_err(),
+        ];
+        for error in errors {
+            let text = error.to_string();
+            assert!(text.contains("object"), "{text}");
+            assert!(!text.contains(&secret), "{text}");
+        }
+        for specification in [
+            json!(secret),
+            json!([secret, "string"]),
+            json!([secret]),
+            json!({"unexpected": secret}),
+        ] {
+            let error = Type::from_json(&specification).unwrap_err().to_string();
+            assert!(!error.contains(&secret), "{error}");
+        }
     }
 
     #[test]

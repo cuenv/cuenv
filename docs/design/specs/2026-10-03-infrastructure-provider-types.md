@@ -204,8 +204,8 @@ any CUE language version the consumer's module declares.
 Runtime data source support (issue #545) adds one package per data source at
 `data/<type>/data_source.cue`, with `#DataSource`, closed `#Configuration` and
 scalar `#Outputs`. Resource packages also expose scalar `#Outputs`. Both kinds
-accept exclusive `fromResource`/`fromDataSource` descriptors and native direct
-output selectors in top-level scalar configuration arguments. Data inputs and
+accept native direct output selectors at scalar configuration leaves, including
+nested objects, maps and ordered collections. Data inputs and
 results can contain collections, but output selection cannot. Provider functions
 and ephemeral resources remain ungenerated.
 

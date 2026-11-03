@@ -15,9 +15,8 @@ import (
 )
 
 // constrainedReference permits a direct reference with reference-free CUE
-// constraints. Unlike descriptor lowering, specialization preserves and checks
-// those constraints in CUE. Arithmetic, interpolation and alternative references
-// are still unsupported.
+// constraints. Specialization preserves and checks those constraints in CUE.
+// Arithmetic, interpolation and alternative references are still unsupported.
 func constrainedReference(value, instance cue.Value, depth int) (cue.Path, error) {
 	if depth > 32 {
 		return cue.Path{}, errors.New("reference nesting limit exceeded")

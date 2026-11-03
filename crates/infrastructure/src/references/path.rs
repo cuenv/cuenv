@@ -11,8 +11,10 @@ use crate::type_system::{PathStep, Value, value_at_path};
 /// A nonempty configuration path rooted at an object attribute.
 ///
 /// Attribute names and map keys are distinct steps, including when their text
-/// contains dots, quotes or digits. Formatting is for diagnostics only; callers
-/// must retain the steps when comparing paths or computing digests.
+/// contains dots, quotes or digits. Display formatting is for diagnostics only:
+/// it hides every map key before secret registration can occur. Static schema
+/// fields and collection indexes remain visible. Callers must retain the steps
+/// when comparing paths or computing digests.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DestinationPath(Vec<PathStep>);
 
@@ -158,11 +160,7 @@ impl fmt::Display for DestinationPath {
                             .fmt(formatter)?;
                     }
                 }
-                PathStep::Key(name) => write!(
-                    formatter,
-                    "[{}]",
-                    serde_json::to_string(name).map_err(|_| fmt::Error)?
-                )?,
+                PathStep::Key(_) => formatter.write_str("[<hidden key>]")?,
                 PathStep::Index(index) => write!(formatter, "[{index}]")?,
             }
         }
@@ -194,7 +192,7 @@ mod tests {
         assert_ne!(nested, keyed);
         assert_eq!(literal.to_string(), "\"a.b\"");
         assert_eq!(nested.to_string(), "a.b");
-        assert_eq!(keyed.to_string(), "a[\"b\"]");
+        assert_eq!(keyed.to_string(), "a[<hidden key>]");
         let indexed =
             DestinationPath::try_from(vec![PathStep::Attribute("a".into()), PathStep::Index(0)])?;
         let numeric_key = DestinationPath::try_from(vec![
@@ -203,7 +201,7 @@ mod tests {
         ])?;
         assert_ne!(indexed, numeric_key);
         assert_eq!(indexed.to_string(), "a[0]");
-        assert_eq!(numeric_key.to_string(), "a[\"0\"]");
+        assert_eq!(numeric_key.to_string(), "a[<hidden key>]");
 
         let special = DestinationPath::try_from(vec![
             PathStep::Attribute("nested".into()),
@@ -211,11 +209,38 @@ mod tests {
             PathStep::Index(2),
             PathStep::Attribute(String::new()),
         ])?;
-        assert_eq!(
-            special.to_string(),
-            "nested[\"quote\\\"\\n\\\\[]\"][2].\"\""
-        );
+        assert_eq!(special.to_string(), "nested[<hidden key>][2].\"\"");
         assert_eq!(special.steps().len(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostics_hide_unregistered_map_keys_and_preserve_path_identity() -> Result<()> {
+        let secret_key = format!("unregistered-map-key-{}", uuid::Uuid::new_v4());
+        let path = DestinationPath::try_from(vec![
+            PathStep::Attribute("config".into()),
+            PathStep::Key(secret_key.clone()),
+            PathStep::Index(2),
+            PathStep::Attribute("token".into()),
+            PathStep::Key("x".into()),
+        ])?;
+        let rendered = "config[<hidden key>][2].token[<hidden key>]";
+        assert_eq!(path.to_string(), rendered);
+        let error = path.problem("missing value").to_string();
+        assert!(error.contains(rendered), "{error}");
+        assert!(!error.contains(&secret_key), "{error}");
+        assert_eq!(path.steps()[1], PathStep::Key(secret_key));
+        let mut different = path.steps().to_vec();
+        different[1] = PathStep::Key("different".into());
+        let different = DestinationPath::try_from(different)?;
+        assert_ne!(path, different);
+        assert_eq!(path.to_string(), different.to_string());
+        let mut absent = json!({"config": {}});
+        let error = path
+            .replace_json(&mut absent, Json::Null)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(rendered), "{error}");
         Ok(())
     }
 

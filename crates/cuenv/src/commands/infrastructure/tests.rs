@@ -558,14 +558,20 @@ infrastructure: {
     )
     .unwrap_err();
     assert!(
-        error.to_string().contains("unknown field `resource`"),
+        error
+            .to_string()
+            .contains("invalid `infrastructure` configuration"),
         "{error}"
     );
+    assert!(!error.to_string().contains("resource`"));
     let error = evaluate(module.path(), NameCheck::TargetOnly).unwrap_err();
     assert!(
-        error.to_string().contains("unknown field `resource`"),
+        error
+            .to_string()
+            .contains("invalid `infrastructure` configuration"),
         "{error}"
     );
+    assert!(!error.to_string().contains("resource`"));
 }
 
 #[test]
@@ -699,7 +705,11 @@ fn an_instance_that_fails_to_evaluate_fails_closed() {
     let error = evaluate(module.path(), NameCheck::WholeModule).unwrap_err();
     assert_eq!(exit_code_for(&error), EXIT_EVAL);
     let message = error.to_string();
-    assert!(message.contains("broken:cuenv"), "{message}");
+    assert!(
+        message.contains("one or more CUE instances could not be evaluated"),
+        "{message}"
+    );
+    assert!(!message.contains("broken:cuenv"), "{message}");
     assert!(!message.contains("CUE parsing failed"), "{message}");
     assert!(!message.contains("instanceFailures"), "{message}");
 }

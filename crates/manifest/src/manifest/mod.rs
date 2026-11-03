@@ -26,11 +26,11 @@ pub use formatters::*;
 pub use hooks::*;
 pub use infrastructure::{
     D1State, DataSourceDeclaration, Infrastructure, InfrastructureApplyTrigger,
-    InfrastructureApplyWorkflow, InfrastructureConfiguration, InfrastructureDataSourceReference,
-    InfrastructureOutputReference, InfrastructureOutputType, InfrastructurePlanWorkflow,
-    InfrastructurePolicyAction, InfrastructureProvider, InfrastructureSelectionError,
-    InfrastructureState, InfrastructureWorkflows, ManagedResourceDeclaration, ProviderEnvironment,
-    S3Addressing, S3State, StateCredentialField, StateToken, TursoState,
+    InfrastructureApplyWorkflow, InfrastructureConfiguration, InfrastructureOutputType,
+    InfrastructurePlanWorkflow, InfrastructurePolicyAction, InfrastructureProvider,
+    InfrastructureSelectionError, InfrastructureState, InfrastructureWorkflows,
+    ManagedResourceDeclaration, ProviderEnvironment, S3Addressing, S3State, StateCredentialField,
+    StateToken, TursoState,
 };
 pub use project::Project;
 pub use rules::*;

@@ -63,8 +63,9 @@ pub const DATA_SOURCE_FILE_NAME: &str = "data_source.cue";
 /// Prefix of every schema digest.
 pub const SCHEMA_DIGEST_PREFIX: &str = "sha256:";
 
-/// Predeclared identifiers and package imports that generated types
-/// refer to. A field with one of these names is written with a quoted label:
+/// Identifiers used by generated types, plus the former schema import name,
+/// which stays quoted to keep existing generated labels stable. A field with
+/// one of these names is written with a quoted label:
 /// an identifier label would shadow the predeclared one for every reference
 /// in the same struct (`length!: number` next to a `number` attribute), but
 /// a quoted label cannot be referenced.
@@ -353,11 +354,7 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
     let mut files = BTreeMap::new();
 
     let description = format!("{} {}", release.source, release.version);
-    let mut provider = Package::new(
-        &description,
-        "the provider's configuration block",
-        ConfigurationKind::Provider,
-    );
+    let mut provider = Package::new(&description, "the provider's configuration block");
     provider.line(
         0,
         "// #Provider declares the provider at exactly the version and schema",
@@ -382,11 +379,7 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         let Some(resource) = schema.resources.get(resource_type) else {
             continue;
         };
-        let mut package = Package::new(
-            &description,
-            &format!("the {resource_type} resource"),
-            ConfigurationKind::Resource,
-        );
+        let mut package = Package::new(&description, &format!("the {resource_type} resource"));
         package.line(
             0,
             &format!("// #Resource declares a managed resource of type {resource_type}."),
@@ -419,11 +412,8 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         let Some(data_source) = schema.data_sources.get(data_source_type) else {
             continue;
         };
-        let mut package = Package::new(
-            &description,
-            &format!("the {data_source_type} data source"),
-            ConfigurationKind::DataSource,
-        );
+        let mut package =
+            Package::new(&description, &format!("the {data_source_type} data source"));
         package.line(
             0,
             &format!("// #DataSource declares a read-only data source of type {data_source_type}."),
@@ -466,56 +456,10 @@ struct Package {
     header: String,
     body: String,
     uses_list: bool,
-    configuration_kind: ConfigurationKind,
-    uses_output_reference: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ConfigurationKind {
-    Provider,
-    Resource,
-    DataSource,
-}
-
-/// Reference destinations need stable field names or list/tuple positions.
-/// Provider configuration and every descendant of a set remain literal-only.
-#[derive(Clone, Copy)]
-enum ReferenceSupport {
-    Allowed,
-    Forbidden,
-}
-
-#[derive(Clone, Copy)]
-struct TypeContext {
-    depth: usize,
-    references: ReferenceSupport,
-}
-
-impl TypeContext {
-    const fn child(self) -> Self {
-        Self {
-            depth: self.depth + 1,
-            ..self
-        }
-    }
-
-    const fn without_references(self) -> Self {
-        Self {
-            references: ReferenceSupport::Forbidden,
-            ..self
-        }
-    }
-
-    const fn nested(self, nesting: Nesting) -> Self {
-        match nesting {
-            Nesting::Set => self.without_references(),
-            _ => self,
-        }
-    }
 }
 
 impl Package {
-    fn new(release: &str, subject: &str, configuration_kind: ConfigurationKind) -> Self {
+    fn new(release: &str, subject: &str) -> Self {
         let header = [
             GENERATED_HEADER.to_string(),
             "//".to_string(),
@@ -528,23 +472,14 @@ impl Package {
             header,
             body: String::new(),
             uses_list: false,
-            configuration_kind,
-            uses_output_reference: false,
         }
     }
 
     fn finish(self, package_name: &str) -> String {
         let mut output = self.header;
         let _ = write!(output, "\n\npackage {package_name}\n\n");
-        match (self.uses_list, self.uses_output_reference) {
-            (true, true) => output.push_str(
-                "import (\n\t\"list\"\n\tcuenv_schema \"github.com/cuenv/cuenv/schema\"\n)\n\n",
-            ),
-            (true, false) => output.push_str("import \"list\"\n\n"),
-            (false, true) => {
-                output.push_str("import cuenv_schema \"github.com/cuenv/cuenv/schema\"\n\n");
-            }
-            (false, false) => {}
+        if self.uses_list {
+            output.push_str("import \"list\"\n\n");
         }
         output.push_str(self.body.trim_end());
         output.push('\n');
@@ -578,16 +513,7 @@ impl Package {
     }
 
     fn configuration(&mut self, block: &Block) {
-        let context = TypeContext {
-            depth: 0,
-            references: match self.configuration_kind {
-                ConfigurationKind::Provider => ReferenceSupport::Forbidden,
-                ConfigurationKind::Resource | ConfigurationKind::DataSource => {
-                    ReferenceSupport::Allowed
-                }
-            },
-        };
-        let value = self.block_struct(block, context);
+        let value = self.block_struct(block, 0);
         self.line(0, &format!("#Configuration: {value}"));
     }
 
@@ -612,13 +538,7 @@ impl Package {
                         "// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.",
                     );
                 }
-                let value = self.type_expression(
-                    &attribute.value_type,
-                    TypeContext {
-                        depth: 1,
-                        references: ReferenceSupport::Forbidden,
-                    },
-                );
+                let value = Self::type_expression(&attribute.value_type, 1);
                 self.field(1, &label(name), &value);
             }
         }
@@ -627,25 +547,25 @@ impl Package {
 
     /// The struct a block's configuration is written as, opening at the
     /// current position and closing at `depth`.
-    fn block_struct(&mut self, block: &Block, context: TypeContext) -> String {
+    fn block_struct(&mut self, block: &Block, depth: usize) -> String {
         let mut fields = Fields::default();
         for (name, attribute) in &block.attributes {
-            if let Some(field) = self.attribute_field(name, attribute, context.child()) {
+            if let Some(field) = self.attribute_field(name, attribute, depth + 1) {
                 fields.0.insert(name.clone(), field);
             }
         }
         for (name, nested) in &block.blocks {
-            let field = self.nested_block_field(name, nested, context.child());
+            let field = self.nested_block_field(name, nested, depth + 1);
             fields.0.insert(name.clone(), field);
         }
-        fields.render(context.depth)
+        fields.render(depth)
     }
 
     fn attribute_field(
         &mut self,
         name: &str,
         attribute: &Attribute,
-        context: TypeContext,
+        depth: usize,
     ) -> Option<Field> {
         if attribute.write_only || attribute.presence == Presence::Computed {
             return None;
@@ -658,8 +578,8 @@ impl Package {
             notes.push("Sensitive: plans show it as (sensitive).");
         }
         let value = match &attribute.nested {
-            Some(nested) => self.nested_attributes(nested, context),
-            None => self.type_expression(&attribute.value_type, context),
+            Some(nested) => self.nested_attributes(nested, depth),
+            None => Self::type_expression(&attribute.value_type, depth),
         };
         Some(Field {
             comments: documentation_lines(&attribute.documentation, &notes),
@@ -673,15 +593,14 @@ impl Package {
         })
     }
 
-    fn nested_attributes(&mut self, nested: &NestedAttributes, context: TypeContext) -> String {
-        let context = context.nested(nested.nesting);
+    fn nested_attributes(&mut self, nested: &NestedAttributes, depth: usize) -> String {
         let mut fields = Fields::default();
         for (name, attribute) in &nested.attributes {
-            if let Some(field) = self.attribute_field(name, attribute, context.child()) {
+            if let Some(field) = self.attribute_field(name, attribute, depth + 1) {
                 fields.0.insert(name.clone(), field);
             }
         }
-        let object = fields.render(context.depth);
+        let object = fields.render(depth);
         match nested.nesting {
             Nesting::Single | Nesting::Group => object,
             Nesting::List | Nesting::Set => format!("[...{object}]"),
@@ -689,13 +608,8 @@ impl Package {
         }
     }
 
-    fn nested_block_field(
-        &mut self,
-        name: &str,
-        nested: &NestedBlock,
-        context: TypeContext,
-    ) -> Field {
-        let object = self.block_struct(&nested.block, context.nested(nested.nesting));
+    fn nested_block_field(&mut self, name: &str, nested: &NestedBlock, depth: usize) -> Field {
+        let object = self.block_struct(&nested.block, depth);
         let required = nested.minimum_items > 0 && nested.nesting != Nesting::Group;
         let value = match nested.nesting {
             Nesting::Single | Nesting::Group => object,
@@ -721,27 +635,24 @@ impl Package {
         }
     }
 
-    /// Render only settable scalar leaves as descriptor destinations. Container
-    /// shape and set identity stay governed by the provider's actual cty type.
-    fn type_expression(&mut self, value_type: &Type, context: TypeContext) -> String {
+    /// Render the provider's cty type, retaining its nested container shape.
+    fn type_expression(value_type: &Type, depth: usize) -> String {
         match value_type {
-            Type::Boolean => self.scalar_expression("bool", context),
-            Type::Number => self.scalar_expression("number", context),
-            Type::String => self.scalar_expression("string", context),
+            Type::Boolean => "bool".to_string(),
+            Type::Number => "number".to_string(),
+            Type::String => "string".to_string(),
             Type::Dynamic => "_".to_string(),
-            Type::List(element) => format!("[...{}]", self.type_expression(element, context)),
-            Type::Set(element) => format!(
-                "[...{}]",
-                self.type_expression(element, context.without_references())
-            ),
+            Type::List(element) | Type::Set(element) => {
+                format!("[...{}]", Self::type_expression(element, depth))
+            }
             Type::Map(element) => {
-                format!("{{[string]: {}}}", self.type_expression(element, context))
+                format!("{{[string]: {}}}", Self::type_expression(element, depth))
             }
             Type::Tuple(elements) => format!(
                 "[{}]",
                 elements
                     .iter()
-                    .map(|element| self.type_expression(element, context))
+                    .map(|element| Self::type_expression(element, depth))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -756,22 +667,12 @@ impl Package {
                             comments: Vec::new(),
                             label: label(name),
                             marker: '!',
-                            value: self.type_expression(attribute_type, context.child()),
+                            value: Self::type_expression(attribute_type, depth + 1),
                         },
                     );
                 }
-                fields.render(context.depth)
+                fields.render(depth)
             }
-        }
-    }
-
-    fn scalar_expression(&mut self, expression: &str, context: TypeContext) -> String {
-        match context.references {
-            ReferenceSupport::Allowed => {
-                self.uses_output_reference = true;
-                format!("{expression} | {{cuenv_schema.#InfrastructureOutputReference}}")
-            }
-            ReferenceSupport::Forbidden => expression.to_string(),
         }
     }
 }

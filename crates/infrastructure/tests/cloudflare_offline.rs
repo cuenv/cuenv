@@ -33,6 +33,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
+#[path = "support/native_configuration.rs"]
+mod native_configuration;
+use native_configuration::{NativeConfiguration, native_resource};
+
 type TestResult<Success = ()> = Result<Success, Box<dyn std::error::Error + Send + Sync>>;
 
 const ACCOUNT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -390,7 +394,7 @@ impl Fixture {
             std::env::vars_os().map(|(name, _)| name),
             &provided,
         );
-        let infrastructure: Infrastructure = serde_json::from_value(json!({
+        let mut infrastructure = json!({
             "state": {"turso": {"url": "http://unused"}},
             "providers": {"cloudflare": {
                 "source": "cloudflare/cloudflare", "path": self.binary,
@@ -405,14 +409,14 @@ impl Fixture {
                 }},
                 "sink": {"type": "cloudflare_pipeline_sink", "configuration": {
                     "account_id": ACCOUNT, "name": "offline-sink", "type": "r2",
-                    "config": {"account_id": ACCOUNT, "bucket": "ordinary-bucket", "token": {
-                        "fromResource": "cloudflare_account_token.token", "attribute": "value",
-                    }},
+                    "config": {"account_id": ACCOUNT, "bucket": "ordinary-bucket", "token": native_resource("cloudflare_account_token.token", "value")},
                 }},
             },
-        }))?;
+        });
+        let evaluator = Arc::new(NativeConfiguration::lower(&mut infrastructure)?);
+        let infrastructure: Infrastructure = serde_json::from_value(infrastructure)?;
         let store: Arc<dyn StateStore> = self.store.clone();
-        Ok(InfrastructureEngine::new(EngineSetup {
+        let mut engine = InfrastructureEngine::new(EngineSetup {
             tenant: self.tenant.clone(),
             store,
             infrastructure,
@@ -425,7 +429,11 @@ impl Fixture {
                 cancellation: Cancellation::default(),
                 locked_providers: BTreeMap::new(),
             },
-        }))
+        });
+        if evaluator.has_references() {
+            engine.set_configuration_evaluator(evaluator);
+        }
+        Ok(engine)
     }
 
     async fn plan(&self) -> TestResult<Plan> {

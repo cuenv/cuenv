@@ -65,8 +65,8 @@ use crate::protocol::{self, Diagnostic, Severity};
 #[cfg(test)]
 use crate::references::ConfigurationSpecialization;
 use crate::references::{
-    ConfigurationEvaluator, ConfigurationReferences, OutputIdentity, ReferenceOrigin,
-    ResourceOutputReference, SourceAddress,
+    ConfigurationEvaluator, ConfigurationReferences, OutputIdentity, ResourceOutputReference,
+    SourceAddress,
 };
 use crate::registry::{
     ProviderInstaller, ProviderSource, current_platform, default_cache_directory,
@@ -218,6 +218,9 @@ pub struct ResourceChange {
     pub sensitive: Vec<String>,
     /// Attribute paths forcing replacement.
     pub requires_replace: Vec<String>,
+    /// Hashes of the original structured paths, whose map keys are hidden in
+    /// `requires_replace`. This keeps the plan digest bound to exact paths.
+    replacement_path_identities: Vec<[u8; 32]>,
     /// The resources this one is configured to depend on, as full
     /// `type.name` addresses; recorded with the resource.
     dependencies: Vec<String>,
@@ -406,6 +409,10 @@ impl Plan {
             for path in &change.requires_replace {
                 digest.field(path.as_bytes());
             }
+            digest.count(change.replacement_path_identities.len());
+            for identity in &change.replacement_path_identities {
+                digest.field(identity);
+            }
             digest.count(change.references.references().len());
             for reference in change.references.references() {
                 digest.reference(reference);
@@ -431,12 +438,13 @@ impl DigestWriter {
     fn reference(&mut self, reference: &ResourceOutputReference) {
         self.field(reference.source.to_string().as_bytes());
         self.field(reference.attribute.as_bytes());
-        self.tag(match reference.origin {
-            ReferenceOrigin::Descriptor => 0,
-            ReferenceOrigin::Native(_) => 1,
-        });
-        self.count(reference.destination.steps().len());
-        for step in reference.destination.steps() {
+        self.tag(1);
+        self.path(reference.destination.steps());
+    }
+
+    fn path(&mut self, steps: &[PathStep]) {
+        self.count(steps.len());
+        for step in steps {
             match step {
                 PathStep::Attribute(name) => {
                     self.tag(0);
@@ -970,20 +978,14 @@ impl InfrastructureEngine {
                     "output must match the destination's concrete scalar type",
                 ));
             }
-            if let ReferenceOrigin::Native(native) = &reference.origin {
-                if value.is_unknown() {
-                    deferred.push(native.clone());
-                } else {
-                    sources.insert(output.clone(), value.clone());
-                }
+            if value.is_unknown() {
+                deferred.push(reference.native.clone());
+            } else {
+                sources.insert(output.clone(), value.clone());
             }
             values.insert(output, value);
         }
-        let has_native = input
-            .references
-            .references()
-            .iter()
-            .any(|reference| matches!(reference.origin, ReferenceOrigin::Native(_)));
+        let has_native = !input.references.references().is_empty();
         let configuration = match &self.configuration_evaluation {
             Some(binding) if has_native => {
                 self.ensure_not_stopped()?;
@@ -1017,12 +1019,7 @@ impl InfrastructureEngine {
             Some(_) | None => input.declaration.configuration.clone(),
         };
         let projected = serde_json::Value::Object(configuration.clone());
-        for reference in input
-            .references
-            .references()
-            .iter()
-            .filter(|reference| matches!(reference.origin, ReferenceOrigin::Native(_)))
-        {
+        for reference in input.references.references() {
             let output = OutputIdentity {
                 source: reference.source.clone(),
                 attribute: reference.attribute.clone(),
@@ -2522,6 +2519,7 @@ impl InfrastructureEngine {
             after: Value::Null,
             sensitive,
             requires_replace: Vec::new(),
+            replacement_path_identities: Vec::new(),
             dependencies: input.dependencies.clone(),
             references: input.references.clone(),
             reference_configuration: (!input.references.references().is_empty())
@@ -2633,7 +2631,7 @@ impl InfrastructureEngine {
             value_type: &value_type,
         })?;
 
-        if requires_replace.is_empty() {
+        if requires_replace.rendered.is_empty() {
             change.action = Action::Update;
             change.steps.push(ApplyStep {
                 kind: StepKind::Update,
@@ -2649,7 +2647,8 @@ impl InfrastructureEngine {
         }
 
         change.action = Action::Replace;
-        change.requires_replace = requires_replace;
+        change.requires_replace = requires_replace.rendered;
+        change.replacement_path_identities = requires_replace.identities;
         let (planned, step) = plan_create(&create, response.planned_private, warnings).await?;
         change.after = planned;
         change.steps = replacement_steps(&prior, step);
@@ -2693,6 +2692,7 @@ impl InfrastructureEngine {
             after: Value::Null,
             sensitive,
             requires_replace: Vec::new(),
+            replacement_path_identities: Vec::new(),
             dependencies: row.dependencies.clone(),
             references: ConfigurationReferences::default(),
             reference_configuration: None,
@@ -3713,12 +3713,24 @@ struct ReplacementCheck<'check> {
     value_type: &'check Type,
 }
 
+#[derive(Debug, Default)]
+struct ReplacementPaths {
+    rendered: Vec<String>,
+    identities: Vec<[u8; 32]>,
+}
+
+impl ReplacementPaths {
+    fn is_empty(&self) -> bool {
+        self.rendered.is_empty()
+    }
+}
+
 /// The replacement paths whose value actually changes (or is not yet
 /// known), as Terraform honours them; SDKv2 providers report spurious ones.
 /// Values are compared with their schema type, so set order and number
 /// representation do not count as changes.
-fn replacement_paths(check: &ReplacementCheck<'_>) -> Result<Vec<String>> {
-    let mut changed = Vec::new();
+fn replacement_paths(check: &ReplacementCheck<'_>) -> Result<ReplacementPaths> {
+    let mut changed = ReplacementPaths::default();
     for path in check.paths {
         let steps = path_steps(path);
         let before = type_system::value_at_path(check.prior, &steps);
@@ -3727,7 +3739,7 @@ fn replacement_paths(check: &ReplacementCheck<'_>) -> Result<Vec<String>> {
             return Err(InfrastructureError::plugin(format!(
                 "provider reported that changing `{}` of {} requires replacement, but that \
                  attribute path exists in neither the prior nor the planned state",
-                render_path(path),
+                render_schema_path(&steps, check.value_type),
                 check.address
             )));
         }
@@ -3735,7 +3747,12 @@ fn replacement_paths(check: &ReplacementCheck<'_>) -> Result<Vec<String>> {
         let before = before.unwrap_or(&Value::Null);
         let after = after.unwrap_or(&Value::Null);
         if !type_system::semantically_equal(before, after, &value_type) {
-            changed.push(render_path(path));
+            changed
+                .rendered
+                .push(render_schema_path(&steps, check.value_type));
+            let mut digest = DigestWriter::default();
+            digest.path(&steps);
+            changed.identities.push(digest.hasher.finalize().into());
         }
     }
     Ok(changed)
@@ -3834,7 +3851,7 @@ fn render_diagnostic_with(diagnostic: &Diagnostic, redact: fn(&str) -> String) -
     if let Some(path) = &diagnostic.attribute
         && !path.steps.is_empty()
     {
-        let _ = write!(rendered, " (at {})", render_path(path));
+        let _ = write!(rendered, " (at {})", sanitize(&render_provider_path(path)));
     }
     rendered
 }
@@ -3864,9 +3881,38 @@ pub(crate) fn check_diagnostics(
     }
 }
 
-/// Render an attribute path as `rules.match[0]["key"]`.
-fn render_path(path: &protocol::AttributePath) -> String {
-    crate::object_change::render_steps(&path_steps(path))
+/// Provider diagnostics are untrusted and do not carry a schema. Attribute
+/// names may themselves be dynamic keys, so do not print them as labels.
+fn render_provider_path(path: &protocol::AttributePath) -> String {
+    let steps: Vec<_> = path_steps(path)
+        .into_iter()
+        .map(|step| match step {
+            PathStep::Attribute(_) => PathStep::Attribute("<hidden field>".into()),
+            other => other,
+        })
+        .collect();
+    crate::object_change::render_diagnostic_steps(&steps)
+}
+
+/// A replacement path can show schema-known object attributes. Map keys,
+/// dynamic object labels and unknown provider-supplied selectors stay hidden.
+fn render_schema_path(steps: &[PathStep], value_type: &Type) -> String {
+    let mut current = Some(value_type.clone());
+    let mut safe = Vec::with_capacity(steps.len());
+    for step in steps {
+        let shown = match (&current, step) {
+            (Some(Type::Object(fields)), PathStep::Attribute(name))
+                if fields.contains_key(name) =>
+            {
+                step.clone()
+            }
+            (_, PathStep::Attribute(name)) => PathStep::Key(name.clone()),
+            _ => step.clone(),
+        };
+        current = current.and_then(|kind| kind.at_path(std::slice::from_ref(step)));
+        safe.push(shown);
+    }
+    crate::object_change::render_diagnostic_steps(&safe)
 }
 
 /// One reference's source and destination schemas, checked together.
@@ -4156,26 +4202,7 @@ fn sensitive_reference_paths(
             reference.destination.steps().len() > 1
                 && sensitive.contains(&reference.destination_attribute)
         })
-        .map(|reference| {
-            let mut rendered = String::new();
-            for step in reference.destination.steps() {
-                match step {
-                    PathStep::Attribute(name) => {
-                        if !rendered.is_empty() {
-                            rendered.push('.');
-                        }
-                        rendered.push_str(
-                            &crate::references::DestinationPath::attribute(name).to_string(),
-                        );
-                    }
-                    PathStep::Key(_) => rendered.push_str("[<hidden key>]"),
-                    PathStep::Index(index) => {
-                        let _ = write!(rendered, "[{index}]");
-                    }
-                }
-            }
-            rendered
-        })
+        .map(|reference| reference.destination.to_string())
         .collect()
 }
 

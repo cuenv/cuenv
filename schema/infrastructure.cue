@@ -48,8 +48,7 @@ import "strings"
 //
 // Primitive resource and data-source arguments, including nested object and
 // ordered collection elements, can refer to a top-level primitive output of
-// another resource or data source with #InfrastructureOutputReference or a
-// native selector through its `outputs` namespace. Sets and write-only fields
+// another resource or data source with a native selector through its `outputs` namespace. Sets and write-only fields
 // do not support output references.
 // A sensitive source attribute may be referenced: plans mask the containing
 // argument and identify nested reference paths as (sensitive), with map keys
@@ -453,15 +452,4 @@ _s3LoopbackEndpoint:  "^(?i:http)://((?i:localhost)|\(_tursoLoopback4)|\\[::1\\]
 // names managed resources; references infer dependencies on either kind.
 #DataSource: {
 	#ManagedResource
-}
-
-// A primitive configuration argument supplied by a top-level output of a
-// managed resource or data source. The destination may be nested. Exactly one
-// source namespace must be selected.
-#InfrastructureOutputReference: {
-	fromResource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
-	attribute!:    string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
-} | {
-	fromDataSource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
-	attribute!:      string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
 }

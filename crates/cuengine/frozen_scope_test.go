@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/cuecontext"
 )
 
 func TestFrozenNestedControlsRetainIterationSourceIdentity(t *testing.T) {
@@ -16,6 +20,49 @@ func TestFrozenNestedControlsRetainIterationSourceIdentity(t *testing.T) {
 		{"extra nesting", `for _, resource in resources {if true {if (resource.outputs.flag & false) {_error: true}}}`, false},
 		{"embedded nested control", `for _, resource in resources {{if (resource.outputs.flag & false) {_error: true}}}`, false},
 		{"parenthesized embedded control", `for _, resource in resources {({if (resource.outputs.flag & false) {_error: true}})}`, false},
+		{"parenthesized hidden field control", `for _, resource in resources {_check: ({if (resource.outputs.flag & false) {_error: error("bad")}})}`, false},
+		{"conjoined hidden field control", `for _, resource in resources {_check: {} & {if (resource.outputs.flag & false) {_error: true}}}`, false},
+		{"nested parenthesized hidden control", `for _, resource in resources {_check: ({nested: ({if (resource.outputs.flag & false) {_error: true}})})}`, false},
+		{"ordinary parenthesized hidden control", `for _, resource in resources {_check: ({if resource.type == "fake" {_ok: true}})}`, true},
+		{"hidden list control", `for _, resource in resources {_check: [{if (resource.outputs.flag & false) {_error: true}}]}`, false},
+		{"hidden builtin control", `for _, resource in resources {_check: close({if (resource.outputs.flag & false) {_error: true}})}`, false},
+		{"multiply wrapped hidden control", `for _, resource in resources {_check: (({} & ({if (resource.outputs.flag & false) {_error: true}})))}`, false},
+		{"ordinary conjoined hidden control", `for _, resource in resources {_check: {} & {if resource.type == "fake" {_ok: true}}}`, true},
+		{"ordinary hidden builtin control", `for _, resource in resources {_check: close({if resource.type == "fake" {_ok: true}})}`, true},
+		{"ordinary hidden list control", `for _, resource in resources {_check: [{if resource.type == "fake" {_ok: true}}]}`, true},
+		{"ordinary wrapped hidden payload", `for _, resource in resources {_check: ({kind: resource.type})}`, true},
+		{"ordinary conjoined lexical let", `for _, resource in resources {let item = resource
+_check: {} & {if item.type == "fake" {_ok: true}}}`, true},
+		{"conjoined lexical let output control", `for _, resource in resources {let item = resource
+_check: {} & {if (item.outputs.flag & false) {_error: true}}}`, false},
+		{"nested iteration ordinary conjunction", `for _, resource in resources {for _, item in resources {_check: {} & {if item.type == "fake" {_ok: true}}}}`, true},
+		{"nested iteration conjoined output control", `for _, resource in resources {for _, item in resources {_check: {} & {if (item.outputs.flag & false) {_error: true}}}}`, false},
+		{"wrapped nested lexical let ordinary control", `for _, resource in resources {_check: ({} & {let item = resource
+inner: ({} & {if item.type == "fake" {_ok: true}})})}`, true},
+		{"wrapped nested lexical let output control", `for _, resource in resources {_check: ({} & {let item = resource
+inner: ({} & {if (item.outputs.flag & false) {_error: true}})})}`, false},
+		{"literal bound list ordinary control", `for _, resource in resources {for _, item in [resource] {_check: {} & {if item.type == "fake" {_ok: true}}}}`, true},
+		{"literal bound list output control", `for _, resource in resources {for _, item in [resource] {_check: {} & {if (item.outputs.flag & false) {_error: true}}}}`, false},
+		{"wrapped literal bound list ordinary control", `for _, resource in resources {for _, item in ([resource]) {_check: ({if item.type == "fake" {_ok: true}})}}`, true},
+		{"wrapped literal bound list output control", `for _, resource in resources {for _, item in ([resource]) {_check: ({if (item.outputs.flag & false) {_error: true}})}}`, false},
+		{"nested literal bound list ordinary control", `for _, resource in resources {for _, item in [resource] {for _, nested in [item] {_check: {} & {if nested.type == "fake" {_ok: true}}}}}`, true},
+		{"nested literal bound list output control", `for _, resource in resources {for _, item in [resource] {for _, nested in [item] {_check: {} & {if (nested.outputs.flag & false) {_error: true}}}}}`, false},
+		{"nested lexical shadow retains outer source", `for _, resource in resources {let item = resource
+_check: {first: ({let item = {outputs: flag: false}
+if item.outputs.flag == false {_ok: true}})
+second: ({if (item.outputs.flag & false) {_error: true}})}}`, false},
+		{"ordinary field shadows iteration binding", `for _, resource in resources {_check: {resource: {outputs: flag: false}
+if resource.outputs.flag == false {_ok: true}}}`, true},
+		{"field shadows ordinary iteration alias with source", `for _, item in [{outputs: flag: false}] {_check: {item: resources.first
+if (item.outputs.flag & false) {_error: true}}}`, false},
+		{"fallback lexical let ordinary control", `for _, resource in resources {if false {_hidden: true} else {let item = resource
+_check: {} & {if item.type == "fake" {_ok: true}}}}`, true},
+		{"fallback lexical let output control", `for _, resource in resources {if false {_hidden: true} else {let item = resource
+_check: {} & {if (item.outputs.flag & false) {_error: true}}}}`, false},
+		{"erroneous shadow field rejects", `for _, resource in resources {_check: {resource: {outputs: flag: error("invalid")}
+if resource.outputs.flag {_error: true}}}`, false},
+		{"iteration let clause ordinary control", `for _, resource in resources let item = resource {_check: {} & {if item.type == "fake" {_ok: true}}}`, true},
+		{"iteration let clause output control", `for _, resource in resources let item = resource {_check: {} & {if (item.outputs.flag & false) {_error: true}}}`, false},
 		{"constrained container presence", `if (resources.first & {outputs: flag: false}) != _|_ {_error: true}`, false},
 		{"constrained container length", `if len(resources.first & {outputs: flag: false}) > 0 {_error: true}`, false},
 		{"bound alias", `for _, resource in resources {let item = resource
@@ -28,7 +75,12 @@ if len(fields) > 0 {_check: true}}`, true},
 		{"ordinary container length", `if len(resources) > 0 {_check: true}`, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, snapshot := freezeTestModule(t, map[string]string{"env.cue": "package app\nresources: first: {type: \"fake\", outputs: flag: bool}\nconfig: value: \"literal\"\n" + test.control + "\n"})
+			files := map[string]string{"env.cue": "package app\nresources: first: {type: \"fake\", outputs: flag: bool}\nconfig: value: \"literal\"\n" + test.control + "\n"}
+			if strings.Contains(test.name, "fallback") {
+				files["cue.mod/module.cue"] = "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.16.0\"\n"
+				files["env.cue"] = "@experiment(try)\n" + files["env.cue"]
+			}
+			_, snapshot := freezeTestModule(t, files)
 			sources := []valuePath{frozenPath("resources.first.outputs.flag")}
 			for operation, response := range map[string]string{
 				"inspection":     evaluateFrozenResponse(snapshot, frozenJSON(t, frozenEvaluationOptions{ReferencePaths: []valuePath{frozenPath("config")}, SourcePaths: &sources})),
@@ -172,5 +224,82 @@ func TestFrozenGlobalPredicatesRequireExactTrackedExpressions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIterationOperandInspectionExcludesSiblingSelectors(t *testing.T) {
+	instance := cuecontext.New().CompileString(`package app
+resources: first: {type: "fake", outputs: flag: bool}
+for _, resource in resources {
+    _copy: resource.outputs.flag
+    _check: {} & {let item = resource
+        if item.type == "fake" {_ok: true}
+    }
+}`)
+	var expression ast.Expr
+	ast.Walk(instance.BuildInstance().Files[0], func(node ast.Node) bool {
+		if field, ok := node.(*ast.Field); ok {
+			if name, _, err := ast.LabelName(field.Label); err == nil && name == "_check" {
+				expression = field.Value
+			}
+		}
+		return true
+	}, nil)
+	if expression == nil {
+		t.Fatal("missing original operand")
+	}
+	controls := structuralAncestors(instance.BuildInstance())[expression]
+	if len(controls) == 0 {
+		t.Fatal("missing iteration scope")
+	}
+	scoped, err := expressionWithIterationBindings(expression, controls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := inspectRawReferencePaths(rawReferenceInspection{value: instance, instance: instance, expression: scoped, originalSource: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundOrdinary := false
+	for _, path := range paths {
+		if strings.Contains(path.String(), "outputs") {
+			t.Fatalf("sibling selector attributed to selected operand: %s", path)
+		}
+		foundOrdinary = foundOrdinary || path.String() == "resources.first.type"
+	}
+	if !foundOrdinary {
+		t.Fatalf("selected operand lost its ordinary dependency: %v", paths)
+	}
+}
+
+func TestFrozenLiteralIterationPreservesPartialOrdinaryContainers(t *testing.T) {
+	_, snapshot := freezeTestModule(t, map[string]string{"env.cue": `package app
+source: string
+resources: first: {type: "fake", ordinary: string}
+config: value: "literal"
+for _, resource in resources {
+    for _, item in ([resource]) {
+        _check: {} & {if item.type == "fake" {_ok: true}}
+    }
+}`})
+	var graph frozenGraph
+	if err := json.Unmarshal([]byte(snapshot), &graph); err != nil {
+		t.Fatal(err)
+	}
+	value, err := graph.build()
+	if err != nil || value.Err() != nil {
+		t.Fatalf("invalid original CUE: %v %v", err, value.Err())
+	}
+	if err := value.LookupPath(cue.ParsePath("config")).Validate(cue.Concrete(true)); err != nil {
+		t.Fatal(err)
+	}
+	sources := []valuePath{frozenPath("source")}
+	for operation, response := range map[string]string{
+		"inspection":     evaluateFrozenResponse(snapshot, frozenJSON(t, frozenEvaluationOptions{ReferencePaths: []valuePath{frozenPath("config")}, SourcePaths: &sources})),
+		"specialization": specializeFrozenResponse(snapshot, frozenJSON(t, specializationOptions{Projection: frozenPath("config"), SourcePaths: &sources})),
+	} {
+		if strings.Contains(response, `"error"`) || !strings.Contains(response, `"ok"`) {
+			t.Fatalf("%s rejected ordinary partial CUE: %s", operation, response)
+		}
 	}
 }

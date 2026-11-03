@@ -1,7 +1,7 @@
 # Nested infrastructure output references
 
-Status: implementation and experiments in progress. The behavior described as
-a goal below is not yet fully validated.
+Status: implemented for native CUE selectors. The experiments below describe
+the implementation snapshots on which they were run.
 
 ## Problem
 
@@ -11,32 +11,30 @@ to a top-level scalar configuration argument. A Cloudflare account token's
 pipeline sink. Moving the consumer argument inside an object must not change
 the dependency, type, planning, or sensitivity rules for the reference.
 
-The native selector and descriptor forms (`{fromResource, attribute}` or
-`{fromDataSource, attribute}`) have different CUE semantics. CUE evaluates a
-descriptor as an object. A native selector is an expression referring to an
-abstract output. The descriptor must remain supported, but converting a native
-selector to a descriptor and filling it only after CUE export cannot validate
-the actual provider output against the original CUE constraints.
+A native selector is an expression referring to an abstract output. Preserve
+its CUE provenance and validate the actual provider output against the original
+CUE constraints. Output references must not be encoded as provider configuration
+objects or reconstructed from their field names.
 
 ## Intended contract
 
 - Native selectors use CUE for the initial evaluation and for validating a
   consumer once the referenced output is known. Runtime outputs are unified
   into a frozen CUE evaluation in memory; they are not written to project files.
-- A descriptor remains an explicit compatibility binding. CUE evaluates the
-  descriptor object, then the engine resolves the scalar in the projected
-  provider configuration. Both forms share provider-schema validation,
-  dependency ordering, unknown handling, sensitivity and final-plan checks.
+- Native CUE selectors are the only reference syntax. Remove the descriptor
+  schema, generated type unions, manifest descriptor types, parser and
+  compatibility adapter. Carry selector provenance as structured bindings
+  separate from provider configuration; do not lower it into descriptor JSON.
 - Source attributes remain declared top-level provider scalars. Source and
   destination scalar types must match; provider configuration, write-only and
   computed-only destinations remain unsupported. Arithmetic, interpolation,
   output-dependent defaults, dynamic structure and source collection selection
   are outside this change. A native selector needs an abstract output
-  declaration; an existing descriptor does not.
+  declaration.
 - Destination paths distinguish object fields, concrete map keys and ordered
   list or tuple indices. References beneath sets or dynamic-typed values are
-  rejected. Schema-directed recognition must preserve existing provider
-  objects that happen to contain descriptor field names.
+  rejected. Ordinary provider objects must retain their field meanings, even
+  when fields are named `fromResource`, `fromDataSource`, or `attribute`.
 - An unknown producer stays unknown to the provider even if CUE constraints
   narrow the consumer expression to an apparently concrete value. Resolve and
   validate the actual output before the consumer's final provider plan. A
@@ -50,6 +48,24 @@ the actual provider output against the original CUE constraints.
   identities, dependencies, configuration shape and known values. Runtime
   specialization must not reread changed files or accumulate earlier fills.
   It must not permit an output to alter unconfirmed infrastructure changes.
+
+## Descriptor removal and migration
+
+The former `{fromResource, attribute}` and `{fromDataSource, attribute}` forms
+are removed without a compatibility fallback. Replace them with direct selectors
+such as `infrastructure.resources.primary.outputs.id` or
+`infrastructure.data.lookup.outputs.value`. Untyped producers must declare the
+selected output as a bare `string`, `number`, or `bool`; generated producer types
+provide eligible declarations. Regenerate provider types with
+`cuenv sync infrastructure` to remove the obsolete descriptor unions.
+
+Provider object keys are not reserved globally. A literal object with fields
+named `fromResource`, `fromDataSource`, or `attribute` remains ordinary provider
+configuration when its provider schema accepts it. A descriptor-shaped object
+at a scalar destination fails ordinary type validation and never creates a
+reference or dependency edge. Test both cases, and keep all native selector
+coverage for resource/data combinations, nested destinations, constraints,
+sensitivity, ordering, replacement and deferred reads.
 
 ## Experiments so far
 
@@ -72,22 +88,21 @@ Evaluating `resources.producer.outputs.value` gives `string`, while exporting
 `resources.consumer.configuration` gives `{"token":"expected"}`. The engine
 must retain the producer's unknown status independently of this CUE result.
 
-Finally, unifying a descriptor object directly with its resolved string fails
-because the values have different CUE types. This is why descriptors need a
-compatibility adapter rather than runtime unification at the descriptor field.
+An earlier experiment showed that unifying a descriptor object directly with
+its resolved string fails because the values have different CUE types. The
+final design removes that syntax instead of retaining a compatibility adapter.
 
 The standalone CLI experiments did not exercise cuenv's pinned CUE fork. A
 separate Go experiment run under `nix develop` imported the fork from
 `crates/cuengine/go.mod`. It captured an instance and an imported closed schema,
 removed the source files, rebuilt fresh contexts and filled string, number and
 boolean values. It resolved a `let` alias and nested list destination and
-rejected incompatible literal and length constraints. This is a proof of the
-approach, not yet a Go/Rust bridge or infrastructure lifecycle test; the
-permanent bridge tests must also cover shared imports, numeric precision,
-snapshot ownership, safe diagnostics and repeated-specialization cost.
+rejected incompatible literal and length constraints. That experiment was a
+proof of the approach, not a Go/Rust bridge or infrastructure lifecycle test.
+The proof and integration gates below cover the remaining requirements.
 
-A fake provider with a single nested consumer attribute has also reproduced
-the current limitation: an ordinary literal configuration passed, while six
+A fake provider with a single nested consumer attribute also reproduced
+the previous limitation: an ordinary literal configuration passed, while six
 nested descriptor cases failed with `config.token: expected string, got an
 object`. No live Cloudflare service was used.
 
@@ -177,7 +192,7 @@ add them to the three phase measurements when comparing totals.
 2. Connect structured bindings to the resource/data graph, provider schema
    cursor, planning, final replanning, state dependency persistence, sensitivity
    and recovery. Preserve invocation-local data reads and destroy ordering.
-3. Exercise both forms with a fake provider, including sensitive unknown values,
+3. Exercise native selectors with a fake provider, including sensitive unknown values,
    known/no-op cases, type mismatches, dependency cycles, repeated references,
    and a replacement first revealed by the final plan.
 4. Test the pinned Cloudflare provider against a loopback-only fake API with

@@ -81,32 +81,32 @@ cuenv i plan
 
 An import identifier is interpreted by the provider. cuenv supports one returned resource of the declared type per import. It reads the imported object before storing it, so the following plan compares live state with the configuration. Import does not call `ApplyResourceChange`; it does not create or update the remote object. Use the matching `--env`, `-p` and `--package` on import and follow-up commands. The command's success output includes a plan command that preserves those selectors.
 
-A resource configuration can use a top-level scalar output from another declared resource. The descriptor form works with typed and untyped resources:
+A resource configuration can use a top-level scalar output from another declared resource through a native CUE selector. Untyped resources declare the output with its primitive type:
 
 ```cue
-resources: {
+infrastructure: resources: {
 	primary: {
 		type: "cloudflare_zone"
+		outputs: id: string
 		configuration: {name: "example.com"}
 	}
 	www: {
 		type: "cloudflare_record"
 		configuration: {
-			zone_id: {
-				fromResource: "cloudflare_zone.primary"
-				attribute: "id"
-			}
+			zone_id: infrastructure.resources.primary.outputs.id
 			// Other provider-required record arguments go here.
 		}
 	}
 }
 ```
 
-`fromResource` is the full `type.name` address and `attribute` is a top-level provider attribute. cuenv infers an apply and destroy dependency from the reference, and stores it with the consuming resource.
+The selector names a declaration in the selected configuration and a top-level provider output. cuenv infers an apply and destroy dependency from the reference, and stores it with the consuming resource.
 
-The provider schema distinguishes a reference from an ordinary object with similarly named fields. cuenv may start an unconfigured provider to obtain that schema; it validates the complete reference graph before configuring a provider or calling a resource or data source.
+References come from CUE selector provenance, not the shape of provider configuration objects. Ordinary provider objects retain their field meanings. cuenv may start an unconfigured provider to obtain its schema; it validates the complete reference graph before configuring a provider or calling a resource or data source.
 
-You can also write a native CUE selector. For an untyped resource, declare the output with its primitive type. Generated provider resource types expose supported output attributes under `outputs` automatically:
+The former `{fromResource, attribute}` and `{fromDataSource, attribute}` descriptor syntax is no longer supported. Replace each descriptor with a selector through the producer declaration’s `outputs` namespace. Add a bare `string`, `number`, or `bool` output declaration for an untyped producer, and regenerate provider types with `cuenv sync infrastructure`.
+
+Generated provider resource types expose supported output attributes under `outputs` automatically. An untyped resource declares them explicitly:
 
 ```cue
 infrastructure: {
@@ -149,11 +149,11 @@ infrastructure: resources: {
 }
 ```
 
-The descriptor `{fromResource: "cloudflare_account_token.catalog_token", attribute: "value"}` can be used at the same destination. CUE still evaluates the rest of the configuration and validates constraints on a native selector once its actual output is known. Source selection remains limited to top-level scalars. References into sets or write-only fields, arithmetic, interpolation, output-dependent configuration structure, and independent checks outside a consumer's argument that depend on a runtime output are not supported.
+CUE still evaluates the rest of the configuration and validates constraints on a native selector once its actual output is known. Source selection remains limited to top-level scalars. References into sets or write-only fields, arithmetic, interpolation, output-dependent configuration structure, and independent checks outside a consumer's argument that depend on a runtime output are not supported.
 
 A sensitive output can be referenced too, for example a generated API token copied into a secret manager. The receiving top-level argument is shown as `(sensitive)` in plans, including when the reference is nested and its provider does not mark it sensitive. A text plan also identifies a nested destination, for example `config.token = (sensitive)`. Map keys in these paths are hidden, and any path text that matches a registered secret is redacted. Known sensitive strings are registered for redaction before downstream provider calls, including after apply creates a source. String redaction covers matching copies, not transformations such as hashes or base64; strings shorter than four characters, numbers and booleans are masked in plans but not covered by string redaction. The copy is stored in plaintext in the consumer's state record, like every other attribute.
 
-Both forms infer the same dependency. If a source value is unknown until its create or replacement finishes, cuenv resolves it and asks the consumer provider for a final plan before applying that consumer. A replacement reported by the provider in the initial plan stays visible and is ordered as destroy then create. If only the final plan reveals a replacement that the confirmed plan did not include, cuenv stops before changing the consumer; run `plan` again after its source is recorded. Outputs that were known at plan time need no final plan. When a consumer is replaced and its final plan fails after its delete, apply warns that it was destroyed and not recreated; the next apply creates it.
+Resource and data-source selectors infer dependencies in the same way. If a source value is unknown until its create or replacement finishes, cuenv resolves it and asks the consumer provider for a final plan before applying that consumer. A replacement reported by the provider in the initial plan stays visible and is ordered as destroy then create. If only the final plan reveals a replacement that the confirmed plan did not include, cuenv stops before changing the consumer; run `plan` again after its source is recorded. Outputs that were known at plan time need no final plan. When a consumer is replaced and its final plan fails after its delete, apply warns that it was destroyed and not recreated; the next apply creates it.
 
 Native selectors are re-evaluated from the CUE source snapshot captured for the run, so editing a file after the plan cannot change the confirmed configuration. Runtime evaluation uses the `CUENV_EVAL_TIMEOUT` budget (60 seconds by default). An interrupt or timeout stops waiting and prevents further changes; CUE itself cannot be cancelled, so an unfinished evaluation may continue in memory until it returns or the process exits. cuenv limits the number of outstanding evaluations.
 
@@ -191,9 +191,7 @@ infrastructure: {
 }
 ```
 
-Declare the provider and common state backend as usual. The equivalent
-descriptor is `{fromDataSource: "aws_ami.image", attribute: "id"}`. Exactly
-one of `fromResource` and `fromDataSource` is allowed. Resource and data source
+Declare the provider and common state backend as usual. Resource and data source
 names occupy separate namespaces; both can be named `image`.
 
 Each `plan` and each `apply` invocation validates and reads data sources anew.
@@ -473,7 +471,7 @@ infrastructure: {
 - **`#Resource`** sets `type` and types `configuration`. It stays open for `provider` and `dependsOn`.
 - **`#Configuration`** in each package is the closed definition behind them, if you want to type a value on its own.
 
-Evaluation now fails — with the field and its file position — on a misspelled argument (`field not allowed`), a wrong type (`conflicting values "three" and number`), a missing required argument (`field is required but not present`) and a computed-only attribute set by hand. Provider-side rules (ranges, mutually exclusive arguments) are not in the schema, so the provider still checks them at plan time.
+Evaluation fails on a misspelled argument, a wrong type, a missing required argument and a computed-only attribute set by hand. Infrastructure commands withhold raw CUE error details before provider sensitivity is known, because those details can contain configuration keys and values. Provider-side rules (ranges, mutually exclusive arguments) are not in the schema, so the provider still checks them at plan time.
 
 Field names are Terraform's attribute names (`min_lower`, `override_special`). Each field carries the provider's description as a comment, and comments say when the provider chooses a value when the field is not set, when a value is sensitive, and when an argument is deprecated. Optional arguments are `name?: T` without `| null`: Terraform treats an explicit `null` like an absent argument, so leave it out instead. Nested blocks become structs, lists of structs or maps of structs, with `list.MinItems`/`list.MaxItems` where the provider sets bounds.
 
@@ -770,7 +768,7 @@ With generated types, write `web_dns: cloudflare_dns_record.#Resource & {depends
 
 With or without generated types, `configuration` is also validated by the provider's own schema at plan time, including nested blocks.
 
-The `infrastructure` block is closed at every level: a misspelled field such as `resource:` or `sourcee:` fails evaluation with `field not allowed` and its position, instead of being ignored (which would otherwise plan the deletion of everything under the real field). The schema also checks the references and the provider install choice with CUE's `error()`: a provider must set exactly one of `version` and `path`, every `dependsOn` entry must name a resource of the same configuration, every resource's provider (explicit, or the prefix of its `type`) must be declared in the same configuration, and the state `url` must be valid. The checks apply to the top level and to every `environments.NAME` configuration, **selected or not**, so a mistake in an environment you are not using is still found, and each error carries its field path (for example `infrastructure.environments.dev._unresolved."resources.pet.dependsOn[0]"`). A provider, resource or `configuration` that CUE itself rejects (a conflicting value, a `version` that is not exact) is reported by CUE alone, and the checks that read it wait until it is fixed, so one mistake does not bury the real error under false "no provider named" messages. They need no network and no provider. See [the schema reference](/reference/cue-schema/#checks).
+The `infrastructure` block is closed at every level: a misspelled field such as `resource:` or `sourcee:` fails evaluation instead of being ignored (which would otherwise plan the deletion of everything under the real field). The schema also checks the references and the provider install choice with CUE's `error()`: a provider must set exactly one of `version` and `path`, every `dependsOn` entry must name a resource of the same configuration, every resource's provider (explicit, or the prefix of its `type`) must be declared in the same configuration, and the state `url` must be valid. The checks apply to the top level and to every `environments.NAME` configuration, **selected or not**, so a mistake in an environment you are not using is still found. A provider, resource or `configuration` that CUE itself rejects (a conflicting value, a `version` that is not exact) is rejected before the checks that read it, so one mistake does not produce false "no provider named" messages. These checks need no network and no provider. See [the schema reference](/reference/cue-schema/#checks).
 
 The Rust engine repeats these checks before launching a provider, as defense in depth for projects that do not unify with cuenv's schema. It collects **every** problem rather than stopping at the first, each with its full field path, for example `infrastructure.environments.dev.resources.pet.dependsOn[0]`, and an environment's messages say that top-level providers are not inherited. Each dependency cycle is reported on its own, with only its member resources and the `dependsOn` entries that form it, even when other dependencies are unknown.
 
@@ -864,6 +862,7 @@ A replacement whose old object was destroyed but whose new object was not create
 ## Current limitations
 
 - **Output reference boundaries.** Sources must be top-level scalar provider attributes, and source/destination types must match. Nested object, map and ordered collection destinations are supported; nested or collection sources, sets and write-only destinations are not. If a value was unknown at plan time and its final value makes an existing consumer require replacement, apply stops before deleting or updating that consumer; plan again after the source is recorded.
+- **Early CUE diagnostics.** Infrastructure commands report a value-free evaluation error when CUE fails before provider sensitivity is known. Raw CUE details, including field names, source positions and custom error text, are withheld because they can contain private configuration keys or values. This does not change CUE evaluation; other cuenv commands may still display their normal CUE diagnostics.
 - **Numeric precision.** Provider-bound numbers outside cuenv's lossless Terraform codec range are rejected. Some CUE numeric literals that cannot be represented without loss in the selected configuration's JSON are rejected as well; see [Import and connect resources](#import-and-connect-resources).
 - **Resource identity is not supported.** Plugin Framework resources that declare an identity (recent AWS, Google and Azure resources) fail on update with "Missing Resource Identity After Update".
 - **Dynamic-typed configuration** infers arrays as tuples and objects as objects because configuration values carry no concrete Terraform collection type. Provider-returned dynamic values retain their reported types through state and provider round trips.

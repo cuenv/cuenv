@@ -605,3 +605,166 @@ fn paths_render_like_terraform() {
         r#"rules[0].tags["team"]"#
     );
 }
+
+fn assert_map_keys_hidden(problems: &[PlanProblem], key: &str) {
+    assert!(!problems.is_empty());
+    for problem in problems {
+        let message = problem.to_string();
+        assert!(message.contains("[<hidden key>]"), "{message}");
+        assert!(!message.contains(&format!("{key:?}")), "{message}");
+        // Legacy-provider plans also send these problems to raw tracing.
+        let debug = format!("{problem:?}");
+        assert!(!debug.contains(&format!("{key:?}")), "{debug}");
+    }
+}
+
+#[test]
+fn nested_map_plan_problems_hide_short_and_sensitive_keys() {
+    for key in ["q", "synthetic-sensitive-map-key"] {
+        let mut block = resource_with_rules(Nesting::Map);
+        block.attributes.get_mut("rules").unwrap().sensitive = true;
+        let configured = object(&[
+            ("id", Value::Null),
+            ("name", text("example")),
+            ("rules", object(&[(key, rule("first", Value::Null))])),
+        ]);
+        let renamed = object(&[
+            ("id", Value::Unknown),
+            ("name", text("example")),
+            ("rules", object(&[("other", rule("first", Value::Unknown))])),
+        ]);
+        let problems = check(&block, [&Value::Null, &configured, &renamed]);
+        assert_map_keys_hidden(&problems, key);
+
+        let changed = object(&[
+            ("id", Value::Unknown),
+            ("name", text("example")),
+            ("rules", object(&[(key, rule("changed", Value::Unknown))])),
+        ]);
+        let problems = check(&block, [&Value::Null, &configured, &changed]);
+        assert_map_keys_hidden(&problems, key);
+        assert_eq!(problems[0].path, "rules[<hidden key>].label");
+    }
+}
+
+#[test]
+fn nested_block_map_plan_problems_hide_keys() {
+    let mut block = resource_with_rule_blocks();
+    block.blocks.get_mut("rule").unwrap().nesting = Nesting::Map;
+    for key in ["q", "synthetic-sensitive-map-key"] {
+        let configured = object(&[
+            ("name", text("example")),
+            ("rule", object(&[(key, rule("first", Value::Null))])),
+        ]);
+        let renamed = object(&[
+            ("name", text("example")),
+            ("rule", object(&[("other", rule("first", Value::Unknown))])),
+        ]);
+        let problems = check(&block, [&Value::Null, &configured, &renamed]);
+        assert_map_keys_hidden(&problems, key);
+    }
+}
+
+#[test]
+fn map_compatibility_problems_hide_short_and_sensitive_keys() {
+    let field = attribute(Type::Map(Box::new(Type::String)), Presence::Optional);
+    let block = Block {
+        attributes: BTreeMap::from([("credentials".into(), field)]),
+        ..Block::default()
+    };
+    for key in ["q", "synthetic-sensitive-map-key"] {
+        let planned = object(&[("credentials", object(&[(key, text("value"))]))]);
+        let renamed = object(&[("credentials", object(&[("other", text("value"))]))]);
+        let problems = compatibility_problems(&block, &planned, &renamed);
+        assert_map_keys_hidden(&problems, key);
+
+        let changed = object(&[("credentials", object(&[(key, text("changed"))]))]);
+        let problems = compatibility_problems(&block, &planned, &changed);
+        assert_map_keys_hidden(&problems, key);
+        assert_eq!(problems[0].path, "credentials[<hidden key>]");
+
+        let mut sensitive_block = block.clone();
+        sensitive_block
+            .attributes
+            .get_mut("credentials")
+            .unwrap()
+            .sensitive = true;
+        let sensitive_problems = compatibility_problems(&sensitive_block, &planned, &renamed);
+        assert_eq!(
+            sensitive_problems[0].to_string(),
+            "credentials: inconsistent values for sensitive attribute"
+        );
+        assert!(!format!("{sensitive_problems:?}").contains(&format!("{key:?}")));
+    }
+}
+
+#[test]
+fn dynamic_map_block_compatibility_problems_hide_keys() {
+    let mut block = resource_with_rule_blocks();
+    let nested = block.blocks.get_mut("rule").unwrap();
+    nested.nesting = Nesting::Map;
+    nested.block.attributes.insert(
+        "dynamic".into(),
+        attribute(Type::Dynamic, Presence::Optional),
+    );
+    for key in ["q", "synthetic-sensitive-map-key"] {
+        let planned = object(&[
+            ("name", text("example")),
+            ("rule", object(&[(key, rule("first", Value::Null))])),
+        ]);
+        let renamed = object(&[
+            ("name", text("example")),
+            ("rule", object(&[("other", rule("first", Value::Null))])),
+        ]);
+        let problems = compatibility_problems(&block, &planned, &renamed);
+        assert_map_keys_hidden(&problems, key);
+    }
+}
+
+#[test]
+fn dynamic_object_compatibility_hides_runtime_field_names() {
+    let block = Block {
+        attributes: BTreeMap::from([("data".into(), attribute(Type::Dynamic, Presence::Optional))]),
+        ..Block::default()
+    };
+    for key in ["q", "synthetic-sensitive-map-key"] {
+        let dynamic_type = Type::Object(BTreeMap::from([(
+            key.to_string(),
+            Type::Object(BTreeMap::from([(
+                "nested-private-key".to_string(),
+                Type::String,
+            )])),
+        )]));
+        let dynamic = |value| {
+            Value::typed(
+                dynamic_type.clone(),
+                object(&[(key, object(&[("nested-private-key", text(value))]))]),
+            )
+        };
+        let planned = object(&[("data", dynamic("planned"))]);
+        let actual = object(&[("data", dynamic("changed"))]);
+        let problems = compatibility_problems(&block, &planned, &actual);
+        assert_map_keys_hidden(&problems, key);
+        assert_eq!(problems[0].path, "data[<hidden key>][<hidden key>]");
+        assert!(!format!("{problems:?}").contains("nested-private-key"));
+    }
+}
+
+#[test]
+fn diagnostic_masking_does_not_change_structured_path_identity() {
+    let first = [
+        PathStep::Attribute("rules".into()),
+        PathStep::Key("first".into()),
+    ];
+    let second = [
+        PathStep::Attribute("rules".into()),
+        PathStep::Key("second".into()),
+    ];
+    assert_ne!(first, second);
+    assert_ne!(render_steps(&first), render_steps(&second));
+    assert_eq!(render_diagnostic_steps(&first), "rules[<hidden key>]");
+    assert_eq!(
+        render_diagnostic_steps(&first),
+        render_diagnostic_steps(&second)
+    );
+}

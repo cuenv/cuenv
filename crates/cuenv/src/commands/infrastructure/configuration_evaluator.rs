@@ -22,7 +22,7 @@ use cuenv_infrastructure::type_system::{parse_json_preserving_numbers, scan_json
 use cuenv_infrastructure::{InfrastructureError, ResourceAddress};
 use serde_json::Value as Json;
 
-use super::output_selectors::OutputSelectors;
+use super::output_selectors::{OutputSelectors, diagnostic_path};
 use crate::cli::CliError;
 
 pub(super) struct SnapshotRequest<'request> {
@@ -319,21 +319,14 @@ fn unselected_number_path(path: &[ConfigurationSelector], environment: Option<&s
 }
 
 fn display_configuration_path(path: &[ConfigurationSelector]) -> String {
-    let mut rendered = String::new();
-    for selector in path {
-        match selector {
-            ConfigurationSelector::Field(field) => {
-                if !rendered.is_empty() {
-                    rendered.push('.');
-                }
-                rendered.push_str(&Json::String(field.clone()).to_string());
-            }
-            ConfigurationSelector::Index(index) => {
-                let _ = write!(rendered, "[{index}]");
-            }
-        }
-    }
-    rendered
+    let labels: Vec<_> = path
+        .iter()
+        .map(|selector| match selector {
+            ConfigurationSelector::Field(field) => field.clone(),
+            ConfigurationSelector::Index(_) => String::new(),
+        })
+        .collect();
+    diagnostic_path(&labels)
 }
 
 fn path_field(path: &ValuePath, index: usize) -> Result<&str, CliError> {
@@ -497,6 +490,9 @@ fn direct_reference(reference: &FrozenReference) -> DirectReference {
 }
 
 fn display_path(path: &ValuePath) -> String {
+    // This canonical form distinguishes quoted labels from indices when
+    // matching references. It contains untrusted values and must not be
+    // included in diagnostics; use `diagnostic_path` for those instead.
     let mut rendered = String::new();
     for selector in path {
         match selector {

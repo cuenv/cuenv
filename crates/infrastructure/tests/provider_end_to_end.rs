@@ -39,6 +39,10 @@ use cuenv_infrastructure::{
 use cuenv_manifest::manifest::Infrastructure;
 use serde_json::json;
 
+#[path = "support/native_configuration.rs"]
+mod native_configuration;
+use native_configuration::{NativeConfiguration, native_data_source, native_resource};
+
 type TestResult<Success = ()> = Result<Success, Box<dyn std::error::Error>>;
 
 fn environment_path(name: &str) -> TestResult<String> {
@@ -426,10 +430,7 @@ async fn generated_types_describe_real_provider_schemas() -> TestResult {
         .get(Path::new("resources/random_pet/resource.cue"))
         .ok_or("no random_pet package")?;
     // Computed-only `id` is not configuration.
-    assert!(
-        pet.contains("\tlength?: number | {cuenv_schema.#InfrastructureOutputReference}\n"),
-        "{pet}"
-    );
+    assert!(pet.contains("\tlength?: number\n"), "{pet}");
     assert!(!pet.contains("\tid?:"), "{pet}");
     Ok(())
 }
@@ -509,10 +510,7 @@ async fn fake_data_source_generated_types_describe_configuration_and_scalar_outp
     ] {
         assert!(package.contains(declaration), "{package}");
     }
-    assert!(
-        package.contains("name!: string | {cuenv_schema.#InfrastructureOutputReference}"),
-        "{package}"
-    );
+    assert!(package.contains("name!: string"), "{package}");
     for output in [
         "value: string",
         "secret_value: string",
@@ -560,15 +558,17 @@ async fn local_data_source_protocol_five_reads_feed_managed_resources() -> TestR
         "web",
     )?;
     let _cleanup = TenantCleanup::new(&tenant);
-    let infrastructure: Infrastructure = serde_json::from_value(json!({
+    let mut infrastructure = json!({
         "state": {"turso": {"url": "http://unused"}},
         "providers": {"local": {"source": "hashicorp/local", "path": binary}},
         "data": {"input": {"type": "local_file", "configuration": {"filename": source}}},
         "resources": {"output": {"type": "local_file", "configuration": {
             "filename": destination,
-            "content": {"fromDataSource": "local_file.input", "attribute": "content"},
+            "content": native_data_source("local_file.input", "content"),
         }}},
-    }))?;
+    });
+    let evaluator = Arc::new(NativeConfiguration::lower(&mut infrastructure)?);
+    let infrastructure: Infrastructure = serde_json::from_value(infrastructure)?;
     for content in ["first read", "fresh read"] {
         std::fs::write(&source, content)?;
         let mut engine = InfrastructureEngine::new(EngineSetup {
@@ -577,6 +577,7 @@ async fn local_data_source_protocol_five_reads_feed_managed_resources() -> TestR
             infrastructure: infrastructure.clone(),
             options: engine_options(directory.path(), &cancellation),
         });
+        engine.set_configuration_evaluator(evaluator.clone());
         let lock = store.lock(&tenant, "local data source").await?;
         let plan = engine.plan(PlanMode::Apply).await?;
         engine
@@ -1253,13 +1254,18 @@ impl Fake {
         {
             infrastructure[name] = value.clone();
         }
+        let evaluator = Arc::new(NativeConfiguration::lower(&mut infrastructure)?);
         let infrastructure: Infrastructure = serde_json::from_value(infrastructure)?;
-        Ok(InfrastructureEngine::new(EngineSetup {
+        let mut engine = InfrastructureEngine::new(EngineSetup {
             tenant: self.tenant.clone(),
             store: Arc::clone(&self.store),
             infrastructure,
             options: engine_options(self.directory.path(), cancellation),
-        }))
+        });
+        if evaluator.has_references() {
+            engine.set_configuration_evaluator(evaluator);
+        }
+        Ok(engine)
     }
 
     async fn plan(&self, resources: &serde_json::Value) -> TestResult<Plan> {
@@ -1392,7 +1398,7 @@ async fn fake_data_source_references_observe_remote_changes() -> TestResult {
     let configuration = json!({
         "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "outside"}}},
         "resources": {"consumer": {"type": "fake_plain", "configuration": {
-            "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+            "name": native_data_source("fake_lookup.lookup", "value"),
         }}},
     });
     fake.converge_configuration(&configuration, PlanMode::Apply)
@@ -1434,11 +1440,11 @@ async fn fake_data_source_resource_data_resource_chain_defers_reads_until_apply(
         "resources": {
             "producer": {"type": "fake_plain", "configuration": {"name": "producer"}},
             "consumer": {"type": "fake_plain", "configuration": {
-                "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+                "name": native_data_source("fake_lookup.lookup", "value"),
             }},
         },
         "data": {"lookup": {"type": "fake_lookup", "configuration": {
-            "name": {"fromResource": "fake_plain.producer", "attribute": "id"},
+            "name": native_resource("fake_plain.producer", "id"),
         }}},
     });
     fake.plan_configuration(&configuration).await?;
@@ -1480,7 +1486,7 @@ async fn fake_data_source_known_arguments_wait_for_changing_dependencies() -> Te
             "resources": {
                 "producer": {"type": "fake_plain", "configuration": {"name": name}},
                 "consumer": {"type": "fake_plain", "configuration": {
-                    "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+                    "name": native_data_source("fake_lookup.lookup", "value"),
                 }},
             },
             "data": {"lookup": {"type": "fake_lookup", "dependsOn": ["producer"],
@@ -1526,7 +1532,7 @@ async fn fake_data_source_waits_through_an_unchanged_managed_prerequisite() -> T
                 "unchanged": {"type": "fake_plain", "dependsOn": ["ancestor"],
                     "configuration": {"name": "unchanged"}},
                 "consumer": {"type": "fake_plain", "configuration": {
-                    "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+                    "name": native_data_source("fake_lookup.lookup", "value"),
                 }},
             },
             "data": {"lookup": {"type": "fake_lookup", "dependsOn": ["unchanged"],
@@ -1603,7 +1609,7 @@ async fn fake_data_source_managed_ancestry_survives_lookup_removal_for_destroy()
             "parent": {"type": "fake_ordered", "configuration": {"name": "parent-a"}},
             "dependent": {"type": "fake_ordered", "configuration": {
                 "name": "dependent-a",
-                "parent_name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+                "parent_name": native_data_source("fake_lookup.lookup", "value"),
             }},
         },
         "data": {"lookup": {"type": "fake_lookup", "dependsOn": ["parent"],
@@ -1670,8 +1676,8 @@ async fn fake_data_source_completed_read_is_frozen_during_final_resource_replan(
         "resources": {
             "parent": {"type": "fake_ordered", "configuration": {"name": "parent-a"}},
             "dependent": {"type": "fake_ordered", "configuration": {
-                "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
-                "parent_name": {"fromResource": "fake_ordered.parent", "attribute": "id"},
+                "name": native_data_source("fake_lookup.lookup", "value"),
+                "parent_name": native_resource("fake_ordered.parent", "id"),
             }},
         },
         "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "outside"}}},
@@ -1718,7 +1724,7 @@ async fn fake_data_source_failure_skips_only_dependents_and_redacts_returned_sec
         "resources": {
             "producer": {"type": "fake_plain", "configuration": {"name": "producer"}},
             "consumer": {"type": "fake_plain", "configuration": {
-                "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+                "name": native_data_source("fake_lookup.lookup", "value"),
             }},
             "unrelated": {"type": "fake_plain", "configuration": {"name": "unrelated"}},
         },
@@ -1807,7 +1813,7 @@ async fn fake_data_source_deferred_sensitive_destination_redacts_final_validatio
         "resources": {
             "producer": {"type": "fake_plain", "configuration": {"name": "producer"}},
             "consumer": {"type": "fake_sensitive_input", "configuration": {
-                "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "value"},
+                "name": native_data_source("fake_lookup.lookup", "value"),
             }},
         },
     });
@@ -1874,7 +1880,7 @@ async fn fake_data_source_sensitive_outputs_mask_resource_plans() -> TestResult 
     let configuration = json!({
         "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "private"}}},
         "resources": {"consumer": {"type": "fake_plain", "configuration": {
-            "name": {"fromDataSource": "fake_lookup.lookup", "attribute": "secret_value"},
+            "name": native_data_source("fake_lookup.lookup", "secret_value"),
         }}},
     });
     let plan = fake.plan_configuration(&configuration).await?;
@@ -2035,10 +2041,7 @@ async fn fake_output_references_infer_dependencies_and_stay_noop() -> TestResult
         "record": {
             "type": "fake_repl",
             "configuration": {
-                "name": {
-                    "fromResource": "fake_plain.primary",
-                    "attribute": "id",
-                },
+                "name": native_resource("fake_plain.primary", "id"),
             },
         },
     });
@@ -2067,10 +2070,7 @@ async fn fake_unknown_reference_keeps_the_provider_replacement_plan() -> TestRes
         "record": {
             "type": "fake_repl",
             "configuration": {
-                "name": {
-                    "fromResource": "fake_plain.primary",
-                    "attribute": "id",
-                },
+                "name": native_resource("fake_plain.primary", "id"),
             },
         },
     });
@@ -2103,10 +2103,7 @@ async fn fake_referenced_create_ignores_requires_replace_without_prior_state() -
         "record": {
             "type": "fake_repl",
             "configuration": {
-                "name": {
-                    "fromResource": "fake_plain.primary",
-                    "attribute": "id",
-                },
+                "name": native_resource("fake_plain.primary", "id"),
             },
         },
     });
@@ -2125,9 +2122,7 @@ fn nested_token_consumer(token: &serde_json::Value) -> serde_json::Value {
 fn nested_token_resources(source_name: &str) -> serde_json::Value {
     json!({
         "producer": {"type": "fake_token_source", "configuration": {"name": source_name}},
-        "consumer": nested_token_consumer(&json!({
-            "fromResource": "fake_token_source.producer", "attribute": "token",
-        })),
+        "consumer": nested_token_consumer(&json!(native_resource("fake_token_source.producer", "token"))),
     })
 }
 
@@ -2360,9 +2355,7 @@ async fn fake_nested_token_reference_renders_exact_unknown_leaf_before_apply() -
     let fake = Fake::new().await?;
     let resources = json!({
         "producer": {"type": "fake_plain", "configuration": {"name": "public-source"}},
-        "consumer": nested_token_consumer(&json!({
-            "fromResource": "fake_plain.producer", "attribute": "id",
-        })),
+        "consumer": nested_token_consumer(&json!(native_resource("fake_plain.producer", "id"))),
     });
     let plan = fake.plan(&resources).await?;
     let consumer = plan
@@ -2569,19 +2562,15 @@ async fn fake_nested_token_data_source_known_and_deferred_keep_managed_ancestry(
     for configuration in [
         json!({
             "data": {"lookup": {"type": "fake_lookup", "configuration": {"name": "known"}}},
-            "resources": {"consumer": nested_token_consumer(&json!({
-                "fromDataSource": "fake_lookup.lookup", "attribute": "secret_value",
-            }))},
+            "resources": {"consumer": nested_token_consumer(&json!(native_data_source("fake_lookup.lookup", "secret_value")))},
         }),
         json!({
             "data": {"lookup": {"type": "fake_lookup", "configuration": {
-                "name": {"fromResource": "fake_plain.producer", "attribute": "id"},
+                "name": native_resource("fake_plain.producer", "id"),
             }}},
             "resources": {
                 "producer": {"type": "fake_plain", "configuration": {"name": "public-source"}},
-                "consumer": nested_token_consumer(&json!({
-                    "fromDataSource": "fake_lookup.lookup", "attribute": "secret_value",
-                })),
+                "consumer": nested_token_consumer(&json!(native_data_source("fake_lookup.lookup", "secret_value"))),
             },
         }),
     ] {
@@ -2650,14 +2639,12 @@ async fn fake_nested_token_data_source_destination_flows_to_nested_resource_dest
     let configuration = json!({
         "resources": {
             "producer": {"type": "fake_token_source", "configuration": {"name": "nested-data"}},
-            "consumer": nested_token_consumer(&json!({
-                "fromDataSource": "fake_lookup.lookup", "attribute": "nested_value",
-            })),
+            "consumer": nested_token_consumer(&json!(native_data_source("fake_lookup.lookup", "nested_value"))),
         },
         "data": {"lookup": {"type": "fake_lookup", "configuration": {
             "name": "public-lookup-name",
             "config": {
-                "token": {"fromResource": "fake_token_source.producer", "attribute": "token"},
+                "token": native_resource("fake_token_source.producer", "token"),
                 "label": "ordinary-data-sibling",
             },
         }}},
@@ -2705,10 +2692,7 @@ async fn fake_nested_token_data_source_destination_flows_to_nested_resource_dest
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
 async fn referenced_replacement_orders_consumer_and_producer_in_one_apply() -> TestResult {
     let fake = Fake::new().await?;
-    let reference = json!({
-        "fromResource": "fake_obj.producer",
-        "attribute": "id",
-    });
+    let reference = json!(native_resource("fake_obj.producer", "id"));
     let initial = json!({
         "producer": obj(&json!({"key": "old"})),
         "consumer": obj(&json!({
@@ -2772,10 +2756,7 @@ async fn fake_sensitive_outputs_flow_through_references_masked_and_redacted() ->
         "consumer": {
             "type": "fake_plain",
             "configuration": {
-                "name": {
-                    "fromResource": "fake_secret.secret",
-                    "attribute": "arn",
-                },
+                "name": native_resource("fake_secret.secret", "arn"),
             },
         },
     });

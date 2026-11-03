@@ -83,21 +83,16 @@ pub(super) fn declaration<'declaration>(
 }
 
 impl DeclarationGraph {
-    #[cfg(test)]
-    pub(super) fn new(infrastructure: &Infrastructure) -> Result<Self> {
-        Self::build(infrastructure, None)
-    }
-
     pub(super) fn with_references(
         infrastructure: &Infrastructure,
         references: &BTreeMap<SourceAddress, ConfigurationReferences>,
     ) -> Result<Self> {
-        Self::build(infrastructure, Some(references))
+        Self::build(infrastructure, references)
     }
 
     fn build(
         infrastructure: &Infrastructure,
-        classified: Option<&BTreeMap<SourceAddress, ConfigurationReferences>>,
+        classified: &BTreeMap<SourceAddress, ConfigurationReferences>,
     ) -> Result<Self> {
         let mut references = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
@@ -117,10 +112,7 @@ impl DeclarationGraph {
                 )
             }))
         {
-            let parsed = match classified {
-                Some(references) => references.get(&source).cloned().unwrap_or_default(),
-                None => ConfigurationReferences::extract(&declared.configuration)?,
-            };
+            let parsed = classified.get(&source).cloned().unwrap_or_default();
             let mut prerequisites = BTreeSet::new();
             for name in &declared.depends_on {
                 let managed = infrastructure.resources.get(name).ok_or_else(|| {

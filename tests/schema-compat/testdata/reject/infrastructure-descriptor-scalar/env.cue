@@ -1,4 +1,4 @@
-// want: empty disjunction
+// want: conflicting values
 package compat
 
 import "github.com/cuenv/cuenv/schema"
@@ -12,7 +12,7 @@ infrastructure: {
 	providers: fake: {source: "example/fake", version: "1.0.0"}
 	resources: consumer: {
 		type: "fake_object"
-		configuration: value: schema.#InfrastructureOutputReference & {
+		configuration: value: string & {
 			fromResource:   "fake_lookup.primary"
 			fromDataSource: "fake_lookup.primary"
 			attribute:      "id"

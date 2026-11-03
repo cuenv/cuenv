@@ -71,10 +71,8 @@ impl<'name> ConfigurationScope<'name> {
 /// `infrastructure.environments.dev.resources.pet.dependsOn[0]`. Call this
 /// before resolving provider secrets or opening a state backend. The engine
 /// repeats the validation as defense in depth before planning.
-/// Descriptor meaning requires provider schemas: descriptor-derived edges and
-/// scalar contracts are checked by the engine's schema phase before any
-/// provider configuration or resource/data call, rather than guessed here from
-/// ordinary object keys.
+/// Native selector edges and scalar contracts are checked against provider
+/// schemas before any provider configuration or resource/data call.
 ///
 /// `environment` is the environment the configuration was selected from, if
 /// any, and only changes the paths in the messages.
@@ -309,8 +307,8 @@ fn check_cycles(
                     })
                     .map(move |reference| {
                         format!(
-                            "{path}.{name}.configuration.{}.fromResource -> {}",
-                            reference.destination_attribute, reference.source
+                            "{path}.{name}.configuration.{} -> {}.outputs.{}",
+                            reference.destination, reference.source, reference.attribute
                         )
                     });
                 explicit.chain(references)

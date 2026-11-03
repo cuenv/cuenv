@@ -998,15 +998,12 @@ cancelling it, whatever its ref.
 - **Closed at every level.** Every infrastructure definition is closed, also
   when the project embeds `schema.#Project` at file level: a misspelled field
   such as `resource:`, `sourcee:`, `environment:` or `authTokenEnv:` fails
-  with `field not allowed` and the position of the typo. cuenv's Rust types
-  reject unknown fields as well.
-- **Errors.** Evaluation fails before any provider starts, and every error is
-  listed, each with its field path
-  (`infrastructure.environments.Dev.resources.pet.configuration.length`) and
-  file positions relative to the module root. Errors raised by the schema's
-  own checks (see [Checks](#checks)) point at `schema/infrastructure.cue`
-  rather than your file; the message and the field path name the problem, so
-  search for those.
+  evaluation. cuenv's Rust types reject unknown fields as well.
+- **Errors.** Evaluation failures stop infrastructure commands before provider
+  work. Those commands withhold raw CUE details before provider sensitivity is
+  known, because field paths, source positions and messages may contain private
+  configuration keys or values. CUE evaluation and its schema checks still run;
+  other cuenv commands may display their usual CUE diagnostics.
 
 #### State identity
 
@@ -1333,22 +1330,14 @@ Copied top-level sensitivity is persisted on the managed record for later
 destroy/orphan plans, including after a process restart; see
 [`#InfrastructureState`](#infrastructurestate) for migration and historical limits.
 
-### #InfrastructureOutputReference
+### Infrastructure output selectors
 
-A top-level scalar argument of a managed resource or data source may reference
-a top-level scalar output in either namespace:
-
-| Field | Type | Required | Description |
-| ----- | ---- | -------- | ----------- |
-| `fromResource` | `string` | One of | Declared managed resource address, `type.name` |
-| `fromDataSource` | `string` | One of | Declared data source address, `type.name` |
-| `attribute` | `string` | Yes | Top-level scalar attribute name |
-
-Exactly one of `fromResource` and `fromDataSource` is allowed. For example,
-`{fromDataSource: "aws_ami.base", attribute: "id"}` selects a data source output.
-Native direct selectors such as `infrastructure.data.base.outputs.id` or
-`infrastructure.resources.primary.outputs.id` lower to the same reference;
-both managed resources and data sources can consume them. Sources must belong
+A scalar argument of a managed resource or data source may reference a top-level
+scalar output in either namespace. Use a native CUE selector such as
+`infrastructure.data.base.outputs.id` or
+`infrastructure.resources.primary.outputs.id`. Destinations can be nested in
+objects, maps and ordered lists or tuples. Both managed resources and data
+sources can consume these selectors. Sources must belong
 to the selected configuration, and source and destination primitive types must
 match. Untyped declarations supply placeholders such as `outputs: id: string`;
 generated types supply eligible declarations automatically. Nested or collection
@@ -1373,8 +1362,8 @@ Not part of cuenv's schema module: `cuenv infrastructure provider add
 | `<hostname>/<namespace>/<type>/resources/<resource type>` | `<resource type>` | `#Resource`, `#Configuration` (closed), `#Outputs` (top-level scalars) |
 | `<hostname>/<namespace>/<type>/data/<data source type>` | `<data source type>` | `#DataSource`, `#Configuration` (closed), `#Outputs` (top-level scalars), written in `data_source.cue` |
 
-Resource and data source configurations accept scalar output-reference
-descriptors. The schema digest includes nonempty data source schemas; providers
+Resource and data source configurations accept native CUE output selectors
+at supported scalar leaves, including nested objects, maps and ordered collections. The schema digest includes nonempty data source schemas; providers
 without data sources retain their previous digest. To refresh an existing pin
 made before data source support for a provider that has data sources, run
 `cuenv infrastructure provider add <source>@<same-version>`. `cuenv sync
