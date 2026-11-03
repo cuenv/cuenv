@@ -2727,7 +2727,7 @@ impl Render for TerminalView {
             focused: terminal_focused,
             overlays,
         }));
-        let mut terminal_surface = div().relative().size_full().overflow_hidden().child(
+        let mut terminal_surface = div().relative().overflow_hidden().child(
             canvas(
                 move |bounds, _, app| {
                     let next = (
