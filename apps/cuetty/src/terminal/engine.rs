@@ -2911,6 +2911,9 @@ pub fn run() {
                     traffic_light_position: Some(point(px(12.0), px(9.0))),
                 }),
                 window_background: WindowBackgroundAppearance::Blurred,
+                // Matches the installed `cuetty.desktop` so Linux
+                // compositors associate windows with the launcher entry.
+                app_id: Some("cuetty".to_string()),
                 ..WindowOptions::default()
             },
             |window, cx| {

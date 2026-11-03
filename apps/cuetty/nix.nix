@@ -78,7 +78,33 @@ let
     commonArgs
     // {
       cargoBuildFlags = [ "--bin=cuetty" ];
-      nativeBuildInputs = nativeBuildInputs ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.makeWrapper ];
+      nativeBuildInputs =
+        nativeBuildInputs
+        ++ lib.optionals pkgs.stdenv.isLinux [
+          pkgs.makeWrapper
+          pkgs.copyDesktopItems
+        ];
+      desktopItems = lib.optionals pkgs.stdenv.isLinux [
+        (pkgs.makeDesktopItem {
+          name = "cuetty";
+          desktopName = "Cuetty";
+          genericName = "Terminal";
+          comment = "Cuenv's GPUI terminal backed by pinned Rio";
+          exec = "cuetty";
+          icon = "utilities-terminal";
+          terminal = false;
+          startupWMClass = "cuetty";
+          categories = [
+            "System"
+            "TerminalEmulator"
+          ];
+          keywords = [
+            "shell"
+            "terminal"
+            "cuenv"
+          ];
+        })
+      ];
       postFixup = lib.optionalString pkgs.stdenv.isLinux ''
         wrapProgram $out/bin/cuetty \
           --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath buildInputs}
