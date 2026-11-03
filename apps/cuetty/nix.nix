@@ -81,7 +81,7 @@ let
       nativeBuildInputs =
         nativeBuildInputs
         ++ lib.optionals pkgs.stdenv.isLinux [
-          pkgs.makeWrapper
+          pkgs.patchelf
           pkgs.copyDesktopItems
         ];
       desktopItems = lib.optionals pkgs.stdenv.isLinux [
@@ -106,8 +106,46 @@ let
         })
       ];
       postFixup = lib.optionalString pkgs.stdenv.isLinux ''
-        wrapProgram $out/bin/cuetty \
-          --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath buildInputs}
+        # GPUI loads some libraries with dlopen, so keep their paths after
+        # Nix's RPATH shrinking without exporting them to terminal children.
+        patchelf --add-rpath ${lib.escapeShellArg (lib.makeLibraryPath buildInputs)} "$out/bin/cuetty"
+      '';
+      doInstallCheck = pkgs.stdenv.isLinux;
+      installCheckPhase = lib.optionalString pkgs.stdenv.isLinux ''
+        runHook preInstallCheck
+
+        # The installed entry point must be an ELF executable, not a wrapper
+        # that modifies the environment inherited by the user's shell.
+        patchelf --print-interpreter "$out/bin/cuetty" > /dev/null
+
+        # Exercise dynamically loaded libraries using the installed ELF's
+        # search path, without relying on the build environment's library path.
+        cat > "$TMPDIR/cuetty-dlopen-check.c" <<'EOF'
+        #include <dlfcn.h>
+        #include <stdio.h>
+
+        int main(void) {
+            const char *libraries[] = {
+                "libwayland-client.so.0",
+                "libvulkan.so.1",
+                "libfontconfig.so.1",
+            };
+            for (unsigned int i = 0; i < sizeof(libraries) / sizeof(libraries[0]); i++) {
+                void *handle = dlopen(libraries[i], RTLD_NOW);
+                if (handle == NULL) {
+                    fprintf(stderr, "%s: %s\n", libraries[i], dlerror());
+                    return 1;
+                }
+                dlclose(handle);
+            }
+            return 0;
+        }
+        EOF
+        cc "$TMPDIR/cuetty-dlopen-check.c" -o "$TMPDIR/cuetty-dlopen-check" -ldl
+        patchelf --set-rpath "$(patchelf --print-rpath "$out/bin/cuetty")" "$TMPDIR/cuetty-dlopen-check"
+        env -u LD_LIBRARY_PATH "$TMPDIR/cuetty-dlopen-check"
+
+        runHook postInstallCheck
       '';
       meta = {
         description = "Cuenv's GPUI terminal backed by pinned Rio";

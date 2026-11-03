@@ -214,5 +214,6 @@ per terminal pane before Rio history is moved.
 From the repository root, use `nix build .#cuetty`, `nix run .#cuetty`, or
 `nix develop .#cuetty`. The root flake also provides the focused `cuetty-test`,
 `cuetty-clippy`, and `cuetty-fmt` checks.
-On Linux, the packaged executable exposes its runtime libraries to GPUI,
-including the Wayland client library loaded dynamically at startup.
+On Linux, the packaged executable provides GPUI's runtime library search paths,
+including the Wayland client library loaded dynamically at startup, without
+adding them to the `LD_LIBRARY_PATH` inherited by terminal shells.

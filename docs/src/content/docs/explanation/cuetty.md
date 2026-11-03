@@ -206,7 +206,9 @@ release as of 7 September 2026, per the
 sign, and validate the application bundle. The exact commands and resulting
 platform boundary should be reported with every Cuetty implementation change.
 
-On Linux, the root flake's Cuetty package wraps it with the library search path
-needed by GPUI for dynamically loaded libraries, including the Wayland client.
-The package uses the root flake's NixOS unstable input so its C library can load graphics
+On Linux, the root flake's Cuetty executable includes the search paths GPUI
+needs for dynamically loaded libraries, including the Wayland client. These
+paths are not added to `LD_LIBRARY_PATH`, so terminal shells inherit the caller's
+value without Cuetty's libraries overriding their own programs. The package
+uses the root flake's NixOS unstable input so its C library can load graphics
 drivers built against recent NixOS releases.

@@ -695,6 +695,8 @@
           cuenv-fmt = fmt-check;
           cuenv-nextest = nextest-check;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # Building the package also checks its executable and dlopen paths.
+          cuetty-package = cuetty.package;
           # Linux only: the suites need sqld, the nixpkgs Terraform providers and
           # loopback networking in the build sandbox, none of which has been
           # validated on darwin.
