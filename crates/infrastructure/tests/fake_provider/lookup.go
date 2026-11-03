@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
@@ -29,6 +30,8 @@ type lookupModel struct {
 	SecretMap   types.Map    `tfsdk:"secret_map"`
 	Length      types.Int64  `tfsdk:"length"`
 	Found       types.Bool   `tfsdk:"found"`
+	Config      types.Object `tfsdk:"config"`
+	NestedValue types.String `tfsdk:"nested_value"`
 }
 
 func (d *lookup) Metadata(_ context.Context, _ datasource.MetadataRequest, response *datasource.MetadataResponse) {
@@ -43,6 +46,11 @@ func (d *lookup) Schema(_ context.Context, _ datasource.SchemaRequest, response 
 		"secret_map":   schema.MapAttribute{ElementType: types.StringType, Computed: true, Sensitive: true},
 		"length":       schema.Int64Attribute{Computed: true},
 		"found":        schema.BoolAttribute{Computed: true},
+		"config": schema.SingleNestedAttribute{Optional: true, Attributes: map[string]schema.Attribute{
+			"token": schema.StringAttribute{Required: true},
+			"label": schema.StringAttribute{Required: true},
+		}},
+		"nested_value": schema.StringAttribute{Computed: true, Sensitive: true},
 	}}
 }
 
@@ -76,6 +84,10 @@ func (d *lookup) Read(ctx context.Context, request datasource.ReadRequest, respo
 	model.SecretMap = secretMap
 	model.Length = types.Int64Value(int64(len(value)))
 	model.Found = types.BoolValue(true)
+	if !model.Config.IsNull() {
+		response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("config").AtName("token"), &model.NestedValue)...)
+		journal("lookup: Read nested config")
+	}
 	response.Diagnostics.Append(response.State.Set(ctx, &model)...)
 }
 

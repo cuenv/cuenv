@@ -46,11 +46,14 @@ import "strings"
 // is not affected by its own module's language version. The Rust engine
 // repeats the checks for projects that do not unify with this schema.
 //
-// Proof of concept: top-level primitive arguments can refer to another
-// resource or data source's primitive attribute with #InfrastructureOutputReference.
-// A sensitive source attribute may be referenced: plans show the destination
-// argument as (sensitive). Known sensitive strings of at least four characters
-// are registered for output redaction; numeric and boolean values are only masked.
+// Primitive resource and data-source arguments, including nested object and
+// ordered collection elements, can refer to a top-level primitive output of
+// another resource or data source with a native selector through its `outputs` namespace. Sets and write-only fields
+// do not support output references.
+// A sensitive source attribute may be referenced: plans mask the containing
+// argument and identify nested reference paths as (sensitive), with map keys
+// hidden. Known sensitive strings of at least four characters are registered
+// for output redaction; numeric and boolean values are only masked.
 // Use `dependsOn` when only ordering is needed.
 //
 // Closedness: every nested definition is referenced inside a struct literal
@@ -449,14 +452,4 @@ _s3LoopbackEndpoint:  "^(?i:http)://((?i:localhost)|\(_tursoLoopback4)|\\[::1\\]
 // names managed resources; references infer dependencies on either kind.
 #DataSource: {
 	#ManagedResource
-}
-
-// A top-level primitive argument supplied by a managed resource or data
-// source. Exactly one source namespace must be selected.
-#InfrastructureOutputReference: {
-	fromResource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
-	attribute!:    string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
-} | {
-	fromDataSource!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+\\.[a-zA-Z][a-zA-Z0-9_-]*$"
-	attribute!:      string & =~"^[a-zA-Z_][a-zA-Z0-9_]*$"
 }

@@ -37,6 +37,7 @@ pub struct Cancellation {
 struct Shared {
     stop_requested: AtomicBool,
     terminated: AtomicBool,
+    stop_notification: tokio::sync::Notify,
     providers: Mutex<Vec<Weak<ProviderProcess>>>,
     socket_directories: Mutex<Vec<PathBuf>>,
     /// Records being written (to the state store or saved locally). A
@@ -91,6 +92,7 @@ impl Cancellation {
         if self.shared.stop_requested.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.shared.stop_notification.notify_waiters();
         let providers = self.live_providers();
         tracing::info!(
             providers = providers.len(),
@@ -114,6 +116,19 @@ impl Cancellation {
         self.shared.stop_requested.load(Ordering::SeqCst)
     }
 
+    /// Wait until a stop has been requested without losing concurrent signals.
+    pub(crate) async fn stopped(&self) {
+        loop {
+            let notified = self.shared.stop_notification.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_stop_requested() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     /// Second interrupt: kill every provider process (with its process
     /// group) now, and remove their socket directories.
     ///
@@ -124,6 +139,7 @@ impl Cancellation {
     pub fn terminate_providers(&self) {
         self.shared.stop_requested.store(true, Ordering::SeqCst);
         self.shared.terminated.store(true, Ordering::SeqCst);
+        self.shared.stop_notification.notify_waiters();
         let providers = self.live_providers();
         tracing::info!(providers = providers.len(), "terminating providers");
         for provider in providers {

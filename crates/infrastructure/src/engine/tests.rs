@@ -1,4 +1,5 @@
 use super::*;
+use crate::references::{ConfigurationSelector, NativeReference};
 use crate::state::MemoryStateStore;
 use async_trait::async_trait;
 use serde_json::json;
@@ -151,13 +152,46 @@ fn declaration(resource_type: &str, depends_on: &[&str]) -> ManagedResourceDecla
     }
 }
 
+fn classified_scalar_reference(native: &NativeReference) -> ConfigurationReferences {
+    let [ConfigurationSelector::Field(destination)] = native.destination.as_slice() else {
+        panic!("scalar reference fixture requires one field");
+    };
+    let configuration = serde_json::Map::from_iter([(destination.clone(), json!(null))]);
+    let block = string_block(destination, crate::schema::Presence::Required, false);
+    ConfigurationReferences::extract_with_schema(
+        &configuration,
+        &block,
+        std::slice::from_ref(native),
+    )
+    .unwrap()
+}
+
+fn graph_with_native_references(
+    infrastructure: &Infrastructure,
+    references: &[NativeReference],
+) -> Result<DeclarationGraph> {
+    let classified = references
+        .iter()
+        .map(|reference| {
+            (
+                reference.consumer.clone(),
+                classified_scalar_reference(reference),
+            )
+        })
+        .collect();
+    DeclarationGraph::with_references(infrastructure, &classified)
+}
+
 #[test]
 fn managed_dependencies_deduplicate_explicit_and_reference_edges() {
     let mut consumer = declaration("fake_obj", &["third", "first", "third"]);
-    consumer.configuration.insert(
-        "parent".into(),
-        json!({"fromResource": "fake_obj.third", "attribute": "id"}),
-    );
+    consumer.configuration.insert("parent".into(), json!(null));
+    let reference = NativeReference {
+        consumer: SourceAddress::Resource(ResourceAddress::new("fake_obj", "consumer")),
+        destination: vec![ConfigurationSelector::Field("parent".into())],
+        source: SourceAddress::Resource(ResourceAddress::new("fake_obj", "third")),
+        attribute: "id".into(),
+    };
     let declared = BTreeMap::from([
         ("consumer".into(), consumer),
         ("first".into(), declaration("fake_obj", &[])),
@@ -165,7 +199,7 @@ fn managed_dependencies_deduplicate_explicit_and_reference_edges() {
     ]);
     let mut infrastructure = infrastructure();
     infrastructure.resources = declared;
-    let graph = DeclarationGraph::new(&infrastructure).unwrap();
+    let graph = graph_with_native_references(&infrastructure, &[reference]).unwrap();
     assert_eq!(
         graph.managed_dependencies(&SourceAddress::Resource(ResourceAddress::new(
             "fake_obj", "consumer"
@@ -441,6 +475,27 @@ fn diagnostics_redact_secrets_containing_control_characters_before_stripping() {
 }
 
 #[test]
+fn provider_diagnostic_paths_hide_untrusted_names_and_short_map_keys() {
+    let diagnostic = Diagnostic {
+        severity: Severity::Error as i32,
+        summary: "invalid value".into(),
+        detail: String::new(),
+        attribute: Some(protocol_path(&[
+            protocol::Selector::AttributeName("private-dynamic-field".into()),
+            protocol::Selector::ElementKeyString("x".into()),
+            protocol::Selector::ElementKeyInt(2),
+        ])),
+    };
+    let rendered = render_diagnostic_with(&diagnostic, str::to_owned);
+    assert!(
+        rendered.contains("<hidden field>[<hidden key>][2]"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("private-dynamic-field"), "{rendered}");
+    assert!(!rendered.contains("[\"x\"]"), "{rendered}");
+}
+
+#[test]
 fn diagnostics_split_errors_from_warnings() {
     let mut warnings = Vec::new();
     let warning = Diagnostic {
@@ -465,7 +520,7 @@ fn diagnostics_split_errors_from_warnings() {
     assert!(
         failure
             .to_string()
-            .contains("bad: value too long (at rules[0])"),
+            .contains("bad: value too long (at <hidden field>[0])"),
         "{failure}"
     );
 }
@@ -490,6 +545,7 @@ fn change(address: ResourceAddress, action: Action) -> ResourceChange {
         after: Value::Null,
         sensitive: Vec::new(),
         requires_replace: Vec::new(),
+        replacement_path_identities: Vec::new(),
         dependencies: Vec::new(),
         references: crate::references::ConfigurationReferences::default(),
         reference_configuration: None,
@@ -510,6 +566,7 @@ fn plan_of(changes: Vec<ResourceChange>) -> Plan {
         changes,
         warnings: Vec::new(),
         environment_identity: environment_identity(&BTreeMap::new()),
+        configuration_evaluation: None,
     }
 }
 
@@ -2068,6 +2125,181 @@ fn render_plan_masks_sensitive_values() {
     assert!(text.contains("Plan: 1 to create"), "{text}");
 }
 
+#[test]
+fn nested_sensitive_annotations_hide_map_keys_for_resources_and_data() {
+    let map_key = format!("private-map-key-{}", uuid::Uuid::new_v4());
+    let mut block = string_block("config", crate::schema::Presence::Required, false);
+    block.attributes.get_mut("config").unwrap().value_type = Type::Object(BTreeMap::from([
+        ("token".into(), Type::String),
+        ("credentials".into(), Type::Map(Box::new(Type::String))),
+        (
+            "items".into(),
+            Type::List(Box::new(Type::Object(BTreeMap::from([(
+                "token".into(),
+                Type::String,
+            )])))),
+        ),
+    ]));
+    let source = json!(null);
+    let native: Vec<_> = [
+        vec![
+            ConfigurationSelector::Field("config".into()),
+            ConfigurationSelector::Field("token".into()),
+        ],
+        vec![
+            ConfigurationSelector::Field("config".into()),
+            ConfigurationSelector::Field("credentials".into()),
+            ConfigurationSelector::Field(map_key.clone()),
+        ],
+        vec![
+            ConfigurationSelector::Field("config".into()),
+            ConfigurationSelector::Field("credentials".into()),
+            ConfigurationSelector::Field("x".into()),
+        ],
+        vec![
+            ConfigurationSelector::Field("config".into()),
+            ConfigurationSelector::Field("items".into()),
+            ConfigurationSelector::Index(0),
+            ConfigurationSelector::Field("token".into()),
+        ],
+    ]
+    .into_iter()
+    .map(|destination| NativeReference {
+        consumer: SourceAddress::Resource(ResourceAddress::new("example_consumer", "consumer")),
+        destination,
+        source: SourceAddress::Resource(ResourceAddress::new("example_source", "producer")),
+        attribute: "value".into(),
+    })
+    .collect();
+    let configuration = json!({"config": {
+        "token": source,
+        "credentials": {&map_key: source, "x": source},
+        "items": [{"token": source}],
+    }});
+    let references = ConfigurationReferences::extract_with_schema(
+        configuration.as_object().unwrap(),
+        &block,
+        &native,
+    )
+    .unwrap();
+    let mut create = change(
+        ResourceAddress::new("example_consumer", "consumer"),
+        Action::Create,
+    );
+    create.after = references
+        .prepare(configuration.as_object().unwrap(), &block.implied_type())
+        .unwrap();
+    create.sensitive = vec!["config".into()];
+    create.references = references.clone();
+    register_typed_sensitive_values(&create, &block.implied_type());
+    assert!(!cuenv_events::redact(&map_key).contains(&map_key));
+    let mut read = deferred_data_source("lookup", Vec::new());
+    let data_native: Vec<_> = native
+        .into_iter()
+        .map(|mut reference| {
+            reference.consumer = SourceAddress::DataSource(read.address.clone());
+            reference
+        })
+        .collect();
+    read.references = ConfigurationReferences::extract_with_schema(
+        configuration.as_object().unwrap(),
+        &block,
+        &data_native,
+    )
+    .unwrap();
+    read.sensitive = create.sensitive.clone();
+    let mut plan = plan_of(vec![create]);
+    plan.data_sources.push(read);
+    let text = render_plan(&plan);
+    assert!(text.contains("+ config = (sensitive)"), "{text}");
+    assert_eq!(
+        text.matches("# config.token = (sensitive)").count(),
+        2,
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("# config.items[0].token = (sensitive)")
+            .count(),
+        2,
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("# config.credentials[<hidden key>] = (sensitive)")
+            .count(),
+        2,
+        "{text}"
+    );
+    assert!(!text.contains(&map_key), "{text}");
+    assert!(!text.contains("[\"x\"]"), "{text}");
+    assert!(sensitive_reference_paths(&plan.changes[0].references, &[]).is_empty());
+}
+
+#[test]
+fn typed_sensitive_registration_preserves_schema_labels_but_masks_runtime_keys() {
+    let identifier = uuid::Uuid::new_v4().simple().to_string();
+    let field = format!("schema_field_{identifier}");
+    let secret = format!("private-value-{identifier}");
+    let map_key = format!("private-map-{identifier}");
+    let dynamic_key = format!("private-dynamic-{identifier}");
+    let unexpected = format!("private-unexpected-{identifier}");
+    let nested_type = Type::Object(BTreeMap::from([
+        (field.clone(), Type::String),
+        ("map".into(), Type::Map(Box::new(Type::String))),
+        ("dynamic".into(), Type::Dynamic),
+    ]));
+    let dynamic_type = Type::Object(BTreeMap::from([(dynamic_key.clone(), Type::String)]));
+    let value = Value::Object(BTreeMap::from([(
+        "config".into(),
+        Value::Object(BTreeMap::from([
+            (field.clone(), Value::String(secret.clone())),
+            (
+                "map".into(),
+                Value::Object(BTreeMap::from([(map_key.clone(), Value::Unknown)])),
+            ),
+            (
+                "dynamic".into(),
+                Value::typed(
+                    dynamic_type,
+                    Value::Object(BTreeMap::from([(dynamic_key.clone(), Value::Unknown)])),
+                ),
+            ),
+            (unexpected.clone(), Value::Unknown),
+        ])),
+    )]));
+    let value_type = Type::Object(BTreeMap::from([("config".into(), nested_type)]));
+    register_typed_attributes(&value, &["config".into()], &value_type);
+    let annotation = format!("config.{field} = (sensitive)");
+    assert_eq!(cuenv_events::redact(&annotation), annotation);
+    for hidden in [&secret, &map_key, &dynamic_key, &unexpected] {
+        assert!(!cuenv_events::redact(hidden).contains(hidden));
+    }
+
+    // Existing registrations remain authoritative: a public schema label can
+    // also be a real secret or a key from historical state in this invocation.
+    let mut stored = record("example_consumer", "consumer", &[]);
+    stored.state = json!({"config": {&field: "old-value"}});
+    stored.sensitive_attributes = vec!["config".into()];
+    register_stored_values(&stored, &[]);
+    register_typed_attributes(&value, &["config".into()], &value_type);
+    assert!(!cuenv_events::redact(&annotation).contains(&field));
+}
+
+#[test]
+fn typed_sensitive_registration_keeps_unknown_shapes_conservative() {
+    for schema in [Type::Dynamic, Type::String, Type::Tuple(Vec::new())] {
+        let key = format!("private-shape-key-{}", uuid::Uuid::new_v4());
+        let nested = Value::Object(BTreeMap::from([(key.clone(), Value::Unknown)]));
+        let value = match schema {
+            Type::Tuple(_) => Value::List(vec![nested]),
+            _ => nested,
+        };
+        let value = Value::Object(BTreeMap::from([("config".into(), value)]));
+        let value_type = Type::Object(BTreeMap::from([("config".into(), schema)]));
+        register_typed_attributes(&value, &["config".into()], &value_type);
+        assert!(!cuenv_events::redact(&key).contains(&key));
+    }
+}
+
 fn refresh_only(name: &str) -> ResourceChange {
     let stored = record("random_pet", name, &[]);
     let mut refreshed = stored.clone();
@@ -2212,7 +2444,7 @@ fn replacement_paths_compare_with_schema_types() {
         value_type: &object_type(),
     })
     .unwrap();
-    assert_eq!(changed, vec!["name".to_string()]);
+    assert_eq!(changed.rendered, vec!["name".to_string()]);
 
     let mut unknown = planned.clone();
     if let Value::Object(attributes) = &mut unknown {
@@ -2226,7 +2458,7 @@ fn replacement_paths_compare_with_schema_types() {
         value_type: &object_type(),
     })
     .unwrap();
-    assert_eq!(changed, vec!["length".to_string()]);
+    assert_eq!(changed.rendered, vec!["length".to_string()]);
 }
 
 #[test]
@@ -2243,7 +2475,75 @@ fn replacement_paths_that_exist_nowhere_are_provider_errors() {
         value_type: &object_type(),
     })
     .unwrap_err();
-    assert!(error.to_string().contains("`missing`"), "{error}");
+    assert!(error.to_string().contains("[<hidden key>]"), "{error}");
+    assert!(!error.to_string().contains("missing"), "{error}");
+}
+
+#[test]
+fn masked_replacement_paths_keep_distinct_plan_identities() {
+    let address = ResourceAddress::new("example_thing", "one");
+    let value_type = Type::Object(BTreeMap::from([(
+        "config".into(),
+        Type::Map(Box::new(Type::String)),
+    )]));
+    let prior = Value::from_configuration_json(
+        &json!({"config": {"private-first": "old", "private-second": "old"}}),
+        &value_type,
+    )
+    .unwrap();
+    let planned = Value::from_configuration_json(
+        &json!({"config": {"private-first": "new", "private-second": "new"}}),
+        &value_type,
+    )
+    .unwrap();
+    let paths = ["private-first", "private-second"].map(|key| {
+        protocol_path(&[
+            protocol::Selector::AttributeName("config".into()),
+            protocol::Selector::ElementKeyString(key.into()),
+        ])
+    });
+    let changed = replacement_paths(&ReplacementCheck {
+        address: &address,
+        paths: &paths,
+        prior: &prior,
+        planned: &planned,
+        value_type: &value_type,
+    })
+    .unwrap();
+    assert_eq!(
+        changed.rendered,
+        ["config[<hidden key>]", "config[<hidden key>]"]
+    );
+    assert_ne!(changed.identities[0], changed.identities[1]);
+    let mut first = plan_of(vec![change(address, Action::Replace)]);
+    first.changes[0].requires_replace = vec![changed.rendered[0].clone()];
+    first.changes[0].replacement_path_identities = vec![changed.identities[0]];
+    let mut second = first.clone();
+    second.changes[0].replacement_path_identities = vec![changed.identities[1]];
+    assert_ne!(first.digest(), second.digest());
+    let text = render_plan(&first);
+    assert!(text.contains("config[<hidden key>]"), "{text}");
+    assert!(!text.contains("private-first"), "{text}");
+}
+
+#[test]
+fn replacement_diagnostics_hide_dynamic_and_unknown_fields() {
+    let value_type = Type::Object(BTreeMap::from([("config".into(), Type::Dynamic)]));
+    let steps = [
+        PathStep::Attribute("config".into()),
+        PathStep::Attribute("private-dynamic-field".into()),
+        PathStep::Key("x".into()),
+    ];
+    let rendered = render_schema_path(&steps, &value_type);
+    assert_eq!(rendered, "config[<hidden key>][<hidden key>]");
+    assert!(!rendered.contains("private-dynamic-field"));
+    assert_eq!(
+        render_schema_path(
+            &[PathStep::Attribute("private-unknown".into())],
+            &value_type
+        ),
+        "[<hidden key>]"
+    );
 }
 
 #[test]
@@ -2782,6 +3082,39 @@ fn undecodable_apply_results_report_the_provider_errors() {
 }
 
 #[test]
+fn provider_message_pack_is_checked_before_reuse_but_apply_values_can_be_recorded() {
+    let mut message_pack = Vec::new();
+    rmpv::encode::write_value(&mut message_pack, &rmpv::Value::F64(f64::MAX)).unwrap();
+    let dynamic = protocol::DynamicValue {
+        message_pack,
+        json: Vec::new(),
+    };
+    assert!(provider_value(Some(&dynamic), &Type::Number).is_err());
+    let response = protocol::ApplyResourceChangeResponse {
+        new_state: Some(dynamic),
+        private: Vec::new(),
+        diagnostics: Vec::new(),
+        legacy_type_system: false,
+    };
+    let returned = applied_value(&response, &Type::Number, "apply example").unwrap();
+    assert!(returned.to_state_json(&Type::Number).unwrap().is_string());
+}
+
+#[test]
+fn historical_state_rejects_unsafe_numeric_tokens_before_provider_upgrade() {
+    let safe = json!({"literal": "not-a-number", "count": "123", "nested": [2, "0.125"]});
+    assert!(validate_historical_state_numbers(&safe, 0).is_ok());
+    for token in ["1e-1000000000", "1e1000000000"] {
+        let state = json!({"nested": [{"value": token}]});
+        let error = validate_historical_state_numbers(&state, 0)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("precision limits"), "{error}");
+        assert!(!error.contains(token));
+    }
+}
+
+#[test]
 fn upgraded_states_must_exist_and_be_known() {
     let address = ResourceAddress::new("example_thing", "one");
     assert!(check_upgraded(&address, &named("x")).is_ok());
@@ -2955,11 +3288,330 @@ fn string_block(name: &str, presence: crate::schema::Presence, sensitive: bool) 
     }
 }
 
+#[test]
+fn nested_output_type_mismatch_reports_the_destination_path() {
+    use crate::schema::Presence;
+
+    let mut destination_block = string_block("config", Presence::Optional, false);
+    destination_block
+        .attributes
+        .get_mut("config")
+        .unwrap()
+        .value_type = Type::Object(BTreeMap::from([(
+        "inner".into(),
+        Type::Object(BTreeMap::from([("token".into(), Type::String)])),
+    )]));
+    let mut source_block = string_block("value", Presence::Computed, false);
+    source_block.attributes.get_mut("value").unwrap().value_type = Type::Number;
+    let configuration = json!({"config": {"inner": {"token": null}}});
+    let native = NativeReference {
+        consumer: SourceAddress::Resource(ResourceAddress::new("fake_consumer", "example")),
+        destination: ["config", "inner", "token"]
+            .into_iter()
+            .map(|field| ConfigurationSelector::Field(field.into()))
+            .collect(),
+        source: SourceAddress::Resource(ResourceAddress::new("fake_source", "example")),
+        attribute: "value".into(),
+    };
+    let references = ConfigurationReferences::extract_with_schema(
+        configuration.as_object().unwrap(),
+        &destination_block,
+        &[native],
+    )
+    .unwrap();
+    let destination = ResourceAddress::new("fake_consumer", "example");
+    let error = OutputReferenceCheck {
+        destination: &destination,
+        reference: &references.references()[0],
+        destination_block: &destination_block,
+        source_block: &source_block,
+        declared_type: None,
+    }
+    .check()
+    .err()
+    .expect("numeric source cannot fill a string destination")
+    .to_string();
+    assert!(
+        error.contains("configuration.config.inner.token"),
+        "{error}"
+    );
+    assert!(
+        error.contains("source and destination scalar types must match"),
+        "{error}"
+    );
+}
+
+#[test]
+fn reference_type_errors_hide_unregistered_map_keys() -> Result<()> {
+    let key = format!("unregistered-map-key-{}", uuid::Uuid::new_v4());
+    let mut destination_block = string_block("config", crate::schema::Presence::Required, false);
+    destination_block
+        .attributes
+        .get_mut("config")
+        .unwrap()
+        .value_type = Type::Map(Box::new(Type::String));
+    let destination = ResourceAddress::new("fake_consumer", "example");
+    let native = NativeReference {
+        consumer: SourceAddress::Resource(destination.clone()),
+        destination: vec![
+            ConfigurationSelector::Field("config".into()),
+            ConfigurationSelector::Field(key.clone()),
+        ],
+        source: SourceAddress::Resource(ResourceAddress::new("fake_source", "example")),
+        attribute: "value".into(),
+    };
+    let configuration = json!({"config": {&key: null}});
+    let references = ConfigurationReferences::extract_with_schema(
+        configuration.as_object().unwrap(),
+        &destination_block,
+        &[native],
+    )?;
+    let mut source_block = string_block("value", crate::schema::Presence::Computed, true);
+    source_block.attributes.get_mut("value").unwrap().value_type = Type::Number;
+    let error = OutputReferenceCheck {
+        destination: &destination,
+        reference: &references.references()[0],
+        destination_block: &destination_block,
+        source_block: &source_block,
+        declared_type: None,
+    }
+    .check()
+    .err()
+    .expect("source type must not match")
+    .to_string();
+    assert!(
+        error.contains("configuration.config[<hidden key>]"),
+        "{error}"
+    );
+    assert!(!error.contains(&key), "{error}");
+    assert!(
+        error.contains("source and destination scalar types must match"),
+        "{error}"
+    );
+    Ok(())
+}
+
 fn token_reference() -> ResourceOutputReference {
     ResourceOutputReference {
         destination_attribute: "value".into(),
+        destination: crate::references::DestinationPath::attribute("value"),
+        native: NativeReference {
+            consumer: SourceAddress::Resource(ResourceAddress::new("example_secret", "token")),
+            destination: vec![ConfigurationSelector::Field("value".into())],
+            source: SourceAddress::Resource(ResourceAddress::new("example_token", "deploy")),
+            attribute: "value".into(),
+        },
         source: SourceAddress::Resource(ResourceAddress::new("example_token", "deploy")),
         attribute: "value".into(),
+    }
+}
+
+mod native_configuration {
+    use super::*;
+    use crate::references::{ConfigurationSelector, NativeReference, SpecializedConfiguration};
+
+    enum Provenance {
+        Preserve,
+        Discard,
+    }
+
+    struct LiteralEvaluator {
+        references: Vec<NativeReference>,
+        provenance: Provenance,
+    }
+
+    impl ConfigurationEvaluator for LiteralEvaluator {
+        fn references(&self) -> &[NativeReference] {
+            &self.references
+        }
+
+        fn specialize(
+            &self,
+            input: &ConfigurationSpecialization<'_>,
+        ) -> Result<SpecializedConfiguration> {
+            assert!(input.sources.values().all(|value| !value.is_unknown()));
+            Ok(SpecializedConfiguration {
+                // A narrowing constraint may make the projected leaf literal
+                // while its producer still has no runtime value.
+                configuration: serde_json::Map::from_iter([("argument".into(), json!("narrowed"))]),
+                unresolved: match self.provenance {
+                    Provenance::Preserve => input.deferred.to_vec(),
+                    Provenance::Discard => Vec::new(),
+                },
+            })
+        }
+    }
+
+    fn native_reference() -> NativeReference {
+        NativeReference {
+            consumer: SourceAddress::Resource(ResourceAddress::new("fake_obj", "consumer")),
+            destination: vec![ConfigurationSelector::Field("argument".into())],
+            source: SourceAddress::Resource(ResourceAddress::new("fake_obj", "source")),
+            attribute: "id".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn source_unknownness_survives_a_literal_cue_projection() -> Result<()> {
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = engine(Arc::new(MemoryStateStore::new()), directory.path());
+        let native = native_reference();
+        engine.set_configuration_evaluator(Arc::new(LiteralEvaluator {
+            references: vec![native.clone()],
+            provenance: Provenance::Preserve,
+        }));
+        let mut declaration = declaration("fake_obj", &[]);
+        declaration
+            .configuration
+            .insert("argument".into(), json!(null));
+        let block = string_block("argument", crate::schema::Presence::Required, false);
+        let references = ConfigurationReferences::extract_with_schema(
+            &declaration.configuration,
+            &block,
+            std::slice::from_ref(&native),
+        )?;
+        let configuration = engine
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: &native.consumer,
+                    declaration: &declaration,
+                    references: &references,
+                    block: &block,
+                    phase: ConfigurationPhase::Planning,
+                },
+                |_| Ok(Value::Unknown),
+            )
+            .await?;
+        assert_eq!(configuration.attribute("argument"), Some(&Value::Unknown));
+        let mut change = change(native.consumer.address().clone(), Action::Create);
+        change.references = references.clone();
+        change.reference_configuration = Some(configuration);
+        assert!(change.needs_final_plan());
+        let final_configuration = engine
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: &native.consumer,
+                    declaration: &declaration,
+                    references: &references,
+                    block: &block,
+                    phase: ConfigurationPhase::Apply,
+                },
+                |_| Ok(Value::String("narrowed".into())),
+            )
+            .await?;
+        assert_eq!(
+            final_configuration.attribute("argument"),
+            Some(&Value::String("narrowed".into()))
+        );
+        let inconsistent_projection = engine
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: &native.consumer,
+                    declaration: &declaration,
+                    references: &references,
+                    block: &block,
+                    phase: ConfigurationPhase::Apply,
+                },
+                |_| Ok(Value::String("contradicts-the-projection".into())),
+            )
+            .await;
+        assert!(inconsistent_projection.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn specialization_cannot_drop_unknown_source_identity() -> Result<()> {
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = engine(Arc::new(MemoryStateStore::new()), directory.path());
+        let native = native_reference();
+        engine.set_configuration_evaluator(Arc::new(LiteralEvaluator {
+            references: vec![native.clone()],
+            provenance: Provenance::Discard,
+        }));
+        let mut declaration = declaration("fake_obj", &[]);
+        declaration
+            .configuration
+            .insert("argument".into(), json!(null));
+        let block = string_block("argument", crate::schema::Presence::Required, false);
+        let references = ConfigurationReferences::extract_with_schema(
+            &declaration.configuration,
+            &block,
+            std::slice::from_ref(&native),
+        )?;
+        let result = engine
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: &native.consumer,
+                    declaration: &declaration,
+                    references: &references,
+                    block: &block,
+                    phase: ConfigurationPhase::Planning,
+                },
+                |_| Ok(Value::Unknown),
+            )
+            .await;
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn declarations_without_native_references_do_not_specialize_absent_configuration()
+    -> Result<()> {
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = engine(Arc::new(MemoryStateStore::new()), directory.path());
+        let native = native_reference();
+        engine.set_configuration_evaluator(Arc::new(LiteralEvaluator {
+            references: vec![native.clone()],
+            provenance: Provenance::Preserve,
+        }));
+        let source = declaration("fake_obj", &[]);
+        let empty_references = ConfigurationReferences::default();
+        let block = Block::default();
+        let configuration = engine
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: &native.source,
+                    declaration: &source,
+                    references: &empty_references,
+                    block: &block,
+                    phase: ConfigurationPhase::Planning,
+                },
+                |_| {
+                    Err(InfrastructureError::configuration(
+                        "source should not resolve outputs",
+                    ))
+                },
+            )
+            .await?;
+        assert_eq!(configuration, Value::Object(BTreeMap::new()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn apply_refuses_a_different_immutable_snapshot_before_store_or_provider_work()
+    -> Result<()> {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(MemoryStateStore::new());
+        let mut engine = engine(store.clone(), directory.path());
+        let evaluator: Arc<dyn ConfigurationEvaluator> = Arc::new(LiteralEvaluator {
+            references: Vec::new(),
+            provenance: Provenance::Preserve,
+        });
+        engine.set_configuration_evaluator(Arc::clone(&evaluator));
+        let mut plan = plan_of(Vec::new());
+        plan.configuration_evaluation = engine.configuration_evaluation.clone();
+        engine.set_configuration_evaluator(evaluator);
+        let lock = store.lock(&tenant(), "snapshot regression").await?;
+        let result = engine
+            .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+            .await;
+        store.unlock(&tenant(), &lock).await?;
+        assert!(result.is_err_and(|error| {
+            error
+                .to_string()
+                .contains("different immutable CUE snapshot")
+        }));
+        Ok(())
     }
 }
 
@@ -3058,11 +3710,12 @@ fn deferred_data_source(name: &str, dependencies: Vec<SourceAddress>) -> DataSou
 fn consuming_data_source(name: &str, source: &str) -> ResourceChange {
     let mut consumer = change(ResourceAddress::new("random_pet", name), Action::Create);
     consumer.dependencies = vec!["random_pet.producer".to_string()];
-    consumer.references = ConfigurationReferences::extract(&serde_json::Map::from_iter([(
-        "id".to_string(),
-        json!({"fromDataSource": format!("example_lookup.{source}"), "attribute": "id"}),
-    )]))
-    .unwrap();
+    consumer.references = classified_scalar_reference(&NativeReference {
+        consumer: SourceAddress::Resource(consumer.address.clone()),
+        destination: vec![ConfigurationSelector::Field("id".into())],
+        source: data_source_address(source),
+        attribute: "id".into(),
+    });
     consumer
 }
 
@@ -3073,26 +3726,37 @@ fn mixed_graph_keeps_namespaces_and_persists_managed_ancestry() -> Result<()> {
         .resources
         .insert("same".to_string(), declaration("example_lookup", &[]));
     let mut first = declaration("example_lookup", &["same"]);
-    first.configuration.insert(
-        "id".to_string(),
-        json!({"fromResource": "example_lookup.same", "attribute": "id"}),
-    );
+    first.configuration.insert("id".to_string(), json!(null));
     infrastructure.data.insert("same".to_string(), first);
     let mut second = declaration("example_lookup", &[]);
-    second.configuration.insert(
-        "id".to_string(),
-        json!({"fromDataSource": "example_lookup.same", "attribute": "id"}),
-    );
+    second.configuration.insert("id".to_string(), json!(null));
     infrastructure.data.insert("second".to_string(), second);
     let mut consumer = declaration("example_object", &[]);
-    consumer.configuration.insert(
-        "id".to_string(),
-        json!({"fromDataSource": "example_lookup.second", "attribute": "id"}),
-    );
+    consumer.configuration.insert("id".to_string(), json!(null));
     infrastructure
         .resources
         .insert("consumer".to_string(), consumer);
-    let graph = DeclarationGraph::new(&infrastructure)?;
+    let references = [
+        NativeReference {
+            consumer: data_source_address("same"),
+            destination: vec![ConfigurationSelector::Field("id".into())],
+            source: SourceAddress::Resource(ResourceAddress::new("example_lookup", "same")),
+            attribute: "id".into(),
+        },
+        NativeReference {
+            consumer: data_source_address("second"),
+            destination: vec![ConfigurationSelector::Field("id".into())],
+            source: data_source_address("same"),
+            attribute: "id".into(),
+        },
+        NativeReference {
+            consumer: SourceAddress::Resource(ResourceAddress::new("example_object", "consumer")),
+            destination: vec![ConfigurationSelector::Field("id".into())],
+            source: data_source_address("second"),
+            attribute: "id".into(),
+        },
+    ];
+    let graph = graph_with_native_references(&infrastructure, &references)?;
     let consumer = SourceAddress::Resource(ResourceAddress::new("example_object", "consumer"));
     assert_eq!(
         graph.managed_dependencies(&consumer),
@@ -3118,7 +3782,7 @@ fn mixed_graph_keeps_namespaces_and_persists_managed_ancestry() -> Result<()> {
         .ok_or_else(|| InfrastructureError::configuration("missing test declaration"))?
         .depends_on
         .push("consumer".to_string());
-    assert!(DeclarationGraph::new(&infrastructure).is_err());
+    assert!(graph_with_native_references(&infrastructure, &references).is_err());
     Ok(())
 }
 
@@ -3137,14 +3801,17 @@ fn concrete_data_arguments_defer_for_pending_managed_ancestors() -> Result<()> {
         declaration("example_lookup", &["unchanged"]),
     );
     let mut consumer = declaration("random_pet", &[]);
-    consumer.configuration.insert(
-        "id".to_string(),
-        json!({"fromDataSource": "example_lookup.lookup", "attribute": "id"}),
-    );
+    consumer.configuration.insert("id".to_string(), json!(null));
     infrastructure
         .resources
         .insert("consumer".to_string(), consumer);
-    let graph = DeclarationGraph::new(&infrastructure)?;
+    let reference = NativeReference {
+        consumer: SourceAddress::Resource(ResourceAddress::new("random_pet", "consumer")),
+        destination: vec![ConfigurationSelector::Field("id".into())],
+        source: data_source_address("lookup"),
+        attribute: "id".into(),
+    };
+    let graph = graph_with_native_references(&infrastructure, &[reference])?;
     let dependencies = graph.managed_dependencies(&SourceAddress::Resource(ResourceAddress::new(
         "random_pet",
         "consumer",
@@ -3411,14 +4078,17 @@ fn persisted_data_ancestry_orders_destroy_after_the_data_declaration_is_gone() -
         declaration("example_lookup", &["producer"]),
     );
     let mut consumer = declaration("random_pet", &[]);
-    consumer.configuration.insert(
-        "id".to_string(),
-        json!({"fromDataSource": "example_lookup.lookup", "attribute": "id"}),
-    );
+    consumer.configuration.insert("id".to_string(), json!(null));
     infrastructure
         .resources
         .insert("consumer".to_string(), consumer);
-    let graph = DeclarationGraph::new(&infrastructure)?;
+    let reference = NativeReference {
+        consumer: SourceAddress::Resource(ResourceAddress::new("random_pet", "consumer")),
+        destination: vec![ConfigurationSelector::Field("id".into())],
+        source: data_source_address("lookup"),
+        attribute: "id".into(),
+    };
+    let graph = graph_with_native_references(&infrastructure, &[reference])?;
     let dependencies = graph.managed_dependencies(&SourceAddress::Resource(ResourceAddress::new(
         "random_pet",
         "consumer",

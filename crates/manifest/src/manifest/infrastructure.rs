@@ -729,29 +729,6 @@ pub struct InfrastructureProvider {
     pub configuration: serde_json::Map<String, serde_json::Value>,
 }
 
-/// A top-level primitive argument supplied by another managed resource.
-///
-/// Based on `#InfrastructureOutputReference` in schema/infrastructure.cue.
-/// The engine validates the resource address, output attribute and types.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct InfrastructureOutputReference {
-    /// Full address of the resource producing the value, such as `random_id.seed`.
-    pub from_resource: String,
-    /// Top-level primitive output attribute, such as `id`.
-    pub attribute: String,
-}
-
-/// A top-level primitive argument supplied by a read-only data source.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct InfrastructureDataSourceReference {
-    /// Data source address within `infrastructure.data`, as `type.name`.
-    pub from_data_source: String,
-    /// Top-level primitive output attribute.
-    pub attribute: String,
-}
-
 /// Primitive type of a native CUE output declaration, retained for live-schema validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfrastructureOutputType {
@@ -834,57 +811,6 @@ impl ManagedResourceDeclaration {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn output_reference_round_trips_and_keeps_resource_configuration() {
-        let value = serde_json::json!({
-            "fromResource": "cloudflare_zone.primary",
-            "attribute": "id",
-        });
-        let reference: InfrastructureOutputReference =
-            serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(reference.from_resource, "cloudflare_zone.primary");
-        assert_eq!(reference.attribute, "id");
-        assert_eq!(serde_json::to_value(reference).unwrap(), value);
-        let declaration: ManagedResourceDeclaration = serde_json::from_value(serde_json::json!({
-            "type": "cloudflare_dns_record",
-            "configuration": {"zone_id": value},
-        }))
-        .unwrap();
-        assert_eq!(declaration.configuration["zone_id"], value);
-    }
-
-    #[test]
-    fn output_reference_rejects_missing_mistyped_and_unknown_fields() {
-        for value in [
-            serde_json::json!({"fromResource": "cloudflare_zone.primary"}),
-            serde_json::json!({"attribute": "id"}),
-            serde_json::json!({"fromResource": 12, "attribute": "id"}),
-            serde_json::json!({"fromResource": "cloudflare_zone.primary", "attribute": []}),
-            serde_json::json!({"fromResource": "cloudflare_zone.primary", "attribute": "id", "extra": "value"}),
-        ] {
-            assert!(serde_json::from_value::<InfrastructureOutputReference>(value).is_err());
-        }
-    }
-
-    #[test]
-    fn data_source_reference_rejects_ambiguous_sources() -> Result<(), serde_json::Error> {
-        let value = serde_json::json!({
-            "fromDataSource": "fake_lookup.primary", "attribute": "id",
-        });
-        let reference: InfrastructureDataSourceReference = serde_json::from_value(value.clone())?;
-        assert_eq!(reference.from_data_source, "fake_lookup.primary");
-        assert_eq!(serde_json::to_value(reference)?, value);
-        assert!(
-            serde_json::from_value::<InfrastructureDataSourceReference>(serde_json::json!({
-                "fromDataSource": "fake_lookup.primary",
-                "fromResource": "fake_lookup.primary",
-                "attribute": "id",
-            }))
-            .is_err()
-        );
-        Ok(())
-    }
 
     #[test]
     fn selecting_data_sources_discards_the_other_configurations()

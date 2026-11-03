@@ -81,22 +81,16 @@ path.
 
 ## Managed-resource and data source output references
 
-A top-level resource or data source argument may use a descriptor with exactly
-two string fields: `attribute` and one of `fromResource` or `fromDataSource`:
+A scalar resource or data source argument can use a native CUE selector:
 
 ```cue
 configuration: {
-	zone_id: {
-		fromResource: "cloudflare_zone.primary"
-		attribute: "id"
-	}
+	zone_id: infrastructure.resources.primary.outputs.id
 }
 ```
 
-`fromResource` names a declared resource by its full `type.name` address;
-`fromDataSource` names a declared read-only lookup by `type.name`. They are
-mutually exclusive, and `attribute` names a top-level provider output. The source
-output and destination argument must have the same primitive type (string,
+The selector names a declared resource or data source and its top-level output.
+The source output and destination argument must have the same primitive type (string,
 number, or boolean). Sensitive primitives are masked; known sensitive strings of
 at least four characters are registered for output redaction before validation
 and read calls, and before processing response diagnostics. Nested or collection
@@ -106,12 +100,11 @@ only. Managed ancestors reached through data are flattened into persisted manage
 dependencies for destroy ordering. Data results themselves have no state rows or
 recovery files, but copied managed arguments can persist in managed state.
 
-The descriptor remains supported alongside a native CUE selector such as
+Use a native CUE selector such as
 `configuration.zone_id: infrastructure.resources.primary.outputs.id` or
 `configuration.ami: infrastructure.data.base.outputs.id`. CUE
 evaluates the selector and exports its canonical reference path even though the
-provider output is incomplete. The infrastructure command lowers that metadata
-to the same runtime reference used by the descriptor. It permits incompleteness
+provider output is incomplete. The infrastructure command retains that metadata as a structured binding. It permits incompleteness
 only for recognized direct selectors and declared output placeholders; all
 other selected infrastructure values remain subject to concrete validation.
 
@@ -120,9 +113,9 @@ under `outputs`. Untyped declarations supply selected outputs explicitly, for
 example `outputs: {id: string}`. Such declarations identify the output and its
 primitive type; they are removed before provider configuration is decoded or
 sent. Defaults, literal values, refinements, and expressions over outputs are
-not supported in this first selector form. Both syntaxes share provider schema
-compatibility, sensitivity checks, inferred dependencies, unknown-value
-handling, replacement planning, and apply semantics.
+not supported in this selector form. The engine validates provider schema
+compatibility, sensitivity, inferred dependencies, unknown-value handling,
+replacement planning, and apply semantics.
 
 Data source support (issue #545) adds fresh reads on every plan/apply invocation.
 Apply owns the results of its own planning reads across confirmation. A data read
@@ -150,8 +143,8 @@ through `UpgradeResourceState` first, as refresh does. Because a consumer's
 replacement deletes before its producers change, a final plan that fails after
 that delete leaves the consumer absent and recorded as deleted; apply warns
 that the object was destroyed and not recreated, and the next apply creates
-it. Generated provider resource
-types import the shared descriptor definition from `schema/infrastructure.cue`.
+it. Generated provider resource types expose scalar outputs and keep provider
+configuration leaves typed as their native scalar types.
 
 ## State, policy, and identity behavior
 

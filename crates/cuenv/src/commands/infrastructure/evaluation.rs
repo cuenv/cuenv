@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cuengine::{
     InstanceFailures, ModuleEvalOptions, PackageScope, SkippedDirectories, SkippedDirectory,
@@ -27,6 +28,9 @@ use cuenv_manifest::manifest::{
     Infrastructure, InfrastructureSelectionError, InfrastructureState, ProviderEnvironment,
 };
 
+use super::configuration_evaluator::{
+    NativeConfigurationEvaluator, SnapshotRequest, freeze_configuration,
+};
 use super::invocation::Invocation;
 use super::output_selectors::OutputSelectors;
 use crate::cli::CliError;
@@ -139,6 +143,8 @@ pub(super) struct Target {
     pub(super) project_environment: Option<Env>,
     /// Canonical project directory.
     pub(super) project_directory: PathBuf,
+    /// Original CUE instance and native output provenance for provider inputs.
+    pub(super) configuration_evaluator: Option<Arc<NativeConfigurationEvaluator>>,
 }
 
 /// Evaluate the target project and, when asked, check its name is unique.
@@ -153,7 +159,8 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     let project_path = Path::new(request.path).canonicalize().map_err(|error| {
         CliError::config(format!("cannot resolve path {}: {error}", request.path))
     })?;
-    let locator = super::locator::load(&project_path)?
+    let locator = super::locator::load(&project_path)
+        .map_err(locator_evaluation_failure)?
         .filter(|locator| locator.project_package == request.package);
     let (target_path, package, project_fields) = if let Some(locator) = &locator {
         if locator.package == request.package {
@@ -173,7 +180,9 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
                 "infrastructure".to_string(),
             ],
         })
-        .map_err(CliError::from)?;
+        .map_err(|error| {
+            safe_evaluation_failure(error, "the owning CUE project could not be evaluated")
+        })?;
         let relative = compute_relative_path(&project_path, &project.root);
         let fields = project
             .get(Path::new(&relative))
@@ -195,18 +204,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     };
     // Only a command that needs the selected configuration requires it to be
     // concrete; state-only commands need `infrastructure.state` alone.
-    let selected_path = request
-        .environment
-        .filter(|_| request.needs == Needs::Configuration)
-        .map(|name| {
-            serde_json::to_string(name)
-                .map(|name| format!("infrastructure.environments.{name}"))
-                .map_err(|error| {
-                    CliError::config(format!("cannot encode infrastructure environment: {error}"))
-                })
-        })
-        .transpose()?;
-    let mut concrete_paths = vec!["infrastructure.state".to_string()];
+    let concrete_paths = vec!["infrastructure.state".to_string()];
 
     // Export the infrastructure object leniently so its complete set of
     // top-level keys reaches the DTO's unknown-field check. Only selected
@@ -247,47 +245,33 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             error,
         })
     })?;
-    if request.needs == Needs::Configuration {
-        let relative_path = compute_relative_path(&target_path, &module.root);
-        if let Some(instance) = module.get(Path::new(&relative_path)) {
-            if let Some(path) = &selected_path {
-                concrete_paths.push(path.clone());
-            } else {
-                for field in ["providers", "resources", "data"] {
-                    if instance
-                        .value
-                        .pointer(&format!("/infrastructure/{field}"))
-                        .is_some()
-                    {
-                        concrete_paths.push(format!("infrastructure.{field}"));
-                    }
-                }
+    let configuration_evaluator = if request.needs == Needs::Configuration {
+        let relative = compute_relative_path(&target_path, &module.root);
+        if let Some(environment) = request.environment
+            && let Some(instance) = module.get(Path::new(&relative))
+        {
+            let declared = declared_environment_names(&instance.value);
+            if !declared.iter().any(|name| name == environment) {
+                let name = project_fields
+                    .as_ref()
+                    .unwrap_or(&instance.value)
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("<unknown>");
+                return Err(unknown_environment(name, environment, &declared));
             }
-            let selectors = OutputSelectors {
-                instance_path: &relative_path,
-                references: &module.direct_references,
-                environment: request.environment,
-            };
-            let references = selectors.evaluation(&instance.value)?;
-            let unselected_export_paths = exported_paths("infrastructure");
-            module = evaluate_path(PathEvaluation {
-                reference_evaluation: Some(references),
-                target_path: &target_path,
-                package,
-                concrete_paths,
-                export_paths: unselected_export_paths.clone(),
-            })
-            .map_err(|error| {
-                explain_concrete_failure(ConcreteFailure {
-                    target_path: &target_path,
-                    package,
-                    environment: request.environment,
-                    export_paths: unselected_export_paths,
-                    error,
-                })
-            })?;
         }
-    }
+        freeze_configuration(
+            &mut module,
+            &SnapshotRequest {
+                directory: &target_path,
+                package,
+                environment: request.environment,
+            },
+        )?
+    } else {
+        None
+    };
     let relative_path = compute_relative_path(&target_path, &module.root);
     if let Some(fields) = project_fields {
         let instance = module
@@ -364,6 +348,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         remote_cache_credential_variables,
         project_environment: project.env,
         project_directory: project_path,
+        configuration_evaluator,
     })
 }
 
@@ -465,7 +450,18 @@ fn project_target(
     if let Some(project) = selected.value.as_object_mut() {
         project.remove(CACHE_PATH);
     }
-    let project = selected.deserialize().map_err(CliError::from)?;
+    let project = selected.deserialize().map_err(|_| {
+        let message = if selected
+            .value
+            .get("env")
+            .is_some_and(|env| serde_json::from_value::<Env>(env.clone()).is_err())
+        {
+            "the project `env` configuration could not be decoded"
+        } else {
+            "the CUE project could not be decoded"
+        };
+        CliError::config_with_help(message, PRIVATE_CUE_DIAGNOSTIC_HELP)
+    })?;
     // Ordinary Project decoding keeps infrastructure as raw JSON. Only this
     // command consumes it, decoding strictly just the selected configuration.
     let top_level = match request.needs {
@@ -562,7 +558,14 @@ fn select_infrastructure(
             &requested,
             context.declared_environments,
         ),
-        other => CliError::config(other.to_string()),
+        other @ (InfrastructureSelectionError::NotAnObject { .. }
+        | InfrastructureSelectionError::ProviderEnvironmentNotSet { .. }) => {
+            CliError::config(other.to_string())
+        }
+        _ => CliError::config_with_help(
+            "invalid `infrastructure` configuration",
+            PRIVATE_CUE_DIAGNOSTIC_HELP,
+        ),
     })
 }
 
@@ -680,6 +683,49 @@ fn missing_infrastructure(project_name: &str) -> CliError {
     ))
 }
 
+const PRIVATE_CUE_DIAGNOSTIC_HELP: &str = "Inspect the local CUE source and configuration types. Detailed diagnostics are withheld because they can contain private configuration values or keys.";
+
+/// CUE and FFI errors can contain arbitrary field names, values and source
+/// snippets before provider sensitivity information is available. Preserve
+/// only errors produced by cuenv itself whose origin is known to be safe.
+fn safe_evaluation_failure(error: cuenv_core::Error, subject: &'static str) -> CliError {
+    match error {
+        cuenv_core::Error::Eval(_) => {
+            CliError::eval_with_help(subject, PRIVATE_CUE_DIAGNOSTIC_HELP)
+        }
+        cuenv_core::Error::Configuration(ref detail)
+            if detail
+                .message
+                .starts_with("No CUE module found (looking for cue.mod/)")
+                || detail
+                    .message
+                    .starts_with("No env.cue files declaring package '") =>
+        {
+            CliError::from(error)
+        }
+        cuenv_core::Error::Configuration(_) => {
+            CliError::config_with_help(subject, PRIVATE_CUE_DIAGNOSTIC_HELP)
+        }
+        other => CliError::from(other),
+    }
+}
+
+/// Locator evaluation and decoding may similarly report arbitrary CUE keys
+/// and values. Keep the explicit filesystem and package-identity errors.
+fn locator_evaluation_failure(error: CliError) -> CliError {
+    match &error {
+        CliError::Config { message, .. }
+            if message.starts_with("cannot evaluate ") || message.starts_with("invalid ") =>
+        {
+            CliError::config_with_help(
+                "the .infrastructure.cue locator could not be evaluated or decoded",
+                PRIVATE_CUE_DIAGNOSTIC_HELP,
+            )
+        }
+        _ => error,
+    }
+}
+
 /// What [`explain_concrete_failure`] needs to know.
 #[derive(Debug)]
 struct ConcreteFailure<'failure> {
@@ -728,7 +774,10 @@ fn explain_concrete_failure(failure: ConcreteFailure<'_>) -> CliError {
             }
         }
     }
-    CliError::from(error)
+    safe_evaluation_failure(
+        error,
+        "the CUE infrastructure configuration could not be evaluated",
+    )
 }
 
 /// The only fields of each instance the uniqueness check reads.
@@ -918,17 +967,17 @@ fn skipped_by_name(target: &ProjectInstance) -> Option<SkippedDirectory> {
 }
 
 fn check_unique_name(check: &UniquenessCheck<'_>) -> Result<(), CliError> {
-    let module = module_instances(check.module_root).map_err(|error| {
+    let module = module_instances(check.module_root).map_err(|_| {
         CliError::eval_with_help(
             format!(
-                "cannot confirm that project name '{}' is unique in this CUE module: {error}",
+                "cannot confirm that project name '{}' is unique in this CUE module: one or more CUE instances could not be evaluated",
                 check.project_name
             ),
             skipped_by_name(check.target).map_or_else(
                 || {
                     "Infrastructure state is keyed by module path and project name, and an \
                      instance that does not evaluate could declare a project with the same \
-                     name. Fix or remove the instances listed above; `state list` and \
+                     name. Inspect and fix the module's CUE instances; `state list` and \
                      `unlock` still work meanwhile."
                         .to_string()
                 },
@@ -1018,6 +1067,7 @@ fn check_unique_name(check: &UniquenessCheck<'_>) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_infrastructure::references::ConfigurationEvaluator as _;
 
     type TestResult<Success = ()> = Result<Success, Box<dyn std::error::Error>>;
 
@@ -1107,10 +1157,14 @@ infrastructure: schema.#Infrastructure & {
                 .get("id"),
             Some(&cuenv_manifest::manifest::InfrastructureOutputType::String)
         );
-        assert_eq!(
-            target.infrastructure.resources["record"].configuration["name"]["fromResource"],
-            "fake_plain.primary"
-        );
+        assert!(target.infrastructure.resources["record"].configuration["name"].is_null());
+        let reference = &target
+            .configuration_evaluator
+            .as_ref()
+            .ok_or("missing evaluator")?
+            .references()[0];
+        assert_eq!(reference.source.to_string(), "fake_plain.primary");
+        assert_eq!(reference.attribute, "id");
         let whole_module = evaluate(TargetRequest {
             path: &directory.path().to_string_lossy(),
             package: "cuenv",
@@ -1203,7 +1257,7 @@ infrastructure: {
     }
 
     #[test]
-    fn native_selectors_lower_to_identical_descriptors_and_retain_output_types() -> TestResult {
+    fn native_selectors_keep_provenance_and_output_types() -> TestResult {
         use cuenv_manifest::manifest::InfrastructureOutputType;
         let direct = native_fixture(
             r#"resources: {
@@ -1211,23 +1265,522 @@ infrastructure: {
  record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}
 }"#,
         )?;
-        let descriptor = native_fixture(
-            r#"resources: {
- primary: {type: "fake_plain"}
- record: {type: "fake_plain", configuration: name: {fromResource: "fake_plain.primary", attribute: "id"}}
-}"#,
-        )?;
-        let native = evaluate_native_fixture(direct.path(), None)?.infrastructure;
-        let existing = evaluate_native_fixture(descriptor.path(), None)?.infrastructure;
+        let target = evaluate_native_fixture(direct.path(), None)?;
+        let evaluator = target
+            .configuration_evaluator
+            .as_ref()
+            .ok_or("missing evaluator")?;
+        assert_eq!(evaluator.references().len(), 1);
         assert_eq!(
-            serde_json::to_value(&native)?,
-            serde_json::to_value(&existing)?
+            evaluator.references()[0].source.to_string(),
+            "fake_plain.primary"
         );
+        assert_eq!(evaluator.references()[0].attribute, "id");
+        let native = target.infrastructure;
+        assert!(native.resources["record"].configuration["name"].is_null());
         assert_eq!(
             native.resources["primary"].output_types.get("id"),
             Some(&InfrastructureOutputType::String)
         );
         cuenv_infrastructure::validate_configuration(&native, None)?;
+        Ok(())
+    }
+
+    #[test]
+    fn nested_native_references_preserve_unknowns_and_revalidate_the_frozen_cue() -> TestResult {
+        use cuenv_infrastructure::references::{
+            ConfigurationEvaluator, ConfigurationSpecialization, OutputIdentity,
+        };
+        use cuenv_infrastructure::type_system::Value;
+
+        let directory = native_fixture(
+            r#"resources: {
+ primary: {type: "fake_plain", outputs: id: string}
+ record: {type: "fake_plain", configuration: outer: inner: {
+  token: (number | =~"^expected$") & infrastructure.resources.primary.outputs.id & "expected"
+  label: "unchanged"
+ }}
+}"#,
+        )?;
+        let target = evaluate_native_fixture(directory.path(), None)?;
+        let evaluator = target
+            .configuration_evaluator
+            .as_ref()
+            .ok_or("missing evaluator")?;
+        let reference = evaluator
+            .references()
+            .first()
+            .ok_or("missing reference")?
+            .clone();
+        assert_eq!(reference.destination.len(), 3);
+        assert!(
+            target.infrastructure.resources["record"].configuration["outer"]["inner"]["token"]
+                .is_null()
+        );
+        assert_eq!(reference.source.to_string(), "fake_plain.primary");
+        assert_eq!(reference.attribute, "id");
+
+        // CUE narrows the leaf to "expected", but the producer is still unknown.
+        let sources = BTreeMap::new();
+        let unknown = evaluator.specialize(&ConfigurationSpecialization {
+            consumer: &reference.consumer,
+            sources: &sources,
+            deferred: std::slice::from_ref(&reference),
+        })?;
+        assert_eq!(
+            unknown.configuration["outer"]["inner"]["token"],
+            serde_json::Value::Null
+        );
+        assert_eq!(unknown.unresolved, vec![reference.clone()]);
+
+        // Re-evaluation must use the selected instance as it stood at plan
+        // time, even if the source file changes before application.
+        std::fs::write(
+            directory.path().join("env.cue"),
+            "package cuenv\ninvalid: _|_\n",
+        )?;
+        let identity = OutputIdentity {
+            source: reference.source.clone(),
+            attribute: reference.attribute.clone(),
+        };
+        let matching = BTreeMap::from([(identity.clone(), Value::String("expected".into()))]);
+        let known = evaluator.specialize(&ConfigurationSpecialization {
+            consumer: &reference.consumer,
+            sources: &matching,
+            deferred: &[],
+        })?;
+        assert_eq!(known.configuration["outer"]["inner"]["token"], "expected");
+        let violating =
+            BTreeMap::from([(identity, Value::String("synthetic-sensitive-value".into()))]);
+        let error = evaluator
+            .specialize(&ConfigurationSpecialization {
+                consumer: &reference.consumer,
+                sources: &violating,
+                deferred: &[],
+            })
+            .err()
+            .ok_or("constraint violation was accepted")?;
+        assert!(!error.to_string().contains("synthetic-sensitive-value"));
+        Ok(())
+    }
+
+    #[test]
+    fn nested_native_references_connect_both_namespaces_in_named_environments() -> TestResult {
+        use cuenv_infrastructure::references::{
+            ConfigurationEvaluator, ConfigurationSpecialization, OutputIdentity,
+        };
+        use cuenv_infrastructure::type_system::Value;
+
+        for environment in [None, Some("dev")] {
+            let root = environment.map_or("infrastructure", |_| "infrastructure.environments.dev");
+            let configuration = format!(
+                r#"
+providers: fake: {{source: "example/fake", path: "/not-started"}}
+resources: {{
+ source: {{type: "fake_plain", outputs: id: string}}
+ consumer: {{type: "fake_plain", configuration: nested: [{{
+  managed: {root}.resources.source.outputs.id
+  lookup: {root}.data.source.outputs.id
+ }}]}}
+}}
+data: {{
+ source: {{type: "fake_lookup", outputs: id: string}}
+ consumer: {{type: "fake_lookup", configuration: nested: [{{
+  managed: {root}.resources.source.outputs.id
+  lookup: {root}.data.source.outputs.id
+ }}]}}
+}}"#
+            );
+            let body = environment.map_or_else(
+                || configuration.clone(),
+                |_| format!("environments: dev: {{ {configuration} }}"),
+            );
+            let directory = native_fixture(&body)?;
+            let target = evaluate_native_fixture(directory.path(), environment)?;
+            let evaluator = target.configuration_evaluator.ok_or("missing evaluator")?;
+            assert_eq!(evaluator.references().len(), 4);
+            for reference in evaluator.references().iter().step_by(2) {
+                let consumer = &reference.consumer;
+                let references = evaluator
+                    .references()
+                    .iter()
+                    .filter(|item| &item.consumer == consumer)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert_eq!(references.len(), 2);
+                let sources = references
+                    .iter()
+                    .map(|item| {
+                        (
+                            OutputIdentity {
+                                source: item.source.clone(),
+                                attribute: item.attribute.clone(),
+                            },
+                            Value::String(item.source.to_string()),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let result = evaluator.specialize(&ConfigurationSpecialization {
+                    consumer,
+                    sources: &sources,
+                    deferred: &[],
+                })?;
+                assert_eq!(
+                    result.configuration["nested"][0]["managed"],
+                    "fake_plain.source"
+                );
+                assert_eq!(
+                    result.configuration["nested"][0]["lookup"],
+                    "data.fake_lookup.source"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_numeric_fills_preserve_precision_without_changing_json_object_keys() -> TestResult {
+        use cuenv_infrastructure::references::{
+            ConfigurationEvaluator, ConfigurationSpecialization, OutputIdentity,
+        };
+        use cuenv_infrastructure::type_system::{Number, Value};
+
+        let directory = native_fixture(
+            r#"resources: {
+ primary: {type: "fake_plain", outputs: id: number}
+ consumer: {type: "fake_plain", configuration: {
+  nested: token: infrastructure.resources.primary.outputs.id
+  ordinary: {"$serde_json::private::Number": "42"}
+ }}
+}"#,
+        )?;
+        let target = evaluate_native_fixture(directory.path(), None)?;
+        let evaluator = target.configuration_evaluator.ok_or("missing evaluator")?;
+        let reference = evaluator.references().first().ok_or("missing reference")?;
+        let number = "9007199254740993.1234567890123456789";
+        let sources = BTreeMap::from([(
+            OutputIdentity {
+                source: reference.source.clone(),
+                attribute: reference.attribute.clone(),
+            },
+            Value::Number(number.parse::<Number>()?),
+        )]);
+        let result = evaluator.specialize(&ConfigurationSpecialization {
+            consumer: &reference.consumer,
+            sources: &sources,
+            deferred: &[],
+        })?;
+        assert_eq!(result.configuration["nested"]["token"], number);
+        assert_eq!(
+            result.configuration["ordinary"]["$serde_json::private::Number"],
+            "42"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn lossy_selected_numbers_fail_closed_but_unselected_numbers_do_not_block() -> TestResult {
+        let large = "9007199254740993.1234567890123456789";
+        let directory = native_fixture(&format!(
+            r#"resources: record: {{type: "fake_plain", configuration: amount: {large}}}"#
+        ))?;
+        let error = evaluate_native_fixture(directory.path(), None)
+            .expect_err("lossy selected number must fail");
+        assert!(error.to_string().contains("without losing precision"));
+        assert!(!error.to_string().contains(large));
+
+        let directory = native_fixture(&format!(
+            r#"environments: {{
+ dev: {{providers: fake: {{source: "example/fake", path: "/not-started"}}, resources: record: {{type: "fake_plain", configuration: amount: 1}}}}
+ unused: {{providers: fake: {{source: "example/fake", path: "/not-started"}}, resources: record: {{type: "fake_plain", configuration: amount: {large}}}}}
+}}"#
+        ))?;
+        let target = evaluate_native_fixture(directory.path(), Some("dev"))?;
+        assert_eq!(
+            target.infrastructure.resources["record"].configuration["amount"],
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pre_provider_errors_hide_computed_configuration_keys_and_values() -> TestResult {
+        let key = "computed-sensitive-map-key";
+        let value = "synthetic-sensitive-value";
+        for (body, expected, exit_code) in [
+            (
+                format!(
+                    r#"let secretKey = "{key}"
+resources: record: {{type: "fake_plain", configuration: labels: {{"\(secretKey)": 9007199254740993.1234567890123456789}}}}"#
+                ),
+                "infrastructure.resources.<resource>.configuration.<value>.<value>",
+                2,
+            ),
+            (
+                format!(
+                    r#"let secretKey = "{key}"
+resources: primary: {{type: "fake_plain", outputs: id: string}}
+providers: fake: configuration: labels: {{"\(secretKey)": infrastructure.resources.primary.outputs.id}}"#
+                ),
+                "infrastructure.providers.<provider>.configuration.<value>.<value>",
+                2,
+            ),
+            (
+                format!(
+                    r#"let secretKey = "{key}"
+resources: record: {{type: "fake_plain", configuration: labels: {{"\(secretKey)": "{value}" & "different"}}}}"#
+                ),
+                "the CUE infrastructure configuration could not be evaluated",
+                3,
+            ),
+        ] {
+            let directory = native_fixture(&body)?;
+            let error = evaluate_native_fixture(directory.path(), None)
+                .expect_err("invalid configuration must fail");
+            let printed = error.to_string();
+            assert_eq!(crate::cli::exit_code_for(&error), exit_code, "{printed}");
+            assert!(printed.contains(expected), "{printed}");
+            assert!(!printed.contains(key), "{printed}");
+            assert!(!printed.contains(value), "{printed}");
+            assert!(
+                !printed.contains("9007199254740993.1234567890123456789"),
+                "{printed}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn syntax_errors_remain_evaluation_failures_without_source_details() -> TestResult {
+        let directory = native_fixture("")?;
+        let file = directory.path().join("env.cue");
+        let original = std::fs::read_to_string(&file)?;
+        std::fs::write(&file, format!("{original}\nbroken: {{\n"))?;
+        let error =
+            evaluate_native_fixture(directory.path(), None).expect_err("invalid syntax must fail");
+        assert_eq!(crate::cli::exit_code_for(&error), 3);
+        assert!(error.to_string().contains("could not be evaluated"));
+        assert!(!error.to_string().contains("broken"));
+        Ok(())
+    }
+
+    #[test]
+    fn project_decoding_hides_computed_environment_keys_and_values() -> TestResult {
+        let directory = native_fixture("")?;
+        let file = directory.path().join("env.cue");
+        let original = std::fs::read_to_string(&file)?;
+        std::fs::write(
+            &file,
+            format!(
+                r#"{original}
+let secretKey = "SYNTHETIC_PRIVATE_KEY"
+env: "\(secretKey)": {{value: "ordinary", policies: [{{allowInfrastructure: ["synthetic-sensitive-value"]}}]}}
+"#
+            ),
+        )?;
+        let error =
+            evaluate_native_fixture(directory.path(), None).expect_err("invalid env must fail");
+        let printed = error.to_string();
+        assert_eq!(crate::cli::exit_code_for(&error), 2);
+        assert!(printed.contains("`env`"), "{printed}");
+        assert!(!printed.contains("SYNTHETIC_PRIVATE_KEY"), "{printed}");
+        assert!(!printed.contains("synthetic-sensitive-value"), "{printed}");
+        Ok(())
+    }
+
+    #[test]
+    fn infrastructure_decoding_hides_untyped_invalid_values() -> TestResult {
+        let directory = native_fixture("")?;
+        std::fs::write(
+            directory.path().join("env.cue"),
+            r#"package cuenv
+name: "native"
+infrastructure: {
+ state: turso: url: "http://127.0.0.1:8080"
+ providerEnvironment: "synthetic-sensitive-value"
+ providers: fake: {source: "example/fake", path: "/not-started"}
+ resources: record: {type: "fake_plain", configuration: name: "ordinary"}
+}
+"#,
+        )?;
+        let error = evaluate_native_fixture(directory.path(), None)
+            .expect_err("invalid infrastructure must fail");
+        let printed = error.to_string();
+        assert_eq!(crate::cli::exit_code_for(&error), 2);
+        assert!(
+            printed.contains("invalid `infrastructure` configuration"),
+            "{printed}"
+        );
+        assert!(!printed.contains("synthetic-sensitive-value"), "{printed}");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_package_retains_explicit_configuration_error() -> TestResult {
+        let directory = native_fixture("")?;
+        std::fs::remove_file(directory.path().join("env.cue"))?;
+        let error =
+            evaluate_native_fixture(directory.path(), None).expect_err("missing package must fail");
+        assert_eq!(crate::cli::exit_code_for(&error), 2);
+        assert!(
+            error
+                .to_string()
+                .contains("No env.cue files declaring package 'cuenv'"),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn uniqueness_scan_hides_computed_keys_and_conflicting_values() -> TestResult {
+        let directory = native_fixture(
+            r#"resources: record: {type: "fake_plain", configuration: name: "ordinary"}"#,
+        )?;
+        let sibling = directory.path().join("sibling");
+        std::fs::create_dir(&sibling)?;
+        std::fs::write(
+            sibling.join("env.cue"),
+            r#"package other
+import "example.com/native/schema"
+name: "sibling"
+infrastructure: schema.#Infrastructure & {
+ let secretKey = "sibling-sensitive-key"
+ state: turso: url: "http://127.0.0.1:8080"
+ providers: fake: {source: "example/fake", path: "/not-started"}
+ resources: record: {type: "fake_plain", configuration: labels: {"\(secretKey)": "sibling-sensitive-value" & "different"}}
+}
+"#,
+        )?;
+        let error = evaluate(TargetRequest {
+            path: &directory.path().to_string_lossy(),
+            package: "cuenv",
+            name_check: NameCheck::WholeModule,
+            needs: Needs::Configuration,
+            environment: None,
+        })
+        .expect_err("invalid sibling must prevent a uniqueness check");
+        let printed = error.to_string();
+        assert_eq!(crate::cli::exit_code_for(&error), 3);
+        assert!(printed.contains("unique"), "{printed}");
+        assert!(!printed.contains("sibling-sensitive-key"), "{printed}");
+        assert!(!printed.contains("sibling-sensitive-value"), "{printed}");
+        Ok(())
+    }
+
+    #[test]
+    fn locator_cue_errors_hide_conflicting_values() -> TestResult {
+        let directory = native_fixture("")?;
+        std::fs::write(
+            directory.path().join(".infrastructure.cue"),
+            r#"package cuenv
+directory: "locator-sensitive-value" & "different"
+"package": "infrastructure"
+"#,
+        )?;
+        let error =
+            evaluate_native_fixture(directory.path(), None).expect_err("invalid locator must fail");
+        assert_eq!(crate::cli::exit_code_for(&error), 2);
+        assert!(error.to_string().contains(".infrastructure.cue"));
+        assert!(!error.to_string().contains("locator-sensitive-value"));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER"]
+    async fn nested_native_reference_plans_and_applies_with_fake_provider() -> TestResult {
+        use cuenv_infrastructure::type_system::Value;
+        use cuenv_infrastructure::{
+            ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine,
+            MemoryStateStore, PlanMode, StateStore,
+        };
+
+        let provider = std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?;
+        let directory = native_fixture(
+            r#"resources: {
+ producer: {type: "fake_token_source", outputs: token: string, configuration: name: "native"}
+ consumer: {type: "fake_token_consumer", configuration: config: {
+  token: infrastructure.resources.producer.outputs.token
+  label: "ordinary-sibling"
+ }}
+}"#,
+        )?;
+        let file = directory.path().join("env.cue");
+        let original = std::fs::read_to_string(&file)?;
+        std::fs::write(
+            &file,
+            original.replace(
+                "\"/not-started\"",
+                &format!(
+                    "{}, configuration: directory: {}",
+                    serde_json::to_string(&provider)?,
+                    serde_json::to_string(directory.path())?
+                ),
+            ),
+        )?;
+        let target = evaluate_native_fixture(directory.path(), None)?;
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        store.migrate().await?;
+        let mut engine = InfrastructureEngine::new(EngineSetup {
+            tenant: target.tenant.clone(),
+            store: Arc::clone(&store),
+            infrastructure: target.infrastructure,
+            options: EngineOptions {
+                project_directory: directory.path().to_path_buf(),
+                plugin_cache_directory: None,
+                withheld_environment_variables: Vec::new(),
+                provider_environment_variables: BTreeMap::new(),
+                unrecorded_directory: Some(directory.path().join("unrecorded")),
+                cancellation: Cancellation::default(),
+                locked_providers: BTreeMap::new(),
+            },
+        });
+        engine.set_configuration_evaluator(
+            target.configuration_evaluator.ok_or("missing evaluator")?,
+        );
+        let lock = store
+            .lock(&target.tenant, "native nested reference test")
+            .await?;
+        let plan = engine.plan(PlanMode::Apply).await?;
+        let source_index = plan
+            .changes
+            .iter()
+            .position(|change| change.address.name == "producer")
+            .ok_or("source not planned")?;
+        let consumer_index = plan
+            .changes
+            .iter()
+            .position(|change| change.address.name == "consumer")
+            .ok_or("consumer not planned")?;
+        assert!(source_index < consumer_index);
+        let consumer = &plan.changes[consumer_index];
+        assert_eq!(consumer.sensitive, ["config"]);
+        let Value::Object(after) = &consumer.after else {
+            return Err("consumer plan is not an object".into());
+        };
+        let Some(Value::Object(config)) = after.get("config") else {
+            return Err("missing nested config".into());
+        };
+        assert_eq!(config.get("token"), Some(&Value::Unknown));
+        assert!(cuenv_infrastructure::render_plan(&plan).contains("config = (sensitive)"));
+        engine
+            .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+            .await?;
+        let records = store.list(&target.tenant).await?;
+        let source = records
+            .iter()
+            .find(|record| record.address.name == "producer")
+            .ok_or("source not recorded")?;
+        let consumer = records
+            .iter()
+            .find(|record| record.address.name == "consumer")
+            .ok_or("consumer not recorded")?;
+        assert_eq!(consumer.state["config"]["token"], source.state["token"]);
+        assert_eq!(consumer.dependencies, ["fake_token_source.producer"]);
+        assert_eq!(consumer.sensitive_attributes, ["config"]);
+        let token = source.state["token"].as_str().ok_or("missing token")?;
+        assert!(!cuenv_events::redact(token).contains(token));
+        store.unlock(&target.tenant, &lock).await?;
+        engine.shutdown().await;
         Ok(())
     }
 
@@ -1271,14 +1824,8 @@ data: {{
                 &infrastructure.resources["record"],
                 &infrastructure.data["record"],
             ] {
-                assert_eq!(
-                    consumer.configuration["managed"],
-                    serde_json::json!({"fromResource": "fake_plain.primary", "attribute": "id"})
-                );
-                assert_eq!(
-                    consumer.configuration["lookup"],
-                    serde_json::json!({"fromDataSource": "fake_lookup.primary", "attribute": "id"})
-                );
+                assert!(consumer.configuration["managed"].is_null());
+                assert!(consumer.configuration["lookup"].is_null());
             }
             assert_eq!(
                 infrastructure.resources["primary"].output_types["id"],
@@ -1312,12 +1859,19 @@ data: {
  }}
 }"#,
         )?;
-        let infrastructure = evaluate_native_fixture(directory.path(), None)?.infrastructure;
-        for value in infrastructure.data["record"].configuration.values() {
-            assert_eq!(
-                value,
-                &serde_json::json!({"fromDataSource": "fake_lookup.source-key", "attribute": "_id"})
-            );
+        let target = evaluate_native_fixture(directory.path(), None)?;
+        for value in target.infrastructure.data["record"].configuration.values() {
+            assert!(value.is_null());
+        }
+        let references = target
+            .configuration_evaluator
+            .as_ref()
+            .ok_or("missing evaluator")?
+            .references();
+        assert_eq!(references.len(), 3);
+        for reference in references {
+            assert_eq!(reference.source.to_string(), "data.fake_lookup.source-key");
+            assert_eq!(reference.attribute, "_id");
         }
         Ok(())
     }
@@ -1441,7 +1995,6 @@ environments: dev: {
             r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: infrastructure.data.missing.outputs.id}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: id: string & =~"^prefix"}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: id: *"default" | string}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id}}"#,
-            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: nested: name: infrastructure.data.primary.outputs.id}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: *"fallback" | infrastructure.data.primary.outputs.id}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: "prefix-\(infrastructure.data.primary.outputs.id)"}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: id: number}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id + 1}}"#,
@@ -1475,14 +2028,19 @@ providers: fake: configuration: name: infrastructure.data.primary.outputs.id"#,
  }}
 }"#,
         )?;
-        let configuration = evaluate_native_fixture(directory.path(), None)?.infrastructure;
-        for (name, value) in &configuration.resources["record"].configuration {
-            assert_eq!(value["fromResource"], "fake_plain.source-key", "{name}");
-            assert_eq!(
-                value["attribute"],
-                if name == "true" { "true" } else { "_id" },
-                "{name}"
-            );
+        let target = evaluate_native_fixture(directory.path(), None)?;
+        for (name, value) in &target.infrastructure.resources["record"].configuration {
+            assert!(value.is_null(), "{name}");
+        }
+        let references = target
+            .configuration_evaluator
+            .as_ref()
+            .ok_or("missing evaluator")?
+            .references();
+        assert_eq!(references.len(), 6);
+        for reference in references {
+            assert_eq!(reference.source.to_string(), "fake_plain.source-key");
+            assert!(matches!(reference.attribute.as_str(), "_id" | "true"));
         }
         Ok(())
     }
@@ -1504,6 +2062,112 @@ providers: fake: configuration: name: infrastructure.data.primary.outputs.id"#,
     }
 
     #[test]
+    fn narrowed_outputs_cannot_control_project_identity_or_provider_configuration() -> TestResult {
+        let directory =
+            native_fixture(r#"resources: primary: {type: "fake_plain", outputs: id: string}"#)?;
+        let file = directory.path().join("env.cue");
+        let original = std::fs::read_to_string(&file)?;
+        std::fs::write(
+            &file,
+            original.replace(
+                "name: \"native\"",
+                "name: infrastructure.resources.primary.outputs.id & \"native\"",
+            ),
+        )?;
+        assert!(evaluate_native_fixture(directory.path(), None).is_err());
+
+        std::fs::write(&file, original.replace(
+            "providers: fake: {source:",
+            "providers: fake: {configuration: name: infrastructure.resources.primary.outputs.id & \"literal\", source:",
+        ))?;
+        assert!(evaluate_native_fixture(directory.path(), None).is_err());
+
+        let directory = native_fixture(
+            r#"resources: primary: {type: "fake_plain", outputs: id: string}
+providerEnvironment: infrastructure.resources.primary.outputs.id"#,
+        )?;
+        assert!(evaluate_native_fixture(directory.path(), None).is_err());
+
+        let directory = native_fixture(
+            r#"resources: primary: {type: "fake_plain", outputs: id: string}
+workflows: apply: environment: infrastructure.resources.primary.outputs.id & "production""#,
+        )?;
+        assert!(evaluate_native_fixture(directory.path(), None).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn output_dependent_global_checks_are_rejected_before_scheduling() -> TestResult {
+        for consumer in [
+            "",
+            r#"record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}"#,
+        ] {
+            let directory = native_fixture(&format!(
+                r#"resources: {{
+ primary: {{type: "fake_plain", outputs: id: string}}
+ {consumer}
+}}"#
+            ))?;
+            let file = directory.path().join("env.cue");
+            let original = std::fs::read_to_string(&file)?;
+            for global in [
+                r#"_guard: (infrastructure.resources.primary.outputs.id & "ok") == "ok""#,
+                r#"guard: (infrastructure.resources.primary.outputs.id & "ok") == "ok""#,
+            ] {
+                std::fs::write(&file, format!("{original}\n{global}\n"))?;
+                assert!(
+                    evaluate_native_fixture(directory.path(), None).is_err(),
+                    "an independent global output check must be rejected even when a consumer uses the same source"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn global_checks_respect_selected_environment_boundaries() -> TestResult {
+        let directory = native_fixture(
+            r#"environments: {
+ dev: {providers: fake: {source: "example/fake", path: "/not-started"}, resources: record: {type: "fake_plain", configuration: name: "literal"}}
+ unused: {
+  providers: fake: {source: "example/fake", path: "/not-started"}
+  resources: primary: {type: "fake_plain", outputs: id: string}
+  _guard: (infrastructure.environments.unused.resources.primary.outputs.id & "ok") == "ok"
+ }
+}"#,
+        )?;
+        evaluate_native_fixture(directory.path(), Some("dev"))?;
+        let file = directory.path().join("env.cue");
+        let original = std::fs::read_to_string(&file)?;
+        std::fs::write(
+            &file,
+            format!(
+                "{original}\n_guard: (infrastructure.environments.unused.resources.primary.outputs.id & \"ok\") == \"ok\"\n"
+            ),
+        )?;
+        assert!(evaluate_native_fixture(directory.path(), Some("dev")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn inactive_top_level_resources_can_reference_inactive_top_level_data() -> TestResult {
+        let directory = native_fixture(
+            r#"data: lookup: {type: "fake_lookup", outputs: id: string}
+resources: unused: {type: "fake_plain", configuration: name: infrastructure.data.lookup.outputs.id & !="bad"}
+environments: dev: {
+ providers: fake: {source: "example/fake", path: "/not-started"}
+ resources: record: {type: "fake_plain", configuration: name: "literal"}
+}"#,
+        )?;
+        let target = evaluate_native_fixture(directory.path(), Some("dev"))?;
+        assert_eq!(
+            target.infrastructure.resources["record"].configuration["name"],
+            "literal"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn native_selectors_use_only_the_selected_environment() -> TestResult {
         let directory = native_fixture(
             r#"environments: "outputs": {
@@ -1517,10 +2181,7 @@ environments: unused: providers: fake: {source: "example/fake", version: string}
         )?;
         let configuration =
             evaluate_native_fixture(directory.path(), Some("outputs"))?.infrastructure;
-        assert_eq!(
-            configuration.resources["record"].configuration["name"]["fromResource"],
-            "fake_plain.primary"
-        );
+        assert!(configuration.resources["record"].configuration["name"].is_null());
         Ok(())
     }
 
@@ -1556,7 +2217,6 @@ environments: unused: providers: fake: {source: "example/fake", version: string}
             r#"resources: {primary: {type: "fake_plain", outputs: id: string & =~"^prefix"}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: number & >0}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: *"default" | string}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id & "literal"}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | infrastructure.resources.primary.outputs.id}}"#,
             r#"let string = infrastructure.resources.primary.outputs.id
 resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: name: *42 | string}}"#,
@@ -1571,10 +2231,8 @@ resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "
 resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | alias}}"#,
             r#"_alias: infrastructure.resources.primary.outputs.id
 resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | _alias}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: (number | =~"^prefix") & infrastructure.resources.primary.outputs.id}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: "prefix-\(infrastructure.resources.primary.outputs.id)"}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id + 1}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: nested: name: infrastructure.resources.primary.outputs.id}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, missing!: string}}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, unknown: string}}}"#,
             r#"providers: fake: configuration: name: infrastructure.resources.primary.outputs.id

@@ -473,12 +473,15 @@ impl Values<'_> {
 struct PlanCheck {
     path: Vec<PathStep>,
     problems: Vec<PlanProblem>,
+    /// Object labels inferred from a dynamic value are runtime data rather
+    /// than fixed provider-schema attributes.
+    dynamic_fields: bool,
 }
 
 impl PlanCheck {
     fn problem(&mut self, message: impl Into<String>) {
         self.problems.push(PlanProblem {
-            path: render_steps(&self.path),
+            path: render_diagnostic_steps(&self.path),
             message: message.into(),
         });
     }
@@ -580,9 +583,9 @@ impl PlanCheck {
                 }
                 for (&key, &planned_element) in &planned_entries {
                     let Some(&configured_element) = configured_entries.get(key) else {
-                        self.problem(format!(
-                            "block key {key:?} from plan is not present in configuration"
-                        ));
+                        self.problem(
+                            "block key [<hidden key>] from plan is not present in configuration",
+                        );
                         continue;
                     };
                     self.within(PathStep::Key(key.clone()), |check| {
@@ -602,9 +605,9 @@ impl PlanCheck {
                 }
                 for key in configured_entries.keys() {
                     if !planned_entries.contains_key(key) {
-                        self.problem(format!(
-                            "block key {key:?} from configuration is not present in plan"
-                        ));
+                        self.problem(
+                            "block key [<hidden key>] from configuration is not present in plan",
+                        );
                     }
                 }
             }
@@ -736,9 +739,9 @@ impl PlanCheck {
                 }
                 for (key, planned_element) in planned_entries {
                     let Some(configured_element) = configured_entries.get(key) else {
-                        self.problem(format!(
-                            "map key {key:?} from plan is not present in configuration"
-                        ));
+                        self.problem(
+                            "map key [<hidden key>] from plan is not present in configuration",
+                        );
                         continue;
                     };
                     self.within(PathStep::Key(key.clone()), |check| {
@@ -754,9 +757,9 @@ impl PlanCheck {
                 }
                 for key in configured_entries.keys() {
                     if !planned_entries.contains_key(key) {
-                        self.problem(format!(
-                            "map key {key:?} from configuration is not present in plan"
-                        ));
+                        self.problem(
+                            "map key [<hidden key>] from configuration is not present in plan",
+                        );
                     }
                 }
             }
@@ -838,6 +841,7 @@ impl PlanCheck {
                 let mut inner = Self {
                     path: check.path.clone(),
                     problems: Vec::new(),
+                    dynamic_fields: check.dynamic_fields,
                 };
                 inner.compatible_value(
                     &attribute.value_type,
@@ -898,7 +902,7 @@ impl PlanCheck {
                 let (planned_entries, actual_entries) = (map_entries(planned), map_entries(actual));
                 for (key, planned_element) in &planned_entries {
                     let Some(actual_element) = actual_entries.get(key) else {
-                        self.problem(format!("block key {key:?} has vanished"));
+                        self.problem("block key [<hidden key>] has vanished");
                         continue;
                     };
                     self.within(PathStep::Key((*key).clone()), |check| {
@@ -908,7 +912,7 @@ impl PlanCheck {
                 if !planned.is_unknown() {
                     for key in actual_entries.keys() {
                         if !planned_entries.contains_key(key) {
-                            self.problem(format!("new block key {key:?} has appeared"));
+                            self.problem("new block key [<hidden key>] has appeared");
                         }
                     }
                 }
@@ -941,6 +945,7 @@ impl PlanCheck {
                 let (planned_elements, actual_elements) =
                     (list_elements(planned), list_elements(actual));
                 let path = self.path.clone();
+                let dynamic_fields = self.dynamic_fields;
                 let problems = set_correlation_problems(
                     planned_elements,
                     actual_elements,
@@ -948,6 +953,7 @@ impl PlanCheck {
                         let mut inner = Self {
                             path: path.clone(),
                             problems: Vec::new(),
+                            dynamic_fields,
                         };
                         inner.compatible_object(block, planned_element, actual_element);
                         inner.problems.is_empty()
@@ -983,7 +989,14 @@ impl PlanCheck {
                 self.problem("wrong final value type");
                 return;
             }
-            return self.compatible_value(&typed.value_type, &typed.value, actual.untyped());
+            let mut inner = Self {
+                path: self.path.clone(),
+                problems: Vec::new(),
+                dynamic_fields: true,
+            };
+            inner.compatible_value(&typed.value_type, &typed.value, actual.untyped());
+            self.problems.extend(inner.problems);
+            return;
         } else {
             value_type
         };
@@ -1030,7 +1043,7 @@ impl PlanCheck {
                 let (planned_entries, actual_entries) = (map_entries(planned), map_entries(actual));
                 for (key, planned_element) in &planned_entries {
                     let Some(actual_element) = actual_entries.get(key) else {
-                        self.problem(format!("element {key:?} has vanished"));
+                        self.problem("map element [<hidden key>] has vanished");
                         continue;
                     };
                     self.within(PathStep::Key((*key).clone()), |check| {
@@ -1039,13 +1052,18 @@ impl PlanCheck {
                 }
                 for key in actual_entries.keys() {
                     if !planned_entries.contains_key(key) {
-                        self.problem(format!("new element {key:?} has appeared"));
+                        self.problem("new map element [<hidden key>] has appeared");
                     }
                 }
             }
             Type::Object(attribute_types) => {
                 for (name, attribute_type) in attribute_types {
-                    self.within(PathStep::Attribute(name.clone()), |check| {
+                    let step = if self.dynamic_fields {
+                        PathStep::Key(name.clone())
+                    } else {
+                        PathStep::Attribute(name.clone())
+                    };
+                    self.within(step, |check| {
                         check.compatible_value(
                             attribute_type,
                             member(planned, name),
@@ -1058,6 +1076,7 @@ impl PlanCheck {
                 let (planned_elements, actual_elements) =
                     (list_elements(planned), list_elements(actual));
                 let path = self.path.clone();
+                let dynamic_fields = self.dynamic_fields;
                 let problems = set_correlation_problems(
                     planned_elements,
                     actual_elements,
@@ -1065,6 +1084,7 @@ impl PlanCheck {
                         let mut inner = Self {
                             path: path.clone(),
                             problems: Vec::new(),
+                            dynamic_fields,
                         };
                         inner.compatible_value(element_type, planned_element, actual_element);
                         inner.problems.is_empty()
@@ -1213,6 +1233,28 @@ fn map_entries(value: &Value) -> BTreeMap<&String, &Value> {
 
 fn path_index(index: usize) -> PathStep {
     PathStep::Index(i64::try_from(index).unwrap_or(i64::MAX))
+}
+
+/// Diagnostic paths must hide all map keys, including short or newly returned
+/// keys which cannot be protected by the event redaction registry. Keep the
+/// original steps for correlation and for other users of `render_steps`.
+pub(crate) fn render_diagnostic_steps(steps: &[PathStep]) -> String {
+    let mut rendered = String::new();
+    for step in steps {
+        match step {
+            PathStep::Attribute(name) => {
+                if !rendered.is_empty() {
+                    rendered.push('.');
+                }
+                rendered.push_str(name);
+            }
+            PathStep::Key(_) => rendered.push_str("[<hidden key>]"),
+            PathStep::Index(index) => {
+                let _ = write!(rendered, "[{index}]");
+            }
+        }
+    }
+    rendered
 }
 
 /// Render steps as `rules[0].label` or `tags["team"]`.

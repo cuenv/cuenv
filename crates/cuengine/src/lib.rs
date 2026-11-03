@@ -6,11 +6,16 @@
 
 pub mod cache;
 pub mod error;
+pub mod frozen;
+mod frozen_worker;
 pub mod retry;
 pub mod validation;
 
+#[cfg(test)]
+mod bridge_trace_tests;
+
 // Re-export main types
-pub use error::{CueEngineError, Result};
+pub use error::{CueEngineError, FrozenWorkerFailure, Result};
 pub use retry::RetryConfig;
 pub use validation::Limits;
 
@@ -606,7 +611,7 @@ pub fn evaluate_module(
 ) -> Result<ModuleResult> {
     tracing::info!("Starting module-wide CUE evaluation");
     let start_time = Instant::now();
-    let timeout = module_eval_timeout()?;
+    let timeout = evaluation_timeout()?;
 
     let c_module_root = path_to_cstring(module_root, "cue_eval_module", "module root")?;
     let c_package = str_to_cstring(package_name, "cue_eval_module", "package name")?;
@@ -626,8 +631,16 @@ pub fn evaluate_module(
     Ok(module_result)
 }
 
-/// Reads the module evaluation timeout from [`EVAL_TIMEOUT_ENV_VAR`].
-fn module_eval_timeout() -> Result<Duration> {
+/// Read the validated evaluation budget from [`EVAL_TIMEOUT_ENV_VAR`].
+///
+/// Unset, empty or whitespace-only values select [`DEFAULT_MODULE_EVAL_TIMEOUT`].
+/// This only returns the configured budget; it does not interrupt a running CUE
+/// evaluation or make synchronous frozen-instance operations cancellable.
+///
+/// # Errors
+/// Returns a configuration error unless a nonempty value is a positive whole
+/// number of seconds.
+pub fn evaluation_timeout() -> Result<Duration> {
     parse_module_eval_timeout(std::env::var_os(EVAL_TIMEOUT_ENV_VAR).as_deref())
 }
 
@@ -787,8 +800,7 @@ fn call_ffi_eval_module(
 fn parse_bridge_envelope(json_str: &str) -> Result<BridgeEnvelope<'_>> {
     let envelope: BridgeEnvelope = serde_json::from_str(json_str).map_err(|e| {
         tracing::error!(
-            json_response = json_str,
-            parse_error = %e,
+            response_bytes = json_str.len(),
             "Failed to parse JSON envelope from Go bridge"
         );
         Error::ffi(
@@ -837,17 +849,13 @@ fn process_bridge_response(envelope: BridgeEnvelope, module_root: &Path) -> Resu
 
 /// Handle a bridge error and convert it to our error type.
 fn handle_bridge_error(bridge_error: BridgeError, module_root: &Path) -> Error {
-    tracing::error!(
-        error_code = bridge_error.code,
-        error_message = bridge_error.message,
-        error_hint = bridge_error.hint,
-        "Module evaluation failed"
-    );
+    tracing::error!(error_code = bridge_error.code, "Module evaluation failed");
 
     // A hint explains how to call the bridge correctly (option names and
     // values), so it belongs with configuration errors only. Evaluation
     // errors carry every CUE error with its position in the message; their
-    // hints are logged above, not shown to the end user.
+    // hints are not shown to the end user. Value-bearing diagnostics must never
+    // enter raw tracing sinks, which do not apply application redaction.
     let with_hint = |bridge_error: BridgeError| {
         bridge_error
             .hint
@@ -873,8 +881,7 @@ fn handle_bridge_error(bridge_error: BridgeError, module_root: &Path) -> Error {
 fn parse_module_result(json_data: &str) -> Result<ModuleResult> {
     serde_json::from_str(json_data).map_err(|e| {
         tracing::error!(
-            json_data = json_data,
-            parse_error = %e,
+            response_bytes = json_data.len(),
             "Failed to parse module result"
         );
         Error::ffi(
@@ -1003,7 +1010,7 @@ fn process_bridge_json<T: DeserializeOwned>(
 pub fn evaluate_cue_file(file_path: &Path) -> Result<serde_json::Value> {
     const FUNCTION_NAME: &str = "cue_eval_file";
     let path = path_to_cstring(file_path, FUNCTION_NAME, "file path")?;
-    let timeout = module_eval_timeout()?;
+    let timeout = evaluation_timeout()?;
     let owned_path = file_path.to_path_buf();
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
@@ -1218,9 +1225,8 @@ where
     // Deserialize into the target type
     serde_json::from_str(&json_str).map_err(|e| {
         tracing::error!(
-            "Failed to deserialize CUE output to {}: {}",
-            std::any::type_name::<T>(),
-            e
+            target_type = std::any::type_name::<T>(),
+            "Failed to deserialize CUE output"
         );
         Error::configuration(format!(
             "Failed to parse CUE output as {}: {}",

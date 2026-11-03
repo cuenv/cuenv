@@ -505,7 +505,31 @@ infrastructure: {
         Some("dev"),
     )
     .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_EVAL);
+    assert_eq!(exit_code_for(&error), EXIT_EVAL, "{error}");
+}
+
+#[test]
+fn selected_top_level_must_be_concrete_without_exposing_values() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  providers: random: {
+    source: "hashicorp/random"
+    version: _
+    configuration: token: "synthetic-sensitive-value"
+  }
+}
+"#,
+    );
+    let error = evaluate(module.path(), NameCheck::TargetOnly).unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_EVAL, "{error}");
+    assert!(!error.to_string().contains("synthetic-sensitive-value"));
 }
 
 #[test]
@@ -534,14 +558,20 @@ infrastructure: {
     )
     .unwrap_err();
     assert!(
-        error.to_string().contains("unknown field `resource`"),
+        error
+            .to_string()
+            .contains("invalid `infrastructure` configuration"),
         "{error}"
     );
+    assert!(!error.to_string().contains("resource`"));
     let error = evaluate(module.path(), NameCheck::TargetOnly).unwrap_err();
     assert!(
-        error.to_string().contains("unknown field `resource`"),
+        error
+            .to_string()
+            .contains("invalid `infrastructure` configuration"),
         "{error}"
     );
+    assert!(!error.to_string().contains("resource`"));
 }
 
 #[test]
@@ -675,7 +705,11 @@ fn an_instance_that_fails_to_evaluate_fails_closed() {
     let error = evaluate(module.path(), NameCheck::WholeModule).unwrap_err();
     assert_eq!(exit_code_for(&error), EXIT_EVAL);
     let message = error.to_string();
-    assert!(message.contains("broken:cuenv"), "{message}");
+    assert!(
+        message.contains("one or more CUE instances could not be evaluated"),
+        "{message}"
+    );
+    assert!(!message.contains("broken:cuenv"), "{message}");
     assert!(!message.contains("CUE parsing failed"), "{message}");
     assert!(!message.contains("instanceFailures"), "{message}");
 }
@@ -1013,6 +1047,7 @@ impl Harness {
     /// resources, saving unrecorded changes in the harness's directory.
     fn inputs(&self) -> EngineInputs {
         EngineInputs {
+            configuration_evaluator: None,
             locked_providers: std::collections::BTreeMap::new(),
             infrastructure: serde_json::from_value(serde_json::json!({
                 "state": {"turso": {"url": "http://127.0.0.1:1"}}

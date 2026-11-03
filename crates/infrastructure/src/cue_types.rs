@@ -63,13 +63,22 @@ pub const DATA_SOURCE_FILE_NAME: &str = "data_source.cue";
 /// Prefix of every schema digest.
 pub const SCHEMA_DIGEST_PREFIX: &str = "sha256:";
 
-/// Predeclared identifiers, and the `list` import, that generated types
-/// refer to. A field with one of these names is written with a quoted label:
+/// Identifiers used by generated types, plus the former schema import name,
+/// which stays quoted to keep existing generated labels stable. A field with
+/// one of these names is written with a quoted label:
 /// an identifier label would shadow the predeclared one for every reference
 /// in the same struct (`length!: number` next to a `number` attribute), but
 /// a quoted label cannot be referenced.
-const REFERENCED_IDENTIFIERS: &[&str] =
-    &["bool", "number", "string", "int", "float", "bytes", "list"];
+const REFERENCED_IDENTIFIERS: &[&str] = &[
+    "bool",
+    "number",
+    "string",
+    "int",
+    "float",
+    "bytes",
+    "list",
+    "cuenv_schema",
+];
 
 /// CUE keywords, which are quoted when used as labels.
 const KEYWORDS: &[&str] = &[
@@ -345,11 +354,7 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
     let mut files = BTreeMap::new();
 
     let description = format!("{} {}", release.source, release.version);
-    let mut provider = Package::new(
-        &description,
-        "the provider's configuration block",
-        ConfigurationKind::Provider,
-    );
+    let mut provider = Package::new(&description, "the provider's configuration block");
     provider.line(
         0,
         "// #Provider declares the provider at exactly the version and schema",
@@ -374,11 +379,7 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         let Some(resource) = schema.resources.get(resource_type) else {
             continue;
         };
-        let mut package = Package::new(
-            &description,
-            &format!("the {resource_type} resource"),
-            ConfigurationKind::Resource,
-        );
+        let mut package = Package::new(&description, &format!("the {resource_type} resource"));
         package.line(
             0,
             &format!("// #Resource declares a managed resource of type {resource_type}."),
@@ -411,11 +412,8 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         let Some(data_source) = schema.data_sources.get(data_source_type) else {
             continue;
         };
-        let mut package = Package::new(
-            &description,
-            &format!("the {data_source_type} data source"),
-            ConfigurationKind::DataSource,
-        );
+        let mut package =
+            Package::new(&description, &format!("the {data_source_type} data source"));
         package.line(
             0,
             &format!("// #DataSource declares a read-only data source of type {data_source_type}."),
@@ -458,19 +456,10 @@ struct Package {
     header: String,
     body: String,
     uses_list: bool,
-    configuration_kind: ConfigurationKind,
-    uses_output_reference: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ConfigurationKind {
-    Provider,
-    Resource,
-    DataSource,
 }
 
 impl Package {
-    fn new(release: &str, subject: &str, configuration_kind: ConfigurationKind) -> Self {
+    fn new(release: &str, subject: &str) -> Self {
         let header = [
             GENERATED_HEADER.to_string(),
             "//".to_string(),
@@ -483,23 +472,14 @@ impl Package {
             header,
             body: String::new(),
             uses_list: false,
-            configuration_kind,
-            uses_output_reference: false,
         }
     }
 
     fn finish(self, package_name: &str) -> String {
         let mut output = self.header;
         let _ = write!(output, "\n\npackage {package_name}\n\n");
-        match (self.uses_list, self.uses_output_reference) {
-            (true, true) => output.push_str(
-                "import (\n\t\"list\"\n\tcuenv_schema \"github.com/cuenv/cuenv/schema\"\n)\n\n",
-            ),
-            (true, false) => output.push_str("import \"list\"\n\n"),
-            (false, true) => {
-                output.push_str("import cuenv_schema \"github.com/cuenv/cuenv/schema\"\n\n");
-            }
-            (false, false) => {}
+        if self.uses_list {
+            output.push_str("import \"list\"\n\n");
         }
         output.push_str(self.body.trim_end());
         output.push('\n');
@@ -558,7 +538,8 @@ impl Package {
                         "// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.",
                     );
                 }
-                self.field(1, &label(name), &type_expression(&attribute.value_type, 1));
+                let value = Self::type_expression(&attribute.value_type, 1);
+                self.field(1, &label(name), &value);
             }
         }
         self.line(0, "}");
@@ -596,21 +577,10 @@ impl Package {
         if attribute.sensitive {
             notes.push("Sensitive: plans show it as (sensitive).");
         }
-        let mut value = match &attribute.nested {
+        let value = match &attribute.nested {
             Some(nested) => self.nested_attributes(nested, depth),
-            None => type_expression(&attribute.value_type, depth),
+            None => Self::type_expression(&attribute.value_type, depth),
         };
-        if self.configuration_kind != ConfigurationKind::Provider
-            && depth == 1
-            && attribute.nested.is_none()
-            && matches!(
-                attribute.value_type,
-                Type::String | Type::Number | Type::Boolean
-            )
-        {
-            value.push_str(" | {cuenv_schema.#InfrastructureOutputReference}");
-            self.uses_output_reference = true;
-        }
         Some(Field {
             comments: documentation_lines(&attribute.documentation, &notes),
             label: label(name),
@@ -664,6 +634,47 @@ impl Package {
             value,
         }
     }
+
+    /// Render the provider's cty type, retaining its nested container shape.
+    fn type_expression(value_type: &Type, depth: usize) -> String {
+        match value_type {
+            Type::Boolean => "bool".to_string(),
+            Type::Number => "number".to_string(),
+            Type::String => "string".to_string(),
+            Type::Dynamic => "_".to_string(),
+            Type::List(element) | Type::Set(element) => {
+                format!("[...{}]", Self::type_expression(element, depth))
+            }
+            Type::Map(element) => {
+                format!("{{[string]: {}}}", Self::type_expression(element, depth))
+            }
+            Type::Tuple(elements) => format!(
+                "[{}]",
+                elements
+                    .iter()
+                    .map(|element| Self::type_expression(element, depth))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            // A raw cty object requires all its fields. Unlike nested attribute
+            // schemas, it has no per-child computed or write-only metadata.
+            Type::Object(attributes) => {
+                let mut fields = Fields::default();
+                for (name, attribute_type) in attributes {
+                    fields.0.insert(
+                        name.clone(),
+                        Field {
+                            comments: Vec::new(),
+                            label: label(name),
+                            marker: '!',
+                            value: Self::type_expression(attribute_type, depth + 1),
+                        },
+                    );
+                }
+                fields.render(depth)
+            }
+        }
+    }
 }
 
 /// One field of a generated struct.
@@ -703,44 +714,6 @@ impl Fields {
         output.push_str(&"\t".repeat(depth));
         output.push('}');
         output
-    }
-}
-
-/// The CUE expression for a cty type, for a value at `depth`.
-fn type_expression(value_type: &Type, depth: usize) -> String {
-    match value_type {
-        Type::Boolean => "bool".to_string(),
-        Type::Number => "number".to_string(),
-        Type::String => "string".to_string(),
-        Type::Dynamic => "_".to_string(),
-        Type::List(element) | Type::Set(element) => {
-            format!("[...{}]", type_expression(element, depth))
-        }
-        Type::Map(element) => format!("{{[string]: {}}}", type_expression(element, depth)),
-        Type::Tuple(elements) => format!(
-            "[{}]",
-            elements
-                .iter()
-                .map(|element| type_expression(element, depth))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        // Terraform requires every attribute of an object type.
-        Type::Object(attributes) => {
-            let mut fields = Fields::default();
-            for (name, attribute_type) in attributes {
-                fields.0.insert(
-                    name.clone(),
-                    Field {
-                        comments: Vec::new(),
-                        label: label(name),
-                        marker: '!',
-                        value: type_expression(attribute_type, depth + 1),
-                    },
-                );
-            }
-            fields.render(depth)
-        }
     }
 }
 

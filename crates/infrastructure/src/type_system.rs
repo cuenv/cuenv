@@ -11,15 +11,245 @@
 //!   values and `DynamicPseudoType` wrappers, and
 //! - render values as cty JSON for durable state storage.
 
-use std::collections::BTreeMap;
-use std::fmt;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::{self, Write as _};
+use std::str::FromStr;
 
-use serde_json::Number;
+use serde_json::{Number as JsonNumber, value::RawValue};
 
 use crate::error::{InfrastructureError, Result};
+use crate::references::ConfigurationSelector;
 
 /// MessagePack extension code cty uses for unknown values.
 const UNKNOWN_EXTENSION: i8 = 0;
+
+/// An exact decimal local to the Terraform codec, independent of global JSON settings.
+#[derive(Clone)]
+pub struct Number {
+    text: String,
+}
+
+impl fmt::Debug for Number {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Number(<redacted>)")
+    }
+}
+
+impl FromStr for Number {
+    type Err = InfrastructureError;
+    fn from_str(text: &str) -> Result<Self> {
+        let raw: &RawValue = serde_json::from_str(text)
+            .map_err(|_| InfrastructureError::codec("invalid numeric literal"))?;
+        if !matches!(raw.get().as_bytes().first(), Some(b'-' | b'0'..=b'9')) {
+            return Err(InfrastructureError::codec("invalid numeric literal"));
+        }
+        checked_number(Self {
+            text: raw.get().to_string(),
+        })
+    }
+}
+
+impl From<JsonNumber> for Number {
+    fn from(number: JsonNumber) -> Self {
+        Self {
+            text: number.to_string(),
+        }
+    }
+}
+
+macro_rules! number_from_integer {
+    ($($integer:ty),+ $(,)?) => { $(impl From<$integer> for Number {
+        fn from(value: $integer) -> Self { Self { text: value.to_string() } }
+    })+ };
+}
+
+number_from_integer!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize
+);
+
+impl PartialEq for Number {
+    fn eq(&self, other: &Self) -> bool {
+        numbers_equal(self, other)
+    }
+}
+impl Eq for Number {}
+
+impl fmt::Display for Number {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.text)
+    }
+}
+
+/// An exact JSON numeric token and its path before default JSON conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsonNumberToken {
+    /// Location relative to the scanned JSON root.
+    pub path: Vec<ConfigurationSelector>,
+    /// Exact numeric literal.
+    pub number: Number,
+}
+
+/// Inspect numeric tokens without changing ordinary object keys or strings.
+///
+/// # Errors
+/// Returns a value-free error for malformed JSON or invalid numeric literals.
+pub fn scan_json_numbers(raw: &RawValue) -> Result<Vec<JsonNumberToken>> {
+    let mut tokens = Vec::new();
+    walk_json_numbers(raw, &mut Vec::new(), &mut tokens)?;
+    Ok(tokens)
+}
+
+/// Parse JSON losslessly. Numbers at proven numeric-reference paths become
+/// temporary numeric strings. All other numbers must survive default JSON
+/// conversion without changing their decimal value.
+///
+/// # Errors
+/// Returns a value-free error when an ordinary numeric token would round.
+pub fn parse_json_preserving_numbers(
+    raw: &RawValue,
+    numeric_paths: &[Vec<ConfigurationSelector>],
+) -> Result<serde_json::Value> {
+    parse_raw_json(
+        raw,
+        &mut Vec::new(),
+        &numeric_paths.iter().cloned().collect(),
+    )
+}
+
+fn walk_json_numbers(
+    raw: &RawValue,
+    path: &mut Vec<ConfigurationSelector>,
+    tokens: &mut Vec<JsonNumberToken>,
+) -> Result<()> {
+    if path.len() >= 128 {
+        return Err(InfrastructureError::codec(
+            "JSON nesting exceeds the supported depth",
+        ));
+    }
+    match raw.get().as_bytes().first() {
+        Some(b'{') => {
+            let fields: BTreeMap<String, Box<RawValue>> =
+                serde_json::from_str(raw.get()).map_err(|_| json_number_error())?;
+            for (name, value) in fields {
+                path.push(ConfigurationSelector::Field(name));
+                walk_json_numbers(&value, path, tokens)?;
+                path.pop();
+            }
+        }
+        Some(b'[') => {
+            let elements: Vec<Box<RawValue>> =
+                serde_json::from_str(raw.get()).map_err(|_| json_number_error())?;
+            for (index, value) in elements.iter().enumerate() {
+                path.push(ConfigurationSelector::Index(
+                    i64::try_from(index).map_err(|_| json_number_error())?,
+                ));
+                walk_json_numbers(value, path, tokens)?;
+                path.pop();
+            }
+        }
+        Some(b'-' | b'0'..=b'9') => tokens.push(JsonNumberToken {
+            path: path.clone(),
+            number: raw.get().parse()?,
+        }),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn json_number_error() -> InfrastructureError {
+    InfrastructureError::codec("JSON numeric data could not be decoded losslessly")
+}
+
+fn parse_raw_json(
+    raw: &RawValue,
+    path: &mut Vec<ConfigurationSelector>,
+    preserved: &BTreeSet<Vec<ConfigurationSelector>>,
+) -> Result<serde_json::Value> {
+    use serde_json::Value as Json;
+    if path.len() >= 128 {
+        return Err(InfrastructureError::codec(
+            "JSON nesting exceeds the supported depth",
+        ));
+    }
+    match raw.get().as_bytes().first() {
+        Some(b'{') => {
+            let fields: BTreeMap<String, Box<RawValue>> =
+                serde_json::from_str(raw.get()).map_err(|_| json_number_error())?;
+            let mut object = serde_json::Map::new();
+            for (name, raw) in fields {
+                path.push(ConfigurationSelector::Field(name.clone()));
+                let value = parse_raw_json(&raw, path, preserved)?;
+                path.pop();
+                object.insert(name, value);
+            }
+            Ok(Json::Object(object))
+        }
+        Some(b'[') => {
+            let elements: Vec<Box<RawValue>> =
+                serde_json::from_str(raw.get()).map_err(|_| json_number_error())?;
+            let mut array = Vec::with_capacity(elements.len());
+            for (index, raw) in elements.iter().enumerate() {
+                path.push(ConfigurationSelector::Index(
+                    i64::try_from(index).map_err(|_| json_number_error())?,
+                ));
+                array.push(parse_raw_json(raw, path, preserved)?);
+                path.pop();
+            }
+            Ok(Json::Array(array))
+        }
+        Some(b'-' | b'0'..=b'9') => {
+            let number: Number = raw.get().parse()?;
+            if preserved.contains(path) {
+                return Ok(Json::String(number.text));
+            }
+            number
+                .as_json_number()
+                .map(Json::Number)
+                .ok_or_else(json_number_error)
+        }
+        _ => serde_json::from_str(raw.get()).map_err(|_| json_number_error()),
+    }
+}
+
+impl Number {
+    /// Exact numeric literal, suitable for a CUE scalar fill.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+    /// An integral spelling that fits a signed 64-bit integer.
+    #[must_use]
+    pub fn as_i64(&self) -> Option<i64> {
+        self.text.parse().ok()
+    }
+    /// An integral spelling that fits an unsigned 64-bit integer.
+    #[must_use]
+    pub fn as_u64(&self) -> Option<u64> {
+        self.text.parse().ok()
+    }
+    /// A floating-point approximation. Encoding independently verifies exactness.
+    #[must_use]
+    pub fn as_f64(&self) -> Option<f64> {
+        self.text.parse().ok()
+    }
+    /// Preserve the exact binary value of a finite provider float.
+    #[must_use]
+    pub fn from_f64(value: f64) -> Option<Self> {
+        exact_float_number(value).ok()
+    }
+    /// A default JSON number only when its decimal spelling is lossless.
+    #[must_use]
+    pub fn as_json_number(&self) -> Option<JsonNumber> {
+        let candidate = self.text.parse::<JsonNumber>().ok()?;
+        numbers_equal(self, &Self::from(candidate.clone())).then_some(candidate)
+    }
+    fn json_value(&self) -> serde_json::Value {
+        self.as_json_number().map_or_else(
+            || serde_json::Value::String(self.text.clone()),
+            serde_json::Value::Number,
+        )
+    }
+}
 
 /// A cty type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,16 +301,14 @@ impl Type {
                 "number" => Ok(Self::Number),
                 "string" => Ok(Self::String),
                 "dynamic" => Ok(Self::Dynamic),
-                other => Err(InfrastructureError::codec(format!(
-                    "unknown cty primitive '{other}'"
-                ))),
+                _ => Err(InfrastructureError::codec("unknown cty primitive type")),
             },
             Json::Array(parts) => {
                 let kind = parts.first().and_then(Json::as_str).ok_or_else(|| {
                     InfrastructureError::codec("cty type array must start with a kind")
                 })?;
                 let argument = parts.get(1).ok_or_else(|| {
-                    InfrastructureError::codec(format!("cty '{kind}' type missing argument"))
+                    InfrastructureError::codec("cty type is missing its argument")
                 })?;
                 match kind {
                     "list" => Ok(Self::List(Box::new(Self::from_json(argument)?))),
@@ -113,14 +341,28 @@ impl Type {
                                 .collect::<Result<_>>()?,
                         ))
                     }
-                    other => Err(InfrastructureError::codec(format!(
-                        "unknown cty type kind '{other}'"
-                    ))),
+                    _ => Err(InfrastructureError::codec("unknown cty type kind")),
                 }
             }
-            other => Err(InfrastructureError::codec(format!(
-                "unsupported cty type specification: {other}"
-            ))),
+            _ => Err(InfrastructureError::codec(
+                "unsupported cty type specification",
+            )),
+        }
+    }
+
+    /// A value-free type label for diagnostics, including dynamic types whose
+    /// object field names may originate in provider data.
+    const fn diagnostic_kind(&self) -> &'static str {
+        match self {
+            Self::Boolean => "bool",
+            Self::Number => "number",
+            Self::String => "string",
+            Self::Dynamic => "dynamic",
+            Self::List(_) => "list",
+            Self::Set(_) => "set",
+            Self::Map(_) => "map",
+            Self::Object(_) => "object",
+            Self::Tuple(_) => "tuple",
         }
     }
 
@@ -162,7 +404,7 @@ impl Type {
 /// `list(string)` must not come back as a `tuple`). Such values are
 /// [`Value::Typed`]. Values from CUE configuration carry no type; theirs is
 /// inferred when they are encoded.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value {
     /// A null value of any type.
     Null,
@@ -180,6 +422,23 @@ pub enum Value {
     Object(BTreeMap<String, Self>),
     /// A value of a `dynamic` slot with the concrete type it arrived with.
     Typed(Box<TypedValue>),
+}
+
+/// Structural equality keeps collection order and typed wrappers significant,
+/// while number leaves compare by exact value rather than JSON spelling.
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Null, Self::Null) | (Self::Unknown, Self::Unknown) => true,
+            (Self::Boolean(left), Self::Boolean(right)) => left == right,
+            (Self::Number(left), Self::Number(right)) => numbers_equal(left, right),
+            (Self::String(left), Self::String(right)) => left == right,
+            (Self::List(left), Self::List(right)) => left == right,
+            (Self::Object(left), Self::Object(right)) => left == right,
+            (Self::Typed(left), Self::Typed(right)) => left == right,
+            _ => false,
+        }
+    }
 }
 
 /// A value together with its concrete cty type; see [`Value::Typed`].
@@ -307,7 +566,7 @@ impl Value {
             Self::Null => Json::Null,
             Self::Unknown => Json::from("(known after apply)"),
             Self::Boolean(boolean) => Json::Bool(*boolean),
-            Self::Number(number) => Json::Number(number.clone()),
+            Self::Number(number) => number.json_value(),
             Self::String(text) => Json::String(text.clone()),
             Self::List(items) => Json::Array(items.iter().map(Self::to_display_json).collect()),
             Self::Object(attributes) => Json::Object(
@@ -326,6 +585,7 @@ impl fmt::Display for Value {
         match self.untyped() {
             Self::Unknown => formatter.write_str("(known after apply)"),
             Self::Null => formatter.write_str("null"),
+            Self::Number(number) => number.fmt(formatter),
             other => write!(formatter, "{}", other.to_display_json()),
         }
     }
@@ -520,10 +780,7 @@ impl Equality {
                 )
             }),
             (Value::Number(left_number), Value::Number(right_number), _) => {
-                left_number == right_number
-                    || left_number.as_f64().zip(right_number.as_f64()).is_some_and(
-                        |(left_float, right_float)| left_float.total_cmp(&right_float).is_eq(),
-                    )
+                numbers_equal(left_number, right_number)
             }
             (left, right, _) => left == right,
         }
@@ -563,11 +820,12 @@ fn from_configuration_json(
             _ => Err(mismatch("bool", path)),
         },
         Type::Number => match json {
-            Json::Number(number) => Ok(Value::Number(number.clone())),
+            Json::Number(number) => checked_number(number.clone().into()).map(Value::Number),
             Json::String(text) => text
                 .parse::<Number>()
-                .map(Value::Number)
-                .map_err(|_| mismatch("number", path)),
+                .map_err(|_| mismatch("number", path))
+                .and_then(checked_number)
+                .map(Value::Number),
             _ => Err(mismatch("number", path)),
         },
         Type::String => match json {
@@ -611,7 +869,7 @@ fn from_configuration_json(
             let object = json.as_object().ok_or_else(|| mismatch("map", path))?;
             let mut converted = BTreeMap::new();
             for (key, element_json) in object {
-                path.push(key.clone());
+                path.push("<hidden key>".into());
                 converted.insert(
                     key.clone(),
                     from_configuration_json(element_json, element_type, path)?,
@@ -622,9 +880,9 @@ fn from_configuration_json(
         }
         Type::Object(attributes) => {
             let object = json.as_object().ok_or_else(|| mismatch("object", path))?;
-            if let Some(extra) = object.keys().find(|key| !attributes.contains_key(*key)) {
+            if object.keys().any(|key| !attributes.contains_key(key)) {
                 return Err(InfrastructureError::configuration(format!(
-                    "{}: unsupported argument '{extra}'",
+                    "{}: unsupported argument '<hidden field>'",
                     path_string(path)
                 )));
             }
@@ -651,7 +909,7 @@ fn infer_from_json(json: &serde_json::Value) -> Value {
     match json {
         Json::Null => Value::Null,
         Json::Bool(boolean) => Value::Boolean(*boolean),
-        Json::Number(number) => Value::Number(number.clone()),
+        Json::Number(number) => Value::Number(number.clone().into()),
         Json::String(text) => Value::String(text.clone()),
         Json::Array(items) => Value::List(items.iter().map(infer_from_json).collect()),
         Json::Object(object) => Value::Object(
@@ -702,7 +960,9 @@ fn to_state_json(value: &Value, value_type: &Type) -> Result<serde_json::Value> 
             }))
         }
         (Value::Boolean(boolean), _) => Ok(Json::Bool(*boolean)),
-        (Value::Number(number), _) => Ok(Json::Number(number.clone())),
+        (Value::Number(number), _) => {
+            checked_number(number.clone()).map(|number| number.json_value())
+        }
         (Value::String(text), _) => Ok(Json::String(text.clone())),
         (Value::List(items), Type::List(element_type) | Type::Set(element_type)) => {
             Ok(Json::Array(
@@ -737,7 +997,7 @@ fn to_state_json(value: &Value, value_type: &Type) -> Result<serde_json::Value> 
         (mismatched, expected_type) => Err(InfrastructureError::codec(format!(
             "a {} value does not conform to type {}",
             mismatched.kind(),
-            expected_type.to_json()
+            expected_type.diagnostic_kind()
         ))),
     }
 }
@@ -799,7 +1059,7 @@ fn encode(value: &Value, value_type: &Type) -> Result<rmpv::Value> {
         (Value::Unknown, _) => Ok(MessagePack::Ext(UNKNOWN_EXTENSION, Vec::new())),
         (dynamic_value, Type::Dynamic) => dynamic(&infer_type(dynamic_value), dynamic_value),
         (Value::Boolean(boolean), Type::Boolean) => Ok(MessagePack::Boolean(*boolean)),
-        (Value::Number(number), Type::Number) => Ok(encode_number(number)),
+        (Value::Number(number), Type::Number) => encode_number(number),
         (Value::String(text), Type::String) => Ok(MessagePack::String(text.clone().into())),
         (Value::List(items), Type::List(element_type) | Type::Set(element_type)) => {
             Ok(MessagePack::Array(
@@ -830,13 +1090,13 @@ fn encode(value: &Value, value_type: &Type) -> Result<rmpv::Value> {
                 .collect::<Result<_>>()?,
         )),
         (Value::Object(attributes), Type::Object(attribute_types)) => {
-            if let Some(extra) = attributes
+            if attributes
                 .keys()
-                .find(|name| !attribute_types.contains_key(*name))
+                .any(|name| !attribute_types.contains_key(name))
             {
-                return Err(InfrastructureError::codec(format!(
-                    "unexpected attribute '{extra}'"
-                )));
+                return Err(InfrastructureError::codec(
+                    "unexpected attribute '<hidden field>'",
+                ));
             }
             Ok(MessagePack::Map(
                 attribute_types
@@ -854,21 +1114,169 @@ fn encode(value: &Value, value_type: &Type) -> Result<rmpv::Value> {
         (mismatched, expected_type) => Err(InfrastructureError::codec(format!(
             "a {} value does not conform to type {}",
             mismatched.kind(),
-            expected_type.to_json()
+            expected_type.diagnostic_kind()
         ))),
     }
 }
 
-fn encode_number(number: &Number) -> rmpv::Value {
-    if let Some(signed) = number.as_i64() {
-        rmpv::Value::from(signed)
-    } else if let Some(unsigned) = number.as_u64() {
-        rmpv::Value::from(unsigned)
-    } else if let Some(float) = number.as_f64() {
-        rmpv::Value::F64(float)
-    } else {
-        rmpv::Value::String(number.to_string().into())
+/// An exact finite decimal, independent of exponent or decimal-point spelling.
+#[derive(Debug, PartialEq, Eq)]
+struct NormalizedNumber {
+    negative: bool,
+    coefficient: String,
+    exponent: i64,
+}
+
+fn normalized_number(number: &Number) -> Option<NormalizedNumber> {
+    let text = number.to_string();
+    let (mantissa, exponent) = text
+        .split_once('e')
+        .or_else(|| text.split_once('E'))
+        .map_or(Some((text.as_str(), 0)), |(mantissa, exponent)| {
+            exponent
+                .parse::<i64>()
+                .ok()
+                .map(|exponent| (mantissa, exponent))
+        })?;
+    let negative = mantissa.starts_with('-');
+    let mantissa = mantissa.strip_prefix('-').unwrap_or(mantissa);
+    let fractional_digits = mantissa
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len());
+    let digits: String = mantissa
+        .chars()
+        .filter(|character| *character != '.')
+        .collect();
+    let significant = digits.trim_start_matches('0');
+    if significant.is_empty() {
+        return Some(NormalizedNumber {
+            negative: false,
+            coefficient: "0".into(),
+            exponent: 0,
+        });
     }
+    let coefficient = significant.trim_end_matches('0');
+    let trailing_zeros = significant.len().checked_sub(coefficient.len())?;
+    let shift = i64::try_from(trailing_zeros)
+        .ok()?
+        .checked_sub(i64::try_from(fractional_digits).ok()?)?;
+    let exponent = exponent.checked_add(shift)?;
+    Some(NormalizedNumber {
+        negative,
+        coefficient: coefficient.to_string(),
+        exponent,
+    })
+}
+
+fn numbers_equal(left: &Number, right: &Number) -> bool {
+    left.text == right.text
+        || normalized_number(left)
+            .zip(normalized_number(right))
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn checked_number(number: Number) -> Result<Number> {
+    let raw: &RawValue = serde_json::from_str(number.as_str())
+        .map_err(|_| InfrastructureError::codec("invalid numeric literal"))?;
+    if !matches!(raw.get().as_bytes().first(), Some(b'-' | b'0'..=b'9')) {
+        return Err(InfrastructureError::codec("invalid numeric literal"));
+    }
+    Ok(number)
+}
+
+/// Recover the exact rational binary float as a finite decimal. A shortest
+/// float rendering (for example, "0.1") does not preserve the cty number.
+fn exact_float_number(float: f64) -> Result<Number> {
+    if !float.is_finite() {
+        return Err(InfrastructureError::codec(
+            "non-finite cty numbers are unsupported",
+        ));
+    }
+    let bits = float.to_bits();
+    let exponent_bits = u16::try_from((bits >> 52) & 0x7ff)
+        .map_err(|_| InfrastructureError::codec("invalid floating-point exponent"))?;
+    let mut significand = bits & ((1_u64 << 52) - 1);
+    let mut exponent = if exponent_bits == 0 {
+        -1074
+    } else {
+        significand |= 1_u64 << 52;
+        i32::from(exponent_bits) - 1075
+    };
+    if significand == 0 {
+        return if bits >> 63 == 0 {
+            "0.0".parse()
+        } else {
+            "-0.0".parse()
+        };
+    }
+    while exponent < 0 && significand.is_multiple_of(2) {
+        significand /= 2;
+        exponent += 1;
+    }
+    let coefficient = decimal_coefficient(significand, exponent);
+    let sign = if bits >> 63 == 0 { "" } else { "-" };
+    format!("{sign}{coefficient}e{}", exponent.min(0))
+        .parse::<Number>()
+        .map_err(|_| {
+            InfrastructureError::codec("exact floating-point number could not be represented")
+        })
+}
+
+/// Decimal limbs keep the conversion bounded by the IEEE exponent (1074),
+/// without a bigint dependency or any intermediate floating-point arithmetic.
+fn decimal_coefficient(significand: u64, exponent: i32) -> String {
+    const BASE: u64 = 1_000_000_000;
+    let mut limbs = vec![significand % BASE];
+    if significand >= BASE {
+        limbs.push(significand / BASE);
+    }
+    let factor = if exponent < 0 { 5 } else { 2 };
+    for _ in 0..exponent.unsigned_abs() {
+        let mut carry = 0;
+        for limb in &mut limbs {
+            // Each limb is below BASE and factor is 2 or 5; this cannot overflow.
+            let expanded = *limb * factor + carry;
+            *limb = expanded % BASE;
+            carry = expanded / BASE;
+        }
+        if carry > 0 {
+            limbs.push(carry);
+        }
+    }
+    let mut chunks = limbs.iter().rev();
+    let mut text = chunks.next().map_or_else(String::new, ToString::to_string);
+    for chunk in chunks {
+        // Writing to String is infallible.
+        let _ = write!(&mut text, "{chunk:09}");
+    }
+    text
+}
+
+fn encode_number(number: &Number) -> Result<rmpv::Value> {
+    checked_number(number.clone())?;
+    let normalized = normalized_number(number)
+        .ok_or_else(|| InfrastructureError::codec("unsupported numeric exponent"))?;
+    if let Some(signed) = number.as_i64() {
+        return Ok(rmpv::Value::from(signed));
+    }
+    if let Some(unsigned) = number.as_u64() {
+        return Ok(rmpv::Value::from(unsigned));
+    }
+    if let Some(float) = number.as_f64().filter(|float| float.is_finite())
+        && numbers_equal(number, &exact_float_number(float)?)
+        && (normalized.exponent < 0 || normalized.coefficient == "0")
+    {
+        return Ok(rmpv::Value::F64(float));
+    }
+    // This subset stays separated by more than a 512-bit provider ULP,
+    // including from exact F64 values. Integer strings need at most 496
+    // significant binary bits; fractional exponents stay bounded as well.
+    if normalized.coefficient.len() > 100 || !(-190..=70).contains(&normalized.exponent) {
+        return Err(InfrastructureError::codec(
+            "number exceeds the lossless Terraform provider precision limits",
+        ));
+    }
+    Ok(rmpv::Value::String(number.to_string().into()))
 }
 
 fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
@@ -903,8 +1311,9 @@ fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
         (MessagePack::String(text), Type::Number) => text
             .as_str()
             .and_then(|string| string.parse::<Number>().ok())
-            .map(Value::Number)
-            .ok_or_else(|| InfrastructureError::codec("invalid number string")),
+            .ok_or_else(|| InfrastructureError::codec("invalid number string"))
+            .and_then(checked_number)
+            .map(Value::Number),
         (MessagePack::String(text), Type::String) => text
             .as_str()
             .map(|string| Value::String(string.to_string()))
@@ -944,7 +1353,7 @@ fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
             for (raw_key, raw_attribute) in entries {
                 let key = map_key(raw_key)?;
                 let attribute_type = attribute_types.get(&key).ok_or_else(|| {
-                    InfrastructureError::codec(format!("unexpected attribute '{key}'"))
+                    InfrastructureError::codec("unexpected attribute '<hidden field>'")
                 })?;
                 decoded.insert(key, decode(raw_attribute, attribute_type)?);
             }
@@ -953,7 +1362,7 @@ fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
         (other, expected_type) => Err(InfrastructureError::codec(format!(
             "a MessagePack {} does not match type {}",
             message_pack_kind(other),
-            expected_type.to_json()
+            expected_type.diagnostic_kind()
         ))),
     }
 }
@@ -985,7 +1394,7 @@ const fn message_pack_kind(value: &rmpv::Value) -> &'static str {
 }
 
 /// One step of an attribute path, as providers report it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PathStep {
     /// Object attribute.
     Attribute(String),
@@ -1023,7 +1432,7 @@ pub fn value_at_path<'value>(value: &'value Value, path: &[PathStep]) -> Option<
 ///
 /// Returns [`InfrastructureError::Codec`] when the JSON does not fit `value_type`.
 pub fn from_json_bytes(bytes: &[u8], value_type: &Type) -> Result<Value> {
-    let json: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
+    let raw: &RawValue = serde_json::from_slice(bytes).map_err(|error| {
         InfrastructureError::codec(format!(
             "invalid JSON value ({} at line {}, column {})",
             crate::error::json_error_category(&error),
@@ -1031,6 +1440,11 @@ pub fn from_json_bytes(bytes: &[u8], value_type: &Type) -> Result<Value> {
             error.column()
         ))
     })?;
+    let paths: Vec<_> = scan_json_numbers(raw)?
+        .into_iter()
+        .map(|token| token.path)
+        .collect();
+    let json = parse_json_preserving_numbers(raw, &paths)?;
     from_state_json(&json, value_type)
 }
 
@@ -1046,7 +1460,7 @@ fn from_state_json(json: &serde_json::Value, value_type: &Type) -> Result<Value>
         InfrastructureError::codec(format!(
             "found {} in JSON where type {} was expected",
             json_kind(json),
-            value_type.to_json()
+            value_type.diagnostic_kind()
         ))
     };
     match (value_type, json) {
@@ -1083,13 +1497,10 @@ fn from_state_json(json: &serde_json::Value, value_type: &Type) -> Result<Value>
             .collect::<Result<_>>()
             .map(Value::Object),
         (Type::Object(attribute_types), Json::Object(entries)) => {
-            if let Some(extra) = entries
-                .keys()
-                .find(|key| !attribute_types.contains_key(*key))
-            {
-                return Err(InfrastructureError::codec(format!(
-                    "unexpected attribute '{extra}'"
-                )));
+            if entries.keys().any(|key| !attribute_types.contains_key(key)) {
+                return Err(InfrastructureError::codec(
+                    "unexpected attribute '<hidden field>'",
+                ));
             }
             attribute_types
                 .iter()
@@ -1137,9 +1548,7 @@ impl Type {
 }
 
 fn float_number(float: f64) -> Result<Value> {
-    Number::from_f64(float)
-        .map(Value::Number)
-        .ok_or_else(|| InfrastructureError::codec(format!("non-finite number {float}")))
+    exact_float_number(float).map(Value::Number)
 }
 
 fn map_key(key: &rmpv::Value) -> Result<String> {
@@ -1155,6 +1564,402 @@ fn map_key(key: &rmpv::Value) -> Result<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn raw_json_numbers_preserve_only_explicit_numeric_paths_and_reserved_objects() -> Result<()> {
+        let raw: &RawValue = serde_json::from_str(r#"{"items":[{"count":18446744073709551617,"text":"18446744073709551617"}],"ordinary":{"$serde_json::private::Number":"42"},"half":0.5}"#)
+            .map_err(|_| json_number_error())?;
+        let tokens = scan_json_numbers(raw)?;
+        assert_eq!(tokens.len(), 2);
+        let path = vec![
+            ConfigurationSelector::Field("items".into()),
+            ConfigurationSelector::Index(0),
+            ConfigurationSelector::Field("count".into()),
+        ];
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.path == path && token.number.as_str() == "18446744073709551617")
+        );
+        assert!(parse_json_preserving_numbers(raw, &[]).is_err());
+        let parsed = parse_json_preserving_numbers(raw, std::slice::from_ref(&path))?;
+        assert_eq!(parsed["items"][0]["count"], json!("18446744073709551617"));
+        assert_eq!(parsed["items"][0]["text"], json!("18446744073709551617"));
+        assert_eq!(
+            parsed["ordinary"],
+            json!({"$serde_json::private::Number":"42"})
+        );
+        assert_eq!(parsed["half"], json!(0.5));
+        let legacy: serde_json::Value =
+            serde_json::from_str(r#"{"$serde_json::private::Number":"42"}"#)
+                .map_err(|_| json_number_error())?;
+        assert!(legacy.is_object());
+        let rendered = format!("{tokens:?}");
+        assert!(!rendered.contains("18446744073709551617"));
+        Ok(())
+    }
+
+    #[test]
+    fn raw_json_traversals_refuse_excessive_depth_without_rendering_input() -> Result<()> {
+        let text = format!("{}123{}", "[".repeat(256), "]".repeat(256));
+        let raw = RawValue::from_string(text).map_err(|_| json_number_error())?;
+        assert!(scan_json_numbers(&raw).is_err());
+        assert!(parse_json_preserving_numbers(&raw, &[]).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unencodable_returned_numbers_remain_recordable_and_recoverable()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use crate::state::{
+            ConditionalPut, ManagedResource, MemoryStateStore, RecordVersion, ResourceAddress,
+            StateStore,
+        };
+        use crate::tenant::TenantKey;
+        use crate::unrecorded::{RecoverOptions, RecoverOverrides, UnrecordedStore};
+
+        let text = "12345678901234567890123456789".repeat(400);
+        let returned = decode(&rmpv::Value::String(text.clone().into()), &Type::Number)?;
+        assert!(to_message_pack(&returned, &Type::Number).is_err());
+        let root = tempfile::tempdir()?;
+        let unrecorded = UnrecordedStore::at(root.path());
+        let resource = ManagedResource {
+            address: ResourceAddress::new("example_number", "created"),
+            provider: "example".into(),
+            provider_source: "registry.terraform.io/example/number".into(),
+            schema_version: 0,
+            state: json!({"value": returned.to_state_json(&Type::Number)?}),
+            private: Vec::new(),
+            dependencies: Vec::new(),
+            sensitive_attributes: vec!["value".into()],
+            tainted: false,
+            identity: None,
+            serial: 0,
+            generation: uuid::Uuid::nil(),
+        };
+        let tenant = TenantKey::try_new("example.com/numeric-state", "recovery")?;
+        unrecorded.save(
+            &tenant,
+            &ConditionalPut {
+                resource: &resource,
+                expected: RecordVersion::Absent,
+            },
+        )?;
+        let state = MemoryStateStore::new();
+        let lock = state.lock(&tenant, "numeric recovery").await?;
+        unrecorded
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: RecoverOverrides::default(),
+                },
+            )
+            .await?;
+        let restored = state.list(&tenant).await?;
+        assert_eq!(restored.len(), 1);
+        assert!(
+            restored[0].state["value"].as_str() == Some(text.as_str()),
+            "recorded numeric content changed"
+        );
+        let decoded = from_json_bytes(
+            &serde_json::to_vec(&restored[0].state["value"])?,
+            &Type::Number,
+        )?;
+        assert_eq!(decoded, returned);
+        assert!(to_message_pack(&decoded, &Type::Number).is_err());
+        state.unlock(&tenant, &lock).await?;
+        Ok(())
+    }
+
+    #[test]
+    fn provider_precision_admission_refuses_large_neighbors_and_extreme_exponents() -> Result<()> {
+        let power = decimal_coefficient(1, 600);
+        let mut neighbor = power.clone();
+        // 2^600 ends in 6, so its distinct integer neighbor needs no carry.
+        assert!(neighbor.ends_with('6'));
+        neighbor.pop();
+        neighbor.push('7');
+        assert!(to_message_pack(&Value::Number(power.parse()?), &Type::Number).is_err());
+        for text in [
+            neighbor,
+            "1e1000000000".into(),
+            "1e-1000000000".into(),
+            "1e400".into(),
+            "1e-400".into(),
+        ] {
+            let result = text
+                .parse::<Number>()
+                .and_then(|number| to_message_pack(&Value::Number(number), &Type::Number));
+            assert!(result.is_err());
+        }
+        assert!(to_message_pack(&Value::Number("0.1".parse()?), &Type::Number).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires Go and the pinned upstream Terraform protocol modules"]
+    fn numbers_interoperate_with_real_protocol_five_and_six_codecs()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/numeric_interop");
+        let mut cases = Vec::new();
+        for text in [
+            "0.1".to_string(),
+            "0.5".to_string(),
+            "18446744073709551617".to_string(),
+            "0.123456789012345678901234567890123456789".to_string(),
+            "1.000000000000000000000000000000000000001".to_string(),
+            "1.000000000000000000000000000000000000002".to_string(),
+            format!("{}e70", "9".repeat(100)),
+            format!("{}e-190", "9".repeat(100)),
+        ] {
+            let number: Number = text.parse()?;
+            let value = Value::Number(number.clone());
+            cases.push(json!({"literal": number.as_str(), "messagePack": hex::encode(to_message_pack(&value, &Type::Number)?), "state": value.to_state_json(&Type::Number)?}));
+        }
+        for float in [
+            0.1,
+            -0.1,
+            1.0,
+            -0.0,
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            1e20,
+        ] {
+            let number = exact_float_number(float)?;
+            let value = Value::Number(number.clone());
+            cases.push(json!({"literal": number.as_str(), "floatBits": float.to_bits(), "messagePack": hex::encode(to_message_pack(&value, &Type::Number)?), "state": value.to_state_json(&Type::Number)?}));
+        }
+        for float in [f64::MAX, 2_f64.powi(600)] {
+            let number = exact_float_number(float)?;
+            let value = Value::Number(number.clone());
+            assert!(to_message_pack(&value, &Type::Number).is_err());
+            cases.push(json!({"literal": number.as_str(), "floatBits": float.to_bits(), "state": value.to_state_json(&Type::Number)?}));
+        }
+        let expected_cases = cases.len();
+        let mut command =
+            if let Some(binary) = std::env::var_os("CUENV_INFRASTRUCTURE_TEST_NUMERIC_INTEROP") {
+                Command::new(binary)
+            } else {
+                let mut command = Command::new("go");
+                command
+                    .args(["run", "-mod=readonly", "."])
+                    .current_dir(fixture);
+                command
+            };
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("missing protocol input"))?
+            .write_all(&serde_json::to_vec(&cases)?)?;
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            // The Go harness uses value-free diagnostic categories exclusively.
+            return Err(std::io::Error::other(format!(
+                "upstream numeric interoperability failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))
+            .into());
+        }
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains(&format!("{expected_cases} numeric cases passed"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_decimals_and_integers_larger_than_u64_round_trip_without_float_conversion()
+    -> Result<()> {
+        for text in [
+            "18446744073709551617",
+            "900719925474099312345678901234567890123456789",
+            "0.123456789012345678901234567890123456789",
+            "-0.000000000000000000000000000000000000000001234567890123456789",
+        ] {
+            let value = from_json_bytes(text.as_bytes(), &Type::Number)?;
+            assert_eq!(
+                value.to_state_json(&Type::Number)?,
+                serde_json::Value::String(text.to_string())
+            );
+            let bytes = to_message_pack(&value, &Type::Number)?;
+            assert!(matches!(
+                encode(&value, &Type::Number)?,
+                rmpv::Value::String(_)
+            ));
+            let decoded = from_message_pack(&bytes, &Type::Number)?;
+            assert!(raw_equal(&decoded, &value, &Type::Number));
+            assert_eq!(
+                decoded.to_state_json(&Type::Number)?,
+                serde_json::Value::String(text.to_string())
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn numeric_equality_compares_exact_values_across_decimal_spellings() -> Result<()> {
+        for spellings in [
+            ["1", "1.0", "1e0"],
+            ["1000", "10e2", "100000e-2"],
+            ["-12", "-1200.00e-2", "-1.20e1"],
+            ["0", "-0.0", "0e999"],
+        ] {
+            let expected = from_json_bytes(spellings[0].as_bytes(), &Type::Number)?;
+            for spelling in spellings {
+                let value = from_json_bytes(spelling.as_bytes(), &Type::Number)?;
+                assert_eq!(expected, value);
+                assert!(semantically_equal(&expected, &value, &Type::Number));
+                assert!(raw_equal(&expected, &value, &Type::Number));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn different_decimals_that_share_a_float_never_compare_equal() -> Result<()> {
+        for (left, right) in [
+            (
+                "1.000000000000000000000000000000000000001",
+                "1.000000000000000000000000000000000000002",
+            ),
+            ("9007199254740992", "9007199254740993"),
+            ("18446744073709551616", "18446744073709551617"),
+            ("1e-400", "2e-400"),
+        ] {
+            let left_number = left
+                .parse::<Number>()
+                .map_err(|_| InfrastructureError::codec("invalid test number"))?;
+            let right_number = right
+                .parse::<Number>()
+                .map_err(|_| InfrastructureError::codec("invalid test number"))?;
+            assert_eq!(
+                left_number.as_f64().map(f64::to_bits),
+                right_number.as_f64().map(f64::to_bits)
+            );
+            let left = Value::Number(left_number);
+            let right = Value::Number(right_number);
+            assert_ne!(left, right);
+            assert!(!semantically_equal(&left, &right, &Type::Number));
+            assert!(!raw_equal(&left, &right, &Type::Number));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn supported_provider_floats_keep_their_exact_binary_value_across_state_json() -> Result<()> {
+        for float in [
+            0.1,
+            -0.1,
+            1.0,
+            -0.0,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            f64::from_bits(0x3ff0_0000_0000_0001),
+            std::f64::consts::PI,
+            1e20,
+        ] {
+            let decoded = decode(&rmpv::Value::F64(float), &Type::Number)?;
+            let state = decoded.to_state_json(&Type::Number)?.to_string();
+            let restored = from_json_bytes(state.as_bytes(), &Type::Number)?;
+            let encoded = encode(&restored, &Type::Number)?;
+            let Value::Number(round_trip) = decode(&encoded, &Type::Number)? else {
+                return Err(InfrastructureError::codec(
+                    "provider float lost its exact representation",
+                ));
+            };
+            assert_eq!(round_trip.as_f64().map(f64::to_bits), Some(float.to_bits()));
+            assert_eq!(Value::Number(round_trip), restored);
+        }
+        let binary_tenth = decode(&rmpv::Value::F64(0.1), &Type::Number)?;
+        let decimal_tenth = from_json_bytes(b"0.1", &Type::Number)?;
+        assert!(!semantically_equal(
+            &binary_tenth,
+            &decimal_tenth,
+            &Type::Number
+        ));
+        let exact_tenth = from_json_bytes(
+            b"0.1000000000000000055511151231257827021181583404541015625",
+            &Type::Number,
+        )?;
+        assert!(raw_equal(&binary_tenth, &exact_tenth, &Type::Number));
+        let single = decode(&rmpv::Value::F32(0.1_f32), &Type::Number)?;
+        let rmpv::Value::F64(promoted) = encode(&single, &Type::Number)? else {
+            return Err(InfrastructureError::codec(
+                "single precision value was not preserved",
+            ));
+        };
+        assert_eq!(promoted.to_bits(), f64::from(0.1_f32).to_bits());
+        Ok(())
+    }
+
+    #[test]
+    fn structural_equality_normalizes_nested_numbers_without_ignoring_collection_order()
+    -> Result<()> {
+        let integer = Value::Number(Number::from(1));
+        let decimal = from_json_bytes(b"1.0", &Type::Number)?;
+        let object = |number: Value| {
+            Value::Object(BTreeMap::from([(
+                "items".into(),
+                Value::List(vec![number, Value::Unknown]),
+            )]))
+        };
+        assert_eq!(object(integer.clone()), object(decimal.clone()));
+        assert_ne!(
+            Value::List(vec![integer.clone(), Value::Unknown]),
+            Value::List(vec![Value::Unknown, decimal.clone()])
+        );
+        assert_eq!(
+            Value::typed(Type::Number, integer.clone()),
+            Value::typed(Type::Number, decimal.clone())
+        );
+        assert_ne!(
+            Value::typed(
+                Type::List(Box::new(Type::Number)),
+                Value::List(vec![integer.clone()])
+            ),
+            Value::typed(Type::Tuple(vec![Type::Number]), Value::List(vec![decimal])),
+        );
+        assert_ne!(integer.clone(), Value::typed(Type::Number, integer));
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_numbers_fail_without_disclosing_their_values() -> Result<()> {
+        for float in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(decode(&rmpv::Value::F64(float), &Type::Number).is_err());
+        }
+        let text = "1e9223372036854775808";
+        let number = Number {
+            text: text.to_string(),
+        };
+        let value = Value::Number(number);
+        let error = to_message_pack(&value, &Type::Number)
+            .err()
+            .ok_or_else(|| InfrastructureError::codec("unsupported number was sent"))?
+            .to_string();
+        assert!(!error.contains(text));
+        let state = value.to_state_json(&Type::Number)?;
+        assert_eq!(state, json!(text));
+        assert_eq!(
+            from_json_bytes(
+                &serde_json::to_vec(&state).map_err(|_| json_number_error())?,
+                &Type::Number
+            )?,
+            value
+        );
+        Ok(())
+    }
 
     fn object_type() -> Type {
         Type::from_json(&json!(["object", {
@@ -1186,9 +1991,50 @@ mod tests {
         let error =
             Value::from_configuration_json(&json!({"nope": 1}), &object_type()).unwrap_err();
         assert!(
-            error.to_string().contains("unsupported argument 'nope'"),
+            error
+                .to_string()
+                .contains("unsupported argument '<hidden field>'"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn unclassified_configuration_diagnostics_hide_map_keys_and_unknown_fields() {
+        use rmpv::Value as MessagePack;
+        let key = format!("unregistered-key-{}", uuid::Uuid::new_v4());
+        let value_type = Type::Object(BTreeMap::from([(
+            "config".into(),
+            Type::Map(Box::new(Type::Object(BTreeMap::from([(
+                "leaf".into(),
+                Type::Number,
+            )])))),
+        )]));
+        let invalid = json!({"config": {&key: {"leaf": []}}});
+        let error = Value::from_configuration_json(&invalid, &value_type)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("config.<hidden key>.leaf"), "{error}");
+        assert!(!error.contains(&key), "{error}");
+        let extra = json!({"config": {"ordinary": {&key: 1}}});
+        let error = Value::from_configuration_json(&extra, &value_type)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported argument"), "{error}");
+        assert!(!error.contains(&key), "{error}");
+        assert!(!error.contains("ordinary"), "{error}");
+        let object_type = Type::Object(BTreeMap::new());
+        let object = Value::Object(BTreeMap::from([(key.clone(), Value::Null)]));
+        let packed = MessagePack::Map(vec![(
+            MessagePack::String(key.clone().into()),
+            MessagePack::Nil,
+        )]);
+        for error in [
+            encode(&object, &object_type).unwrap_err(),
+            decode(&packed, &object_type).unwrap_err(),
+            from_state_json(&json!({&key: null}), &object_type).unwrap_err(),
+        ] {
+            assert!(!error.to_string().contains(&key), "{error}");
+        }
     }
 
     #[test]
@@ -1243,6 +2089,39 @@ mod tests {
         )
         .unwrap();
         bytes
+    }
+
+    #[test]
+    fn dynamic_type_errors_do_not_expose_provider_supplied_labels() {
+        let secret = format!("private-dynamic-key-{}", uuid::Uuid::new_v4());
+        let concrete = json!(["object", {&secret: "string"}]);
+        let invalid_json = json!({"type": concrete, "value": true});
+        let invalid_pack = dynamic_message_pack(&concrete, rmpv::Value::Boolean(true));
+        let invalid_value = Value::typed(
+            Type::Object(BTreeMap::from([(secret.clone(), Type::String)])),
+            Value::List(Vec::new()),
+        );
+        let errors = [
+            from_json_bytes(&serde_json::to_vec(&invalid_json).unwrap(), &Type::Dynamic)
+                .unwrap_err(),
+            from_message_pack(&invalid_pack, &Type::Dynamic).unwrap_err(),
+            invalid_value.to_state_json(&Type::Dynamic).unwrap_err(),
+            to_message_pack(&invalid_value, &Type::Dynamic).unwrap_err(),
+        ];
+        for error in errors {
+            let text = error.to_string();
+            assert!(text.contains("object"), "{text}");
+            assert!(!text.contains(&secret), "{text}");
+        }
+        for specification in [
+            json!(secret),
+            json!([secret, "string"]),
+            json!([secret]),
+            json!({"unexpected": secret}),
+        ] {
+            let error = Type::from_json(&specification).unwrap_err().to_string();
+            assert!(!error.contains(&secret), "{error}");
+        }
     }
 
     #[test]

@@ -349,6 +349,25 @@
           };
         };
 
+        # Real Terraform protocol codecs used by the exact-number round-trip
+        # test; dependencies are vendored so the E2E check stays offline.
+        numeric-interop = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
+          pname = "cuenv-numeric-interop";
+          version = "0.0.0";
+          src = ./crates/infrastructure/tests/numeric_interop;
+          vendorHash = "sha256-0tNx+rVKuNpAOzCtHd9Gpf/g+gtvzpmq4UShMsOKAS8=";
+          doCheck = true;
+          checkPhase = ''
+            runHook preCheck
+            go vet ./...
+            runHook postCheck
+          '';
+        };
+
+        # The pinned official Cloudflare binary is exercised only against a
+        # loopback fake API; the test is currently x86_64-linux only.
+        cloudflare-test-provider = import ./crates/infrastructure/tests/cloudflare_provider.nix { inherit pkgs; };
+
         # The ignored suites need a libSQL server and real provider binaries, so
         # they are skipped by `cuenv-nextest`. This check provides them inside the
         # Nix sandbox (loopback only, no network): sqld and a RustFS S3 server on
@@ -386,12 +405,12 @@
         infrastructure-e2e-check = craneLib.cargoNextest (workspaceCheckArgs // infrastructureE2eBuildArgs // {
           pname = "cuenv-infrastructure-e2e";
           cargoArtifacts = infrastructureE2eCargoArtifacts;
-          cargoExtraArgs = builtins.concatStringsSep " " [
+          cargoExtraArgs = builtins.concatStringsSep " " ([
             infrastructureE2eCargoExtraArgs
             "--lib"
             "--test provider_end_to_end"
             "--test infrastructure_lifecycle"
-          ];
+          ] ++ pkgs.lib.optionals (system == "x86_64-linux") [ "--test cloudflare_offline" ]);
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
             pkgs.curl
             pkgs.sqld
@@ -425,6 +444,10 @@
               find "$1" -type f -name "terraform-provider-$2*" | sort | head -n 1
             }
             export CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER="${fake-terraform-provider}/bin/terraform-provider-fake"
+            export CUENV_INFRASTRUCTURE_TEST_NUMERIC_INTEROP="${numeric-interop}/bin/numeric-interop"
+            ${pkgs.lib.optionalString (system == "x86_64-linux") ''
+              export CUENV_INFRASTRUCTURE_TEST_CLOUDFLARE_PROVIDER="${cloudflare-test-provider}/bin/terraform-provider-cloudflare_v5.28.1"
+            ''}
             export CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER="$(provider_binary ${pkgs.terraform-providers.hashicorp_random} random)"
             export CUENV_INFRASTRUCTURE_TEST_LOCAL_PROVIDER="$(provider_binary ${pkgs.terraform-providers.hashicorp_local} local)"
             export CUENV_INFRASTRUCTURE_TEST_TFE_PROVIDER="$(provider_binary ${pkgs.terraform-providers.hashicorp_tfe} tfe)"
@@ -701,6 +724,7 @@
           # loopback networking in the build sandbox, none of which has been
           # validated on darwin.
           cuenv-infrastructure-e2e = infrastructure-e2e-check;
+          cuenv-numeric-interop = numeric-interop;
         };
 
         packages = {

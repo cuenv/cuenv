@@ -6,10 +6,37 @@
 use std::path::Path;
 use thiserror::Error;
 
+/// Value-free reasons a frozen CUE operation could not complete its worker wait.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum FrozenWorkerFailure {
+    /// The caller's deadline elapsed; the underlying operation may still run.
+    #[error("timed out")]
+    TimedOut,
+    /// All process-wide frozen evaluation slots are still occupied.
+    #[error("cannot start because the worker limit is reached")]
+    Capacity,
+    /// The operating system could not start a worker.
+    #[error("could not start its worker")]
+    SpawnFailed,
+    /// The worker exited without returning its result.
+    #[error("worker stopped unexpectedly")]
+    Stopped,
+    /// The configured duration cannot be represented as a monotonic deadline.
+    #[error("has an unsupported timeout")]
+    InvalidDeadline,
+}
+
 /// Errors that can occur during CUE evaluation
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum CueEngineError {
+    /// Worker availability or waiting failed, independently of CUE validity.
+    #[error("Frozen CUE evaluation {reason}")]
+    FrozenWorker {
+        /// A fixed reason containing no source, fill or bridge diagnostic data.
+        reason: FrozenWorkerFailure,
+    },
+
     /// Configuration error (invalid paths, settings, etc.)
     #[error("Configuration error: {message}")]
     Configuration {

@@ -19,11 +19,9 @@ managed state in the no-flag identity. Adding a lookup must not disable the
 legacy-state guard. Without named environments, ordinary orphan deletion
 still applies to previously managed resources removed from configuration.
 
-`#InfrastructureOutputReference` accepts exactly one of `fromResource` and
-`fromDataSource`, together with `attribute`. Both addresses use `type.name`.
-Native selectors through either namespace's `outputs` lower to that same
-representation. Only whole top-level scalar arguments and outputs are
-referenceable. Collection configuration and provider results are otherwise
+Native CUE selectors through either namespace's `outputs` supply reference
+provenance directly. Top-level scalar outputs can supply scalar arguments,
+including leaves nested inside objects, maps and ordered collections. Collection configuration and provider results are otherwise
 supported.
 
 Generated packages are `data/<type>/data_source.cue` with `#DataSource`,

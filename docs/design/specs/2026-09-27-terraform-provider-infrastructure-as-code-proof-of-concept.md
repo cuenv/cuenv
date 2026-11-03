@@ -769,13 +769,13 @@ spelled-out apply order, the CUE semantic checks, and marking the command
 experimental.
 
 1. ~~Cross-resource references.~~ Implemented for top-level primitive
-   resource arguments: `fromResource` and `attribute` descriptors infer and
+   resource arguments: native CUE output selectors infer and
    persist dependencies; known outputs participate in planning, and outputs
    produced by creates resolve before the consumer's final plan. Sensitive
    scalar outputs are supported (masked; strings of at least four characters
    registered for redaction). Nested and collection output selection remain
-   unsupported. Runtime data sources add `fromDataSource` descriptors and native
-   selectors for either producer/consumer namespace. See the
+   unsupported. Runtime data sources support native selectors for either
+   producer/consumer namespace. See the
    completed [import and output-reference design](2026-10-23-infrastructure-import-existing-resources.md).
 2. Protocol fidelity: resource identity (`GetResourceIdentitySchemas` and
    identity on read, plan and apply); numbers with full precision beyond 64-bit

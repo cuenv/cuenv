@@ -1009,8 +1009,11 @@ infrastructure: {{
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.status.code(), Some(3), "{printed}");
-    assert!(printed.contains("lenght"), "{printed}");
-    assert!(printed.contains("field not allowed"), "{printed}");
+    assert!(
+        printed.contains("CUE infrastructure configuration could not be evaluated"),
+        "{printed}"
+    );
+    assert!(!printed.contains("lenght"), "{printed}");
 
     let stale = format!("sha256:{}", "0".repeat(64));
     fs::write(&env_cue, configuration("length: 2", &stale)?)?;
@@ -1019,12 +1022,12 @@ infrastructure: {{
     Ok(())
 }
 
-/// Native and descriptor syntax must produce the same provider input, inferred
-/// dependency and subsequent no-op plan. Also exercise the live schema check
-/// for an untyped source declaration that promises the wrong primitive type.
+/// Native selectors resolve to provider inputs, infer dependencies and produce
+/// a subsequent no-op plan. An untyped source declaration that promises the
+/// wrong primitive type is rejected against the live provider schema.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a real Random provider and Turso/sqld; see module documentation"]
-async fn native_output_selectors_match_descriptor_runtime_behavior() -> TestResult {
+async fn native_output_selectors_resolve_and_infer_dependencies() -> TestResult {
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
     let backend = TursoConfiguration {
@@ -1071,14 +1074,6 @@ infrastructure: {{
     assert_eq!(consumer.dependencies, ["random_pet.primary"]);
     assert_eq!(lifecycle.run(&["plan"])?["summary"]["unchanged"], 2);
 
-    let descriptor = configuration.replace(
-        "infrastructure.resources.primary.outputs.id",
-        r#"{fromResource: "random_pet.primary", attribute: "id"}"#,
-    );
-    fs::write(lifecycle.directory.path().join("env.cue"), &descriptor)?;
-    assert_eq!(lifecycle.run(&["plan"])?["summary"]["unchanged"], 2);
-    assert_eq!(store.list(&tenant).await?, rows);
-
     fs::write(
         lifecycle.directory.path().join("env.cue"),
         configuration.replace("outputs: id: string", "outputs: id: number"),
@@ -1089,16 +1084,15 @@ infrastructure: {{
         "{refused}"
     );
     assert_eq!(store.list(&tenant).await?, rows);
-    fs::write(lifecycle.directory.path().join("env.cue"), descriptor)?;
+    fs::write(lifecycle.directory.path().join("env.cue"), configuration)?;
     lifecycle.run(&["destroy", "--yes"])?;
     Ok(())
 }
 
-/// Generated data source packages must type actual CUE inputs, and native and
-/// descriptor references must both resolve fresh lookup results through the CLI.
+/// Native selectors reach generated nested sensitive attributes through the CLI.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
-async fn generated_data_sources_resolve_native_and_descriptor_references() -> TestResult {
+async fn generated_nested_token_references_plan_and_apply_through_cli() -> TestResult {
     use cuenv_infrastructure::Cancellation;
     use cuenv_infrastructure::cue_types::{self, ProviderRelease};
     use cuenv_infrastructure::registry::ProviderSource;
@@ -1124,6 +1118,129 @@ async fn generated_data_sources_resolve_native_and_descriptor_references() -> Te
         fs::create_dir_all(path.parent().ok_or("generated file has no parent")?)?;
         fs::write(path, content)?;
     }
+    let project = format!("nested-token-lifecycle-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    let store = TursoStateStore::try_new(backend.clone())?;
+    let configuration = format!(
+        r#"package examples
+import (
+ "github.com/cuenv/cuenv/schema"
+ "example.com/test/fake:fake_provider"
+ "example.com/test/fake/resources/fake_token_source"
+ "example.com/test/fake/resources/fake_token_consumer"
+)
+schema.#Project
+name: {project}
+infrastructure: {{
+ state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
+ providers: fake: {{
+  source: "example.com/test/fake"
+  path: {provider}
+  schemaDigest: {digest}
+  configuration: fake_provider.#Configuration & {{directory: {directory}}}
+ }}
+ resources: {{
+  producer: fake_token_source.#Resource & {{configuration: name: "first"}}
+  native: fake_token_consumer.#Resource & {{configuration: config: {{
+   label: "native"
+   token: infrastructure.resources.producer.outputs.token
+  }}}}
+  second_native: fake_token_consumer.#Resource & {{configuration: config: {{
+   label: "second"
+   token: infrastructure.resources.producer.outputs.token
+  }}}}
+ }}
+}}
+"#,
+        project = serde_json::to_string(&project)?,
+        url = serde_json::to_string(&backend.url)?,
+        provider = serde_json::to_string(&provider)?,
+        digest = serde_json::to_string(&types.schema_digest)?,
+        directory = serde_json::to_string(directory.path())?,
+    );
+    let lifecycle = Lifecycle::from_configuration(directory, configuration, &backend)?;
+    let preview = lifecycle.execute_text(&["plan"])?;
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let preview_text = String::from_utf8_lossy(&preview.stdout);
+    assert!(
+        preview_text.contains("config.token = (sensitive)"),
+        "{preview_text}"
+    );
+    assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["create"], 3);
+    let rows = store.list(&tenant).await?;
+    let producer = rows
+        .iter()
+        .find(|row| row.address.name == "producer")
+        .ok_or("producer missing")?;
+    let token = producer.state["token"].as_str().ok_or("token missing")?;
+    for name in ["native", "second_native"] {
+        let consumer = rows
+            .iter()
+            .find(|row| row.address.name == name)
+            .ok_or("consumer missing")?;
+        assert_eq!(consumer.state["config"]["token"], token);
+        assert_eq!(consumer.dependencies, ["fake_token_source.producer"]);
+        assert_eq!(consumer.sensitive_attributes, ["config"]);
+    }
+    assert!(!lifecycle.transcript()?.contains(token));
+    let journal = fs::read_to_string(lifecycle.directory.path().join("journal.log"))?;
+    let source_create = journal
+        .find("token_source: Create")
+        .ok_or("producer was not created")?;
+    let sink_create = journal
+        .find("token_consumer: Create")
+        .ok_or("consumer was not created")?;
+    assert!(source_create < sink_create);
+    assert_eq!(lifecycle.run(&["plan"])?["summary"]["unchanged"], 3);
+    lifecycle.run(&["destroy", "--yes"])?;
+    Ok(())
+}
+
+/// Generated data source packages type actual CUE inputs, and native selectors
+/// resolve fresh lookup results through the CLI.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn generated_data_sources_resolve_native_selectors() -> TestResult {
+    use cuenv_infrastructure::Cancellation;
+    use cuenv_infrastructure::cue_types::{self, ProviderRelease};
+    use cuenv_infrastructure::registry::ProviderSource;
+
+    let provider =
+        PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let directory = prepare_directory()?;
+    let (schema, _) = cue_types::load_schema(&provider, &Cancellation::default()).await?;
+    let source = ProviderSource::parse("example.com/test/fake")?;
+    let types = cue_types::render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "0.0.0",
+        },
+    )?;
+    for (relative, content) in &types.files {
+        let path = directory.path().join(&types.directory).join(relative);
+        fs::create_dir_all(path.parent().ok_or("generated file has no parent")?)?;
+        fs::write(path, content)?;
+    }
+    let wrapper = directory.path().join("provider-wrapper.sh");
+    let launches = directory.path().join("provider-launches.log");
+    let shell_quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+    write_executable(
+        &wrapper,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' started >> {}\nexec {} \"$@\"\n",
+            shell_quote(&launches),
+            shell_quote(&provider),
+        ),
+    )?;
     let project = format!("data-source-lifecycle-{}", uuid::Uuid::new_v4());
     let tenant = TenantKey::try_new(MODULE, &project)?;
     let store = TursoStateStore::try_new(backend.clone())?;
@@ -1148,14 +1265,14 @@ infrastructure: {{
  data: lookup: fake_lookup.#DataSource & {{configuration: {{name: "outside"}}}}
  resources: {{
   native: fake_plain.#Resource & {{configuration: {{name: infrastructure.data.lookup.outputs.value}}}}
-  descriptor: fake_plain.#Resource & {{configuration: {{name: {{fromDataSource: "fake_lookup.lookup", attribute: "value"}}}}}}
+  second_native: fake_plain.#Resource & {{configuration: {{name: infrastructure.data.lookup.outputs.value}}}}
   secret: fake_plain.#Resource & {{configuration: {{name: infrastructure.data.lookup.outputs.secret_value}}}}
  }}
 }}
 "#,
         project = serde_json::to_string(&project)?,
         url = serde_json::to_string(&backend.url)?,
-        provider = serde_json::to_string(&provider)?,
+        provider = serde_json::to_string(&wrapper)?,
         digest = serde_json::to_string(&types.schema_digest)?,
         directory = serde_json::to_string(directory.path())?,
     );
@@ -1165,7 +1282,7 @@ infrastructure: {{
     assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["create"], 3);
     let rows = store.list(&tenant).await?;
     assert_eq!(rows.len(), 3, "data sources must not create state rows");
-    for name in ["native", "descriptor"] {
+    for name in ["native", "second_native"] {
         let consumer = rows
             .iter()
             .find(|row| row.address.name == name)
@@ -1191,7 +1308,7 @@ infrastructure: {{
     assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["update"], 2);
     let updated = store.list(&tenant).await?;
     assert_eq!(updated.len(), 3);
-    for name in ["native", "descriptor"] {
+    for name in ["native", "second_native"] {
         let consumer = updated
             .iter()
             .find(|row| row.address.name == name)
@@ -1203,6 +1320,57 @@ infrastructure: {{
     let env_cue = lifecycle.directory.path().join("env.cue");
     let journal = lifecycle.directory.path().join("journal.log");
     let before = fs::read_to_string(&journal)?;
+    let selector = "name: infrastructure.data.lookup.outputs.value";
+    let typed_consumer = "native: fake_plain.#Resource & {configuration: {name: infrastructure.data.lookup.outputs.value}}";
+    assert!(configuration.contains(typed_consumer));
+    for descriptor in [
+        r#"{fromResource: "fake_plain.second_native", attribute: "name"}"#,
+        r#"{fromDataSource: "fake_lookup.lookup", attribute: "value"}"#,
+    ] {
+        let launches_before = fs::read_to_string(&launches)?;
+        // Generated types reject the old object at the string field before
+        // starting the provider, even when the descriptor is otherwise valid.
+        fs::write(
+            &env_cue,
+            configuration.replacen(selector, &format!("name: {descriptor}"), 1),
+        )?;
+        let output = lifecycle.execute(&["plan"], &[])?;
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(3), "{printed}");
+        assert!(
+            printed.contains("CUE infrastructure configuration could not be evaluated"),
+            "{printed}"
+        );
+        assert_eq!(fs::read_to_string(&launches)?, launches_before);
+        assert_eq!(fs::read_to_string(&journal)?, before);
+        assert_eq!(store.list(&tenant).await?, updated);
+
+        // Untyped fields are checked against the provider schema after the
+        // provider starts. No resource or data-source operation may run.
+        let untyped_consumer =
+            format!("native: {{type: \"fake_plain\", configuration: {{name: {descriptor}}}}}");
+        fs::write(
+            &env_cue,
+            configuration.replacen(typed_consumer, &untyped_consumer, 1),
+        )?;
+        let output = lifecycle.execute(&["plan"], &[])?;
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output.status.success(), "{printed}");
+        assert!(
+            printed.contains("name") && printed.contains("expected string"),
+            "{printed}"
+        );
+        assert_eq!(fs::read_to_string(&journal)?, before);
+        assert_eq!(store.list(&tenant).await?, updated);
+    }
     fs::write(
         &env_cue,
         configuration.replace("name: \"outside\"", "naem: \"outside\""),
@@ -1215,9 +1383,10 @@ infrastructure: {{
     );
     assert_eq!(output.status.code(), Some(3), "{printed}");
     assert!(
-        printed.contains("naem") && printed.contains("field not allowed"),
+        printed.contains("CUE infrastructure configuration could not be evaluated"),
         "{printed}"
     );
+    assert!(!printed.contains("naem"), "{printed}");
     assert_eq!(
         fs::read_to_string(&journal)?,
         before,
@@ -1371,10 +1540,10 @@ async fn sensitive_data_source_destroy(source: SensitiveSource) -> TestResult {
     let tenant = TenantKey::try_new(MODULE, &project)?;
     let store = TursoStateStore::try_new(backend.clone())?;
     let declarations = r#"
- data: lookup: {type: "fake_lookup", configuration: {name: "private"}}
+ data: lookup: {type: "fake_lookup", configuration: {name: "private"}, outputs: secret_value: string}
  resources: consumer: {
   type: "fake_plain"
-  configuration: name: {fromDataSource: "fake_lookup.lookup", attribute: "secret_value"}
+  configuration: name: infrastructure.data.lookup.outputs.secret_value
  }
 "#;
     let configuration = format!(
@@ -1396,7 +1565,7 @@ infrastructure: {{
     let initial_configuration = match source {
         SensitiveSource::Create => configuration.clone(),
         SensitiveSource::MalformedUpdate => configuration.replace(
-            r#"{fromDataSource: "fake_lookup.lookup", attribute: "secret_value"}"#,
+            "infrastructure.data.lookup.outputs.secret_value",
             r#""public-before-update""#,
         ),
     };

@@ -7,7 +7,7 @@ use cuenv_infrastructure::{
 
 use super::action::{ConfirmationPolicy, Identity};
 use super::confirm::confirm;
-use super::dispatch::{CommandContext, EngineInputs, engine_setup, note_last_writer};
+use super::dispatch::{CommandContext, EngineInputs, engine, note_last_writer};
 use super::failure::{failure, printable_text};
 use super::interrupts::{Interrupts, interrupted_after_completion};
 use super::invocation::Invocation;
@@ -27,7 +27,7 @@ pub(super) async fn plan(
 ) -> Result<(), CliError> {
     note_last_writer(context).await?;
     before_change(context, &inputs, Identity::Detect, RenameResponse::Report).await?;
-    let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
+    let mut engine = engine(context, inputs);
     // Planning honours the interrupt itself: providers are asked to stop
     // and the next resource is not planned.
     let result = engine.plan(PlanMode::Apply).await;
@@ -89,7 +89,7 @@ pub(super) async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliErro
     } = request;
     let target = parse_resource_address(address)?;
     before_change(context, &inputs, identity, RenameResponse::Refuse).await?;
-    let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
+    let mut engine = engine(context, inputs);
     let importing = &mut engine;
     let result = under_lock(context, "import", |lock| async move {
         let warnings = importing
@@ -132,7 +132,7 @@ pub(super) async fn converge(
     } = *convergence;
     note_last_writer(context).await?;
     before_change(context, &inputs, identity, RenameResponse::Refuse).await?;
-    let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
+    let mut engine = engine(context, inputs);
     let planning = &mut engine;
     let result = under_lock(context, output::operation_name(mode), |lock| async move {
         let plan = planning

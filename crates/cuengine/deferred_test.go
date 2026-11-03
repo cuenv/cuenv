@@ -20,7 +20,7 @@ sourceAlias: infrastructure.resources.producer.outputs.id
  alias: output
 fieldAlias: sourceAlias
  conjunction: string & infrastructure.resources.producer.outputs.id
- typed: (string | {fromResource!: string, attribute!: string}) & infrastructure.resources.producer.outputs.id
+ typed: (string | number) & infrastructure.resources.producer.outputs.id
  interpolation: "prefix-\(infrastructure.resources.producer.outputs.id)"
  arithmetic: infrastructure.resources.producer.outputs.number + 1
  constrained: =~"^prefix" & infrastructure.resources.producer.outputs.id
@@ -431,12 +431,9 @@ func TestImportedClosedResourceReferenceScanning(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			moduleRoot := writeCueModule(t, map[string]string{
-				"schema/reference.cue": `package schema
-#Reference: close({fromResource!: string, attribute!: string})`,
 				"provider/resource.cue": `package provider
-import "example.com/bridge/schema"
 #Resource: {type: "fake_plain", configuration: #Configuration, outputs: #Outputs, ...}
-#Configuration: {name!: string | schema.#Reference, length!: number | schema.#Reference, "number"?: bool | schema.#Reference}
+#Configuration: {name!: string, length!: number, "number"?: bool}
 #Outputs: {id: string}`,
 				"values.cue": packageSource(`import "example.com/bridge/provider"
 infrastructure: resources: {

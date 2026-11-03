@@ -35,6 +35,11 @@
 //	fake_jsonplan  planned states sent as JSON instead of MessagePack
 //	fake_plain     upgraded states optionally sent as JSON
 //	fake_secret    computed sensitive output for sensitive reference tests
+//	fake_token_source  computed sensitive token unknown until create
+//	fake_token_consumer  single nested config.token and config.label; changing
+//	               token requires replacement at config. Flag files
+//	               token-consumer-late-replace and token-consumer-fail-validation
+//	               exercise final replanning and redacted validation failures
 //	fake_sensitive_input  sensitive name; fail-sensitive-validation makes validation
 //	               echo a known name, but accepts unknown names during initial plans
 //	fake_undead    deletes that return the object instead of null, without errors
@@ -156,6 +161,10 @@ func (p *fakeProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &simple{kind: "jsonplan"} },
 		func() resource.Resource { return &simple{kind: "plain"} },
 		func() resource.Resource { return &simple{kind: "secret"} },
+		func() resource.Resource { return &tokenSource{} },
+		func() resource.Resource { return &tokenConsumer{} },
+		func() resource.Resource { return &jsonNumber{} },
+		func() resource.Resource { return &jsonNumber{sensitive: true} },
 		func() resource.Resource { return &simple{kind: "sensitive_input"} },
 		func() resource.Resource { return &simple{kind: "undead"} },
 		func() resource.Resource { return &simple{kind: "slow"} },
@@ -598,6 +607,16 @@ func (w *wrap) ApplyResourceChange(ctx context.Context, request *tfprotov6.Apply
 		journal("jsonplan: ApplyResourceChange received planned_state null=%v", isNull)
 	}
 	response, err := w.ProviderServer.ApplyResourceChange(ctx, request)
+	if err == nil && (request.TypeName == "fake_json_number" || request.TypeName == "fake_json_sensitive_number") {
+		if priorNull, _ := request.PriorState.IsNull(); priorNull {
+			number := "1e400"
+			if flag("json-number-underflow") {
+				number = "1e-1000000000"
+			}
+			response.NewState = &tfprotov6.DynamicValue{JSON: []byte(`{"id":"created","value":` + number + `}`)}
+			journal("json_number: Apply returned extreme JSON number")
+		}
+	}
 	if err == nil && request.TypeName == "fake_plain" && flag("malformed-update-result") {
 		priorNull, _ := request.PriorState.IsNull()
 		plannedNull, _ := request.PlannedState.IsNull()
@@ -632,6 +651,9 @@ func (w *wrap) ApplyResourceChange(ctx context.Context, request *tfprotov6.Apply
 }
 
 func (w *wrap) UpgradeResourceState(ctx context.Context, request *tfprotov6.UpgradeResourceStateRequest) (*tfprotov6.UpgradeResourceStateResponse, error) {
+	if request.TypeName == "fake_json_number" || request.TypeName == "fake_json_sensitive_number" {
+		journal("json_number: UpgradeResourceState")
+	}
 	if request.TypeName == "fake_version" && request.Version > 0 && !schemaVersionOne() {
 		// SDKv2 behaviour for a state version newer than the schema: no
 		// upgrader matches, and the JSON passes through, decoded against

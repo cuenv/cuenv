@@ -9,12 +9,11 @@ name: "data-sources"
 infrastructure: {
 	state: turso: url: "http://127.0.0.1:8080"
 	providers: fake: {source: "example/fake", version: "1.0.0"}
-	data: lookup: {type: "fake_lookup", configuration: query: "name"}
+	// The compatibility harness exports concrete values; infrastructure runs
+	// declare this output as `string` and fill it from the provider.
+	data: lookup: {type: "fake_lookup", outputs: id: "example-id", configuration: query: "name"}
 	resources: consumer: {
 		type: "fake_object"
-		configuration: value: schema.#InfrastructureOutputReference & {
-			fromDataSource: "fake_lookup.lookup"
-			attribute:      "id"
-		}
+		configuration: value: infrastructure.data.lookup.outputs.id
 	}
 }
