@@ -66,7 +66,8 @@ The current usable slice includes:
   clipped in the viewport.
 - The terminal surface keeps an 8px inset from the host chrome; the inset uses
   the same terminal surface colour and is subtracted from the Rio grid
-  dimensions as well as the rendered bounds.
+  dimensions as well as the rendered bounds. Its opposing edges constrain the
+  surface size so the last row remains inside the content panel.
 - Independent live Rio sessions for each tab with a replaceable workspace
   model. Cmd-T creates a session-backed tab and Cmd-W closes the active one;
   every newly-created session starts in `$HOME`,
@@ -140,11 +141,13 @@ only runtime-verified platform at present; Linux and Windows are unverified.
 
 ## Development
 
-Use the app-local workflow from `apps/cuetty`. The app remains standalone and
-does not participate in the root cuenv release pipeline until it is ready:
+From the repository root, enter Cuetty's development shell and work in its
+standalone Cargo workspace. It does not participate in the root cuenv release
+pipeline until it is ready:
 
 ```bash
-nix develop
+nix develop .#cuetty
+cd apps/cuetty
 rustc --version # Must report 1.98.1 for this qualification baseline.
 cargo fmt -- --check
 cargo check --locked
@@ -154,8 +157,7 @@ cargo build --release --locked
 ./script/build_and_run.sh --verify
 ```
 
-The app-local and root flakes both pin Rust **1.98.1**, with a matching
-`rust-overlay` revision in each lockfile. Enter the app-local Nix shell before
+The root flake pins Rust **1.98.1**. Enter the Cuetty Nix shell before
 using Cargo or the packaging script so they use the pinned compiler. This
 upgrade supplies the compiler baseline for the direct `rio-vt` qualification
 spike and does not change the declared workspace MSRV; it is not evidence that
@@ -166,3 +168,8 @@ release as of 7 September 2026, per the
 `build_and_run.sh --verify` uses the installed macOS Metal toolchain to build,
 sign, and validate the application bundle. The exact commands and resulting
 platform boundary should be reported with every Cuetty implementation change.
+
+On Linux, the root flake's Cuetty package wraps it with the library search path
+needed by GPUI for dynamically loaded libraries, including the Wayland client.
+The package uses the root flake's NixOS unstable input so its C library can load graphics
+drivers built against recent NixOS releases.

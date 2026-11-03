@@ -196,6 +196,8 @@ per terminal pane before Rio history is moved.
 
 ## Nix
 
-The app-local flake provides `packages.cuetty`, `apps.cuetty`, and the focused
-`cuetty-test`, `cuetty-clippy`, and `cuetty-fmt` checks. Its only inputs are
-Nixpkgs, flake-utils, and the Rust overlay.
+From the repository root, use `nix build .#cuetty`, `nix run .#cuetty`, or
+`nix develop .#cuetty`. The root flake also provides the focused `cuetty-test`,
+`cuetty-clippy`, and `cuetty-fmt` checks.
+On Linux, the packaged executable exposes its runtime libraries to GPUI,
+including the Wayland client library loaded dynamically at startup.

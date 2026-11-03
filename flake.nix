@@ -47,6 +47,11 @@
           overlays = [ rust-overlay.overlays.default ];
         };
         pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
+        cuettyPkgs = import nixpkgs-unstable {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+        cuetty = import ./apps/cuetty/nix.nix { pkgs = cuettyPkgs; inherit cue-bridge; };
 
         rustToolchain = pkgs.rust-bin.stable."1.98.1".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
@@ -680,6 +685,7 @@
       {
         checks = {
           inherit cuenv;
+          inherit (cuetty) cuetty-test cuetty-clippy cuetty-fmt;
           cuenv-audit = audit-check;
           cuenv-bdd = bdd-check;
           cuenv-clippy = clippy-check;
@@ -698,7 +704,10 @@
         packages = {
           default = cuenv-nix;
           inherit cuenv cuenv-nix cue-bridge;
+          cuetty = cuetty.package;
         };
+
+        devShells.cuetty = cuetty.devShell;
 
         devShells.default = craneLib.devShell ({
           packages = devTools;
@@ -748,6 +757,7 @@
         });
 
         apps = {
+          cuetty = flake-utils.lib.mkApp { drv = cuetty.package; };
           default = {
             type = "app";
             program = "${cuenv-nix}/bin/cuenv";
