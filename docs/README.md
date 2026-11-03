@@ -34,8 +34,10 @@ publishes it with Wrangler (`wrangler.jsonc`).
 Every pull request that touches the docs also runs the `docs-preview` pipeline.
 Its `docs.preview` task uploads the build as a
 [Worker Preview](https://developers.cloudflare.com/workers/previews/) named
-`pr-<number>` (`wrangler preview`, Wrangler 4.135 or later) and keeps one PR
-comment pointing at its `workers.dev` URL. Each push updates the same Preview.
+`pr-<number>` (`wrangler preview`, Wrangler 4.135 or later). Its `workers.dev`
+URL is captured into the pipeline's "Docs preview" annotation, which shows in
+the check run, the job summary and cuenv's PR comment. Each push updates the
+same Preview.
 Production on cuenv.dev is untouched. Previews are not deleted when a PR closes
 yet; remove one with `bunx wrangler preview delete --name pr-<number>` from
 `docs/`. PRs from forks get no preview, because they cannot read the 1Password

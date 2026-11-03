@@ -32,7 +32,8 @@ produces a static `docs/dist` (including the Pagefind search index) and
 `docs.deploy` publishes it to Cloudflare Workers static assets with Wrangler;
 there is no server Worker. On pull requests, the `docs-preview` pipeline's
 `docs.preview` task uploads the same build as a `pr-<number>` Worker Preview
-(`wrangler preview`) and upserts one PR comment with its URL. Doc paths in this matrix use `.mdx` for pages that
+(`wrangler preview`); a `url` capture feeds the pipeline's "Docs preview"
+annotation. Doc paths in this matrix use `.mdx` for pages that
 render components or `:::` admonitions, which plain `.md` does not.
 
 CLI-only note: module evaluation waits `CUENV_EVAL_TIMEOUT` seconds (default

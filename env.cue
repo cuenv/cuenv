@@ -182,7 +182,8 @@ schema.#Project & {
 			}
 
 			// Every pull request that touches the docs gets a Worker Preview of
-			// cuenv.dev, linked from a single PR comment that each push updates.
+			// cuenv.dev. Its URL is a pipeline annotation, so it shows in the
+			// check run, the job summary and cuenv's PR comment.
 			"docs-preview": {
 				environment: "production"
 				when: pullRequest: true
@@ -191,6 +192,10 @@ schema.#Project & {
 					"pull-requests": "write"
 				}
 				tasks: [_t.docs.preview]
+				annotations: "Docs preview": schema.#TaskCaptureRef & {
+					cuenvTask:    "docs.preview"
+					cuenvCapture: "url"
+				}
 			}
 
 			release: {
@@ -534,13 +539,10 @@ schema.#Project & {
 
 			preview: schema.#Task & {
 				// Uploads docs/dist as the `pr-<number>` Preview of the Worker and
-				// upserts one PR comment with its URL. Requires wrangler 4.135+.
-				ci: github: permissions: "pull-requests": "write"
+				// prints its URL for the `url` capture. Requires wrangler 4.135+.
 				hermetic: {passthrough: ["PATH"]}
-				env: {
-					REF: schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
-					GH_TOKEN: schema.#EnvPassthrough & {name: "GITHUB_TOKEN"}
-				}
+				env: REF: schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
+				captures: url: pattern: "(?m)^Docs preview: (https://\\S+)$"
 				command: "bash"
 				args: ["-c", """
 					set -euo pipefail
@@ -572,15 +574,7 @@ schema.#Project & {
 						exit 1
 					fi
 
-					marker="<!-- cuenv-docs-preview -->"
-					body="$(printf '%s\\n**Docs preview:** %s\\n' "$marker" "$url")"
-					comment_id="$(gh api "repos/cuenv/cuenv/issues/$pr/comments" --paginate \\
-						--jq "[.[] | select(.body | startswith(\\"$marker\\"))][0].id // empty" | head -n1)"
-					if [ -n "$comment_id" ]; then
-						gh api --method PATCH "repos/cuenv/cuenv/issues/comments/$comment_id" -f body="$body" >/dev/null
-					else
-						gh api --method POST "repos/cuenv/cuenv/issues/$pr/comments" -f body="$body" >/dev/null
-					fi
+					echo "Docs preview: $url"
 					"""]
 				dependsOn: [_t.docs.build]
 				inputs: [
