@@ -270,11 +270,11 @@ For changes to the CUE engine FFI:
 
 ### Documentation Structure
 
-Documentation uses [Astro](https://astro.build/) with [Starlight](https://starlight.astro.build/):
+Documentation uses [Nimbus](https://nimbus-docs.com/) on [Astro](https://astro.build/):
 
 - Source files in `docs/src/content/docs/`
-- Configuration in `docs/astro.config.mjs`
-- Build with `bun run build`
+- Configuration and sidebar in `docs/astro.config.ts`
+- Build with `bun run build`; check links and frontmatter with `bun run check`
 
 ### Writing Guidelines
 

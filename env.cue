@@ -41,7 +41,7 @@ let _schemaDocsInputs = [
 	"env.cue",
 	"schema/**",
 	"docs/design/specs/schema-coverage-matrix.md",
-	"docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.md",
+	"docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.mdx",
 	"docs/src/content/docs/decisions/adrs/adr-0009-single-internal-sync-registry.md",
 	"docs/src/content/docs/explanation/**",
 	"docs/src/content/docs/reference/**",
@@ -179,6 +179,23 @@ schema.#Project & {
 						matrix: arch: ["darwin-arm64"]
 					},
 				]
+			}
+
+			// Every pull request that touches the docs gets a Worker Preview of
+			// cuenv.dev. Its URL is a pipeline annotation, so it shows in the
+			// check run, the job summary and cuenv's PR comment.
+			"docs-preview": {
+				environment: "production"
+				when: pullRequest: true
+				provider: github: permissions: {
+					"id-token":      "write"
+					"pull-requests": "write"
+				}
+				tasks: [_t.docs.preview]
+				annotations: "Docs preview": schema.#TaskCaptureRef & {
+					cuenvTask:    "docs.preview"
+					cuenvCapture: "url"
+				}
 			}
 
 			release: {
@@ -480,7 +497,6 @@ schema.#Project & {
 					bun install --frozen-lockfile
 					cd docs
 					bun run build
-					cp public/.assetsignore dist/
 					"""]
 				inputs: [
 					"package.json",
@@ -509,6 +525,56 @@ schema.#Project & {
 					bun install --frozen-lockfile
 					cd docs
 					bunx --no-install wrangler deploy
+					"""]
+				dependsOn: [_t.docs.build]
+				inputs: [
+					{task: "docs.build"},
+					"package.json",
+					"bun.lock",
+					"integrations/*/package.json",
+					"docs/package.json",
+					"docs/wrangler.jsonc",
+				]
+			}
+
+			preview: schema.#Task & {
+				// Uploads docs/dist as the `pr-<number>` Preview of the Worker and
+				// prints its URL for the `url` capture. Requires wrangler 4.135+.
+				hermetic: {passthrough: ["PATH"]}
+				env: REF: schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
+				captures: url: pattern: "(?m)^Docs preview: (https://\\S+)$"
+				command: "bash"
+				args: ["-c", """
+					set -euo pipefail
+					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
+					task_root="$PWD"
+					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
+					export HOME="$task_root/.cuenv-home"
+					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
+					export TMPDIR="$task_root/.cuenv-tmp"
+					export TMP="$TMPDIR"
+					export TEMP="$TMPDIR"
+
+					# Pull request runs check out refs/pull/<number>/merge.
+					pr="${REF%%/*}"
+					if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+						echo "docs.preview runs on pull requests only (ref: $REF)" >&2
+						exit 1
+					fi
+
+					bun install --frozen-lockfile
+					cd docs
+					output="$(bunx --no-install wrangler preview --name "pr-$pr" --message "PR #$pr" --json)"
+					printf '%s\\n' "$output"
+					# Wrangler prints upload progress to stdout before the JSON.
+					json="$(sed -n '/^{/,$p' <<<"$output")"
+					if ! url="$(jq -er '.preview.urls[0] // empty' <<<"$json")"; then
+						echo "Preview pr-$pr has no URL. Enable Preview URLs on the Worker" >&2
+						echo "(preview_urls in wrangler.jsonc takes effect on wrangler deploy)." >&2
+						exit 1
+					fi
+
+					echo "Docs preview: $url"
 					"""]
 				dependsOn: [_t.docs.build]
 				inputs: [

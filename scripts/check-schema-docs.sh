@@ -171,7 +171,7 @@ for pattern in "${removed_sync_api_patterns[@]}"; do
 	fi
 done
 
-adr_0006="docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.md"
+adr_0006="docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.mdx"
 adr_0009="docs/src/content/docs/decisions/adrs/adr-0009-single-internal-sync-registry.md"
 if ! grep -q '^status: Superseded$' "$adr_0006"; then
 	record_failure "$adr_0006 must remain marked Superseded"

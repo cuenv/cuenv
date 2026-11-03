@@ -1,23 +1,14 @@
 ---
 title: cuenv
 description: One typed config for your project — environment variables, secrets, tasks, and CI in CUE.
-template: splash
-hero:
-  title: |
-    <span class="text-gradient">cuenv</span>
-  tagline: One typed config for your whole project — environment variables, secrets, tasks, and CI in CUE.
-  actions:
-    - text: Start a tutorial
-      link: /tutorials/first-project/
-      icon: right-arrow
-      variant: primary
-    - text: View on GitHub
-      link: https://github.com/cuenv/cuenv
-      icon: external
-      variant: minimal
+sidebar:
+  order: 0
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+<div class="not-prose flex flex-wrap gap-3 my-6">
+  <LinkButton href="/tutorials/first-project/" variant="primary" icon>Start a tutorial</LinkButton>
+  <LinkButton href="https://github.com/cuenv/cuenv" variant="secondary">View on GitHub</LinkButton>
+</div>
 
 ## What is cuenv?
 
@@ -129,19 +120,19 @@ something breaks. CUE lets you describe the shape of valid config, and
 evaluation fails loudly when a value doesn't fit.
 
 <CardGrid>
-  <Card title="Validate before you run" icon="approve-check-circle">
+  <Card title="Validate before you run" icon="ph:check-circle">
     Enums, numeric bounds, regex patterns, and defaults are checked at
     evaluation time. `NODE_ENV: "prod"` is caught before any command runs.
   </Card>
-  <Card title="Secrets stay out of files" icon="lock">
+  <Card title="Secrets stay out of files" icon="ph:lock">
     Secrets resolve at runtime from your provider, never landing in `env.cue`,
     generated files, or your shell, and are redacted from output.
   </Card>
-  <Card title="Parallel by structure" icon="random">
+  <Card title="Parallel by structure" icon="ph:shuffle">
     Object keys in a task group run in parallel; arrays run in order;
     `dependsOn` uses CUE references, so a typo is a compile error.
   </Card>
-  <Card title="One source, no drift" icon="setting">
+  <Card title="One source, no drift" icon="ph:gear">
     Environments, tasks, and CI come from the same file, so they can't fall out
     of sync the way `.env` + `Makefile` + workflow YAML do.
   </Card>
@@ -168,16 +159,16 @@ what's wired up.
 ## Get started
 
 <CardGrid>
-  <Card title="Tutorials" icon="right-arrow">
+  <Card title="Tutorials" icon="ph:arrow-right">
     Learn by doing: start with [Your first cuenv project](/tutorials/first-project/).
   </Card>
-  <Card title="How-to guides" icon="right-arrow">
+  <Card title="How-to guides" icon="ph:arrow-right">
     Get something done: [install](/how-to/install/), [configure](/how-to/configure-a-project/), and [run tasks](/how-to/run-tasks/).
   </Card>
-  <Card title="Reference" icon="right-arrow">
+  <Card title="Reference" icon="ph:arrow-right">
     Look things up: [CLI](/reference/cli/), [CUE schema](/reference/cue-schema/), [schema status](/reference/schema/status/).
   </Card>
-  <Card title="GitHub" icon="github">
+  <Card title="GitHub" icon="ph:github-logo">
     [Browse the source](https://github.com/cuenv/cuenv) and join the discussion.
   </Card>
 </CardGrid>

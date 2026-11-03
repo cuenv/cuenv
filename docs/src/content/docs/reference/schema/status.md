@@ -3,7 +3,7 @@ title: Schema status
 description: Current implementation status for cuenv CUE schema definitions
 ---
 
-The CUE schema is the first source of truth for cuenv features. The implementation status lives in [`docs/design/specs/schema-coverage-matrix.md`](../../../../../design/specs/schema-coverage-matrix.md), which has one row for every exported `#Definition` in `schema/**/*.cue`.
+The CUE schema is the first source of truth for cuenv features. The implementation status lives in [`docs/design/specs/schema-coverage-matrix.md`](https://github.com/cuenv/cuenv/blob/main/docs/design/specs/schema-coverage-matrix.md), which has one row for every exported `#Definition` in `schema/**/*.cue`.
 
 Agents and contributors must use the matrix before generating examples or answering feature-support questions. A schema definition can be real without being fully implemented.
 
