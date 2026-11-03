@@ -12,7 +12,7 @@ use super::settings::SettingsDraft;
 use super::sizing::CellSize;
 use super::workspace_shell::{ShellAction, ShellError, WorkspaceShell, WorkspaceShortcut};
 use crate::integrations::cuenv::{
-    ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation,
+    ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation, KeyChord,
     NativeCuenvProvider, RailColor, TaskEvaluation, TitlebarVisibility,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, TabId};
@@ -894,6 +894,15 @@ fn app_chord(modifiers: gpui::Modifiers) -> Option<AppChord> {
     })
 }
 
+/// Whether a key press is exactly the configured chord.
+fn chord_matches(chord: &KeyChord, key: &str, modifiers: gpui::Modifiers) -> bool {
+    key.eq_ignore_ascii_case(&chord.key)
+        && modifiers.control == chord.modifiers.control
+        && modifiers.alt == chord.modifiers.alt
+        && modifiers.shift == chord.modifiers.shift
+        && modifiers.platform == chord.modifiers.platform
+}
+
 fn terminal_key_input(key: &str, key_char: Option<&str>) -> Option<KeyInput> {
     match key {
         "enter" => Some(KeyInput::Enter),
@@ -1542,16 +1551,19 @@ impl TerminalView {
         }
     }
 
-    fn toggle_task_palette(&mut self) {
+    /// Toggles the task palette, returning whether the active pane has a
+    /// task catalogue to show.
+    fn toggle_task_palette(&mut self) -> bool {
         if self
             .active_state()
             .is_none_or(|state| state.cuenv.tasks.is_empty())
         {
-            return;
+            return false;
         }
         self.task_palette_open = !self.task_palette_open;
         self.task_query.clear();
         self.task_selection = 0;
+        true
     }
 
     fn launch_task(&mut self, task: CuenvTask, cx: &mut Context<Self>) {
@@ -1638,8 +1650,16 @@ impl TerminalView {
     fn key(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
-        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("k") {
-            self.toggle_task_palette();
+        let palette_chord = self.active_state().is_some_and(|state| {
+            chord_matches(
+                &state.cuenv.presentation.keybindings.palette,
+                key,
+                modifiers,
+            )
+        });
+        // Without a task catalogue the chord falls through, so a plain
+        // Ctrl-K palette binding still reaches the shell as kill-line.
+        if palette_chord && self.toggle_task_palette() {
             cx.notify();
             return;
         }
@@ -2932,6 +2952,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integrations::cuenv::ChordModifiers;
     use crate::terminal::host::SessionStart;
     use crate::terminal::model::Color;
     use crate::terminal::selection::LogicalPosition;
@@ -3132,6 +3153,33 @@ mod tests {
         for key in ["c", "d", "f", "k", "t", "v", "w"] {
             assert_eq!(TerminalView::workspace_shortcut(key, control), None);
         }
+    }
+
+    #[test]
+    fn palette_chord_matches_exact_modifiers() {
+        let chord = KeyChord {
+            key: "k".into(),
+            modifiers: ChordModifiers {
+                control: true,
+                ..ChordModifiers::default()
+            },
+        };
+        let control = gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        assert!(chord_matches(&chord, "k", control));
+        assert!(chord_matches(&chord, "K", control));
+        assert!(!chord_matches(&chord, "j", control));
+        assert!(!chord_matches(
+            &chord,
+            "k",
+            gpui::Modifiers {
+                shift: true,
+                ..control
+            }
+        ));
+        assert!(!chord_matches(&chord, "k", gpui::Modifiers::default()));
     }
 
     #[test]

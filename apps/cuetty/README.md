@@ -121,7 +121,10 @@ Rio session behind each tab. Cmd-T creates a new session; Cmd-W closes only the
 active tab/session and closes the window when it is the final tab. Shortcuts
 shown as Cmd-* use Command on macOS and Ctrl-Shift on Linux (Ctrl-Shift-Alt for
 the Cmd-Shift-* forms), so plain Ctrl chords such as Ctrl-C, Ctrl-D, and Ctrl-W
-always reach the shell. Cmd-D and
+always reach the shell. The task palette is the exception: it defaults to
+Cmd-K on macOS and plain Ctrl-K elsewhere, and only takes the chord when the
+active directory has a task catalogue, so Ctrl-K stays the shell's kill-line in
+ordinary directories. Cmd-D and
 Cmd-Shift-D report that split panes are unavailable; they never create a fake
 terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse
 selection and the current literal visible-frame search hit are painted directly
@@ -187,10 +190,36 @@ alone where a directory has none. Write overridable global values as CUE
 defaults, for example `rail: *"#89b4fa" | string`; a concrete conflict is an
 invalid configuration. CUE evaluation never runs on the GPUI thread.
 
+`keybindings: palette: "ctrl-shift-p"` rebinds the task palette. Chords are
+`-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`) followed by a
+key and match that exact modifier set.
+
+Home Manager users can manage the global package through the flake's
+`homeManagerModules.cuetty`:
+
+```nix
+{
+  imports = [ cuenv.homeManagerModules.cuetty ];
+  programs.cuetty = {
+    enable = true;
+    settings = {
+      rail = "#89b4fa";
+      titlebar = false;
+      keybindings.palette = "ctrl-k";
+    };
+  };
+}
+```
+
+The module writes `$XDG_CONFIG_HOME/cuetty/config.cue`, rendering every
+`settings` value as a CUE default so directory packages can still override
+it; `extraConfig` appends raw CUE. `package` defaults to the flake's Cuetty
+build and may be set to `null` to manage configuration only.
+
 When the same directory contains an evaluable `package cuenv`, Cuetty also
 discovers its `tasks` map. The task button in the fixed right rail opens a
-floating, non-resizing task sidebar; Command-K opens a searchable command
-palette. Selecting a task invokes the existing CLI in the same terminal pane
+floating, non-resizing task sidebar; Cmd-K (Ctrl-K off macOS, configurable
+through `keybindings.palette`) opens a searchable command palette. Selecting a task invokes the existing CLI in the same terminal pane
 whose working directory supplied the catalogue. The
 `cuenv task --path … --package cuenv …` CLI path preserves its graph, cache,
 hook, secret-redaction, cancellation, and exit behaviour. Tasks with required

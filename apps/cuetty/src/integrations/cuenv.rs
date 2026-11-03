@@ -22,6 +22,78 @@ pub struct CuettyPresentation {
     pub banner: Option<String>,
     pub rail: Option<RailColor>,
     pub titlebar: TitlebarVisibility,
+    pub keybindings: Keybindings,
+}
+
+/// Application chords configured through `keybindings` in package `cuetty`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Keybindings {
+    pub palette: KeyChord,
+}
+
+impl Default for Keybindings {
+    fn default() -> Self {
+        let macos = cfg!(target_os = "macos");
+        Self {
+            // Cmd-K on macOS and Ctrl-K elsewhere, matching common
+            // command-palette conventions.
+            palette: KeyChord {
+                key: "k".into(),
+                modifiers: ChordModifiers {
+                    control: !macos,
+                    platform: macos,
+                    ..ChordModifiers::default()
+                },
+            },
+        }
+    }
+}
+
+/// Modifiers held for a [`KeyChord`]; a chord matches only this exact set.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ChordModifiers {
+    pub control: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub platform: bool,
+}
+
+/// A renderer-neutral chord written as `ctrl-k` or `ctrl-shift-p`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyChord {
+    /// Lowercase key name, compared case-insensitively with the pressed key.
+    pub key: String,
+    pub modifiers: ChordModifiers,
+}
+
+impl KeyChord {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let invalid = || format!("invalid key chord '{value}'; expected e.g. \"ctrl-k\"");
+        let mut segments: Vec<&str> = value.split('-').collect();
+        let key = segments
+            .pop()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .ok_or_else(invalid)?;
+        let mut modifiers = ChordModifiers::default();
+        for segment in segments {
+            let flag = match segment.trim().to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => &mut modifiers.control,
+                "alt" | "option" => &mut modifiers.alt,
+                "shift" => &mut modifiers.shift,
+                "cmd" | "super" | "win" => &mut modifiers.platform,
+                _ => return Err(invalid()),
+            };
+            if *flag {
+                return Err(invalid());
+            }
+            *flag = true;
+        }
+        Ok(Self {
+            key: key.to_ascii_lowercase(),
+            modifiers,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,6 +154,15 @@ struct CuettyDto {
     rail: Option<String>,
     #[serde(default)]
     titlebar: Option<bool>,
+    #[serde(default)]
+    keybindings: Option<KeybindingsDto>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeybindingsDto {
+    #[serde(default)]
+    palette: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -350,6 +431,13 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         },
         None => None,
     };
+    let keybindings = match dto.keybindings.and_then(|keys| keys.palette) {
+        Some(value) => match KeyChord::parse(&value) {
+            Ok(palette) => Keybindings { palette },
+            Err(error) => return Evaluation::Invalid(error),
+        },
+        None => Keybindings::default(),
+    };
     Evaluation::Valid(CuettyPresentation {
         banner,
         rail,
@@ -357,6 +445,7 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
             .titlebar
             .map(TitlebarVisibility::from)
             .unwrap_or_default(),
+        keybindings,
     })
 }
 
@@ -595,6 +684,7 @@ mod tests {
                 banner: Some("Welcome to Cuetty".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
+                keybindings: Keybindings::default(),
             })
         );
     }
@@ -634,6 +724,7 @@ mod tests {
                 banner: Some("A".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
+                keybindings: Keybindings::default(),
             })
         ));
         assert!(state.observe_cwd(PathBuf::from("/b")));
@@ -644,6 +735,7 @@ mod tests {
                 banner: Some("late A".into()),
                 rail: None,
                 titlebar: TitlebarVisibility::Shown,
+                keybindings: Keybindings::default(),
             })
         ));
     }
@@ -657,6 +749,7 @@ mod tests {
             banner: Some("A".into()),
             rail: None,
             titlebar: TitlebarVisibility::Shown,
+            keybindings: Keybindings::default(),
         };
         assert!(state.apply(generation, Evaluation::Valid(presentation.clone())));
         assert!(state.apply(generation, Evaluation::Invalid("broken".into())));
@@ -673,6 +766,7 @@ mod tests {
             banner: Some("A".into()),
             rail: Some(RailColor(255, 0, 0)),
             titlebar: TitlebarVisibility::Shown,
+            keybindings: Keybindings::default(),
         };
         assert!(state.apply(first_generation, Evaluation::Valid(presentation.clone())));
 
@@ -734,6 +828,42 @@ mod tests {
         state.observe_cwd(PathBuf::from("/b"));
         assert!(state.tasks.is_empty());
         assert!(!state.apply_tasks(generation, TaskEvaluation::Valid(Vec::new())));
+    }
+
+    #[test]
+    fn palette_chord_defaults_per_platform_and_is_configurable() {
+        let palette = |value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.keybindings.palette,
+            other => panic!("unexpected evaluation: {other:?}"),
+        };
+        let default = palette(serde_json::json!({}));
+        assert_eq!(default.key, "k");
+        assert_eq!(default.modifiers.control, !cfg!(target_os = "macos"));
+        assert_eq!(default.modifiers.platform, cfg!(target_os = "macos"));
+        assert_eq!(
+            palette(serde_json::json!({"keybindings": {"palette": "Ctrl-Shift-P"}})),
+            KeyChord {
+                key: "p".into(),
+                modifiers: ChordModifiers {
+                    control: true,
+                    shift: true,
+                    ..ChordModifiers::default()
+                },
+            }
+        );
+        for invalid in ["", "ctrl-", "hyper-k", "ctrl-ctrl-k"] {
+            assert!(
+                matches!(
+                    parse_value(serde_json::json!({"keybindings": {"palette": invalid}})),
+                    Evaluation::Invalid(_)
+                ),
+                "{invalid} should be rejected"
+            );
+        }
+        assert!(matches!(
+            parse_value(serde_json::json!({"keybindings": {"copy": "ctrl-c"}})),
+            Evaluation::Invalid(_)
+        ));
     }
 
     #[test]
@@ -836,6 +966,7 @@ mod tests {
                 banner: Some("global".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Hidden,
+                keybindings: Keybindings::default(),
             })
         );
         std::fs::remove_dir_all(root).unwrap();

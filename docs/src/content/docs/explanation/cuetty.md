@@ -74,7 +74,8 @@ The current usable slice includes:
   split shortcuts are rejected with a visible notice until pane/session
   allocation is implemented, and the UI never presents a fake terminal pane.
   Application shortcuts written as Cmd-* use Command on macOS and Ctrl-Shift
-  on Linux, so plain Ctrl chords such as Ctrl-C always reach the shell.
+  on Linux, so plain Ctrl chords such as Ctrl-C always reach the shell. The
+  task palette is the one configurable exception (see below).
 - A fixed 56px right-side vertical tab rail. It shows tab ordinals with stable
   path-name tooltips and deliberately has no resize or expand mode.
 - A session-only Settings destination with transactional Apply, Cancel, and
@@ -101,7 +102,8 @@ tab tooltip; for example, `rail: "#ff0000"` tints the tab rail while that tab
 is active. Terminal panes are never framed, and the former `border` field is
 rejected as unknown. `titlebar: false` hides the Cuetty title strip while that
 tab is active and lets the terminal extend to the top of the window; it
-defaults to `true`. A hidden strip removes the window drag region, and on macOS
+defaults to `true`. `keybindings: palette:` rebinds the task palette; see
+[Keybindings](#keybindings). A hidden strip removes the window drag region, and on macOS
 the traffic lights float over the terminal's top-left corner.
 
 The cuenv repository includes a root `cuetty.cue` with a `cuenv` banner and a
@@ -134,17 +136,63 @@ configuration and keeps the last good presentation. The global directory is
 watched alongside the active directory when it exists; one created later is
 picked up on the next directory change.
 
+#### Home Manager
+
+The root flake exports `homeManagerModules.cuetty` (also `default`), which
+installs Cuetty and writes the global package to
+`$XDG_CONFIG_HOME/cuetty/config.cue`:
+
+```nix
+{
+  imports = [ cuenv.homeManagerModules.cuetty ];
+  programs.cuetty = {
+    enable = true;
+    settings = {
+      rail = "#89b4fa";
+      titlebar = false;
+      keybindings.palette = "ctrl-shift-p";
+    };
+    extraConfig = ''
+      banner: *"home" | string
+    '';
+  };
+}
+```
+
+Every `settings` scalar is rendered as a CUE default (`*value | type`), so the
+generated package never conflicts with a directory that sets its own value.
+`extraConfig` is appended verbatim and is responsible for its own defaults.
+Set `package = null` to manage only the configuration.
+
 Directory and module-metadata changes are watched natively. Evaluation and
 validation occur off the GPUI thread. Invalid matching CUE keeps the last
 valid presentation for that directory and exposes an integration notice.
 
 Cuetty separately evaluates `package cuenv` in the same exact directory and
 surfaces its task, group, and sequence names in a floating sidebar and a
-Command-K palette. These overlays do not participate in terminal layout, so
+command palette. These overlays do not participate in terminal layout, so
 opening them does not change the PTY's reported rows or columns. Launching a
 task delegates to `cuenv task` in the same pane that supplied the catalogue;
 required task parameters leave an editable command at the prompt. The app does not duplicate
 the task graph, cache, hooks, or secret resolution.
+
+### Keybindings
+
+The task palette opens with Cmd-K on macOS and plain Ctrl-K elsewhere. Rebind
+it from any `package cuetty`, global or per-directory:
+
+```cue
+package cuetty
+
+keybindings: palette: *"ctrl-shift-p" | string
+```
+
+A chord is `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`)
+followed by a key, matched case-insensitively against that exact modifier set.
+The palette only claims its chord when the active directory has a task
+catalogue; elsewhere the key reaches the shell, so the Ctrl-K default does not
+cost kill-line in ordinary directories. An unparseable chord or any other
+`keybindings` field is an invalid configuration.
 
 ## Current limits
 
