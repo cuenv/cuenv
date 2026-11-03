@@ -84,6 +84,7 @@ for instance in module.projects() {
 | `presence_paths`               | empty    | Report which of these paths exist in each instance, without exporting them              |
 | `skipped_directories`          | `Ignore` | `Report` lists the directories a recursive evaluation did not load                      |
 | `task_field`                   | `None`   | The top-level field that holds the task graph; see below                                |
+| `unify`                        | empty    | Directories whose instance of the same package is CUE-unified into the target; see below |
 | `with_meta`, `with_references` | `false`  | Source positions and reference paths in `ModuleResult::meta`                            |
 
 **Task field.** Sequence items inside the task graph need a hidden `_name`
@@ -95,6 +96,17 @@ relies on (the field is `tasks`); `Some("")` turns the injection off, so a
 caller that evaluates something other than a cuenv project does not depend on
 cuenv's task shape. The injection itself (and the project detection) is still
 cuenv-specific code in the bridge; see the design specification's next steps.
+
+**Unification.** `unify` takes `UnifySource { dir, module_root }` entries.
+Each directory's instance of the evaluated package is unified into the
+target instance, in order, before `concrete_paths` validation and export.
+This is CUE unification: conflicting concrete values fail the instance, and a
+default (`*"a" | string`) yields to a concrete value from either side. A
+source directory without the package (or that does not exist) contributes
+nothing; any other load or build failure in a source fails the evaluation.
+`module_root: None` makes the directory its own root. Only a non-recursive
+evaluation of one named package accepts sources, and the target directory
+must itself hold the package: an absent target is still an empty result.
 
 **Instance keys.** With `PackageScope::Named`, `ModuleResult::instances` is
 keyed by the directory relative to the module root (`"."`,

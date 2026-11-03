@@ -281,6 +281,16 @@ type ModuleResult struct {
 }
 
 // ModuleEvalOptions controls how module evaluation behaves
+// UnifySource names a directory whose instance of the evaluated package is
+// unified into the target instance. ModuleRoot resolves its imports; when it
+// is nil the directory is its own root, so a standalone directory (no
+// cue.mod) still evaluates and module imports fail through the normal CUE
+// error path.
+type UnifySource struct {
+	Dir        string  `json:"dir"`
+	ModuleRoot *string `json:"moduleRoot"`
+}
+
 type ModuleEvalOptions struct {
 	ReferenceEvaluation *ReferenceEvaluation `json:"referenceEvaluation"`
 	WithMeta            bool                 `json:"withMeta"`       // Extract source positions into separate Meta map
@@ -318,6 +328,12 @@ type ModuleEvalOptions struct {
 	// PresencePaths lists regular-field paths whose existence is reported
 	// per instance in ModuleResult.Present, without exporting their values.
 	PresencePaths []string `json:"presencePaths"`
+	// Unify lists other directories whose instance of the same named package
+	// is unified into each evaluated instance before validation and export,
+	// in order. A source without that package contributes nothing. It needs
+	// a non-recursive, named-package evaluation, and it does not make an
+	// absent target present: the target directory must hold the package.
+	Unify []UnifySource `json:"unify"`
 	// TaskField names the top-level field that holds the task graph. Sequence
 	// items inside it get their hidden `_name` field injected before export
 	// (see injectTaskNames), and a projection that exports nothing below this
@@ -513,6 +529,18 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	}
 	if effectivePackageName != "" && !options.Recursive && !packageMatched {
 		result = createSuccessResponse(`{"instances":{},"projects":[]}`)
+		return result
+	}
+
+	if len(options.Unify) > 0 && (effectivePackageName == "" || options.Recursive || allPackages) {
+		hint := "unify needs a non-recursive evaluation of one named package"
+		result = createErrorResponse(ErrorCodeInvalidInput, "unify cannot be combined with a recursive or unnamed-package evaluation", &hint)
+		return result
+	}
+	unifyInstances, err := loadUnifySources(options.Unify, effectivePackageName, registry)
+	if err != nil {
+		hint := "Check the CUE files in each unify directory"
+		result = createErrorResponse(ErrorCodeLoadInstance, err.Error(), &hint)
 		return result
 	}
 
@@ -725,6 +753,11 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 			buildErrors = append(buildErrors, instanceFailure(relPath, allErrors(v), goModuleRoot))
 			continue
 		}
+		v, err = unifyInto(ctx, v, unifyInstances)
+		if err != nil {
+			buildErrors = append(buildErrors, instanceFailure(relPath, err, goModuleRoot))
+			continue
+		}
 
 		// Caller-named fields must be concrete; see validateConcretePaths.
 		validate := func() error {
@@ -810,6 +843,68 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 
 	result = createSuccessResponse(string(resultBytes))
 	return result
+}
+
+// loadUnifySources loads each unify directory's instance of packageName.
+// A directory without that package is skipped, exactly like an absent
+// target; any other load failure is returned so it is never silently lost.
+func loadUnifySources(sources []UnifySource, packageName string, registry modconfig.Registry) ([]*build.Instance, error) {
+	var loaded []*build.Instance
+	for _, source := range sources {
+		dir, err := filepath.Abs(source.Dir)
+		if err != nil {
+			return nil, fmt.Errorf("cannot resolve unify directory %s: %v", source.Dir, err)
+		}
+		moduleRoot := dir
+		if source.ModuleRoot != nil && *source.ModuleRoot != "" {
+			if moduleRoot, err = filepath.Abs(*source.ModuleRoot); err != nil {
+				return nil, fmt.Errorf("cannot resolve unify module root %s: %v", *source.ModuleRoot, err)
+			}
+		}
+		overlay, matched, err := packageFilterOverlay(dir, packageName, false)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("cannot inspect unify directory %s: %v", dir, err)
+		}
+		if !matched {
+			continue
+		}
+		instances := load.Instances([]string{"."}, &load.Config{
+			Dir:        dir,
+			ModuleRoot: moduleRoot,
+			Registry:   registry,
+			Package:    packageName,
+			Overlay:    overlay,
+		})
+		for _, inst := range instances {
+			if inst.Err != nil {
+				return nil, fmt.Errorf("unify directory %s: %v", dir, inst.Err)
+			}
+			loaded = append(loaded, inst)
+		}
+	}
+	return loaded, nil
+}
+
+// unifyInto builds each unify instance in ctx and unifies it into v. The
+// result is validated so a conflict between sources is reported here rather
+// than surfacing as a partial export.
+func unifyInto(ctx *cue.Context, v cue.Value, sources []*build.Instance) (cue.Value, error) {
+	for _, source := range sources {
+		other := ctx.BuildInstance(source)
+		if other.Err() != nil {
+			return v, fmt.Errorf("unify directory %s: %v", source.Dir, allErrors(other))
+		}
+		v = v.Unify(other)
+	}
+	if len(sources) > 0 {
+		if err := v.Validate(); err != nil {
+			return v, err
+		}
+	}
+	return v, nil
 }
 
 // relativeInstancePath names an instance by its directory relative to the

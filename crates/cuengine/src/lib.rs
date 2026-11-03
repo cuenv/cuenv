@@ -340,6 +340,30 @@ pub struct ModuleEvalOptions {
     /// command line does). `Some("")` turns the injection off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_field: Option<String>,
+    /// Other directories whose instance of the same named package is
+    /// unified into each evaluated instance before `concrete_paths`
+    /// validation and export, in order. This is CUE unification, so a
+    /// conflicting concrete value fails the instance while a default
+    /// (`*"a" | string`) yields to a concrete value from either side. A
+    /// source without the package contributes nothing. Only a
+    /// non-recursive evaluation of one named package accepts sources, and
+    /// the target directory must itself hold the package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unify: Vec<UnifySource>,
+}
+
+/// A directory whose package instance [`ModuleEvalOptions::unify`] merges
+/// into the evaluated instance.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifySource {
+    /// Directory holding the package files.
+    pub dir: String,
+    /// Root that resolves the directory's imports. `None` treats the
+    /// directory as its own root, so a standalone directory evaluates and
+    /// module imports fail through the normal CUE error path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_root: Option<String>,
 }
 
 /// Whether a recursive evaluation reports the directories it leaves out.
@@ -1118,6 +1142,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         presence_paths: Vec::new(),
         skipped_directories: SkippedDirectories::Ignore,
         task_field: None,
+        unify: Vec::new(),
     };
 
     let result = evaluate_module(dir_path, package_name, Some(&options))?;
