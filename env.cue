@@ -41,7 +41,7 @@ let _schemaDocsInputs = [
 	"env.cue",
 	"schema/**",
 	"docs/design/specs/schema-coverage-matrix.md",
-	"docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.md",
+	"docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.mdx",
 	"docs/src/content/docs/decisions/adrs/adr-0009-single-internal-sync-registry.md",
 	"docs/src/content/docs/explanation/**",
 	"docs/src/content/docs/reference/**",
@@ -480,7 +480,6 @@ schema.#Project & {
 					bun install --frozen-lockfile
 					cd docs
 					bun run build
-					cp public/.assetsignore dist/
 					"""]
 				inputs: [
 					"package.json",

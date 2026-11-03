@@ -32,8 +32,8 @@ on:
     - docs/design/specs/schema-coverage-matrix.md
     - docs/design/specs/schema-coverage-matrix.md/**
     - docs/src/content/docs/agents/**
-    - docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.md
-    - docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.md/**
+    - docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.mdx
+    - docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.mdx/**
     - docs/src/content/docs/decisions/adrs/adr-0009-single-internal-sync-registry.md
     - docs/src/content/docs/decisions/adrs/adr-0009-single-internal-sync-registry.md/**
     - docs/src/content/docs/explanation/**
@@ -95,8 +95,8 @@ on:
     - docs/design/specs/schema-coverage-matrix.md
     - docs/design/specs/schema-coverage-matrix.md/**
     - docs/src/content/docs/agents/**
-    - docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.md
-    - docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.md/**
+    - docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.mdx
+    - docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.mdx/**
     - docs/src/content/docs/decisions/adrs/adr-0009-single-internal-sync-registry.md
     - docs/src/content/docs/decisions/adrs/adr-0009-single-internal-sync-registry.md/**
     - docs/src/content/docs/explanation/**

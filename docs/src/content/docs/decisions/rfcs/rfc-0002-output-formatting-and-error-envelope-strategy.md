@@ -12,7 +12,7 @@ related_features:
 
 ## Summary
 
-This RFC documents the multi-format output strategy and error taxonomy for the cuenv CLI. It captures the semantics codified in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs), ensuring that human-friendly output, JSON automation hooks, and exit-code signalling remain predictable as the CLI evolves.
+This RFC documents the multi-format output strategy and error taxonomy for the cuenv CLI. It captures the semantics codified in [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs), ensuring that human-friendly output, JSON automation hooks, and exit-code signalling remain predictable as the CLI evolves.
 
 ## Problem Statement
 
@@ -20,7 +20,7 @@ The CLI presently emits three output modes (`simple`, `env`, `json`) while simul
 
 - Downstream tooling cannot rely on stable JSON schemas.
 - Users lack clarity on when secrets are redacted or how warnings are surfaced.
-- Tests and documentation risk drifting from the implemented behaviour, especially for empty files such as [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1).
+- Tests and documentation risk drifting from the implemented behaviour, especially for empty files such as [crates/cuenv/tests/bdd/features/errors.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/errors.feature#L1).
 
 Documenting the strategy provides a single source of truth that feature files and ADRs can reference.
 
@@ -50,11 +50,11 @@ Documenting the strategy provides a single source of truth that feature files an
    - Provide optional `help` messages surfaced via miette when not in JSON mode.
 
 3. **Exit Code Mapping**
-   - Maintain the explicit mapping in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs).
+   - Maintain the explicit mapping in [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs).
    - Document future additions to the error taxonomy through ADR updates.
 
 4. **Testing Strategy**
-   - Expand BDD coverage in [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1) to assert envelope structure, redaction rules, and exit codes.
+   - Expand BDD coverage in [crates/cuenv/tests/bdd/features/errors.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/errors.feature#L1) to assert envelope structure, redaction rules, and exit codes.
    - Introduce snapshot tests to detect schema regressions.
 
 5. **Documentation Alignment**
@@ -77,15 +77,15 @@ Documenting the strategy provides a single source of truth that feature files an
 ## Migration Plan
 
 - Publish this RFC for review alongside exemplar tests.
-- Populate [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1) with scenarios referencing the exported schema.
+- Populate [crates/cuenv/tests/bdd/features/errors.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/errors.feature#L1) with scenarios referencing the exported schema.
 - On acceptance, emit ADR-0005 to freeze the taxonomy (already drafted).
 
 ## Features Alignment
 
 | Feature Specification                                        | Coverage | Notes                                                         |
 | ------------------------------------------------------------ | -------- | ------------------------------------------------------------- |
-| [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1) | Pending  | Will assert JSON envelopes, redaction, and exit codes.        |
-| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1)     | Pending  | Help output must describe formatting flags based on this RFC. |
+| [crates/cuenv/tests/bdd/features/errors.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/errors.feature#L1) | Pending  | Will assert JSON envelopes, redaction, and exit codes.        |
+| [crates/cuenv/tests/bdd/features/help.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/help.feature#L1)     | Pending  | Help output must describe formatting flags based on this RFC. |
 
 ## Open Questions
 
@@ -97,6 +97,6 @@ Documenting the strategy provides a single source of truth that feature files an
 
 | Artifact                                                                                                  | Purpose                                                    |
 | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs)                                                        | Source of `OutputFormat`, envelopes, and error mappings.   |
+| [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs)                                                        | Source of `OutputFormat`, envelopes, and error mappings.   |
 | [adr-0005-cli-error-taxonomy-and-exit-codes](/decisions/adrs/adr-0005-cli-error-taxonomy-and-exit-codes/) | Ratified decision capturing the taxonomy defined here.     |
-| [readme.md](readme.md:368)                                                                                | Public documentation that will mirror the output contract. |
+| [readme.md](https://github.com/cuenv/cuenv/blob/main/readme.md#L368)                                                                                | Public documentation that will mirror the output contract. |

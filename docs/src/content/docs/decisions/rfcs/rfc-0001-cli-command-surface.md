@@ -13,7 +13,7 @@ related_features:
 
 ## Summary
 
-This RFC defines the canonical command surface for the cuenv CLI. It captures the hierarchy, naming, default argument semantics, and discoverability strategies already prototyped in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs:211). The goal is to stabilise the structural expectations that other tooling (documentation, BDD scenarios, IDE integrations) depend on before the CLI transitions from alpha to beta.
+This RFC defines the canonical command surface for the cuenv CLI. It captures the hierarchy, naming, default argument semantics, and discoverability strategies already prototyped in [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs#L211). The goal is to stabilise the structural expectations that other tooling (documentation, BDD scenarios, IDE integrations) depend on before the CLI transitions from alpha to beta.
 
 ## Problem Statement
 
@@ -41,15 +41,15 @@ Left undocumented, future changes risk fragmenting the user experience and break
 ## Proposed Approach
 
 1. **Command Taxonomy**
-   - Retain the current top-level subcommands enumerated in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs).
+   - Retain the current top-level subcommands enumerated in [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs).
    - Document the rationale for each grouping (`env` for environment inspection and hook lifecycle, `task` for orchestration, `exec` for ad-hoc commands, `shell` for integration, `allow` for approvals).
 
 2. **Default Arguments**
    - Standardise `--path` defaulting to `.` and `--package` defaulting to `cuenv`.
-   - Promote `--format` as a global flag with allowed values (`simple`, `env`, `json`), matching the `OutputFormat` value enum at [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs).
+   - Promote `--format` as a global flag with allowed values (`simple`, `env`, `json`), matching the `OutputFormat` value enum at [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs).
 
 3. **Discoverability Enhancements**
-   - Ensure `--help` output surfaces subcommands, aliases, and examples consistent with documentation commitments in [readme.md](readme.md:242).
+   - Ensure `--help` output surfaces subcommands, aliases, and examples consistent with documentation commitments in [readme.md](https://github.com/cuenv/cuenv/blob/main/readme.md#L242).
    - Provide canonical command usage snippets to be reused in docs and BDD scenarios.
 
 4. **Stability Guarantees**
@@ -83,9 +83,9 @@ Left undocumented, future changes risk fragmenting the user experience and break
 
 | Feature Specification                                    | Coverage                                                 | Notes                                                    |
 | -------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------- |
-| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1) | `Scenario: Full CLI help surfaces subcommands` (pending) | This RFC defines the structure the scenario must assert. |
-| [crates/cuenv/tests/bdd/features/env.feature](crates/cuenv/tests/bdd/features/env.feature:1)   | `Scenario: TBD` (pending)                                | To be updated to verify default path/package handling.   |
-| [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1) | `Scenario: Task listing respects hierarchy` (pending)    | Aligns aliases (`cuenv task`, `cuenv t`).                |
+| [crates/cuenv/tests/bdd/features/help.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/help.feature#L1) | `Scenario: Full CLI help surfaces subcommands` (pending) | This RFC defines the structure the scenario must assert. |
+| [crates/cuenv/tests/bdd/features/env.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/env.feature#L1)   | `Scenario: TBD` (pending)                                | To be updated to verify default path/package handling.   |
+| [crates/cuenv/tests/bdd/features/task.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/task.feature#L1) | `Scenario: Task listing respects hierarchy` (pending)    | Aligns aliases (`cuenv task`, `cuenv t`).                |
 
 ## Open Questions
 
@@ -97,7 +97,7 @@ Left undocumented, future changes risk fragmenting the user experience and break
 
 | Artifact                                                                                                  | Purpose                                                                           |
 | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs)                                                        | Canonical definition of Clap command hierarchy.                                   |
-| [readme.md](readme.md:242)                                                                                | Public CLI reference that must mirror the agreed structure.                       |
+| [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs)                                                        | Canonical definition of Clap command hierarchy.                                   |
+| [readme.md](https://github.com/cuenv/cuenv/blob/main/readme.md#L242)                                                                                | Public CLI reference that must mirror the agreed structure.                       |
 | [adr-0003-task-graph-execution-strategy](/decisions/adrs/adr-0003-task-graph-execution-strategy/)         | Downstream ADR addressing execution semantics that depend on this command layout. |
 | [adr-0005-cli-error-taxonomy-and-exit-codes](/decisions/adrs/adr-0005-cli-error-taxonomy-and-exit-codes/) | Documents error handling expectations for commands defined here.                  |

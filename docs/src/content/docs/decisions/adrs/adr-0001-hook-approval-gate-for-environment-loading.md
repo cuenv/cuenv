@@ -14,7 +14,7 @@ superseded_by: []
 
 ## Context
 
-`cuenv env load` initiates background hooks that configure development environments. The prototype in [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:69) introduced a configuration approval requirement to prevent unreviewed hook execution. Without a ratified decision the behaviour could regress, exposing users to malicious hook payloads or unexpected configuration drifts.
+`cuenv env load` initiates background hooks that configure development environments. The prototype in [crates/cuenv/src/commands/hooks.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/hooks.rs#L69) introduced a configuration approval requirement to prevent unreviewed hook execution. Without a ratified decision the behaviour could regress, exposing users to malicious hook payloads or unexpected configuration drifts.
 
 This ADR builds upon [rfc-0003-shell-integration-workflow-and-hook-lifecycle](/decisions/rfcs/rfc-0003-shell-integration-workflow-and-hook-lifecycle/) and stabilises the approval contract.
 
@@ -48,14 +48,14 @@ This ADR builds upon [rfc-0003-shell-integration-workflow-and-hook-lifecycle](/d
 
 | Feature Scenario                                                                                   | Impact                                                                              |
 | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:59) — Failed hooks do not load environment | Ensures approval gate prevents execution if configuration changes unapproved.       |
-| [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:50) — Changing directories preserves state | Approval keying by canonical directory upholds this scenario.                       |
-| [crates/cuenv/tests/bdd/features/env.feature](crates/cuenv/tests/bdd/features/env.feature:1) — Pending scenarios                         | Must include cases for approved vs. unapproved configurations referencing this ADR. |
+| [crates/cuenv/tests/bdd/features/hooks.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/hooks.feature#L59) — Failed hooks do not load environment | Ensures approval gate prevents execution if configuration changes unapproved.       |
+| [crates/cuenv/tests/bdd/features/hooks.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/hooks.feature#L50) — Changing directories preserves state | Approval keying by canonical directory upholds this scenario.                       |
+| [crates/cuenv/tests/bdd/features/env.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/env.feature#L1) — Pending scenarios                         | Must include cases for approved vs. unapproved configurations referencing this ADR. |
 
 ## Related Documents
 
 - [rfc-0003-shell-integration-workflow-and-hook-lifecycle](/decisions/rfcs/rfc-0003-shell-integration-workflow-and-hook-lifecycle/)
-- [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:191)
+- [crates/cuenv/src/commands/hooks.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/hooks.rs#L191)
 - [adr-0002-background-hook-execution-with-shell-self-unload](/decisions/adrs/adr-0002-background-hook-execution-with-shell-self-unload/)
 
 ## Status

@@ -14,7 +14,7 @@ superseded_by: []
 
 ## Context
 
-The cuenv CLI surfaces distinct error categories to users and automation. The implementation in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs) defines `CliError::{Config, Eval, Other}`, each mapping to a specific exit code and diagnostic presentation. To maintain consistency across commands and documentation, we must formally accept this taxonomy.
+The cuenv CLI surfaces distinct error categories to users and automation. The implementation in [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs) defines `CliError::{Config, Eval, Other}`, each mapping to a specific exit code and diagnostic presentation. To maintain consistency across commands and documentation, we must formally accept this taxonomy.
 
 This ADR builds on [rfc-0002-output-formatting-and-error-envelope-strategy](/decisions/rfcs/rfc-0002-output-formatting-and-error-envelope-strategy/).
 
@@ -46,14 +46,14 @@ This ADR builds on [rfc-0002-output-formatting-and-error-envelope-strategy](/dec
 
 | Feature Scenario                                                       | Impact                                                                        |
 | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1) — Pending | Must verify exit codes, envelope structure, and redaction rules per this ADR. |
-| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1) — Pending     | Help output should highlight error categories and exit codes.                 |
+| [crates/cuenv/tests/bdd/features/errors.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/errors.feature#L1) — Pending | Must verify exit codes, envelope structure, and redaction rules per this ADR. |
+| [crates/cuenv/tests/bdd/features/help.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/help.feature#L1) — Pending     | Help output should highlight error categories and exit codes.                 |
 
 ## Related Documents
 
 - [rfc-0002-output-formatting-and-error-envelope-strategy](/decisions/rfcs/rfc-0002-output-formatting-and-error-envelope-strategy/)
-- [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs)
-- [readme.md](readme.md:770)
+- [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs)
+- [readme.md](https://github.com/cuenv/cuenv/blob/main/readme.md#L770)
 
 ## Status
 

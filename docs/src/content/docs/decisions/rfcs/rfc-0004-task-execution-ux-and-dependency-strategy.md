@@ -12,7 +12,7 @@ related_features:
 
 ## Summary
 
-This RFC records the intended user experience and dependency resolution model for `cuenv task`. The existing implementation, centred on [crates/cuenv/src/commands/task.rs](crates/cuenv/src/commands/task.rs:10), establishes behaviour for listing tasks, executing individual or grouped tasks, and applying environments. Documenting these choices ensures the behaviour remains stable as we expand task orchestration.
+This RFC records the intended user experience and dependency resolution model for `cuenv task`. The existing implementation, centred on [crates/cuenv/src/commands/task.rs](https://github.com/cuenv/cuenv/tree/main/crates/cuenv/src/commands/task#L10), establishes behaviour for listing tasks, executing individual or grouped tasks, and applying environments. Documenting these choices ensures the behaviour remains stable as we expand task orchestration.
 
 ## Problem Statement
 
@@ -20,7 +20,7 @@ Without explicit documentation of task graph semantics:
 
 - Contributors cannot easily reason about when to use sequential versus graph execution.
 - Users do not know what to expect when a task has dependencies, or how environment variables are applied.
-- BDD scenarios (e.g. [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1)) remain empty, missing valuable acceptance coverage.
+- BDD scenarios (e.g. [crates/cuenv/tests/bdd/features/task.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/task.feature#L1)) remain empty, missing valuable acceptance coverage.
 
 We need a durable reference that captures intents, trade-offs, and consequences.
 
@@ -45,7 +45,7 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 
 2. **Execution Semantics**
    - For `TaskNode::Task` without dependencies, execute directly and stream output if `capture_output` is enabled.
-   - For tasks with dependencies, groups (`TaskNode::Group`), or sequences (`TaskNode::Sequence`), construct a `TaskGraph` via [TaskGraph::build_for_task](crates/cuenv/src/commands/task.rs:92) and execute using `execute_graph`, preserving topological order.
+   - For tasks with dependencies, groups (`TaskNode::Group`), or sequences (`TaskNode::Sequence`), construct a `TaskGraph` via [TaskGraph::build_for_task](https://github.com/cuenv/cuenv/tree/main/crates/cuenv/src/commands/task#L92) and execute using `execute_graph`, preserving topological order.
 
 3. **Environment Handling**
    - Build a task-specific environment using `Environment::build_for_task`, injecting base variables while respecting secret redaction.
@@ -76,15 +76,15 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 ## Migration Plan
 
 - Publish this RFC and coordinate with cuenv-core team to ensure alignment.
-- Fill [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1) with scenarios covering listing, successful execution, dependency failure, and output capture.
+- Fill [crates/cuenv/tests/bdd/features/task.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/task.feature#L1) with scenarios covering listing, successful execution, dependency failure, and output capture.
 - Ratify via ADR-0003 once behaviour is final.
 
 ## Features Alignment
 
 | Feature Specification                                    | Coverage                              | Notes                                                    |
 | -------------------------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
-| [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1) | Pending scenarios defined by this RFC | Will cover listing, execution, dependency failure cases. |
-| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1) | Pending                               | Help output must describe task behaviour and flags.      |
+| [crates/cuenv/tests/bdd/features/task.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/task.feature#L1) | Pending scenarios defined by this RFC | Will cover listing, execution, dependency failure cases. |
+| [crates/cuenv/tests/bdd/features/help.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/help.feature#L1) | Pending                               | Help output must describe task behaviour and flags.      |
 
 ## Open Questions
 
@@ -96,7 +96,7 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 
 | Artifact                                                                                          | Purpose                                                |
 | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| [crates/cuenv/src/commands/task/execution.rs](crates/cuenv/src/commands/task/execution.rs)         | Task selection, graph building, and execution flow.    |
+| [crates/cuenv/src/commands/task/execution.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/task/execution.rs)         | Task selection, graph building, and execution flow.    |
 | [adr-0003-task-graph-execution-strategy](/decisions/adrs/adr-0003-task-graph-execution-strategy/) | Ratified decision capturing final execution semantics. |
-| [readme.md](readme.md:248)                                                                        | Public documentation for task commands.                |
+| [readme.md](https://github.com/cuenv/cuenv/blob/main/readme.md#L248)                                                                        | Public documentation for task commands.                |
 | cuenv-core task executor docs (future)                                                            | Provide deeper technical details once published.       |

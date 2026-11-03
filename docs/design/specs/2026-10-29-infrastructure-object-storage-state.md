@@ -635,7 +635,7 @@ Project names are unique.
 
 These pages need adding or updating:
 
-- **`how-to/infrastructure.md`:**
+- **`how-to/infrastructure.mdx`:**
   - the S3 backend with AWS, R2 and MinIO examples, including R2's
     `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` endpoint and
     `region: "auto"`;
@@ -665,7 +665,7 @@ These pages need adding or updating:
     what cannot be detected; change `module:` when copying a repository.
 - Replace the sentence "Moving a project to a different module or renaming it
   starts from empty state" with the new rename behaviour.
-- `reference/cli.md`: every new or changed command and flag.
+- `reference/cli.mdx`: every new or changed command and flag.
 - `docs/design/specs/schema-coverage-matrix.md`: the `s3` block and
   `migrateStateTo`.
 - `.agents/skills/` entries that describe state backends.

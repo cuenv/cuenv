@@ -1,0 +1,212 @@
+---
+id: ADR-0006
+title: Library-First Architecture with Unified Provider System
+status: Superseded
+decision_date: 2025-12-27
+approvers:
+  - Core Maintainers
+related_features: []
+supersedes: []
+superseded_by:
+  - RFC-0006
+  - ADR-0009
+---
+
+:::caution[Superseded]
+RFC-0006 removed this design and ADR-0009 records the replacement. The public
+provider builder described here was never connected to the CLI dispatcher and
+has been removed. This document is retained as historical context only.
+:::
+
+## Context
+
+The cuenv CLI currently has a tightly coupled architecture:
+
+1. **Hardcoded Providers**: Sync providers (ci, cubes, rules) are registered via a static `default_registry()` factory function
+2. **Binary-Only**: The `cuenv` crate is only consumable as a binary, not as a library
+3. **Hardcoded CLI**: The `SyncCommands` enum in `cli.rs` must be modified for each new provider
+4. **Sync-Only Provider Dispatch**: Only generated-file sync has a library-facing dispatch path today
+
+This prevents:
+
+- External crates from extending cuenv without forking
+- Building custom cuenv distributions with different provider sets
+- Sync providers from external crates without inventing placeholder runtime or secret dispatch APIs
+
+## Decision
+
+### 1. Library-First Architecture
+
+The `cuenv` crate will be refactored to expose both library and binary targets:
+
+```toml
+[lib]
+name = "cuenv"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cuenv"
+path = "src/main.rs"
+```
+
+The binary becomes a thin wrapper:
+
+```rust
+fn main() -> cuenv::Result<()> {
+    let cuenv = cuenv::Cuenv::builder()
+        .with_defaults()
+        .build();
+
+    cuenv.run_cli()
+}
+```
+
+The library should only expose that entrypoint once command dispatch actually
+lives behind the provider registry. Until then, the binary remains the canonical
+CLI dispatcher and the library exposes provider registration plus dynamic command
+construction.
+
+### 2. Sync Provider System
+
+A provider is a sync extension point. Runtime and secret provider traits should
+only be added when task execution or secret resolution actually dispatches
+through the registry.
+
+```rust
+/// Base trait for all providers
+pub trait Provider: Send + Sync + 'static {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+}
+
+/// Capability: Sync files from CUE configuration
+#[async_trait]
+pub trait SyncCapability: Provider {
+    fn build_sync_command(&self) -> clap::Command;
+    async fn sync_path(
+        &self,
+        path: &Path,
+        package: &str,
+        options: &SyncOptions,
+        executor: &CommandExecutor,
+    ) -> Result<SyncResult>;
+    async fn sync_workspace(
+        &self,
+        package: &str,
+        options: &SyncOptions,
+        executor: &CommandExecutor,
+    ) -> Result<SyncResult>;
+    fn has_config(&self, manifest: &Base) -> bool;
+    fn parse_sync_args(&self, matches: &ArgMatches) -> SyncOptions; // Has default impl
+}
+```
+
+### 3. Type-Safe Registration via Builder Pattern
+
+The builder exposes the implemented capability only:
+
+```rust
+Cuenv::builder()
+    .with_sync_provider(CiProvider::new())      // SyncCapability
+    .with_sync_provider(CubesProvider::new())   // SyncCapability
+    .build()
+```
+
+The `ProviderRegistry` provides O(1) lookup by name and iteration over sync
+providers:
+
+```rust
+impl ProviderRegistry {
+    pub fn sync_providers(&self) -> impl Iterator<Item = &Arc<dyn SyncCapability>>;
+    pub fn get_sync_provider(&self, name: &str) -> Option<&Arc<dyn SyncCapability>>;
+}
+```
+
+### 4. Dynamic CLI Generation
+
+CLI subcommands are generated from registered provider capabilities:
+
+```rust
+impl Cuenv {
+    fn build_cli(&self) -> clap::Command {
+        let mut sync_cmd = Command::new("sync");
+        for provider in self.registry.sync_providers() {
+            sync_cmd = sync_cmd.subcommand(provider.build_sync_command());
+        }
+    }
+}
+```
+
+## Consequences
+
+### Positive
+
+1. **Extensibility**: External crates can add providers without forking
+2. **Honest Extension Surface**: The public API exposes only dispatch paths that exist today
+3. **Custom Distributions**: Organizations can build cuenv variants with specific provider sets
+4. **Cleaner Architecture**: Removes hardcoded CLI enums and static registries
+5. **Testability**: Providers can be mocked individually
+
+### Negative
+
+1. **Breaking Internal Change**: Provider registration mechanism changes entirely
+2. **Future Capability Work**: Runtime or secret providers will need a new ADR or ADR update once a real registry-backed dispatch path exists
+3. **Migration Effort**: Existing providers must be refactored to implement base `Provider` trait
+
+### Neutral
+
+1. **No CLI Breaking Changes**: `cuenv sync ci` continues to work unchanged
+2. **Incremental Capability Addition**: Runtime or secret capability traits can be added later without changing existing sync providers
+
+## Alternatives Considered
+
+### 1. Unified `with_provider()` Method with Runtime Capability Detection
+
+```rust
+Cuenv::builder()
+    .with_provider(CiProvider)           // Auto-detect SyncCapability
+    .build()
+```
+
+**Rejected**: The current implemented extension point is sync-only, so runtime
+capability detection and downcasting would be speculative. A direct
+`with_sync_provider()` method provides better compile-time guarantees and avoids
+placeholder APIs.
+
+### 2. Plugin System with Dynamic Loading
+
+Load providers from shared libraries at runtime.
+
+**Rejected**: Adds complexity (ABI stability, FFI), harder to debug, security concerns. Can be added later if needed.
+
+### 3. Inventory/Linkme for Compile-Time Discovery
+
+```rust
+#[inventory::submit]
+static _: &dyn Provider = &CiProvider;
+```
+
+**Rejected**: Magic, harder to understand, doesn't allow custom provider sets per binary.
+
+## Related Documents
+
+- [crates/cuenv/src/commands/sync/provider.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/sync/provider.rs) - Current SyncProvider trait
+- [crates/cuenv/src/commands/sync/registry.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/sync/registry.rs) - Current SyncRegistry
+- [crates/cuenv/src/commands/sync/providers/mod.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/sync/providers/mod.rs) - Current `default_registry()`
+- [crates/cuenv/src/cli.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/cli.rs) - Current hardcoded CLI
+
+## Status
+
+Superseded by ADR-0009. The experiment proved that exposing registration and
+dynamic command construction without routing real CLI execution through them
+created a second, misleading architecture rather than an extension point.
+
+## Implementation Order
+
+1. ✅ Add library target to Cargo.toml
+2. ✅ Create `Provider` base trait and sync capability trait (`provider.rs`)
+3. ✅ Create `ProviderRegistry` with O(1) lookup (`registry.rs`)
+4. ✅ Create `CuenvBuilder` with type-safe `with_sync_provider()` (`builder.rs`)
+5. ✅ Refactor existing providers (ci, cubes, rules) to `providers/` module
+6. ✅ Dynamic CLI generation via `build_sync_command()`
+7. ✅ Main binary uses builder pattern

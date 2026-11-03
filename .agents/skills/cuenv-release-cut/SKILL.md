@@ -10,7 +10,7 @@ Use this for an actual cuenv release operation. For release schema/config change
 Read the current release rules before acting:
 
 - `AGENTS.md` release section for project policy.
-- `docs/src/content/docs/how-to/releases.md` for release-tooling limits.
+- `docs/src/content/docs/how-to/releases.mdx` for release-tooling limits.
 - `docs/src/content/docs/how-to/develop-cuenv.md` for maintainer release notes.
 - `Cargo.toml` and `Cargo.lock` for the current version state.
 - `env.cue` and `.github/workflows/cuenv-release.yml` when GitHub release workflow behavior matters.

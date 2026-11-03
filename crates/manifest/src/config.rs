@@ -17,7 +17,7 @@ pub struct Config {
     pub commands: Option<CommandsConfig>,
 
     /// Task backend configuration. Legacy: selects the Dagger backend and its
-    /// default image; see `docs/src/content/docs/explanation/dagger-backend.md`.
+    /// default image; see `docs/src/content/docs/explanation/dagger-backend.mdx`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendConfig>,
 

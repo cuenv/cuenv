@@ -14,7 +14,7 @@ superseded_by: []
 
 ## Context
 
-`cuenv task` supports both simple single-task execution and dependency-aware orchestration. The CLI orchestration in [crates/cuenv/src/commands/task/execution.rs](crates/cuenv/src/commands/task/execution.rs) builds task graphs when dependencies are present, while preserving lightweight execution for independent tasks. This ADR formalises the strategy so future changes remain consistent with user expectations and the architecture documented in [rfc-0004-task-execution-ux-and-dependency-strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/).
+`cuenv task` supports both simple single-task execution and dependency-aware orchestration. The CLI orchestration in [crates/cuenv/src/commands/task/execution.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/task/execution.rs) builds task graphs when dependencies are present, while preserving lightweight execution for independent tasks. This ADR formalises the strategy so future changes remain consistent with user expectations and the architecture documented in [rfc-0004-task-execution-ux-and-dependency-strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/).
 
 ## Decision
 
@@ -46,13 +46,13 @@ superseded_by: []
 
 | Feature Scenario                                                   | Impact                                                                        |
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1) — Pending | Scenarios will validate listing, success, and failure behaviour defined here. |
-| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1) — Pending | Help text must explain graph vs direct execution referencing this decision.   |
+| [crates/cuenv/tests/bdd/features/task.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/task.feature#L1) — Pending | Scenarios will validate listing, success, and failure behaviour defined here. |
+| [crates/cuenv/tests/bdd/features/help.feature](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/tests/bdd/features/help.feature#L1) — Pending | Help text must explain graph vs direct execution referencing this decision.   |
 
 ## Related Documents
 
 - [rfc-0004-task-execution-ux-and-dependency-strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/)
-- [crates/cuenv/src/commands/task/execution.rs](crates/cuenv/src/commands/task/execution.rs)
+- [crates/cuenv/src/commands/task/execution.rs](https://github.com/cuenv/cuenv/blob/main/crates/cuenv/src/commands/task/execution.rs)
 - cuenv-core task graph implementation (future documentation)
 
 ## Status

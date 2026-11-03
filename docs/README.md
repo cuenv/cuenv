@@ -1,28 +1,40 @@
 # cuenv documentation site
 
-This directory contains the cuenv documentation site built with [Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/).
+This directory contains the cuenv documentation site, published at
+[cuenv.dev](https://cuenv.dev). It is built with
+[Nimbus](https://nimbus-docs.com/) (`@cloudflare/nimbus-docs`) on
+[Astro](https://astro.build/) and deployed as static assets to Cloudflare
+Workers.
 
 ## Local development
 
-From this directory:
+Dependencies are installed from the repository root (the docs site is a bun
+workspace member). From this directory:
 
 ```bash
 bun install
 bun run dev
 ```
 
-Build and preview:
+Build, check, and preview:
 
 ```bash
-bun run build
+bun run build      # static site in dist/, including the Pagefind search index
+bun run check      # nimbus-docs check: config, structure, links, frontmatter
+bun run typecheck  # astro check
 bun run preview
 ```
 
+Search only works against a build (`bun run build` then `bun run preview`), not
+`bun run dev`.
+
+In CI, `cuenv task docs.build` builds the site and `cuenv task docs.deploy`
+publishes it with Wrangler (`wrangler.jsonc`).
+
 ## Where docs live
 
-Starlight content is under:
-
-- `docs/src/content/docs/`
+Pages are under `docs/src/content/docs/`. The folder tree is the URL structure,
+and the sidebar order and labels are set in `astro.config.ts`.
 
 The site is organized using the [Diátaxis framework](https://diataxis.fr/):
 
@@ -31,6 +43,34 @@ The site is organized using the [Diátaxis framework](https://diataxis.fr/):
 - `docs/src/content/docs/reference/`
 - `docs/src/content/docs/explanation/`
 - `docs/src/content/docs/decisions/` (ADRs + RFCs)
+
+Directories outside `src/` (`design/`, `releases/`, `superpowers/`) are
+repository notes and are not published.
+
+## Markdown and MDX
+
+- Use `.mdx` for any page with components (`<Aside>`, `<Card>`, `<CardGrid>`,
+  `<Steps>`, `<Tabs>`, `<LinkButton>`) or `:::note` / `:::tip` / `:::caution`
+  admonitions. Plain `.md` renders neither.
+- Components registered in `src/components.ts` work in MDX without an import.
+  Card icons use [Phosphor](https://phosphoricons.com/) names, e.g.
+  `icon="ph:arrow-right"`.
+- In `.mdx`, `{` and `<` in prose are parsed as expressions and tags. Wrap them
+  in backticks.
+- Link to other pages with root-relative paths (`/how-to/install/`). Link to
+  repository files with full GitHub URLs.
+
+## Upgrading Nimbus
+
+The site's components, layouts, and pages are copied into `src/` and are ours
+to edit; `nimbus.json` records which Nimbus templates they came from. To see
+and pull upstream changes:
+
+```bash
+bunx nimbus-docs outdated
+bunx nimbus-docs diff
+bunx nimbus-docs migrate --dry-run
+```
 
 ## Writing guidelines
 

@@ -74,7 +74,7 @@ cuenv/
 ├── schema/                 # CUE schema definitions
 ├── integrations/           # Editor integrations (VSCode)
 ├── examples/              # Example configurations
-├── docs/                   # Documentation (Astro/Starlight)
+├── docs/                   # Documentation (Astro/Nimbus)
 ├── _tests/                 # Integration tests
 └── flake.nix              # Nix development environment
 ```
@@ -171,9 +171,11 @@ bun run build
 
 ### Writing Documentation
 
-- Documentation uses [Astro](https://astro.build/) with [Starlight](https://starlight.astro.build/)
+- Documentation uses [Nimbus](https://nimbus-docs.com/) on [Astro](https://astro.build/)
 - Source files in `docs/src/content/docs/`
-- Use Markdown with MDX support
+- Use `.mdx` for pages with components or `:::note` admonitions; plain `.md`
+  renders neither
+- Run `bun run check` in `docs/` to catch broken internal links and frontmatter errors
 - Test code examples before documenting
 
 ## Debugging
