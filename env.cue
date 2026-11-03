@@ -181,6 +181,18 @@ schema.#Project & {
 				]
 			}
 
+			// Every pull request that touches the docs gets a Worker Preview of
+			// cuenv.dev, linked from a single PR comment that each push updates.
+			"docs-preview": {
+				environment: "production"
+				when: pullRequest: true
+				provider: github: permissions: {
+					"id-token":      "write"
+					"pull-requests": "write"
+				}
+				tasks: [_t.docs.preview]
+			}
+
 			release: {
 				environment: "production"
 				when: {
@@ -508,6 +520,61 @@ schema.#Project & {
 					bun install --frozen-lockfile
 					cd docs
 					bunx --no-install wrangler deploy
+					"""]
+				dependsOn: [_t.docs.build]
+				inputs: [
+					{task: "docs.build"},
+					"package.json",
+					"bun.lock",
+					"integrations/*/package.json",
+					"docs/package.json",
+					"docs/wrangler.jsonc",
+				]
+			}
+
+			preview: schema.#Task & {
+				// Uploads docs/dist as the `pr-<number>` Preview of the Worker and
+				// upserts one PR comment with its URL. Requires wrangler 4.135+.
+				ci: github: permissions: "pull-requests": "write"
+				hermetic: {passthrough: ["PATH"]}
+				env: {
+					REF: schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
+					GH_TOKEN: schema.#EnvPassthrough & {name: "GITHUB_TOKEN"}
+				}
+				command: "bash"
+				args: ["-c", """
+					set -euo pipefail
+					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
+					task_root="$PWD"
+					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
+					export HOME="$task_root/.cuenv-home"
+					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
+					export TMPDIR="$task_root/.cuenv-tmp"
+					export TMP="$TMPDIR"
+					export TEMP="$TMPDIR"
+
+					# Pull request runs check out refs/pull/<number>/merge.
+					pr="${REF%%/*}"
+					if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+						echo "docs.preview runs on pull requests only (ref: $REF)" >&2
+						exit 1
+					fi
+
+					bun install --frozen-lockfile
+					cd docs
+					output="$(bunx --no-install wrangler preview --name "pr-$pr" --message "PR #$pr" --json)"
+					printf '%s\\n' "$output"
+					url="$(jq -er '.preview.urls[0]' <<<"$output")"
+
+					marker="<!-- cuenv-docs-preview -->"
+					body="$(printf '%s\\n**Docs preview:** %s\\n' "$marker" "$url")"
+					comment_id="$(gh api "repos/cuenv/cuenv/issues/$pr/comments" --paginate \\
+						--jq "[.[] | select(.body | startswith(\\"$marker\\"))][0].id // empty" | head -n1)"
+					if [ -n "$comment_id" ]; then
+						gh api --method PATCH "repos/cuenv/cuenv/issues/comments/$comment_id" -f body="$body" >/dev/null
+					else
+						gh api --method POST "repos/cuenv/cuenv/issues/$pr/comments" -f body="$body" >/dev/null
+					fi
 					"""]
 				dependsOn: [_t.docs.build]
 				inputs: [

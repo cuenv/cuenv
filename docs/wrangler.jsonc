@@ -12,6 +12,11 @@
 			"custom_domain": true
 		}
 	],
+	// Pull requests deploy to a Worker Preview (`wrangler preview`), served at
+	// pr-<number>-cuenv-website.<subdomain>.workers.dev. Production stays on
+	// the cuenv.dev custom domain; `previews` holds preview-only overrides.
+	"preview_urls": true,
+	"previews": {},
 	"observability": {
 		"enabled": true
 	}

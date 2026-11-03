@@ -30,7 +30,9 @@ Docs site note: the cuenv.dev site is built with Nimbus
 (`@cloudflare/nimbus-docs`) on Astro. The release pipeline's `docs.build` task
 produces a static `docs/dist` (including the Pagefind search index) and
 `docs.deploy` publishes it to Cloudflare Workers static assets with Wrangler;
-there is no server Worker. Doc paths in this matrix use `.mdx` for pages that
+there is no server Worker. On pull requests, the `docs-preview` pipeline's
+`docs.preview` task uploads the same build as a `pr-<number>` Worker Preview
+(`wrangler preview`) and upserts one PR comment with its URL. Doc paths in this matrix use `.mdx` for pages that
 render components or `:::` admonitions, which plain `.md` does not.
 
 CLI-only note: module evaluation waits `CUENV_EVAL_TIMEOUT` seconds (default

@@ -31,6 +31,16 @@ Search only works against a build (`bun run build` then `bun run preview`), not
 In CI, `cuenv task docs.build` builds the site and `cuenv task docs.deploy`
 publishes it with Wrangler (`wrangler.jsonc`).
 
+Every pull request that touches the docs also runs the `docs-preview` pipeline.
+Its `docs.preview` task uploads the build as a
+[Worker Preview](https://developers.cloudflare.com/workers/previews/) named
+`pr-<number>` (`wrangler preview`, Wrangler 4.135 or later) and keeps one PR
+comment pointing at its `workers.dev` URL. Each push updates the same Preview.
+Production on cuenv.dev is untouched. Previews are not deleted when a PR closes
+yet; remove one with `bunx wrangler preview delete --name pr-<number>` from
+`docs/`. PRs from forks get no preview, because they cannot read the 1Password
+service account secret.
+
 ## Where docs live
 
 Pages are under `docs/src/content/docs/`. The folder tree is the URL structure,
