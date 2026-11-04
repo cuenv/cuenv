@@ -101,7 +101,7 @@ fn opaque(color: Rgb) -> Rgba {
 
 /// The window's one material: the terminal background and structural chrome
 /// share this opacity, so the window never reads as glass beside paint.
-pub(in crate::terminal) fn material_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
+pub(super) fn material_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
     Rgba {
         a: theme.background_opacity.clamp(0.0, 1.0),
         ..opaque(color)

@@ -88,10 +88,11 @@ one dark title strip, a compact right-side vertical tab rail, and a full-bleed
 Catppuccin Mocha terminal surface. The rail is fixed at a narrow 56px and shows
 only tab ordinals; stable path names remain available as tooltips. Restrained
 active-tab treatment and compact footer controls keep the rail readable
-without competing with terminal content. By default, the Rio surface sits in an
-8px inset below the title strip beside the rail. The inset uses the same surface
-colour, so it reads as breathing room inside one continuous terminal canvas
-rather than a contrasting frame. Clicking the terminal viewport requests focus.
+without competing with terminal content. By default, the Rio surface sits in a
+14px inset below the title strip beside the rail. The inset, and any space left
+over past the grid's last whole column and row, use the same surface colour from
+one background layer, so they read as breathing room inside one continuous
+terminal canvas rather than a contrasting frame or strip. Clicking the terminal viewport requests focus.
 Text defaults to the `MonaspiceNe Nerd Font` family with explicit `Noto
 Color Emoji`, `Monaspace Neon`, and macOS symbol/monospace fallbacks so prompt
 and directory glyphs do not depend on GPUI's default fallback selection.
@@ -225,7 +226,7 @@ The appearance fields are optional and apply to the active tab:
 | `font.family` | Nonempty font family name | `MonaspiceNe Nerd Font` |
 | `font.size` | 1–128 pixels | 16 |
 | `font.lineHeight` | 0.5–3 multiplier | 1.2 |
-| `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | 0–128 integer pixels per edge | 8 each |
+| `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | 0–128 integer pixels per edge | 14 each |
 | `transparency` | 0–100 integer percent | 0 |
 
 There is no in-app Settings page; edit the CUE files to change these values.
@@ -234,7 +235,7 @@ A global `package cuetty` in `$XDG_CONFIG_HOME/cuetty` (or `~/.config/cuetty`),
 in any `.cue` file, is CUE-unified beneath each directory's package, or applies
 alone where a directory has none. Write overridable global values as CUE
 defaults, for example `rail: *"#89b4fa" | string` and
-`padding: top: *8 | int`; a concrete conflict is an invalid configuration.
+`padding: top: *14 | int`; a concrete conflict is an invalid configuration.
 Each padding edge may be overridden independently. CUE evaluation never runs on
 the GPUI thread. The global directory is watched when it exists; if it is
 created later while the working directory is known, it is picked up on the

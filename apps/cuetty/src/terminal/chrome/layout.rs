@@ -1,4 +1,4 @@
-use super::tokens::{ChromeColors, border, size, space, text};
+use super::tokens::{ChromeColors, border, material_color, size, space, text};
 use crate::integrations::cuenv::TitlebarVisibility;
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
@@ -28,6 +28,12 @@ impl TerminalView {
                     .min_w(px(0.0))
                     .min_h(px(0.0))
                     .flex()
+                    // This panel is the single terminal background layer. The
+                    // grid only fills whole cells, so padding and whatever is
+                    // left over past the last row and column read as one
+                    // continuous canvas. Default-background cells never repaint
+                    // it, and no child may, or the alpha would compound.
+                    .bg(material_color(theme, theme.surface))
                     .child(content),
             )
             .child(div().w(size::RAIL_WIDTH).flex_shrink_0().child(sidebar));

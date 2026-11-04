@@ -793,8 +793,8 @@ mod tests {
         assert_eq!(terminal.font.size_px, 21.0);
         assert_eq!(terminal.font.line_height_multiplier, 1.5);
         assert_eq!(terminal.terminal_padding.top, 12);
-        assert_eq!(terminal.terminal_padding.right, 8);
-        assert_eq!(terminal.terminal_padding.bottom, 8);
+        assert_eq!(terminal.terminal_padding.right, 14);
+        assert_eq!(terminal.terminal_padding.bottom, 14);
         assert_eq!(terminal.terminal_padding.left, 2);
         assert_eq!(terminal.terminal_transparency_percent, 40);
     }
@@ -911,7 +911,7 @@ mod tests {
         ));
 
         assert!(state.forget_cwd());
-        assert_eq!(state.presentation.terminal.terminal_padding.left, 8);
+        assert_eq!(state.presentation.terminal.terminal_padding.left, 14);
         assert!(!state.apply(
             old_generation,
             parse_value(serde_json::json!({"padding": {"left": 9}}))

@@ -1,4 +1,3 @@
-use super::chrome::material_color;
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
 use super::host::{
@@ -1736,7 +1735,6 @@ impl Render for TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(material_color(&theme, theme.surface))
                     .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
                     .child(message)
                     .into_any_element(),
@@ -1764,7 +1762,6 @@ impl Render for TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(material_color(&theme, theme.surface))
                     .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
                     .child(format!("Cuetty terminal error: {error}"))
                     .into_any_element(),
@@ -1919,22 +1916,14 @@ impl Render for TerminalView {
         if let Some(task_palette) = self.render_task_palette(&theme, cx) {
             terminal_surface = terminal_surface.child(task_palette);
         }
-        let surface = div()
-            .relative()
-            .size_full()
-            .overflow_hidden()
-            // Keep the inset in the terminal's surface colour. The host
-            // chrome still owns the title strip and rail; the terminal area
-            // should read as one continuous canvas rather than a framed box.
-            .bg(material_color(&theme, theme.surface))
-            .child(
-                terminal_surface
-                    .absolute()
-                    .top(px(f32::from(padding.top)))
-                    .right(px(f32::from(padding.right)))
-                    .bottom(px(f32::from(padding.bottom)))
-                    .left(px(f32::from(padding.left))),
-            );
+        let surface = div().relative().size_full().overflow_hidden().child(
+            terminal_surface
+                .absolute()
+                .top(px(f32::from(padding.top)))
+                .right(px(f32::from(padding.right)))
+                .bottom(px(f32::from(padding.bottom)))
+                .left(px(f32::from(padding.left))),
+        );
         self.render_shell_layout(sidebar, surface.into_any_element(), &theme, cx)
     }
 }
@@ -2478,7 +2467,7 @@ mod tests {
             .unwrap();
         assert_eq!(registry.active_pane(), Some(first_pane));
         assert_eq!(registry.active_terminal_config().font.size_px, 24.0);
-        assert_eq!(registry.active_terminal_config().terminal_padding.left, 8);
+        assert_eq!(registry.active_terminal_config().terminal_padding.left, 14);
 
         let next_tab = registry
             .workspace

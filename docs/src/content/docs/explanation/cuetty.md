@@ -71,10 +71,13 @@ The current usable slice includes:
   resize, so the measured width already excludes the title strip, terminal
   inset, divider, and fixed rail width instead of leaving a stale frame
   clipped in the viewport.
-- The terminal surface defaults to an 8px inset from the host chrome; the
+- The terminal surface defaults to a 14px inset from the host chrome; the
   inset uses the same terminal surface colour and is subtracted from the Rio grid
   dimensions as well as the rendered bounds. Its opposing edges constrain the
-  surface size so the last row remains inside the content panel.
+  surface size so the last row remains inside the content panel. Space left over
+  past the last whole column and row shares that one background layer, so no
+  strip appears at the grid's right or bottom edge. A TUI that paints its own
+  explicit background still stops at the grid.
 - Independent live Rio sessions for each tab with a replaceable workspace
   model. Cmd-T creates a session-backed tab and Cmd-W closes the active one;
   every newly-created session starts in `$HOME`,
@@ -141,7 +144,7 @@ transparency: 10
 | `font.family` | Nonempty font family name | `MonaspiceNe Nerd Font` |
 | `font.size` | Font size in pixels, 1–128 | 16 |
 | `font.lineHeight` | Line-height multiplier, 0.5–3 | 1.2 |
-| `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 8 each |
+| `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 14 each |
 | `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and rail share this opacity | 0 |
 
 Fields are optional. The active tab's settings determine the rendered grid,
@@ -179,10 +182,10 @@ font: {
     lineHeight: *1.2 | number
 }
 padding: {
-    top:    *8 | int
-    right:  *8 | int
-    bottom: *8 | int
-    left:   *8 | int
+    top:    *14 | int
+    right:  *14 | int
+    bottom: *14 | int
+    left:   *14 | int
 }
 transparency: *0 | int
 ```

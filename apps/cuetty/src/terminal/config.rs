@@ -43,10 +43,10 @@ pub struct TerminalPadding {
 impl Default for TerminalPadding {
     fn default() -> Self {
         Self {
-            top: 8,
-            right: 8,
-            bottom: 8,
-            left: 8,
+            top: 14,
+            right: 14,
+            bottom: 14,
+            left: 14,
         }
     }
 }

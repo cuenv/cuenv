@@ -8,5 +8,3 @@ mod rail;
 mod task_palette;
 mod task_sidebar;
 mod tokens;
-
-pub(super) use tokens::material_color;
