@@ -219,7 +219,10 @@ individual fields should be overridable per directory. If you used the former
 
 Directory and module-metadata changes are watched natively. Evaluation and
 validation occur off the GPUI thread. Invalid matching CUE keeps the last
-valid presentation for that directory and exposes an integration notice.
+valid presentation for that directory and exposes an integration notice: a small
+accent marker above the rail's controls, with the message in its tooltip. The
+tooltip stops at twelve lines; `cue eval .:cuetty` in that directory prints a
+whole evaluation error.
 
 Cuetty separately evaluates `package cuenv` in the same exact directory and
 surfaces its task, group, and sequence names in a floating sidebar and a

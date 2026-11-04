@@ -219,7 +219,10 @@ drag region, and on macOS the traffic lights float over the terminal's top-left
 corner. Rio reports shell CWD changes through its public working-directory API;
 Cuetty re-evaluates and rebinds its native directory watcher after `cd`.
 Malformed matching configuration retains the last valid presentation for that
-directory, if one exists, and shows an integration notice. Unknown fields are
+directory, if one exists, and shows an integration notice: a small accent marker
+above the rail's controls, with the message in its tooltip. The tooltip stops
+at twelve lines; `cue eval .:cuetty` in that directory prints a whole evaluation
+error. Workspace action failures appear the same way. Unknown fields are
 rejected.
 
 The appearance fields are optional and apply to the active tab:

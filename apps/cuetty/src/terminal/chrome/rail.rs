@@ -10,10 +10,6 @@ use gpui::{
     Styled, div, prelude::FluentBuilder,
 };
 
-fn shell_notice_text(notice: Option<&str>) -> Option<String> {
-    notice.map(|notice| format!("• {notice}"))
-}
-
 /// The active tab's marker: the project accent from a matching `package cuetty`,
 /// or the theme accent. The colour only ever fills this small mark, so a project
 /// can never choose a fill the rail's text has to survive.
@@ -60,6 +56,7 @@ impl TerminalView {
             .flex_col()
             .gap(space::SM)
             .p(space::MD)
+            .min_h_0()
             .overflow_hidden();
         for (index, tab) in self
             .registry
@@ -161,11 +158,36 @@ impl TerminalView {
                     .as_deref()
                     .or(state.cuenv.task_notice.as_deref())
             });
-        let notice = shell_notice_text(self.registry.notice.as_deref().or(integration_notice));
+        // The rail is too narrow to read a message in, and an evaluation error can
+        // run to hundreds of characters. A marker reports that there is one and
+        // can never displace the tabs or controls.
+        let notice_marker = self
+            .registry
+            .notice
+            .as_deref()
+            .or(integration_notice)
+            .map(|notice| {
+                div()
+                    .id("cuetty-notice")
+                    .w(size::CONTROL_WIDTH)
+                    .h(size::CONTROL_HEIGHT)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(radius::CONTROL)
+                    .hover(|this| this.bg(colors.state))
+                    .tooltip(chrome_tooltip(notice.to_string(), colors))
+                    .child(
+                        div()
+                            .size(size::NOTICE_MARK)
+                            .rounded(radius::CONTROL)
+                            .bg(colors.accent),
+                    )
+            });
         let has_tasks = self
             .active_state()
             .is_some_and(|state| !state.cuenv.tasks.is_empty());
-        let mut rail = div()
+        let rail = div()
             .relative()
             .size_full()
             .flex()
@@ -175,18 +197,9 @@ impl TerminalView {
             .border_l(border::HAIRLINE)
             .border_color(colors.divider)
             .child(tabs);
-        if let Some(notice) = notice {
-            rail = rail.child(
-                div()
-                    .px(space::LG)
-                    .py(space::SM)
-                    .text_size(text::CAPTION)
-                    .text_color(colors.text_secondary)
-                    .child(notice),
-            );
-        }
         let mut footer = div()
             .w_full()
+            .flex_shrink_0()
             .flex()
             .flex_col()
             .items_center()
@@ -235,6 +248,7 @@ impl TerminalView {
             }))
             .child("▤");
         footer = footer
+            .children(notice_marker)
             .child(new_tab)
             .when(has_tasks, |this| this.child(tasks));
         rail.child(footer).into_any_element()
@@ -255,17 +269,6 @@ mod tests {
             active_tab_marker_color(Some(RailColor(255, 0, 0)), &colors),
             gpui::rgb(0xff0000)
         );
-    }
-
-    #[test]
-    fn shell_notice_keeps_live_action_failures_visible() {
-        assert_eq!(
-            shell_notice_text(Some(
-                "workspace action unavailable: split panes are unavailable"
-            )),
-            Some("• workspace action unavailable: split panes are unavailable".into())
-        );
-        assert_eq!(shell_notice_text(None), None);
     }
 
     #[test]

@@ -42,6 +42,12 @@ pub(super) mod text {
     /// height budget.
     pub(in crate::terminal::chrome) const LINE_HEIGHT_RATIO: f32 = 1.4;
     pub(in crate::terminal::chrome) const LINE_HEIGHT: DefiniteLength = relative(LINE_HEIGHT_RATIO);
+    /// Characters of `LABEL` text that sit comfortably on one tooltip line.
+    pub(in crate::terminal::chrome) const TOOLTIP_LINE_CHARS: usize = 56;
+    /// A tooltip is a glance: longer text is cut here, counting wrapped and
+    /// newline-separated lines alike, rather than filling the window, as an
+    /// evaluation error can run to many lines.
+    pub(in crate::terminal::chrome) const TOOLTIP_MAX_LINES: usize = 12;
     pub(in crate::terminal::chrome) const REGULAR: FontWeight = FontWeight::NORMAL;
     pub(in crate::terminal::chrome) const STRONG: FontWeight = FontWeight::SEMIBOLD;
 }
@@ -77,6 +83,8 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const PALETTE_KIND_WIDTH: Pixels = px(64.0);
     pub(in crate::terminal::chrome) const CARET_WIDTH: Pixels = px(2.0);
     pub(in crate::terminal::chrome) const CARET_HEIGHT: Pixels = px(16.0);
+    pub(in crate::terminal::chrome) const NOTICE_MARK: Pixels = px(6.0);
+    pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
 }
 
 /// Elevation of chrome that floats above the terminal.
@@ -113,6 +121,12 @@ pub(super) fn palette_height(rows: usize) -> Pixels {
     let results =
         size::PALETTE_ROW_HEIGHT * rows as f32 + space::XS * rows.saturating_sub(1) as f32;
     frame + fixed + results
+}
+
+/// The height of a tooltip at its line limit, with its padding and outline.
+pub(super) fn tooltip_max_height() -> Pixels {
+    let line = (text::LABEL * text::LINE_HEIGHT_RATIO).ceil();
+    line * text::TOOLTIP_MAX_LINES as f32 + space::XS * 2.0 + border::HAIRLINE * 2.0
 }
 
 /// Where native window controls sit: centred in the title strip, so they follow
