@@ -86,7 +86,8 @@ write; shell control chords such as Ctrl-C and Ctrl-U; a new tab opening in
 The shell follows Ghostty's restrained presentation: native traffic lights,
 one dark title strip, a compact right-side vertical tab rail, and a full-bleed
 Catppuccin Mocha terminal surface. The rail is fixed at a narrow 56px and shows
-only tab ordinals; stable path names remain available as tooltips. Restrained
+only tab ordinals; stable path names remain available as tooltips. A tab list
+taller than the window scrolls, and follows the active tab. Restrained
 active-tab treatment and compact footer controls keep the rail readable
 without competing with terminal content. By default, the Rio surface sits in a
 14px inset below the title strip beside the rail. The inset, and any space left

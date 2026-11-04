@@ -809,6 +809,8 @@ pub(super) struct TerminalView {
     pub(super) task_query: String,
     pub(super) task_selection: usize,
     pub(super) task_palette_scroll: ScrollHandle,
+    pub(super) rail_scroll: ScrollHandle,
+    pub(super) rail_revealed_tab: Option<TabId>,
 }
 
 /// How many filtered tasks the palette shows and the keyboard can reach.
@@ -998,6 +1000,8 @@ impl TerminalView {
                     task_query: String::new(),
                     task_selection: 0,
                     task_palette_scroll: ScrollHandle::new(),
+                    rail_scroll: ScrollHandle::new(),
+                    rail_revealed_tab: None,
                 };
                 view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
                 view.spawn_cwd_poll(cx);
@@ -1022,6 +1026,8 @@ impl TerminalView {
                     task_query: String::new(),
                     task_selection: 0,
                     task_palette_scroll: ScrollHandle::new(),
+                    rail_scroll: ScrollHandle::new(),
+                    rail_revealed_tab: None,
                 }
             }
         }
@@ -1788,6 +1794,7 @@ impl Render for TerminalView {
         let metrics = self.metrics.clone();
         let padding = self.config.terminal_padding;
         let active_tab = self.active_tab();
+        self.reveal_active_rail_tab(active_tab);
         let sidebar = self.render_sidebar(active_tab, &theme, cx);
         let Some(active_pane) = self.active_pane() else {
             let message = self

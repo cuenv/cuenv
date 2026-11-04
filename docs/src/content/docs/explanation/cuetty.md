@@ -88,7 +88,8 @@ The current usable slice includes:
   Ctrl-Page Up and Ctrl-Page Down switch to the previous and next tab,
   wrapping at either end. The task palette is configurable (see below).
 - A fixed 56px right-side vertical tab rail. It shows tab ordinals with stable
-  path-name tooltips and deliberately has no resize or expand mode.
+  path-name tooltips and deliberately has no resize or expand mode. A tab list
+  taller than the window scrolls, and follows the active tab.
 - One design token set for all chrome spacing, radii, type sizes, border widths,
   elevation, and colours, with faint dividers between regions.
 - Global and per-directory CUE configuration for font family, font size, line height,

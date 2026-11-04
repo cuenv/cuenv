@@ -19,6 +19,18 @@ fn active_tab_marker_color(project_accent: Option<RailColor>, colors: &ChromeCol
     })
 }
 
+/// Where the tab list has to scroll to: the active tab's position, once for each
+/// time it changes, so wheel scrolling through the list is left alone in between.
+fn rail_scroll_target(
+    active_tab: Option<TabId>,
+    revealed_tab: Option<TabId>,
+    mut tabs: impl Iterator<Item = TabId>,
+) -> Option<usize> {
+    active_tab
+        .filter(|_| active_tab != revealed_tab)
+        .and_then(|active| tabs.position(|tab| tab == active))
+}
+
 fn sidebar_tab_label(label: &str) -> String {
     let path = label
         .split_whitespace()
@@ -38,6 +50,20 @@ fn sidebar_tab_label(label: &str) -> String {
 }
 
 impl TerminalView {
+    /// Keeps the active tab's marker on screen when the list is taller than the
+    /// rail, whichever way the tab became active.
+    pub(in crate::terminal) fn reveal_active_rail_tab(&mut self, active_tab: Option<TabId>) {
+        let tabs = self.registry.workspace.workspace().tabs();
+        if let Some(index) = rail_scroll_target(
+            active_tab,
+            self.rail_revealed_tab,
+            tabs.iter().map(|tab| tab.id),
+        ) {
+            self.rail_scroll.scroll_to_item(index);
+        }
+        self.rail_revealed_tab = active_tab;
+    }
+
     pub(in crate::terminal) fn render_sidebar(
         &self,
         active_tab: Option<TabId>,
@@ -51,13 +77,15 @@ impl TerminalView {
             &colors,
         );
         let mut tabs = div()
+            .id("cuetty-rail-tabs")
+            .track_scroll(&self.rail_scroll)
+            .overflow_y_scroll()
             .flex_1()
             .flex()
             .flex_col()
             .gap(space::SM)
             .p(space::MD)
-            .min_h_0()
-            .overflow_hidden();
+            .min_h_0();
         for (index, tab) in self
             .registry
             .workspace
@@ -86,6 +114,7 @@ impl TerminalView {
                 .relative()
                 .w_full()
                 .min_h(size::TAB_ROW_HEIGHT)
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -269,6 +298,20 @@ mod tests {
             active_tab_marker_color(Some(RailColor(255, 0, 0)), &colors),
             gpui::rgb(0xff0000)
         );
+    }
+
+    #[test]
+    fn the_tab_list_scrolls_once_for_each_change_of_active_tab() {
+        let (first, second, closed) = (TabId::new(1), TabId::new(2), TabId::new(3));
+        let tabs = || [first, second].into_iter();
+        assert_eq!(rail_scroll_target(Some(second), None, tabs()), Some(1));
+        assert_eq!(
+            rail_scroll_target(Some(first), Some(second), tabs()),
+            Some(0)
+        );
+        assert_eq!(rail_scroll_target(Some(second), Some(second), tabs()), None);
+        assert_eq!(rail_scroll_target(None, Some(second), tabs()), None);
+        assert_eq!(rail_scroll_target(Some(closed), Some(first), tabs()), None);
     }
 
     #[test]
