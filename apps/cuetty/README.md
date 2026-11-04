@@ -186,6 +186,11 @@ All chrome spacing, radii, type sizes, border widths, elevation, and colours com
 from one token set in `src/terminal/chrome/tokens.rs`; chrome views, tooltips
 included, do not write their own literals.
 
+Chrome controls draw from one icon set: a few [Lucide](https://lucide.dev) glyphs
+in `assets/icons`, compiled into the binary and served through GPUI's asset source,
+at a slightly lighter stroke than upstream to sit beside the text. Lucide's ISC
+licence is alongside them. Add a glyph there rather than using a text character.
+
 The terminal render resizes Rio from the pane canvas measured inside GPUI's
 actual content panel. The measurement therefore already excludes the title
 strip, terminal inset, divider, and fixed rail width instead of trying to

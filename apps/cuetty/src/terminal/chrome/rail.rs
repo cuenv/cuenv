@@ -1,3 +1,4 @@
+use super::icons::Icon;
 use super::tokens::{ChromeColors, border, opaque, radius, size, space, text};
 use super::tooltip::chrome_tooltip;
 use crate::integrations::cuenv::RailColor;
@@ -226,15 +227,13 @@ impl TerminalView {
             .items_center()
             .justify_center()
             .rounded(radius::CONTROL)
-            .text_color(colors.text_secondary)
-            .text_size(text::LABEL)
             .hover(|this| this.bg(colors.state))
             .cursor_pointer()
             .tooltip(chrome_tooltip("New tab", colors))
             .on_click(cx.listener(|view, _event, window, cx| {
                 view.new_tab(window, cx);
             }))
-            .child("+");
+            .child(Icon::Plus.element(colors.text_secondary));
         let palette_chord = self.palette_chord_label();
         let tasks = div()
             .id("cuetty-tasks")
@@ -244,8 +243,6 @@ impl TerminalView {
             .items_center()
             .justify_center()
             .rounded(radius::CONTROL)
-            .text_color(colors.text_secondary)
-            .text_size(text::BODY)
             .when(self.task_sidebar_open, |this| this.bg(colors.state))
             .hover(|this| this.bg(colors.state))
             .cursor_pointer()
@@ -257,7 +254,7 @@ impl TerminalView {
                 view.task_sidebar_open = !view.task_sidebar_open;
                 cx.notify();
             }))
-            .child("▤");
+            .child(Icon::Tasks.element(colors.text_secondary));
         footer = footer
             .children(notice_marker)
             .child(new_tab)

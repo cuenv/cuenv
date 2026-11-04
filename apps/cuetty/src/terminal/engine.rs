@@ -1,4 +1,4 @@
-use super::chrome::{render_shell_message, traffic_light_position};
+use super::chrome::{ChromeAssets, render_shell_message, traffic_light_position};
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
 use super::host::{
@@ -2152,67 +2152,69 @@ impl Render for TerminalView {
 }
 
 pub fn run() {
-    Application::new().run(|cx: &mut App| {
-        gpui_component::init(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.set_menus(vec![Menu {
-            name: "Cuetty".into(),
-            items: vec![
-                MenuItem::os_submenu("Services", SystemMenuType::Services),
-                MenuItem::separator(),
-                MenuItem::action("Quit Cuetty", Quit),
-            ],
-        }]);
-        let window_size = size(px(960.), px(640.));
-        let window_min_size = size(px(640.), px(400.));
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                        None,
-                        window_size,
-                        cx,
-                    ))),
-                    window_min_size: Some(window_min_size),
-                    titlebar: Some(gpui::TitlebarOptions {
-                        title: None,
-                        appears_transparent: true,
-                        traffic_light_position: Some(traffic_light_position()),
-                    }),
-                    window_background: TerminalTheme::default().window_background(),
-                    // Matches the installed `cuetty.desktop` so Linux
-                    // compositors associate windows with the launcher entry.
-                    app_id: Some("cuetty".to_string()),
-                    ..WindowOptions::default()
-                },
-                |window, cx| {
-                    // Cuetty owns its entire window surface. gpui-component's
-                    // generic Root paints an opaque theme background behind its
-                    // child, which prevents the terminal alpha from ever reaching
-                    // the macOS compositor.
-                    cx.new(|cx| TerminalView::new(window, cx))
-                },
-            )
-            .expect("open Cuetty window");
-        // The native window being active does not select a GPUI focus
-        // target. Focus the live terminal once its view has been mounted so
-        // its key handler receives input without an initial mouse click.
-        window
-            .update(cx, |view, window, _cx| {
-                if view.active_state().is_some() {
-                    view.focus.focus(window);
+    Application::new()
+        .with_assets(ChromeAssets)
+        .run(|cx: &mut App| {
+            gpui_component::init(cx);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+            cx.set_menus(vec![Menu {
+                name: "Cuetty".into(),
+                items: vec![
+                    MenuItem::os_submenu("Services", SystemMenuType::Services),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit Cuetty", Quit),
+                ],
+            }]);
+            let window_size = size(px(960.), px(640.));
+            let window_min_size = size(px(640.), px(400.));
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
                 }
             })
-            .expect("focus Cuetty terminal");
-        cx.activate(true);
-    });
+            .detach();
+            let window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            window_size,
+                            cx,
+                        ))),
+                        window_min_size: Some(window_min_size),
+                        titlebar: Some(gpui::TitlebarOptions {
+                            title: None,
+                            appears_transparent: true,
+                            traffic_light_position: Some(traffic_light_position()),
+                        }),
+                        window_background: TerminalTheme::default().window_background(),
+                        // Matches the installed `cuetty.desktop` so Linux
+                        // compositors associate windows with the launcher entry.
+                        app_id: Some("cuetty".to_string()),
+                        ..WindowOptions::default()
+                    },
+                    |window, cx| {
+                        // Cuetty owns its entire window surface. gpui-component's
+                        // generic Root paints an opaque theme background behind its
+                        // child, which prevents the terminal alpha from ever reaching
+                        // the macOS compositor.
+                        cx.new(|cx| TerminalView::new(window, cx))
+                    },
+                )
+                .expect("open Cuetty window");
+            // The native window being active does not select a GPUI focus
+            // target. Focus the live terminal once its view has been mounted so
+            // its key handler receives input without an initial mouse click.
+            window
+                .update(cx, |view, window, _cx| {
+                    if view.active_state().is_some() {
+                        view.focus.focus(window);
+                    }
+                })
+                .expect("focus Cuetty terminal");
+            cx.activate(true);
+        });
 }
 
 #[cfg(test)]

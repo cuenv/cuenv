@@ -3,6 +3,7 @@
 //! The terminal engine owns sessions and input; this module only turns view
 //! state into GPUI elements around the terminal surface.
 
+mod icons;
 mod layout;
 mod rail;
 mod task_palette;
@@ -10,6 +11,7 @@ mod task_sidebar;
 mod tokens;
 mod tooltip;
 
+pub(super) use icons::ChromeAssets;
 pub(super) use layout::render_shell_message;
 pub(super) use tokens::traffic_light_position;
 

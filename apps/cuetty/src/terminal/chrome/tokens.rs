@@ -71,6 +71,7 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const WINDOW_CONTROLS_WIDTH: Pixels = px(82.0);
     pub(in crate::terminal::chrome) const CONTROL_HEIGHT: Pixels = px(30.0);
     pub(in crate::terminal::chrome) const CONTROL_WIDTH: Pixels = px(34.0);
+    pub(in crate::terminal::chrome) const ICON: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TAB_ROW_HEIGHT: Pixels = px(40.0);
     pub(in crate::terminal::chrome) const TAB_MARK: Pixels = px(30.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = px(3.0);

@@ -101,7 +101,8 @@ The current usable slice includes:
   `.name-wrapped` binaries are shown as `name`. A tab list taller than the window scrolls, and
   follows the active tab.
 - One design token set for all chrome spacing, radii, type sizes, border widths,
-  elevation, and colours, with faint dividers between regions.
+  elevation, and colours, with faint dividers between regions, and one bundled
+  Lucide icon set for chrome controls.
 - Global and per-directory CUE configuration for font family, font size, line height,
   padding, and transparency. There is no in-app Settings page. The native
   Cuetty menu exposes Quit Cuetty and Cmd-Q uses the same application-level
