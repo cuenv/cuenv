@@ -186,6 +186,12 @@ All chrome spacing, radii, type sizes, border widths, elevation, and colours com
 from one token set in `src/terminal/chrome/tokens.rs`; chrome views, tooltips
 included, do not write their own literals.
 
+Chrome text uses the platform's sans-serif UI font on a small type scale, and only
+paths and shortcuts use the terminal's monospaced family. GPUI's UI font name is only
+meaningful on macOS and Windows: on Linux it means IBM Plex Sans and otherwise a
+fallback stack led by a monospaced font, so Cuetty picks the first installed family
+from a short list of desktop UI fonts, starting with Inter.
+
 Chrome controls draw from one icon set: a few [Lucide](https://lucide.dev) glyphs
 in `assets/icons`, compiled into the binary and served through GPUI's asset source,
 at a slightly lighter stroke than upstream to sit beside the text. Lucide's ISC

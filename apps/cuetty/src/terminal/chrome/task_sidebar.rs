@@ -64,6 +64,7 @@ impl TerminalView {
             );
         }
         let palette_chord = self.palette_chord_label();
+        let mono = self.mono_font_family();
         let cwd = state
             .cuenv
             .cwd
@@ -114,6 +115,7 @@ impl TerminalView {
                                 )
                                 .child(
                                     div()
+                                        .font_family(mono.clone())
                                         .text_size(text::CAPTION)
                                         .text_color(colors.text_muted)
                                         .truncate()
@@ -126,6 +128,7 @@ impl TerminalView {
                         .child(
                             div()
                                 .flex_shrink_0()
+                                .font_family(mono)
                                 .text_size(text::CAPTION)
                                 .text_color(colors.text_muted)
                                 .child(palette_chord),

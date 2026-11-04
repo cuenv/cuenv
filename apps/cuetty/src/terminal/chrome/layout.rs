@@ -1,4 +1,4 @@
-use super::tokens::{ChromeColors, border, material_color, size, space, text};
+use super::tokens::{ChromeColors, border, material_color, size, space, text, ui_font_family};
 use crate::integrations::cuenv::TitlebarVisibility;
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
@@ -60,7 +60,11 @@ impl TerminalView {
             .active_state()
             .map(|state| state.cuenv.presentation.titlebar)
             .unwrap_or_default();
-        let shell = div().size_full().flex().flex_col();
+        let shell = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .font_family(ui_font_family());
         if titlebar_visibility == TitlebarVisibility::Hidden {
             // The terminal grid is resized from its measured bounds, so it
             // reclaims the strip's height without extra arithmetic here.

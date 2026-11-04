@@ -134,6 +134,9 @@ impl TerminalView {
                         .when(selected, |this| this.bg(colors.state))
                         .text_center()
                         .text_size(text::LABEL)
+                        .when(number.is_some(), |this| {
+                            this.font_family(self.mono_font_family())
+                        })
                         .font_weight(if selected {
                             text::STRONG
                         } else {

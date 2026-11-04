@@ -102,7 +102,10 @@ The current usable slice includes:
   follows the active tab.
 - One design token set for all chrome spacing, radii, type sizes, border widths,
   elevation, and colours, with faint dividers between regions, and one bundled
-  Lucide icon set for chrome controls.
+  Lucide icon set for chrome controls. Chrome text uses the platform's sans-serif
+  UI font, or on Linux the first of Inter, Adwaita Sans, Cantarell, Ubuntu, Noto
+  Sans, DejaVu Sans, and Liberation Sans that is installed; only paths and
+  shortcuts use the terminal's monospaced family.
 - Global and per-directory CUE configuration for font family, font size, line height,
   padding, and transparency. There is no in-app Settings page. The native
   Cuetty menu exposes Quit Cuetty and Cmd-Q uses the same application-level

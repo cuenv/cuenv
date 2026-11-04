@@ -13,12 +13,18 @@ mod tooltip;
 
 pub(super) use icons::ChromeAssets;
 pub(super) use layout::render_shell_message;
-pub(super) use tokens::traffic_light_position;
+pub(super) use tokens::{resolve_ui_font, traffic_light_position};
 
 use super::engine::TerminalView;
 use crate::integrations::cuenv::Keybindings;
 
 impl TerminalView {
+    /// The terminal's own monospaced family, which chrome uses for paths and
+    /// shortcuts so they read the way they do in the terminal.
+    fn mono_font_family(&self) -> gpui::SharedString {
+        self.metrics.font.family.clone()
+    }
+
     /// The active tab's task palette chord as shown in hints.
     fn palette_chord_label(&self) -> String {
         self.active_state().map_or_else(

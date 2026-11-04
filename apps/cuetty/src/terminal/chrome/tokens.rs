@@ -6,7 +6,8 @@
 
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
-use gpui::{BoxShadow, Pixels, Point, Rgba, point};
+use gpui::{BoxShadow, Pixels, Point, Rgba, TextSystem, font, point};
+use std::sync::OnceLock;
 
 /// Spacing scale for padding, gaps, and offsets.
 pub(super) mod space {
@@ -50,6 +51,61 @@ pub(super) mod text {
     pub(in crate::terminal::chrome) const TOOLTIP_MAX_LINES: usize = 12;
     pub(in crate::terminal::chrome) const REGULAR: FontWeight = FontWeight::NORMAL;
     pub(in crate::terminal::chrome) const STRONG: FontWeight = FontWeight::SEMIBOLD;
+}
+
+/// GPUI's name for the platform UI font. On macOS and Windows it is the real one.
+const SYSTEM_UI_FONT: &str = ".SystemUIFont";
+
+/// Sans-serif families to use where the platform has no UI font to ask for. GPUI
+/// maps its name to IBM Plex Sans on Linux and, when that is absent, walks a stack
+/// that starts with a monospaced font, which is what chrome text must avoid.
+const LINUX_UI_FONTS: &[&str] = &[
+    "Inter",
+    "Adwaita Sans",
+    "Cantarell",
+    "Ubuntu",
+    "Noto Sans",
+    "DejaVu Sans",
+    "Liberation Sans",
+];
+
+/// A family no system has, which resolves to whatever GPUI falls back to.
+const MISSING_FONT: &str = "cuetty-no-such-font";
+
+static UI_FONT_FAMILY: OnceLock<&'static str> = OnceLock::new();
+
+fn first_available_family(
+    candidates: &[&'static str],
+    available: impl Fn(&str) -> bool,
+) -> &'static str {
+    candidates
+        .iter()
+        .copied()
+        .find(|family| available(family))
+        .unwrap_or(SYSTEM_UI_FONT)
+}
+
+/// Settles the chrome's font for the life of the process. GPUI offers no way to
+/// ask whether a family exists, and its name list includes its own fallbacks
+/// whether installed or not, so a family counts as present when it resolves to
+/// something other than the fallback. The fallback's own family is therefore
+/// passed over, which only ever picks another family from this list.
+pub(in crate::terminal) fn resolve_ui_font(text_system: &TextSystem) {
+    let candidates = if cfg!(target_os = "linux") {
+        LINUX_UI_FONTS
+    } else {
+        &[]
+    };
+    let fallback = text_system.resolve_font(&font(MISSING_FONT));
+    let family = first_available_family(candidates, |family| {
+        text_system.resolve_font(&font(family.to_string())) != fallback
+    });
+    let _ = UI_FONT_FAMILY.set(family);
+}
+
+/// The sans-serif family all chrome text uses, other than paths and shortcuts.
+pub(super) fn ui_font_family() -> &'static str {
+    UI_FONT_FAMILY.get().copied().unwrap_or(SYSTEM_UI_FONT)
 }
 
 /// Border widths.
@@ -215,6 +271,21 @@ mod tests {
             terminal_transparency_percent: percent,
             ..TerminalConfig::default()
         })
+    }
+
+    #[test]
+    fn the_first_installed_family_wins_and_the_system_name_is_the_last_resort() {
+        let candidates = ["Inter", "Noto Sans"];
+        assert_eq!(first_available_family(&candidates, |_| true), "Inter");
+        assert_eq!(
+            first_available_family(&candidates, |family| family == "Noto Sans"),
+            "Noto Sans"
+        );
+        assert_eq!(
+            first_available_family(&candidates, |_| false),
+            SYSTEM_UI_FONT
+        );
+        assert_eq!(first_available_family(&[], |_| true), SYSTEM_UI_FONT);
     }
 
     #[test]

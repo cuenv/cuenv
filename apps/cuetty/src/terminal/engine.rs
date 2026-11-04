@@ -1,4 +1,4 @@
-use super::chrome::{ChromeAssets, render_shell_message, traffic_light_position};
+use super::chrome::{ChromeAssets, render_shell_message, resolve_ui_font, traffic_light_position};
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
 use super::host::{
@@ -834,7 +834,7 @@ pub(super) struct TerminalView {
     pub(super) registry: SessionRegistry,
     cuenv: Arc<dyn CuenvProvider>,
     config: TerminalConfig,
-    metrics: TerminalMetrics,
+    pub(super) metrics: TerminalMetrics,
     theme: TerminalTheme,
     focus: FocusHandle,
     renderer: Box<dyn TerminalRenderer>,
@@ -2156,6 +2156,7 @@ pub fn run() {
         .with_assets(ChromeAssets)
         .run(|cx: &mut App| {
             gpui_component::init(cx);
+            resolve_ui_font(cx.text_system());
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
             cx.set_menus(vec![Menu {
