@@ -169,8 +169,8 @@ func matrixCases() []matrixCase {
 		detected("pattern_label", matrixBase+matrixConfig+"{["+narrowed+"]: int, x: 1}", ""),
 		check("for_value_control", matrixBase+"_q: {for k, r in system.units {if (r.outputs.id & \"x\") == \"x\" {(k): 1}}}", "", "_q"),
 		check("for_over_output", matrixBase+"_q: {for x in ["+narrowed+"] {(x): 1}}", "", "_q"),
-		detected("interpolation", matrixBase+matrixConfig+"n: \"a-\\("+source+")\"", ""),
-		detected("arithmetic", "system: units: producer: outputs: n: number\n"+matrixConfig+"n: system.units.producer.outputs.n + 1", ""),
+		edges("interpolation", matrixBase+matrixConfig+"n: \"a-\\("+source+")\"", "", "system.units.consumer.settings.n<="+source),
+		edges("arithmetic", "system: units: producer: outputs: n: number\n"+matrixConfig+"n: system.units.producer.outputs.n + 1", "", "system.units.consumer.settings.n<=system.units.producer.outputs.n"),
 		check("inline_struct", matrixBase+"_q: {if ({v: "+source+"}).v == \"x\" {a: 1}}", "", "_q"),
 		check("true_guard", matrixBase+"_q: {if true {if "+source+" == \"x\" {a: 1}}}", "", "_q"),
 		clean("false_guard", matrixBase+"_q: {if false {if "+source+" == \"x\" {a: 1}}}", ""),
@@ -214,7 +214,7 @@ func matrixCases() []matrixCase {
 		detected("copy_closed", matrixBase+"_c: close(system.units.producer)\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
 		detected("copy_default", matrixBase+"_c: *system.units.producer | {}\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
 		detected("copy_or", matrixBase+"_c: or([system.units.producer])\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
-		detected("two_source_unification", "system: units: {a: outputs: id: string, b: outputs: id: string}\n_c: system.units.a & system.units.b\n"+matrixConfig+"name: _c.outputs.id", ""),
+		edges("two_source_unification", "system: units: {a: outputs: id: string, b: outputs: id: string}\n_c: system.units.a & system.units.b\n"+matrixConfig+"name: _c.outputs.id", "", "system.units.consumer.settings.name<=system.units.a.outputs.id", "system.units.consumer.settings.name<=system.units.b.outputs.id"),
 		detected("json_presence", "import \"encoding/json\"\n"+matrixBase+matrixConfig+"doc: json.Marshal({a: ("+source+" & =~\"^x\") != _|_})", ""),
 		detected("imported_json_presence", matrixImport+matrixBase+matrixConfig+"schema.#J & {arg: "+source+"}", "import \"encoding/json\"\n#J: {arg: string, doc: json.Marshal({a: (arg & =~\"^x\") != _|_})}"),
 		detected("validator_struct_argument", matrixBase+"_v: matchN(1, [{k: string, _x: "+source+" & !=\"bad\"}])\n"+matrixConfig+"*({k: \"a\"} & _v) | {k: \"q\"}", ""),
@@ -296,7 +296,11 @@ func matrixVerdict(t *testing.T, snapshot string) (string, []string, error) {
 		}
 		path, _ := reference.Path.cuePath()
 		target, _ := reference.Target.cuePath()
-		found = append(found, path.String()+"<-"+target.String())
+		arrow := "<-"
+		if reference.Computed {
+			arrow = "<="
+		}
+		found = append(found, path.String()+arrow+target.String())
 		unsupported = unsupported || !reference.Supported
 	}
 	sort.Strings(found)

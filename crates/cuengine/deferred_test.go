@@ -46,11 +46,12 @@ func directReference(value, instance cue.Value) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	target, direct := graph.directSource(value.Path())
-	if !direct {
-		return nil, nil
+	references, err := graph.frozenReferences(value.Path())
+	if err != nil || len(references) != 1 || !references[0].Supported || references[0].Computed {
+		return nil, err
 	}
-	return regularLabels(target), nil
+	target, err := references[0].Target.cuePath()
+	return regularLabels(target), err
 }
 
 func TestDirectReference(t *testing.T) {

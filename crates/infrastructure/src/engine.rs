@@ -439,7 +439,7 @@ impl DigestWriter {
     fn reference(&mut self, reference: &ResourceOutputReference) {
         self.field(reference.source.to_string().as_bytes());
         self.field(reference.attribute.as_bytes());
-        self.tag(1);
+        self.tag(if reference.native.computed { 2 } else { 1 });
         self.path(reference.destination.steps());
     }
 
@@ -984,6 +984,7 @@ impl InfrastructureEngine {
                 None => resolver(reference)?,
             };
             if !value.is_unknown()
+                && !reference.native.computed
                 && !input
                     .block
                     .reference_destination(&reference.destination)?
@@ -1036,6 +1037,7 @@ impl InfrastructureEngine {
             Some(_) | None => input.declaration.configuration.clone(),
         };
         let projected = serde_json::Value::Object(configuration.clone());
+        let mut computed = BTreeMap::new();
         for reference in input.references.references() {
             let output = OutputIdentity {
                 source: reference.source.clone(),
@@ -1056,6 +1058,22 @@ impl InfrastructureEngine {
                             "native projection is missing",
                         )
                     })?;
+            if reference.native.computed {
+                // Null until CUE knows every source this value is computed from.
+                if !projected_value.is_null() {
+                    let decoded =
+                        Value::from_configuration_json(projected_value, destination.value_type())
+                            .map_err(|_| {
+                            reference_error(
+                                input.consumer.address(),
+                                reference,
+                                "computes a value of the wrong type for its destination",
+                            )
+                        })?;
+                    computed.insert(reference.destination.clone(), decoded);
+                }
+                continue;
+            }
             let decoded =
                 Value::from_configuration_json(projected_value, destination.value_type())?;
             if !type_system::semantically_equal(&decoded, value, destination.value_type()) {
@@ -1070,6 +1088,12 @@ impl InfrastructureEngine {
             .references
             .prepare(&configuration, &input.block.implied_type())?;
         let resolve = |reference: &ResourceOutputReference| {
+            if reference.native.computed {
+                return Ok(computed
+                    .get(&reference.destination)
+                    .cloned()
+                    .unwrap_or(Value::Unknown));
+            }
             values
                 .get(&OutputIdentity {
                     source: reference.source.clone(),
@@ -2538,7 +2562,13 @@ impl InfrastructureEngine {
                     warnings,
                 )
                 .await?;
-            outputs.insert(reference.destination.clone(), value);
+            outputs.insert(
+                OutputIdentity {
+                    source: reference.source.clone(),
+                    attribute: reference.attribute.clone(),
+                },
+                value,
+            );
         }
         let consumer = SourceAddress::Resource(change.address.clone());
         let declaration =
@@ -2555,7 +2585,10 @@ impl InfrastructureEngine {
             },
             |reference| {
                 outputs
-                    .get(&reference.destination)
+                    .get(&OutputIdentity {
+                        source: reference.source.clone(),
+                        attribute: reference.attribute.clone(),
+                    })
                     .cloned()
                     .ok_or_else(|| reference_error(&change.address, reference, "was not resolved"))
             },
@@ -4232,7 +4265,9 @@ impl OutputReferenceCheck<'_> {
                 ));
             }
         }
-        if &source_attribute.value_type != destination_attribute.value_type() {
+        if !reference.native.computed
+            && &source_attribute.value_type != destination_attribute.value_type()
+        {
             return Err(reference_error(
                 destination,
                 reference,

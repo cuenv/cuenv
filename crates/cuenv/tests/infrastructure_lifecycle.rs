@@ -1916,10 +1916,10 @@ async fn output_dependent_structure_is_refused_before_any_provider_change() -> T
             )),
         ),
         (
-            "hidden-control",
+            "hidden-control-read-by-the-configuration",
             format!(
                 "_o: {PRODUCER_ID}\n_h: {{if (_o & =~\"^x\") != _|_ {{v: 1}}}}\n{}",
-                outputs_stack(OUTPUT_PRODUCER)
+                consumer("{name: \"n\", if _h.v != _|_ {extra: \"e\"}}")
             ),
         ),
         (
@@ -1934,14 +1934,13 @@ async fn output_dependent_structure_is_refused_before_any_provider_change() -> T
     ];
     for (label, body) in &cases {
         let stack = OutputLifecycle::new(label, body)?;
-        stack.fails(&["plan"], "could not be")?;
-        stack.fails(&["apply", "--yes"], "could not be")?;
+        stack.fails(&["plan"], "an output cannot decide the structure")?;
+        stack.fails(&["apply", "--yes"], "an output cannot decide the structure")?;
         assert_eq!(stack.mutations(), 0, "{label} changed: {}", stack.journal());
         assert!(stack.store.list(&stack.tenant).await?.is_empty(), "{label}");
         // The same syntax on an unrelated value must plan: the refusal above is about
-        // the output, not a mistake in this fixture. A selection embedded from an inline
-        // definition is one of the forms refused either way.
-        if body.contains(PRODUCER_ID) && *label != "definition-as-function" {
+        // the output, not a mistake in this fixture.
+        if body.contains(PRODUCER_ID) {
             let unrelated = format!(
                 "_unrelated: \"unmatched\"\n{}",
                 body.replace(PRODUCER_ID, "_unrelated")
@@ -1951,6 +1950,222 @@ async fn output_dependent_structure_is_refused_before_any_provider_change() -> T
                 .run(&["plan"])?;
         }
     }
+    Ok(())
+}
+
+/// Every way of writing a reference that CUE evaluates to the output itself carries it,
+/// wherever it sits and however it got there. Each is applied through a real provider.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn every_way_of_reaching_an_output_is_ordered_and_filled() -> TestResult {
+    let cases = [
+        ("direct", String::new(), PRODUCER_ID.to_string()),
+        (
+            "constrained",
+            String::new(),
+            format!("{PRODUCER_ID} & =~\"^.\""),
+        ),
+        (
+            "field-alias",
+            format!("_alias: {PRODUCER_ID}\n"),
+            "_alias".to_string(),
+        ),
+        ("let", format!("let L = {PRODUCER_ID}\n"), "L".to_string()),
+        (
+            "let-of-a-struct",
+            "let P = infrastructure.resources.producer\n".to_string(),
+            "P.outputs.id".to_string(),
+        ),
+        (
+            "function",
+            "#F: {in: string, v: in}\n".to_string(),
+            format!("(#F & {{in: {PRODUCER_ID}}}).v"),
+        ),
+        (
+            "inline-struct",
+            String::new(),
+            format!("({{in: {PRODUCER_ID}, v: in}}).v"),
+        ),
+        (
+            "value-alias",
+            format!("_s: W={{z: {PRODUCER_ID}, y: W.z}}\n"),
+            "_s.y".to_string(),
+        ),
+        (
+            "selected-from-a-list",
+            String::new(),
+            format!("[{PRODUCER_ID}][0]"),
+        ),
+    ];
+    for (label, prefix, name) in &cases {
+        let stack = OutputLifecycle::new(
+            label,
+            &format!(
+                "{prefix}{}",
+                outputs_stack(&format!(
+                    "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: {name}}}"
+                ))
+            ),
+        )?;
+        let planned = stack.lifecycle.execute_text(&["plan"])?;
+        assert!(planned.status.success(), "{label}: {planned:?}");
+        assert!(
+            String::from_utf8_lossy(&planned.stdout).contains("known after apply"),
+            "{label}"
+        );
+        stack.lifecycle.run(&["apply", "--yes"])?;
+        assert_eq!(stack.creates()[0], "producer", "{label}");
+        let consumer = stack.record("consumer").await?;
+        assert_eq!(consumer.dependencies, ["fake_plain.producer"], "{label}");
+        assert_eq!(
+            consumer.state["name"],
+            stack.record("producer").await?.state["id"],
+            "{label}"
+        );
+    }
+    Ok(())
+}
+
+/// Conditions and loops over what is known work around references: only what decides
+/// the structure has to be known at plan.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn references_inside_known_conditions_and_loops_are_filled() -> TestResult {
+    let conditional = OutputLifecycle::new(
+        "conditional-body",
+        &format!(
+            "_enabled: true\n{}",
+            outputs_stack(&format!(
+                "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: {{if _enabled {{name: {PRODUCER_ID}}}}}}}"
+            ))
+        ),
+    )?;
+    conditional.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(
+        conditional.record("consumer").await?.state["name"],
+        conditional.record("producer").await?.state["id"]
+    );
+
+    // One consumer per producer, named from a key and filled from the loop variable.
+    let looped = OutputLifecycle::new(
+        "loop-over-producers",
+        &format!(
+            "_producers: {{a: \"first\", b: \"second\"}}\n{}\ninfrastructure: resources: {{for key, _ in _producers {{\"consumer_\\(key)\": {{type: \"fake_plain\", configuration: name: infrastructure.resources[\"producer_\\(key)\"].outputs.id}}}}}}",
+            outputs_stack(
+                "for key, name in _producers {\"producer_\\(key)\": {type: \"fake_plain\", outputs: id: string, configuration: \"name\": name}}"
+            )
+        ),
+    )?;
+    looped.lifecycle.run(&["apply", "--yes"])?;
+    for key in ["a", "b"] {
+        let consumer = looped.record(&format!("consumer_{key}")).await?;
+        assert_eq!(
+            consumer.dependencies,
+            [format!("fake_plain.producer_{key}")]
+        );
+        assert_eq!(
+            consumer.state["name"],
+            looped.record(&format!("producer_{key}")).await?.state["id"]
+        );
+    }
+    Ok(())
+}
+
+/// A value computed from outputs is unknown until all of them are, is recorded as
+/// depending on each, and converges.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn computed_values_wait_for_every_output_they_read() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "computed",
+        &format!(
+            "_other: infrastructure.resources.other.outputs.id\n{}",
+            outputs_stack(&format!(
+                "{OUTPUT_PRODUCER}, other: {{type: \"fake_plain\", outputs: id: string, configuration: name: \"other\"}}, interpolated: {{type: \"fake_plain\", configuration: name: \"app-\\({PRODUCER_ID})-\\(_other)\"}}, concatenated: {{type: \"fake_plain\", configuration: name: {PRODUCER_ID} + \"-suffix\"}}"
+            ))
+        ),
+    )?;
+    let planned = stack.lifecycle.execute_text(&["plan"])?;
+    assert!(planned.status.success(), "{planned:?}");
+    assert!(String::from_utf8_lossy(&planned.stdout).contains("known after apply"));
+    assert_eq!(stack.mutations(), 0, "plan must not change anything");
+
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    let producer = stack.record("producer").await?;
+    let other = stack.record("other").await?;
+    let producer_id = producer.state["id"].as_str().ok_or("no id")?;
+    let other_id = other.state["id"].as_str().ok_or("no id")?;
+    let interpolated = stack.record("interpolated").await?;
+    assert_eq!(
+        interpolated.state["name"],
+        format!("app-{producer_id}-{other_id}")
+    );
+    assert_eq!(
+        interpolated.dependencies,
+        ["fake_plain.other", "fake_plain.producer"]
+    );
+    let concatenated = stack.record("concatenated").await?;
+    assert_eq!(concatenated.state["name"], format!("{producer_id}-suffix"));
+    assert_eq!(concatenated.dependencies, ["fake_plain.producer"]);
+
+    let mutations = stack.mutations();
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(
+        stack.mutations(),
+        mutations,
+        "a converged stack must be a no-op"
+    );
+    Ok(())
+}
+
+/// A check nothing in the configuration reads does not stop a plan, and a real value
+/// violating it stops the apply before anything else changes.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_check_outside_the_configuration_is_verified_against_real_values() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "unread-check",
+        &format!(
+            "_check: {PRODUCER_ID} & \"not-the-output\"\n{}",
+            outputs_stack(&format!(
+                "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: {PRODUCER_ID}}}"
+            ))
+        ),
+    )?;
+    stack.lifecycle.run(&["plan"])?;
+    stack.fails(
+        &["apply", "--yes"],
+        "the real value of output fake_plain.producer.id",
+    )?;
+    assert_eq!(stack.creates(), ["producer"]);
+    assert!(stack.record("consumer").await.is_err());
+    Ok(())
+}
+
+/// A sensitive output keeps a value computed from it out of plans and logs.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_value_computed_from_a_sensitive_output_stays_masked() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "sensitive-computed",
+        &token_stack(
+            "\"bearer \\(infrastructure.resources.producer.outputs.token)\"",
+            "source",
+        ),
+    )?;
+    let planned = stack.lifecycle.execute_text(&["plan"])?;
+    assert!(planned.status.success(), "{planned:?}");
+    let applied = stack.lifecycle.execute_text(&["apply", "--yes"])?;
+    assert!(applied.status.success(), "{applied:?}");
+    let producer = stack.record("producer").await?;
+    let consumer = stack.record("consumer").await?;
+    let token = producer.state["token"].as_str().ok_or("no token")?;
+    assert_eq!(consumer.state["config"]["token"], format!("bearer {token}"));
+    assert_eq!(consumer.sensitive_attributes, ["config"]);
+    stack.lifecycle.execute_text(&["plan"])?;
+    let transcript = stack.lifecycle.transcript()?;
+    assert!(!transcript.contains(token));
+    assert!(!transcript.contains(&format!("bearer {token}")));
     Ok(())
 }
 
@@ -2120,11 +2335,11 @@ async fn separate_infrastructure_packages_share_the_output_contract() -> TestRes
     fs::write(
         directory.join("infra/control.cue"),
         format!(
-            "package infrastructure\n_o: {PRODUCER_ID}\n_h: {{if (_o & \"x\") == \"x\" {{v: 1}}}}\n"
+            "package infrastructure\n_o: {PRODUCER_ID}\ninfrastructure: resources: consumer: configuration: {{if (_o & \"x\") == \"x\" {{extra: \"e\"}}}}\n"
         ),
     )?;
     let before = stack.mutations();
-    stack.fails(&["plan"], "could not be inspected")?;
+    stack.fails(&["plan"], "an output cannot decide the structure")?;
     assert_eq!(stack.mutations(), before);
     Ok(())
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 
 	"cuelang.org/go/cue"
+	cueerrors "cuelang.org/go/cue/errors"
 )
 
 type frozenValidationOptions struct {
@@ -63,6 +64,7 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 		return err
 	}
 	deferred := make(map[string]bool)
+	seen := make(map[string]bool)
 	for _, entry := range options.Deferred {
 		path, err := entry.Path.cuePath()
 		if err != nil || len(path.Selectors()) == 0 || !instance.LookupPath(path).Exists() {
@@ -72,13 +74,14 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 		if err != nil || len(target.Selectors()) == 0 || primitiveDeclaration(instance.LookupPath(target)) == "" {
 			return errors.New("invalid deferred source")
 		}
-		actual, direct := graph.directSource(path)
-		if !direct || !samePath(actual, target) {
-			return errors.New("deferred path does not match a direct reference")
+		if !graph.readsSource(path, target) {
+			return errors.New("deferred path does not match a reference")
 		}
-		if deferred[path.String()] {
-			return errors.New("duplicate deferred path")
+		pair := path.String() + "<-" + target.String()
+		if seen[pair] {
+			return errors.New("duplicate deferred reference")
 		}
+		seen[pair] = true
 		deferred[path.String()] = true
 	}
 	var visit func(cue.Value, cue.Path) error
@@ -107,7 +110,7 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 			return err
 		}
 		value := instance.LookupPath(path)
-		if !value.Exists() || value.Validate(cue.Final()) != nil {
+		if !value.Exists() || validateFinal(value, deferred) != nil {
 			return errors.New("selected subtree is not final")
 		}
 		references, err := graph.frozenReferences(path)
@@ -124,6 +127,26 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 			}
 		}
 		if err := visit(value, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateFinal checks everything is final except what is computed from a value that
+// is not known yet: the expression producing it cannot complete before then.
+func validateFinal(value cue.Value, unknown map[string]bool) error {
+	err := value.Validate(cue.Final())
+	if err == nil {
+		return nil
+	}
+	for _, failure := range cueerrors.Errors(err) {
+		path := failure.Path()
+		selectors := make([]cue.Selector, 0, len(path))
+		for _, label := range path {
+			selectors = append(selectors, cue.ParsePath(label).Selectors()...)
+		}
+		if !unknown[cue.MakePath(selectors...).String()] {
 			return err
 		}
 	}

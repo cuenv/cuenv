@@ -2507,6 +2507,7 @@ async fn fake_interrupt_during_final_cue_evaluation_releases_lock_and_discards_l
                 "producer",
             )),
             attribute: "token".into(),
+            computed: false,
         },
         entered: AtomicBool::new(false),
         finished: AtomicBool::new(false),

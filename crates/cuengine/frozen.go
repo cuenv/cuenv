@@ -316,6 +316,8 @@ type frozenReference struct {
 	Target        valuePath `json:"target"`
 	PrimitiveType string    `json:"primitiveType"`
 	Supported     bool      `json:"supported"`
+	// Computed means CUE computes the value from its sources rather than carrying one.
+	Computed bool `json:"computed"`
 }
 
 type frozenEvaluation struct {

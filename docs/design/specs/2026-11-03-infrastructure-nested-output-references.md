@@ -25,12 +25,12 @@ objects or reconstructed from their field names.
   schema, generated type unions, manifest descriptor types, parser and
   compatibility adapter. Carry selector provenance as structured bindings
   separate from provider configuration; do not lower it into descriptor JSON.
-- Source attributes remain declared top-level provider scalars. Source and
-  destination scalar types must match; provider configuration, write-only and
-  computed-only destinations remain unsupported. Arithmetic, interpolation,
-  output-dependent defaults, dynamic structure and source collection selection
-  are outside this change. A native selector needs an abstract output
-  declaration.
+- Source attributes remain declared top-level provider scalars. A value that
+  carries one must have its type, and CUE computes a value derived from one, which
+  must then suit its destination. Provider configuration, write-only and
+  computed-only destinations remain unsupported. Output-dependent defaults, dynamic
+  structure and source collection selection are refused. A native selector needs an
+  abstract output declaration.
 - Destination paths distinguish object fields, concrete map keys and ordered
   list or tuple indices. References beneath sets or dynamic-typed values are
   rejected. Ordinary provider objects must retain their field meanings, even
@@ -191,95 +191,102 @@ no dependency, because `ReferencePath` reports a shared definition by its declar
 path and a reference rooted outside the instance counted as no dependency. On the
 second failure a fake provider applied the consumer before its producer.
 
-The fix keeps the pinned CUE fork unchanged and uses four layers. None of them alone
-is a proof, and no layer treats an expression it does not model as safe.
+Both came from rebuilding from source text what the evaluator already knows, and every
+review of that approach found another gap. The evaluator resolves each reference through
+the environment it was bound in. It only had no public API to report that, so the pinned
+CUE fork now has one, tracked upstream as cue-lang/cue#4547.
 
-1. **Analysis with bindings kept.** Analysis builds with structure sharing off, so
-   references report the path where a definition was instantiated. Expressions
-   resolve with the package identity of their source file. Unknown syntax is treated
-   as a possible control, only the values of data fields are excluded, and a
-   non-concrete value under a root that is neither this instance, an imported package
-   nor a let is an error. `sourceTargets` follows references toward every declared
-   source and stops each branch at the first one, because fills flow from a source to
-   its aliases and never back. A reference with more than one source is not direct.
-2. **Sampling before anything changes.** Analysis can miss a read whose result is
-   concrete while the source is abstract, as with a default over a narrowed source.
-   `rejectSampledDependence` fills every source with a value chosen to differ from
-   everything and compares the exported configuration. Any change outside the output
-   namespaces and exact reference leaves refuses the instance, and a reference leaf must
-   carry exactly its value. A leaf whose constraint refuses the sample excludes that
-   source and the check repeats for the rest. This can refuse and never clear: it cannot
-   prove independence from a value it did not try.
-3. **Verification with real values.** `cue_verify_frozen` applies the same comparison to
-   the outputs that actually exist, with all of them unified at once. It runs at the end
-   of planning, after each completed change of a resource declaring outputs, after a
-   deferred read, and when apply finishes. It only uses outputs whose resource has no
-   remaining work, because a recorded output about to be replaced says nothing about
-   what will be applied. A declared scalar whose real value is a list or object cannot
-   reach CUE, so it is refused rather than ignored. Failing while planning changes
-   nothing. Failing during apply skips everything not yet started, including deferred
-   reads, and reports an incomplete apply, exit code 5. It cannot undo a change that
-   already ran, so it does not replace the layers above.
+1. **Provenance from the evaluator.** `provenance.Analyze` in the fork's `cue/provenance`
+   walks the conjuncts of every field through those environments, with structure sharing
+   off so a definition's fields exist where it was instantiated. It reports each reference
+   as a field, the field it resolves to, and how it is used: `Value` (unified in, possibly
+   constrained), `Computed` (an operand), `Control` (a condition, label, index or the arm
+   of a disjunction) or `Presence` (which fields exist). A let, a comprehension variable and
+   a field of an inline value have no path of their own, so what they read is reported for
+   the field using them. Conditions are reported even when evaluation consumed them and
+   their results left no trace. A field pushed down from a comprehension is reported even
+   when its arc is gone because the condition did not resolve. Anything it cannot walk is
+   an error, and refuses the instance rather than being treated as independent.
+2. **A graph from the configuration to the outputs.** `referenceGraph` in the bridge follows
+   these from each exported value under the configuration roots. A value depends on what
+   it refers to, on what decides that it exists, and when read whole on everything below
+   it. A struct unified into a field is followed field by field, so a copy of a resource
+   maps to its output. Reading which fields a struct has reads no values, but the presence
+   of a scalar depends on its value, because CUE does not consider an abstract value present.
+3. **Verification with real values.** `cue_verify_frozen` unifies the outputs that actually
+   exist and compares the exported configuration. It runs at the end of planning, after each
+   completed change of a resource declaring outputs, after a deferred read, and when apply
+   finishes, only using outputs whose resource has no remaining work. A declared scalar whose
+   real value is a list or object cannot reach CUE, so it is refused rather than ignored.
+   Failing while planning changes nothing. Failing during apply skips everything not yet
+   started, including deferred reads, and reports an incomplete apply, exit code 5. It cannot
+   undo a change that already ran.
 4. **Exported values stay ordinary CUE.** Exports, fills and final validation run on a
    normal build. Tests compare both modes on every accepted fixture and several values.
 
+The sampling step and the source analysis were removed: about 3,000 lines of bridge code
+against about 870 lines in the fork. Sampling could only refuse and tried values that real
+outputs may never have, so it refused what depended on nothing real.
+
 ### Admitted and refused forms
 
-Admitted: a direct reference through aliases, lets, hidden fields, imported
-definitions, field aliases and reference-free constraints, at a scalar destination
-including nested objects, maps and ordered collections. Comprehensions, dynamic
-labels and indexes may use anything that does not depend on an output. `for` over
-containers holding outputs may read their keys and unrelated fields.
+Admitted: a scalar configuration value in `resources` or `data`, including inside nested
+objects, maps and ordered collections, however its reference is written and however many
+it reads. That covers aliases, lets, hidden fields, imported definitions, `(#F & {in: x}).v`,
+`({in: x, v: in}).v`, `self`, `try y = expr`, `W={...}` read as `W.z`, loop variables, and
+bodies of conditions and loops that are themselves known. A value that reads one output
+through constraints carries it. Anything else is computed: interpolation, arithmetic,
+builtins, or two outputs unified together. It stays unknown until every output it reads is
+known, and CUE computes it from the real values.
 
-Refused before any provider change: conditions, labels, patterns, indexes, slices,
-arithmetic, interpolation and builtins depending on an output, including through
-`close`, `and`, `or`, defaults, selections and lets.
+Refused before any provider change: conditions, labels, patterns, indexes, slices and
+defaults that depend on an output, a presence guard on a field holding one, and a list or
+struct computed from one, wherever they are reached from. These decide what fields exist,
+so a plan could not say what would be applied. Terraform refuses the same for `count` and
+`for_each`.
 
-These valid forms cannot be checked and are refused even when unrelated to any
-output: reading a data field from a definition instantiated inline, such as
-`(#F & {in: x}).v`, the same selection embedded in a struct, a literal read the same way
-such as `({in: x, v: in}).v`, `self`, `try y = expr`, and value aliases of a whole struct
-such as `W={...}` read as `W.z`. The same definition reached through a field,
-`_t: #F & {in: x}` then `_t.v`, and a control inside `(#F & {in: x}).out` are admitted.
-Refused as well, as in earlier releases: a reference inside a conditional or loop body
-such as `if _e {name: x}`, a `let` clause interpolating a loop variable, and a presence
-guard on a field holding a reference, whose result differs between plan and apply. A resource copied
-whole into another field, such as `_c: infrastructure.resources.producer`, is refused
-by CUE itself under the closed schema. `{a: 1}[x]` inside a `for` panics in the pinned
-evaluator's `Expr`, which is recovered and refused.
+Not refused: a check the configuration does not read, such as
+`_check: infrastructure.resources.a.outputs.id & =~"^x"` or a hidden comprehension. It
+cannot change what is sent to a provider, and real values are verified against it, so a
+violated check stops the apply as soon as that value exists.
 
 ### Evidence
 
-`frozen_provenance_matrix_test.go` asserts exact edges and that a rejection came from
-a dependency rule rather than a failed inspection, unless explicitly marked as a refusal.
-`frozen_provenance_generated_test.go` crosses 11 controls with 21 wrappers and 5
-placements, each with an unrelated twin. `frozen_provenance_attack_test.go` covers
-further syntax and ways of reaching a stack, and pins the exact lists of refused forms,
-so a new refusal or panic fails the test. A fill oracle, which can show a dependency and
-never clear one, checks every accepted fixture. `TestFrozenVerificationFollowsRealValues`
-checks that verification refuses exactly the accepted fixtures that values change.
-`TestFrozenChecksRefuseAWrongReferenceTarget` gives sampling and verification a recorded
-edge to the wrong source; removing the equality check they share fails it.
+`cue/provenance/provenance_test.go` in the fork asserts reported dependencies, including
+definitions binding to their instance, shadowing, hidden names of the same spelling in
+different packages, and let and comprehension variables through inline values.
 
-This is finite evidence, not a completeness proof. Review repeatedly found new classes
-of escape in analysis alone: default markers, `close`, container copies, defaults over
-narrowed sources, and hidden names colliding across packages. One fix that resolved a
-binding turned a safe refusal into an escape, so a refused form must only become admitted
-with both of its twins tested. A second review of the finished layers found no case
-that verification missed; the cases that passed analysis and sampling all needed a real value
-the samples did not try, such as `(x & =~"^x") != _|_` inside a builtin. Those specific forms
-are now analysed, but others like them can exist: when one does, the run stops as soon as the
-real value is known, which can be after an unrelated or mis-ordered resource has changed.
+`frozen_provenance_matrix_test.go` asserts exact edges. `frozen_provenance_generated_test.go`
+crosses 11 controls with 21 wrappers and 5 placements, each with an unrelated twin.
+`frozen_provenance_attack_test.go` covers further syntax and ways of reaching a stack, and
+requires no valid form to be refused unless it decides structure. A fill oracle, which can
+show a dependency and never clear one, checks every accepted fixture.
+`TestFrozenVerificationFollowsRealValues` checks that verification refuses exactly the
+accepted fixtures that values change, and every value CUE refuses.
+`TestFrozenChecksRefuseAWrongReferenceTarget` gives verification a recorded edge to the wrong
+source. `TestFrozenComputedReferences` covers partly known values and violated constraints on
+computed ones.
+
+This is finite evidence, not a proof. The analysis now reads what the evaluator bound, so
+what it misses is limited to expressions the walker classifies wrongly rather than scoping it
+reimplements. A form it refuses to walk fails closed. One it walks and misclassifies is caught
+when its real value is known, which can be after an unrelated resource has changed.
+
+The schema's checks moved into `_unresolved: {...}`. While they were comprehensions on the
+configuration itself, reading any field of it forced them, and they read every resource. A
+resource reading an output through a field or let outside the configuration then read itself,
+which the pinned evaluator and CUE 0.17.1 report as a structural cycle (0.18 does not). Error
+paths are unchanged.
 
 The pinned evaluator evaluates `o: "zzz"; let M = o & "x"; y: M == "x"` to `true`, so a
-conflict inside a let can vanish and final validation does not see it. Analysis
-rejects the output-dependent forms of this, and verification compares results. Whether
-current upstream CUE behaves the same has not been checked.
+conflict inside a let can vanish and final validation does not see it
+(cue-lang/cue#4548). A structural use of this is refused, but a computed one such as
+`"\(M)"` evaluates to `"x"` instead of failing.
 
 `crates/cuenv/tests/infrastructure_lifecycle.rs` drives the real schema, command line,
-bridge and fake provider over ordering, stored edges, unknown values, constraint
-violations, sensitive nested destinations, final-plan replacement, chains and separate
-packages.
+bridge and fake provider over ordering, stored edges, unknown values, computed values,
+constraint violations, sensitive nested and computed destinations, final-plan replacement,
+chains and separate packages.
 
 ### Snapshot consistency
 

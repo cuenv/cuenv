@@ -424,6 +424,10 @@ func TestFrozenVerificationFollowsRealValues(t *testing.T) {
 		mutable := append([]valuePath{}, sources...)
 		var references []deferredValue
 		for _, edge := range edges {
+			if computed := strings.SplitN(edge, "<=", 2); len(computed) == 2 {
+				mutable = append(mutable, frozenPath(computed[0]))
+				continue
+			}
 			parts := strings.SplitN(edge, "<-", 2)
 			references = append(references, deferredValue{Path: frozenPath(parts[0]), Target: frozenPath(parts[1])})
 		}

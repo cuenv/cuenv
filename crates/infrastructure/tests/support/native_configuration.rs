@@ -92,6 +92,7 @@ impl NativeConfiguration {
                     .as_str()
                     .ok_or_else(|| InfrastructureError::configuration("invalid test output"))?
                     .into(),
+                computed: false,
             });
             *value = Value::Null;
         } else {

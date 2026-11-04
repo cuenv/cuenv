@@ -226,8 +226,8 @@ func (graph *referenceGraph) sourcesOf(start *referenceNode) map[*referenceNode]
 }
 
 // frozenReferences reports every source each exported value below root depends on.
-// A reference is supported when the value is that source, optionally constrained,
-// and nothing else. A container only reports what decides its structure.
+// A reference is supported unless a source decides the structure around the value.
+// A container only reports what its structure depends on.
 func (graph *referenceGraph) frozenReferences(root cue.Path) ([]frozenReference, error) {
 	paths := make(map[string]cue.Path)
 	var collect func(cue.Value, cue.Path) error
@@ -288,8 +288,12 @@ func (graph *referenceGraph) frozenReferences(root cue.Path) ([]frozenReference,
 		node := graph.node(path)
 		sources := graph.sourcesOf(node)
 		container := graph.instance.LookupPath(path).Exists() && graph.isContainer(node)
+		structural := false
+		for _, use := range sources {
+			structural = structural || use == provenance.Control || (container && use == provenance.Computed)
+		}
 		for source, use := range sources {
-			if container && use != provenance.Control {
+			if container && use == provenance.Value {
 				continue
 			}
 			primitive := primitiveDeclaration(graph.instance.LookupPath(source.path))
@@ -297,7 +301,8 @@ func (graph *referenceGraph) frozenReferences(root cue.Path) ([]frozenReference,
 				Path:          typed,
 				Target:        typedPath(source.path),
 				PrimitiveType: primitive,
-				Supported:     primitive != "" && use == provenance.Value && len(sources) == 1,
+				Supported:     primitive != "" && !structural,
+				Computed:      use == provenance.Computed || len(sources) > 1,
 			})
 		}
 	}
@@ -317,18 +322,17 @@ func (graph *referenceGraph) frozenReferences(root cue.Path) ([]frozenReference,
 	return references, nil
 }
 
-// directSource returns the single source path is a direct reference to, if it is one.
-func (graph *referenceGraph) directSource(path cue.Path) (cue.Path, bool) {
-	sources := graph.sourcesOf(graph.node(path))
-	if len(sources) != 1 {
-		return cue.Path{}, false
-	}
-	for source, use := range sources {
-		if use == provenance.Value {
-			return source.path, true
+// readsSource reports whether the value at path is computed from or carries target,
+// and nothing decides its structure.
+func (graph *referenceGraph) readsSource(path, target cue.Path) bool {
+	reads := false
+	for source, use := range graph.sourcesOf(graph.node(path)) {
+		if use == provenance.Control {
+			return false
 		}
+		reads = reads || samePath(source.path, target)
 	}
-	return cue.Path{}, false
+	return reads
 }
 
 func pathWithin(path, parent cue.Path) bool {

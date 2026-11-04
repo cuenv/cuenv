@@ -235,6 +235,7 @@ mod tests {
             destination: vec![ConfigurationSelector::Field(destination.to_string())],
             source: source.clone(),
             attribute: "id".into(),
+            computed: false,
         };
         ResourceOutputReference {
             destination_attribute: destination.into(),

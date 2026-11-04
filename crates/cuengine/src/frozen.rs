@@ -88,8 +88,12 @@ pub struct FrozenReference {
     pub target: ValuePath,
     /// Bare source declaration (`string`, `number`, `bool`), or empty otherwise.
     pub primitive_type: String,
-    /// Whether this is a direct selector with reference-free CUE constraints.
+    /// Whether the value can be supplied once its sources are known: nothing about
+    /// the structure around it depends on a source.
     pub supported: bool,
+    /// Whether CUE computes the value from its sources rather than carrying one.
+    #[serde(default)]
+    pub computed: bool,
 }
 
 /// Inspection result. Raw JSON preserves exact numeric values.

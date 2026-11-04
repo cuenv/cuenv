@@ -653,3 +653,89 @@ func TestFrozenSnapshotRefusesMixedRevisions(t *testing.T) {
 		t.Fatalf("expected a refusal for continuous edits: %s", failure)
 	}
 }
+
+// A value computed from sources stays unknown until all of them are known, and CUE
+// computes it from the real values, with its constraints.
+func TestFrozenComputedReferences(t *testing.T) {
+	_, snapshot := freezeTestModule(t, map[string]string{"env.cue": `package app
+import "strings"
+source: {a: string, b: string, n: number}
+config: {
+ interpolated: "x-\(source.a)-\(source.b)"
+ upper: strings.ToUpper(source.a)
+ constrained: "x-\(source.a)" & =~"^x-ok"
+ sum: source.n + 1
+ plain: source.a
+}
+`})
+	path := func(field string) valuePath { return frozenPath("config." + field) }
+	source := func(field string) valuePath { return frozenPath("source." + field) }
+	references := []deferredValue{
+		{Path: path("interpolated"), Target: source("a")},
+		{Path: path("interpolated"), Target: source("b")},
+		{Path: path("upper"), Target: source("a")},
+		{Path: path("constrained"), Target: source("a")},
+		{Path: path("sum"), Target: source("n")},
+		{Path: path("plain"), Target: source("a")},
+	}
+	var evaluation frozenEvaluation
+	inspection := frozenPayload(t, evaluateFrozenResponse(snapshot, frozenJSON(t, frozenEvaluationOptions{ReferencePaths: []valuePath{frozenPath("config")}})))
+	if err := json.Unmarshal(inspection, &evaluation); err != nil {
+		t.Fatal(err)
+	}
+	if len(evaluation.References) != len(references) {
+		t.Fatalf("references: %s", inspection)
+	}
+	for _, reference := range evaluation.References {
+		consumer, _ := reference.Path.cuePath()
+		if !reference.Supported || reference.Computed == (consumer.String() == "config.plain") {
+			t.Fatalf("%s: %s", consumer, inspection)
+		}
+	}
+	frozenPayload(t, validateFrozenResponse(snapshot, frozenJSON(t, frozenValidationOptions{ConcretePaths: []valuePath{frozenPath("config")}, AbstractPaths: []valuePath{frozenPath("source")}, Deferred: references})))
+
+	fill := func(field, value string) scalarFill {
+		return scalarFill{Path: source(field), Value: json.RawMessage(value)}
+	}
+	specialize := func(fills []scalarFill, deferred []deferredValue) string {
+		return specializeFrozenResponse(snapshot, frozenJSON(t, specializationOptions{Projection: frozenPath("config"), Fills: fills, Deferred: deferred}))
+	}
+	// Nothing known: every computed value is a placeholder.
+	var result specializationResult
+	if err := json.Unmarshal(frozenPayload(t, specialize(nil, references)), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Unresolved) != len(references) {
+		t.Fatalf("unresolved: %+v", result)
+	}
+	// One of two sources known: still unknown, with the other named.
+	known := append([]deferredValue{}, references[1], references[4])
+	response := specialize([]scalarFill{fill("a", `"ok"`)}, known)
+	if err := json.Unmarshal(frozenPayload(t, response), &result); err != nil {
+		t.Fatal(err)
+	}
+	projected, _ := result.Value.(map[string]any)
+	if projected["interpolated"] != nil || projected["upper"] != "OK" || projected["constrained"] != "x-ok" || projected["sum"] != nil || projected["plain"] != "ok" {
+		t.Fatalf("partly known: %s", response)
+	}
+	// All known: CUE computes every value.
+	response = specialize([]scalarFill{fill("a", `"ok"`), fill("b", `"b"`), fill("n", "41")}, nil)
+	if err := json.Unmarshal(frozenPayload(t, response), &result); err != nil {
+		t.Fatal(err)
+	}
+	projected, _ = result.Value.(map[string]any)
+	if projected["interpolated"] != "x-ok-b" || projected["sum"] != float64(42) {
+		t.Fatalf("known: %s", response)
+	}
+	// A value the constraint on the computed value refuses.
+	if response := specialize([]scalarFill{fill("a", `"nope"`), fill("b", `"b"`), fill("n", "41")}, nil); !strings.Contains(response, `"error"`) {
+		t.Fatalf("accepted a violated constraint: %s", response)
+	}
+	// A wrong or missing source is refused.
+	if response := specialize(nil, []deferredValue{{Path: path("sum"), Target: source("a")}}); !strings.Contains(response, `"error"`) {
+		t.Fatalf("accepted the wrong source: %s", response)
+	}
+	if response := specialize(nil, references[1:]); !strings.Contains(response, `"error"`) {
+		t.Fatalf("accepted a source left out: %s", response)
+	}
+}

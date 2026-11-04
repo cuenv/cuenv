@@ -135,7 +135,7 @@ pub(super) fn freeze_configuration(
         .collect();
     let mut preserved_numbers = BTreeSet::new();
     for (reference, direct) in inspected.references.iter().zip(&reference_map[&relative]) {
-        if reference.primitive_type == "number"
+        if (reference.primitive_type == "number" || reference.computed)
             && selected.contains(&(direct.path.as_str(), direct.target.as_slice()))
         {
             preserved_numbers.insert(configuration_path(&reference.path)?);
@@ -168,7 +168,7 @@ pub(super) fn freeze_configuration(
     for (reference, direct) in inspected.references.iter().zip(&reference_map[&relative]) {
         if selected.contains(&(direct.path.as_str(), direct.target.as_slice())) {
             let native = native_reference(reference, &value, &root)?;
-            if reference.primitive_type == "number" {
+            if reference.primitive_type == "number" || reference.computed {
                 numeric_references.insert(native.clone());
             }
             references.push(native);
@@ -213,7 +213,20 @@ pub(super) fn freeze_configuration(
     if request.environment.is_none() {
         verification_mutable.push(append_field(&root, "environments"));
     }
-    let verification_references = deferred.clone();
+    // A carried value must equal its output. CUE decides what a computed one is.
+    let mut verification_references = Vec::new();
+    for (reference, entry) in inspected
+        .references
+        .iter()
+        .filter(|reference| deferred.iter().any(|entry| reference_is(reference, entry)))
+        .zip(&deferred)
+    {
+        if reference.computed {
+            verification_mutable.push(entry.path.clone());
+        } else {
+            verification_references.push(entry.clone());
+        }
+    }
     let verification_roots = vec![root.clone()];
     snapshot
         .validate(&FrozenValidationOptions {
@@ -285,10 +298,10 @@ fn inspection_failure(error: &cuengine::CueEngineError, message: &'static str) -
     }
 }
 
-const OUTPUT_REFERENCE_HELP: &str = "A runtime output may only be used as a direct reference, \
-optionally through aliases and constraints, at a scalar destination. Conditions, labels, indexes, \
-arithmetic and interpolation may not depend on one. Diagnostics are withheld because they can \
-contain private configuration values or keys.";
+const OUTPUT_REFERENCE_HELP: &str = "A scalar configuration value may read, or be computed from, \
+runtime outputs. What fields exist may not depend on one: conditions, labels, indexes and defaults \
+cannot read an output. Diagnostics are withheld because they can contain private configuration \
+values or keys.";
 
 fn native_reference(
     reference: &FrozenReference,
@@ -319,7 +332,12 @@ fn native_reference(
         destination,
         source,
         attribute,
+        computed: reference.computed,
     })
+}
+
+fn reference_is(reference: &FrozenReference, entry: &DeferredValue) -> bool {
+    reference.path == entry.path && reference.target == entry.target
 }
 
 fn configuration_path(path: &[ValueSelector]) -> Result<Vec<ConfigurationSelector>, CliError> {

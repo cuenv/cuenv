@@ -133,7 +133,7 @@ func fillChanges(t *testing.T, snapshot string, edges []string) string {
 				delete(read, key)
 			}
 			for _, edge := range edges {
-				if strings.HasPrefix(edge, key+"<-") {
+				if strings.HasPrefix(edge, key+"<-") || strings.HasPrefix(edge, key+"<=") {
 					delete(read, key)
 				}
 			}

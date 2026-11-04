@@ -38,6 +38,9 @@ pub struct NativeReference {
     pub source: SourceAddress,
     /// Top-level primitive output attribute.
     pub attribute: String,
+    /// CUE computes the destination from its sources instead of carrying this one,
+    /// so it may read several, and the two need not have the same type.
+    pub computed: bool,
 }
 
 /// Inputs for a fresh consumer evaluation from the original snapshot.

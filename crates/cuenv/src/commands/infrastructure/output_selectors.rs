@@ -41,6 +41,12 @@ impl OutputSelectors<'_> {
             }
             let target = &reference.target;
             let destination = &reference.labels;
+            if !reference.supported {
+                return Err(CliError::config(format!(
+                    "{}: an output cannot decide the structure of a configuration, through a condition, a label, an index or a default",
+                    diagnostic_path(&reference.labels)
+                )));
+            }
             if target.len() != root.len() + 4
                 || target[..root.len()] != root
                 || !is_declaration_namespace(&target[root.len()])
@@ -58,9 +64,9 @@ impl OutputSelectors<'_> {
                     diagnostic_path(&reference.labels)
                 )));
             }
-            if !reference.supported || output_type(&reference.primitive_type).is_none() {
+            if output_type(&reference.primitive_type).is_none() {
                 return Err(CliError::config(format!(
-                    "{}: output selectors support direct references and primitive type conjunctions; output declarations must be bare string, number or bool types without defaults or refinements",
+                    "{}: output declarations must be bare string, number or bool types without defaults or refinements",
                     diagnostic_path(&reference.labels)
                 )));
             }
