@@ -3121,6 +3121,15 @@ impl TerminalView {
             cx.notify();
             return;
         }
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("c") {
+            if let Some(text) = self
+                .active_state()
+                .and_then(|state| state.interaction.copy(&state.frame))
+            {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            return;
+        }
         if self
             .active_state()
             .is_some_and(|state| state.interaction.search().is_some())
@@ -3141,15 +3150,6 @@ impl TerminalView {
             if let Some(search_key) = search_key {
                 self.search_key(search_key);
                 cx.notify();
-            }
-            return;
-        }
-        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("c") {
-            if let Some(text) = self
-                .active_state()
-                .and_then(|state| state.interaction.copy(&state.frame))
-            {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
             return;
         }
