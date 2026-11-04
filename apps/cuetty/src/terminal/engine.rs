@@ -5,7 +5,7 @@ use super::cursor::{
     CursorAnimator, CursorFocus, CursorFrame, CursorObservation, TrailSpan, blink_wanted,
 };
 use super::events::ControlEvent;
-use super::glyphs::{GlyphShape, drawn_glyph, is_drawn};
+use super::glyphs::{GlyphShape, drawn_glyph, is_drawn, is_graphic};
 use super::host::{
     RioTerminalFactory, SessionStart, TerminalScroll, TerminalSession, TerminalSessionFactory,
     TerminalWheel,
@@ -765,6 +765,14 @@ fn drawn_character(cell: &TerminalCell) -> Option<char> {
         .filter(|character| is_drawn(*character))
 }
 
+/// Whether a cell holds a piece of a picture rather than text.
+fn draws_a_graphic(cell: &TerminalCell) -> bool {
+    cell.text
+        .as_deref()
+        .and_then(single_character)
+        .is_some_and(is_graphic)
+}
+
 fn frame_row(frame: &TerminalFrame, row: usize) -> &[TerminalCell] {
     frame.rows.get(row).map_or(&[], |row| row.cells.as_slice())
 }
@@ -870,7 +878,7 @@ fn is_selected(overlays: &[CellOverlaySpan], position: CellPosition) -> bool {
 /// A glyph's colour after the minimum contrast setting, measured against `selection`
 /// when one is painted beneath the cell. A layer above the cell has its own colour pair.
 ///
-/// Colours an application spelled out in 24-bit are left alone, as are shapes: image
+/// Colours an application spelled out in 24-bit are left alone, as are graphics: image
 /// previews and Powerline segments are built from them, and only line up when a cell's
 /// foreground matches its neighbour's background exactly.
 fn readable_foreground(
@@ -888,7 +896,7 @@ fn readable_foreground(
     if layer != CellLayer::Cell
         || theme.minimum_contrast.is_off()
         || matches!(explicit, super::model::Color::Rgb(_))
-        || drawn_character(cell).is_some()
+        || draws_a_graphic(cell)
     {
         return foreground;
     }
@@ -3614,7 +3622,7 @@ mod tests {
     }
 
     #[test]
-    fn minimum_contrast_lifts_palette_text_but_not_explicit_colours_or_shapes() {
+    fn minimum_contrast_lifts_palette_text_but_not_explicit_colours_or_graphics() {
         let theme = contrast_theme();
         let surface = theme.surface;
         let readable = |cell: &TerminalCell, selection| {
@@ -3630,9 +3638,12 @@ mod tests {
         explicit.foreground = Color::Rgb(Rgb(40, 40, 50));
         assert_eq!(readable(&explicit, None), Rgb(40, 40, 50));
 
-        let mut powerline = palette.clone();
-        powerline.text = Some("\u{E0B0}".into());
-        assert_eq!(readable(&powerline, None), theme.ansi[0]);
+        // Drawn as a shape, and through the font: both have to meet their neighbours.
+        for graphic in ["\u{E0B0}", "\u{E0B4}", "\u{2801}", "\u{1FB00}"] {
+            let mut cell = palette.clone();
+            cell.text = Some(graphic.into());
+            assert_eq!(readable(&cell, None), theme.ansi[0], "{graphic}");
+        }
     }
 
     #[test]

@@ -65,6 +65,23 @@ pub(super) fn is_drawn(character: char) -> bool {
     )
 }
 
+/// Whether a character is a piece of a picture rather than text. Image previews and
+/// Powerline segments are built from these, however they are painted, and only line up
+/// when a cell's foreground is exactly the colour it was given.
+pub(super) fn is_graphic(character: char) -> bool {
+    is_drawn(character)
+        || matches!(
+            u32::from(character),
+            // Braille, used for its dots.
+            0x2800..=0x28FF
+            // Powerline Extra's rounded, slanted, and decorative separators.
+            | 0xE0B4..=0xE0D7
+            // Symbols for Legacy Computing and its supplement: sextants, octants, wedges.
+            | 0x1CC00..=0x1CEBF
+            | 0x1FB00..=0x1FBFF
+        )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Weight {
     None,
@@ -1147,6 +1164,34 @@ mod tests {
                 !drawn_glyph(character, roomy).expect("drawn").is_empty(),
                 "U+{code:04X} draws nothing"
             );
+        }
+    }
+
+    #[test]
+    fn pieces_of_a_picture_are_graphics_and_text_is_not() {
+        for character in [
+            '\u{2500}',
+            '\u{2588}',
+            '\u{2801}',
+            '\u{E0B0}',
+            '\u{E0B4}',
+            '\u{E0BC}',
+            '\u{E0D7}',
+            '\u{1CD00}',
+            '\u{1FB00}',
+        ] {
+            assert!(is_graphic(character), "U+{:04X}", u32::from(character));
+        }
+        // Powerline's own branch and lock icons are read like text.
+        for character in [
+            'a',
+            '\u{00E9}',
+            '\u{25A0}',
+            '\u{E0A0}',
+            '\u{E0D8}',
+            '\u{1F600}',
+        ] {
+            assert!(!is_graphic(character), "U+{:04X}", u32::from(character));
         }
     }
 
