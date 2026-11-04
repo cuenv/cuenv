@@ -6,7 +6,7 @@
 
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
-use gpui::{BoxShadow, Rgba};
+use gpui::{BoxShadow, Pixels, Point, Rgba, point};
 
 /// Spacing scale for padding, gaps, and offsets.
 pub(super) mod space {
@@ -55,6 +55,8 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const RAIL_WIDTH: Pixels = px(56.0);
     pub(in crate::terminal::chrome) const RAIL_FOOTER_HEIGHT: Pixels = px(112.0);
     pub(in crate::terminal::chrome) const TITLEBAR_HEIGHT: Pixels = px(34.0);
+    /// Height of the native macOS window controls.
+    pub(in crate::terminal::chrome) const WINDOW_CONTROLS_HEIGHT: Pixels = px(16.0);
     /// Horizontal room reserved for native window controls.
     pub(in crate::terminal::chrome) const WINDOW_CONTROLS_WIDTH: Pixels = px(82.0);
     pub(in crate::terminal::chrome) const CONTROL_HEIGHT: Pixels = px(30.0);
@@ -94,6 +96,15 @@ pub(super) mod elevation {
             },
         ]
     }
+}
+
+/// Where native window controls sit: centred in the title strip, so they follow
+/// its height.
+pub(in crate::terminal) fn traffic_light_position() -> Point<Pixels> {
+    point(
+        space::LG,
+        (size::TITLEBAR_HEIGHT - size::WINDOW_CONTROLS_HEIGHT) * 0.5,
+    )
 }
 
 fn opaque(color: Rgb) -> Rgba {

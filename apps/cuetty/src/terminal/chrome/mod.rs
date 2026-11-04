@@ -10,6 +10,7 @@ mod task_sidebar;
 mod tokens;
 
 pub(super) use layout::render_shell_message;
+pub(super) use tokens::traffic_light_position;
 
 use super::engine::TerminalView;
 use crate::integrations::cuenv::Keybindings;

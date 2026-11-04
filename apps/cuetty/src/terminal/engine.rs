@@ -1,4 +1,4 @@
-use super::chrome::render_shell_message;
+use super::chrome::{render_shell_message, traffic_light_position};
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
 use super::host::{
@@ -1946,7 +1946,7 @@ pub fn run() {
                     titlebar: Some(gpui::TitlebarOptions {
                         title: None,
                         appears_transparent: true,
-                        traffic_light_position: Some(point(px(12.0), px(9.0))),
+                        traffic_light_position: Some(traffic_light_position()),
                     }),
                     window_background: TerminalTheme::default().window_background(),
                     // Matches the installed `cuetty.desktop` so Linux
