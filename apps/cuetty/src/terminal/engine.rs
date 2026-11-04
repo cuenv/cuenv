@@ -1743,14 +1743,30 @@ struct LiveHoverTargets {
     notice: bool,
     tasks: bool,
     palette_hint: bool,
-    palette: bool,
-    task_sidebar: bool,
+    /// How many rows the open palette lists, as its query has them.
+    palette_rows: usize,
+    /// How many rows the open task sidebar lists.
+    task_rows: usize,
     session_actions: bool,
     search: bool,
     scrollbar: bool,
 }
 
 impl LiveHoverTargets {
+    /// Whether `target` is on screen this draw, given the tabs there are.
+    fn holds(&self, target: HoverTarget, tabs: &[TabId]) -> bool {
+        match target {
+            HoverTarget::Tab(tab) => tabs.contains(&tab),
+            HoverTarget::TabClose(tab) => self.tab_close_buttons && tabs.contains(&tab),
+            HoverTarget::Button(button) => self.button(button),
+            HoverTarget::PaletteRow(row) => row < self.palette_rows,
+            HoverTarget::TaskRow(row) => row < self.task_rows,
+            HoverTarget::SessionAction(_) => self.session_actions,
+            HoverTarget::SearchButton(_) => self.search,
+            HoverTarget::Scrollbar => self.scrollbar,
+        }
+    }
+
     fn button(&self, button: SidebarButton) -> bool {
         match button {
             SidebarButton::NewTab | SidebarButton::Toggle => true,
@@ -3077,16 +3093,8 @@ impl TerminalView {
         if !live.scrollbar {
             self.scrollbar_grab = None;
         }
-        self.motion.forget_hovers(now, |target| match *target {
-            HoverTarget::Tab(tab) => tabs.contains(&tab),
-            HoverTarget::TabClose(tab) => live.tab_close_buttons && tabs.contains(&tab),
-            HoverTarget::Button(button) => live.button(button),
-            HoverTarget::PaletteRow(_) => live.palette,
-            HoverTarget::TaskRow(_) => live.task_sidebar,
-            HoverTarget::SessionAction(_) => live.session_actions,
-            HoverTarget::SearchButton(_) => live.search,
-            HoverTarget::Scrollbar => live.scrollbar,
-        });
+        self.motion
+            .forget_hovers(now, |target| live.holds(*target, &tabs));
         if let Some(delay) = self.motion.next_frame(now, pace) {
             self.request_frame(now + delay, delay, cx);
         }
@@ -3106,8 +3114,18 @@ impl TerminalView {
                     .is_some_and(|state| state.marker_notice().is_some()),
             tasks: has_tasks,
             palette_hint: has_tasks && self.sidebar_mode() == SidebarMode::Expanded,
-            palette: self.task_palette_open,
-            task_sidebar: self.task_sidebar_open,
+            palette_rows: self
+                .active_state()
+                .filter(|_| self.task_palette_open)
+                .map_or(0, |state| {
+                    filtered_tasks(&state.cuenv.tasks, &self.task_query)
+                        .len()
+                        .min(PALETTE_RESULT_LIMIT)
+                }),
+            task_rows: self
+                .active_state()
+                .filter(|_| self.task_sidebar_open)
+                .map_or(0, |state| state.cuenv.tasks.len()),
             session_actions: self
                 .active_state()
                 .is_none_or(|state| state.error.is_some()),
@@ -3894,6 +3912,35 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn a_row_a_filter_has_removed_is_no_longer_there_to_be_hovered() {
+        let live = LiveHoverTargets {
+            palette_rows: 2,
+            task_rows: 1,
+            ..LiveHoverTargets::default()
+        };
+        assert!(live.holds(HoverTarget::PaletteRow(1), &[]));
+        assert!(!live.holds(HoverTarget::PaletteRow(2), &[]));
+        assert!(live.holds(HoverTarget::TaskRow(0), &[]));
+        assert!(!live.holds(HoverTarget::TaskRow(1), &[]));
+
+        let closed = LiveHoverTargets::default();
+        assert!(!closed.holds(HoverTarget::PaletteRow(0), &[]));
+        assert!(!closed.holds(HoverTarget::TaskRow(0), &[]));
+    }
+
+    #[test]
+    fn a_close_button_is_only_there_for_a_tab_in_an_expanded_sidebar() {
+        let tab = TabId::new(1);
+        let expanded = LiveHoverTargets {
+            tab_close_buttons: true,
+            ..LiveHoverTargets::default()
+        };
+        assert!(expanded.holds(HoverTarget::TabClose(tab), &[tab]));
+        assert!(!expanded.holds(HoverTarget::TabClose(tab), &[]));
+        assert!(!LiveHoverTargets::default().holds(HoverTarget::TabClose(tab), &[tab]));
     }
 
     #[test]
