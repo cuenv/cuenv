@@ -290,7 +290,9 @@ takes a pasted newline as text. Enter is pressed only while the foreground is an
 interactive shell, judged from the name and start-up arguments of the process that
 holds it: a program, or a shell running a script (`bash deploy.sh`, `sh -c …`), gets the
 command but no Enter, so it cannot submit something the user was still writing or
-answer a script's question. A shell's builtin, such as `read`, or a subshell looks the
+answer a script's question. The sidebar's notice marker then says the command is
+waiting, on that pane, until Enter or Ctrl-C finishes the line or the foreground
+changes; a configuration error for that pane takes priority over it. A shell's builtin, such as `read`, or a subshell looks the
 same as its prompt from outside, so a command launched during one does get an Enter. Required task parameters leave an editable command at the prompt. The app does not duplicate
 the task graph, cache, hooks, or secret resolution.
 

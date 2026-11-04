@@ -605,11 +605,18 @@ impl PaneState {
     /// the command takes an Enter of its own. That is for an interactive shell only:
     /// in a program or a shell running a script it could submit whatever was being
     /// held or answer a question, so there the command is left for the user to act on.
-    fn launch_task(&mut self, command: &str, task: &CuenvTask) -> Result<(), String> {
+    fn launch_task(&mut self, command: &str, task: &CuenvTask) -> Result<TaskLaunch, String> {
         let now = std::time::Instant::now();
         self.sample_foreground(now);
         self.session.paste(command)?;
-        if !task.requires_parameters && self.activity.at_prompt() {
+        let launch = if task.requires_parameters {
+            TaskLaunch::AwaitingArguments
+        } else if self.activity.at_prompt() {
+            TaskLaunch::Started
+        } else {
+            TaskLaunch::AwaitingEnter
+        };
+        if launch == TaskLaunch::Started {
             self.session.input(TerminalKeyEvent {
                 key: KeyInput::Enter,
                 modifiers: InputModifiers::default(),
@@ -617,7 +624,57 @@ impl PaneState {
             })?;
             self.activity.launch_task(task.name.clone(), now);
         }
-        Ok(())
+        self.activity.set_staged_hint(launch.hint(&task.name));
+        Ok(launch)
+    }
+
+    /// Sends a key the user pressed to the terminal.
+    fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
+        if acts_on_the_line(&event) {
+            self.activity.set_staged_hint(None);
+        }
+        self.session.input(event)
+    }
+
+    /// What the sidebar's notice marker says for this pane. A broken configuration
+    /// matters more than a reminder about a pasted task.
+    pub(super) fn marker_notice(&self) -> Option<&str> {
+        self.cuenv
+            .notice
+            .as_deref()
+            .or(self.cuenv.task_notice.as_deref())
+            .or(self.activity.staged_hint())
+    }
+}
+
+/// How far launching a task got.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskLaunch {
+    /// Pasted and submitted to a waiting shell.
+    Started,
+    /// Pasted for the user to complete, because the task has required parameters.
+    AwaitingArguments,
+    /// Pasted but not submitted, because no shell could be seen waiting.
+    AwaitingEnter,
+}
+
+impl TaskLaunch {
+    /// What the user has to do next, if anything.
+    fn hint(self, task: &str) -> Option<String> {
+        match self {
+            Self::Started => None,
+            Self::AwaitingArguments => Some(format!("Add arguments for '{task}' and press Enter")),
+            Self::AwaitingEnter => Some(format!("Pasted '{task}'; press Enter to run it")),
+        }
+    }
+}
+
+/// Whether a key finishes with the line being edited, by submitting or abandoning it.
+fn acts_on_the_line(event: &TerminalKeyEvent) -> bool {
+    match event.key {
+        KeyInput::Enter => true,
+        KeyInput::Character('c' | 'C') => event.modifiers.contains(InputModifiers::CONTROL),
+        _ => false,
     }
 }
 
@@ -1521,6 +1578,7 @@ impl TerminalView {
     ) {
         match self.registry.workspace.apply(ShellAction::ActivateTab(tab)) {
             Ok(_) => {
+                self.registry.notice = None;
                 self.focus.focus(window);
                 self.refresh_cuenv_integration(cx);
                 self.sync_active_config(cx);
@@ -1753,13 +1811,10 @@ impl TerminalView {
             return;
         };
         let command = task_command(&cwd, &task);
-        if let Some(state) = self.registry.sessions.get_mut(&active_pane) {
-            if let Err(error) = state.launch_task(&command, &task) {
-                state.error = Some(error);
-            } else if task.requires_parameters {
-                self.registry.notice =
-                    Some(format!("Add arguments for '{}' and press Enter", task.name));
-            }
+        if let Some(state) = self.registry.sessions.get_mut(&active_pane)
+            && let Err(error) = state.launch_task(&command, &task)
+        {
+            state.error = Some(error);
         }
         self.close_task_palette(cx);
     }
@@ -2008,7 +2063,7 @@ impl TerminalView {
             bits |= InputModifiers::SUPER.bits();
         }
         if let Some(state) = self.active_state_mut()
-            && let Err(error) = state.session.input(TerminalKeyEvent {
+            && let Err(error) = state.input(TerminalKeyEvent {
                 key: input,
                 modifiers: InputModifiers::from_bits(bits),
                 repeat: event.is_held,
@@ -3258,10 +3313,11 @@ mod tests {
         let (mut pane, sent) = bracketed_pane("zsh");
         let task = runnable_task("docs.build");
         let command = task_command(std::path::Path::new("/tmp/x"), &task);
-        pane.launch_task(&command, &task).unwrap();
+        assert_eq!(pane.launch_task(&command, &task), Ok(TaskLaunch::Started));
         let expected = format!("\x1b[200~{command}\x1b[201~\r");
         assert_eq!(*sent.lock().unwrap(), expected.into_bytes());
         assert_eq!(pane.activity.task_name(), Some("docs.build"));
+        assert_eq!(pane.marker_notice(), None);
     }
 
     #[test]
@@ -3270,9 +3326,62 @@ mod tests {
         let mut task = runnable_task("release");
         task.requires_parameters = true;
         let command = task_command(std::path::Path::new("/tmp/x"), &task);
-        pane.launch_task(&command, &task).unwrap();
+        assert_eq!(
+            pane.launch_task(&command, &task),
+            Ok(TaskLaunch::AwaitingArguments)
+        );
         let expected = format!("\x1b[200~{command}\x1b[201~");
         assert_eq!(*sent.lock().unwrap(), expected.into_bytes());
+        assert_eq!(
+            pane.marker_notice(),
+            Some("Add arguments for 'release' and press Enter")
+        );
+    }
+
+    fn pressed(key: KeyInput, modifiers: InputModifiers) -> TerminalKeyEvent {
+        TerminalKeyEvent {
+            key,
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn a_staged_tasks_hint_lasts_until_the_line_is_submitted_or_abandoned() {
+        let plain = InputModifiers::default();
+        for finishing in [
+            pressed(KeyInput::Enter, plain),
+            pressed(KeyInput::Character('c'), InputModifiers::CONTROL),
+        ] {
+            let (mut pane, _) = bracketed_pane("zsh");
+            let mut task = runnable_task("release");
+            task.requires_parameters = true;
+            pane.launch_task("cuenv task release ", &task).unwrap();
+            // Typing the arguments is what the hint asked for.
+            for key in [KeyInput::Character('c'), KeyInput::Character('1')] {
+                pane.input(pressed(key, plain)).unwrap();
+            }
+            assert!(pane.marker_notice().is_some());
+            pane.input(finishing).unwrap();
+            assert_eq!(pane.marker_notice(), None);
+        }
+    }
+
+    #[test]
+    fn a_configuration_notice_outranks_a_staged_tasks_hint() {
+        let (mut pane, _) = bracketed_pane("claude");
+        pane.launch_task("cuenv task docs.build", &runnable_task("docs.build"))
+            .unwrap();
+        pane.cuenv.task_notice = Some("tasks did not evaluate".into());
+        assert_eq!(pane.marker_notice(), Some("tasks did not evaluate"));
+        pane.cuenv.notice = Some("cuetty.cue is invalid".into());
+        assert_eq!(pane.marker_notice(), Some("cuetty.cue is invalid"));
+        pane.cuenv.notice = None;
+        pane.cuenv.task_notice = None;
+        assert_eq!(
+            pane.marker_notice(),
+            Some("Pasted 'docs.build'; press Enter to run it")
+        );
     }
 
     #[test]
@@ -3282,10 +3391,17 @@ mod tests {
         for process in ["claude", "", "bash deploy.sh", "sh -c make"] {
             let (mut pane, sent) = bracketed_pane(process);
             let task = runnable_task("docs.build");
-            pane.launch_task("cuenv task docs.build", &task).unwrap();
+            assert_eq!(
+                pane.launch_task("cuenv task docs.build", &task),
+                Ok(TaskLaunch::AwaitingEnter)
+            );
             let expected = "\x1b[200~cuenv task docs.build\x1b[201~";
             assert_eq!(*sent.lock().unwrap(), expected.as_bytes());
             assert_eq!(pane.activity.task_name(), None);
+            assert_eq!(
+                pane.marker_notice(),
+                Some("Pasted 'docs.build'; press Enter to run it")
+            );
         }
     }
 

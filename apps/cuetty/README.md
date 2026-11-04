@@ -273,8 +273,10 @@ Malformed matching configuration retains the last valid presentation for that
 directory, if one exists, and shows an integration notice: a small accent marker
 beside the sidebar's controls, with the message in its tooltip. The tooltip stops
 at twelve lines; `cue eval .:cuetty` in that directory prints a whole evaluation
-error. Workspace action failures appear the same way. Unknown fields are
-rejected.
+error. Workspace action failures appear the same way until the next tab switch or
+successful action. So does a task pasted without running, on its own pane, until Enter
+or Ctrl-C finishes the line or the foreground changes; a configuration error there
+takes priority. Unknown fields are rejected.
 
 The appearance fields are optional and apply to the active tab:
 

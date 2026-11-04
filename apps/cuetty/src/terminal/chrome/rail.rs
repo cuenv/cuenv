@@ -115,13 +115,7 @@ impl TerminalView {
         let integration_notice = active_tab
             .and_then(|tab_id| tab_list.iter().find(|tab| tab.id == tab_id))
             .and_then(|tab| self.registry.sessions.get(&tab.focused))
-            .and_then(|state| {
-                state
-                    .cuenv
-                    .notice
-                    .as_deref()
-                    .or(state.cuenv.task_notice.as_deref())
-            });
+            .and_then(|state| state.marker_notice());
         // A message does not fit here, and an evaluation error can run to hundreds
         // of characters. A marker reports that there is one and can never displace
         // the tabs or controls.

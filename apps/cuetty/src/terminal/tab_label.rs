@@ -244,6 +244,8 @@ pub(super) struct PaneActivity {
     /// last known, and a prompt cannot be assumed from it being empty.
     foreground_unknown: bool,
     task: Option<RunningTask>,
+    /// What a task pasted here but not run is waiting for.
+    staged_hint: Option<String>,
 }
 
 impl PaneActivity {
@@ -258,6 +260,16 @@ impl PaneActivity {
 
     pub(super) fn task_name(&self) -> Option<&str> {
         self.task.as_ref().map(RunningTask::name)
+    }
+
+    pub(super) fn staged_hint(&self) -> Option<&str> {
+        self.staged_hint.as_deref()
+    }
+
+    /// Replaces the hint about a pasted task, which goes when the line is acted on
+    /// or the foreground changes hands.
+    pub(super) fn set_staged_hint(&mut self, hint: Option<String>) {
+        self.staged_hint = hint;
     }
 
     /// Whether the last sample found an interactive shell, as opposed to a program, a
@@ -283,6 +295,7 @@ impl PaneActivity {
         };
         if program != self.program {
             self.title = None;
+            self.staged_hint = None;
             self.program = program;
         }
         self.task = self
@@ -614,6 +627,19 @@ mod tests {
         assert_eq!(label_of(&activity), "cargo");
         activity.sample_name(Some("zsh"), now);
         assert_eq!(label_of(&activity), "other");
+    }
+
+    #[test]
+    fn a_staged_hint_goes_when_the_foreground_changes_hands() {
+        let now = Instant::now();
+        let mut activity = PaneActivity::default();
+        activity.sample_name(Some("vim"), now);
+        activity.set_staged_hint(Some("press Enter".into()));
+        activity.sample_name(Some("vim"), now);
+        activity.sample_name(Some(""), now);
+        assert_eq!(activity.staged_hint(), Some("press Enter"));
+        activity.sample_name(Some("zsh"), now);
+        assert_eq!(activity.staged_hint(), None);
     }
 
     #[test]
