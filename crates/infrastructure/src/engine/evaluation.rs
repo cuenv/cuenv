@@ -8,8 +8,8 @@ use tokio::sync::{Semaphore, oneshot};
 use crate::cancellation::Cancellation;
 use crate::error::{InfrastructureError, Result};
 use crate::references::{
-    ConfigurationEvaluator, ConfigurationSpecialization, NativeReference, OutputIdentity,
-    SourceAddress, SpecializedConfiguration,
+    ConfigurationEvaluator, ConfigurationSpecialization, ConfigurationVerification,
+    NativeReference, OutputIdentity, SourceAddress, SpecializedConfiguration,
 };
 use crate::type_system::Value;
 
@@ -25,13 +25,39 @@ pub(super) struct Specialization {
     pub(super) deferred: Vec<NativeReference>,
 }
 
+/// Real outputs to check against the instance on a bounded worker.
+pub(super) struct Verification {
+    pub(super) evaluator: Arc<dyn ConfigurationEvaluator>,
+    pub(super) sources: BTreeMap<OutputIdentity, Value>,
+}
+
+fn slots() -> &'static Arc<Semaphore> {
+    EVALUATION_SLOTS.get_or_init(|| Arc::new(Semaphore::new(MAX_OUTSTANDING_EVALUATIONS)))
+}
+
 pub(super) async fn specialize(
     request: Specialization,
     cancellation: &Cancellation,
 ) -> Result<SpecializedConfiguration> {
-    let slots =
-        EVALUATION_SLOTS.get_or_init(|| Arc::new(Semaphore::new(MAX_OUTSTANDING_EVALUATIONS)));
-    specialize_with_slots(request, cancellation, slots).await
+    specialize_with_slots(request, cancellation, slots()).await
+}
+
+pub(super) async fn verify(request: Verification, cancellation: &Cancellation) -> Result<()> {
+    let timeout = request.evaluator.timeout();
+    bounded(
+        Bounded {
+            subject: "the CUE configuration".to_string(),
+            timeout,
+            work: move || {
+                request.evaluator.verify(&ConfigurationVerification {
+                    sources: &request.sources,
+                })
+            },
+        },
+        cancellation,
+        slots(),
+    )
+    .await
 }
 
 async fn specialize_with_slots(
@@ -39,8 +65,48 @@ async fn specialize_with_slots(
     cancellation: &Cancellation,
     slots: &Arc<Semaphore>,
 ) -> Result<SpecializedConfiguration> {
+    let subject = request.consumer.to_string();
+    let timeout = request.evaluator.timeout();
+    bounded(
+        Bounded {
+            subject,
+            timeout,
+            work: move || {
+                request.evaluator.specialize(&ConfigurationSpecialization {
+                    consumer: &request.consumer,
+                    sources: &request.sources,
+                    deferred: &request.deferred,
+                })
+            },
+        },
+        cancellation,
+        slots,
+    )
+    .await
+}
+
+struct Bounded<Work> {
+    subject: String,
+    timeout: std::time::Duration,
+    work: Work,
+}
+
+async fn bounded<Output, Work>(
+    request: Bounded<Work>,
+    cancellation: &Cancellation,
+    slots: &Arc<Semaphore>,
+) -> Result<Output>
+where
+    Output: Send + 'static,
+    Work: FnOnce() -> Result<Output> + Send + 'static,
+{
+    let Bounded {
+        subject,
+        timeout,
+        work,
+    } = request;
     let failure = |reason| InfrastructureError::ConfigurationEvaluation {
-        consumer: request.consumer.to_string(),
+        consumer: subject.clone(),
         reason,
     };
     if cancellation.is_stop_requested() {
@@ -49,7 +115,7 @@ async fn specialize_with_slots(
     // Start the budget before admission; a full pool fails immediately rather
     // than holding the lock while waiting for a stuck evaluator.
     let deadline = tokio::time::Instant::now()
-        .checked_add(request.evaluator.timeout())
+        .checked_add(timeout)
         .ok_or_else(|| failure("has an unsupported timeout"))?;
     let permit = Arc::clone(slots)
         .try_acquire_owned()
@@ -57,43 +123,29 @@ async fn specialize_with_slots(
     if cancellation.is_stop_requested() {
         return Err(InfrastructureError::InterruptedWhilePlanning);
     }
-    let consumer = request.consumer.to_string();
     let (sender, receiver) = oneshot::channel();
     let worker = std::thread::Builder::new()
         .name("cuenv-configuration-evaluation".to_string())
         .spawn(move || {
             let _permit = permit;
-            let result = request.evaluator.specialize(&ConfigurationSpecialization {
-                consumer: &request.consumer,
-                sources: &request.sources,
-                deferred: &request.deferred,
-            });
+            let result = work();
             // An abandoned result must not log values or trigger any work.
             let _ = sender.send(result);
         })
-        .map_err(|_| InfrastructureError::ConfigurationEvaluation {
-            consumer: consumer.clone(),
-            reason: "could not start its worker",
-        })?;
+        .map_err(|_| failure("could not start its worker"))?;
     drop(worker);
     tokio::select! {
         biased;
         () = cancellation.stopped() => Err(InfrastructureError::InterruptedWhilePlanning),
-        () = tokio::time::sleep_until(deadline) => Err(InfrastructureError::ConfigurationEvaluation {
-            consumer, reason: "timed out",
-        }),
+        () = tokio::time::sleep_until(deadline) => Err(failure("timed out")),
         result = receiver => {
             if cancellation.is_stop_requested() {
                 return Err(InfrastructureError::InterruptedWhilePlanning);
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(InfrastructureError::ConfigurationEvaluation {
-                    consumer, reason: "timed out",
-                });
+                return Err(failure("timed out"));
             }
-            result.map_err(|_| InfrastructureError::ConfigurationEvaluation {
-                consumer, reason: "worker stopped unexpectedly",
-            })?
+            result.map_err(|_| failure("worker stopped unexpectedly"))?
         },
     }
 }

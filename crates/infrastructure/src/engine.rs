@@ -54,8 +54,8 @@ use sha2::{Digest, Sha256};
 
 use crate::cancellation::Cancellation;
 use crate::error::{
-    IncompleteApply, InfrastructureError, Result, failure_category, json_error_category,
-    strip_control_characters_except_newlines,
+    ChangeFailure, IncompleteApply, InfrastructureError, Result, failure_category,
+    json_error_category, strip_control_characters_except_newlines,
 };
 use crate::object_change::{PlanProblem, PlanValues, compatibility_problems, plan_problems};
 use crate::plugin::{
@@ -383,11 +383,12 @@ impl Plan {
         }
         digest.field(&self.environment_identity);
         match &self.configuration_evaluation {
-            Some(binding) => {
+            // A snapshot held only to verify outputs does not shape the plan.
+            Some(binding) if !binding.evaluator.references().is_empty() => {
                 digest.tag(1);
                 digest.field(&binding.identity);
             }
-            None => digest.tag(0),
+            _ => digest.tag(0),
         }
         digest.count(self.changes.len());
         for change in &self.changes {
@@ -758,6 +759,22 @@ struct OperationRunContext<'run> {
     rows: &'run mut BTreeMap<ResourceAddress, ManagedResource>,
     data_sources: &'run BTreeMap<ResourceAddress, Value>,
     on_event: &'run mut (dyn FnMut(ApplyEvent) + Send),
+}
+
+/// Outputs known at one point of a run. A pending resource's recorded outputs are
+/// about to be replaced, so they say nothing about what will be applied.
+struct OutputVerification<'read> {
+    rows: &'read BTreeMap<ResourceAddress, ManagedResource>,
+    data_sources: &'read BTreeMap<ResourceAddress, Value>,
+    pending: &'read BTreeSet<ResourceAddress>,
+}
+
+struct SensitiveOutput<'read> {
+    source: &'read SourceAddress,
+    attribute: &'read String,
+    row: &'read ManagedResource,
+    schema: &'read Schema,
+    value: &'read Value,
 }
 
 struct ReferenceValueInput<'read> {
@@ -1442,6 +1459,28 @@ impl InfrastructureEngine {
         let ordered = in_schedule_order(changes)?;
         let changes = ordered.changes;
         warnings.extend(ordered.warnings);
+        if mode == PlanMode::Apply {
+            let mut rows = stored;
+            let mut pending = BTreeSet::new();
+            for change in &changes {
+                if change.action.changes_infrastructure() {
+                    pending.insert(change.address.clone());
+                } else if let Some(record) = &change.refreshed_record {
+                    rows.insert(change.address.clone(), record.clone());
+                }
+            }
+            let reads: BTreeMap<_, _> = data_sources
+                .iter()
+                .filter(|read: &&DataSourcePlan| !read.deferred)
+                .map(|read| (read.address.clone(), read.after.clone()))
+                .collect();
+            self.verify_outputs(&OutputVerification {
+                rows: &rows,
+                data_sources: &reads,
+                pending: &pending,
+            })
+            .await?;
+        }
         Ok(Plan {
             tenant: self.tenant.clone(),
             changes,
@@ -1600,6 +1639,13 @@ impl InfrastructureEngine {
     ) -> Result<()> {
         let schedule = execution.run.schedule();
         let mut refreshed: Vec<ManagedResource> = Vec::new();
+        let mut remaining: BTreeMap<ResourceAddress, usize> = BTreeMap::new();
+        for scheduled in &schedule.operations {
+            *remaining
+                .entry(scheduled.operation.change.address.clone())
+                .or_default() += 1;
+        }
+        let mut verified_reads = execution.data_sources.values.len();
         for (index, scheduled) in schedule.operations.iter().enumerate() {
             if execution.run.is_skipped(index) {
                 execution
@@ -1630,6 +1676,31 @@ impl InfrastructureEngine {
                 return Err(execution.progress.interrupted());
             }
             reads?;
+            // A deferred read produced new outputs: check them before this change.
+            if execution.data_sources.values.len() != verified_reads {
+                verified_reads = execution.data_sources.values.len();
+                let pending = pending_addresses(&remaining);
+                let verified = self
+                    .verify_outputs(&OutputVerification {
+                        rows: &execution.rows,
+                        data_sources: &execution.data_sources.values,
+                        pending: &pending,
+                    })
+                    .await;
+                if self.cancellation().is_stop_requested() {
+                    return Err(execution.progress.interrupted());
+                }
+                if let Err(error) = verified {
+                    execution.run.halted(
+                        ChangeFailure {
+                            address: change.address.clone(),
+                            error,
+                        },
+                        execution.on_event,
+                    );
+                    continue;
+                }
+            }
             if operation.kind != OperationKind::Delete
                 && execution.data_sources.consumer_blocked(&change.references)
             {
@@ -1649,6 +1720,7 @@ impl InfrastructureEngine {
                 refreshed.push(record.clone());
                 execution.run.finished(index);
                 execution.data_sources.finished(&change.address);
+                settle(&mut remaining, &change.address);
                 continue;
             }
             self.record_refreshed(execution, &mut refreshed).await?;
@@ -1673,6 +1745,7 @@ impl InfrastructureEngine {
                 .await;
             let Err(failure) = outcome else {
                 execution.run.finished(index);
+                settle(&mut remaining, &change.address);
                 if operation.completes_change() {
                     execution.data_sources.finished(&change.address);
                     execution.progress.completed += 1;
@@ -1680,6 +1753,29 @@ impl InfrastructureEngine {
                         address: change.address.clone(),
                         action: change.action,
                     });
+                    // New outputs exist: check them before anything else changes.
+                    if self.declares_outputs(&change.address) {
+                        let pending = pending_addresses(&remaining);
+                        let verified = self
+                            .verify_outputs(&OutputVerification {
+                                rows: &execution.rows,
+                                data_sources: &execution.data_sources.values,
+                                pending: &pending,
+                            })
+                            .await;
+                        if self.cancellation().is_stop_requested() {
+                            return Err(execution.progress.interrupted());
+                        }
+                        if let Err(error) = verified {
+                            execution.run.halted(
+                                ChangeFailure {
+                                    address: change.address.clone(),
+                                    error,
+                                },
+                                execution.on_event,
+                            );
+                        }
+                    }
                 }
                 continue;
             };
@@ -1726,6 +1822,30 @@ impl InfrastructureEngine {
             return Err(execution.progress.interrupted());
         }
         reads?;
+        if let Some(last) = schedule.operations.last()
+            && !execution.run.has_failures()
+        {
+            let pending = pending_addresses(&remaining);
+            let verified = self
+                .verify_outputs(&OutputVerification {
+                    rows: &execution.rows,
+                    data_sources: &execution.data_sources.values,
+                    pending: &pending,
+                })
+                .await;
+            if self.cancellation().is_stop_requested() {
+                return Err(execution.progress.interrupted());
+            }
+            if let Err(error) = verified {
+                execution.run.halted(
+                    ChangeFailure {
+                        address: last.operation.change.address.clone(),
+                        error,
+                    },
+                    execution.on_event,
+                );
+            }
+        }
         for read in execution
             .data_source_plans
             .iter()
@@ -1740,6 +1860,129 @@ impl InfrastructureEngine {
             }
         }
         Ok(())
+    }
+
+    fn declares_outputs(&self, address: &ResourceAddress) -> bool {
+        self.configuration_evaluation
+            .as_ref()
+            .is_some_and(|binding| {
+                binding
+                    .evaluator
+                    .declared_outputs()
+                    .iter()
+                    .any(|identity| match &identity.source {
+                        SourceAddress::Resource(source) => source == address,
+                        SourceAddress::DataSource(_) => false,
+                    })
+            })
+    }
+
+    /// Check every output known so far against the whole CUE instance. Reference
+    /// analysis cannot prove an unmodelled expression independent of every value,
+    /// but this needs no such proof: it evaluates the values that actually exist.
+    async fn verify_outputs(&self, input: &OutputVerification<'_>) -> Result<()> {
+        let Some(binding) = &self.configuration_evaluation else {
+            return Ok(());
+        };
+        let mut sources = BTreeMap::new();
+        for identity in binding.evaluator.declared_outputs() {
+            if let Some(value) = self.known_output(identity, input).await? {
+                sources.insert(identity.clone(), value);
+            }
+        }
+        if sources.is_empty() {
+            return Ok(());
+        }
+        self.ensure_not_stopped()?;
+        evaluation::verify(
+            evaluation::Verification {
+                evaluator: Arc::clone(&binding.evaluator),
+                sources,
+            },
+            self.cancellation(),
+        )
+        .await?;
+        self.ensure_not_stopped()
+    }
+
+    /// The scalar value of one declared output, if this point of the run knows it.
+    async fn known_output(
+        &self,
+        identity: &OutputIdentity,
+        input: &OutputVerification<'_>,
+    ) -> Result<Option<Value>> {
+        let value = match &identity.source {
+            SourceAddress::DataSource(address) => input
+                .data_sources
+                .get(address)
+                .and_then(|value| value.attribute(&identity.attribute))
+                .cloned(),
+            SourceAddress::Resource(address) => {
+                let Some(row) = input.rows.get(address) else {
+                    return Ok(None);
+                };
+                if row.tainted || input.pending.contains(address) {
+                    return Ok(None);
+                }
+                let Some(declaration) = declared_resource(&self.infrastructure.resources, address)
+                else {
+                    return Ok(None);
+                };
+                let provider = self.loaded(declaration.provider_name())?;
+                if require_same_source(row, provider).is_err() {
+                    return Ok(None);
+                }
+                let schema = resource_schema(
+                    provider,
+                    declaration.provider_name(),
+                    &address.resource_type,
+                )?;
+                let mut warnings = Vec::new();
+                let state = upgraded_state(provider, row, schema, &mut warnings).await?;
+                let value = state.attribute(&identity.attribute).cloned();
+                if let Some(value) = &value {
+                    self.register_sensitive_output(&SensitiveOutput {
+                        source: &identity.source,
+                        attribute: &identity.attribute,
+                        row,
+                        schema,
+                        value,
+                    });
+                }
+                value
+            }
+        };
+        Ok(value.filter(|value| {
+            matches!(
+                value.untyped(),
+                Value::String(_) | Value::Number(_) | Value::Boolean(_)
+            )
+        }))
+    }
+
+    /// A source created during this apply was never planned with a known value:
+    /// register it before anything downstream sees it.
+    fn register_sensitive_output(&self, output: &SensitiveOutput<'_>) {
+        let SensitiveOutput {
+            source,
+            attribute,
+            row,
+            schema,
+            value,
+        } = output;
+        if resource_sensitivity(row, schema).contains(attribute)
+            || self
+                .output_sensitivity
+                .get(source)
+                .is_some_and(|attributes| attributes.contains(attribute))
+            || schema
+                .block
+                .attributes
+                .get(*attribute)
+                .is_some_and(|attribute| attribute.sensitive)
+        {
+            register_value_strings(value);
+        }
     }
 
     /// Write the refreshed records gathered since the last write, in one
@@ -2379,21 +2622,13 @@ impl InfrastructureEngine {
                     "source attribute is absent from state",
                 )
             })?;
-        // A source created during this apply was never planned with a
-        // known value: register it before the consumer's provider sees it.
-        if resource_sensitivity(row, source_schema).contains(&reference.attribute)
-            || self
-                .output_sensitivity
-                .get(&reference.source)
-                .is_some_and(|attributes| attributes.contains(&reference.attribute))
-            || source_schema
-                .block
-                .attributes
-                .get(&reference.attribute)
-                .is_some_and(|attribute| attribute.sensitive)
-        {
-            register_value_strings(&value);
-        }
+        self.register_sensitive_output(&SensitiveOutput {
+            source: &reference.source,
+            attribute: &reference.attribute,
+            row,
+            schema: source_schema,
+            value: &value,
+        });
         Ok(value)
     }
 
@@ -3120,6 +3355,20 @@ struct Execution<'run, 'schedule, 'plan> {
     data_sources: DataSourceExecution,
     data_source_plans: &'plan [DataSourcePlan],
     on_event: &'run mut (dyn FnMut(ApplyEvent) + Send),
+}
+
+fn pending_addresses(remaining: &BTreeMap<ResourceAddress, usize>) -> BTreeSet<ResourceAddress> {
+    remaining
+        .iter()
+        .filter(|(_, count)| **count > 0)
+        .map(|(address, _)| address.clone())
+        .collect()
+}
+
+fn settle(remaining: &mut BTreeMap<ResourceAddress, usize>, address: &ResourceAddress) {
+    if let Some(count) = remaining.get_mut(address) {
+        *count = count.saturating_sub(1);
+    }
 }
 
 /// How one operation failed.

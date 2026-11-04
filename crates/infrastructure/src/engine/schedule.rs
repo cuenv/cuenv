@@ -887,6 +887,21 @@ impl<'schedule, 'plan> ScheduleRun<'schedule, 'plan> {
         self.skip_dependents(node, on_event);
     }
 
+    /// Real outputs were refused. What already ran stays recorded, and nothing that
+    /// has not started may start, whether or not it depends on what was refused.
+    pub(super) fn halted(
+        &mut self,
+        failure: ChangeFailure,
+        on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+    ) {
+        self.failures.push(failure);
+        for node in 0..self.states.len() {
+            if self.states[node] == OperationState::Pending {
+                self.skip(node, on_event);
+            }
+        }
+    }
+
     /// A non-managed operation failed. Its own identity belongs in the failure
     /// list; managed consumers are skipped, never blamed for its provider error.
     pub(super) fn record_read_failures(&mut self, failures: Vec<ChangeFailure>) {

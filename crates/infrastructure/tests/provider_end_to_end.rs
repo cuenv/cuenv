@@ -1365,6 +1365,181 @@ impl Fake {
     }
 }
 
+/// Refuses verification once a chosen output is known, as CUE does for a real
+/// output that changes configuration no native reference accounts for.
+struct RefusingVerification {
+    declared: Vec<cuenv_infrastructure::references::OutputIdentity>,
+    refused: Option<cuenv_infrastructure::references::OutputIdentity>,
+    seen: std::sync::Mutex<Vec<Vec<cuenv_infrastructure::references::OutputIdentity>>>,
+}
+
+impl cuenv_infrastructure::references::ConfigurationEvaluator for RefusingVerification {
+    fn references(&self) -> &[cuenv_infrastructure::references::NativeReference] {
+        &[]
+    }
+
+    fn declared_outputs(&self) -> &[cuenv_infrastructure::references::OutputIdentity] {
+        &self.declared
+    }
+
+    fn verify(
+        &self,
+        input: &cuenv_infrastructure::references::ConfigurationVerification<'_>,
+    ) -> cuenv_infrastructure::Result<()> {
+        self.seen
+            .lock()
+            .map_err(|_| InfrastructureError::configuration("test verification poisoned"))?
+            .push(input.sources.keys().cloned().collect());
+        match &self.refused {
+            Some(refused) if input.sources.contains_key(refused) => Err(
+                InfrastructureError::configuration("real outputs changed the configuration"),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    fn specialize(
+        &self,
+        _input: &cuenv_infrastructure::references::ConfigurationSpecialization<'_>,
+    ) -> cuenv_infrastructure::Result<cuenv_infrastructure::references::SpecializedConfiguration>
+    {
+        Err(InfrastructureError::configuration(
+            "this evaluator has no references to specialize",
+        ))
+    }
+}
+
+fn plain_output(name: &str) -> cuenv_infrastructure::references::OutputIdentity {
+    cuenv_infrastructure::references::OutputIdentity {
+        source: cuenv_infrastructure::references::SourceAddress::Resource(
+            cuenv_infrastructure::ResourceAddress::new("fake_plain", name),
+        ),
+        attribute: "id".to_string(),
+    }
+}
+
+impl Fake {
+    /// Plan and apply with a verifying evaluator bound to the engine.
+    async fn converge_verifying(
+        &self,
+        resources: &serde_json::Value,
+        evaluator: Arc<RefusingVerification>,
+    ) -> TestResult<Result<Converged, InfrastructureError>> {
+        let mut engine = self.engine(resources, &Cancellation::default())?;
+        engine.set_configuration_evaluator(evaluator);
+        let lock = self.store.lock(&self.tenant, "fake").await?;
+        let converged = match engine.plan(PlanMode::Apply).await {
+            Ok(plan) => {
+                let mut events = Vec::new();
+                let applied = engine
+                    .apply(&plan, ApplyContext { lock: &lock }, &mut |event| {
+                        events.push(event);
+                    })
+                    .await;
+                Ok(Converged {
+                    plan,
+                    applied,
+                    events,
+                })
+            }
+            Err(error) => Err(error),
+        };
+        self.store.unlock(&self.tenant, &lock).await?;
+        engine.shutdown().await;
+        Ok(converged)
+    }
+}
+
+/// A real output that changes undeclared configuration stops the run before
+/// anything later changes, and what already happened stays recorded.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_stops_before_later_changes() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({
+        "alpha": {"type": "fake_plain", "configuration": {"name": "alpha"}},
+        "beta": {"type": "fake_plain", "configuration": {"name": "beta"}},
+    });
+    let evaluator = Arc::new(RefusingVerification {
+        declared: vec![plain_output("alpha"), plain_output("beta")],
+        refused: Some(plain_output("alpha")),
+        seen: std::sync::Mutex::default(),
+    });
+    let converged = fake
+        .converge_verifying(&resources, Arc::clone(&evaluator))
+        .await?
+        .map_err(|error| format!("nothing is known while planning: {error}"))?;
+    let error = converged
+        .applied
+        .expect_err("verification must stop the run");
+    assert!(
+        error.to_string().contains("real outputs changed"),
+        "{error}"
+    );
+    assert!(fake.record("alpha").await.is_ok(), "alpha happened");
+    assert!(fake.record("beta").await.is_err(), "beta must not start");
+    assert!(!fake.journal().contains("name=beta"), "{}", fake.journal());
+    Ok(())
+}
+
+/// Outputs already in state are checked while planning, before any change.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_refuses_known_outputs_while_planning() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({"alpha": {"type": "fake_plain", "configuration": {"name": "alpha"}}});
+    fake.converge(&resources, PlanMode::Apply).await?.applied?;
+    fake.clear_journal()?;
+    let refusing = Arc::new(RefusingVerification {
+        declared: vec![plain_output("alpha")],
+        refused: Some(plain_output("alpha")),
+        seen: std::sync::Mutex::default(),
+    });
+    let Err(error) = fake.converge_verifying(&resources, refusing).await? else {
+        return Err("a known output must be refused while planning".into());
+    };
+    assert!(
+        error.to_string().contains("real outputs changed"),
+        "{error}"
+    );
+    assert!(
+        !fake.journal().contains("ApplyResourceChange"),
+        "{}",
+        fake.journal()
+    );
+    Ok(())
+}
+
+/// A recorded output about to be replaced says nothing about what will be applied.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_ignores_outputs_about_to_change() -> TestResult {
+    let fake = Fake::new().await?;
+    let initial = json!({"alpha": {"type": "fake_plain", "configuration": {"name": "first"}}});
+    fake.converge(&initial, PlanMode::Apply).await?.applied?;
+    let changed = json!({"alpha": {"type": "fake_plain", "configuration": {"name": "second"}}});
+    let evaluator = Arc::new(RefusingVerification {
+        declared: vec![plain_output("alpha")],
+        refused: None,
+        seen: std::sync::Mutex::default(),
+    });
+    let converged = fake
+        .converge_verifying(&changed, Arc::clone(&evaluator))
+        .await?
+        .map_err(|error| error.to_string())?;
+    converged.applied?;
+    let seen = evaluator
+        .seen
+        .lock()
+        .map_err(|_| "test verification poisoned")?;
+    // Once after the change and once as apply finishes: planning saw nothing to check.
+    assert_eq!(
+        seen.as_slice(),
+        [vec![plain_output("alpha")], vec![plain_output("alpha")]]
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
 async fn fake_data_sources_are_read_fresh_without_persisting_rows() -> TestResult {

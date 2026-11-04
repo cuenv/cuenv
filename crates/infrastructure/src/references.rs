@@ -18,8 +18,8 @@ mod path;
 
 pub use destination::ReferenceDestination;
 pub use evaluation::{
-    ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization, NativeReference,
-    OutputIdentity, SpecializedConfiguration,
+    ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization,
+    ConfigurationVerification, NativeReference, OutputIdentity, SpecializedConfiguration,
 };
 pub use path::DestinationPath;
 

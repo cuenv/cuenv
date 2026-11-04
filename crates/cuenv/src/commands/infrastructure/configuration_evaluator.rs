@@ -9,14 +9,15 @@ use std::time::Duration;
 use cuengine::frozen::{
     DeferredValue, FreezeOptions, FrozenEvaluationOptions, FrozenInstance, FrozenReference,
     FrozenValidationOptions, PreparationOptions, PreparedInstance, PreparedSpecializationOptions,
-    ScalarFill, ScalarValue, ValuePath, ValueSelector,
+    ScalarFill, ScalarValue, ValuePath, ValueSelector, VerificationOptions,
 };
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::cue::discovery::compute_relative_path;
 use cuenv_core::module::DirectReference;
 use cuenv_infrastructure::references::{
-    ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization, NativeReference,
-    OutputIdentity, SourceAddress, SpecializedConfiguration,
+    ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization,
+    ConfigurationVerification, NativeReference, OutputIdentity, SourceAddress,
+    SpecializedConfiguration,
 };
 use cuenv_infrastructure::type_system::{parse_json_preserving_numbers, scan_json_numbers};
 use cuenv_infrastructure::{InfrastructureError, ResourceAddress};
@@ -39,6 +40,14 @@ pub(super) struct NativeConfigurationEvaluator {
     references: Vec<NativeReference>,
     numeric_references: BTreeSet<NativeReference>,
     timeout: Duration,
+    /// Every selected output, referenced or not.
+    declared_outputs: Vec<OutputIdentity>,
+    /// Selected configuration compared with and without real outputs.
+    verification_roots: Vec<ValuePath>,
+    /// Output namespaces and unselected configuration, which real outputs may change.
+    verification_mutable: Vec<ValuePath>,
+    /// Leaves that must carry exactly the output they reference.
+    verification_references: Vec<DeferredValue>,
 }
 
 /// Replace preliminary configuration with an immutable CUE instance.
@@ -112,7 +121,7 @@ pub(super) fn freeze_configuration(
             ignored_groups: ignored_groups.clone(),
         })
         .map_err(|error| {
-            frozen_failure(
+            inspection_failure(
                 &error,
                 "the frozen CUE infrastructure could not be inspected",
             )
@@ -189,6 +198,29 @@ pub(super) fn freeze_configuration(
             }
         }
     }
+    let mut declared_outputs = Vec::new();
+    for namespace in output_namespaces(&value, &root) {
+        let source = address(
+            &value,
+            &root,
+            (
+                path_field(&namespace, root.len())?,
+                path_field(&namespace, root.len() + 1)?,
+            ),
+        )?;
+        if let Some(outputs) = json_at(&value, &namespace).and_then(Json::as_object) {
+            declared_outputs.extend(outputs.keys().map(|attribute| OutputIdentity {
+                source: source.clone(),
+                attribute: attribute.clone(),
+            }));
+        }
+    }
+    let mut verification_mutable = output_namespaces(&value, &root);
+    if request.environment.is_none() {
+        verification_mutable.push(append_field(&root, "environments"));
+    }
+    let verification_references = deferred.clone();
+    let verification_roots = vec![root.clone()];
     snapshot
         .validate(&FrozenValidationOptions {
             concrete_paths,
@@ -208,7 +240,7 @@ pub(super) fn freeze_configuration(
         relative,
         reference_map.into_values().next().unwrap_or_default(),
     );
-    if references.is_empty() {
+    if references.is_empty() && declared_outputs.is_empty() {
         return Ok(None);
     }
     let mut projections = Vec::new();
@@ -230,7 +262,7 @@ pub(super) fn freeze_configuration(
             projections,
         })
         .map_err(|error| {
-            frozen_failure(&error, "the frozen CUE references could not be prepared")
+            inspection_failure(&error, "the frozen CUE references could not be prepared")
         })?;
     let timeout = cuengine::evaluation_timeout()
         .map_err(|_| CliError::config("CUENV_EVAL_TIMEOUT must be a positive number of seconds"))?;
@@ -240,6 +272,10 @@ pub(super) fn freeze_configuration(
         references,
         numeric_references,
         timeout,
+        declared_outputs,
+        verification_roots,
+        verification_mutable,
+        verification_references,
     })))
 }
 
@@ -251,6 +287,19 @@ fn frozen_failure(error: &cuengine::CueEngineError, message: &'static str) -> Cl
         _ => CliError::eval(message),
     }
 }
+
+fn inspection_failure(error: &cuengine::CueEngineError, message: &'static str) -> CliError {
+    match error {
+        cuengine::CueEngineError::FrozenWorker { .. } => frozen_failure(error, message),
+        _ => CliError::eval_with_help(message, OUTPUT_REFERENCE_HELP),
+    }
+}
+
+const OUTPUT_REFERENCE_HELP: &str = "A runtime output may only be used as a direct reference, \
+optionally through aliases and reference-free constraints, at a scalar destination. Conditions, \
+labels, indexes, arithmetic and interpolation may not depend on one. Some CUE forms cannot be \
+checked and are refused; see the infrastructure how-to. Diagnostics are withheld because they \
+can contain private configuration values or keys.";
 
 fn native_reference(
     reference: &FrozenReference,
@@ -510,6 +559,20 @@ fn display_path(path: &ValuePath) -> String {
     rendered
 }
 
+fn scalar_value(value: &cuenv_infrastructure::type_system::Value) -> Result<ScalarValue, ()> {
+    use cuenv_infrastructure::type_system::Value;
+    match value.untyped() {
+        Value::String(value) => ScalarValue::string(value),
+        Value::Number(value) => ScalarValue::number(value.as_str()),
+        Value::Boolean(value) => {
+            let raw = serde_json::value::to_raw_value(value).map_err(|_| ())?;
+            ScalarValue::from_json(&raw)
+        }
+        _ => return Err(()),
+    }
+    .map_err(|_| ())
+}
+
 impl NativeConfigurationEvaluator {
     fn declaration_path(&self, source: &SourceAddress) -> ValuePath {
         declaration_path(&self.root, source)
@@ -553,6 +616,62 @@ impl ConfigurationEvaluator for NativeConfigurationEvaluator {
         self.timeout
     }
 
+    fn declared_outputs(&self) -> &[OutputIdentity] {
+        &self.declared_outputs
+    }
+
+    fn verify(&self, input: &ConfigurationVerification<'_>) -> cuenv_infrastructure::Result<()> {
+        let invalid = || InfrastructureError::configuration("an output value is not a scalar");
+        let mut fills = Vec::new();
+        for (identity, value) in input.sources {
+            if self.declared_outputs.contains(identity) {
+                fills.push((
+                    identity,
+                    ScalarFill {
+                        path: self.source_path(identity),
+                        value: scalar_value(value).map_err(|()| invalid())?,
+                    },
+                ));
+            }
+        }
+        let check = |values: Vec<ScalarFill>| {
+            self.snapshot.verify(&VerificationOptions {
+                fills: values,
+                roots: self.verification_roots.clone(),
+                mutable: self.verification_mutable.clone(),
+                references: self.verification_references.clone(),
+            })
+        };
+        let worker = || InfrastructureError::ConfigurationEvaluation {
+            consumer: "the CUE configuration".to_string(),
+            reason: "could not acquire or complete a CUE worker",
+        };
+        match check(fills.iter().map(|(_, fill)| fill.clone()).collect()) {
+            Ok(()) => return Ok(()),
+            Err(cuengine::CueEngineError::FrozenWorker { .. }) => return Err(worker()),
+            Err(_) => {}
+        }
+        // Name the output, never its value. Only a failed run pays for this.
+        let mut subject = "real output values".to_string();
+        for (identity, fill) in &fills {
+            match check(vec![fill.clone()]) {
+                Ok(()) => {}
+                Err(cuengine::CueEngineError::FrozenWorker { .. }) => return Err(worker()),
+                Err(_) => {
+                    subject = format!(
+                        "the real value of output {}.{}",
+                        identity.source, identity.attribute
+                    );
+                    break;
+                }
+            }
+        }
+        Err(InfrastructureError::configuration(format!(
+            "{subject} changed this CUE configuration outside its declared output references or \
+             violated its constraints"
+        )))
+    }
+
     fn specialize(
         &self,
         input: &ConfigurationSpecialization<'_>,
@@ -577,20 +696,7 @@ impl ConfigurationEvaluator for NativeConfigurationEvaluator {
             if identities.insert(identity.clone())
                 && let Some(value) = input.sources.get(&identity)
             {
-                let scalar = match value.untyped() {
-                    cuenv_infrastructure::type_system::Value::String(value) => {
-                        ScalarValue::string(value)
-                    }
-                    cuenv_infrastructure::type_system::Value::Number(value) => {
-                        ScalarValue::number(value.as_str())
-                    }
-                    cuenv_infrastructure::type_system::Value::Boolean(value) => {
-                        let raw = serde_json::value::to_raw_value(value).map_err(|_| failure())?;
-                        ScalarValue::from_json(&raw)
-                    }
-                    _ => return Err(failure()),
-                }
-                .map_err(|_| failure())?;
+                let scalar = scalar_value(value).map_err(|()| failure())?;
                 fills.push(ScalarFill {
                     path: self.source_path(&identity),
                     value: scalar,

@@ -1670,3 +1670,423 @@ infrastructure: {{
     assert!(store.list(&tenant).await?.is_empty());
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Native output references through the real CLI, CUE bridge and fake provider.
+// ---------------------------------------------------------------------------
+
+const OUTPUT_STACK: &str = r#"package stack
+Marker: 1
+#Good: {
+	resources: {
+		producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}
+		consumer: {type: "fake_plain", configuration: name: _i & =~"^."}
+	}
+	_i: resources.producer.outputs.id
+	...
+}
+#Bad: {
+	resources: {
+		producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}
+		consumer: {type: "fake_plain", configuration: {if (_i & "x") == "x" {name: "consumer"}}}
+	}
+	_i: resources.producer.outputs.id
+	...
+}
+#Conflict: {
+	resources: {
+		producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}
+		consumer: {type: "fake_plain", configuration: name: _i & "not-the-output"}
+	}
+	_i: resources.producer.outputs.id
+	...
+}
+"#;
+const OUTPUT_PRODUCER: &str =
+    r#"producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}"#;
+const PRODUCER_ID: &str = "infrastructure.resources.producer.outputs.id";
+
+struct OutputLifecycle {
+    lifecycle: Lifecycle,
+    store: TursoStateStore,
+    tenant: TenantKey,
+}
+
+impl OutputLifecycle {
+    /// A project whose body uses `@INFRASTRUCTURE@` for state and the fake provider.
+    fn new(label: &str, body: &str) -> TestResult<Self> {
+        let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?)
+            .canonicalize()?;
+        let backend = TursoConfiguration {
+            url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+            authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+        };
+        let directory = prepare_directory()?;
+        fs::create_dir_all(directory.path().join("stack"))?;
+        fs::write(directory.path().join("stack/stack.cue"), OUTPUT_STACK)?;
+        let project = format!("{label}-{}", uuid::Uuid::new_v4());
+        let infrastructure = format!(
+            "state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: \"TURSO_AUTH_TOKEN\"}}}}\n providers: fake: {{source: \"example.com/test/fake\", path: {provider}, configuration: directory: {directory}}}",
+            url = serde_json::to_string(&backend.url)?,
+            provider = serde_json::to_string(&provider)?,
+            directory = serde_json::to_string(directory.path())?,
+        );
+        let configuration = format!(
+            "package examples\nimport (\n \"github.com/cuenv/cuenv/schema\"\n \"github.com/cuenv/cuenv/stack\"\n)\nschema.#Project\nname: {project}\n_marker: stack.Marker\n{body}\n",
+            project = serde_json::to_string(&project)?,
+            body = body.replace("@INFRASTRUCTURE@", &infrastructure),
+        );
+        let tenant = TenantKey::try_new(MODULE, &project)?;
+        let store = TursoStateStore::try_new(backend.clone())?;
+        let lifecycle = Lifecycle::from_configuration(directory, configuration, &backend)?;
+        Ok(Self {
+            lifecycle,
+            store,
+            tenant,
+        })
+    }
+
+    fn journal(&self) -> String {
+        fs::read_to_string(self.lifecycle.directory.path().join("journal.log")).unwrap_or_default()
+    }
+
+    /// Names passed to fake_plain creates, in the order the provider saw them.
+    fn creates(&self) -> Vec<String> {
+        self.journal()
+            .lines()
+            .filter_map(|line| {
+                line.split_once("Create name=")
+                    .map(|(_, name)| name.to_owned())
+            })
+            .collect()
+    }
+
+    /// Anything the provider did to an object, across every fake resource type.
+    fn mutations(&self) -> usize {
+        self.journal()
+            .lines()
+            .filter(|line| {
+                line.contains(": Create") || line.contains(": Update") || line.contains(": Delete")
+            })
+            .count()
+    }
+
+    async fn record(&self, name: &str) -> TestResult<cuenv_infrastructure::ManagedResource> {
+        Ok(self
+            .store
+            .list(&self.tenant)
+            .await?
+            .into_iter()
+            .find(|row| row.address.name == name)
+            .ok_or_else(|| format!("{name} is not recorded"))?)
+    }
+
+    /// Run a command that must fail, for the reason named by `expected`.
+    fn fails(&self, arguments: &[&str], expected: &str) -> TestResult<String> {
+        let output = self.lifecycle.execute(arguments, &[])?;
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !output.status.success(),
+            "unexpectedly succeeded: {printed}"
+        );
+        let flattened = printed.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flattened.contains(expected), "wanted {expected}: {printed}");
+        Ok(printed)
+    }
+}
+
+fn outputs_stack(resources: &str) -> String {
+    format!("infrastructure: {{\n @INFRASTRUCTURE@\n resources: {{{resources}}}\n}}")
+}
+
+/// #566: comprehensions unrelated to any output keep working, and a reference next
+/// to them is unknown at plan, ordered, filled with the real value and recorded.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn output_references_coexist_with_unrelated_comprehensions() -> TestResult {
+    let unrelated = r#"
+_b: "x"
+_z: {if _b == "x" {v: 1}}
+_o?: string
+_y: {if _o == _|_ {v: 1}}
+_xs: ["a"]
+_w: {for x in _xs {(x): 1}}
+config: ci: cuenv: {source: "release", version: [if _o != _|_ {_o}, "0.63.1"][0]}
+"#;
+    let stack = OutputLifecycle::new(
+        "unrelated-comprehensions",
+        &format!(
+            "{unrelated}{}",
+            outputs_stack(&format!(
+                "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: {PRODUCER_ID}}}"
+            ))
+        ),
+    )?;
+    let planned = stack.lifecycle.execute_text(&["plan"])?;
+    assert!(planned.status.success(), "{planned:?}");
+    assert!(String::from_utf8_lossy(&planned.stdout).contains("known after apply"));
+    assert_eq!(stack.mutations(), 0, "plan must not change anything");
+
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    let creates = stack.creates();
+    assert_eq!(creates.len(), 2, "{creates:?}");
+    assert_eq!(creates[0], "producer");
+    let consumer = stack.record("consumer").await?;
+    let producer = stack.record("producer").await?;
+    assert_eq!(consumer.dependencies, ["fake_plain.producer"]);
+    assert_eq!(consumer.state["name"], producer.state["id"]);
+    assert!(producer.dependencies.is_empty());
+
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(stack.mutations(), 2, "a converged stack must be a no-op");
+    Ok(())
+}
+
+/// A hidden alias inside an imported definition keeps its edge and its constraint.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn imported_definitions_order_and_record_output_edges() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "imported-alias",
+        "infrastructure: stack.#Good & {\n @INFRASTRUCTURE@\n}",
+    )?;
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(stack.creates()[0], "producer");
+    let consumer = stack.record("consumer").await?;
+    assert_eq!(consumer.dependencies, ["fake_plain.producer"]);
+    assert_eq!(
+        consumer.state["name"],
+        stack.record("producer").await?.state["id"]
+    );
+    Ok(())
+}
+
+/// Preserved behaviour: a real output violating a consumer's constraint stops the
+/// apply after the producer, and the consumer is never created.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_real_output_violating_a_constraint_stops_before_the_consumer() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "constraint-violation",
+        "infrastructure: stack.#Conflict & {\n @INFRASTRUCTURE@\n}",
+    )?;
+    stack.lifecycle.run(&["plan"])?;
+    // The real value is checked as soon as it exists, before the consumer's turn.
+    stack.fails(
+        &["apply", "--yes"],
+        "the real value of output fake_plain.producer.id",
+    )?;
+    assert_eq!(stack.creates(), ["producer"]);
+    assert!(stack.record("consumer").await.is_err());
+    Ok(())
+}
+
+/// Output-dependent structure is refused before the provider changes anything.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn output_dependent_structure_is_refused_before_any_provider_change() -> TestResult {
+    let consumer = |configuration: &str| {
+        outputs_stack(&format!(
+            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: {configuration}}}"
+        ))
+    };
+    let fake_object = outputs_stack(&format!(
+        "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_obj\", configuration: close({{key: \"consumer\", (*({PRODUCER_ID} & \"version\") | \"mode\"): \"value\"}})}}"
+    ));
+    let cases = [
+        (
+            "imported-conditional",
+            "infrastructure: stack.#Bad & {\n @INFRASTRUCTURE@\n}".to_string(),
+        ),
+        ("close-dynamic-label", fake_object),
+        (
+            "default-marker",
+            consumer(&format!(
+                "*{{name: \"base\", if ({PRODUCER_ID} & =~\"^bad$\") != _|_ {{extra: \"e\"}}}} | {{name: \"z\"}}"
+            )),
+        ),
+        (
+            "plain-condition",
+            consumer(&format!(
+                "{{name: \"n\", if {PRODUCER_ID} == \"x\" {{extra: \"e\"}}}}"
+            )),
+        ),
+        (
+            "hidden-control",
+            format!(
+                "_o: {PRODUCER_ID}\n_h: {{if (_o & =~\"^x\") != _|_ {{v: 1}}}}\n{}",
+                outputs_stack(OUTPUT_PRODUCER)
+            ),
+        ),
+        (
+            "definition-as-function",
+            format!(
+                "#F: {{in: string, out: {{if (in & =~\"^x\") != _|_ {{extra: \"e\"}}}}}}\n{}",
+                consumer(&format!(
+                    "{{name: \"n\"}} & (#F & {{in: {PRODUCER_ID}}}).out"
+                ))
+            ),
+        ),
+    ];
+    for (label, body) in &cases {
+        let stack = OutputLifecycle::new(label, body)?;
+        stack.fails(&["plan"], "could not be")?;
+        stack.fails(&["apply", "--yes"], "could not be")?;
+        assert_eq!(stack.mutations(), 0, "{label} changed: {}", stack.journal());
+        assert!(stack.store.list(&stack.tenant).await?.is_empty(), "{label}");
+        // The same syntax on an unrelated value must plan: the refusal above is about
+        // the output, not a mistake in this fixture.
+        if body.contains(PRODUCER_ID) {
+            let unrelated = format!(
+                "_unrelated: \"unmatched\"\n{}",
+                body.replace(PRODUCER_ID, "_unrelated")
+            );
+            OutputLifecycle::new(label, &unrelated)?
+                .lifecycle
+                .run(&["plan"])?;
+        }
+    }
+    Ok(())
+}
+
+fn token_stack(token: &str, source: &str) -> String {
+    outputs_stack(&format!(
+        "producer: {{type: \"fake_token_source\", outputs: token: string, configuration: name: \"{source}\"}}, consumer: {{type: \"fake_token_consumer\", configuration: config: {{token: {token}, label: \"ordinary-sibling\"}}}}"
+    ))
+}
+
+/// A sensitive output reaches a nested destination, is marked sensitive, recorded
+/// as a dependency, and never printed.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn sensitive_nested_destinations_stay_masked_and_recorded() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "sensitive-nested",
+        &token_stack("infrastructure.resources.producer.outputs.token", "source"),
+    )?;
+    let planned = stack.lifecycle.execute_text(&["plan"])?;
+    assert!(planned.status.success(), "{planned:?}");
+    let applied = stack.lifecycle.execute_text(&["apply", "--yes"])?;
+    assert!(applied.status.success(), "{applied:?}");
+    let producer = stack.record("producer").await?;
+    let consumer = stack.record("consumer").await?;
+    let token = producer.state["token"].as_str().ok_or("no token")?;
+    assert!(!token.is_empty());
+    assert_eq!(consumer.state["config"]["token"], token);
+    assert_eq!(consumer.dependencies, ["fake_token_source.producer"]);
+    assert_eq!(consumer.sensitive_attributes, ["config"]);
+    stack.lifecycle.execute_text(&["plan"])?;
+    assert!(!stack.lifecycle.transcript()?.contains(token));
+    Ok(())
+}
+
+/// A replacement first revealed by the final plan stops before the consumer changes.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn final_plan_replacement_leaves_the_consumer_unchanged() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "late-replacement",
+        &token_stack("\"ordinary-existing-token\"", "first"),
+    )?;
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    let before = stack.record("consumer").await?;
+    fs::write(
+        stack
+            .lifecycle
+            .directory
+            .path()
+            .join("token-consumer-late-replace"),
+        b"",
+    )?;
+    let edited = stack
+        .lifecycle
+        .configuration
+        .replace(
+            "\"ordinary-existing-token\"",
+            "infrastructure.resources.producer.outputs.token",
+        )
+        .replace("name: \"first\"", "name: \"second\"");
+    fs::write(stack.lifecycle.directory.path().join("env.cue"), edited)?;
+    stack.fails(&["apply", "--yes"], "not in the confirmed plan")?;
+    let after = stack.record("consumer").await?;
+    assert_eq!(before.state, after.state);
+    assert_eq!(before.generation, after.generation);
+    Ok(())
+}
+
+/// Each step of a chain specializes from the same snapshot with exact edges.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn output_chains_specialize_in_order_with_exact_edges() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "output-chain",
+        &outputs_stack(&format!(
+            "{OUTPUT_PRODUCER}, middle: {{type: \"fake_plain\", outputs: id: string, configuration: name: {PRODUCER_ID}}}, last: {{type: \"fake_plain\", configuration: name: infrastructure.resources.middle.outputs.id}}"
+        )),
+    )?;
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(stack.creates()[0], "producer");
+    let producer = stack.record("producer").await?;
+    let middle = stack.record("middle").await?;
+    let last = stack.record("last").await?;
+    assert_eq!(middle.dependencies, ["fake_plain.producer"]);
+    assert_eq!(last.dependencies, ["fake_plain.middle"]);
+    assert_eq!(middle.state["name"], producer.state["id"]);
+    assert_eq!(last.state["name"], middle.state["id"]);
+    Ok(())
+}
+
+/// A separate infrastructure package follows the same contract as an inline one.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn separate_infrastructure_packages_share_the_output_contract() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "separate-package",
+        &outputs_stack(&format!(
+            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: {PRODUCER_ID}}}"
+        )),
+    )?;
+    let directory = stack.lifecycle.directory.path();
+    let (project, infrastructure) = stack
+        .lifecycle
+        .configuration
+        .split_once("infrastructure: {")
+        .ok_or("missing infrastructure declaration")?;
+    fs::write(
+        directory.join("env.cue"),
+        project
+            .replace(" \"github.com/cuenv/cuenv/stack\"\n", "")
+            .replace("_marker: stack.Marker\n", ""),
+    )?;
+    fs::create_dir(directory.join("infra"))?;
+    fs::write(
+        directory.join("infra/stack.cue"),
+        format!(
+            "package infrastructure\n_b: \"x\"\n_z: {{if _b == \"x\" {{v: 1}}}}\ninfrastructure: {{{infrastructure}"
+        ),
+    )?;
+    fs::write(
+        directory.join(".infrastructure.cue"),
+        "package examples\ndirectory: \"infra\"\n\"package\": \"infrastructure\"\nprojectPackage: \"examples\"\n",
+    )?;
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(stack.creates()[0], "producer");
+    assert_eq!(
+        stack.record("consumer").await?.dependencies,
+        ["fake_plain.producer"]
+    );
+    fs::write(
+        directory.join("infra/control.cue"),
+        format!(
+            "package infrastructure\n_o: {PRODUCER_ID}\n_h: {{if (_o & \"x\") == \"x\" {{v: 1}}}}\n"
+        ),
+    )?;
+    let before = stack.mutations();
+    stack.fails(&["plan"], "could not be inspected")?;
+    assert_eq!(stack.mutations(), before);
+    Ok(())
+}

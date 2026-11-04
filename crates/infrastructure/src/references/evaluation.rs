@@ -61,6 +61,13 @@ pub struct SpecializedConfiguration {
     pub unresolved: Vec<NativeReference>,
 }
 
+/// Real output values to check against the whole instance.
+/// Values deliberately do not implement Debug to prevent accidental disclosure.
+pub struct ConfigurationVerification<'input> {
+    /// Concrete primitive outputs known at this point. Unknown values never appear.
+    pub sources: &'input BTreeMap<OutputIdentity, Value>,
+}
+
 /// Immutable, in-memory evaluation of the original CUE instance.
 ///
 /// Implementations must start every specialization from the same frozen source
@@ -76,6 +83,24 @@ pub trait ConfigurationEvaluator: Send + Sync {
     /// may continue on a detached worker after the caller stops waiting.
     fn timeout(&self) -> Duration {
         Duration::from_secs(60)
+    }
+
+    /// Every output this instance declares, whether or not a reference uses it.
+    fn declared_outputs(&self) -> &[OutputIdentity] {
+        &[]
+    }
+
+    /// Check that real outputs change nothing outside the native references.
+    ///
+    /// Reference analysis cannot prove an expression it does not model is
+    /// independent of every value. This checks the values that actually exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns a value-free error when the values conflict with CUE constraints or
+    /// change a configuration value no native reference accounts for.
+    fn verify(&self, _input: &ConfigurationVerification<'_>) -> Result<()> {
+        Ok(())
     }
 
     /// Specialize and validate one complete consumer configuration.
