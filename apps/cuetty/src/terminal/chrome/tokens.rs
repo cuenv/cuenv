@@ -31,12 +31,17 @@ pub(super) mod radius {
 /// Type scale for chrome text. Nothing smaller than `CAPTION` stays legible
 /// at normal viewing distance, so there is no smaller step.
 pub(super) mod text {
-    use gpui::{FontWeight, Pixels, px};
+    use gpui::{DefiniteLength, FontWeight, Pixels, px, relative};
 
     pub(in crate::terminal::chrome) const CAPTION: Pixels = px(11.0);
     pub(in crate::terminal::chrome) const LABEL: Pixels = px(12.0);
     pub(in crate::terminal::chrome) const BODY: Pixels = px(13.0);
     pub(in crate::terminal::chrome) const TITLE: Pixels = px(14.0);
+    /// Line height of panel text as a multiple of its size. GPUI otherwise
+    /// inherits phi (1.618), which is loose for chrome and throws off every
+    /// height budget.
+    pub(in crate::terminal::chrome) const LINE_HEIGHT_RATIO: f32 = 1.4;
+    pub(in crate::terminal::chrome) const LINE_HEIGHT: DefiniteLength = relative(LINE_HEIGHT_RATIO);
     pub(in crate::terminal::chrome) const REGULAR: FontWeight = FontWeight::NORMAL;
     pub(in crate::terminal::chrome) const STRONG: FontWeight = FontWeight::SEMIBOLD;
 }
@@ -66,7 +71,7 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const TAB_MARKER_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TASK_SIDEBAR_WIDTH: Pixels = px(280.0);
     pub(in crate::terminal::chrome) const PALETTE_WIDTH: Pixels = px(520.0);
-    pub(in crate::terminal::chrome) const PALETTE_MAX_HEIGHT: Pixels = px(430.0);
+    pub(in crate::terminal::chrome) const PALETTE_ROW_HEIGHT: Pixels = px(32.0);
     pub(in crate::terminal::chrome) const PALETTE_TOP_OFFSET: Pixels = px(54.0);
     pub(in crate::terminal::chrome) const PALETTE_FIELD_HEIGHT: Pixels = px(38.0);
     pub(in crate::terminal::chrome) const PALETTE_KIND_WIDTH: Pixels = px(64.0);
@@ -97,6 +102,17 @@ pub(super) mod elevation {
             },
         ]
     }
+}
+
+/// The palette height that holds `rows` results along with its field, hint,
+/// gaps, padding, and outline.
+pub(super) fn palette_height(rows: usize) -> Pixels {
+    let hint = (text::CAPTION * text::LINE_HEIGHT_RATIO).ceil();
+    let frame = border::HAIRLINE * 2.0 + space::LG * 2.0;
+    let fixed = size::PALETTE_FIELD_HEIGHT + hint + space::MD * 2.0;
+    let results =
+        size::PALETTE_ROW_HEIGHT * rows as f32 + space::XS * rows.saturating_sub(1) as f32;
+    frame + fixed + results
 }
 
 /// Where native window controls sit: centred in the title strip, so they follow
@@ -184,6 +200,16 @@ mod tests {
             terminal_transparency_percent: percent,
             ..TerminalConfig::default()
         })
+    }
+
+    #[test]
+    fn palette_height_grows_by_a_row_and_a_gap_only_between_rows() {
+        let one = palette_height(1);
+        assert_eq!(palette_height(0) + size::PALETTE_ROW_HEIGHT, one);
+        assert_eq!(
+            one + size::PALETTE_ROW_HEIGHT + space::XS,
+            palette_height(2)
+        );
     }
 
     #[test]

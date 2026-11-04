@@ -24,7 +24,7 @@ use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Edges, Element,
     FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
     KeyBinding, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, SharedString, Size,
+    ParentElement, Pixels, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Size,
     StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
     UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
     WindowOptions, actions, canvas, div, point, px, quad, size,
@@ -808,7 +808,11 @@ pub(super) struct TerminalView {
     pub(super) task_sidebar_open: bool,
     pub(super) task_query: String,
     pub(super) task_selection: usize,
+    pub(super) task_palette_scroll: ScrollHandle,
 }
+
+/// How many filtered tasks the palette shows and the keyboard can reach.
+pub(super) const PALETTE_RESULT_LIMIT: usize = 9;
 
 struct CuenvIntegrationUpdate {
     presentation: Evaluation,
@@ -993,6 +997,7 @@ impl TerminalView {
                     task_sidebar_open: false,
                     task_query: String::new(),
                     task_selection: 0,
+                    task_palette_scroll: ScrollHandle::new(),
                 };
                 view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
                 view.spawn_cwd_poll(cx);
@@ -1016,6 +1021,7 @@ impl TerminalView {
                     task_sidebar_open: false,
                     task_query: String::new(),
                     task_selection: 0,
+                    task_palette_scroll: ScrollHandle::new(),
                 }
             }
         }
@@ -1495,6 +1501,7 @@ impl TerminalView {
         self.task_palette_open = !self.task_palette_open;
         self.task_query.clear();
         self.task_selection = 0;
+        self.task_palette_scroll.scroll_to_item(0);
         true
     }
 
@@ -1553,7 +1560,7 @@ impl TerminalView {
                     .active_state()
                     .map(|state| filtered_tasks(&state.cuenv.tasks, &self.task_query).len())
                     .unwrap_or_default()
-                    .min(9);
+                    .min(PALETTE_RESULT_LIMIT);
                 self.task_selection = (self.task_selection + 1).min(count.saturating_sub(1));
             }
             "enter" => {
@@ -1579,6 +1586,8 @@ impl TerminalView {
             }
             _ => {}
         }
+        // A short window clips the results, so the selection has to stay visible.
+        self.task_palette_scroll.scroll_to_item(self.task_selection);
         cx.notify();
         true
     }
