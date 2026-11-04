@@ -4,6 +4,7 @@ use crate::integrations::cuenv::RailColor;
 use crate::terminal::engine::TerminalView;
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::TerminalTheme;
+use crate::terminal::tab_label::{tab_initial, tab_tooltip};
 use crate::workspace::TabId;
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, Rgba, StatefulInteractiveElement,
@@ -29,24 +30,6 @@ fn rail_scroll_target(
     active_tab
         .filter(|_| active_tab != revealed_tab)
         .and_then(|active| tabs.position(|tab| tab == active))
-}
-
-fn sidebar_tab_label(label: &str) -> String {
-    let path = label
-        .split_whitespace()
-        .rev()
-        .find(|part| part.starts_with('/') || part.starts_with('~'))
-        .unwrap_or(label);
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return "/".into();
-    }
-    trimmed
-        .rsplit('/')
-        .next()
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or(trimmed)
-        .to_string()
 }
 
 impl TerminalView {
@@ -86,29 +69,17 @@ impl TerminalView {
             .gap(space::SM)
             .p(space::MD)
             .min_h_0();
-        for (index, tab) in self
-            .registry
-            .workspace
-            .workspace()
-            .tabs()
-            .iter()
-            .enumerate()
-        {
+        for tab in self.registry.workspace.workspace().tabs() {
             let tab_id = tab.id;
             let selected = active_tab == Some(tab_id);
-            let label = self
-                .registry
-                .sessions
-                .get(&tab.focused)
-                .map(|state| state.title.clone())
-                .unwrap_or_else(|| tab.title.clone());
-            let tooltip_label = self
-                .registry
-                .sessions
-                .get(&tab.focused)
-                .and_then(|state| state.cuenv.presentation.banner.clone())
-                .unwrap_or_else(|| sidebar_tab_label(&label));
-            let number = format!("{:02}", index + 1);
+            let label = self.registry.tab_label(tab);
+            let tooltip_label = tab_tooltip(
+                &label,
+                self.registry
+                    .sessions
+                    .get(&tab.focused)
+                    .and_then(|state| state.cuenv.presentation.banner.as_deref()),
+            );
             let mut tab_button = div()
                 .id(("cuetty-rail-tab", tab_id.get()))
                 .relative()
@@ -166,7 +137,7 @@ impl TerminalView {
                         } else {
                             colors.text_secondary
                         })
-                        .child(number),
+                        .child(tab_initial(&label)),
                 );
             tabs = tabs.child(tab_button);
         }
@@ -312,16 +283,5 @@ mod tests {
         assert_eq!(rail_scroll_target(Some(second), Some(second), tabs()), None);
         assert_eq!(rail_scroll_target(None, Some(second), tabs()), None);
         assert_eq!(rail_scroll_target(Some(closed), Some(first), tabs()), None);
-    }
-
-    #[test]
-    fn sidebar_labels_use_a_stable_single_line_name() {
-        assert_eq!(
-            sidebar_tab_label("~/Code/src/github.com/cuenv/cuenv"),
-            "cuenv"
-        );
-        assert_eq!(sidebar_tab_label("/"), "/");
-        assert_eq!(sidebar_tab_label("build"), "build");
-        assert_eq!(sidebar_tab_label("sleep 5 ~/Code/cuenv"), "cuenv");
     }
 }

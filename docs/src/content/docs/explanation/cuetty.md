@@ -87,9 +87,18 @@ The current usable slice includes:
   on Linux, so plain Ctrl chords such as Ctrl-C always reach the shell.
   Ctrl-Page Up and Ctrl-Page Down switch to the previous and next tab,
   wrapping at either end. The task palette is configurable (see below).
-- A fixed 56px right-side vertical tab rail. It shows tab ordinals with stable
-  path-name tooltips and deliberately has no resize or expand mode. A tab list
-  taller than the window scrolls, and follows the active tab.
+- A fixed 56px right-side vertical tab rail. Each tab shows the initial of its
+  name, with the full name as a tooltip. A tab is named after, in order, the name
+  the user gave it, the Cuenv task it is running, the program in its foreground or
+  a title that program set, and finally its directory; with none of those it is
+  `Terminal`. A task launched from Cuetty names its tab until `cuenv` hands the
+  foreground back or another program takes it. A title lasts only as long as the
+  program it was set under, a title that merely names a shell is ignored, a title that
+  names a directory stands in only while the working directory is unknown, a foreground
+  that cannot be named keeps what was last known (a pipeline whose first command has
+  exited, as in `git log | less`, cannot be), and Nix's
+  `.name-wrapped` binaries are shown as `name`. A tab list taller than the window scrolls, and
+  follows the active tab.
 - One design token set for all chrome spacing, radii, type sizes, border widths,
   elevation, and colours, with faint dividers between regions.
 - Global and per-directory CUE configuration for font family, font size, line height,
@@ -112,8 +121,8 @@ inherited from parent directories and any `.cue` filename may provide the
 package. A directory without package `cuetty` is neutral. Standalone packages
 are evaluated in the exact directory; imports that require a module context
 fail through normal CUE evaluation. A matching package may provide a
-single-line `banner` and a quoted `rail: "#RRGGBB"`. The banner supplies the
-tab tooltip; `rail` is the project accent, so `rail: "#ff0000"` colours the
+single-line `banner` and a quoted `rail: "#RRGGBB"`. The banner joins the tab's
+name in its tooltip; `rail` is the project accent, so `rail: "#ff0000"` colours the
 small marker on the active tab while that tab is active and never fills the
 rail. Terminal panes are never framed, and the former `border` field is
 rejected as unknown. `titlebar: false` hides the Cuetty title strip while that

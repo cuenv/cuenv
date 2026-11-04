@@ -49,6 +49,9 @@ pub trait TerminalSession: Send {
     fn frame(&mut self) -> TerminalFrame;
     /// OSC 7 directory, with a foreground-process fallback while the PTY is open.
     fn working_directory(&self) -> Option<String>;
+    /// The foreground process's name while the PTY is open, shells included. `None`
+    /// or a blank name means it could not be told, not that a shell is waiting.
+    fn foreground_process(&self) -> Option<String>;
     fn drain_effects(&self) -> Vec<ControlEvent>;
     fn close(&mut self) -> Result<(), String>;
 }
@@ -493,6 +496,21 @@ impl TerminalSession for RioTerminalSession {
             return teletypewriter::foreground_process_path(self.main_fd, self.shell_pid)
                 .ok()
                 .map(|path| path.to_string_lossy().into_owned());
+        }
+        None
+    }
+
+    fn foreground_process(&self) -> Option<String> {
+        #[cfg(unix)]
+        if self
+            .io_thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            return Some(teletypewriter::foreground_process_name(
+                self.main_fd,
+                self.shell_pid,
+            ));
         }
         None
     }

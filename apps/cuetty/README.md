@@ -86,8 +86,15 @@ write; shell control chords such as Ctrl-C and Ctrl-U; a new tab opening in
 The shell follows Ghostty's restrained presentation: native traffic lights,
 one dark title strip, a compact right-side vertical tab rail, and a full-bleed
 Catppuccin Mocha terminal surface. The rail is fixed at a narrow 56px and shows
-only tab ordinals; stable path names remain available as tooltips. A tab list
-taller than the window scrolls, and follows the active tab. Restrained
+the initial of each tab's name, with the full name as a tooltip. Names resolve in
+`src/terminal/tab_label.rs`: a user-set name, then a running Cuenv task, then the
+foreground program or a title it set, then the directory, then `Terminal`. A title
+lasts only as long as the program it was set under, one that names a directory stands
+in only while the working directory is unknown, a foreground that cannot be named
+keeps what was last known (a pipeline whose first command has exited, as in
+`git log | less`, cannot be), and Nix's `.name-wrapped`
+binaries are shown as `name`. A tab
+list taller than the window scrolls, and follows the active tab. Restrained
 active-tab treatment and compact footer controls keep the rail readable
 without competing with terminal content. By default, the Rio surface sits in a
 14px inset below the title strip beside the rail. The inset, and any space left

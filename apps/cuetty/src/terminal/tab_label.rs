@@ -1,0 +1,624 @@
+//! What a tab is called. Everything here is pure, so the naming rules can be
+//! tested without a window or a terminal session.
+
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+/// The name of a tab nothing else can name.
+const FALLBACK_LABEL: &str = "Terminal";
+
+/// Foreground processes that mean the tab is sitting at a prompt. A nested shell
+/// says nothing about the tab that its title and directory do not say better.
+const SHELLS: &[&str] = &[
+    "bash", "dash", "elvish", "fish", "ksh", "mksh", "nu", "pwsh", "sh", "tcsh", "xonsh", "zsh",
+];
+
+/// What a task launched from Cuetty shows up as in the foreground: the first word
+/// of the command line it pastes.
+const TASK_PROGRAM: &str = "cuenv";
+
+/// The suffixes Nix's wrappers give the binaries they wrap, as in `.bat-wrapped`.
+const WRAPPER_SUFFIXES: &[&str] = &["-wrapped", "-unwrapped"];
+
+/// Bytes of a process name the Linux kernel keeps in `/proc/<pid>/comm`.
+const COMM_LIMIT: usize = 15;
+
+/// How long a launched task may go without a program appearing in the foreground
+/// before it is assumed to have finished between two samples.
+const TASK_START_GRACE: Duration = Duration::from_secs(3);
+
+/// Everything a tab can be named after, in no particular order.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct TabLabelSources<'a> {
+    pub(super) custom_name: Option<&'a str>,
+    pub(super) running_task: Option<&'a str>,
+    pub(super) foreground_program: Option<&'a str>,
+    pub(super) title: Option<&'a str>,
+    pub(super) directory: Option<&'a Path>,
+}
+
+/// What a terminal title turned out to describe.
+enum TitleName<'a> {
+    /// A program chose this title, so it says more than the process name would.
+    Program(&'a str),
+    /// A shell prompt's directory, reduced to its last component. It only stands in
+    /// for the working directory, which is exact, while that is not known.
+    Directory(&'a str),
+}
+
+impl<'a> TitleName<'a> {
+    fn parse(title: &'a str) -> Option<Self> {
+        let title = title.trim();
+        // A shell naming itself says nothing, and must not outrank what it runs.
+        if title.is_empty() || is_shell(title) {
+            return None;
+        }
+        Some(title_directory(title).map_or(Self::Program(title), |path| {
+            Self::Directory(path_basename(path))
+        }))
+    }
+}
+
+/// The directory a shell's title names. The path has to lead the title, past any
+/// `user@host:` prefix, because a program naming a file further along is not saying
+/// where it is. It runs to the end of the title or to the `>` of the `path> command`
+/// a shell sets while a command runs, so it may contain spaces.
+fn title_directory(title: &str) -> Option<&str> {
+    let is_path = |text: &&str| text.starts_with('/') || text.starts_with('~');
+    let path = Some(title).filter(is_path).or_else(|| {
+        title
+            .split_once(':')
+            .filter(|(prefix, _)| prefix.contains('@') && !prefix.contains(char::is_whitespace))
+            .map(|(_, path)| path.trim_start())
+            .filter(is_path)
+    })?;
+    Some(
+        path.split_once('>')
+            .map_or(path, |(path, _)| path)
+            .trim_end(),
+    )
+}
+
+fn path_basename(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "/";
+    }
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+fn nonblank(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// Names a tab, preferring what the user chose, then what the tab is doing, then
+/// where it is.
+pub(super) fn resolve_tab_label(sources: TabLabelSources<'_>) -> String {
+    let title = sources.title.and_then(TitleName::parse);
+    let program_title = match title {
+        Some(TitleName::Program(title)) => Some(title),
+        _ => None,
+    };
+    let named_directory = match title {
+        Some(TitleName::Directory(directory)) => Some(directory),
+        _ => None,
+    };
+    let directory = sources.directory.map(|directory| {
+        directory.file_name().map_or_else(
+            || directory.to_string_lossy(),
+            |name| name.to_string_lossy(),
+        )
+    });
+    nonblank(sources.custom_name)
+        .or(nonblank(sources.running_task))
+        .or(program_title)
+        .or(nonblank(sources.foreground_program))
+        .or(nonblank(directory.as_deref()))
+        .or(named_directory)
+        .unwrap_or(FALLBACK_LABEL)
+        .to_string()
+}
+
+/// A one-character stand-in for `label` where only a short mark fits.
+pub(super) fn tab_initial(label: &str) -> String {
+    label
+        .chars()
+        .find(|character| character.is_alphanumeric())
+        .or_else(|| label.chars().next())
+        .map_or_else(String::new, |initial| {
+            initial.to_uppercase().take(1).collect()
+        })
+}
+
+/// A tab's full name, with the project's banner when it adds anything.
+pub(super) fn tab_tooltip(label: &str, banner: Option<&str>) -> String {
+    match banner {
+        Some(banner) if banner != label => format!("{label} · {banner}"),
+        _ => label.to_string(),
+    }
+}
+
+/// The name a person would know a binary by. Nix's wrappers run the real binary as
+/// `.name-wrapped`, and `exec -a` does not change the process name the kernel
+/// reports, which is cut short when it is long.
+fn unwrapped_name(name: &str) -> &str {
+    let bare = name.trim_start_matches('.');
+    let truncated = bare.len() != name.len() && name.len() == COMM_LIMIT;
+    WRAPPER_SUFFIXES
+        .iter()
+        .find_map(|suffix| bare.strip_suffix(suffix))
+        .or_else(|| {
+            truncated.then_some(())?;
+            WRAPPER_SUFFIXES.iter().find_map(|suffix| {
+                (1..suffix.len())
+                    .rev()
+                    .find_map(|kept| bare.strip_suffix(&suffix[..kept]))
+            })
+        })
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or(if bare.is_empty() { name } else { bare })
+}
+
+/// Whether a name is a shell's. Login shells report themselves as `-zsh`.
+fn is_shell(name: &str) -> bool {
+    SHELLS.contains(&unwrapped_name(name.strip_prefix('-').unwrap_or(name)))
+}
+
+/// The program in a sampled foreground process name: `None` while a shell is
+/// waiting at its prompt.
+fn foreground_program(process: &str) -> Option<&str> {
+    let process = process.trim();
+    let name = process.strip_prefix('-').unwrap_or(process);
+    let unwrapped = unwrapped_name(name);
+    (!unwrapped.is_empty() && !is_shell(process)).then_some(if unwrapped == name {
+        process
+    } else {
+        unwrapped
+    })
+}
+
+/// What a pane's terminal is doing, as far as naming its tab goes.
+///
+/// A title only speaks for the program that set it, so it goes when the foreground
+/// changes. Otherwise it would go on naming the tab long after that program exited.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct PaneActivity {
+    title: Option<String>,
+    program: Option<String>,
+    /// The last sample could not name the foreground, so `program` is only what was
+    /// last known, and a prompt cannot be assumed from it being empty.
+    foreground_unknown: bool,
+    task: Option<RunningTask>,
+}
+
+impl PaneActivity {
+    pub(super) fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// The foreground program as of the last sample; `None` at a shell prompt.
+    pub(super) fn program(&self) -> Option<&str> {
+        self.program.as_deref()
+    }
+
+    pub(super) fn task_name(&self) -> Option<&str> {
+        self.task.as_ref().map(RunningTask::name)
+    }
+
+    /// Whether the last sample found a shell waiting, as opposed to some program or
+    /// nothing it could name.
+    pub(super) fn at_prompt(&self) -> bool {
+        self.program.is_none() && !self.foreground_unknown
+    }
+
+    /// Records the foreground process, which also settles whether a title still
+    /// applies and whether a task launched here is still going.
+    ///
+    /// A missing or blank name is not a prompt. A pipeline's group outlives its
+    /// leader, whose name is all the platform offers, so `git log | less` reads as
+    /// nothing while `less` runs. What was known stands until a name comes back.
+    pub(super) fn sample(&mut self, process: Option<&str>, now: Instant) {
+        let process = nonblank(process);
+        self.foreground_unknown = process.is_none();
+        if let Some(process) = process {
+            let program = foreground_program(process);
+            if program != self.program.as_deref() {
+                self.title = None;
+                self.program = program.map(str::to_owned);
+            }
+        }
+        self.task = self
+            .task
+            .take()
+            .and_then(|task| task.observe(self.program.as_deref(), now));
+    }
+
+    /// Records a title for the program in the foreground, so sample first: a
+    /// program that sets its title as it starts is usually not sampled yet.
+    pub(super) fn set_title(&mut self, title: String) {
+        self.title = Some(title).filter(|title| !title.trim().is_empty());
+    }
+
+    /// Records a task pasted at this pane's prompt. A paste into a busy pane goes
+    /// to that program instead of starting anything.
+    pub(super) fn launch_task(&mut self, name: impl Into<String>, now: Instant) {
+        if self.at_prompt() {
+            self.task = Some(RunningTask::launched(name, now));
+        }
+    }
+}
+
+/// A Cuenv task launched from Cuetty, which names its tab until it finishes.
+///
+/// The task is pasted into the shell, so Cuetty only ever sees it from outside:
+/// a program takes over the foreground, and later hands it back to the shell.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RunningTask {
+    name: String,
+    launched_at: Instant,
+    program_seen: bool,
+}
+
+impl RunningTask {
+    fn launched(name: impl Into<String>, launched_at: Instant) -> Self {
+        Self {
+            name: name.into(),
+            launched_at,
+            program_seen: false,
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The task after a foreground sample, or `None` once it has finished. Any other
+    /// program means it finished between samples and the user has moved on.
+    fn observe(self, foreground_program: Option<&str>, now: Instant) -> Option<Self> {
+        match foreground_program {
+            Some(TASK_PROGRAM) => Some(Self {
+                program_seen: true,
+                ..self
+            }),
+            Some(_) => None,
+            None if self.program_seen => None,
+            None => (now.duration_since(self.launched_at) < TASK_START_GRACE).then_some(self),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_source_outranks_every_source_after_it() {
+        let mut sources = TabLabelSources {
+            custom_name: Some("deploys"),
+            running_task: Some("checks.clippy"),
+            foreground_program: Some("cargo"),
+            title: Some("deploy logs"),
+            directory: Some(Path::new("/home/me/directory")),
+        };
+        assert_eq!(resolve_tab_label(sources), "deploys");
+        sources.custom_name = None;
+        assert_eq!(resolve_tab_label(sources), "checks.clippy");
+        sources.running_task = None;
+        assert_eq!(resolve_tab_label(sources), "deploy logs");
+        sources.title = None;
+        assert_eq!(resolve_tab_label(sources), "cargo");
+        sources.foreground_program = None;
+        sources.title = Some("~/Code/title");
+        assert_eq!(resolve_tab_label(sources), "directory");
+        sources.directory = None;
+        assert_eq!(resolve_tab_label(sources), "title");
+        sources.title = None;
+        assert_eq!(resolve_tab_label(sources), "Terminal");
+    }
+
+    #[test]
+    fn the_working_directory_outranks_the_one_a_title_names() {
+        // Nu's own titles, as it sets them at the prompt and while a command runs.
+        for title in ["~/Code/cuenv> sleep", "~/My Pro", "~/My Pro> sleep"] {
+            let sources = TabLabelSources {
+                title: Some(title),
+                directory: Some(Path::new("/home/me/My Project")),
+                ..TabLabelSources::default()
+            };
+            assert_eq!(resolve_tab_label(sources), "My Project");
+        }
+    }
+
+    #[test]
+    fn a_title_a_program_chose_outranks_its_process_name() {
+        let sources = TabLabelSources {
+            foreground_program: Some("node"),
+            title: Some("Claude Code"),
+            ..TabLabelSources::default()
+        };
+        assert_eq!(resolve_tab_label(sources), "Claude Code");
+    }
+
+    #[test]
+    fn a_blank_source_gives_way_to_the_next_one() {
+        let sources = TabLabelSources {
+            custom_name: Some("  "),
+            running_task: Some(""),
+            title: Some("   "),
+            directory: Some(Path::new("/work/cuenv")),
+            ..TabLabelSources::default()
+        };
+        assert_eq!(resolve_tab_label(sources), "cuenv");
+    }
+
+    #[test]
+    fn titles_reduce_to_the_directory_they_name() {
+        let label = |title| {
+            resolve_tab_label(TabLabelSources {
+                title: Some(title),
+                ..TabLabelSources::default()
+            })
+        };
+        assert_eq!(label("~/Code/src/github.com/cuenv/cuenv"), "cuenv");
+        assert_eq!(label("~/Code/cuenv/"), "cuenv");
+        assert_eq!(label("/"), "/");
+        assert_eq!(label("~"), "~");
+        assert_eq!(label("me@host:~/Code/cuenv"), "cuenv");
+        assert_eq!(label("me@host: /srv/www"), "www");
+        assert_eq!(label("~/Code/cuenv > cargo test -p /tmp/x"), "cuenv");
+        assert_eq!(label("~/Code/cuenv> sleep"), "cuenv");
+        assert_eq!(label("~/Code/cuenv>"), "cuenv");
+        assert_eq!(label("~/My Project"), "My Project");
+        assert_eq!(label("~/My Project> sleep"), "My Project");
+        assert_eq!(label("/srv/a:b"), "a:b");
+    }
+
+    #[test]
+    fn a_program_title_keeps_its_slashes() {
+        let sources = TabLabelSources {
+            title: Some("vim src/main.rs"),
+            ..TabLabelSources::default()
+        };
+        assert_eq!(resolve_tab_label(sources), "vim src/main.rs");
+    }
+
+    #[test]
+    fn a_path_further_along_a_title_is_not_where_the_program_is() {
+        for title in ["vim /etc/hosts", "editing: /etc/hosts"] {
+            let sources = TabLabelSources {
+                title: Some(title),
+                directory: Some(Path::new("/work/cuenv")),
+                ..TabLabelSources::default()
+            };
+            assert_eq!(resolve_tab_label(sources), title);
+        }
+    }
+
+    #[test]
+    fn the_filesystem_root_is_still_a_name() {
+        let sources = TabLabelSources {
+            directory: Some(Path::new("/")),
+            ..TabLabelSources::default()
+        };
+        assert_eq!(resolve_tab_label(sources), "/");
+    }
+
+    #[test]
+    fn initials_skip_punctuation_and_stay_one_character() {
+        assert_eq!(tab_initial("cuenv"), "C");
+        assert_eq!(tab_initial(".config"), "C");
+        assert_eq!(tab_initial("~"), "~");
+        assert_eq!(tab_initial("/"), "/");
+        assert_eq!(tab_initial("ßeta"), "S");
+        assert_eq!(tab_initial(""), "");
+    }
+
+    #[test]
+    fn a_tooltip_adds_the_banner_only_when_it_differs() {
+        assert_eq!(tab_tooltip("cargo", None), "cargo");
+        assert_eq!(tab_tooltip("cuenv", Some("cuenv")), "cuenv");
+        assert_eq!(tab_tooltip("cargo", Some("cuenv")), "cargo · cuenv");
+    }
+
+    #[test]
+    fn shells_are_not_foreground_programs() {
+        assert_eq!(foreground_program("zsh"), None);
+        assert_eq!(foreground_program("-zsh"), None);
+        assert_eq!(foreground_program("nu"), None);
+        assert_eq!(foreground_program(""), None);
+        assert_eq!(foreground_program("cargo"), Some("cargo"));
+        assert_eq!(foreground_program("-custom"), Some("-custom"));
+    }
+
+    #[test]
+    fn nix_wrappers_are_named_after_what_they_wrap() {
+        assert_eq!(foreground_program(".claude-wrapped"), Some("claude"));
+        assert_eq!(foreground_program(".bat-wrapped"), Some("bat"));
+        assert_eq!(foreground_program("neovim-unwrapped"), Some("neovim"));
+        assert_eq!(foreground_program(".hidden-tool"), Some("hidden-tool"));
+        // Their shells are still shells.
+        assert_eq!(foreground_program(".fish-wrapped"), None);
+        assert_eq!(foreground_program("-.zsh-wrapped"), None);
+    }
+
+    #[test]
+    fn a_wrapper_suffix_cut_off_by_the_kernel_is_still_removed() {
+        assert_eq!(foreground_program(".kubectl-wrappe"), Some("kubectl"));
+        assert_eq!(foreground_program(".terraform-wrap"), Some("terraform"));
+        assert_eq!(
+            foreground_program(".some-long-tool"),
+            Some("some-long-tool")
+        );
+        // Short of the limit, the name is whole, and these are not suffixes.
+        assert_eq!(foreground_program(".tool-wrap"), Some("tool-wrap"));
+        assert_eq!(foreground_program("."), Some("."));
+    }
+
+    #[test]
+    fn a_title_naming_a_shell_does_not_name_the_tab() {
+        for title in ["bash", "-zsh", ".fish-wrapped"] {
+            let sources = TabLabelSources {
+                foreground_program: Some("cargo"),
+                title: Some(title),
+                ..TabLabelSources::default()
+            };
+            assert_eq!(resolve_tab_label(sources), "cargo");
+        }
+    }
+
+    fn label_of(activity: &PaneActivity) -> String {
+        resolve_tab_label(TabLabelSources {
+            running_task: activity.task_name(),
+            foreground_program: activity.program(),
+            title: activity.title(),
+            directory: Some(Path::new("/work/other")),
+            ..TabLabelSources::default()
+        })
+    }
+
+    #[test]
+    fn a_title_goes_with_the_program_that_set_it() {
+        let now = Instant::now();
+        let mut activity = PaneActivity::default();
+        activity.sample(Some("deploy"), now);
+        activity.set_title("deploy logs".into());
+        assert_eq!(label_of(&activity), "deploy logs");
+        activity.sample(Some("deploy"), now);
+        assert_eq!(label_of(&activity), "deploy logs");
+
+        activity.sample(Some("cargo"), now);
+        assert_eq!(label_of(&activity), "cargo");
+        activity.sample(Some("zsh"), now);
+        assert_eq!(label_of(&activity), "other");
+    }
+
+    #[test]
+    fn a_title_set_at_the_prompt_lasts_until_a_program_runs() {
+        let now = Instant::now();
+        let mut activity = PaneActivity::default();
+        activity.sample(Some("zsh"), now);
+        activity.set_title("deploy logs".into());
+        activity.sample(Some("zsh"), now);
+        assert_eq!(label_of(&activity), "deploy logs");
+
+        activity.sample(Some("cargo"), now);
+        assert_eq!(label_of(&activity), "cargo");
+        activity.sample(Some("zsh"), now);
+        assert_eq!(label_of(&activity), "other");
+    }
+
+    #[test]
+    fn a_blank_title_clears_the_current_one() {
+        let mut activity = PaneActivity::default();
+        activity.set_title("vim".into());
+        activity.set_title("  ".into());
+        assert_eq!(activity.title(), None);
+    }
+
+    #[test]
+    fn a_busy_pane_never_gains_a_task() {
+        let now = Instant::now();
+        let mut activity = PaneActivity::default();
+        activity.sample(Some("vim"), now);
+        activity.launch_task("build", now);
+        assert_eq!(activity.task_name(), None);
+        activity.sample(Some("zsh"), now);
+        activity.launch_task("build", now);
+        assert_eq!(activity.task_name(), Some("build"));
+    }
+
+    #[test]
+    fn an_unreadable_foreground_keeps_the_program_and_its_title() {
+        let now = Instant::now();
+        let mut activity = PaneActivity::default();
+        activity.sample(Some("less"), now);
+        activity.set_title("README.md".into());
+        for unreadable in [Some(""), Some("  "), None] {
+            activity.sample(unreadable, now);
+            assert_eq!(activity.program(), Some("less"));
+            assert_eq!(label_of(&activity), "README.md");
+        }
+        // The same program coming back into view is no change of program.
+        activity.sample(Some("less"), now);
+        assert_eq!(label_of(&activity), "README.md");
+        activity.sample(Some("zsh"), now);
+        assert_eq!(label_of(&activity), "other");
+    }
+
+    #[test]
+    fn an_unreadable_foreground_is_not_a_prompt() {
+        let now = Instant::now();
+        let mut activity = PaneActivity::default();
+        // A pipeline whose leader was gone before it was ever sampled.
+        activity.sample(Some("zsh"), now);
+        assert!(activity.at_prompt());
+        activity.sample(Some(""), now);
+        assert!(!activity.at_prompt());
+        activity.launch_task("build", now);
+        assert_eq!(activity.task_name(), None);
+
+        activity.sample(Some("zsh"), now);
+        activity.launch_task("build", now);
+        assert_eq!(activity.task_name(), Some("build"));
+    }
+
+    #[test]
+    fn an_unreadable_foreground_neither_ends_a_running_task_nor_extends_a_grace_period() {
+        let start = Instant::now();
+        let mut activity = PaneActivity::default();
+        activity.launch_task("build", start);
+        activity.sample(Some("cuenv"), start);
+        let later = start + TASK_START_GRACE * 10;
+        activity.sample(Some(""), later);
+        assert_eq!(activity.task_name(), Some("build"));
+
+        let mut unseen = PaneActivity::default();
+        unseen.launch_task("build", start);
+        unseen.sample(Some(""), start);
+        assert_eq!(unseen.task_name(), Some("build"));
+        unseen.sample(Some(""), later);
+        assert_eq!(unseen.task_name(), None);
+    }
+
+    #[test]
+    fn an_unrelated_program_ends_a_task_that_finished_between_samples() {
+        let now = Instant::now();
+        let mut activity = PaneActivity::default();
+        activity.launch_task("build", now);
+        activity.sample(Some("vim"), now + TASK_START_GRACE / 2);
+        assert_eq!(activity.task_name(), None);
+        assert_eq!(label_of(&activity), "vim");
+    }
+
+    #[test]
+    fn a_program_following_the_task_ends_it_too() {
+        let now = Instant::now();
+        let mut activity = PaneActivity::default();
+        activity.launch_task("build", now);
+        activity.sample(Some(".cuenv-wrapped"), now);
+        assert_eq!(activity.task_name(), Some("build"));
+        activity.sample(Some("vim"), now);
+        assert_eq!(activity.task_name(), None);
+    }
+
+    #[test]
+    fn a_task_runs_until_its_program_hands_back_the_foreground() {
+        let start = Instant::now();
+        let task = RunningTask::launched("build", start);
+        // The shell still holds the foreground just after the paste.
+        let task = task.observe(None, start).unwrap();
+        let task = task.observe(Some("cuenv"), start).unwrap();
+        let later = start + TASK_START_GRACE * 10;
+        let task = task.observe(Some("cuenv"), later).unwrap();
+        assert_eq!(task.name(), "build");
+        assert_eq!(task.observe(None, later), None);
+    }
+
+    #[test]
+    fn a_task_too_quick_to_sample_ends_after_the_grace_period() {
+        let start = Instant::now();
+        let task = RunningTask::launched("build", start);
+        let task = task.observe(None, start + TASK_START_GRACE / 2).unwrap();
+        assert_eq!(task.observe(None, start + TASK_START_GRACE), None);
+    }
+}

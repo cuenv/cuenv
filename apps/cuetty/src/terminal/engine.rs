@@ -12,6 +12,7 @@ use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
+use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
 use super::workspace_shell::{
     ShellAction, ShellError, TabDirection, WorkspaceShell, WorkspaceShortcut,
 };
@@ -19,7 +20,7 @@ use crate::integrations::cuenv::{
     ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation, KeyChord,
     NativeCuenvProvider, TaskEvaluation,
 };
-use crate::workspace::{LayoutRect, MinSizePolicy, TabId};
+use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Edges, Element,
     FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
@@ -554,7 +555,8 @@ pub(super) struct PaneState {
     frame: TerminalFrame,
     interaction: InteractionState,
     scroll_remainder: f32,
-    pub(super) title: String,
+    /// What the terminal is doing, which is what its tab is named after.
+    activity: PaneActivity,
     measured_bounds: Arc<Mutex<(u32, u32)>>,
     viewport_bounds: Arc<Mutex<ViewportBounds>>,
     error: Option<String>,
@@ -562,6 +564,50 @@ pub(super) struct PaneState {
     cuenv_source: Option<ConfigSource>,
     cuenv_watcher: Option<Box<dyn CuenvWatcher>>,
     cuenv_watch_retry_at: Option<std::time::Instant>,
+}
+
+impl PaneState {
+    fn new(
+        generation: SessionGeneration,
+        mut session: Box<dyn TerminalSession>,
+        (width, height): (u32, u32),
+    ) -> Self {
+        let frame = session.frame();
+        Self {
+            generation,
+            session,
+            frame,
+            interaction: InteractionState::default(),
+            scroll_remainder: 0.0,
+            activity: PaneActivity::default(),
+            measured_bounds: Arc::new(Mutex::new((width, height))),
+            viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
+            error: None,
+            cuenv: CuenvPaneState::default(),
+            cuenv_source: None,
+            cuenv_watcher: None,
+            cuenv_watch_retry_at: None,
+        }
+    }
+
+    /// Records what the terminal is running now.
+    fn sample_foreground(&mut self, now: std::time::Instant) {
+        let process = self.session.foreground_process();
+        self.activity.sample(process.as_deref(), now);
+    }
+
+    /// Paste the task's command into this pane's shell. A task that needs
+    /// arguments is only staged at the prompt, so it is not running yet. The
+    /// periodic sample may be out of date, and it decides where the paste went.
+    fn launch_task(&mut self, command: &str, task: &CuenvTask) -> Result<(), String> {
+        let now = std::time::Instant::now();
+        self.sample_foreground(now);
+        self.session.paste(command)?;
+        if !task.requires_parameters {
+            self.activity.launch_task(task.name.clone(), now);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -617,7 +663,7 @@ impl SessionRegistry {
         height: u32,
         cell: CellSize,
     ) -> Result<(Self, async_channel::Receiver<()>), RegistryError> {
-        let mut start = factory
+        let start = factory
             .start(width, height, cell)
             .map_err(RegistryError::Session)?;
         let workspace = WorkspaceShell::new()
@@ -629,25 +675,10 @@ impl SessionRegistry {
                 .ok_or(RegistryError::Workspace(ShellError::Workspace(
                     crate::workspace::Error::NoTabs,
                 )))?;
-        let frame = start.session.frame();
         let mut sessions = HashMap::new();
         sessions.insert(
             pane,
-            PaneState {
-                generation: SessionGeneration(1),
-                session: start.session,
-                frame,
-                interaction: InteractionState::default(),
-                scroll_remainder: 0.0,
-                title: "Cuetty".into(),
-                measured_bounds: Arc::new(Mutex::new((width, height))),
-                viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
-                error: None,
-                cuenv: CuenvPaneState::default(),
-                cuenv_source: None,
-                cuenv_watcher: None,
-                cuenv_watch_retry_at: None,
-            },
+            PaneState::new(SessionGeneration(1), start.session, (width, height)),
         );
         Ok((
             Self {
@@ -702,24 +733,9 @@ impl SessionRegistry {
             .next_generation
             .checked_add(1)
             .expect("session generation exhausted");
-        let frame = start.session.frame();
         self.sessions.insert(
             target.pane,
-            PaneState {
-                generation,
-                session: start.session,
-                frame,
-                interaction: InteractionState::default(),
-                scroll_remainder: 0.0,
-                title: "Cuetty".into(),
-                measured_bounds: Arc::new(Mutex::new((width, height))),
-                viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
-                error: None,
-                cuenv: CuenvPaneState::default(),
-                cuenv_source: None,
-                cuenv_watcher: None,
-                cuenv_watch_retry_at: None,
-            },
+            PaneState::new(generation, start.session, (width, height)),
         );
         self.notice = None;
         Ok((target.pane, generation, start.wake_rx))
@@ -761,7 +777,9 @@ impl SessionRegistry {
                     if let Some(state) = self.sessions.get_mut(&pane)
                         && state.generation == generation
                     {
-                        state.title = title;
+                        // The title belongs to whatever is running as it arrives.
+                        state.sample_foreground(std::time::Instant::now());
+                        state.activity.set_title(title);
                     }
                 }
                 ControlEvent::Bell => {}
@@ -774,6 +792,24 @@ impl SessionRegistry {
             clipboard,
             should_close,
         }
+    }
+
+    fn sample_foreground(&mut self, now: std::time::Instant) {
+        self.sessions
+            .values_mut()
+            .for_each(|state| state.sample_foreground(now));
+    }
+
+    /// What `tab` is called right now.
+    pub(super) fn tab_label(&self, tab: &Tab) -> String {
+        let state = self.sessions.get(&tab.focused);
+        resolve_tab_label(TabLabelSources {
+            custom_name: tab.custom_name.as_deref(),
+            running_task: state.and_then(|state| state.activity.task_name()),
+            foreground_program: state.and_then(|state| state.activity.program()),
+            title: state.and_then(|state| state.activity.title()),
+            directory: state.and_then(|state| state.cuenv.cwd.as_deref()),
+        })
     }
 
     fn close_pane(&mut self, pane: crate::workspace::PaneId) -> Result<(), RegistryError> {
@@ -1268,6 +1304,7 @@ impl TerminalView {
                 Timer::after(std::time::Duration::from_millis(500)).await;
                 if weak
                     .update(cx, |view, cx| {
+                        view.registry.sample_foreground(std::time::Instant::now());
                         view.refresh_cuenv_integration(cx);
                         cx.notify();
                     })
@@ -1528,7 +1565,7 @@ impl TerminalView {
         };
         let command = task_command(&cwd, &task, launch);
         if let Some(state) = self.registry.sessions.get_mut(&active_pane) {
-            if let Err(error) = state.session.paste(&command) {
+            if let Err(error) = state.launch_task(&command, &task) {
                 state.error = Some(error);
             } else if task.requires_parameters {
                 self.registry.notice =
@@ -2067,6 +2104,7 @@ mod tests {
         frame: TerminalFrame,
         effects: Arc<Mutex<Vec<ControlEvent>>>,
         close_error: Option<String>,
+        foreground: Arc<Mutex<String>>,
     }
 
     impl TerminalSession for FakeSession {
@@ -2094,6 +2132,10 @@ mod tests {
             None
         }
 
+        fn foreground_process(&self) -> Option<String> {
+            Some(self.foreground.lock().unwrap().clone())
+        }
+
         fn drain_effects(&self) -> Vec<ControlEvent> {
             std::mem::take(&mut *self.effects.lock().expect("fake effects mutex poisoned"))
         }
@@ -2102,6 +2144,9 @@ mod tests {
             self.close_error.take().map_or(Ok(()), Err)
         }
     }
+
+    type FakeForeground = Arc<Mutex<String>>;
+    type FakeEffects = Arc<Mutex<Vec<ControlEvent>>>;
 
     struct FakeFactory {
         starts: Mutex<VecDeque<Result<SessionStart, String>>>,
@@ -2177,12 +2222,35 @@ mod tests {
             frame: frame_with(character),
             effects: Arc::clone(&effects),
             close_error: close_error.map(str::to_owned),
+            foreground: Arc::new(Mutex::new("zsh".into())),
         };
         (
             SessionStart {
                 session: Box::new(session),
                 wake_rx,
             },
+            effects,
+        )
+    }
+
+    /// A session whose foreground process and control events a test can change.
+    fn fake_start_in_foreground(process: &str) -> (SessionStart, FakeForeground, FakeEffects) {
+        let (wake_tx, wake_rx) = async_channel::unbounded();
+        drop(wake_tx);
+        let foreground = Arc::new(Mutex::new(process.to_owned()));
+        let effects = Arc::new(Mutex::new(Vec::new()));
+        let session = FakeSession {
+            frame: frame_with('a'),
+            effects: Arc::clone(&effects),
+            close_error: None,
+            foreground: Arc::clone(&foreground),
+        };
+        (
+            SessionStart {
+                session: Box::new(session),
+                wake_rx,
+            },
+            foreground,
             effects,
         )
     }
@@ -2654,8 +2722,11 @@ mod tests {
         let background = registry.apply_wake(second_pane, generation, Some(first_pane));
         assert!(background.accepted);
         assert!(background.clipboard.is_empty());
-        assert_eq!(registry.sessions[&second_pane].title, "background title");
-        assert_eq!(registry.sessions[&first_pane].title, "Cuetty");
+        assert_eq!(
+            registry.sessions[&second_pane].activity.title(),
+            Some("background title")
+        );
+        assert_eq!(registry.sessions[&first_pane].activity.title(), None);
 
         effects
             .lock()
@@ -2668,6 +2739,106 @@ mod tests {
         let late = registry.apply_wake(second_pane, generation, Some(first_pane));
         assert!(!late.accepted);
         assert!(late.clipboard.is_empty());
+    }
+
+    #[test]
+    fn a_program_clearing_its_title_leaves_the_tab_untitled() {
+        let (initial, effects) = fake_start('a', vec![ControlEvent::Title("vim".into())], None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(registry.sessions[&pane].activity.title(), Some("vim"));
+
+        effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::Title(String::new()));
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(registry.sessions[&pane].activity.title(), None);
+    }
+
+    #[test]
+    fn a_tab_is_named_after_its_task_while_it_runs_and_its_program_otherwise() {
+        let (initial, foreground, _) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let tab = registry.workspace.workspace().tabs()[0].clone();
+        assert_eq!(registry.tab_label(&tab), "Terminal");
+
+        let task = CuenvTask {
+            name: "docs.build".into(),
+            description: None,
+            kind: crate::integrations::cuenv::CuenvTaskKind::Task,
+            requires_parameters: false,
+        };
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.launch_task("cuenv task docs.build\n", &task).unwrap();
+        assert_eq!(registry.tab_label(&tab), "docs.build");
+
+        let mut named = tab.clone();
+        named.custom_name = Some("site".into());
+        assert_eq!(registry.tab_label(&named), "site");
+
+        // The fake's shell never gave up the foreground, so the task ended
+        // between samples, and a sampled shell is not a program to name.
+        registry.sample_foreground(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        assert_eq!(registry.sessions[&pane].activity.task_name(), None);
+        assert_eq!(registry.sessions[&pane].activity.program(), None);
+        assert_eq!(registry.tab_label(&tab), "Terminal");
+
+        *foreground.lock().unwrap() = "cuenv".into();
+        registry.sample_foreground(std::time::Instant::now());
+        assert_eq!(registry.tab_label(&tab), "cuenv");
+    }
+
+    #[test]
+    fn a_title_lasts_exactly_as_long_as_the_program_that_set_it() {
+        let (initial, foreground, effects) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        let tab = registry.workspace.workspace().tabs()[0].clone();
+
+        // The program starts and sets its title between two periodic samples.
+        *foreground.lock().unwrap() = "deploy".into();
+        effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::Title("deploy logs".into()));
+        registry.apply_wake(pane, generation, Some(pane));
+        registry.sample_foreground(std::time::Instant::now());
+        assert_eq!(registry.tab_label(&tab), "deploy logs");
+
+        *foreground.lock().unwrap() = "zsh".into();
+        registry.sample_foreground(std::time::Instant::now());
+        assert_eq!(registry.tab_label(&tab), "Terminal");
+    }
+
+    #[test]
+    fn a_task_needing_arguments_or_a_busy_pane_is_not_marked_running() {
+        let (initial, foreground, _) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let mut task = CuenvTask {
+            name: "release".into(),
+            description: None,
+            kind: crate::integrations::cuenv::CuenvTaskKind::Task,
+            requires_parameters: true,
+        };
+        state.launch_task("cuenv task release ", &task).unwrap();
+        assert_eq!(state.activity.task_name(), None);
+
+        // Vim started after the last periodic sample, which still says the shell.
+        task.requires_parameters = false;
+        *foreground.lock().unwrap() = "vim".into();
+        state.launch_task("cuenv task release\n", &task).unwrap();
+        assert_eq!(state.activity.task_name(), None);
     }
 
     #[test]
