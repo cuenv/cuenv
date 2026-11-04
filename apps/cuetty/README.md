@@ -116,7 +116,8 @@ repository's `HEAD` file every couple of seconds without spawning a process; wit
 known the line is absent. `src/terminal/tab_status.rs`
 works out each tab's indicator: a bell for a bell rung while the tab was not on screen, a
 ring while a task launched from Cuetty runs, counted from the Enter that runs it if it
-needed arguments, a check once it hands the foreground back,
+needed arguments, a flag once it hands the foreground back, which says it ended and
+not how,
 and a dot for text that changed while the tab was not on screen. Each has its own shape
 and its meaning in the tab's tooltip. Arriving at a tab clears what was waiting there,
 and typing moves on from a finished task. A shell that exits with a failing status or

@@ -20,7 +20,7 @@ pub(super) enum Icon {
     Bell,
     /// A tab's task is running. Drawn still: an idle window never redraws for it.
     Running,
-    /// A tab's task has finished.
+    /// A tab's task has ended, which says nothing of how: its status cannot be seen.
     Finished,
     /// A tab's shell failed.
     Failed,
@@ -48,7 +48,7 @@ impl Icon {
             Self::SidebarExpand => "icons/panel-right-open.svg",
             Self::Bell => "icons/bell.svg",
             Self::Running => "icons/loader-circle.svg",
-            Self::Finished => "icons/check.svg",
+            Self::Finished => "icons/flag.svg",
             Self::Failed => "icons/triangle-alert.svg",
         }
     }
@@ -62,7 +62,7 @@ impl Icon {
             Self::SidebarExpand => include_bytes!("../../../assets/icons/panel-right-open.svg"),
             Self::Bell => include_bytes!("../../../assets/icons/bell.svg"),
             Self::Running => include_bytes!("../../../assets/icons/loader-circle.svg"),
-            Self::Finished => include_bytes!("../../../assets/icons/check.svg"),
+            Self::Finished => include_bytes!("../../../assets/icons/flag.svg"),
             Self::Failed => include_bytes!("../../../assets/icons/triangle-alert.svg"),
         }
     }

@@ -137,8 +137,8 @@ The current usable slice includes:
 - A small indicator on each tab, beside its name or on its collapsed mark, with its
   meaning in the tab's tooltip: a bell for a bell rung in a tab not on screen, a ring
   while a task launched from Cuetty runs, counted from the Enter that runs it if it
-  needed arguments, a check once that task hands the foreground
-  back, and a dot for text that changed in a tab not on screen. Every state has its own
+  needed arguments, a flag once that task hands the foreground
+  back, which says it ended and not how, and a dot for text that changed in a tab not on screen. Every state has its own
   shape, so colour is never all that tells them apart. Arriving at a tab clears what was
   waiting there, and typing moves on from a finished task. Only tasks launched from
   Cuetty count as running, since a program in the foreground may just as well be an

@@ -107,7 +107,7 @@ impl TabIndicator {
             Self::Failed => "Shell failed",
             Self::Bell => "Rang the bell",
             Self::Running => "Task running",
-            Self::Finished => "Task finished",
+            Self::Finished => "Task ended",
             Self::Unread => "New output",
         }
     }
