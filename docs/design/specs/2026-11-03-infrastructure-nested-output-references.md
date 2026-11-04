@@ -182,6 +182,150 @@ Set `CUENV_FROZEN_SCALING_VARIANT=prepared` to measure the prepared path with
 the same fixture. `setup_ms` and `setup_allocated_bytes` include preparation;
 add them to the three phase measurements when comparing totals.
 
+## Output provenance after issue 566
+
+Release 0.65.0 failed in both directions. Valid CUE unrelated to any output was
+refused, because reparsing an expression lost the package identity of its hidden
+names. An output-dependent conditional in an imported definition was accepted with
+no dependency, because `ReferencePath` reports a shared definition by its declared
+path and a reference rooted outside the instance counted as no dependency. On the
+second failure a fake provider applied the consumer before its producer.
+
+The fix keeps the pinned CUE fork unchanged and uses four layers. None of them alone
+is a proof, and no layer treats an expression it does not model as safe.
+
+1. **Analysis with bindings kept.** Analysis builds with structure sharing off, so
+   references report the path where a definition was instantiated. Expressions
+   resolve with the package identity of their source file. Unknown syntax is treated
+   as a possible control, only the values of data fields are excluded, and a
+   non-concrete value under a root that is neither this instance, an imported package
+   nor a let is an error. `sourceTargets` follows references toward every declared
+   source and stops each branch at the first one, because fills flow from a source to
+   its aliases and never back. A reference with more than one source is not direct.
+2. **Sampling before anything changes.** Analysis can miss a read whose result is
+   concrete while the source is abstract, as with a default over a narrowed source.
+   `rejectSampledDependence` fills every source with a value chosen to differ from
+   everything and compares the exported configuration. Any change outside the output
+   namespaces and exact reference leaves refuses the instance, and a reference leaf must
+   carry exactly its value. A leaf whose constraint refuses the sample excludes that
+   source and the check repeats for the rest. This can refuse and never clear: it cannot
+   prove independence from a value it did not try.
+3. **Verification with real values.** `cue_verify_frozen` applies the same comparison to
+   the outputs that actually exist, with all of them unified at once. It runs at the end
+   of planning, after each completed change of a resource declaring outputs, after a
+   deferred read, and when apply finishes. It only uses outputs whose resource has no
+   remaining work, because a recorded output about to be replaced says nothing about
+   what will be applied. Failing while planning changes nothing. Failing during apply
+   skips everything not yet started and reports an incomplete apply, exit code 5. It
+   cannot undo a change that already ran, so it does not replace the layers above.
+4. **Exported values stay ordinary CUE.** Exports, fills and final validation run on a
+   normal build. Tests compare both modes on every accepted fixture and several values.
+
+### Admitted and refused forms
+
+Admitted: a direct reference through aliases, lets, hidden fields, imported
+definitions, field aliases and reference-free constraints, at a scalar destination
+including nested objects, maps and ordered collections. Comprehensions, dynamic
+labels and indexes may use anything that does not depend on an output. `for` over
+containers holding outputs may read their keys and unrelated fields.
+
+Refused before any provider change: conditions, labels, patterns, indexes, slices,
+arithmetic, interpolation and builtins depending on an output, including through
+`close`, `and`, `or`, defaults, selections and lets.
+
+These valid forms cannot be checked and are refused even when unrelated to any
+output: reading a data field from a definition instantiated inline, such as
+`(#F & {in: x}).v`, the same selection embedded in a struct, a literal read the same way
+such as `({in: x, v: in}).v`, `self`, `try y = expr`, and value aliases of a whole struct
+such as `W={...}` read as `W.z`. The same definition reached through a field,
+`_t: #F & {in: x}` then `_t.v`, and a control inside `(#F & {in: x}).out` are admitted.
+Refused as well, as in earlier releases: a reference inside a conditional or loop body
+such as `if _e {name: x}`, a `let` clause interpolating a loop variable, and a presence
+guard on a field holding a reference, whose result differs between plan and apply. A resource copied
+whole into another field, such as `_c: infrastructure.resources.producer`, is refused
+by CUE itself under the closed schema. `{a: 1}[x]` inside a `for` panics in the pinned
+evaluator's `Expr`, which is recovered and refused.
+
+### Evidence
+
+`frozen_provenance_matrix_test.go` asserts exact edges and that a rejection came from
+a dependency rule rather than a failed inspection, unless explicitly marked as a refusal.
+`frozen_provenance_generated_test.go` crosses 11 controls with 21 wrappers and 5
+placements, each with an unrelated twin. `frozen_provenance_attack_test.go` covers
+further syntax and ways of reaching a stack, and pins the exact lists of refused forms,
+so a new refusal or panic fails the test. A fill oracle, which can show a dependency and
+never clear one, checks every accepted fixture. `TestFrozenVerificationFollowsRealValues`
+checks that verification refuses exactly the accepted fixtures that values change.
+
+This is finite evidence, not a completeness proof. Review repeatedly found new classes
+of escape in analysis alone: default markers, `close`, container copies, defaults over
+narrowed sources, and hidden names colliding across packages. One fix that resolved a
+binding turned a safe refusal into an escape, so a refused form must only become admitted
+with both of its twins tested. A second review of the finished layers found no case
+that verification missed; the cases that passed analysis and sampling all needed a real value
+the samples did not try, such as `(x & =~"^x") != _|_` inside a builtin. Those specific forms
+are now analysed, but others like them can exist: when one does, the run stops as soon as the
+real value is known, which can be after an unrelated or mis-ordered resource has changed.
+
+The pinned evaluator evaluates `o: "zzz"; let M = o & "x"; y: M == "x"` to `true`, so a
+conflict inside a let can vanish and final validation does not see it. Analysis
+rejects the output-dependent forms of this, and verification compares results. Whether
+current upstream CUE behaves the same has not been checked.
+
+`crates/cuenv/tests/infrastructure_lifecycle.rs` drives the real schema, command line,
+bridge and fake provider over ordering, stored edges, unknown values, constraint
+violations, sensitive nested destinations, final-plan replacement, chains and separate
+packages.
+
+### Snapshot consistency
+
+The loader reads each file twice, imports first, one file at a time. A test edits two
+files between those reads and reproduces a snapshot pairing old bytes of one file with
+new bytes of another, a revision that never existed. Freezing now requires two
+consecutive loads with identical bytes, and refuses after four attempts. Package
+filtering is recomputed per load, so a file joining the package is seen too. This doubles
+loading work. An owning project and a separate infrastructure package are loaded by
+separate operations, so a project edited between them is not covered. Editing a file
+during the confirmation prompt was exercised against the built binary with a terminal
+and applied the confirmed value.
+
+### End-to-end cost
+
+One local run per size, with the real schema, the fake provider and a loopback `sqld`,
+one producer and N consumers that all declare an output. Peak is the command's maximum
+resident set size. Time is wall clock.
+
+| Consumers | 0.65 plan | Plan | Plan peak | 0.65 apply | Apply | 0.65 apply peak | Apply peak |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.20 s | 0.36 s | 105 MB | 0.33 s | 0.44 s | 92 MB | 108 MB |
+| 8 | 0.31 s | 0.49 s | 132 MB | 0.50 s | 0.77 s | 97 MB | 136 MB |
+| 32 | 0.64 s | 0.97 s | 115 MB | 1.34 s | 1.84 s | 97 MB | 117 MB |
+| 64 | 1.40 s | 1.96 s | 156 MB | 2.90 s | 4.24 s | 105 MB | 126 MB |
+| 128 | 3.38 s | 4.66 s | 144 MB | not run | not run | not run | not run |
+
+An earlier version filled one output at a time, which took 10 seconds and 538 MB to apply
+64 consumers and a measured 223 seconds for one verification of 500 resources with 5 outputs
+each. Unifying all values at once took that verification to 96 milliseconds. Verification
+remains a full CUE build per completed change of a resource declaring outputs, so apply stays
+above linear in such stacks. Larger stacks have not been measured through the CLI.
+
+### Cancellation
+
+Deadlines apply per operation, with `CUENV_EVAL_TIMEOUT` defaulting to 60 seconds. At
+`CUENV_EVAL_TIMEOUT=1`, the 128-consumer plan finished in 4.65 seconds because no single
+operation reached the deadline; an earlier, slower build stopped with exit code 3 after 1.42
+seconds, which is the behaviour when one does. CUE cannot be cancelled: the caller stops waiting, and an unfinished worker keeps its memory,
+including any filled values, and one of 16 process-wide slots until it returns or the
+process exits. A verification that times out or finds no free slot stops the run rather
+than continuing unverified.
+
+### Limits
+
+An output declared with the wrong type in an untyped configuration, such as `number` for a
+string attribute, is not caught while planning: the resource is created and the run then
+stops naming that output, and plans stay refused until the declaration is corrected or the
+resource destroyed. Generated provider types declare the correct type.
+
 ## Proof and integration gates
 
 1. Prove in-memory specialization against the pinned CUE fork and bridge,
