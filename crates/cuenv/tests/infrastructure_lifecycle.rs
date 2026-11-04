@@ -1676,9 +1676,13 @@ infrastructure: {{
 // ---------------------------------------------------------------------------
 
 const OUTPUT_STACK: &str = r#"package stack
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 Marker: 1
 #Parts: {in: string, out: strings.Split(in, ",")}
+#Decoded: {in: string, out: json.Unmarshal(in)}
 #Good: {
 	resources: {
 		producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}
@@ -2134,6 +2138,18 @@ async fn a_computed_value_that_is_not_a_scalar_is_refused() -> TestResult {
     )?;
     into_a_set.fails(&["plan"], "references require a scalar destination")?;
     assert_eq!(into_a_set.mutations(), 0);
+
+    let whole_configuration = OutputLifecycle::new(
+        "computed-whole-configuration",
+        &outputs_stack(&format!(
+            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: (stack.#Decoded & {{in: {PRODUCER_ID}}}).out}}"
+        )),
+    )?;
+    whole_configuration.fails(
+        &["plan"],
+        "output selectors require a resource or data source configuration argument",
+    )?;
+    assert_eq!(whole_configuration.mutations(), 0);
 
     let into_a_string = OutputLifecycle::new(
         "computed-list-scalar",
