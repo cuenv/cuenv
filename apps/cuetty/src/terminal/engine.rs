@@ -2326,7 +2326,11 @@ impl TerminalView {
         }
         cx.notify();
     }
-    fn close_pane(&mut self, pane: crate::workspace::PaneId, cx: &mut Context<Self>) {
+    /// Hands the keyboard back to the terminal after a click in the chrome.
+    pub(super) fn focus_terminal(&self, window: &mut Window) {
+        self.focus.focus(window);
+    }
+    pub(super) fn close_pane(&mut self, pane: crate::workspace::PaneId, cx: &mut Context<Self>) {
         if let Err(error) = self.registry.close_pane(pane) {
             self.registry.notice = Some(format!("workspace action unavailable: {error}"));
         } else {

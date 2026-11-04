@@ -10,6 +10,7 @@ use std::borrow::Cow;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Icon {
     Plus,
+    Close,
     Tasks,
     /// Collapses the sidebar towards the window edge.
     SidebarCollapse,
@@ -26,8 +27,9 @@ pub(super) enum Icon {
 }
 
 impl Icon {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Plus,
+        Self::Close,
         Self::Tasks,
         Self::SidebarCollapse,
         Self::SidebarExpand,
@@ -40,6 +42,7 @@ impl Icon {
     const fn path(self) -> &'static str {
         match self {
             Self::Plus => "icons/plus.svg",
+            Self::Close => "icons/x.svg",
             Self::Tasks => "icons/list-todo.svg",
             Self::SidebarCollapse => "icons/panel-right-close.svg",
             Self::SidebarExpand => "icons/panel-right-open.svg",
@@ -53,6 +56,7 @@ impl Icon {
     const fn source(self) -> &'static [u8] {
         match self {
             Self::Plus => include_bytes!("../../../assets/icons/plus.svg"),
+            Self::Close => include_bytes!("../../../assets/icons/x.svg"),
             Self::Tasks => include_bytes!("../../../assets/icons/list-todo.svg"),
             Self::SidebarCollapse => include_bytes!("../../../assets/icons/panel-right-close.svg"),
             Self::SidebarExpand => include_bytes!("../../../assets/icons/panel-right-open.svg"),

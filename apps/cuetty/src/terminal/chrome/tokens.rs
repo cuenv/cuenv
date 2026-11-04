@@ -150,6 +150,11 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const EXIT_NOTICE_HEIGHT: Pixels = px(28.0);
     /// A tab's status indicator, small enough to sit beside its name or its mark.
     pub(in crate::terminal::chrome) const STATUS_ICON: Pixels = px(12.0);
+    /// What a tab keeps free for its close button and its indicator, which share it,
+    /// so neither appearing moves the name.
+    pub(in crate::terminal::chrome) const TAB_ACTION: Pixels = px(20.0);
+    /// The close button in a collapsed tab's corner, where its mark needs the room.
+    pub(in crate::terminal::chrome) const TAB_ACTION_COMPACT: Pixels = px(14.0);
     pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
 }
 

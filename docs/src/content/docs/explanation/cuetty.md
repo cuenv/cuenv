@@ -114,6 +114,9 @@ The current usable slice includes:
   the script, and Nix's
   `.name-wrapped` binaries are shown as `name`. A tab list taller than the window scrolls, and
   follows the active tab.
+- A close button revealed on a tab's row when the pointer is over it. It takes over from
+  the tab's indicator while it shows, and sits in the row's corner when the sidebar is
+  collapsed.
 - A muted second line on each expanded tab, such as `cuenv · main`: its directory,
   unless the tab is already named after it, and the git branch that directory is on, or
   a detached commit's short form. Cuetty reads the repository's `HEAD` file every couple

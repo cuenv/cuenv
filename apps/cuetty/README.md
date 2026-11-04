@@ -104,7 +104,8 @@ keeps what was last known (a pipeline whose first command has exited, as in
 `git log | less`, cannot be), a shell running a script is named after the script, and
 Nix's `.name-wrapped`
 binaries are shown as `name`. A tab
-list taller than the window scrolls, and follows the active tab. Each expanded tab has a muted
+list taller than the window scrolls, and follows the active tab. Hovering a tab reveals a button that closes
+it. Each expanded tab has a muted
 second line such as `cuenv · main`, with its directory, unless the tab is already named after
 it, and the branch that directory is on. `src/terminal/git_branch.rs` reads that from the
 repository's `HEAD` file every couple of seconds without spawning a process; with neither

@@ -8,11 +8,14 @@ use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_label::{TabMarkSources, tab_mark, tab_subtitle, tab_tooltip};
 use crate::terminal::tab_status::TabIndicator;
 use crate::terminal::workspace_shell::TabNumber;
-use crate::workspace::TabId;
+use crate::workspace::{PaneId, TabId};
 use gpui::{
-    Context, Div, InteractiveElement, IntoElement, ParentElement, Rgba, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
+    Context, Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Rgba, SharedString,
+    Stateful, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
 };
+
+/// Names a tab's row to the parts of it that only show while it is hovered.
+const TAB_ROW_GROUP: &str = "cuetty-tab-row";
 
 /// The active tab's marker: the project's `rail` from a matching `package cuetty`,
 /// or the window's accent. The colour only ever fills this small mark, so a project
@@ -96,6 +99,7 @@ impl TerminalView {
                 render_tab_row(
                     TabRow {
                         id: tab.id,
+                        pane: tab.focused,
                         label,
                         subtitle,
                         mark,
@@ -262,9 +266,52 @@ fn render_indicator(indicator: TabIndicator, colors: &ChromeColors) -> Div {
     }
 }
 
+/// Which tab a close button closes, and how it is drawn.
+struct CloseButton {
+    id: TabId,
+    pane: PaneId,
+    colors: ChromeColors,
+}
+
+/// The button that closes a tab, which stays out of sight until its row is hovered.
+/// The press stops here, so it neither selects the tab nor starts dragging it.
+fn render_close_button(button: CloseButton, cx: &mut Context<TerminalView>) -> Stateful<Div> {
+    let CloseButton { id, pane, colors } = button;
+    let hover = colors.panel_hover;
+    div()
+        .id(("cuetty-rail-tab-close", id.get()))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::CONTROL)
+        .opacity(0.0)
+        .group_hover(TAB_ROW_GROUP, |this| this.opacity(1.0))
+        .hover(move |this| this.bg(hover))
+        .cursor_pointer()
+        .tooltip(chrome_tooltip(
+            format!("Close tab · {}", app_chord_label("w")),
+            colors,
+        ))
+        .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+            cx.stop_propagation();
+        })
+        .on_click(cx.listener(move |view, _event, window, cx| {
+            cx.stop_propagation();
+            view.close_pane(pane, cx);
+            view.focus_terminal(window);
+            cx.notify();
+        }))
+        .child(
+            Icon::Close
+                .element(colors.text_secondary)
+                .size(size::STATUS_ICON),
+        )
+}
+
 /// What a row in the tab list shows.
 struct TabRow {
     id: TabId,
+    pane: PaneId,
     label: String,
     /// The muted second line, left out when empty.
     subtitle: String,
@@ -283,6 +330,7 @@ struct TabRow {
 fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> {
     let TabRow {
         id,
+        pane,
         label,
         subtitle,
         mark,
@@ -309,6 +357,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
     };
     div()
         .id(("cuetty-rail-tab", id.get()))
+        .group(TAB_ROW_GROUP)
         .relative()
         .w_full()
         .h(match mode {
@@ -382,7 +431,25 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                         .font_weight(text::REGULAR)
                         .child(tab_number_hint(number))
                 }))
-                .children(indicator.map(|indicator| render_indicator(indicator, &colors))),
+                .child(
+                    // The button takes over from the indicator while the row is hovered.
+                    div()
+                        .relative()
+                        .size(size::TAB_ACTION)
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .children(indicator.map(|indicator| {
+                            render_indicator(indicator, &colors)
+                                .group_hover(TAB_ROW_GROUP, |this| this.opacity(0.0))
+                        }))
+                        .child(
+                            render_close_button(CloseButton { id, pane, colors }, cx)
+                                .absolute()
+                                .inset_0(),
+                        ),
+                ),
             // Only a character fits, so the hint stands in for the mark.
             SidebarMode::Collapsed => this
                 .justify_center()
@@ -401,7 +468,15 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                         .right(space::XXS)
                         .bottom(space::XXS)
                         .child(render_indicator(indicator, &colors))
-                })),
+                }))
+                .child(
+                    render_close_button(CloseButton { id, pane, colors }, cx)
+                        .absolute()
+                        .top(space::XXS)
+                        .right(space::XXS)
+                        .size(size::TAB_ACTION_COMPACT)
+                        .bg(colors.panel),
+                ),
         })
 }
 
