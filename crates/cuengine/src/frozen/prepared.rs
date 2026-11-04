@@ -17,14 +17,10 @@ pub struct PreparationOptions {
     /// Roots whose discovered references authorize global dependency analysis.
     /// Every projection and its references must already be covered by these roots.
     pub reference_paths: Vec<ValuePath>,
-    /// Runtime declarations. `None` discovers bare primitives; `Some([])` cannot
-    /// authorize any runtime source for a prepared consumer. Explicit paths
-    /// cover descendants; fills remain limited to exact proven source leaves.
+    /// Values only known at runtime. `Some([])` cannot authorize any source for a
+    /// prepared consumer. Explicit paths cover what is below them; fills remain
+    /// limited to exact proven source leaves.
     pub source_paths: Option<Vec<ValuePath>>,
-    /// Independent subtrees whose internal dependencies are ignored.
-    pub ignored_paths: Vec<ValuePath>,
-    /// Groups of roots belonging to one ignored configuration.
-    pub ignored_groups: Vec<Vec<ValuePath>>,
     /// Exact consumer paths allowed by the resulting capability. Descendants do
     /// not inherit permission, and runtime calls cannot expand this list.
     pub projections: Vec<ValuePath>,

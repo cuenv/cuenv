@@ -59,16 +59,9 @@ pub struct FrozenEvaluationOptions {
     pub export_paths: Vec<ValuePath>,
     /// Subtrees in which to inspect native reference provenance.
     pub reference_paths: Vec<ValuePath>,
-    /// Runtime declarations checked for untracked global predicates. `None`
-    /// detects bare primitive sources; `Some([])` permits bootstrap inspection.
-    /// Explicit paths also cover refined declarations and their descendants.
+    /// Values only known at runtime, including what is below them. Bare primitive
+    /// declarations nothing else refines count as well.
     pub source_paths: Option<Vec<ValuePath>>,
-    /// Ignore dependencies internal to the same subtree. Cross-boundary uses
-    /// remain checked, including root predicates using an ignored source.
-    pub ignored_paths: Vec<ValuePath>,
-    /// Roots belonging to one ignored configuration. Dependencies across roots
-    /// in the same group are internal; dependencies across groups remain checked.
-    pub ignored_groups: Vec<Vec<ValuePath>>,
 }
 
 /// Strict validation of selected frozen subtrees before consuming inspection data.
@@ -83,11 +76,6 @@ pub struct FrozenValidationOptions {
     pub deferred: Vec<DeferredValue>,
     /// Runtime source declarations, with the same meaning as inspection options.
     pub source_paths: Option<Vec<ValuePath>>,
-    /// Subtrees whose internal dependencies may be ignored during global checks.
-    pub ignored_paths: Vec<ValuePath>,
-    /// Roots belonging to one ignored configuration. Dependencies across roots
-    /// in the same group are internal; dependencies across groups remain checked.
-    pub ignored_groups: Vec<Vec<ValuePath>>,
 }
 
 /// A native reference discovered before runtime values are supplied.
@@ -208,11 +196,6 @@ pub struct SpecializationOptions {
     pub reference_paths: Vec<ValuePath>,
     /// Runtime declarations, including refined declarations and descendants.
     pub source_paths: Option<Vec<ValuePath>>,
-    /// Subtrees whose internal dependencies may be ignored during global checks.
-    pub ignored_paths: Vec<ValuePath>,
-    /// Roots belonging to one ignored configuration. Dependencies across roots
-    /// in the same group are internal; dependencies across groups remain checked.
-    pub ignored_groups: Vec<Vec<ValuePath>>,
 }
 
 /// Strictly validated consumer data and unresolved native source provenance.

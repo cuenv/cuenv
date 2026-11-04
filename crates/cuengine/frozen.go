@@ -306,11 +306,9 @@ func typedPath(path cue.Path) valuePath {
 }
 
 type frozenEvaluationOptions struct {
-	ExportPaths    []valuePath   `json:"exportPaths"`
-	ReferencePaths []valuePath   `json:"referencePaths"`
-	SourcePaths    *[]valuePath  `json:"sourcePaths"`
-	IgnoredPaths   []valuePath   `json:"ignoredPaths"`
-	IgnoredGroups  [][]valuePath `json:"ignoredGroups"`
+	ExportPaths    []valuePath  `json:"exportPaths"`
+	ReferencePaths []valuePath  `json:"referencePaths"`
+	SourcePaths    *[]valuePath `json:"sourcePaths"`
 }
 
 type frozenReference struct {
@@ -346,22 +344,22 @@ func evaluateFrozenResponse(snapshot, optionsJSON string) (result string) {
 		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance could not be evaluated")
 	}
 	references := make([]frozenReference, 0)
-	for _, path := range options.ReferencePaths {
-		parsed, err := path.cuePath()
-		if err != nil {
-			return frozenFailure(ErrorCodeInvalidInput, "Invalid frozen CUE reference path")
-		}
-		found, err := frozenReferences(value, parsed, declaredPaths(options.SourcePaths))
+	if len(options.ReferencePaths) > 0 {
+		graph, err := newReferenceGraph(value, options.SourcePaths)
 		if err != nil {
 			return frozenFailure(ErrorCodeBuildValue, "Frozen CUE references could not be inspected")
 		}
-		references = append(references, found...)
-	}
-	if validateUntrackedDependencies(dependencyInspection{instance: value, references: references, scope: frozenDependencyScope{SourcePaths: options.SourcePaths, IgnoredPaths: options.IgnoredPaths, IgnoredGroups: options.IgnoredGroups}}) != nil {
-		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance contains an untracked runtime dependency")
-	}
-	if rejectSampledDependence(sampledDependence{base: value, sources: options.SourcePaths, roots: options.ReferencePaths, references: references}) != nil {
-		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance contains an untracked runtime dependency")
+		for _, path := range options.ReferencePaths {
+			parsed, err := path.cuePath()
+			if err != nil {
+				return frozenFailure(ErrorCodeInvalidInput, "Invalid frozen CUE reference path")
+			}
+			found, err := graph.frozenReferences(parsed)
+			if err != nil {
+				return frozenFailure(ErrorCodeBuildValue, "Frozen CUE references could not be inspected")
+			}
+			references = append(references, found...)
+		}
 	}
 	// Exported values are consumed as ordinary input, so they come from a normal build.
 	value, err = graph.build()

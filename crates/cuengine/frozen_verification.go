@@ -9,9 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"maps"
-	"strings"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/ast"
@@ -19,9 +17,8 @@ import (
 )
 
 // frozenVerificationOptions names what real runtime values may change. Analysis
-// classifies expressions ahead of time and cannot prove an expression it does not
-// model is independent of every value. This check needs no such proof: it asks CUE
-// what the values that actually exist do to the instance.
+// says what depends on a source. This check says what real values do to the instance,
+// which also catches a constraint they violate after other changes were applied.
 type frozenVerificationOptions struct {
 	Fills []scalarFill `json:"fills"`
 	// Roots are compared with and without the fills.
@@ -69,21 +66,14 @@ func verifyFrozenInstance(base cue.Value, options frozenVerificationOptions) err
 	return compareFilled(filledComparison{base: base, filled: filled, literals: literals, roots: options.Roots, mutable: options.Mutable, references: options.References})
 }
 
-// A deferred reference leaf that CUE constrains may conflict with a sample chosen
-// to differ from everything. Real values must never conflict: validation rejected
-// them before this comparison.
+// Validation has rejected values that conflict before this comparison.
 type filledComparison struct {
 	base, filled cue.Value
 	literals     map[string]cue.Value
 	roots        []valuePath
 	mutable      []valuePath
 	references   []deferredValue
-	// conflicted, when set, collects sources a sample conflicted with instead of
-	// failing. Such a conflict can take its enclosing structs with it.
-	conflicted map[string]bool
 }
-
-var errSampleConflicted = errors.New("sample conflicted with a constrained reference")
 
 func compareFilled(comparison filledComparison) error {
 	mutable := make([]cue.Path, 0, len(comparison.mutable)+len(comparison.references))
@@ -113,18 +103,11 @@ func compareFilled(comparison filledComparison) error {
 			return errors.New("reference leaf disappeared")
 		}
 		if leaf.Err() != nil || leaf.Validate() != nil {
-			if comparison.conflicted != nil {
-				comparison.conflicted[target.String()] = true
-				continue
-			}
 			return errors.New("reference leaf conflicts with its value")
 		}
-		if !leaf.Equals(literal) {
+		if !carries(leaf, literal) {
 			return errors.New("reference leaf does not carry its value")
 		}
-	}
-	if len(comparison.conflicted) > 0 {
-		return errSampleConflicted
 	}
 	for _, typed := range comparison.roots {
 		path, err := typed.cuePath()
@@ -144,6 +127,17 @@ func compareFilled(comparison filledComparison) error {
 		}
 	}
 	return nil
+}
+
+// carries compares what leaves CUE: a scalar embedded next to hidden fields does not
+// equal the bare scalar, but exports as one.
+func carries(leaf, literal cue.Value) bool {
+	if leaf.Equals(literal) {
+		return true
+	}
+	left, leftErr := leaf.MarshalJSON()
+	right, rightErr := literal.MarshalJSON()
+	return leftErr == nil && rightErr == nil && bytes.Equal(left, right)
 }
 
 // fillScalars unifies every value at once: filling one path at a time costs a full
@@ -271,113 +265,4 @@ func exportedLeaves(value cue.Value, root cue.Path, mutable []cue.Path) (map[str
 		return nil
 	}
 	return leaves, visit(value, root)
-}
-
-type sampledDependence struct {
-	base       cue.Value
-	sources    *[]valuePath
-	roots      []valuePath
-	references []frozenReference
-}
-
-// rejectSampledDependence runs before anything can change, on values chosen to differ
-// from everything the source mentions. A value's effect can only show this way, so
-// this can refuse and never clear: it covers analysis missing a read whose result
-// is concrete while the source is abstract, as with defaults over a narrowed source.
-func rejectSampledDependence(request sampledDependence) error {
-	if request.sources == nil || len(*request.sources) == 0 {
-		return nil
-	}
-	var references []deferredValue
-	for _, reference := range request.references {
-		if reference.PrimitiveType != "" && reference.Supported {
-			references = append(references, deferredValue{Path: reference.Path, Target: reference.Target})
-		}
-	}
-	for round := range 2 {
-		// How far each source has moved through its candidates after a constraint
-		// refused a sample. A source that refused all of them is left out, which
-		// says nothing about the rest.
-		attempts := make(map[string]int)
-		for {
-			fills, boolean, err := sampleFills(request, sampleRound{round: round, attempts: attempts})
-			if err != nil {
-				return err
-			}
-			if len(fills) == 0 || (round == 1 && !boolean) {
-				break
-			}
-			filled, literals, err := fillScalars(request.base, fills)
-			if err != nil {
-				return err
-			}
-			conflicted := make(map[string]bool)
-			err = compareFilled(filledComparison{base: request.base, filled: filled, literals: literals, roots: request.roots, mutable: *request.sources, references: references, conflicted: conflicted})
-			if err == nil {
-				break
-			}
-			if !errors.Is(err, errSampleConflicted) {
-				return fmt.Errorf("runtime source controls an unsupported expression: %w", err)
-			}
-			for target := range conflicted {
-				attempts[target]++
-			}
-		}
-	}
-	return nil
-}
-
-// Sample shapes that common constraints accept, in order. The index keeps sources
-// distinct, so a reference leaf can only match the source it really references.
-var stringSamples = []string{"sample %d %d \t", "samplevalue%c%c", "sample-%d-%d", "s%c%c", "%d%d"}
-
-type sampleRound struct {
-	round    int
-	attempts map[string]int
-}
-
-func sampleFills(request sampledDependence, sample sampleRound) ([]scalarFill, bool, error) {
-	var fills []scalarFill
-	boolean := false
-	for index, source := range *request.sources {
-		path, err := source.cuePath()
-		if err != nil {
-			return nil, false, err
-		}
-		attempt := sample.attempts[path.String()]
-		var literal string
-		switch primitiveDeclaration(request.base.LookupPath(path)) {
-		case "string":
-			if attempt >= len(stringSamples) {
-				continue
-			}
-			first, second := sample.round, index
-			if strings.Contains(stringSamples[attempt], "%c") {
-				first, second = 'a'+sample.round, 'a'+index%26
-			}
-			encoded, err := json.Marshal(fmt.Sprintf(stringSamples[attempt], first, second))
-			if err != nil {
-				return nil, false, err
-			}
-			literal = string(encoded)
-		case "number":
-			if attempt >= 2 {
-				continue
-			}
-			literal = fmt.Sprint(7919 + index + sample.round*104729)
-			if attempt == 0 {
-				literal += ".5"
-			}
-		case "bool":
-			if attempt >= 1 {
-				continue
-			}
-			boolean = true
-			literal = fmt.Sprint(sample.round == 0)
-		default:
-			continue
-		}
-		fills = append(fills, scalarFill{Path: source, Value: json.RawMessage(literal)})
-	}
-	return fills, boolean, nil
 }

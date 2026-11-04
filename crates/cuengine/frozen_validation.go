@@ -17,8 +17,6 @@ type frozenValidationOptions struct {
 	AbstractPaths []valuePath     `json:"abstractPaths"`
 	Deferred      []deferredValue `json:"deferred"`
 	SourcePaths   *[]valuePath    `json:"sourcePaths"`
-	IgnoredPaths  []valuePath     `json:"ignoredPaths"`
-	IgnoredGroups [][]valuePath   `json:"ignoredGroups"`
 }
 
 //export cue_validate_frozen
@@ -60,6 +58,10 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 		}
 		abstract[path.String()] = true
 	}
+	graph, err := newReferenceGraph(instance, options.SourcePaths)
+	if err != nil {
+		return err
+	}
 	deferred := make(map[string]bool)
 	for _, entry := range options.Deferred {
 		path, err := entry.Path.cuePath()
@@ -70,11 +72,8 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 		if err != nil || len(target.Selectors()) == 0 || primitiveDeclaration(instance.LookupPath(target)) == "" {
 			return errors.New("invalid deferred source")
 		}
-		actual, err := constrainedReference(instance.LookupPath(path), instance, 0)
-		if found := sourceTargets(actual, instance, declaredPaths(options.SourcePaths)); len(found) == 1 {
-			actual = found[0]
-		}
-		if err != nil || actual.String() != target.String() {
+		actual, direct := graph.directSource(path)
+		if !direct || !samePath(actual, target) {
 			return errors.New("deferred path does not match a direct reference")
 		}
 		if deferred[path.String()] {
@@ -102,7 +101,6 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 			return nil
 		}
 	}
-	var tracked []frozenReference
 	for _, typed := range options.ConcretePaths {
 		path, err := typed.cuePath()
 		if err != nil {
@@ -112,11 +110,10 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 		if !value.Exists() || value.Validate(cue.Final()) != nil {
 			return errors.New("selected subtree is not final")
 		}
-		references, err := frozenReferences(instance, path, declaredPaths(options.SourcePaths))
+		references, err := graph.frozenReferences(path)
 		if err != nil {
 			return err
 		}
-		tracked = append(tracked, references...)
 		for _, reference := range references {
 			if reference.PrimitiveType == "" {
 				continue
@@ -130,5 +127,5 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 			return err
 		}
 	}
-	return validateUntrackedDependencies(dependencyInspection{instance: instance, references: tracked, scope: frozenDependencyScope{SourcePaths: options.SourcePaths, IgnoredPaths: options.IgnoredPaths, IgnoredGroups: options.IgnoredGroups}})
+	return nil
 }

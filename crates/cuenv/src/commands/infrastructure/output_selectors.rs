@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use cuengine::ReferenceEvaluation;
 use cuenv_core::module::DirectReference;
 use cuenv_manifest::manifest::InfrastructureOutputType;
 use serde_json::Value;
@@ -26,20 +25,6 @@ impl OutputSelectors<'_> {
             root.extend(["environments".to_string(), environment.to_string()]);
         }
         root
-    }
-
-    pub(super) fn scanning(&self) -> ReferenceEvaluation {
-        ReferenceEvaluation {
-            paths: ["resources", "data"]
-                .into_iter()
-                .map(|namespace| {
-                    let mut path = self.root();
-                    path.push(namespace.to_string());
-                    quoted_path(&path)
-                })
-                .collect(),
-            ..ReferenceEvaluation::default()
-        }
     }
 
     pub(super) fn selected_references(&self) -> Result<Vec<&DirectReference>, CliError> {
@@ -234,16 +219,6 @@ fn pointer(labels: &[String]) -> String {
         }
     }
     pointer
-}
-
-// Quoting every label produces a valid CUE input path. Canonical bridge paths
-// always come from reference metadata, and are never reconstructed here.
-fn quoted_path(labels: &[String]) -> String {
-    labels
-        .iter()
-        .map(|label| Value::String(label.clone()).to_string())
-        .collect::<Vec<_>>()
-        .join(".")
 }
 
 #[cfg(test)]

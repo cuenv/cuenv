@@ -26,11 +26,9 @@ var preparedKey = sync.OnceValues(func() ([]byte, error) {
 })
 
 type preparationOptions struct {
-	ReferencePaths []valuePath   `json:"referencePaths"`
-	SourcePaths    *[]valuePath  `json:"sourcePaths"`
-	IgnoredPaths   []valuePath   `json:"ignoredPaths"`
-	IgnoredGroups  [][]valuePath `json:"ignoredGroups"`
-	Projections    []valuePath   `json:"projections"`
+	ReferencePaths []valuePath  `json:"referencePaths"`
+	SourcePaths    *[]valuePath `json:"sourcePaths"`
+	Projections    []valuePath  `json:"projections"`
 }
 
 type preparedProjection struct {
@@ -79,17 +77,21 @@ func prepareFrozenResponse(snapshot, optionsJSON string) (result string) {
 }
 
 func prepareFrozen(snapshot, optionsJSON string) (string, error) {
-	var graph frozenGraph
+	var frozen frozenGraph
 	var options preparationOptions
-	if json.Unmarshal([]byte(snapshot), &graph) != nil || json.Unmarshal([]byte(optionsJSON), &options) != nil {
+	if json.Unmarshal([]byte(snapshot), &frozen) != nil || json.Unmarshal([]byte(optionsJSON), &options) != nil {
 		return "", errors.New("invalid preparation options")
 	}
-	base, err := graph.buildAnalysis()
+	base, err := frozen.buildAnalysis()
 	if err != nil {
 		return "", err
 	}
-	// Only these roots authorize global alias uses. Requested projections may
-	// never expand that set, even when contained in a configured root.
+	graph, err := newReferenceGraph(base, options.SourcePaths)
+	if err != nil {
+		return "", err
+	}
+	// Requested projections may never expand what these roots checked, even when
+	// contained in a configured root.
 	tracked := make([]frozenReference, 0)
 	roots := make([]cue.Path, 0, len(options.ReferencePaths))
 	for _, typed := range options.ReferencePaths {
@@ -98,17 +100,11 @@ func prepareFrozen(snapshot, optionsJSON string) (string, error) {
 			return "", err
 		}
 		roots = append(roots, path)
-		references, err := frozenReferences(base, path, declaredPaths(options.SourcePaths))
+		references, err := graph.frozenReferences(path)
 		if err != nil {
 			return "", err
 		}
 		tracked = append(tracked, references...)
-	}
-	if err := validateUntrackedDependencies(dependencyInspection{instance: base, references: tracked, scope: frozenDependencyScope{SourcePaths: options.SourcePaths, IgnoredPaths: options.IgnoredPaths, IgnoredGroups: options.IgnoredGroups}}); err != nil {
-		return "", err
-	}
-	if err := rejectSampledDependence(sampledDependence{base: base, sources: options.SourcePaths, roots: options.ReferencePaths, references: tracked}); err != nil {
-		return "", err
 	}
 	rootReferences := make(map[string]bool)
 	for _, reference := range tracked {
@@ -136,7 +132,7 @@ func prepareFrozen(snapshot, optionsJSON string) (string, error) {
 		if !covered {
 			return "", errors.New("prepared projection is outside reference roots")
 		}
-		references, err := frozenReferences(base, path, declaredPaths(options.SourcePaths))
+		references, err := graph.frozenReferences(path)
 		if err != nil {
 			return "", err
 		}

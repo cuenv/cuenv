@@ -146,7 +146,7 @@
           pname = "libcue-bridge";
           inherit version;
           src = ./crates/cuengine;
-          vendorHash = "sha256-r+RlVL3o3BaDjD3nLHRbRc7r139EiqEy04cdYuUd3Io=";
+          vendorHash = "sha256-TEmbyjnq77YJA5cP/MCL3eEuAqD3DJCtTHnejrRojHQ=";
           nativeBuildInputs = [ pkgs.zig zigCCWrapper zigCXXWrapper zigARWrapper ]
             ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
 

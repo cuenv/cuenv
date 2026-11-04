@@ -40,9 +40,13 @@ func edges(name, app, schema string, expected ...string) matrixCase {
 	return matrixCase{name, app, schema, "edges", expected}
 }
 
-// CUE itself reports the consumer incomplete while its output is unknown.
-func incomplete(name, app, schema string) matrixCase {
-	return matrixCase{name, app, schema, "incomplete", nil}
+// A check that nothing in the configuration reads is accepted, and real values are
+// verified against it. Reading what it decides from the configuration is refused.
+func unreadCheck(name, app, schema, field string) []matrixCase {
+	return []matrixCase{
+		clean(name, app, schema),
+		detected(name+"_read", app+"\n"+matrixConfig+"read: "+field, schema),
+	}
 }
 
 func stack(control string) string {
@@ -50,6 +54,12 @@ func stack(control string) string {
 }
 
 func matrixCases() []matrixCase {
+	var checks []matrixCase
+	check := func(name, app, schema, field string) matrixCase {
+		both := unreadCheck(name, app, schema, field)
+		checks = append(checks, both[1])
+		return both[0]
+	}
 	source := matrixSource
 	narrowed := "(" + source + " & \"x\")"
 	deep := "{name: \"base\", if (" + source + " & =~\"^bad$\") != _|_ {value: \"c\"}}"
@@ -57,7 +67,7 @@ func matrixCases() []matrixCase {
 		deep = "{nested: " + deep + "}"
 	}
 	dynamic := "(*" + narrowed + " | \"mode\"): \"value\""
-	return []matrixCase{
+	cases := []matrixCase{
 		// Valid CUE unrelated to runtime outputs.
 		clean("issue_hidden_if", matrixBase+"_b: \"x\"\n_z: {if _b == \"x\" {v: 1}}", ""),
 		clean("issue_hidden_optional", matrixBase+"_b?: string\n_z: {if _b == _|_ {v: 1}}", ""),
@@ -127,9 +137,11 @@ func matrixCases() []matrixCase {
 		detected("imported_conditional", matrixImport+"system: schema.#S", stack("{if (_i & \"x\") == \"x\" {name: \"c\"}}")),
 		detected("imported_conditional_unified", matrixImport+"system: schema.#S & {units: extra: outputs: x: string}", "#S: {units: {producer: {outputs: id: string}, consumer: settings: {if (_i & \"x\") == \"x\" {name: \"c\"}}, ...}, _i: units.producer.outputs.id}"),
 		detected("imported_let", matrixImport+"system: schema.#S", "#S: {units: producer: outputs: id: string\n let L = units.producer.outputs.id\n units: consumer: settings: {if (L & \"x\") == \"x\" {a: 1}}}"),
-		incomplete("imported_plain_equal", matrixImport+"system: schema.#S", stack("{if _i == \"x\" {a: 1}}")),
-		detected("imported_hidden_control", matrixImport+"system: schema.#D\n_i: \"x\"", "#D: {units: producer: outputs: id: string, _i: units.producer.outputs.id, _z: {if (_i & \"x\") == \"x\" {a: 1}}}"),
-		detected("caller_argument", matrixImport+matrixBase+"_q: schema.#G & {arg: "+source+" & \"x\"}", "#G: {arg: string, z: {if arg == \"x\" {a: 1}}}"),
+		detected("imported_plain_equal", matrixImport+"system: schema.#S", stack("{if _i == \"x\" {a: 1}}")),
+		clean("imported_hidden_control", matrixImport+"system: schema.#D\n_i: \"x\"", "#D: {units: producer: outputs: id: string, _i: units.producer.outputs.id, _z: {if (_i & \"x\") == \"x\" {a: 1}}}"),
+		detected("imported_hidden_control_read", matrixImport+"system: schema.#D\n_i: \"x\"", "#D: {units: producer: outputs: id: string, _i: units.producer.outputs.id, _z: {if (_i & \"x\") == \"x\" {a: 1}}, units: consumer: settings: read: _z}"),
+		clean("caller_argument", matrixImport+matrixBase+"_q: schema.#G & {arg: "+source+" & \"x\"}", "#G: {arg: string, z: {if arg == \"x\" {a: 1}}}"),
+		detected("caller_argument_read", matrixImport+matrixBase+"_q: schema.#G & {arg: "+source+" & \"x\"}\n"+matrixConfig+"read: _q.z", "#G: {arg: string, z: {if arg == \"x\" {a: 1}}}"),
 		detected("definition_chain", matrixImport+"system: schema.#A", "#A: #S & {z: 1}\n"+"#S: {z: int, units: {producer: {outputs: id: string}, consumer: settings: {if (_i & \"x\") == \"x\" {a: 1}}}, _i: units.producer.outputs.id}"),
 		detected("definition_embedded", matrixImport+"system: schema.#E", "#E: {#S, ...}\n"+stack("{if (_i & \"x\") == \"x\" {a: 1}}")),
 		detected("root_embed", matrixImport+"schema.#T", "#T: {system: units: {producer: {outputs: id: string}, consumer: settings: {if (_i & \"x\") == \"x\" {a: 1}}}\n _i: system.units.producer.outputs.id}"),
@@ -141,10 +153,10 @@ func matrixCases() []matrixCase {
 		detected("hidden_definition_control", matrixImport+"system: schema.#S", "_#D: {units: {producer: {outputs: id: string}, consumer: settings: {if (_i & \"x\") == \"x\" {a: 1}}}, _i: units.producer.outputs.id}\n#S: {_#D}"),
 		detected("default_imported_control", matrixImport+"system: schema.#S", stack("*{name: \"b\", if (_i & =~\"^bad$\") != _|_ {v: 1}} | {}")),
 		detected("default_let_control", matrixImport+"system: schema.#S", stack("*{let L = _i\n if (L & \"x\") == \"x\" {a: 1}} | {}")),
-		incomplete("local_equal", matrixBase+matrixConfig+"{if "+source+" == \"x\" {a: 1}}", ""),
-		detected("hidden_control", matrixBase+"_q: {if "+narrowed+" == \"x\" {a: 1}}", ""),
+		detected("local_equal", matrixBase+matrixConfig+"{if "+source+" == \"x\" {a: 1}}", ""),
+		check("hidden_control", matrixBase+"_q: {if "+narrowed+" == \"x\" {a: 1}}", "", "_q"),
 		detected("let_control", matrixBase+"let L = "+source+"\n"+matrixConfig+"{if (L & \"x\") == \"x\" {a: 1}}", ""),
-		detected("let_chain", matrixBase+"let L = "+source+"\nlet M = L & \"x\"\n_z: {if M == \"x\" {a: 1}}", ""),
+		check("let_chain", matrixBase+"let L = "+source+"\nlet M = L & \"x\"\n_z: {if M == \"x\" {a: 1}}", "", "_z"),
 		detected("let_presence", matrixBase+"let M = "+source+" & =~\"^bad$\"\n"+matrixConfig+"{name: \"b\", if M != _|_ {value: \"c\"}}", ""),
 		detected("regex_presence", matrixBase+matrixConfig+"{if ("+source+" & =~\"^a\") != _|_ {a: 1}}", ""),
 		detected("default_marker", matrixBase+matrixConfig+"*{name: \"base\", if ("+source+" & =~\"^bad$\") != _|_ {value: \"c\"}} | {}", ""),
@@ -152,22 +164,23 @@ func matrixCases() []matrixCase {
 		detected("default_unselected_arm", matrixBase+matrixConfig+"*{c: 1} | {a: {("+narrowed+"): 1}}", ""),
 		detected("parenthesised_and", matrixBase+matrixConfig+"({name: \"b\"} & ({if "+narrowed+" == \"x\" {v: 1}}))", ""),
 		detected("deep_nesting", matrixBase+matrixConfig+deep, ""),
-		detected("index", matrixBase+"_m: {x: 1}\n_q: _m["+source+"]", ""),
+		check("index", matrixBase+"_m: {x: 1}\n_q: _m["+source+"]", "", "_q"),
 		detected("dynamic_label", matrixBase+matrixConfig+"{"+narrowed+": 1}", ""),
 		detected("pattern_label", matrixBase+matrixConfig+"{["+narrowed+"]: int, x: 1}", ""),
-		detected("for_value_control", matrixBase+"_q: {for k, r in system.units {if (r.outputs.id & \"x\") == \"x\" {(k): 1}}}", ""),
-		detected("for_over_output", matrixBase+"_q: {for x in ["+narrowed+"] {(x): 1}}", ""),
-		incomplete("interpolation", matrixBase+matrixConfig+"n: \"a-\\("+source+")\"", ""),
-		incomplete("arithmetic", "system: units: producer: outputs: n: number\n"+matrixConfig+"n: system.units.producer.outputs.n + 1", ""),
-		detected("inline_struct", matrixBase+"_q: {if ({v: "+source+"}).v == \"x\" {a: 1}}", ""),
-		detected("true_guard", matrixBase+"_q: {if true {if "+source+" == \"x\" {a: 1}}}", ""),
-		detected("false_guard", matrixBase+"_q: {if false {if "+source+" == \"x\" {a: 1}}}", ""),
-		detected("untracked_predicate", matrixBase+"_chk: "+source+" & =~\"^a\"", ""),
-		incomplete("builtin_control", "import \"strings\"\n"+matrixBase+matrixConfig+"{if strings.HasPrefix("+source+", \"a\") {v: 1}}", ""),
+		check("for_value_control", matrixBase+"_q: {for k, r in system.units {if (r.outputs.id & \"x\") == \"x\" {(k): 1}}}", "", "_q"),
+		check("for_over_output", matrixBase+"_q: {for x in ["+narrowed+"] {(x): 1}}", "", "_q"),
+		detected("interpolation", matrixBase+matrixConfig+"n: \"a-\\("+source+")\"", ""),
+		detected("arithmetic", "system: units: producer: outputs: n: number\n"+matrixConfig+"n: system.units.producer.outputs.n + 1", ""),
+		check("inline_struct", matrixBase+"_q: {if ({v: "+source+"}).v == \"x\" {a: 1}}", "", "_q"),
+		check("true_guard", matrixBase+"_q: {if true {if "+source+" == \"x\" {a: 1}}}", "", "_q"),
+		clean("false_guard", matrixBase+"_q: {if false {if "+source+" == \"x\" {a: 1}}}", ""),
+		clean("untracked_predicate", matrixBase+"_chk: "+source+" & =~\"^a\"", ""),
+		edges("untracked_predicate_read", matrixBase+"_chk: "+source+" & =~\"^a\"\n"+matrixConfig+"name: _chk", "", matrixEdge),
+		detected("builtin_control", "import \"strings\"\n"+matrixBase+matrixConfig+"{if strings.HasPrefix("+source+", \"a\") {v: 1}}", ""),
 		detected("default_data_arm", matrixBase+matrixConfig+"*{name: "+source+"} | {name: \"x\"}", ""),
 		// The call family hides syntax from the path-driven structural walk.
 		detected("close_dynamic_default", matrixBase+matrixConfig+"close({key: \"consumer\", "+dynamic+"})", ""),
-		incomplete("close_dynamic_plain", matrixBase+matrixConfig+"close({("+source+"): \"value\"})", ""),
+		detected("close_dynamic_plain", matrixBase+matrixConfig+"close({("+source+"): \"value\"})", ""),
 		detected("close_interpolated_label", matrixBase+matrixConfig+"close({\"\\("+narrowed+")\": \"value\"})", ""),
 		detected("close_pattern", matrixBase+matrixConfig+"close({["+narrowed+"]: string, x: \"v\"})", ""),
 		detected("close_comprehension", matrixBase+matrixConfig+"close({if "+narrowed+" == \"x\" {a: 1}})", ""),
@@ -196,7 +209,7 @@ func matrixCases() []matrixCase {
 		detected("validator_argument", matrixBase+"_v: matchN(1, ["+source+"])\n"+matrixConfig+"name: *(\"y\" & _v) | \"q\"", ""),
 		detected("let_default_leaf", matrixBase+"let T = {v: *("+source+" & \"x\") | \"z\"}\n"+matrixConfig+"name: T.v", ""),
 		detected("let_interpolated_default", matrixBase+"let T = {v: \"p-\\(*("+source+" & \"x\") | \"z\")\"}\n"+matrixConfig+"name: T.v", ""),
-		detected("let_struct_edge", matrixBase+"let T = {cfg: {name: "+source+", extra: 1}}\n"+matrixConfig+"T.cfg", ""),
+		edges("let_struct_edge", matrixBase+"let T = {cfg: {name: "+source+", extra: 1}}\n"+matrixConfig+"T.cfg", "", matrixEdge),
 		detected("copy_embedded", matrixBase+"_c: {system.units.producer}\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
 		detected("copy_closed", matrixBase+"_c: close(system.units.producer)\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
 		detected("copy_default", matrixBase+"_c: *system.units.producer | {}\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
@@ -208,16 +221,16 @@ func matrixCases() []matrixCase {
 		detected("constrained_source_keeps_sampling", "import \"encoding/json\"\n"+matrixBase+matrixConfig+"{prefix: "+source+" & =~\"^[a-z-]+$\", doc: json.Marshal({a: *("+source+" & \"x\") | \"z\"})}", ""),
 		detected("let_selection_with_default", matrixBase+"let T = {v: *("+source+" & !=\"bad\") | \"z\"}\n"+matrixConfig+"prefix: T.v", ""),
 		detected("copy_closed_regex", matrixBase+"_c: close(system.units.producer)\n"+matrixConfig+"{if (_c.outputs.id & =~\"^x\") != _|_ {a: 1}}", ""),
-		// Valid CUE refused because independence cannot be established. Refused by the
-		// release too. Admit one only with its output-dependent twin tested.
-		refused("conditional_body_reference", matrixBase+"_e: true\n"+matrixConfig+"{if _e {name: "+source+"}}", ""),
-		refused("for_let_interpolation", matrixBase+"_m: {a: \"b\"}\nsystem: units: producer: settings: tags: {for k, v in _m let z = \"p-\\(v)\" {(k): z}}", ""),
-		refused("list_for_let_interpolation", matrixBase+"_xs: [\"a\"]\nsystem: units: producer: settings: l: [for y in _xs let z = \"p-\\(y)\" {z}]", ""),
-		refused("optional_presence_guard_on_reference", matrixImport+matrixBase+matrixConfig+"schema.#C & {name: "+source+"}", "#C: {name?: string, if name != _|_ {has: true}}"),
+		// Valid CUE that used to be refused because independence could not be established.
+		edges("conditional_body_reference", matrixBase+"_e: true\n"+matrixConfig+"{if _e {name: "+source+"}}", "", matrixEdge),
+		clean("for_let_interpolation", matrixBase+"_m: {a: \"b\"}\nsystem: units: producer: settings: tags: {for k, v in _m let z = \"p-\\(v)\" {(k): z}}", ""),
+		clean("list_for_let_interpolation", matrixBase+"_xs: [\"a\"]\nsystem: units: producer: settings: l: [for y in _xs let z = \"p-\\(y)\" {z}]", ""),
+		detected("presence_guard_on_reference", matrixImport+matrixBase+matrixConfig+"schema.#C & {name: "+source+"}", "#C: {name?: string, if name != _|_ {has: true}}"),
 		detected("default_over_present_output", matrixBase+"_x: {a?: string, a: "+source+"}\nsystem: units: consumer: settings: name: *_x.a | \"fallback\"", ""),
 		detected("default_over_narrowed_optional", matrixBase+"_x: {a?: string, a: "+source+" & \"x\"}\nsystem: units: consumer: settings: name: *_x.a | \"fallback\"", ""),
 		detected("list_concat", "import \"list\"\n"+matrixBase+matrixConfig+"items: list.Concat([[{"+dynamic+"}]])", ""),
 	}
+	return append(cases, checks...)
 }
 
 func matrixSources(t *testing.T, snapshot string) []valuePath {
@@ -263,14 +276,14 @@ func matrixVerdict(t *testing.T, snapshot string) (string, []string, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	referenceAnalysis, err := newReferenceGraph(value, &sources)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: %v", errInspection, err)
+	}
 	var references []frozenReference
 	for _, root := range []string{"system.units", "system.lookups"} {
-		declared := declaredPaths(&sources)
-		found, err := frozenReferences(value, cue.ParsePath(root), declared)
+		found, err := referenceAnalysis.frozenReferences(cue.ParsePath(root))
 		if err != nil {
-			if strings.Contains(err.Error(), "invalid reference value") {
-				return "incomplete", nil, nil
-			}
 			return "", nil, fmt.Errorf("%w: %v", errInspection, err)
 		}
 		references = append(references, found...)
@@ -287,15 +300,7 @@ func matrixVerdict(t *testing.T, snapshot string) (string, []string, error) {
 		unsupported = unsupported || !reference.Supported
 	}
 	sort.Strings(found)
-	err = validateUntrackedDependencies(dependencyInspection{instance: value, references: references, scope: frozenDependencyScope{SourcePaths: &sources}})
-	if err == nil {
-		err = rejectSampledDependence(sampledDependence{base: value, sources: &sources, roots: []valuePath{frozenPath("system")}, references: references})
-	}
 	switch {
-	case err != nil && strings.Contains(err.Error(), "runtime source"):
-		return "detected", nil, nil
-	case err != nil:
-		return "", nil, fmt.Errorf("%w: %v", errInspection, err)
 	case unsupported:
 		return "detected", nil, nil
 	case len(found) > 0:
@@ -328,24 +333,6 @@ func TestFrozenProvenanceMatrix(t *testing.T) {
 			}
 			if verdict != test.want {
 				t.Fatalf("verdict %s, want %s (edges %v)", verdict, test.want, found)
-			}
-			if test.want == "clean" || test.want == "edges" {
-				// The module evaluation scan runs first and must not reject it either.
-				var graph frozenGraph
-				if err := json.Unmarshal([]byte(snapshot), &graph); err != nil {
-					t.Fatal(err)
-				}
-				value, err := graph.build()
-				if err != nil {
-					t.Fatal(err)
-				}
-				paths, err := parseProjectionPaths("referenceEvaluation.paths", []string{"system.units", "system.lookups"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := collectDirectReferences(value, paths); err != nil {
-					t.Fatalf("module evaluation scan rejected it: %v", err)
-				}
 			}
 			if test.want == "edges" {
 				expected := append([]string{}, test.edges...)

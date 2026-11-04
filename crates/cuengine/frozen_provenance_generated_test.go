@@ -122,6 +122,10 @@ func fillChanges(t *testing.T, snapshot string, edges []string) string {
 			path, _ := source.cuePath()
 			value = value.FillPath(path, fill)
 		}
+		// A value CUE refuses stops the run, which changes nothing.
+		if value.Validate() != nil {
+			continue
+		}
 		read := map[string]string{}
 		generatedRead(value, cue.Path{}, read)
 		for key := range read {
@@ -133,9 +137,6 @@ func fillChanges(t *testing.T, snapshot string, edges []string) string {
 					delete(read, key)
 				}
 			}
-		}
-		if value.Validate() != nil {
-			read["<valid>"] = "false"
 		}
 		if baseline == nil {
 			baseline, first = read, fill

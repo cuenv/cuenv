@@ -14,168 +14,6 @@ import (
 	"cuelang.org/go/cue"
 )
 
-// constrainedReference permits a direct reference with reference-free CUE
-// constraints. Specialization preserves and checks those constraints in CUE.
-// Arithmetic, interpolation and alternative references are still unsupported.
-func constrainedReference(value, instance cue.Value, depth int) (cue.Path, error) {
-	if depth > 32 {
-		return cue.Path{}, errors.New("reference nesting limit exceeded")
-	}
-	root, path := value.ReferencePath()
-	if root.Exists() {
-		if root != instance && fileScopedReference(value) {
-			root = instance
-		}
-		if root != instance {
-			if packageRoot(root) && !selectsThroughLet(value) {
-				return cue.Path{}, nil
-			}
-			paths, err := letSelectedPaths(value, instance, depth)
-			if err != nil || len(paths) != 1 {
-				return cue.Path{}, err
-			}
-			return paths[0], nil
-		}
-		nested, err := constrainedReference(root.LookupPath(path), instance, depth+1)
-		if err != nil || len(nested.Selectors()) > 0 {
-			return nested, err
-		}
-		if namesDefinition(path) {
-			return cue.Path{}, nil
-		}
-		return path, nil
-	}
-	if selectsThroughLet(value) {
-		if !plainLetSelection(value) {
-			return cue.Path{}, nil
-		}
-		paths, err := letSelectedPaths(value, instance, depth)
-		if err != nil || len(paths) != 1 {
-			return cue.Path{}, err
-		}
-		return paths[0], nil
-	}
-	if dereferenced := cue.Dereference(value); dereferenced != value {
-		return constrainedReference(dereferenced, instance, depth+1)
-	}
-	if openBoundSliceSource(value) != nil {
-		return cue.Path{}, nil
-	}
-	operation, operands := value.Expr()
-	if operation != cue.AndOp {
-		return cue.Path{}, nil
-	}
-	var target cue.Path
-	for _, operand := range operands {
-		candidate, err := constrainedReference(operand, instance, depth+1)
-		if err != nil {
-			return cue.Path{}, err
-		}
-		if len(candidate.Selectors()) > 0 {
-			switch {
-			case len(target.Selectors()) == 0, target.String() == candidate.String(), typedPath(target) == nil && typedPath(candidate) != nil:
-				target = candidate
-			case typedPath(candidate) == nil:
-				// A hidden helper beside a declared source constrains it.
-			default:
-				return cue.Path{}, nil
-			}
-		} else {
-			// Reject reference-bearing transformations even if an independent
-			// direct operand also names the same source.
-			references, err := expressionReferencePaths(operand, instance, depth+1)
-			if err != nil {
-				return cue.Path{}, err
-			}
-			for _, reference := range references {
-				if instance.LookupPath(reference).Validate(cue.Concrete(true)) != nil {
-					return cue.Path{}, nil
-				}
-			}
-		}
-	}
-	return target, nil
-}
-
-func frozenReferences(instance cue.Value, root cue.Path, sources []cue.Path) ([]frozenReference, error) {
-	references := make([]frozenReference, 0)
-	ancestors := structuralAncestors(instance.BuildInstance())
-	var visit func(cue.Value, cue.Path) error
-	visit = func(value cue.Value, path cue.Path) error {
-		if value.Err() != nil {
-			return errors.New("invalid reference value")
-		}
-		candidates, err := expressionReferencePaths(value, instance, 0)
-		if err != nil {
-			return errors.New("reference inspection failed")
-		}
-		controls, err := structuralReferencePaths(value, instance, ancestors)
-		if err != nil {
-			return err
-		}
-		structural := make(map[string]bool)
-		for _, control := range controls {
-			structural[control.String()] = true
-			candidates = append(candidates, control)
-		}
-		direct, err := constrainedReference(value, instance, 0)
-		if err != nil {
-			return err
-		}
-		// More than one declared source behind a single reference is not direct.
-		switch found := sourceTargets(direct, instance, sources); len(found) {
-		case 0:
-		case 1:
-			direct = found[0]
-		default:
-			direct = cue.Path{}
-		}
-		targets := make(map[string]cue.Path)
-		for _, candidate := range candidates {
-			found := sourceTargets(candidate, instance, sources)
-			if len(found) == 0 {
-				found = []cue.Path{candidate}
-			}
-			for _, target := range found {
-				if typedPath(target) != nil {
-					targets[target.String()] = target
-				}
-			}
-		}
-		for _, control := range controls {
-			for _, found := range sourceTargets(control, instance, sources) {
-				structural[found.String()] = true
-			}
-		}
-		if len(direct.Selectors()) > 0 && typedPath(direct) != nil {
-			targets[direct.String()] = direct
-		}
-		for _, target := range targets {
-			primitive := primitiveDeclaration(instance.LookupPath(target))
-			references = append(references, frozenReference{Path: typedPath(path), Target: typedPath(target), PrimitiveType: primitive, Supported: primitive != "" && direct.String() == target.String() && !structural[target.String()]})
-		}
-		return visitChildren(value, path, visit)
-	}
-	selected := instance.LookupPath(root)
-	if !selected.Exists() {
-		return references, nil
-	}
-	if err := visit(selected, root); err != nil {
-		return nil, err
-	}
-	sort.Slice(references, func(i, j int) bool {
-		leftPath, _ := references[i].Path.cuePath()
-		rightPath, _ := references[j].Path.cuePath()
-		if leftPath.String() != rightPath.String() {
-			return leftPath.String() < rightPath.String()
-		}
-		leftTarget, _ := references[i].Target.cuePath()
-		rightTarget, _ := references[j].Target.cuePath()
-		return leftTarget.String() < rightTarget.String()
-	})
-	return references, nil
-}
-
 func visitChildren(value cue.Value, path cue.Path, visit func(cue.Value, cue.Path) error) error {
 	child := func(selector cue.Selector) cue.Path {
 		return cue.MakePath(append(append([]cue.Selector{}, path.Selectors()...), selector)...)
@@ -221,8 +59,6 @@ type specializationOptions struct {
 	Deferred       []deferredValue `json:"deferred"`
 	ReferencePaths []valuePath     `json:"referencePaths"`
 	SourcePaths    *[]valuePath    `json:"sourcePaths"`
-	IgnoredPaths   []valuePath     `json:"ignoredPaths"`
-	IgnoredGroups  [][]valuePath   `json:"ignoredGroups"`
 }
 
 type specializationResult struct {
@@ -274,24 +110,12 @@ func specializeValue(analysis, base cue.Value, options specializationOptions) (*
 	}
 	// Inspect provenance before any fill. In particular, source & "literal"
 	// is unresolved until source is supplied even though its value is concrete.
-	declared := declaredPaths(options.SourcePaths)
-	references, err := frozenReferences(analysis, projection, declared)
+	graph, err := newReferenceGraph(analysis, options.SourcePaths)
 	if err != nil {
 		return nil, err
 	}
-	tracked := references
-	for _, typed := range options.ReferencePaths {
-		path, err := typed.cuePath()
-		if err != nil {
-			return nil, err
-		}
-		found, err := frozenReferences(analysis, path, declared)
-		if err != nil {
-			return nil, err
-		}
-		tracked = append(tracked, found...)
-	}
-	if err := validateUntrackedDependencies(dependencyInspection{instance: analysis, references: tracked, scope: frozenDependencyScope{SourcePaths: options.SourcePaths, IgnoredPaths: options.IgnoredPaths, IgnoredGroups: options.IgnoredGroups}}); err != nil {
+	references, err := graph.frozenReferences(projection)
+	if err != nil {
 		return nil, err
 	}
 	return specializeWithReferences(base, options, references)

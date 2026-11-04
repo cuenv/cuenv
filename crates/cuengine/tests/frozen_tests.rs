@@ -180,7 +180,7 @@ fn cloned_snapshots_can_specialize_concurrently() -> TestResult {
 }
 
 #[test]
-fn bootstrap_scope_cannot_authorize_an_independent_global_predicate() -> TestResult {
+fn a_check_outside_the_configuration_is_accepted_and_verified() -> TestResult {
     let (directory, _) = fixture()?;
     let file = directory.path().join("env.cue");
     let original = fs::read_to_string(&file)?;
@@ -190,35 +190,37 @@ fn bootstrap_scope_cannot_authorize_an_independent_global_predicate() -> TestRes
         directory: directory.path().to_owned(),
         package: "app".to_owned(),
     })?;
-    let mut inspection = FrozenEvaluationOptions {
+    let sources = Some(vec![path(&["source"])]);
+    let inspection = FrozenEvaluationOptions {
         reference_paths: vec![path(&["config"])],
-        source_paths: Some(Vec::new()),
+        source_paths: sources.clone(),
         ..FrozenEvaluationOptions::default()
     };
     assert_eq!(snapshot.evaluate(&inspection)?.references.len(), 3);
-    inspection.source_paths = Some(vec![path(&["source", "id"])]);
-    assert!(snapshot.evaluate(&inspection).is_err());
-    assert!(
-        snapshot
-            .validate(&FrozenValidationOptions {
-                concrete_paths: vec![path(&["config"])],
-                deferred: deferred(),
-                source_paths: inspection.source_paths.clone(),
-                ..FrozenValidationOptions::default()
-            })
-            .is_err()
-    );
-    assert!(
-        snapshot
-            .specialize(&SpecializationOptions {
-                projection: path(&["config"]),
-                deferred: deferred(),
-                reference_paths: inspection.reference_paths,
-                source_paths: inspection.source_paths,
-                ..SpecializationOptions::default()
-            })
-            .is_err()
-    );
+    snapshot.validate(&FrozenValidationOptions {
+        concrete_paths: vec![path(&["config"])],
+        deferred: deferred(),
+        source_paths: sources.clone(),
+        ..FrozenValidationOptions::default()
+    })?;
+    let prepared = snapshot.prepare(&PreparationOptions {
+        reference_paths: vec![path(&["config"])],
+        source_paths: sources,
+        projections: vec![path(&["config"])],
+    })?;
+    let verify = |value: &str| -> Result<(), cuengine::CueEngineError> {
+        prepared.verify(&VerificationOptions {
+            fills: vec![ScalarFill {
+                path: path(&["source", "id"]),
+                value: ScalarValue::string(value)?,
+            }],
+            roots: vec![path(&["config"])],
+            mutable: vec![path(&["source"]), path(&["config"])],
+            references: Vec::new(),
+        })
+    };
+    verify("ok")?;
+    assert!(verify("bad").is_err());
     Ok(())
 }
 

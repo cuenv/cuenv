@@ -12,7 +12,8 @@ import (
 )
 
 // attackRead reports whether a value that can flip the fixtures' conditions changes
-// any exported field or validity.
+// anything exported from the configuration. A value CUE refuses changes nothing: the
+// run stops there, as verification checks. Hidden fields do not leave CUE.
 func attackRead(t *testing.T, snapshot string) string {
 	t.Helper()
 	var graph frozenGraph
@@ -46,15 +47,15 @@ func attackRead(t *testing.T, snapshot string) string {
 		if !usable {
 			continue
 		}
+		if value.Validate() != nil {
+			continue
+		}
 		read := map[string]string{}
-		generatedRead(value, cue.Path{}, read)
+		generatedRead(value.LookupPath(cue.ParsePath("system")), cue.ParsePath("system"), read)
 		for key := range read {
 			if strings.Contains(key, ".outputs.") || strings.Contains(key, "._") {
 				delete(read, key)
 			}
-		}
-		if value.Validate() != nil {
-			read["<valid>"] = "false"
 		}
 		if baseline == nil {
 			baseline, first = read, fill
@@ -343,22 +344,8 @@ func TestFrozenAttack(t *testing.T) {
 	for _, line := range unconfirmed {
 		t.Logf("ACCEPTED %s", line)
 	}
-	// Output-dependent shapes refused because independence cannot be established.
-	knownInspectionFailures := map[string]bool{
-		"function_data":         true,
-		"function_embed":        true,
-		"function_struct":       true,
-		"literal_selection":     true,
-		"self_reference":        true,
-		"selected_copy_control": true,
-		"struct_alias":          true,
-		"try_assign":            true,
-	}
 	for _, line := range inspection {
-		shape := strings.SplitN(strings.SplitN(line, "/", 2)[1], ":", 2)[0]
-		if !knownInspectionFailures[shape] {
-			t.Errorf("INSPECTION %s", line)
-		}
+		t.Errorf("INSPECTION %s", line)
 	}
 	for _, line := range unbuildable {
 		t.Errorf("UNBUILDABLE %s", line)
@@ -366,29 +353,13 @@ func TestFrozenAttack(t *testing.T) {
 	for _, line := range panics {
 		t.Errorf("PANIC %s", line)
 	}
-	for verdict, minimum := range map[string]int{"detected": 100, "incomplete": 10, "edges": 25, "clean-unrelated": 90} {
+	for verdict, minimum := range map[string]int{"detected": 100, "edges": 25, "clean-unrelated": 90} {
 		if counts[verdict] < minimum {
 			t.Errorf("only %d %s fixtures, expected at least %d: the table stopped exercising analysis", counts[verdict], verdict, minimum)
 		}
 	}
 	sort.Strings(falseRejections)
-	// Valid CUE this analysis cannot establish independence for and so refuses.
-	// Shrinking this list is fine. Growing it is a regression: fix the analysis.
-	knownRefusals := map[string]bool{
-		"function_data":     true,
-		"function_embed":    true,
-		"function_struct":   true,
-		"literal_selection": true,
-		"self_reference":    true,
-		"struct_alias":      true,
-		"try_assign":        true,
-	}
 	for _, line := range falseRejections {
-		shape := strings.SplitN(strings.SplitN(line, "/", 2)[1], ":", 2)[0]
-		if knownRefusals[shape] {
-			t.Logf("REFUSED %s", line)
-			continue
-		}
 		t.Errorf("FALSE %s", line)
 	}
 }
@@ -457,7 +428,7 @@ func TestFrozenVerificationFollowsRealValues(t *testing.T) {
 			references = append(references, deferredValue{Path: frozenPath(parts[0]), Target: frozenPath(parts[1])})
 		}
 		roots := []valuePath{frozenPath("system")}
-		rejected := false
+		rejected, refused := false, false
 		for _, value := range []string{`"x"`, `"mode"`, `"abc"`, `"bad"`, `"plain-1"`, `""`, "0", "1", "4", "100", "true", "false"} {
 			literal := base.Context().CompileString(value)
 			var fills []scalarFill
@@ -472,8 +443,16 @@ func TestFrozenVerificationFollowsRealValues(t *testing.T) {
 			if !usable {
 				continue
 			}
+			filled, _, err := fillScalars(base, fills)
+			valid := err == nil && filled.Validate() == nil
 			if verifyFrozenInstance(base, frozenVerificationOptions{Fills: fills, Roots: roots, Mutable: mutable, References: references}) != nil {
-				rejected = true
+				if !valid {
+					refused = true
+				} else {
+					rejected = true
+				}
+			} else if !valid {
+				t.Errorf("%s: verification accepted %s, which CUE refuses", entry.name, value)
 			}
 		}
 		switch verdict {
@@ -490,7 +469,7 @@ func TestFrozenVerificationFollowsRealValues(t *testing.T) {
 			}
 			consistent++
 		default:
-			if rejected {
+			if rejected || refused {
 				caught++
 			}
 		}
@@ -532,11 +511,6 @@ system: units: {
 		verified := verifyFrozenInstance(base, frozenVerificationOptions{Fills: fills, Roots: roots, Mutable: sources, References: references})
 		if (verified == nil) != test.valid {
 			t.Errorf("%s target, verification: %v", name, verified)
-		}
-		supported := []frozenReference{{Path: leaf, Target: test.target, PrimitiveType: "string", Supported: true}}
-		sampled := rejectSampledDependence(sampledDependence{base: base, sources: &sources, roots: roots, references: supported})
-		if (sampled == nil) != test.valid {
-			t.Errorf("%s target, sampling: %v", name, sampled)
 		}
 	}
 }

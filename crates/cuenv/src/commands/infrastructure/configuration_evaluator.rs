@@ -93,8 +93,6 @@ pub(super) fn freeze_configuration(
             export_paths: export_paths.clone(),
             reference_paths: Vec::new(),
             source_paths: Some(Vec::new()),
-            ignored_paths: Vec::new(),
-            ignored_groups: Vec::new(),
         })
         .map_err(|error| {
             frozen_failure(
@@ -110,15 +108,11 @@ pub(super) fn freeze_configuration(
     let bootstrap_value = parse_json_preserving_numbers(&bootstrap.value, &bootstrap_number_paths)
         .map_err(|_| CliError::config("the frozen CUE configuration could not be inspected"))?;
     let source_paths = all_output_paths(&bootstrap_value);
-    let ignored_paths = ignored_infrastructure_paths(&bootstrap_value, request.environment);
-    let ignored_groups = ignored_infrastructure_groups(request.environment);
     let inspected = snapshot
         .evaluate(&FrozenEvaluationOptions {
             export_paths,
             reference_paths: reference_paths.clone(),
             source_paths: Some(source_paths.clone()),
-            ignored_paths: ignored_paths.clone(),
-            ignored_groups: ignored_groups.clone(),
         })
         .map_err(|error| {
             inspection_failure(
@@ -227,8 +221,6 @@ pub(super) fn freeze_configuration(
             abstract_paths: output_namespaces(&value, &root),
             deferred,
             source_paths: Some(source_paths.clone()),
-            ignored_paths: ignored_paths.clone(),
-            ignored_groups: ignored_groups.clone(),
         })
         .map_err(|error| frozen_failure(&error, "the selected CUE infrastructure configuration is incomplete or violates its constraints"))?;
     let instance = module
@@ -257,8 +249,6 @@ pub(super) fn freeze_configuration(
         .prepare(&PreparationOptions {
             reference_paths,
             source_paths: Some(source_paths),
-            ignored_paths,
-            ignored_groups,
             projections,
         })
         .map_err(|error| {
@@ -296,10 +286,9 @@ fn inspection_failure(error: &cuengine::CueEngineError, message: &'static str) -
 }
 
 const OUTPUT_REFERENCE_HELP: &str = "A runtime output may only be used as a direct reference, \
-optionally through aliases and reference-free constraints, at a scalar destination. Conditions, \
-labels, indexes, arithmetic and interpolation may not depend on one. Some CUE forms cannot be \
-checked and are refused; see the infrastructure how-to. Diagnostics are withheld because they \
-can contain private configuration values or keys.";
+optionally through aliases and constraints, at a scalar destination. Conditions, labels, indexes, \
+arithmetic and interpolation may not depend on one. Diagnostics are withheld because they can \
+contain private configuration values or keys.";
 
 fn native_reference(
     reference: &FrozenReference,
@@ -452,36 +441,6 @@ fn infrastructure_roots(project: &Json) -> Vec<ValuePath> {
         roots.extend(environments.keys().map(|name| selected_root(Some(name))));
     }
     roots
-}
-
-/// Unselected configuration is not scheduled, though references crossing out
-/// of these subtrees still need to be checked by the CUE bridge.
-fn ignored_infrastructure_paths(project: &Json, selected: Option<&str>) -> Vec<ValuePath> {
-    let mut ignored = Vec::new();
-    if let Some(environments) = project
-        .pointer("/infrastructure/environments")
-        .and_then(Json::as_object)
-    {
-        ignored.extend(
-            environments
-                .keys()
-                .filter(|name| Some(name.as_str()) != selected)
-                .map(|name| selected_root(Some(name))),
-        );
-    }
-    ignored
-}
-
-fn ignored_infrastructure_groups(selected: Option<&str>) -> Vec<Vec<ValuePath>> {
-    if selected.is_none() {
-        return Vec::new();
-    }
-    vec![
-        ["providers", "resources", "data", "providerEnvironment"]
-            .into_iter()
-            .map(|field| append_field(&selected_root(None), field))
-            .collect(),
-    ]
 }
 
 fn selected_root(environment: Option<&str>) -> ValuePath {

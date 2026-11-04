@@ -150,13 +150,14 @@ consumers: {first: id: _alias, second: id: source.id}
 	}
 }
 
-func TestPreparedRejectsUntrackedGlobalAndStructuralDependencies(t *testing.T) {
+func TestPreparedRejectsStructuralDependencies(t *testing.T) {
 	for _, declaration := range []string{
-		`_check: source.id & !="bad"`,
-		`check: source.id & !="bad"`,
-		`#Check: source.id & !="bad"`,
-		`for _, item in resources {if (item.outputs.flag & false) {_error: true}}`,
 		`config: {if source.flag {other: "yes"}}`,
+		`config: {for _, item in resources {if (item.outputs.flag & false) {other: true}}}`,
+		`_decided: {if source.flag {other: "yes"}}
+config: read: _decided`,
+		`config: other: *source.id | "fallback"`,
+		`config: {("\(source.id)"): "value"}`,
 	} {
 		t.Run(declaration, func(t *testing.T) {
 			_, snapshot := freezeTestModule(t, map[string]string{"env.cue": "package app\nsource: {id:string, flag:bool}\nresources: one: outputs: flag: bool\nconfig: id: source.id\n" + declaration + "\n"})

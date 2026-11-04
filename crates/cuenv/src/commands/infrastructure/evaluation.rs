@@ -169,7 +169,6 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             ));
         }
         let project = evaluate_path(PathEvaluation {
-            reference_evaluation: None,
             target_path: &project_path,
             package: request.package,
             concrete_paths: vec!["name".to_string()],
@@ -223,14 +222,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     if request.needs == Needs::StateOnly {
         export_paths.push("infrastructure.migrateStateTo".to_string());
     }
-    let scanning = OutputSelectors {
-        instance_path: ".",
-        references: &std::collections::HashMap::new(),
-        environment: request.environment,
-    }
-    .scanning();
     let mut module = evaluate_path(PathEvaluation {
-        reference_evaluation: (request.needs == Needs::Configuration).then_some(scanning),
         target_path: &target_path,
         package,
         concrete_paths: concrete_paths.clone(),
@@ -576,7 +568,6 @@ fn select_infrastructure(
 /// value is unknown.
 fn export_if_evaluable(target_path: &Path, package: &str, path: &str) -> Option<serde_json::Value> {
     let module = evaluate_path(PathEvaluation {
-        reference_evaluation: None,
         target_path,
         package,
         concrete_paths: Vec::new(),
@@ -749,7 +740,6 @@ fn explain_concrete_failure(failure: ConcreteFailure<'_>) -> CliError {
         error,
     } = failure;
     let lenient = evaluate_path(PathEvaluation {
-        reference_evaluation: None,
         target_path,
         package,
         concrete_paths: Vec::new(),

@@ -23,4 +23,4 @@ require (
 	google.golang.org/protobuf v1.33.0 // indirect
 )
 
-replace cuelang.org/go => github.com/rawkode/cue v0.16.0-0.dev.0.20261021002650-5a1f958250d6
+replace cuelang.org/go => github.com/rawkode/cue v0.16.0-0.dev.0.20261104170027-567c8612a6a8

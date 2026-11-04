@@ -427,7 +427,7 @@ config: value: _alias`, false},
 if false {_alias: "primary"} else {_alias: "fallback"}
 config: value: _alias`, true},
 		{"output controlled hidden branches", `config: {if (source.enabled & true) {_hidden: true} else {_hidden: false}, value: "literal"}`, false},
-		{"output controlled hidden primary without fallback", `config: {if (source.enabled & true) {_hidden: true}, value: "literal"}`, false},
+		{"output controlled hidden primary without fallback", `config: {if (source.enabled & true) {_hidden: true}, value: "literal"}`, true},
 		{"constant hidden branches", `config: {if true {_hidden: true} else {_hidden: false}, value: "literal"}`, true},
 		{"constant hidden primary without fallback", `config: {if true {_hidden: true}, value: "literal"}`, true},
 	} {
@@ -563,13 +563,6 @@ config: schema.#Configuration & {
 `,
 	})
 	response := evaluateFrozenResponse(snapshot, frozenJSON(t, frozenEvaluationOptions{ReferencePaths: []valuePath{frozenPath("config")}}))
-	if strings.Contains(response, `"error"`) {
-		var graph frozenGraph
-		_ = json.Unmarshal([]byte(snapshot), &graph)
-		value, _ := graph.build()
-		references, _ := frozenReferences(value, cue.ParsePath("config"), nil)
-		t.Logf("imported fixture inspection cause: %v", validateUntrackedDependencies(dependencyInspection{instance: value, references: references}))
-	}
 	frozenPayload(t, response)
 	entry := deferredValue{Path: frozenPath("config.resources.consumer.configuration.id"), Target: frozenPath("config.resources.producer.outputs.id")}
 	frozenPayload(t, validateFrozenResponse(snapshot, frozenJSON(t, frozenValidationOptions{ConcretePaths: []valuePath{frozenPath("config")}, AbstractPaths: []valuePath{frozenPath("config.resources.producer.outputs")}, Deferred: []deferredValue{entry}})))
