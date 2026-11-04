@@ -172,8 +172,10 @@ impl TerminalGrid {
         while start < cells.len() {
             let cell = &cells[start];
             // Spacers carry background and occupancy only.  In particular,
-            // they are never shaped as a space glyph.
-            if cell.text.is_none() {
+            // they are never shaped as a space glyph. Concealed text has no glyph
+            // either: painting it in its background would show through a translucent
+            // terminal as an opaque shape.
+            if cell.text.is_none() || cell.style.hidden {
                 start += 1;
                 continue;
             }
@@ -195,6 +197,7 @@ impl TerminalGrid {
                 .find(|&column| {
                     let next = &cells[column];
                     next.text.is_none()
+                        || next.style.hidden
                         || drawn_character(next).is_some()
                         || next.style.bold != cell.style.bold
                         || next.style.italic != cell.style.italic
@@ -296,10 +299,9 @@ impl TerminalGrid {
     /// once a row's runs are placed and do not depend on how it was shaped.
     fn paint_row_decorations(&self, row: &RowPaint<'_>, window: &mut Window) {
         let cells = row.cells;
-        if cells
-            .iter()
-            .all(|cell| cell.style.underline.is_none() && !cell.style.strikeout)
-        {
+        if cells.iter().all(|cell| {
+            cell.style.hidden || (cell.style.underline.is_none() && !cell.style.strikeout)
+        }) {
             return;
         }
         let grid_cell = self.metrics.render_cell();
@@ -312,7 +314,8 @@ impl TerminalGrid {
         let x = |column: usize| row.origin.x + grid_cell.width * column as f32;
         let underlines = merged_spans(cells.iter().enumerate().map(|(column, cell)| {
             let foreground = self.foreground_at(cell, row, column);
-            cell.style.underline.map(|style| {
+            let style = cell.style.underline.filter(|_| !cell.style.hidden);
+            style.map(|style| {
                 let color = cell
                     .underline_color
                     .map_or(foreground, |color| self.theme.resolve(color));
@@ -335,8 +338,7 @@ impl TerminalGrid {
             );
         }
         let strikethroughs = merged_spans(cells.iter().enumerate().map(|(column, cell)| {
-            cell.style
-                .strikeout
+            (cell.style.strikeout && !cell.style.hidden)
                 .then(|| self.foreground_at(cell, row, column))
         }));
         for (columns, color) in strikethroughs {
