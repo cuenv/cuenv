@@ -1,7 +1,7 @@
-use super::hover_fade;
 use super::tokens::{
     ChromeColors, border, elevation, faded, palette_height, radius, size, space, text,
 };
+use super::{fading_in, hover_fade};
 use crate::terminal::engine::{PALETTE_RESULT_LIMIT, TerminalView, filtered_tasks};
 use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
@@ -105,6 +105,64 @@ impl TerminalView {
         } else {
             self.task_query.clone()
         };
+        let panel = div()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|view, _event, _window, cx| {
+                view.close_task_palette(cx);
+            }))
+            .min_h_0()
+            .p(space::LG)
+            .flex()
+            .flex_col()
+            .gap(space::MD)
+            .rounded(radius::PANEL)
+            .border(border::HAIRLINE)
+            .border_color(colors.panel_outline)
+            .bg(colors.panel)
+            .shadow(elevation::overlay())
+            .line_height(text::LINE_HEIGHT)
+            .child(
+                div()
+                    .w_full()
+                    .h(size::PALETTE_FIELD_HEIGHT)
+                    .flex_shrink_0()
+                    .px(space::LG)
+                    .flex()
+                    .items_center()
+                    .rounded(radius::CONTROL)
+                    .gap(space::XXS)
+                    .overflow_hidden()
+                    .bg(colors.well)
+                    .text_size(text::BODY)
+                    .text_color(if self.task_query.is_empty() {
+                        colors.text_muted
+                    } else {
+                        colors.text
+                    })
+                    // Filter text is typed at the end of the query, so an empty query
+                    // keeps the caret before the placeholder.
+                    .when(self.task_query.is_empty(), |this| this.child(caret()))
+                    // As wide as the query until the field runs out, then end-aligned
+                    // so the overflow clips at the start and the end being typed stays
+                    // beside the caret.
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .justify_end()
+                            .overflow_hidden()
+                            .child(div().flex_shrink_0().whitespace_nowrap().child(query)),
+                    )
+                    .when(!self.task_query.is_empty(), |this| this.child(caret())),
+            )
+            .child(results)
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(text::CAPTION)
+                    .text_color(colors.text_muted)
+                    .child("↑↓ select · return run · esc close"),
+            );
         Some(
             div()
                 .absolute()
@@ -125,77 +183,11 @@ impl TerminalView {
                         .max_h(palette_height(PALETTE_RESULT_LIMIT))
                         .flex()
                         .flex_col()
-                        .child(
-                            div()
-                                .occlude()
-                                .on_mouse_down_out(cx.listener(|view, _event, _window, cx| {
-                                    view.close_task_palette(cx);
-                                }))
-                                .min_h_0()
-                                .p(space::LG)
-                                .flex()
-                                .flex_col()
-                                .gap(space::MD)
-                                .rounded(radius::PANEL)
-                                .border(border::HAIRLINE)
-                                .border_color(colors.panel_outline)
-                                .bg(colors.panel)
-                                .shadow(elevation::overlay())
-                                .line_height(text::LINE_HEIGHT)
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .h(size::PALETTE_FIELD_HEIGHT)
-                                        .flex_shrink_0()
-                                        .px(space::LG)
-                                        .flex()
-                                        .items_center()
-                                        .rounded(radius::CONTROL)
-                                        .gap(space::XXS)
-                                        .overflow_hidden()
-                                        .bg(colors.well)
-                                        .text_size(text::BODY)
-                                        .text_color(if self.task_query.is_empty() {
-                                            colors.text_muted
-                                        } else {
-                                            colors.text
-                                        })
-                                        // Filter text is typed at the end of the
-                                        // query, so an empty query keeps the caret
-                                        // before the placeholder.
-                                        .when(self.task_query.is_empty(), |this| {
-                                            this.child(caret())
-                                        })
-                                        // As wide as the query until the field
-                                        // runs out, then end-aligned so the
-                                        // overflow clips at the start and the
-                                        // end being typed stays beside the caret.
-                                        .child(
-                                            div()
-                                                .min_w_0()
-                                                .flex()
-                                                .justify_end()
-                                                .overflow_hidden()
-                                                .child(
-                                                    div()
-                                                        .flex_shrink_0()
-                                                        .whitespace_nowrap()
-                                                        .child(query),
-                                                ),
-                                        )
-                                        .when(!self.task_query.is_empty(), |this| {
-                                            this.child(caret())
-                                        }),
-                                )
-                                .child(results)
-                                .child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .text_size(text::CAPTION)
-                                        .text_color(colors.text_muted)
-                                        .child("↑↓ select · return run · esc close"),
-                                ),
-                        ),
+                        .child(fading_in(
+                            panel,
+                            "cuetty-task-palette-fade",
+                            self.motion_pace(),
+                        )),
                 )
                 .into_any_element(),
         )

@@ -18,9 +18,23 @@ pub(super) use layout::{
 pub(super) use tokens::{UNFOCUSED_TERMINAL_FADE, resolve_ui_font, traffic_light_position};
 
 use super::engine::TerminalView;
-use super::motion::HoverTarget;
+use super::motion::{HoverTarget, MotionPace, PANEL_FADE_IN};
 use crate::integrations::cuenv::Keybindings;
-use gpui::{App, Context, Window};
+use gpui::{Animation, AnimationExt, App, Context, Div, IntoElement, Styled, Window};
+
+/// `panel` fading in as it first appears, which starts again each time it reopens because
+/// GPUI forgets the animation of an element that has left the screen. At a reduced pace it
+/// is simply there. Keys typed into it meanwhile are not held up: it is already live.
+fn fading_in(panel: Div, id: &'static str, pace: MotionPace) -> gpui::AnyElement {
+    match pace.duration(PANEL_FADE_IN) {
+        duration if duration.is_zero() => panel.into_any_element(),
+        duration => panel
+            .with_animation(id, Animation::new(duration), |panel, delta| {
+                panel.opacity(delta)
+            })
+            .into_any_element(),
+    }
+}
 
 /// A listener for `.on_hover` that fades `target`'s hover in and out.
 fn hover_fade(

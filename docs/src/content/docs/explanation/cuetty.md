@@ -134,7 +134,8 @@ The current usable slice includes:
   are. Chrome keeps its colours, and the fade costs an idle window no redraws.
 - Chrome that moves briefly, and only in answer to something: the sidebar's controls and
   rows fade their hover over 100ms, and on a switch of tab one marker slides to its new
-  place over 140ms while the row fills hand over. Nothing draws once it has landed, and
+  place over 140ms while the row fills hand over. The task palette fades in over 120ms,
+  already taking keys as it does. Nothing draws once it has landed, and
   `motion: "reduced"`, or the platform's own setting, makes all of it land at once.
 - A hint at the foot of the expanded sidebar naming the active tab's task palette chord,
   such as `⌘K` or `Ctrl+K`, shown only where the directory has a task catalogue and a live

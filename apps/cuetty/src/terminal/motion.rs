@@ -16,6 +16,8 @@ const FRAME: Duration = Duration::from_millis(16);
 const SIDEBAR_TRANSITION: Duration = Duration::from_millis(150);
 /// How long the active tab's marker takes to reach another tab, and its fill to follow.
 const TAB_TRANSITION: Duration = Duration::from_millis(140);
+/// How long a floating panel takes to fade in.
+pub(super) const PANEL_FADE_IN: Duration = Duration::from_millis(120);
 /// How long a hover takes to show or clear: quick, since it answers the pointer.
 const HOVER_TRANSITION: Duration = Duration::from_millis(100);
 
@@ -40,7 +42,7 @@ impl MotionPace {
     }
 
     /// How long a transition takes at this pace.
-    fn duration(self, full: Duration) -> Duration {
+    pub(super) fn duration(self, full: Duration) -> Duration {
         match self {
             Self::Full => full,
             Self::Reduced => Duration::ZERO,
