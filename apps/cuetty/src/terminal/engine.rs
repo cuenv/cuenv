@@ -358,7 +358,7 @@ impl Element for TerminalGrid {
                 let (foreground, _) = colors(cell, &self.theme, cursor_block);
                 let decoration_color = cell
                     .underline_color
-                    .map(|color| self.theme.resolve(color, true))
+                    .map(|color| self.theme.resolve(color))
                     .unwrap_or(foreground);
                 let mut end = start + 1;
                 while end < cells.len() {
@@ -462,8 +462,8 @@ fn colors(cell: &TerminalCell, theme: &TerminalTheme, cursor: bool) -> (Rgb, Rgb
     if cursor {
         return (theme.cursor_text, theme.cursor);
     }
-    let mut foreground = theme.resolve(cell.foreground, true);
-    let mut background = theme.resolve(cell.background, false);
+    let mut foreground = theme.resolve(cell.foreground);
+    let mut background = theme.resolve(cell.background);
     if cell.style.inverse {
         std::mem::swap(&mut foreground, &mut background);
     }

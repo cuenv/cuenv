@@ -103,7 +103,7 @@ impl TerminalTheme {
         }
     }
 
-    pub fn resolve(&self, color: Color, _foreground: bool) -> Rgb {
+    pub fn resolve(&self, color: Color) -> Rgb {
         match color {
             Color::DefaultForeground => self.text,
             Color::DefaultBackground => self.surface,
@@ -250,8 +250,8 @@ mod tests {
         config.theme.text = crate::terminal::config::Rgb(1, 2, 3);
         config.theme.surface = crate::terminal::config::Rgb(4, 5, 6);
         let theme = TerminalTheme::from_config(&config);
-        assert_eq!(theme.resolve(Color::DefaultForeground, true), Rgb(1, 2, 3));
-        assert_eq!(theme.resolve(Color::DefaultBackground, false), Rgb(4, 5, 6));
+        assert_eq!(theme.resolve(Color::DefaultForeground), Rgb(1, 2, 3));
+        assert_eq!(theme.resolve(Color::DefaultBackground), Rgb(4, 5, 6));
     }
 
     #[test]
