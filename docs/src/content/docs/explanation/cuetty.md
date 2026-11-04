@@ -260,7 +260,10 @@ individual fields should be overridable per directory. If you used the former
 `programs.cuetty.settings` values into this CUE file.
 
 Directory and module-metadata changes are watched natively. Evaluation and
-validation occur off the GPUI thread. Invalid matching CUE keeps the last
+validation occur off the GPUI thread. Until a new directory's evaluation lands, the tab
+keeps its look but drops the previous `banner` and `rail`, and a new tab starts from
+the look of the tab it opened from, so neither flashes the defaults or resizes the
+grid. Invalid matching CUE keeps the last
 valid presentation for that directory and exposes an integration notice: a small
 accent marker beside the sidebar's controls, with the message in its tooltip. The
 tooltip stops at twelve lines; `cue eval .:cuetty` in that directory prints a

@@ -722,6 +722,11 @@ impl SessionRegistry {
             .factory
             .start(width, height, cell)
             .map_err(RegistryError::Session)?;
+        let presentation = self
+            .active_pane()
+            .and_then(|pane| self.sessions.get(&pane))
+            .map(|state| state.cuenv.presentation.carried_over())
+            .unwrap_or_default();
         let target = match self.workspace.create_tab("Terminal") {
             Ok(target) => target,
             Err(error) => {
@@ -734,10 +739,9 @@ impl SessionRegistry {
             .next_generation
             .checked_add(1)
             .expect("session generation exhausted");
-        self.sessions.insert(
-            target.pane,
-            PaneState::new(generation, start.session, (width, height)),
-        );
+        let mut state = PaneState::new(generation, start.session, (width, height));
+        state.cuenv.presentation = presentation;
+        self.sessions.insert(target.pane, state);
         self.notice = None;
         Ok((target.pane, generation, start.wake_rx))
     }
@@ -1268,7 +1272,9 @@ impl TerminalView {
                     .sessions
                     .get_mut(&pane)
                     .expect("active pane registry invariant");
-                if state.cuenv_source.take().is_some() {
+                // A changed directory carried the old look over for an evaluation
+                // that is not coming, so this has to settle it too.
+                if state.cuenv_source.take().is_some() || cwd_changed {
                     let generation = state.cuenv.begin_source();
                     state.cuenv.apply(generation, Evaluation::Absent);
                     state.cuenv_watcher = None;
@@ -2976,7 +2982,8 @@ mod tests {
             .terminal
             .terminal_padding
             .left = 2;
-        assert_eq!(registry.active_terminal_config().font.size_px, 16.0);
+        // A new tab starts with the look of the tab it opened from, not the defaults.
+        assert_eq!(registry.active_terminal_config().font.size_px, 20.0);
         assert_eq!(registry.active_terminal_config().terminal_padding.left, 2);
 
         // Updating an inactive pane must not change the active configuration.
@@ -2989,7 +2996,7 @@ mod tests {
             .terminal
             .font
             .size_px = 24.0;
-        assert_eq!(registry.active_terminal_config().font.size_px, 16.0);
+        assert_eq!(registry.active_terminal_config().font.size_px, 20.0);
         let previous_tab = registry
             .workspace
             .tab_in_direction(TabDirection::Previous)

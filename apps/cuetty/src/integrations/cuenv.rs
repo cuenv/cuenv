@@ -29,6 +29,19 @@ pub struct CuettyPresentation {
     pub terminal: Box<TerminalConfig>,
 }
 
+impl CuettyPresentation {
+    /// What a pane shows while its own evaluation is on the way: the same look,
+    /// so a `cd` or a new tab does not flash the defaults and resize the grid, but
+    /// nothing that identifies another project.
+    pub fn carried_over(&self) -> Self {
+        Self {
+            banner: None,
+            rail: None,
+            ..self.clone()
+        }
+    }
+}
+
 /// Application chords configured through `keybindings` in package `cuetty`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Keybindings {
@@ -363,7 +376,7 @@ impl CuenvPaneState {
         }
         self.cwd = cwd;
         self.generation = self.generation.wrapping_add(1);
-        self.presentation = CuettyPresentation::default();
+        self.presentation = self.presentation.carried_over();
         self.tasks.clear();
         self.notice = None;
         self.task_notice = None;
@@ -1236,6 +1249,36 @@ mod tests {
     }
 
     #[test]
+    fn a_new_directory_keeps_the_look_but_not_the_project_until_it_evaluates() {
+        let mut state = CuenvPaneState::default();
+        state.observe_cwd(PathBuf::from("/a"));
+        let generation = state.begin_source();
+        let Evaluation::Valid(mut presentation) = parse_value(serde_json::json!({
+            "banner": "A",
+            "rail": "#ff0000",
+            "accent": "#00ff00",
+            "titlebar": false,
+            "padding": {"left": 4},
+        })) else {
+            panic!("the configuration is valid");
+        };
+        presentation.sidebar = SidebarMode::Collapsed;
+        assert!(state.apply(generation, Evaluation::Valid(presentation.clone())));
+
+        assert!(state.observe_cwd(PathBuf::from("/b")));
+        assert_eq!(state.presentation.banner, None);
+        assert_eq!(state.presentation.rail, None);
+        assert_eq!(state.presentation.titlebar, presentation.titlebar);
+        assert_eq!(state.presentation.sidebar, SidebarMode::Collapsed);
+        assert_eq!(state.presentation.terminal, presentation.terminal);
+
+        // The new directory's own evaluation still decides in the end.
+        let generation = state.begin_source();
+        assert!(state.apply(generation, Evaluation::Absent));
+        assert_eq!(state.presentation, CuettyPresentation::default());
+    }
+
+    #[test]
     fn pane_state_clears_on_cwd_changes_and_rejects_stale_results() {
         let mut state = CuenvPaneState::default();
         assert!(state.observe_cwd(PathBuf::from("/a")));
@@ -1277,7 +1320,7 @@ mod tests {
         ));
 
         assert!(state.forget_cwd());
-        assert_eq!(state.presentation.terminal.terminal_padding.left, 14);
+        assert_eq!(state.presentation.terminal.terminal_padding.left, 4);
         assert!(!state.apply(
             old_generation,
             parse_value(serde_json::json!({"padding": {"left": 9}}))

@@ -257,7 +257,10 @@ the Cuetty title strip while that tab is active so the terminal extends to the
 top of the window; it defaults to `true`. With the strip hidden only the small gap
 above the sidebar moves the window, and on macOS the traffic lights float over the terminal's top-left
 corner. Rio reports shell CWD changes through its public working-directory API;
-Cuetty re-evaluates and rebinds its native directory watcher after `cd`.
+Cuetty re-evaluates and rebinds its native directory watcher after `cd`. Until that
+evaluation lands, a tab keeps its look but drops the previous `banner` and `rail`, and
+a new tab starts from the look of the tab it opened from, so neither a `cd` nor a new
+tab flashes the defaults or resizes the grid.
 Malformed matching configuration retains the last valid presentation for that
 directory, if one exists, and shows an integration notice: a small accent marker
 beside the sidebar's controls, with the message in its tooltip. The tooltip stops
