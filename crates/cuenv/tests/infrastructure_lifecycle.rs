@@ -1939,8 +1939,9 @@ async fn output_dependent_structure_is_refused_before_any_provider_change() -> T
         assert_eq!(stack.mutations(), 0, "{label} changed: {}", stack.journal());
         assert!(stack.store.list(&stack.tenant).await?.is_empty(), "{label}");
         // The same syntax on an unrelated value must plan: the refusal above is about
-        // the output, not a mistake in this fixture.
-        if body.contains(PRODUCER_ID) {
+        // the output, not a mistake in this fixture. A selection embedded from an inline
+        // definition is one of the forms refused either way.
+        if body.contains(PRODUCER_ID) && *label != "definition-as-function" {
             let unrelated = format!(
                 "_unrelated: \"unmatched\"\n{}",
                 body.replace(PRODUCER_ID, "_unrelated")
