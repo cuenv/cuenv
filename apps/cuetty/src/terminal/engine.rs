@@ -475,7 +475,7 @@ impl TerminalGrid {
         {
             return;
         }
-        let bounds = self.cell_bounds(row.origin, row.row, column..column + 1);
+        let bounds = self.cell_bounds(row.origin, row.row, cursor_columns(row.cells, column));
         let scale = self.metrics.scale;
         let color = gpui::Rgba {
             a: self.cursor_opacity,
@@ -800,13 +800,36 @@ impl HostCursorStyle {
     }
 }
 
+/// The columns a cursor at `column` covers: both halves of a wide character, whichever
+/// half it landed on, because the whole glyph is painted in the cursor's colours.
+fn cursor_columns(cells: &[TerminalCell], column: usize) -> std::ops::Range<usize> {
+    let occupancy = |column: usize| cells.get(column).map(|cell| cell.occupancy);
+    match occupancy(column) {
+        Some(CellOccupancy::Wide) if occupancy(column + 1).is_some() => column..column + 2,
+        Some(CellOccupancy::TrailingSpacer)
+            if column > 0 && occupancy(column - 1) == Some(CellOccupancy::Wide) =>
+        {
+            column - 1..column + 1
+        }
+        _ => column..column + 1,
+    }
+}
+
 fn cursor_style_at(
     frame: &TerminalFrame,
     focus: CursorFocus,
     position: CellPosition,
 ) -> Option<HostCursorStyle> {
+    let covers = |(row, column): (u16, u16)| {
+        let cells = frame
+            .rows
+            .get(usize::from(row))
+            .map_or(&[][..], |row| row.cells.as_slice());
+        usize::from(row) == position.row
+            && cursor_columns(cells, usize::from(column)).contains(&position.column)
+    };
     let shown = !matches!(frame.cursor.visible, Known::Known(false))
-        && frame.cursor.position == Some((position.row as u16, position.column as u16));
+        && frame.cursor.position.is_some_and(covers);
     shown.then_some(match (focus, frame.cursor.shape) {
         (CursorFocus::Unfocused, _) => HostCursorStyle::Hollow,
         (_, Known::Known(CursorShape::Underline)) => HostCursorStyle::Underline,
@@ -3869,6 +3892,54 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn wide_character_row() -> Vec<TerminalCell> {
+        vec![
+            TerminalCell::narrow('a'),
+            TerminalCell::wide('\u{4e16}'),
+            TerminalCell::trailing_spacer(),
+            TerminalCell::narrow('b'),
+            TerminalCell::leading_spacer(),
+        ]
+    }
+
+    #[test]
+    fn a_cursor_covers_both_halves_of_a_wide_character() {
+        let cells = wide_character_row();
+        assert_eq!(cursor_columns(&cells, 0), 0..1);
+        assert_eq!(cursor_columns(&cells, 1), 1..3);
+        assert_eq!(cursor_columns(&cells, 2), 1..3);
+        assert_eq!(cursor_columns(&cells, 3), 3..4);
+        assert_eq!(cursor_columns(&cells, 4), 4..5);
+    }
+
+    #[test]
+    fn a_cursor_never_covers_a_column_the_row_does_not_have() {
+        assert_eq!(cursor_columns(&[TerminalCell::wide('\u{4e16}')], 0), 0..1);
+        assert_eq!(cursor_columns(&[], 3), 3..4);
+        // A spacer with no wide character before it stays on its own column.
+        assert_eq!(cursor_columns(&[TerminalCell::trailing_spacer()], 0), 0..1);
+    }
+
+    #[test]
+    fn a_wide_character_under_a_cursor_is_the_cursors_on_both_halves() {
+        let mut frame = TerminalView::empty_frame();
+        frame.rows[0].cells = wide_character_row();
+        for cursor_column in [1, 2] {
+            frame.cursor.position = Some((0, cursor_column));
+            let style_at = |column| {
+                cursor_style_at(
+                    &frame,
+                    CursorFocus::Focused,
+                    CellPosition { row: 0, column },
+                )
+            };
+            assert_eq!(style_at(0), None);
+            assert_eq!(style_at(1), Some(HostCursorStyle::Block));
+            assert_eq!(style_at(2), Some(HostCursorStyle::Block));
+            assert_eq!(style_at(3), None);
+        }
     }
 
     #[test]

@@ -57,8 +57,8 @@ The current usable slice includes:
 - Box drawing, block elements, shades, and Powerline separators drawn as shapes on
   the cell's device pixels, so rules and blocks meet with no seam at any line height.
 - A cursor that fades when the application asks it to blink, turns to a hollow outline
-  without keyboard focus, and asks for no frames at rest, so an idle window stops
-  drawing.
+  without keyboard focus, covers both columns of a wide character, and asks for no
+  frames at rest, so an idle window stops drawing.
 - Text shaped with the font's contextual alternates and placed cell by cell: every
   glyph starts on the column its source text belongs to, so substitutions, combining
   marks, and fallback fonts cannot shift a column.

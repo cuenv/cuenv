@@ -124,7 +124,8 @@ blinks only if the application asks, with `cursor.blink` to override that: it fa
 rather than toggles, stays solid for a moment after output, a key press, or a
 switch of tab, and settles solid after about half a minute of nothing happening, so an idle window
 stops drawing. Rio raises no event for a program that only shows or hides its
-cursor, so the half-second poll notices that instead. Unfocused, or with another window active, it is a hollow outline.
+cursor, so the half-second poll notices that instead. Unfocused, or with another window active, it is a hollow outline. On a wide
+character it covers both columns, whichever half it landed on.
 Rio
 colour semantics (default, indexed, RGB, bold, dim, inverse, and hidden) stay
 in `TerminalFrame` until the renderer resolves them through the theme.
