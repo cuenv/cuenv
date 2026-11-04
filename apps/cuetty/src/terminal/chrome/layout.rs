@@ -2,9 +2,7 @@ use super::tokens::{ChromeColors, border, material_color, size, space, text};
 use crate::integrations::cuenv::TitlebarVisibility;
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
-use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, Styled, WindowControlArea, div, px,
-};
+use gpui::{InteractiveElement, IntoElement, ParentElement, Styled, WindowControlArea, div, px};
 
 impl TerminalView {
     pub(in crate::terminal) fn render_shell_layout(
@@ -12,7 +10,6 @@ impl TerminalView {
         sidebar: gpui::AnyElement,
         content: gpui::AnyElement,
         theme: &TerminalTheme,
-        _cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = ChromeColors::from_theme(theme);
         let workspace = div()

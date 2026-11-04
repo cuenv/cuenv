@@ -1739,7 +1739,6 @@ impl Render for TerminalView {
                     .child(message)
                     .into_any_element(),
                 &theme,
-                cx,
             );
         };
         let state = self
@@ -1766,7 +1765,6 @@ impl Render for TerminalView {
                     .child(format!("Cuetty terminal error: {error}"))
                     .into_any_element(),
                 &theme,
-                cx,
             );
         }
         let workspace_bounds = Arc::clone(&self.workspace_bounds);
@@ -1924,7 +1922,7 @@ impl Render for TerminalView {
                 .bottom(px(f32::from(padding.bottom)))
                 .left(px(f32::from(padding.left))),
         );
-        self.render_shell_layout(sidebar, surface.into_any_element(), &theme, cx)
+        self.render_shell_layout(sidebar, surface.into_any_element(), &theme)
     }
 }
 
