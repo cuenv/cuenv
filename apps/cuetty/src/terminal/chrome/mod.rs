@@ -18,9 +18,33 @@ pub(super) use layout::{
 pub(super) use tokens::{UNFOCUSED_TERMINAL_FADE, resolve_ui_font, traffic_light_position};
 
 use super::engine::TerminalView;
+use super::motion::HoverTarget;
 use crate::integrations::cuenv::Keybindings;
+use gpui::{App, Context, Window};
+
+/// A listener for `.on_hover` that fades `target`'s hover in and out.
+fn hover_fade(
+    target: HoverTarget,
+    cx: &mut Context<TerminalView>,
+) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+    cx.listener(move |view, hovered: &bool, _window, cx| {
+        let pace = view.motion_pace();
+        let now = std::time::Instant::now();
+        if *hovered {
+            view.motion.hover_on(target, pace, now);
+        } else {
+            view.motion.hover_off(target, pace, now);
+        }
+        cx.notify();
+    })
+}
 
 impl TerminalView {
+    /// How lit `target` is under the pointer in this draw.
+    fn hover_level(&self, target: HoverTarget) -> f32 {
+        self.motion.hover_level(target, std::time::Instant::now())
+    }
+
     /// The terminal's own monospaced family, which chrome uses for paths and
     /// shortcuts so they read the way they do in the terminal.
     fn mono_font_family(&self) -> gpui::SharedString {

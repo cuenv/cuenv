@@ -295,7 +295,7 @@ transparency: 10
 ```
 
 `banner` is a bounded single line and `rail` must be a quoted `#RRGGBB`
-project accent. It colours the small marker on the active tab while that tab is
+project accent. It colours the small marker on the active tab, which slides to whichever tab becomes active, while that tab is
 active, in place of the window's accent, and never fills the sidebar. `accent`, also
 a quoted `#RRGGBB`, is that window accent, for instance to match a compositor's
 window border: the marker uses `rail`, then `accent`, then the theme's accent, and

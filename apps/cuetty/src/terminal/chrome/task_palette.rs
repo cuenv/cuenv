@@ -1,5 +1,9 @@
-use super::tokens::{ChromeColors, border, elevation, palette_height, radius, size, space, text};
+use super::hover_fade;
+use super::tokens::{
+    ChromeColors, border, elevation, faded, palette_height, radius, size, space, text,
+};
 use crate::terminal::engine::{PALETTE_RESULT_LIMIT, TerminalView, filtered_tasks};
+use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
@@ -38,6 +42,7 @@ impl TerminalView {
         for (index, task) in tasks.iter().take(PALETTE_RESULT_LIMIT).enumerate() {
             let selected = index == self.task_selection;
             let task_to_run = (*task).clone();
+            let target = HoverTarget::PaletteRow(index);
             results = results.child(
                 div()
                     .id(("cuetty-task-palette-row", index))
@@ -49,10 +54,12 @@ impl TerminalView {
                     .items_center()
                     .gap(space::MD)
                     .rounded(radius::CONTROL)
-                    .when(selected, |this| this.bg(colors.panel_selected))
-                    .when(!selected, |this| {
-                        this.hover(|this| this.bg(colors.panel_hover))
+                    .bg(if selected {
+                        colors.panel_selected
+                    } else {
+                        faded(colors.panel_hover, self.hover_level(target))
                     })
+                    .on_hover(hover_fade(target, cx))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);

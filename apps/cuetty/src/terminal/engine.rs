@@ -21,7 +21,9 @@ use super::model::{
 };
 #[cfg(test)]
 use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
-use super::motion::{ChromeMotion, MotionPace, SidebarFrame};
+use super::motion::{
+    ChromeMotion, HoverTarget, MotionPace, SidebarButton, SidebarFrame, TabPlaces,
+};
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
@@ -1631,6 +1633,26 @@ pub(super) struct TerminalView {
     pub(super) motion: ChromeMotion,
 }
 
+/// What besides the tabs is on screen for the pointer to be over.
+struct LiveHoverTargets {
+    notice: bool,
+    tasks: bool,
+    palette_hint: bool,
+    palette: bool,
+    task_sidebar: bool,
+}
+
+impl LiveHoverTargets {
+    fn button(&self, button: SidebarButton) -> bool {
+        match button {
+            SidebarButton::NewTab | SidebarButton::Toggle => true,
+            SidebarButton::Notice => self.notice,
+            SidebarButton::Tasks => self.tasks,
+            SidebarButton::PaletteHint => self.palette_hint,
+        }
+    }
+}
+
 /// What the window is called with no tab to name it after.
 const APP_TITLE: &str = "Cuetty";
 
@@ -2808,10 +2830,50 @@ impl TerminalView {
         let pace = self.motion_pace();
         let width = sidebar_width(self.sidebar_mode());
         let sidebar = self.motion.sidebar_frame(width, pace, now);
+        let tabs: Vec<TabId> = self
+            .registry
+            .workspace
+            .workspace()
+            .tabs()
+            .iter()
+            .map(|tab| tab.id)
+            .collect();
+        self.motion.follow_tabs(
+            TabPlaces {
+                tabs: &tabs,
+                active: self.active_tab(),
+            },
+            pace,
+            now,
+        );
+        let live = self.live_hover_targets();
+        self.motion.forget_hovers(now, |target| match *target {
+            HoverTarget::Tab(tab) => tabs.contains(&tab),
+            HoverTarget::Button(button) => live.button(button),
+            HoverTarget::PaletteRow(_) => live.palette,
+            HoverTarget::TaskRow(_) => live.task_sidebar,
+        });
         if let Some(delay) = self.motion.next_frame(now) {
             self.request_frame(now + delay, delay, cx);
         }
         sidebar
+    }
+
+    /// What is on screen to be hovered, besides the tabs.
+    fn live_hover_targets(&self) -> LiveHoverTargets {
+        let has_tasks = self
+            .active_state()
+            .is_some_and(|state| !state.task_catalogue().is_empty());
+        LiveHoverTargets {
+            notice: self.registry.notice.is_some()
+                || self
+                    .active_state()
+                    .is_some_and(|state| state.marker_notice().is_some()),
+            tasks: has_tasks,
+            palette_hint: has_tasks && self.sidebar_mode() == SidebarMode::Expanded,
+            palette: self.task_palette_open,
+            task_sidebar: self.task_sidebar_open,
+        }
     }
 
     /// One timer is enough: only one sooner than any already waiting replaces it.

@@ -5,12 +5,19 @@
 //! moving stops drawing.
 
 use super::config::MotionPreference;
+use crate::workspace::TabId;
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::time::{Duration, Instant};
 
 /// The time between frames of a transition.
 const FRAME: Duration = Duration::from_millis(16);
 /// How long the sidebar takes to open or close, the longest distance anything travels.
 const SIDEBAR_TRANSITION: Duration = Duration::from_millis(150);
+/// How long the active tab's marker takes to reach another tab, and its fill to follow.
+const TAB_TRANSITION: Duration = Duration::from_millis(140);
+/// How long a hover takes to show or clear: quick, since it answers the pointer.
+const HOVER_TRANSITION: Duration = Duration::from_millis(100);
 
 /// How far the chrome is allowed to move, once the setting and the platform have had
 /// their say.
@@ -183,10 +190,90 @@ impl SidebarMotion {
     }
 }
 
+/// Things that are each somewhere between off (0) and on (1). Whatever has settled off
+/// is forgotten, so this only ever holds what is lit or fading.
+#[derive(Clone, Debug)]
+struct Fades<K> {
+    levels: HashMap<K, Tween>,
+}
+
+impl<K> Default for Fades<K> {
+    fn default() -> Self {
+        Self {
+            levels: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Eq + Hash> Fades<K> {
+    fn set(&mut self, key: K, target: FadeTarget, duration: Duration, now: Instant) {
+        let to = match target {
+            FadeTarget::On => 1.0,
+            FadeTarget::Off => 0.0,
+        };
+        self.levels
+            .entry(key)
+            .or_insert_with(|| Tween::at(0.0, now))
+            .head_for(to, duration, now);
+    }
+
+    fn level(&self, key: &K, now: Instant) -> f32 {
+        self.levels.get(key).map_or(0.0, |tween| tween.value(now))
+    }
+
+    fn is_running(&self, now: Instant) -> bool {
+        self.levels.values().any(|tween| tween.is_running(now))
+    }
+
+    /// Drops what has faded out and what `live` says no longer exists.
+    fn retain(&mut self, now: Instant, live: impl Fn(&K) -> bool) {
+        self.levels
+            .retain(|key, tween| live(key) && (tween.to > 0.0 || tween.is_running(now)));
+    }
+}
+
+/// Where a fade is heading.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FadeTarget {
+    On,
+    Off,
+}
+
+/// A button in the sidebar's footer.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum SidebarButton {
+    Notice,
+    NewTab,
+    Tasks,
+    Toggle,
+    PaletteHint,
+}
+
+/// Something in the chrome that lights up under the pointer.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum HoverTarget {
+    Tab(TabId),
+    Button(SidebarButton),
+    PaletteRow(usize),
+    TaskRow(usize),
+}
+
+/// The tabs as this draw has them.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TabPlaces<'a> {
+    pub(super) tabs: &'a [TabId],
+    pub(super) active: Option<TabId>,
+}
+
 /// Everything in the chrome that is on its way somewhere.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ChromeMotion {
     sidebar: Option<SidebarMotion>,
+    /// Where the active tab's marker is, as a position in the tab list.
+    marker: Option<Tween>,
+    hover: Fades<HoverTarget>,
+    /// How strongly each tab shows as the active one.
+    active: Fades<TabId>,
 }
 
 impl ChromeMotion {
@@ -205,12 +292,77 @@ impl ChromeMotion {
         sidebar.frame(now)
     }
 
+    /// Sends the marker to the active tab and hands the fill over to it, whichever way it
+    /// became active and wherever a reorder or a closed tab has left it. The first tab to
+    /// be active has no tab to slide from.
+    pub(super) fn follow_tabs(&mut self, places: TabPlaces<'_>, pace: MotionPace, now: Instant) {
+        let TabPlaces { tabs, active } = places;
+        let duration = pace.duration(TAB_TRANSITION);
+        let place = active.and_then(|active| tabs.iter().position(|tab| *tab == active));
+        self.marker = place.map(|place| {
+            let place = place as f32;
+            let mut marker = self.marker.unwrap_or_else(|| Tween::at(place, now));
+            marker.head_for(place, duration, now);
+            marker
+        });
+        for tab in tabs {
+            let target = if active == Some(*tab) {
+                FadeTarget::On
+            } else {
+                FadeTarget::Off
+            };
+            self.active.set(*tab, target, duration, now);
+        }
+        self.active.retain(now, |tab| tabs.contains(tab));
+    }
+
+    /// Lets go of whatever has left the screen: the element under the pointer reports no
+    /// end to its hover once it has gone, so it would come back lit.
+    pub(super) fn forget_hovers(&mut self, now: Instant, live: impl Fn(&HoverTarget) -> bool) {
+        self.hover.retain(now, live);
+    }
+
+    /// The pointer has arrived over `target`.
+    pub(super) fn hover_on(&mut self, target: HoverTarget, pace: MotionPace, now: Instant) {
+        self.hover
+            .set(target, FadeTarget::On, pace.duration(HOVER_TRANSITION), now);
+    }
+
+    /// The pointer has left `target`.
+    pub(super) fn hover_off(&mut self, target: HoverTarget, pace: MotionPace, now: Instant) {
+        self.hover.set(
+            target,
+            FadeTarget::Off,
+            pace.duration(HOVER_TRANSITION),
+            now,
+        );
+    }
+
+    /// How lit something is under the pointer.
+    pub(super) fn hover_level(&self, target: HoverTarget, now: Instant) -> f32 {
+        self.hover.level(&target, now)
+    }
+
+    /// How strongly a tab shows as the active one.
+    pub(super) fn active_level(&self, tab: TabId, now: Instant) -> f32 {
+        self.active.level(&tab, now)
+    }
+
+    /// Where the active tab's marker is, as a fractional place in the tab list.
+    pub(super) fn marker_place(&self, now: Instant) -> Option<f32> {
+        self.marker.map(|marker| marker.value(now))
+    }
+
     /// When the next draw is due, if anything is still moving. Nothing moving asks for
     /// nothing, which leaves an idle window idle.
     pub(super) fn next_frame(&self, now: Instant) -> Option<Duration> {
-        self.sidebar
+        let moving = self
+            .sidebar
             .is_some_and(|sidebar| sidebar.panel.is_running(now))
-            .then_some(FRAME)
+            || self.marker.is_some_and(|marker| marker.is_running(now))
+            || self.hover.is_running(now)
+            || self.active.is_running(now);
+        moving.then_some(FRAME)
     }
 }
 
@@ -316,6 +468,115 @@ mod tests {
                 slot: COLLAPSED
             }
         );
+    }
+
+    #[test]
+    fn the_marker_slides_between_tabs_and_lands_on_the_active_one() {
+        let now = Instant::now();
+        let tabs = [TabId::new(1), TabId::new(2), TabId::new(3)];
+        let mut motion = ChromeMotion::default();
+        let at = |active| TabPlaces {
+            tabs: &tabs,
+            active: Some(active),
+        };
+        motion.follow_tabs(at(tabs[0]), MotionPace::Full, now);
+        assert_eq!(motion.marker_place(now), Some(0.0), "nothing to slide from");
+        motion.follow_tabs(at(tabs[2]), MotionPace::Full, now);
+        assert_eq!(motion.marker_place(now), Some(0.0));
+        let part_way = motion
+            .marker_place(now + TAB_TRANSITION / 2)
+            .unwrap_or_default();
+        assert!(part_way > 0.0 && part_way < 2.0, "{part_way}");
+        assert_eq!(motion.marker_place(now + TAB_TRANSITION), Some(2.0));
+    }
+
+    #[test]
+    fn the_marker_follows_its_tab_when_the_list_moves_under_it() {
+        let now = Instant::now();
+        let (first, second) = (TabId::new(1), TabId::new(2));
+        let mut motion = ChromeMotion::default();
+        let reduced = MotionPace::Reduced;
+        let places = [first, second];
+        motion.follow_tabs(
+            TabPlaces {
+                tabs: &places,
+                active: Some(second),
+            },
+            reduced,
+            now,
+        );
+        assert_eq!(motion.marker_place(now), Some(1.0));
+        motion.follow_tabs(
+            TabPlaces {
+                tabs: &[second],
+                active: Some(second),
+            },
+            reduced,
+            now,
+        );
+        assert_eq!(motion.marker_place(now), Some(0.0));
+        motion.follow_tabs(
+            TabPlaces {
+                tabs: &[],
+                active: None,
+            },
+            reduced,
+            now,
+        );
+        assert_eq!(motion.marker_place(now), None);
+    }
+
+    #[test]
+    fn the_active_fill_hands_over_from_one_tab_to_the_next() {
+        let now = Instant::now();
+        let (first, second) = (TabId::new(1), TabId::new(2));
+        let tabs = [first, second];
+        let mut motion = ChromeMotion::default();
+        let at = |active| TabPlaces {
+            tabs: &tabs,
+            active: Some(active),
+        };
+        motion.follow_tabs(at(first), MotionPace::Reduced, now);
+        motion.follow_tabs(at(second), MotionPace::Full, now);
+        let midway = now + TAB_TRANSITION / 2;
+        let (leaving, arriving) = (
+            motion.active_level(first, midway),
+            motion.active_level(second, midway),
+        );
+        assert!(leaving > 0.0 && leaving < 1.0);
+        assert!(arriving > 0.0 && arriving < 1.0);
+        let done = now + TAB_TRANSITION;
+        assert_eq!(motion.active_level(first, done), 0.0);
+        assert_eq!(motion.active_level(second, done), 1.0);
+    }
+
+    #[test]
+    fn a_hover_fades_up_and_away_and_leaves_nothing_behind() {
+        let now = Instant::now();
+        let target = HoverTarget::PaletteRow(1);
+        let mut motion = ChromeMotion::default();
+        motion.hover_on(target, MotionPace::Full, now);
+        assert!(motion.next_frame(now).is_some());
+        let lit = now + HOVER_TRANSITION;
+        assert_eq!(motion.hover_level(target, lit), 1.0);
+        motion.hover_off(target, MotionPace::Full, lit);
+        motion.forget_hovers(lit, |_| true);
+        assert_eq!(motion.hover_level(target, lit), 1.0, "still fading");
+        let gone = lit + HOVER_TRANSITION;
+        assert_eq!(motion.hover_level(target, gone), 0.0);
+        motion.forget_hovers(gone, |_| true);
+        assert!(motion.hover.levels.is_empty());
+    }
+
+    #[test]
+    fn a_hovered_control_that_left_the_screen_is_not_lit_when_it_returns() {
+        let now = Instant::now();
+        let target = HoverTarget::TaskRow(0);
+        let mut motion = ChromeMotion::default();
+        motion.hover_on(target, MotionPace::Reduced, now);
+        assert_eq!(motion.hover_level(target, now), 1.0);
+        motion.forget_hovers(now, |target| !matches!(target, HoverTarget::TaskRow(_)));
+        assert_eq!(motion.hover_level(target, now), 0.0);
     }
 
     #[test]

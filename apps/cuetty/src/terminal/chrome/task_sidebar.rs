@@ -1,5 +1,7 @@
-use super::tokens::{ChromeColors, border, elevation, radius, size, space, text};
+use super::hover_fade;
+use super::tokens::{ChromeColors, border, elevation, faded, radius, size, space, text};
 use crate::terminal::engine::TerminalView;
+use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
@@ -30,6 +32,7 @@ impl TerminalView {
         let mut list = div().flex().flex_col().gap(space::XS);
         for (index, task) in state.cuenv.tasks.iter().enumerate() {
             let task_to_run = task.clone();
+            let target = HoverTarget::TaskRow(index);
             let detail = task
                 .description
                 .clone()
@@ -44,7 +47,8 @@ impl TerminalView {
                     .flex_col()
                     .gap(space::XXS)
                     .rounded(radius::CONTROL)
-                    .hover(|this| this.bg(colors.panel_hover))
+                    .bg(faded(colors.panel_hover, self.hover_level(target)))
+                    .on_hover(hover_fade(target, cx))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);

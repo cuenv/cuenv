@@ -290,6 +290,21 @@ fn state_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
     }
 }
 
+/// `color` part of the way in, for something fading: a hover, or a tab becoming active.
+pub(super) fn faded(color: Rgba, level: f32) -> Rgba {
+    Rgba {
+        a: color.a * level.clamp(0.0, 1.0),
+        ..color
+    }
+}
+
+/// How far down its list the active tab's marker sits at a fractional place in it, so
+/// it can travel between rows. Every row is the same height, in both sidebar modes.
+pub(super) fn tab_marker_top(place: f32) -> Pixels {
+    let row = size::TAB_ROW_TWO_LINE_HEIGHT;
+    space::MD + (row + space::XXS) * place + (row - size::TAB_MARKER_HEIGHT) / 2.0
+}
+
 /// Semantic chrome colours resolved from the active theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ChromeColors {
@@ -445,6 +460,17 @@ mod tests {
             SYSTEM_UI_FONT
         );
         assert_eq!(first_available_family(&[], |_| true), SYSTEM_UI_FONT);
+    }
+
+    #[test]
+    fn the_tab_marker_is_centred_on_a_row_at_every_whole_place() {
+        let row_top = |place: f32| space::MD + (size::TAB_ROW_TWO_LINE_HEIGHT + space::XXS) * place;
+        for place in [0.0, 1.0, 7.0] {
+            let marker = tab_marker_top(place);
+            let above = marker - row_top(place);
+            let below = size::TAB_ROW_TWO_LINE_HEIGHT - size::TAB_MARKER_HEIGHT - above;
+            assert_eq!(above, below);
+        }
     }
 
     #[test]

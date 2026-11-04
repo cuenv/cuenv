@@ -1,6 +1,8 @@
+use super::hover_fade;
 use super::icons::Icon;
 use super::tokens::{
-    ChromeColors, border, elevation, opaque, radius, size, space, text, ui_font_family,
+    ChromeColors, border, elevation, faded, opaque, radius, size, space, tab_marker_top, text,
+    ui_font_family,
 };
 use super::tooltip::chrome_tooltip;
 use crate::integrations::cuenv::{RailColor, SidebarMode};
@@ -8,6 +10,7 @@ use crate::terminal::engine::{
     SIDEBAR_TOGGLE_KEY, TabClick, TerminalView, app_chord_label, tab_number_hint,
 };
 use crate::terminal::model::Rgb;
+use crate::terminal::motion::{HoverTarget, SidebarButton};
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_label::{TabMarkSources, tab_mark, tab_subtitle, tab_tooltip};
 use crate::terminal::tab_rename::TabRename;
@@ -19,9 +22,6 @@ use gpui::{
     ParentElement, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled,
     Window, div, prelude::FluentBuilder,
 };
-
-/// Names a tab's row to the parts of it that only show while it is hovered.
-const TAB_ROW_GROUP: &str = "cuetty-tab-row";
 
 /// A tab being dragged to another place in the list, and what follows the pointer.
 #[derive(Clone)]
@@ -100,6 +100,7 @@ impl TerminalView {
                 .and_then(|state| state.cuenv.presentation.rail),
             &colors,
         );
+        let now = std::time::Instant::now();
         let tab_list = self.registry.workspace.workspace().tabs();
         let tabs = tab_list
             .iter()
@@ -151,8 +152,9 @@ impl TerminalView {
                             .then(|| TabNumber::of_position(index, tab_list.len()))
                             .flatten(),
                         selected: active_tab == Some(tab.id),
+                        hover: self.motion.hover_level(HoverTarget::Tab(tab.id), now),
+                        active: self.motion.active_level(tab.id, now),
                         mode,
-                        marker_color,
                         colors,
                         mono: self.mono_font_family(),
                     },
@@ -170,7 +172,20 @@ impl TerminalView {
             .gap(space::XXS)
             .p(space::MD)
             .min_h_0()
-            .children(tabs);
+            .children(tabs)
+            // One marker for the whole list, which travels between rows. It follows them as
+            // the list scrolls, being a child of what scrolls, and comes after them so a
+            // scroll to a tab's position still counts rows.
+            .children(self.motion.marker_place(now).map(|place| {
+                div()
+                    .absolute()
+                    .left(space::MD + border::HAIRLINE)
+                    .top(tab_marker_top(place))
+                    .w(size::TAB_MARKER_WIDTH)
+                    .h(size::TAB_MARKER_HEIGHT)
+                    .rounded(radius::CONTROL)
+                    .bg(marker_color)
+            }));
         let integration_notice = active_tab
             .and_then(|tab_id| tab_list.iter().find(|tab| tab.id == tab_id))
             .and_then(|tab| self.registry.sessions.get(&tab.focused))
@@ -184,7 +199,7 @@ impl TerminalView {
             .as_deref()
             .or(integration_notice)
             .map(|notice| {
-                control(&colors, "cuetty-notice")
+                self.control(SidebarButton::Notice, &colors, cx)
                     .tooltip(chrome_tooltip(notice.to_string(), colors))
                     .child(
                         div()
@@ -196,7 +211,8 @@ impl TerminalView {
         let has_tasks = self
             .active_state()
             .is_some_and(|state| !state.task_catalogue().is_empty());
-        let new_tab = control(&colors, "cuetty-new-tab")
+        let new_tab = self
+            .control(SidebarButton::NewTab, &colors, cx)
             .cursor_pointer()
             .tooltip(chrome_tooltip(
                 format!("New tab · {}", app_chord_label("t")),
@@ -207,7 +223,8 @@ impl TerminalView {
             }))
             .child(Icon::Plus.element(colors.text_secondary));
         let palette_chord = self.palette_chord_label();
-        let tasks = control(&colors, "cuetty-tasks")
+        let tasks = self
+            .control(SidebarButton::Tasks, &colors, cx)
             .when(self.task_sidebar_open, |this| this.bg(colors.state))
             .cursor_pointer()
             .tooltip(chrome_tooltip(
@@ -223,7 +240,8 @@ impl TerminalView {
             SidebarMode::Expanded => ("Collapse sidebar", Icon::SidebarCollapse),
             SidebarMode::Collapsed => ("Expand sidebar", Icon::SidebarExpand),
         };
-        let toggle = control(&colors, "cuetty-sidebar-toggle")
+        let toggle = self
+            .control(SidebarButton::Toggle, &colors, cx)
             .cursor_pointer()
             .tooltip(chrome_tooltip(
                 format!("{toggle_label} · {}", app_chord_label(SIDEBAR_TOGGLE_KEY)),
@@ -235,7 +253,7 @@ impl TerminalView {
         // run one, the key is left alone. A collapsed sidebar has no room for it, and the tasks button's
         // tooltip says the same.
         let palette_hint = (has_tasks && mode == SidebarMode::Expanded).then(|| {
-            let hover = colors.state;
+            let target = HoverTarget::Button(SidebarButton::PaletteHint);
             div()
                 .id("cuetty-palette-hint")
                 .mx(space::SM)
@@ -247,7 +265,8 @@ impl TerminalView {
                 .justify_between()
                 .gap(space::MD)
                 .rounded(radius::CONTROL)
-                .hover(move |this| this.bg(hover))
+                .bg(faded(colors.state, self.hover_level(target)))
+                .on_hover(hover_fade(target, cx))
                 .cursor_pointer()
                 .text_size(text::CAPTION)
                 .text_color(colors.text_muted)
@@ -300,21 +319,33 @@ impl TerminalView {
             .child(footer)
             .into_any_element()
     }
-}
 
-/// The square-ish hit target every sidebar control shares.
-fn control(colors: &ChromeColors, id: &'static str) -> Stateful<Div> {
-    let hover = colors.state;
-    div()
-        .id(id)
-        .w(size::CONTROL_WIDTH)
-        .h(size::CONTROL_HEIGHT)
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(radius::CONTROL)
-        .hover(move |this| this.bg(hover))
+    /// The square-ish hit target every sidebar control shares.
+    fn control(
+        &self,
+        button: SidebarButton,
+        colors: &ChromeColors,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let target = HoverTarget::Button(button);
+        div()
+            .id(match button {
+                SidebarButton::Notice => "cuetty-notice",
+                SidebarButton::NewTab => "cuetty-new-tab",
+                SidebarButton::Tasks => "cuetty-tasks",
+                SidebarButton::Toggle => "cuetty-sidebar-toggle",
+                SidebarButton::PaletteHint => "cuetty-palette-hint",
+            })
+            .w(size::CONTROL_WIDTH)
+            .h(size::CONTROL_HEIGHT)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(radius::CONTROL)
+            .bg(faded(colors.state, self.hover_level(target)))
+            .on_hover(hover_fade(target, cx))
+    }
 }
 
 /// A tab's status at a glance. Every state has its own shape, so it reads the same
@@ -386,13 +417,20 @@ fn render_name_field(editing: String, label: String, colors: &ChromeColors) -> D
 struct CloseButton {
     id: TabId,
     pane: PaneId,
+    /// How far its row's hover has come, which it fades in with.
+    reveal: f32,
     colors: ChromeColors,
 }
 
 /// The button that closes a tab, which stays out of sight until its row is hovered.
 /// The press stops here, so it neither selects the tab nor starts dragging it.
 fn render_close_button(button: CloseButton, cx: &mut Context<TerminalView>) -> Stateful<Div> {
-    let CloseButton { id, pane, colors } = button;
+    let CloseButton {
+        id,
+        pane,
+        reveal,
+        colors,
+    } = button;
     let hover = colors.panel_hover;
     div()
         .id(("cuetty-rail-tab-close", id.get()))
@@ -400,8 +438,7 @@ fn render_close_button(button: CloseButton, cx: &mut Context<TerminalView>) -> S
         .items_center()
         .justify_center()
         .rounded(radius::CONTROL)
-        .opacity(0.0)
-        .group_hover(TAB_ROW_GROUP, |this| this.opacity(1.0))
+        .opacity(reveal)
         .hover(move |this| this.bg(hover))
         .cursor_pointer()
         .tooltip(chrome_tooltip(
@@ -441,8 +478,11 @@ struct TabRow {
     indicator: Option<TabIndicator>,
     number: Option<TabNumber>,
     selected: bool,
+    /// How far the pointer's hover over this row has faded in.
+    hover: f32,
+    /// How strongly the row shows as the active one, which fades as tabs switch.
+    active: f32,
     mode: SidebarMode,
-    marker_color: Rgba,
     colors: ChromeColors,
     mono: SharedString,
 }
@@ -460,12 +500,12 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         indicator,
         number,
         selected,
+        hover,
+        active,
         mode,
-        marker_color,
         colors,
         mono,
     } = row;
-    let hover = colors.state;
     let drop_outline = colors.accent;
     let dragged = DraggedTab {
         id,
@@ -485,7 +525,6 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
     };
     div()
         .id(("cuetty-rail-tab", id.get()))
-        .group(TAB_ROW_GROUP)
         .relative()
         .w_full()
         .h(size::TAB_ROW_TWO_LINE_HEIGHT)
@@ -493,7 +532,8 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         .flex()
         .items_center()
         .rounded(radius::CONTROL)
-        .hover(move |this| this.bg(hover))
+        .bg(faded(colors.state, hover.max(active)))
+        .on_hover(hover_fade(HoverTarget::Tab(id), cx))
         .cursor_pointer()
         .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
             view.tab_row_clicked(
@@ -533,24 +573,6 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
             text::MEDIUM
         } else {
             text::REGULAR
-        })
-        .when(selected, |this| {
-            this.bg(colors.state).child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .bottom_0()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .w(size::TAB_MARKER_WIDTH)
-                            .h(size::TAB_MARKER_HEIGHT)
-                            .rounded(radius::CONTROL)
-                            .bg(marker_color),
-                    ),
-            )
         })
         .map(|this| match mode {
             SidebarMode::Expanded => this
@@ -597,13 +619,20 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                         .items_center()
                         .justify_center()
                         .children(indicator.map(|indicator| {
-                            render_indicator(indicator, &colors)
-                                .group_hover(TAB_ROW_GROUP, |this| this.opacity(0.0))
+                            render_indicator(indicator, &colors).opacity(1.0 - hover)
                         }))
                         .child(
-                            render_close_button(CloseButton { id, pane, colors }, cx)
-                                .absolute()
-                                .inset_0(),
+                            render_close_button(
+                                CloseButton {
+                                    id,
+                                    pane,
+                                    reveal: hover,
+                                    colors,
+                                },
+                                cx,
+                            )
+                            .absolute()
+                            .inset_0(),
                         ),
                 ),
             // Only a character fits, so the hint stands in for the mark. The row is too

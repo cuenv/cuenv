@@ -132,6 +132,10 @@ The current usable slice includes:
   colours move towards its background, so drawn glyphs stay even and a translucent
   window's material does not change; emoji, which bring their own colours, stay as they
   are. Chrome keeps its colours, and the fade costs an idle window no redraws.
+- Chrome that moves briefly, and only in answer to something: the sidebar's controls and
+  rows fade their hover over 100ms, and on a switch of tab one marker slides to its new
+  place over 140ms while the row fills hand over. Nothing draws once it has landed, and
+  `motion: "reduced"`, or the platform's own setting, makes all of it land at once.
 - A hint at the foot of the expanded sidebar naming the active tab's task palette chord,
   such as `⌘K` or `Ctrl+K`, shown only where the directory has a task catalogue and a live
   shell to run it, and so the chord does something. Clicking it opens the palette.
