@@ -1694,6 +1694,10 @@ impl TerminalView {
                 state.interaction.extend_selection(hit_test, position);
             }
             cx.notify();
+        } else if let Some(state) = self.active_state_mut() {
+            // Moving with no button held means the press ended where no release
+            // could reach this view, such as outside the window.
+            state.interaction.end_selection();
         }
     }
 
@@ -1855,6 +1859,10 @@ impl Render for TerminalView {
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                         .on_mouse_move(cx.listener(Self::mouse_move))
                         .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+                        // A drag can end over chrome, whose panels occlude this
+                        // element. The gesture still has to end there, or a later
+                        // drag starting on that chrome extends the old selection.
+                        .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
                         .on_scroll_wheel(cx.listener(Self::scroll_wheel))
                         .child(
                             canvas(
