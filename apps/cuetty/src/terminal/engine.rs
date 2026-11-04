@@ -1274,6 +1274,44 @@ fn takes_offered_action(event: &gpui::KeyDownEvent) -> bool {
     !event.is_held && event.keystroke.key == "enter" && !(control || alt || shift || platform)
 }
 
+/// What holding Alt means on this platform.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AltKey {
+    /// It is Option, which composes characters that are text.
+    Composes,
+    /// It makes a chord, though the keystroke still carries the letter.
+    Chords,
+}
+
+impl AltKey {
+    const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Composes
+        } else {
+            Self::Chords
+        }
+    }
+}
+
+/// The character a keystroke types as text, if it does. A chord is not text, whatever
+/// character it would have typed.
+fn typed_character(keystroke: &gpui::Keystroke, alt_key: AltKey) -> Option<char> {
+    let gpui::Modifiers {
+        control,
+        alt,
+        platform,
+        ..
+    } = keystroke.modifiers;
+    if control || platform || (alt && alt_key == AltKey::Chords) {
+        return None;
+    }
+    keystroke
+        .key_char
+        .as_deref()
+        .and_then(|text| text.chars().next())
+        .filter(|character| !character.is_control())
+}
+
 /// What the poll can change about a pane, for telling whether it did.
 #[derive(Debug, PartialEq)]
 struct PolledPaneState {
@@ -3140,12 +3178,7 @@ impl TerminalView {
                     reverse: modifiers.shift,
                 }),
                 "escape" => Some(SearchKey::Escape),
-                _ => event
-                    .keystroke
-                    .key_char
-                    .as_ref()
-                    .and_then(|text| text.chars().next())
-                    .map(SearchKey::Character),
+                _ => typed_character(&event.keystroke, AltKey::current()).map(SearchKey::Character),
             };
             if let Some(search_key) = search_key {
                 self.search_key(search_key);
@@ -3687,6 +3720,68 @@ mod tests {
         let mut frame = TerminalView::empty_frame();
         frame.rows[0].cells[0] = TerminalCell::narrow(character);
         frame
+    }
+
+    fn keystroke_typing(key_char: &str, modifiers: gpui::Modifiers) -> gpui::Keystroke {
+        gpui::Keystroke {
+            modifiers,
+            key: "b".into(),
+            key_char: Some(key_char.into()),
+        }
+    }
+
+    #[test]
+    fn alt_types_into_a_query_only_where_it_composes_characters() {
+        let alt = gpui::Modifiers {
+            alt: true,
+            ..gpui::Modifiers::default()
+        };
+        assert_eq!(
+            typed_character(&keystroke_typing("b", alt), AltKey::Chords),
+            None
+        );
+        assert_eq!(
+            typed_character(&keystroke_typing("∫", alt), AltKey::Composes),
+            Some('∫')
+        );
+    }
+
+    #[test]
+    fn control_and_platform_chords_are_never_text_and_plain_keys_are() {
+        let plain = gpui::Modifiers::default();
+        assert_eq!(
+            typed_character(&keystroke_typing("B", plain), AltKey::Chords),
+            Some('B')
+        );
+        let chords = [
+            gpui::Modifiers {
+                control: true,
+                ..plain
+            },
+            gpui::Modifiers {
+                platform: true,
+                ..plain
+            },
+        ];
+        for chord in chords {
+            for alt_key in [AltKey::Chords, AltKey::Composes] {
+                assert_eq!(
+                    typed_character(&keystroke_typing("b", chord), alt_key),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_control_character_is_not_text() {
+        assert_eq!(
+            typed_character(
+                &keystroke_typing("\u{7f}", gpui::Modifiers::default()),
+                AltKey::Chords
+            ),
+            None
+        );
     }
 
     #[test]
