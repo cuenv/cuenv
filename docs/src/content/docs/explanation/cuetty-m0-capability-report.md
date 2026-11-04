@@ -84,7 +84,7 @@ an ignored test ran. Failed executions use `fail` with an attributed `gap_owner`
 
 Promotion requires all M0-required scopes to be verified, including the retained
 `librio` comparison and real Apple Silicon corpus. Current host gaps include
-colour queries, focus/mouse routing, keypad identity, hyperlink destinations,
+focus/mouse routing, keypad identity, hyperlink destinations,
 selection/search across history, and IME. The representable Kitty and
 `modifyOtherKeys` subset is implemented and fixture-tested, while key releases
 and alternate-key reporting remain unqualified. Kitty graphics remains

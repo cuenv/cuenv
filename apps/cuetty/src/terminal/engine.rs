@@ -4,7 +4,7 @@ use super::chrome::{
     traffic_light_position,
 };
 use super::color::{blend, dimmed, with_minimum_contrast};
-use super::config::{SystemAppearance, TerminalConfig};
+use super::config::{SystemAppearance, TerminalConfig, ThemeColors};
 use super::cursor::{
     CursorAnimator, CursorFocus, CursorFrame, CursorObservation, TrailSpan, blink_wanted,
 };
@@ -37,8 +37,8 @@ use super::workspace_shell::{
 };
 use crate::integrations::cuenv::{
     ChordModifiers, ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher,
-    Evaluation, KeyChord, NativeCuenvProvider, SidebarMode, TaskEvaluation, WindowSidebar,
-    evaluate_within,
+    Evaluation, EvaluationStage, KeyChord, NativeCuenvProvider, SidebarMode, StagedEvaluation,
+    WindowSidebar, evaluate_within,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
@@ -1001,6 +1001,8 @@ struct CuenvUpdateTarget {
 pub(super) struct PaneState {
     generation: SessionGeneration,
     session: Box<dyn TerminalSession>,
+    /// The palette the session was last told about, so it is told only of a change.
+    told_palette: Option<ThemeColors>,
     frame: TerminalFrame,
     interaction: InteractionState,
     scroll_remainder: f32,
@@ -1033,6 +1035,7 @@ impl PaneState {
         Self {
             generation,
             session,
+            told_palette: None,
             frame,
             interaction: InteractionState::default(),
             scroll_remainder: 0.0,
@@ -1395,9 +1398,16 @@ impl SessionRegistry {
     fn start(
         factory: Arc<dyn TerminalSessionFactory>,
         geometry: SessionGeometry,
+        palette: &ThemeColors,
     ) -> Result<(Self, async_channel::Receiver<()>), RegistryError> {
         let start = geometry
-            .start_session(factory.as_ref(), None)
+            .start_session(
+                factory.as_ref(),
+                SessionSeed {
+                    working_directory: None,
+                    palette,
+                },
+            )
             .map_err(RegistryError::Session)?;
         let workspace = WorkspaceShell::new()
             .map_err(ShellError::from)
@@ -1432,6 +1442,19 @@ impl SessionRegistry {
         self.workspace.active_pane()
     }
 
+    /// Tells every session the palette its pane now paints in, which is what applications
+    /// asking about colours hear. This includes tabs out of sight, whose programs go on
+    /// asking, and which keep their own theme.
+    fn sync_session_palettes(&mut self, appearance: SystemAppearance) {
+        for state in self.sessions.values_mut() {
+            let palette = state.cuenv.presentation.terminal.colors_for(appearance);
+            if state.told_palette.as_ref() != Some(&palette) {
+                state.session.set_palette(palette.clone());
+                state.told_palette = Some(palette);
+            }
+        }
+    }
+
     fn active_terminal_config(&self) -> TerminalConfig {
         self.active_pane()
             .and_then(|pane| self.sessions.get(&pane))
@@ -1442,6 +1465,7 @@ impl SessionRegistry {
     fn start_tab(
         &mut self,
         geometry: SessionGeometry,
+        appearance: SystemAppearance,
     ) -> Result<
         (
             crate::workspace::PaneId,
@@ -1450,14 +1474,20 @@ impl SessionRegistry {
         ),
         RegistryError,
     > {
-        let mut start = geometry
-            .start_session(self.factory.as_ref(), None)
-            .map_err(RegistryError::Session)?;
         let presentation = self
             .active_pane()
             .and_then(|pane| self.sessions.get(&pane))
             .map(|state| state.cuenv.presentation.carried_over())
             .unwrap_or_default();
+        let mut start = geometry
+            .start_session(
+                self.factory.as_ref(),
+                SessionSeed {
+                    working_directory: None,
+                    palette: &presentation.terminal.colors_for(appearance),
+                },
+            )
+            .map_err(RegistryError::Session)?;
         let target = match self.workspace.create_tab("Terminal") {
             Ok(target) => target,
             Err(error) => {
@@ -1489,17 +1519,23 @@ impl SessionRegistry {
         &mut self,
         pane: crate::workspace::PaneId,
         geometry: SessionGeometry,
+        appearance: SystemAppearance,
     ) -> Result<StartedSession, RegistryError> {
-        let directory = self
+        let cuenv = &self
             .sessions
             .get(&pane)
             .ok_or(RegistryError::MissingSession(pane))?
-            .cuenv
-            .cwd
-            .clone()
-            .filter(|directory| directory.is_dir());
+            .cuenv;
+        let directory = cuenv.cwd.clone().filter(|directory| directory.is_dir());
+        let palette = cuenv.presentation.terminal.colors_for(appearance);
         let start = geometry
-            .start_session(self.factory.as_ref(), directory.as_deref())
+            .start_session(
+                self.factory.as_ref(),
+                SessionSeed {
+                    working_directory: directory.as_deref(),
+                    palette: &palette,
+                },
+            )
             .map_err(RegistryError::Session)?;
         let generation = self.take_generation();
         let mut fresh = PaneState::new(generation, start.session, geometry.surface);
@@ -1807,6 +1843,13 @@ struct StartedSession {
     wake_rx: async_channel::Receiver<()>,
 }
 
+/// What a session starts from, apart from its grid.
+#[derive(Debug, Clone, Copy)]
+struct SessionSeed<'a> {
+    working_directory: Option<&'a std::path::Path>,
+    palette: &'a ThemeColors,
+}
+
 /// The grid a session starts on.
 #[derive(Debug, Clone, Copy)]
 struct SessionGeometry {
@@ -1819,14 +1862,15 @@ impl SessionGeometry {
     fn start_session(
         self,
         factory: &dyn TerminalSessionFactory,
-        working_directory: Option<&std::path::Path>,
+        seed: SessionSeed<'_>,
     ) -> Result<SessionStart, String> {
         let (width, height) = self.scale.whole_device_size(self.surface);
         factory.start(SessionRequest {
             width,
             height,
             cell: self.cell,
-            working_directory,
+            working_directory: seed.working_directory,
+            palette: seed.palette,
         })
     }
 }
@@ -1841,9 +1885,14 @@ const TAB_HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(350
 /// How many filtered tasks the palette shows and the keyboard can reach.
 pub(super) const PALETTE_RESULT_LIMIT: usize = 9;
 
-struct CuenvIntegrationUpdate {
-    presentation: Evaluation,
-    tasks: TaskEvaluation,
+/// Runs an evaluation on a thread of its own, finishing once it has reported everything.
+async fn evaluate_off_thread(evaluation: StagedEvaluation) {
+    let (finished_tx, finished_rx) = async_channel::bounded::<()>(1);
+    std::thread::spawn(move || {
+        evaluation.run();
+        drop(finished_tx);
+    });
+    let _ = finished_rx.recv().await;
 }
 
 pub(super) fn filtered_tasks<'a>(tasks: &'a [CuenvTask], query: &str) -> Vec<&'a CuenvTask> {
@@ -2124,6 +2173,19 @@ impl TerminalView {
         let theme = TerminalTheme::from_config(&config);
         let window_background = theme.window_background();
         let factory: Arc<dyn TerminalSessionFactory> = Arc::new(RioTerminalFactory);
+        let system_appearance = SystemAppearance::from(window.appearance());
+        // The window's first frame sizes the grid, so what shapes it has to be known by then.
+        // A pane carries this look over until its directory has evaluated. It comes before
+        // the shell, whose startup files may ask straight away what colours it is painted in.
+        let global = ConfigSource::from_working_directory(None)
+            .ok()
+            .flatten()
+            .and_then(|source| {
+                evaluate_within(Arc::clone(&cuenv), source, FIRST_FRAME_CONFIG_WAIT)
+            });
+        let palette = global.as_ref().map_or_else(ThemeColors::default, |global| {
+            global.palette_for(system_appearance)
+        });
         let started = SessionRegistry::start(
             factory.clone(),
             SessionGeometry {
@@ -2131,28 +2193,20 @@ impl TerminalView {
                 scale,
                 cell: metrics.device_cell(),
             },
+            &palette,
         );
         let (registry, sidebar, session) = match started {
             Ok((mut registry, wake_rx)) => {
                 let pane = registry.active_pane().expect("initial workspace pane");
                 registry.window_presence = window_presence(window);
-                // The window's first frame sizes the grid, so what shapes it has to be
-                // known by then. A pane carries this look over until its directory
-                // has evaluated.
-                let sidebar = ConfigSource::from_working_directory(None)
-                    .ok()
-                    .flatten()
-                    .and_then(|source| {
-                        evaluate_within(Arc::clone(&cuenv), source, FIRST_FRAME_CONFIG_WAIT)
-                    })
-                    .map_or_else(WindowSidebar::default, |global| {
-                        let sidebar = WindowSidebar::expecting(&global);
-                        if let Some(state) = registry.sessions.get_mut(&pane) {
-                            let generation = state.cuenv.begin_source();
-                            state.cuenv.apply(generation, global);
-                        }
-                        sidebar
-                    });
+                let sidebar = global.map_or_else(WindowSidebar::default, |global| {
+                    let sidebar = WindowSidebar::expecting(&global);
+                    if let Some(state) = registry.sessions.get_mut(&pane) {
+                        let generation = state.cuenv.begin_source();
+                        state.cuenv.apply(generation, global);
+                    }
+                    sidebar
+                });
                 let session = StartedSession {
                     pane,
                     generation: SessionGeneration(1),
@@ -2170,7 +2224,7 @@ impl TerminalView {
             registry,
             cuenv,
             config,
-            system_appearance: window.appearance().into(),
+            system_appearance,
             metrics,
             theme,
             focus: cx.focus_handle(),
@@ -2362,25 +2416,15 @@ impl TerminalView {
             }
         })
         .detach();
-        let evaluator = Arc::clone(&cuenv);
+        let evaluation = StagedEvaluation {
+            provider: Arc::clone(&cuenv),
+            source,
+            discover_tasks,
+            stages: updates_tx,
+        };
         cx.spawn(async move |_weak, _cx| {
-            let (result_tx, result_rx) = async_channel::bounded(1);
-            let initial_source = source.clone();
-            let initial_evaluator = Arc::clone(&evaluator);
-            std::thread::spawn(move || {
-                let _ = result_tx.send_blocking(CuenvIntegrationUpdate {
-                    presentation: initial_evaluator.evaluate(&initial_source),
-                    tasks: if discover_tasks {
-                        initial_evaluator.evaluate_tasks(&initial_source)
-                    } else {
-                        TaskEvaluation::Absent
-                    },
-                });
-            });
-            let Ok(update) = result_rx.recv().await else {
-                return;
-            };
-            if updates_tx.send(update).await.is_err() {
+            evaluate_off_thread(evaluation.clone()).await;
+            if evaluation.is_abandoned() {
                 return;
             }
             while wake_rx.recv().await.is_ok() {
@@ -2391,23 +2435,8 @@ impl TerminalView {
                 while wake_rx.try_recv().is_ok() {}
                 Timer::after(std::time::Duration::from_millis(120)).await;
                 while wake_rx.try_recv().is_ok() {}
-                let (result_tx, result_rx) = async_channel::bounded(1);
-                let source = source.clone();
-                let evaluator = Arc::clone(&evaluator);
-                std::thread::spawn(move || {
-                    let _ = result_tx.send_blocking(CuenvIntegrationUpdate {
-                        presentation: evaluator.evaluate(&source),
-                        tasks: if discover_tasks {
-                            evaluator.evaluate_tasks(&source)
-                        } else {
-                            TaskEvaluation::Absent
-                        },
-                    });
-                });
-                let Ok(update) = result_rx.recv().await else {
-                    break;
-                };
-                if updates_tx.send(update).await.is_err() {
+                evaluate_off_thread(evaluation.clone()).await;
+                if evaluation.is_abandoned() {
                     break;
                 }
             }
@@ -2418,7 +2447,7 @@ impl TerminalView {
     fn apply_cuenv_update(
         &mut self,
         target: CuenvUpdateTarget,
-        update: CuenvIntegrationUpdate,
+        update: EvaluationStage,
         cx: &mut Context<Self>,
     ) {
         let is_active = self.active_pane() == Some(target.pane);
@@ -2428,26 +2457,30 @@ impl TerminalView {
         if state.generation != target.session_generation {
             return;
         }
-        if is_active && state.cuenv.generation == target.config_generation {
-            self.sidebar.observe(&update.presentation);
+        match update {
+            EvaluationStage::Presentation(presentation) => {
+                if is_active && state.cuenv.generation == target.config_generation {
+                    self.sidebar.observe(&presentation);
+                }
+                if !state.cuenv.apply(target.config_generation, presentation) {
+                    return;
+                }
+                self.sync_active_config(cx);
+            }
+            EvaluationStage::Tasks(tasks) => {
+                if !state.cuenv.apply_tasks(target.config_generation, tasks) {
+                    return;
+                }
+                if is_active {
+                    self.reconcile_task_ui();
+                }
+            }
         }
-        if !state
-            .cuenv
-            .apply(target.config_generation, update.presentation)
-        {
-            return;
-        }
-        state
-            .cuenv
-            .apply_tasks(target.config_generation, update.tasks);
-        if is_active {
-            self.reconcile_task_ui();
-        }
-        self.sync_active_config(cx);
         cx.notify();
     }
 
     fn sync_active_config(&mut self, cx: &mut Context<Self>) {
+        self.registry.sync_session_palettes(self.system_appearance);
         let config = self
             .registry
             .active_terminal_config()
@@ -2675,11 +2708,14 @@ impl TerminalView {
         let surface = self
             .active_state()
             .map_or_else(unmeasured_surface, PaneState::surface_for_sibling);
-        match self.registry.start_tab(SessionGeometry {
-            surface,
-            scale: self.metrics.scale,
-            cell: self.metrics.device_cell(),
-        }) {
+        match self.registry.start_tab(
+            SessionGeometry {
+                surface,
+                scale: self.metrics.scale,
+                cell: self.metrics.device_cell(),
+            },
+            self.system_appearance,
+        ) {
             Ok((pane, generation, wake_rx)) => {
                 self.spawn_wake(
                     StartedSession {
@@ -2722,6 +2758,7 @@ impl TerminalView {
                 scale: self.metrics.scale,
                 cell: self.metrics.device_cell(),
             },
+            self.system_appearance,
         ) {
             Ok(session) => {
                 self.spawn_wake(session, cx);
@@ -3749,6 +3786,7 @@ pub fn run() {
 mod tests {
     use super::*;
     use crate::terminal::color::contrast_ratio;
+    use crate::terminal::config::{ThemeChoice, ThemeName};
     use crate::terminal::foreground::ForegroundProcess;
     use crate::terminal::model::Color;
     use crate::terminal::rio_input::{encode_key, encode_paste};
@@ -3766,6 +3804,8 @@ mod tests {
         sent: Arc<Mutex<Vec<u8>>>,
         /// A cursor a test can move, for a change that marks no damage.
         cursor: Option<Arc<Mutex<CursorState>>>,
+        /// Every palette the session has been told about, oldest first.
+        palette: FakePalettes,
     }
 
     impl TerminalSession for FakeSession {
@@ -3826,18 +3866,26 @@ mod tests {
         fn close(&mut self) -> Result<(), String> {
             self.close_error.take().map_or(Ok(()), Err)
         }
+
+        fn set_palette(&mut self, palette: ThemeColors) {
+            self.palette.lock().unwrap().push(palette);
+        }
     }
 
+    type FakePalettes = Arc<Mutex<Vec<ThemeColors>>>;
     type FakeForeground = Arc<Mutex<String>>;
     type FakeEffects = Arc<Mutex<Vec<ControlEvent>>>;
 
     struct FakeFactory {
         starts: Mutex<VecDeque<Result<SessionStart, String>>>,
         directories: Arc<StartDirectories>,
+        palettes: Arc<StartPalettes>,
     }
 
     /// The directory each session was asked to start in, oldest first.
     type StartDirectories = Mutex<Vec<Option<std::path::PathBuf>>>;
+    /// The palette each session was started with, oldest first.
+    type StartPalettes = Mutex<Vec<ThemeColors>>;
 
     impl TerminalSessionFactory for FakeFactory {
         fn start(&self, request: SessionRequest<'_>) -> Result<SessionStart, String> {
@@ -3845,6 +3893,10 @@ mod tests {
                 .lock()
                 .expect("fake factory mutex poisoned")
                 .push(request.working_directory.map(std::path::Path::to_path_buf));
+            self.palettes
+                .lock()
+                .expect("fake factory mutex poisoned")
+                .push(request.palette.clone());
             self.starts
                 .lock()
                 .expect("fake factory mutex poisoned")
@@ -4054,8 +4106,7 @@ mod tests {
     #[test]
     fn the_poll_sees_a_change_only_when_a_pane_shows_something_new() {
         let (start, foreground, _) = fake_start_in_foreground("zsh");
-        let (mut registry, _) =
-            SessionRegistry::start(fake_factory(vec![Ok(start)]), test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(fake_factory(vec![Ok(start)])).unwrap();
         let now = std::time::Instant::now();
         registry.sample_foreground(now);
         let shown = registry.polled_state();
@@ -4088,13 +4139,13 @@ mod tests {
             foreground: Arc::new(Mutex::new("zsh".into())),
             sent: Arc::default(),
             cursor: Some(Arc::clone(&cursor)),
+            palette: Arc::default(),
         };
         let start = SessionStart {
             session: Box::new(session),
             wake_rx,
         };
-        let (mut registry, _) =
-            SessionRegistry::start(fake_factory(vec![Ok(start)]), test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(fake_factory(vec![Ok(start)])).unwrap();
         assert!(!registry.active_cursor_changed(), "nothing has happened");
 
         cursor.lock().unwrap().visible = Known::Known(false);
@@ -4163,6 +4214,7 @@ mod tests {
             foreground: Arc::new(Mutex::new("zsh".into())),
             sent: Arc::default(),
             cursor: None,
+            palette: Arc::default(),
         };
         (
             SessionStart {
@@ -4186,6 +4238,7 @@ mod tests {
             foreground: Arc::clone(&foreground),
             sent: Arc::default(),
             cursor: None,
+            palette: Arc::default(),
         };
         (
             SessionStart {
@@ -4208,8 +4261,27 @@ mod tests {
         let factory = Arc::new(FakeFactory {
             starts: Mutex::new(plans.into_iter().collect()),
             directories: Arc::clone(&directories),
+            palettes: Arc::default(),
         });
         (factory, directories)
+    }
+
+    fn fake_factory_recording_palettes(
+        plans: Vec<Result<SessionStart, String>>,
+    ) -> (Arc<dyn TerminalSessionFactory>, Arc<StartPalettes>) {
+        let palettes = Arc::new(StartPalettes::default());
+        let factory = Arc::new(FakeFactory {
+            starts: Mutex::new(plans.into_iter().collect()),
+            directories: Arc::default(),
+            palettes: Arc::clone(&palettes),
+        });
+        (factory, palettes)
+    }
+
+    fn start_test_registry(
+        factory: Arc<dyn TerminalSessionFactory>,
+    ) -> Result<(SessionRegistry, async_channel::Receiver<()>), RegistryError> {
+        SessionRegistry::start(factory, test_geometry(), &ThemeColors::default())
     }
 
     fn test_cell() -> CellSize {
@@ -4931,11 +5003,13 @@ mod tests {
     fn failed_tab_creation_leaves_workspace_and_registry_unchanged() {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Err("spawn failed".into())]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let active = registry.active_pane().unwrap();
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
         assert_eq!(registry.sessions.len(), 1);
-        let error = registry.start_tab(test_geometry()).unwrap_err();
+        let error = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap_err();
         assert_eq!(error, RegistryError::Session("spawn failed".into()));
         assert_eq!(registry.active_pane(), Some(active));
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
@@ -4947,7 +5021,7 @@ mod tests {
         let (initial, old_effects) = fake_start('a', Vec::new(), None);
         let (replacement, new_effects) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(replacement)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let old_generation = registry.sessions[&pane].generation;
         let state = registry.sessions.get_mut(&pane).unwrap();
@@ -4961,7 +5035,9 @@ mod tests {
             .terminal
             .terminal_transparency_percent = 40;
 
-        let restarted = registry.restart_pane(pane, test_geometry()).unwrap();
+        let restarted = registry
+            .restart_pane(pane, test_geometry(), SystemAppearance::Dark)
+            .unwrap();
 
         assert_eq!(registry.active_pane(), Some(pane));
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
@@ -5013,13 +5089,15 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (replacement, _) = fake_start('b', Vec::new(), None);
         let (factory, directories) = fake_factory_recording(vec![Ok(initial), Ok(replacement)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         state.cuenv.observe_cwd(directory.clone());
         state.cuenv.presentation.banner = Some("project".into());
 
-        registry.restart_pane(pane, test_geometry()).unwrap();
+        registry
+            .restart_pane(pane, test_geometry(), SystemAppearance::Dark)
+            .unwrap();
 
         assert_eq!(
             directories.lock().unwrap().as_slice(),
@@ -5046,7 +5124,7 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (replacement, _) = fake_start('b', Vec::new(), None);
         let (factory, directories) = fake_factory_recording(vec![Ok(initial), Ok(replacement)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         registry
             .sessions
@@ -5055,7 +5133,9 @@ mod tests {
             .cuenv
             .observe_cwd(std::env::temp_dir().join("cuetty-no-such-directory"));
 
-        registry.restart_pane(pane, test_geometry()).unwrap();
+        registry
+            .restart_pane(pane, test_geometry(), SystemAppearance::Dark)
+            .unwrap();
 
         assert_eq!(directories.lock().unwrap().as_slice(), [None, None]);
     }
@@ -5064,12 +5144,14 @@ mod tests {
     fn a_restart_that_cannot_start_a_shell_leaves_the_pane_as_it_was() {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Err("no pty".into())]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let generation = registry.sessions[&pane].generation;
         registry.sessions.get_mut(&pane).unwrap().error = Some("pipe gone".into());
 
-        let error = registry.restart_pane(pane, test_geometry()).err();
+        let error = registry
+            .restart_pane(pane, test_geometry(), SystemAppearance::Dark)
+            .err();
 
         assert_eq!(error, Some(RegistryError::Session("no pty".into())));
         let state = &registry.sessions[&pane];
@@ -5084,7 +5166,9 @@ mod tests {
         registry.notice = Some("Could not start a shell: no pty".into());
         assert_eq!(registry.active_pane(), None);
 
-        let (pane, _, _) = registry.start_tab(test_geometry()).unwrap();
+        let (pane, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
 
         assert_eq!(registry.active_pane(), Some(pane));
         assert_eq!(registry.notice, None);
@@ -5094,7 +5178,7 @@ mod tests {
     fn a_broken_pane_offers_no_tasks() {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         state.cuenv.tasks = vec![runnable_task("build")];
@@ -5121,12 +5205,133 @@ mod tests {
         }));
     }
 
+    fn palette_recording_start() -> (SessionStart, FakePalettes) {
+        let (wake_tx, wake_rx) = async_channel::unbounded();
+        drop(wake_tx);
+        let palette = FakePalettes::default();
+        let session = FakeSession {
+            frame: frame_with('a'),
+            effects: Arc::default(),
+            close_error: None,
+            foreground: Arc::new(Mutex::new("zsh".into())),
+            sent: Arc::default(),
+            cursor: None,
+            palette: Arc::clone(&palette),
+        };
+        let start = SessionStart {
+            session: Box::new(session),
+            wake_rx,
+        };
+        (start, palette)
+    }
+
+    #[test]
+    fn a_shell_starts_already_knowing_the_palette_its_pane_paints_in() {
+        let starts = (0..3)
+            .map(|_| Ok(palette_recording_start().0))
+            .collect::<Vec<_>>();
+        let (factory, palettes) = fake_factory_recording_palettes(starts);
+        let (mut registry, _) =
+            SessionRegistry::start(factory, test_geometry(), &ThemeName::Paper.colors()).unwrap();
+        let first = registry.active_pane().unwrap();
+        registry
+            .sessions
+            .get_mut(&first)
+            .unwrap()
+            .cuenv
+            .presentation
+            .terminal
+            .choose_theme(ThemeChoice::Named(ThemeName::Paper), None);
+
+        // A new tab carries its look over from the active one, and starts in it.
+        let (second, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+        registry
+            .sessions
+            .get_mut(&second)
+            .unwrap()
+            .cuenv
+            .presentation
+            .terminal
+            .choose_theme(ThemeChoice::FollowSystem, None);
+        registry
+            .restart_pane(second, test_geometry(), SystemAppearance::Light)
+            .unwrap();
+
+        assert_eq!(
+            *palettes.lock().unwrap(),
+            [
+                ThemeName::Paper.colors(),
+                ThemeName::Paper.colors(),
+                ThemeName::CatppuccinLatte.colors(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pane_answers_for_its_theme_while_its_tasks_are_still_being_discovered() {
+        let (start, told) = palette_recording_start();
+        let (mut registry, _) = start_test_registry(fake_factory(vec![Ok(start)])).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.cuenv.begin_source();
+        let mut presentation = crate::integrations::cuenv::CuettyPresentation::default();
+        presentation
+            .terminal
+            .choose_theme(ThemeChoice::Named(ThemeName::Paper), None);
+
+        assert!(
+            state
+                .cuenv
+                .apply(generation, Evaluation::Valid(presentation))
+        );
+        registry.sync_session_palettes(SystemAppearance::Dark);
+
+        assert_eq!(*told.lock().unwrap(), [ThemeName::Paper.colors()]);
+        assert!(registry.sessions[&pane].cuenv.tasks.is_empty());
+    }
+
+    #[test]
+    fn every_session_is_told_its_own_palette_and_only_when_it_changes() {
+        let (first_start, first_told) = palette_recording_start();
+        let (second_start, second_told) = palette_recording_start();
+        let factory = fake_factory(vec![Ok(first_start), Ok(second_start)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let first = registry.active_pane().unwrap();
+        let (second, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+        let mut configure = |pane, choice| {
+            let state = registry.sessions.get_mut(&pane).unwrap();
+            state.cuenv.presentation.terminal.choose_theme(choice, None);
+        };
+        configure(first, ThemeChoice::FollowSystem);
+        configure(second, ThemeChoice::Named(ThemeName::Paper));
+
+        registry.sync_session_palettes(SystemAppearance::Dark);
+        registry.sync_session_palettes(SystemAppearance::Dark);
+        assert_eq!(
+            *first_told.lock().unwrap(),
+            [ThemeName::CatppuccinMocha.colors()]
+        );
+        assert_eq!(*second_told.lock().unwrap(), [ThemeName::Paper.colors()]);
+
+        registry.sync_session_palettes(SystemAppearance::Light);
+        assert_eq!(
+            first_told.lock().unwrap().last(),
+            Some(&ThemeName::CatppuccinLatte.colors()),
+            "a tab out of sight still answers for the theme it paints"
+        );
+        assert_eq!(second_told.lock().unwrap().len(), 1);
+    }
+
     #[test]
     fn terminal_configuration_follows_the_active_tab() {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let first_pane = registry.active_pane().unwrap();
         let first_tab = registry.workspace.active_tab().unwrap();
         registry
@@ -5140,7 +5345,9 @@ mod tests {
             .size_px = 20.0;
         assert_eq!(registry.active_terminal_config().font.size_px, 20.0);
 
-        let (second_pane, _, _) = registry.start_tab(test_geometry()).unwrap();
+        let (second_pane, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
         registry
             .sessions
             .get_mut(&second_pane)
@@ -5195,9 +5402,11 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let first_pane = registry.active_pane().unwrap();
-        let (second_pane, _, _) = registry.start_tab(test_geometry()).unwrap();
+        let (second_pane, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
         assert_eq!(registry.workspace.workspace().tabs().len(), 2);
         assert_eq!(registry.sessions.len(), 2);
 
@@ -5217,8 +5426,10 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), Some("already exited"));
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
-        let _ = registry.start_tab(test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let _ = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
         let second_pane = registry.active_pane().unwrap();
         registry.close_pane(second_pane).unwrap();
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
@@ -5243,9 +5454,11 @@ mod tests {
             None,
         );
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let first_pane = registry.active_pane().unwrap();
-        let (second_pane, generation, _) = registry.start_tab(test_geometry()).unwrap();
+        let (second_pane, generation, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
 
         let background = registry.apply_wake(second_pane, generation, Some(first_pane));
         assert!(background.accepted);
@@ -5273,7 +5486,7 @@ mod tests {
     fn a_program_clearing_its_title_leaves_the_tab_untitled() {
         let (initial, effects) = fake_start('a', vec![ControlEvent::Title("vim".into())], None);
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let generation = registry.sessions[&pane].generation;
         registry.apply_wake(pane, generation, Some(pane));
@@ -5291,7 +5504,7 @@ mod tests {
     fn a_tab_is_named_after_its_task_while_it_runs_and_its_program_otherwise() {
         let (initial, foreground, _) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let tab = registry.workspace.workspace().tabs()[0].clone();
         assert_eq!(registry.tab_label(&tab), "Terminal");
@@ -5326,7 +5539,7 @@ mod tests {
     fn the_active_tab_label_follows_the_active_tab_and_goes_with_it() {
         let (initial, foreground, _) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         assert_eq!(registry.active_tab_label().as_deref(), Some("Terminal"));
 
         *foreground.lock().unwrap() = "claude".into();
@@ -5341,7 +5554,7 @@ mod tests {
     fn a_title_lasts_exactly_as_long_as_the_program_that_set_it() {
         let (initial, foreground, effects) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let generation = registry.sessions[&pane].generation;
         let tab = registry.workspace.workspace().tabs()[0].clone();
@@ -5371,6 +5584,7 @@ mod tests {
             foreground: Arc::new(Mutex::new(process.to_owned())),
             sent: Arc::clone(&sent),
             cursor: None,
+            palette: Arc::default(),
         };
         let pane = PaneState::new(
             SessionGeneration(1),
@@ -5490,7 +5704,7 @@ mod tests {
     fn a_task_needing_arguments_or_a_busy_pane_is_not_marked_running() {
         let (initial, foreground, _) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         let mut task = CuenvTask {
@@ -5517,13 +5731,15 @@ mod tests {
         let (first, _) = fake_start('z', effects, None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(first), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         let generation = state.generation;
         // What the tab last showed, which its next wake's 'z' differs from.
         state.frame = frame_with('a');
-        registry.start_tab(test_geometry()).unwrap();
+        registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
         registry.note_active_pane();
         (registry, pane, generation)
     }
@@ -5566,7 +5782,7 @@ mod tests {
     fn the_tab_on_screen_collects_neither_output_nor_a_bell() {
         let (initial, _) = fake_start('z', vec![ControlEvent::Bell], None);
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         let generation = state.generation;
@@ -5579,7 +5795,7 @@ mod tests {
     fn the_tab_on_screen_reports_what_happens_while_its_window_is_in_the_background() {
         let (initial, _) = fake_start('z', vec![ControlEvent::Bell], None);
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         let generation = state.generation;
@@ -5658,6 +5874,7 @@ mod tests {
             effects: Arc::default(),
             close_error: None,
             cursor: None,
+            palette: Arc::default(),
         };
         let foreground = Arc::clone(&session.foreground);
         let mut state = PaneState::new(
@@ -5715,7 +5932,7 @@ mod tests {
     fn wake_with(effects: Vec<ControlEvent>) -> (SessionRegistry, crate::workspace::PaneId, bool) {
         let (initial, _) = fake_start('z', effects, None);
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let generation = registry.sessions[&pane].generation;
         let outcome = registry.apply_wake(pane, generation, Some(pane));
@@ -5760,7 +5977,7 @@ mod tests {
     fn a_close_arriving_on_a_later_wake_still_leaves_a_failed_shells_tab() {
         let (initial, _, effects) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let generation = registry.sessions[&pane].generation;
         effects
@@ -5781,7 +5998,7 @@ mod tests {
     fn a_failed_shell_shows_its_output_even_if_something_hit_the_closed_session_first() {
         let (initial, _, effects) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         let generation = state.generation;
@@ -5919,7 +6136,7 @@ mod tests {
     fn close_wake_samples_the_final_frame_before_requesting_pane_removal() {
         let (initial, _) = fake_start('z', vec![ControlEvent::Close], None);
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         let generation = state.generation;
@@ -5942,9 +6159,11 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let first_pane = registry.active_pane().unwrap();
-        let (second_pane, _, _) = registry.start_tab(test_geometry()).unwrap();
+        let (second_pane, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,

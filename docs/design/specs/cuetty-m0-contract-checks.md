@@ -163,9 +163,10 @@ workaround or engine-pin change is implied by these repair requirements.
 The session uses live legacy application-cursor and bracketed-paste modes.
 It rejects extended keyboard input explicitly when Kitty keyboard flags or
 `modifyOtherKeys` are active; key releases, IME/committed text, keypad identity,
-focus reporting, and mouse reporting remain unwired. Color queries currently
-receive no reply because the session has no exact configured renderer palette;
-text-area size queries do receive a reply. OSC 52 clipboard reads return an
+focus reporting, and mouse reporting remain unwired. Color queries (OSC 4, 10,
+11, and 12) are answered from the palette the pane paints in, and colours an
+application sets are not painted or reported; text-area size queries also
+receive a reply. OSC 52 clipboard reads return an
 empty response by policy rather than exposing the system clipboard.
 
 ## Adapter and lifecycle regression requirements

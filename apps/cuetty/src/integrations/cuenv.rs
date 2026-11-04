@@ -5,7 +5,8 @@
 //! session directly.
 
 use crate::terminal::config::{
-    CursorBlink, MinimumContrast, MotionPreference, Rgb, TerminalConfig, ThemeChoice,
+    CursorBlink, MinimumContrast, MotionPreference, Rgb, SystemAppearance, TerminalConfig,
+    ThemeChoice, ThemeColors,
 };
 use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -374,6 +375,17 @@ pub enum Evaluation {
     Absent,
     Valid(CuettyPresentation),
     Invalid(String),
+}
+
+impl Evaluation {
+    /// The palette a pane given this evaluation paints in. Without a valid look to go by,
+    /// that is the default theme's, as it is for [`CuenvPaneState::apply`].
+    pub fn palette_for(&self, appearance: SystemAppearance) -> ThemeColors {
+        match self {
+            Self::Valid(presentation) => presentation.terminal.colors_for(appearance),
+            Self::Absent | Self::Invalid(_) => ThemeColors::default(),
+        }
+    }
 }
 
 /// Per-pane presentation state kept independent from the GPUI view. The
@@ -1003,6 +1015,50 @@ impl CuenvProvider for NativeCuenvProvider {
     }
 }
 
+/// One part of what a source says, reported as soon as it is known.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EvaluationStage {
+    Presentation(Evaluation),
+    Tasks(TaskEvaluation),
+}
+
+/// One evaluation of a source, which blocks and so belongs off the UI thread.
+#[derive(Clone)]
+pub struct StagedEvaluation {
+    pub provider: Arc<dyn CuenvProvider>,
+    pub source: ConfigSource,
+    /// Whether the source has a directory to look for tasks in.
+    pub discover_tasks: bool,
+    pub stages: async_channel::Sender<EvaluationStage>,
+}
+
+impl StagedEvaluation {
+    /// Reports the look first. Task discovery can take far longer, and everything the look
+    /// decides, including what a program asking about colours is told, should not wait on
+    /// it. Nobody listening any more ends this early.
+    pub fn run(&self) {
+        let presentation = self.provider.evaluate(&self.source);
+        if self
+            .stages
+            .send_blocking(EvaluationStage::Presentation(presentation))
+            .is_err()
+        {
+            return;
+        }
+        let tasks = if self.discover_tasks {
+            self.provider.evaluate_tasks(&self.source)
+        } else {
+            TaskEvaluation::Absent
+        };
+        // The look has been delivered, so a listener leaving now loses nothing.
+        let _ = self.stages.send_blocking(EvaluationStage::Tasks(tasks));
+    }
+
+    pub fn is_abandoned(&self) -> bool {
+        self.stages.is_closed()
+    }
+}
+
 /// Evaluates `source` if that takes no longer than `wait`. For configuration that
 /// should be in place before something is shown, but must never hold it up for long:
 /// a slow evaluation is left to finish on its own, and its result dropped.
@@ -1481,6 +1537,108 @@ mod tests {
             release: Mutex::new(release_rx),
         };
         (Arc::new(provider), release_tx)
+    }
+
+    /// Knows its look at once, and its tasks only when `release` says to.
+    struct SlowTaskProvider {
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl CuenvProvider for SlowTaskProvider {
+        fn evaluate(&self, _source: &ConfigSource) -> Evaluation {
+            Evaluation::Absent
+        }
+
+        fn evaluate_tasks(&self, _source: &ConfigSource) -> TaskEvaluation {
+            let _ = self
+                .release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(30));
+            TaskEvaluation::Valid(Vec::new())
+        }
+
+        fn watch(
+            &self,
+            _source: &ConfigSource,
+            _notify: async_channel::Sender<()>,
+        ) -> Result<Box<dyn CuenvWatcher>, String> {
+            Err("not watched".into())
+        }
+    }
+
+    #[test]
+    fn the_look_of_a_source_is_reported_while_its_tasks_are_still_being_discovered() {
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let (stages, reported) = async_channel::unbounded();
+        let evaluation = StagedEvaluation {
+            provider: Arc::new(SlowTaskProvider {
+                release: Mutex::new(release_rx),
+            }),
+            source: any_source(),
+            discover_tasks: true,
+            stages,
+        };
+        let worker = std::thread::spawn(move || evaluation.run());
+
+        assert_eq!(
+            reported.recv_blocking(),
+            Ok(EvaluationStage::Presentation(Evaluation::Absent))
+        );
+        assert!(reported.is_empty(), "the tasks have not been released");
+        release.send(()).unwrap();
+        assert_eq!(
+            reported.recv_blocking(),
+            Ok(EvaluationStage::Tasks(TaskEvaluation::Valid(Vec::new())))
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn a_source_with_no_directory_reports_no_tasks_without_looking() {
+        let (stages, reported) = async_channel::unbounded();
+        // Would hold this test up for as long as it waits to be released, if it were asked.
+        let (_release, release_rx) = std::sync::mpsc::channel();
+        StagedEvaluation {
+            provider: Arc::new(SlowTaskProvider {
+                release: Mutex::new(release_rx),
+            }),
+            source: any_source(),
+            discover_tasks: false,
+            stages,
+        }
+        .run();
+        assert_eq!(
+            reported.try_recv(),
+            Ok(EvaluationStage::Presentation(Evaluation::Absent))
+        );
+        assert_eq!(
+            reported.try_recv(),
+            Ok(EvaluationStage::Tasks(TaskEvaluation::Absent))
+        );
+    }
+
+    #[test]
+    fn an_evaluation_decides_the_palette_its_pane_paints_in() {
+        let with_theme = |choice| {
+            let mut presentation = CuettyPresentation::default();
+            presentation.terminal.choose_theme(choice, None);
+            Evaluation::Valid(presentation)
+        };
+        assert_eq!(
+            with_theme(ThemeChoice::Named(ThemeName::Paper)).palette_for(SystemAppearance::Dark),
+            ThemeName::Paper.colors()
+        );
+        assert_eq!(
+            with_theme(ThemeChoice::FollowSystem).palette_for(SystemAppearance::Light),
+            ThemeName::CatppuccinLatte.colors()
+        );
+        for without_a_look in [Evaluation::Absent, Evaluation::Invalid("broken".into())] {
+            assert_eq!(
+                without_a_look.palette_for(SystemAppearance::Light),
+                ThemeColors::default()
+            );
+        }
     }
 
     fn any_source() -> ConfigSource {

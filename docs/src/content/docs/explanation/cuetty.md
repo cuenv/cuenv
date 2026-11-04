@@ -313,6 +313,13 @@ arrives just after a window opens, so a dark desktop can show one light frame fi
 desktop with no portal, or one that states no preference, counts as light there, so
 choose a theme by name on such a system.
 
+Applications that ask the terminal about colours (OSC 4, 10, 11, and 12), as Neovim and
+`bat` do to tell a light background from a dark one, are told the palette their tab
+paints in, so they pick the right scheme on a light theme. They are told once, at the
+time they ask: a program that has already chosen stays with its choice when `auto`
+switches underneath it, although everything it left in the default colours follows.
+Colours an application sets for itself are neither painted nor reported.
+
 A unit test holds every theme to the same contrast: body and metadata text at least
 4.5:1 on each surface it is painted on, ANSI colours 4.5:1 on the page apart from the
 one faint neutral pair (black on a dark theme, white on a light one), and the accent

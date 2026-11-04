@@ -1,15 +1,18 @@
+use super::config::{Rgb, ThemeColors};
 use super::events::{ControlEvent, EventBridge};
 use super::foreground::ForegroundProcess;
 #[cfg(unix)]
 use super::foreground::leader_arguments;
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::model::{CursorState, SamplingToken, TerminalFrame};
+use super::presentation::extended_palette;
 use super::rio_adapter::{cursor_state, snapshot};
 use super::rio_input::{encode_key, encode_paste};
 use super::sizing::{CellSize, TerminalSize, terminal_size};
 #[cfg(unix)]
 use super::tab_label::is_shell;
 use rio_vt::ansi::CursorShape;
+use rio_vt::config::colors::{ColorRgb, NamedColor};
 use rio_vt::corcovado::channel::Sender;
 use rio_vt::crosswords::grid::Scroll;
 use rio_vt::crosswords::{Crosswords, CrosswordsSize, Mode};
@@ -35,6 +38,9 @@ pub struct SessionRequest<'a> {
     pub cell: CellSize,
     /// Where its shell starts. `None` leaves that to the default.
     pub working_directory: Option<&'a Path>,
+    /// The palette its pane paints in. A shell's startup files can ask about colours before
+    /// anything else has had a chance to say, so it has to be known before the shell runs.
+    pub palette: &'a ThemeColors,
 }
 
 pub trait TerminalSessionFactory: Send + Sync {
@@ -84,6 +90,9 @@ pub trait TerminalSession: Send {
     /// blank name means it could not be told, not that a shell is waiting.
     fn foreground_process(&self) -> Option<ForegroundProcess>;
     fn drain_effects(&self) -> Vec<ControlEvent>;
+    /// The palette this pane is painted in, which applications asking about colours
+    /// are told.
+    fn set_palette(&mut self, palette: ThemeColors);
     fn close(&mut self) -> Result<(), String>;
 }
 
@@ -216,6 +225,7 @@ pub(crate) struct SessionOptions {
     pub shell: Option<String>,
     pub args: Vec<String>,
     pub working_directory: Option<String>,
+    pub palette: ThemeColors,
 }
 
 impl Default for SessionOptions {
@@ -224,6 +234,7 @@ impl Default for SessionOptions {
             shell: None,
             args: Vec::new(),
             working_directory: default_working_directory(),
+            palette: ThemeColors::default(),
         }
     }
 }
@@ -233,6 +244,26 @@ struct Listener {
     bridge: Arc<EventBridge>,
     writer: Arc<Mutex<Option<Sender<Msg>>>>,
     size: Arc<Mutex<WindowSize>>,
+    palette: Arc<Mutex<ThemeColors>>,
+}
+
+/// What an application asking after a colour is told: what the pane actually paints. The
+/// colours an application sets for itself are not painted, so they are not reported.
+/// Rio's other named colours have no equivalent here and get no answer, which is how a
+/// terminal that does not know says so.
+fn queried_color(palette: &ThemeColors, index: usize) -> Option<ColorRgb> {
+    let Rgb(r, g, b) = match index {
+        0..16 => palette.ansi[index],
+        16..=255 => {
+            let color = extended_palette(u8::try_from(index).ok()?);
+            Rgb(color.0, color.1, color.2)
+        }
+        _ if index == NamedColor::Foreground as usize => palette.text,
+        _ if index == NamedColor::Background as usize => palette.surface,
+        _ if index == NamedColor::Cursor as usize => palette.cursor,
+        _ => return None,
+    };
+    Some(ColorRgb { r, g, b })
 }
 
 impl Listener {
@@ -260,10 +291,14 @@ impl Listener {
                 let size = *self.size.lock().expect("PTY size poisoned");
                 self.reply(format(size));
             }
-            // Color queries are not qualified until the host can supply the
-            // exact configured renderer palette. Do not invent a default RGB
-            // answer or re-lock Crosswords from its own parser callback.
-            RioEvent::ColorRequest(..) => self.bridge.wake(),
+            // This lock is the palette's own, and whoever updates the palette holds it
+            // for nothing else, so taking it under the terminal lock cannot deadlock.
+            RioEvent::ColorRequest(_, index, format) => {
+                let palette = self.palette.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(color) = queried_color(&palette, index) {
+                    self.reply(format(color));
+                }
+            }
             RioEvent::ChildExited(_, status) => {
                 self.writer.lock().expect("PTY writer poisoned").take();
                 self.bridge.control(ControlEvent::ChildExited(status));
@@ -330,6 +365,7 @@ impl RioTerminalSession {
             terminal_size(request.width, request.height, request.cell),
             SessionOptions {
                 working_directory: working_directory_for(request.working_directory),
+                palette: request.palette.clone(),
                 ..SessionOptions::default()
             },
         )
@@ -348,6 +384,7 @@ impl RioTerminalSession {
             bridge,
             writer: Arc::new(Mutex::new(None)),
             size: Arc::new(Mutex::new(size)),
+            palette: Arc::new(Mutex::new(options.palette)),
         };
         let terminal = Arc::new(FairMutex::new(Crosswords::new(
             grid_size(size),
@@ -474,6 +511,14 @@ impl RioTerminalSession {
 }
 
 impl TerminalSession for RioTerminalSession {
+    fn set_palette(&mut self, palette: ThemeColors) {
+        *self
+            .listener
+            .palette
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = palette;
+    }
+
     fn resize(&mut self, width: u32, height: u32, cell: CellSize) -> Result<(), String> {
         self.ensure_open()?;
         let size = window_size(terminal_size(width, height, cell));
@@ -678,6 +723,7 @@ mod tests {
             bridge: bridge.clone(),
             writer: Arc::new(Mutex::new(None)),
             size: Arc::new(Mutex::new(WindowSize::default())),
+            palette: Arc::new(Mutex::new(ThemeColors::default())),
         };
         listener.dispatch(RioEvent::Title(0, "shell".into()));
         listener.dispatch(RioEvent::Bell(0));
@@ -692,6 +738,54 @@ mod tests {
                 ControlEvent::Close,
             ]
         );
+    }
+
+    #[test]
+    fn an_application_is_told_the_colours_the_pane_paints() {
+        let palette = ThemeColors::paper();
+        let told = |index| queried_color(&palette, index).map(|ColorRgb { r, g, b }| Rgb(r, g, b));
+        assert_eq!(told(NamedColor::Foreground as usize), Some(palette.text));
+        assert_eq!(told(NamedColor::Background as usize), Some(palette.surface));
+        assert_eq!(told(NamedColor::Cursor as usize), Some(palette.cursor));
+        assert_eq!(told(1), Some(palette.ansi[1]));
+        assert_eq!(told(15), Some(palette.ansi[15]));
+        // Black and white in the fixed cube, and the ramp, whatever the theme.
+        assert_eq!(told(16), Some(Rgb(0, 0, 0)));
+        assert_eq!(told(231), Some(Rgb(255, 255, 255)));
+        assert_eq!(told(232), Some(Rgb(8, 8, 8)));
+    }
+
+    #[test]
+    fn a_colour_with_no_equivalent_here_gets_no_answer() {
+        let palette = ThemeColors::default();
+        assert_eq!(
+            queried_color(&palette, NamedColor::Cursor as usize + 1),
+            None
+        );
+        assert_eq!(queried_color(&palette, usize::MAX), None);
+    }
+
+    #[test]
+    fn a_colour_query_is_answered_on_the_pty_with_the_latest_palette() {
+        let (bridge, _) = EventBridge::new();
+        let (sender, receiver) = rio_vt::corcovado::channel::channel();
+        let listener = Listener {
+            bridge,
+            writer: Arc::new(Mutex::new(Some(sender))),
+            size: Arc::new(Mutex::new(WindowSize::default())),
+            palette: Arc::new(Mutex::new(ThemeColors::default())),
+        };
+        *listener.palette.lock().unwrap() = ThemeColors::paper();
+        listener.dispatch(RioEvent::ColorRequest(
+            0,
+            NamedColor::Background as usize,
+            Arc::new(|color| format!("{:02x}{:02x}{:02x}", color.r, color.g, color.b)),
+        ));
+        let Ok(Msg::Input(reply)) = receiver.try_recv() else {
+            panic!("expected a reply on the PTY");
+        };
+        let Rgb(r, g, b) = ThemeColors::paper().surface;
+        assert_eq!(reply.as_ref(), format!("{r:02x}{g:02x}{b:02x}").as_bytes());
     }
 
     #[test]
@@ -825,6 +919,7 @@ mod tests {
                     .map(String::from)
                     .collect(),
                 working_directory: None,
+                palette: ThemeColors::default(),
             },
         )
         .expect("deterministic child should spawn");
@@ -950,6 +1045,43 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn a_shell_asking_about_colours_as_it_starts_is_told_the_palette_it_was_started_with() {
+        let _serial = serial_pty_test();
+        let palette = ThemeColors::paper();
+        // Asks before doing anything else, then prints what it heard with the escapes out
+        // of it, so the answer can be read off the screen.
+        let script = r#"stty -echo -icanon min 0 time 20
+printf '\033]11;?\033\\'
+answer=$(dd bs=64 count=1 2>/dev/null)
+printf 'ANSWER %s\n' "$answer" | tr -d '\033\007'
+sleep 5
+"#;
+        let (mut session, _) = RioTerminalSession::with_options(
+            TerminalSize {
+                cols: 100,
+                rows: 20,
+                pixels_width: 800,
+                pixels_height: 320,
+            },
+            SessionOptions {
+                shell: Some("/bin/sh".into()),
+                args: vec!["-c".into(), script.into()],
+                working_directory: None,
+                palette: palette.clone(),
+            },
+        )
+        .expect("deterministic child should spawn");
+        let Rgb(r, g, b) = palette.surface;
+        wait_for_text(
+            &mut session,
+            &format!("rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}"),
+        );
+        session.close().expect("the child should close");
     }
 
     #[test]

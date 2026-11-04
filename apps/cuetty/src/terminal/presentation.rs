@@ -152,14 +152,20 @@ impl TerminalTheme {
         if index < 16 {
             return self.ansi[index as usize];
         }
-        if index >= 232 {
-            let value = 8 + (index - 232) * 10;
-            return Rgb(value, value, value);
-        }
-        let n = index - 16;
-        let channel = |value: u8| if value == 0 { 0 } else { 55 + value * 40 };
-        Rgb(channel(n / 36), channel((n / 6) % 6), channel(n % 6))
+        extended_palette(index)
     }
+}
+
+/// The fixed part of the 256-colour palette above the theme's sixteen: the 6x6x6 cube and
+/// the grey ramp.
+pub(super) fn extended_palette(index: u8) -> Rgb {
+    if index >= 232 {
+        let value = 8 + (index - 232) * 10;
+        return Rgb(value, value, value);
+    }
+    let n = index.saturating_sub(16);
+    let channel = |value: u8| if value == 0 { 0 } else { 55 + value * 40 };
+    Rgb(channel(n / 36), channel((n / 6) % 6), channel(n % 6))
 }
 
 /// Device pixels per logical pixel for the window being drawn.

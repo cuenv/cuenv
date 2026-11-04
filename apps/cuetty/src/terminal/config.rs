@@ -630,23 +630,31 @@ impl TerminalConfig {
     pub fn choose_theme(&mut self, choice: ThemeChoice, accent: Option<Rgb>) {
         self.theme_choice = choice;
         self.accent_override = accent;
-        self.resolve_theme(SystemAppearance::default());
+        self.theme = choice.name_for(SystemAppearance::default()).colors();
+        if let Some(accent) = accent {
+            self.theme.accent = accent;
+        }
     }
 
     /// This configuration as a window of the given appearance paints it. Only `auto`
     /// depends on that; any other theme is left exactly as it stands.
     #[must_use]
     pub fn for_appearance(mut self, appearance: SystemAppearance) -> Self {
-        if self.theme_choice == ThemeChoice::FollowSystem {
-            self.resolve_theme(appearance);
-        }
+        self.theme = self.colors_for(appearance);
         self
     }
 
-    fn resolve_theme(&mut self, appearance: SystemAppearance) {
-        self.theme = self.theme_choice.name_for(appearance).colors();
-        if let Some(accent) = self.accent_override {
-            self.theme.accent = accent;
+    /// The palette a window of the given appearance paints in, without the rest.
+    pub fn colors_for(&self, appearance: SystemAppearance) -> ThemeColors {
+        match self.theme_choice {
+            ThemeChoice::Named(_) => self.theme.clone(),
+            ThemeChoice::FollowSystem => {
+                let mut colors = self.theme_choice.name_for(appearance).colors();
+                if let Some(accent) = self.accent_override {
+                    colors.accent = accent;
+                }
+                colors
+            }
         }
     }
 
