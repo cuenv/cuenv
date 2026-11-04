@@ -7,6 +7,7 @@ use super::cursor::{
     CursorAnimator, CursorFocus, CursorFrame, CursorObservation, TrailSpan, blink_wanted,
 };
 use super::events::ControlEvent;
+use super::git_branch::BranchProbe;
 use super::glyphs::{GlyphShape, drawn_glyph, is_drawn, is_graphic};
 use super::host::{
     RioTerminalFactory, SessionStart, TerminalScroll, TerminalSession, TerminalSessionFactory,
@@ -988,6 +989,8 @@ pub(super) struct PaneState {
     activity: PaneActivity,
     /// What the tab's indicator reports.
     pub(super) status: TabStatus,
+    /// The branch the pane's directory is on, for the tab's second line.
+    pub(super) branch: BranchProbe,
     /// The terminal surface as laid out, in logical pixels. The grid is worked out from
     /// this at each draw's own scale, so no draw pairs one scale's surface with
     /// another's cell, however long ago the surface was measured.
@@ -1016,6 +1019,7 @@ impl PaneState {
             scroll_remainder: 0.0,
             activity: PaneActivity::default(),
             status: TabStatus::default(),
+            branch: BranchProbe::default(),
             measured_bounds: Arc::new(Mutex::new(surface)),
             viewport_origin: Arc::new(Mutex::new((0.0, 0.0))),
             error: None,
@@ -1207,6 +1211,7 @@ struct PolledPaneState {
     pane: crate::workspace::PaneId,
     activity: PaneActivity,
     status: TabStatus,
+    branch: Option<String>,
     cwd: Option<std::path::PathBuf>,
     notice: Option<String>,
     task_notice: Option<String>,
@@ -1448,6 +1453,14 @@ impl SessionRegistry {
             .for_each(|state| state.sample_foreground(now));
     }
 
+    /// Keeps each tab's branch current. This is a file read at most every few seconds,
+    /// which is why it is sampled here and never during a draw.
+    fn sample_branches(&mut self, now: std::time::Instant) {
+        for state in self.sessions.values_mut() {
+            state.branch.sample(state.cuenv.cwd.as_deref(), now);
+        }
+    }
+
     /// Everything a draw shows that the periodic poll can change, so an idle window
     /// is only redrawn when something it shows did.
     fn polled_state(&self) -> Vec<PolledPaneState> {
@@ -1458,6 +1471,7 @@ impl SessionRegistry {
                 pane: *pane,
                 activity: state.activity.clone(),
                 status: state.status,
+                branch: state.branch.branch().map(str::to_owned),
                 cwd: state.cuenv.cwd.clone(),
                 notice: state.cuenv.notice.clone(),
                 task_notice: state.cuenv.task_notice.clone(),
@@ -2217,6 +2231,7 @@ impl TerminalView {
                         let shown = view.registry.polled_state();
                         view.registry.sample_foreground(std::time::Instant::now());
                         view.refresh_cuenv_integration(cx);
+                        view.registry.sample_branches(std::time::Instant::now());
                         let cursor_changed = view.registry.active_cursor_changed();
                         if cursor_changed {
                             view.cursor_animator.touch(std::time::Instant::now());
@@ -2480,6 +2495,8 @@ impl TerminalView {
     /// measured in the layout this change causes.
     pub(super) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar.toggle();
+        // Rows change height between the two, which can leave the active tab off screen.
+        self.rail_revealed_tab = None;
         cx.notify();
     }
 

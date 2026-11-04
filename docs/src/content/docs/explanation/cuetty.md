@@ -114,6 +114,11 @@ The current usable slice includes:
   the script, and Nix's
   `.name-wrapped` binaries are shown as `name`. A tab list taller than the window scrolls, and
   follows the active tab.
+- A muted second line on each expanded tab, such as `cuenv · main`: its directory,
+  unless the tab is already named after it, and the git branch that directory is on, or
+  a detached commit's short form. Cuetty reads the repository's `HEAD` file every couple
+  of seconds and spawns no process, following `.git` files for worktrees and submodules.
+  With neither known the line is simply absent.
 - A small indicator on each tab, beside its name or on its collapsed mark, with its
   meaning in the tab's tooltip: a bell for a bell rung in a tab not on screen, a ring
   while a task launched from Cuetty runs, counted from the Enter that runs it if it

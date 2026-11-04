@@ -165,6 +165,21 @@ pub(super) fn tab_tooltip(label: &str, banner: Option<&str>) -> String {
     }
 }
 
+/// A tab's second line: where it is, then which branch that is on, leaving out the
+/// directory when the tab is already named after it. Empty when neither is known, so
+/// nothing stands in for what cannot be told.
+pub(super) fn tab_subtitle(directory: Option<&Path>, branch: Option<&str>, label: &str) -> String {
+    let directory = directory.map(directory_name);
+    [
+        nonblank(directory.as_deref()).filter(|directory| *directory != label),
+        nonblank(branch),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
 /// The name a person would know a binary by. Nix's wrappers run the real binary as
 /// `.name-wrapped`, and `exec -a` does not change the process name the kernel
 /// reports, which is cut short when it is long.
@@ -398,6 +413,30 @@ mod tests {
             };
             self.sample(Some(&process), Instant::now());
         }
+    }
+
+    #[test]
+    fn a_subtitle_says_where_a_tab_is_and_which_branch_that_is_on() {
+        let directory = Path::new("/home/me/Code/cuenv");
+        assert_eq!(
+            tab_subtitle(Some(directory), Some("main"), "claude"),
+            "cuenv · main"
+        );
+        assert_eq!(tab_subtitle(Some(directory), None, "claude"), "cuenv");
+        assert_eq!(tab_subtitle(None, Some("main"), "claude"), "main");
+    }
+
+    #[test]
+    fn a_subtitle_does_not_repeat_a_label_named_after_the_directory() {
+        let directory = Path::new("/home/me/Code/cuenv");
+        assert_eq!(tab_subtitle(Some(directory), Some("main"), "cuenv"), "main");
+        assert_eq!(tab_subtitle(Some(directory), None, "cuenv"), "");
+    }
+
+    #[test]
+    fn a_subtitle_is_empty_rather_than_a_placeholder_when_nothing_is_known() {
+        assert_eq!(tab_subtitle(None, None, "Terminal"), "");
+        assert_eq!(tab_subtitle(None, Some("  "), "Terminal"), "");
     }
 
     #[test]

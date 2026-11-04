@@ -132,6 +132,9 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const CONTROL_WIDTH: Pixels = px(34.0);
     pub(in crate::terminal::chrome) const ICON: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TAB_ROW_HEIGHT: Pixels = px(32.0);
+    /// An expanded tab's row. It has this height with or without a second line, so a
+    /// subtitle arriving never shifts the list.
+    pub(in crate::terminal::chrome) const TAB_ROW_TWO_LINE_HEIGHT: Pixels = px(44.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = px(3.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TASK_SIDEBAR_WIDTH: Pixels = px(280.0);

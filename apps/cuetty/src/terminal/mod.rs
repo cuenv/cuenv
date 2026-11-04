@@ -5,6 +5,7 @@ mod cursor;
 mod engine;
 mod events;
 mod foreground;
+mod git_branch;
 mod glyphs;
 mod host;
 mod input;

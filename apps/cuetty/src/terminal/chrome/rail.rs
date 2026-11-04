@@ -5,7 +5,7 @@ use crate::integrations::cuenv::{RailColor, SidebarMode};
 use crate::terminal::engine::{SIDEBAR_TOGGLE_KEY, TerminalView, app_chord_label, tab_number_hint};
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::TerminalTheme;
-use crate::terminal::tab_label::{TabMarkSources, tab_mark, tab_tooltip};
+use crate::terminal::tab_label::{TabMarkSources, tab_mark, tab_subtitle, tab_tooltip};
 use crate::terminal::tab_status::TabIndicator;
 use crate::terminal::workspace_shell::TabNumber;
 use crate::workspace::TabId;
@@ -75,11 +75,13 @@ impl TerminalView {
                     .get(&tab.focused)
                     .map(|state| &state.cuenv);
                 let banner = cuenv.and_then(|cuenv| cuenv.presentation.banner.as_deref());
-                let indicator = self
-                    .registry
-                    .sessions
-                    .get(&tab.focused)
-                    .and_then(|state| state.status.indicator());
+                let state = self.registry.sessions.get(&tab.focused);
+                let indicator = state.and_then(|state| state.status.indicator());
+                let subtitle = tab_subtitle(
+                    cuenv.and_then(|cuenv| cuenv.cwd.as_deref()),
+                    state.and_then(|state| state.branch.branch()),
+                    &label,
+                );
                 let tooltip = tab_tooltip(&label, banner);
                 let tooltip = match indicator {
                     Some(indicator) => format!("{tooltip}\n{}", indicator.description()),
@@ -95,6 +97,7 @@ impl TerminalView {
                     TabRow {
                         id: tab.id,
                         label,
+                        subtitle,
                         mark,
                         tooltip,
                         indicator,
@@ -263,6 +266,8 @@ fn render_indicator(indicator: TabIndicator, colors: &ChromeColors) -> Div {
 struct TabRow {
     id: TabId,
     label: String,
+    /// The muted second line, left out when empty.
+    subtitle: String,
     /// What stands in for the label when the sidebar is collapsed.
     mark: String,
     tooltip: String,
@@ -279,6 +284,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
     let TabRow {
         id,
         label,
+        subtitle,
         mark,
         tooltip,
         indicator,
@@ -295,11 +301,20 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
     } else {
         colors.text_secondary
     };
+    // The active row's fill is a step lighter, which muted text would fade into.
+    let subtitle_color = if selected {
+        colors.text_secondary
+    } else {
+        colors.text_muted
+    };
     div()
         .id(("cuetty-rail-tab", id.get()))
         .relative()
         .w_full()
-        .h(size::TAB_ROW_HEIGHT)
+        .h(match mode {
+            SidebarMode::Expanded => size::TAB_ROW_TWO_LINE_HEIGHT,
+            SidebarMode::Collapsed => size::TAB_ROW_HEIGHT,
+        })
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -339,7 +354,25 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
             SidebarMode::Expanded => this
                 .gap(space::MD)
                 .px(space::LG)
-                .child(div().flex_1().min_w_0().truncate().child(label))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .line_height(text::LINE_HEIGHT)
+                        .child(div().truncate().child(label))
+                        .when(!subtitle.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .truncate()
+                                    .text_size(text::CAPTION)
+                                    .text_color(subtitle_color)
+                                    .font_weight(text::REGULAR)
+                                    .child(subtitle),
+                            )
+                        }),
+                )
                 .children(number.map(|number| {
                     div()
                         .flex_none()
