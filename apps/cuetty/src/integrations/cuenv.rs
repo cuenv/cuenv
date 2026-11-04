@@ -4,7 +4,7 @@
 //! validated representation, so configuration cannot reach a renderer or a
 //! session directly.
 
-use crate::terminal::config::{Rgb, TerminalConfig};
+use crate::terminal::config::{MinimumContrast, Rgb, TerminalConfig};
 use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
@@ -308,6 +308,8 @@ struct CuettyDto {
     padding: Option<PaddingDto>,
     #[serde(default)]
     transparency: Option<u8>,
+    #[serde(default, rename = "minimumContrast")]
+    minimum_contrast: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -693,6 +695,14 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
     if let Some(transparency) = dto.transparency {
         terminal.terminal_transparency_percent = transparency;
     }
+    if let Some(ratio) = dto.minimum_contrast {
+        let Some(minimum_contrast) = MinimumContrast::new(ratio) else {
+            return Evaluation::Invalid(format!(
+                "minimumContrast must be between 1 and 21, got {ratio}"
+            ));
+        };
+        terminal.minimum_contrast = minimum_contrast;
+    }
     if let Err(error) = terminal.validate() {
         return Evaluation::Invalid(format!("invalid Cuetty terminal configuration: {error}"));
     }
@@ -986,16 +996,27 @@ mod tests {
     }
 
     #[test]
-    fn the_bold_weight_reaches_the_terminal_and_is_validated() {
-        let Evaluation::Valid(presentation) =
-            parse_value(serde_json::json!({"font": {"boldWeight": 700}}))
-        else {
+    fn text_rendering_settings_reach_the_terminal_and_are_validated() {
+        let Evaluation::Valid(presentation) = parse_value(serde_json::json!({
+            "font": {"boldWeight": 700},
+            "minimumContrast": 4.5,
+        })) else {
             panic!("expected a valid presentation");
         };
         assert_eq!(presentation.terminal.font.bold_weight, 700);
-        for invalid in [50.0, 950.0, 600.5] {
-            let value = serde_json::json!({"font": {"boldWeight": invalid}});
-            assert!(matches!(parse_value(value), Evaluation::Invalid(_)));
+        assert_eq!(presentation.terminal.minimum_contrast.ratio(), 4.5);
+        for invalid in [
+            serde_json::json!({"minimumContrast": 0.5}),
+            serde_json::json!({"minimumContrast": 22}),
+            serde_json::json!({"minimumContrast": "high"}),
+            serde_json::json!({"font": {"boldWeight": 50}}),
+            serde_json::json!({"font": {"boldWeight": 950}}),
+            serde_json::json!({"font": {"boldWeight": 600.5}}),
+        ] {
+            assert!(
+                matches!(parse_value(invalid.clone()), Evaluation::Invalid(_)),
+                "{invalid} should be rejected"
+            );
         }
     }
 

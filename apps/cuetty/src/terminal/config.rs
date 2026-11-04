@@ -39,6 +39,28 @@ pub struct FontConfig {
     pub bold_weight: u16,
 }
 
+/// The contrast ratio text is kept to against what it is drawn on, from 1 (no
+/// adjustment) to 21 (only black on white would do).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MinimumContrast(f32);
+
+impl MinimumContrast {
+    pub const OFF: Self = Self(1.0);
+
+    /// `None` for what is not a contrast ratio.
+    pub fn new(ratio: f32) -> Option<Self> {
+        (ratio.is_finite() && (1.0..=21.0).contains(&ratio)).then_some(Self(ratio))
+    }
+
+    pub const fn ratio(self) -> f32 {
+        self.0
+    }
+
+    pub fn is_off(self) -> bool {
+        self.0 <= Self::OFF.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalPadding {
     pub top: u16,
@@ -126,6 +148,7 @@ pub struct TerminalConfig {
     /// transparent.
     pub terminal_transparency_percent: u8,
     pub terminal_padding: TerminalPadding,
+    pub minimum_contrast: MinimumContrast,
     pub cursor: CursorPreference,
     pub theme: ThemeColors,
     pub interaction: InteractionConfig,
@@ -206,6 +229,7 @@ impl Default for TerminalConfig {
             },
             terminal_transparency_percent: 0,
             terminal_padding: TerminalPadding::default(),
+            minimum_contrast: MinimumContrast::OFF,
             cursor: CursorPreference::Block,
             theme: ThemeColors::default(),
             interaction: InteractionConfig {
@@ -495,6 +519,15 @@ mod tests {
                 Err(ConfigError::InvalidBoldWeight(weight))
             );
         }
+    }
+
+    #[test]
+    fn a_minimum_contrast_has_to_be_a_contrast_ratio() {
+        for invalid in [0.99, 21.01, f32::NAN, f32::INFINITY] {
+            assert_eq!(MinimumContrast::new(invalid), None);
+        }
+        assert!(MinimumContrast::new(1.0).is_some_and(MinimumContrast::is_off));
+        assert!(MinimumContrast::new(4.5).is_some_and(|contrast| !contrast.is_off()));
     }
 
     #[test]

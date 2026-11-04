@@ -1,4 +1,4 @@
-use super::config::{FontConfig, Rgb as ConfigRgb, TerminalConfig};
+use super::config::{FontConfig, MinimumContrast, Rgb as ConfigRgb, TerminalConfig};
 use super::model::{Color, Rgb};
 use super::sizing::CellSize;
 use gpui::{
@@ -81,6 +81,7 @@ pub struct TerminalTheme {
     /// Hovered rows on a floating panel, legible beneath muted metadata.
     pub hover_surface: Rgb,
     pub ansi: [Rgb; 16],
+    pub minimum_contrast: MinimumContrast,
 }
 
 impl Default for TerminalTheme {
@@ -110,6 +111,7 @@ impl TerminalTheme {
             raised_surface: rgb(theme.raised_surface),
             hover_surface: rgb(theme.hover_surface),
             ansi: theme.ansi.map(rgb),
+            minimum_contrast: config.minimum_contrast,
         }
     }
 

@@ -1,5 +1,5 @@
 use super::chrome::{ChromeAssets, render_shell_message, resolve_ui_font, traffic_light_position};
-use super::color::dimmed;
+use super::color::{dimmed, with_minimum_contrast};
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
 use super::glyphs::{GlyphShape, drawn_glyph, is_drawn};
@@ -143,7 +143,13 @@ impl TerminalGrid {
             row: row.row,
             column,
         };
-        colors(cell, &self.theme, self.layer_at(row.overlays, position)).0
+        let layer = self.layer_at(row.overlays, position);
+        readable_foreground(
+            cell,
+            &self.theme,
+            layer,
+            is_selected(row.overlays, position).then_some(self.theme.selection),
+        )
     }
 
     /// Paints a row's glyphs. Adjacent cells are shaped together wherever they share a
@@ -824,6 +830,47 @@ fn colors(cell: &TerminalCell, theme: &TerminalTheme, layer: CellLayer) -> (Rgb,
         foreground = background;
     }
     (foreground, background)
+}
+
+/// Whether a cell lies inside a selection.
+fn is_selected(overlays: &[CellOverlaySpan], position: CellPosition) -> bool {
+    overlays.iter().any(|span| {
+        span.kind == OverlayKind::Selection
+            && span.row == position.row
+            && (span.start_column..span.end_column).contains(&position.column)
+    })
+}
+
+/// A glyph's colour after the minimum contrast setting, measured against `selection`
+/// when one is painted beneath the cell. A layer above the cell has its own colour pair.
+///
+/// Colours an application spelled out in 24-bit are left alone, as are shapes: image
+/// previews and Powerline segments are built from them, and only line up when a cell's
+/// foreground matches its neighbour's background exactly.
+fn readable_foreground(
+    cell: &TerminalCell,
+    theme: &TerminalTheme,
+    layer: CellLayer,
+    selection: Option<Rgb>,
+) -> Rgb {
+    let (foreground, background) = colors(cell, theme, layer);
+    let explicit = if cell.style.inverse {
+        cell.background
+    } else {
+        cell.foreground
+    };
+    if layer != CellLayer::Cell
+        || theme.minimum_contrast.is_off()
+        || matches!(explicit, super::model::Color::Rgb(_))
+        || drawn_character(cell).is_some()
+    {
+        return foreground;
+    }
+    with_minimum_contrast(
+        foreground,
+        selection.unwrap_or(background),
+        theme.minimum_contrast,
+    )
 }
 
 /// Focus only counts as terminal focus while the active workspace pane owns
@@ -2715,6 +2762,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::color::contrast_ratio;
     use crate::terminal::foreground::ForegroundProcess;
     use crate::terminal::host::SessionStart;
     use crate::terminal::model::Color;
@@ -3390,6 +3438,65 @@ mod tests {
         assert_eq!(
             colors(&cell, &TerminalTheme::default(), CellLayer::Cell).0,
             Rgb(150, 150, 150)
+        );
+    }
+
+    fn contrast_theme() -> TerminalTheme {
+        TerminalTheme::from_config(&TerminalConfig {
+            minimum_contrast: crate::terminal::config::MinimumContrast::new(4.5)
+                .expect("a valid ratio"),
+            ..TerminalConfig::default()
+        })
+    }
+
+    #[test]
+    fn minimum_contrast_lifts_palette_text_but_not_explicit_colours_or_shapes() {
+        let theme = contrast_theme();
+        let surface = theme.surface;
+        let readable = |cell: &TerminalCell, selection| {
+            readable_foreground(cell, &theme, CellLayer::Cell, selection)
+        };
+        let mut palette = TerminalCell::narrow('x');
+        // ANSI black sits close to the default surface.
+        palette.foreground = Color::Indexed(0);
+        let lifted = readable(&palette, None);
+        assert!(contrast_ratio(lifted, surface) >= 4.5);
+
+        let mut explicit = palette.clone();
+        explicit.foreground = Color::Rgb(Rgb(40, 40, 50));
+        assert_eq!(readable(&explicit, None), Rgb(40, 40, 50));
+
+        let mut powerline = palette.clone();
+        powerline.text = Some("\u{E0B0}".into());
+        assert_eq!(readable(&powerline, None), theme.ansi[0]);
+    }
+
+    #[test]
+    fn minimum_contrast_measures_against_a_selection_beneath_the_cell() {
+        let theme = contrast_theme();
+        let mut cell = TerminalCell::narrow('x');
+        cell.foreground = Color::Indexed(7);
+        let plain = readable_foreground(&cell, &theme, CellLayer::Cell, None);
+        let selected = Rgb(170, 170, 180);
+        let on_selection = readable_foreground(&cell, &theme, CellLayer::Cell, Some(selected));
+        assert_ne!(plain, on_selection);
+        assert!(contrast_ratio(on_selection, selected) >= 4.5);
+    }
+
+    #[test]
+    fn minimum_contrast_leaves_a_layer_with_its_own_colours_alone() {
+        let theme = TerminalTheme {
+            cursor_text: Rgb(240, 225, 230),
+            ..contrast_theme()
+        };
+        assert_eq!(
+            readable_foreground(
+                &TerminalCell::narrow('x'),
+                &theme,
+                CellLayer::BlockCursor,
+                None
+            ),
+            theme.cursor_text
         );
     }
 
