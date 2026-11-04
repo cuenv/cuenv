@@ -1,3 +1,4 @@
+/// One cell in whole device pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellSize {
     pub width: u32,
@@ -12,6 +13,9 @@ pub struct TerminalSize {
     pub pixels_height: u32,
 }
 
+/// Derives the grid from a surface. Every length is in device pixels, so what the PTY
+/// reports is exactly what is painted, and a fractional scale leaves no rounding for
+/// the two to disagree over.
 pub fn terminal_size(width: u32, height: u32, cell: CellSize) -> TerminalSize {
     let width = width.max(1);
     let height = height.max(1);

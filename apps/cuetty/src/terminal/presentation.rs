@@ -1,7 +1,10 @@
 use super::config::{Rgb as ConfigRgb, TerminalConfig};
 use super::model::{Color, Rgb};
 use super::sizing::CellSize;
-use gpui::{Font, FontFallbacks, Pixels, Size, TextSystem, WindowBackgroundAppearance, font, px};
+use gpui::{
+    Font, FontFallbacks, Pixels, Point, Size, TextSystem, WindowBackgroundAppearance, font, point,
+    px,
+};
 
 #[cfg(test)]
 const TERMINAL_FONT_FAMILY: &str = "MonaspiceNe Nerd Font";
@@ -129,17 +132,59 @@ impl TerminalTheme {
     }
 }
 
+/// Device pixels per logical pixel for the window being drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScaleFactor(f32);
+
+impl ScaleFactor {
+    /// A logical length that a float error leaves this far short of a whole device
+    /// pixel still counts as reaching it.
+    const WHOLE_PIXEL_TOLERANCE: f32 = 0.001;
+
+    /// A platform reporting a nonsensical scale is treated as an unscaled display.
+    pub fn new(scale: f32) -> Self {
+        Self(if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        })
+    }
+
+    /// How many whole device pixels fit in a logical length, and at least one.
+    pub fn whole_device_pixels(self, logical: Pixels) -> u32 {
+        (f32::from(logical) * self.0 + Self::WHOLE_PIXEL_TOLERANCE)
+            .floor()
+            .max(1.0) as u32
+    }
+
+    /// The logical length of a run of device pixels.
+    pub fn logical(self, device_pixels: u32) -> Pixels {
+        px(device_pixels as f32 / self.0)
+    }
+
+    /// The nearest position that falls on a device pixel.
+    pub fn snap(self, position: Point<Pixels>) -> Point<Pixels> {
+        let snap = |value: Pixels| px((f32::from(value) * self.0).round() / self.0);
+        point(snap(position.x), snap(position.y))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminalMetrics {
     pub font: Font,
     pub font_size: Pixels,
-    /// Raw font-derived geometry. `render_cell` snaps this once so rendering
-    /// and Rio's resize boundary share exactly the same terminal grid.
+    /// Raw font-derived geometry in logical pixels. It is only ever read through
+    /// `device_cell`, so painting and Rio's resize boundary share one grid.
     pub cell: Size<Pixels>,
+    pub scale: ScaleFactor,
 }
 
 impl TerminalMetrics {
-    pub fn from_config(text_system: &TextSystem, config: &TerminalConfig) -> Self {
+    pub fn from_config(
+        text_system: &TextSystem,
+        config: &TerminalConfig,
+        scale: ScaleFactor,
+    ) -> Self {
         // Match the user's terminal stack explicitly. If the primary family is
         // unavailable, GPUI still resolves its robust platform fallback stack.
         let font = font_from_config(config);
@@ -156,19 +201,22 @@ impl TerminalMetrics {
             font,
             font_size,
             cell: Size { width, height },
+            scale,
         }
     }
 
-    pub fn rio_cell(&self) -> CellSize {
-        let cell = self.render_cell();
-        CellSize {
-            width: f32::from(cell.width) as u32,
-            height: f32::from(cell.height) as u32,
-        }
+    /// The cell in whole device pixels: what the PTY is told and the grid is built on.
+    pub fn device_cell(&self) -> CellSize {
+        device_cell(self.cell, self.scale)
     }
 
+    /// The same cell in the logical pixels GPUI lays out and paints in.
     pub fn render_cell(&self) -> Size<Pixels> {
-        snapped_cell(self.cell)
+        let cell = self.device_cell();
+        Size {
+            width: self.scale.logical(cell.width),
+            height: self.scale.logical(cell.height),
+        }
     }
 }
 
@@ -176,10 +224,14 @@ fn terminal_line_height(font_size: Pixels, multiplier: f32) -> Pixels {
     px((f32::from(font_size) * multiplier).max(1.0))
 }
 
-fn snapped_cell(cell: Size<Pixels>) -> Size<Pixels> {
-    Size {
-        width: px(f32::from(cell.width).ceil().max(1.0)),
-        height: px(f32::from(cell.height).ceil().max(1.0)),
+/// Rounds a cell to the nearest whole device pixels, rather than always up: a 9.6px
+/// advance is 19px at 2x, which sits the text as the font intended, where rounding
+/// up to a whole logical pixel would space every column out by 0.4px.
+fn device_cell(cell: Size<Pixels>, scale: ScaleFactor) -> CellSize {
+    let device = |length: Pixels| (f32::from(length) * scale.0).round().max(1.0) as u32;
+    CellSize {
+        width: device(cell.width),
+        height: device(cell.height),
     }
 }
 
@@ -189,21 +241,112 @@ pub fn gpui_rgb(rgb: Rgb) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::sizing::terminal_size;
     use super::*;
 
+    fn metrics(scale: f32) -> TerminalMetrics {
+        TerminalMetrics {
+            font: terminal_font(),
+            font_size: px(TERMINAL_FONT_SIZE),
+            cell: Size {
+                width: px(9.6),
+                height: terminal_line_height(
+                    px(TERMINAL_FONT_SIZE),
+                    TERMINAL_LINE_HEIGHT_MULTIPLIER,
+                ),
+            },
+            scale: ScaleFactor::new(scale),
+        }
+    }
+
     #[test]
-    fn fractional_font_metrics_share_one_snapped_renderer_and_rio_cell() {
-        let cell = snapped_cell(Size {
-            width: px(8.1),
-            height: px(15.01),
-        });
+    fn a_cell_snaps_to_device_pixels_not_logical_ones() {
+        let snapped = |scale| {
+            let metrics = metrics(scale);
+            (metrics.device_cell(), metrics.render_cell().width)
+        };
+        let (cell, width) = snapped(2.0);
         assert_eq!(
             cell,
-            Size {
-                width: px(9.0),
-                height: px(16.0)
+            CellSize {
+                width: 19,
+                height: 38
             }
         );
+        assert_eq!(width, px(9.5));
+        let (cell, width) = snapped(1.0);
+        assert_eq!(
+            cell,
+            CellSize {
+                width: 10,
+                height: 19
+            }
+        );
+        assert_eq!(width, px(10.0));
+    }
+
+    #[test]
+    fn a_fractional_scale_keeps_the_renderer_and_pty_on_one_grid() {
+        let metrics = metrics(1.5);
+        let cell = metrics.device_cell();
+        let surface = Size {
+            width: px(900.0),
+            height: px(600.0),
+        };
+        let grid = terminal_size(
+            metrics.scale.whole_device_pixels(surface.width),
+            metrics.scale.whole_device_pixels(surface.height),
+            cell,
+        );
+        let painted = metrics.render_cell();
+        // Everything the PTY was told about is painted, and it all fits.
+        assert!(f32::from(painted.width) * f32::from(grid.cols) <= f32::from(surface.width));
+        assert!(f32::from(painted.height) * f32::from(grid.rows) <= f32::from(surface.height));
+        // Every column boundary lands on a whole device pixel.
+        for column in 0..grid.cols {
+            let x = f32::from(painted.width) * f32::from(column) * 1.5;
+            assert!((x - x.round()).abs() < 0.01, "column {column} is at {x}");
+        }
+        assert_eq!(grid.pixels_width, u32::from(grid.cols) * cell.width);
+    }
+
+    #[test]
+    fn a_tiny_cell_is_still_a_cell() {
+        let cell = device_cell(
+            Size {
+                width: px(0.1),
+                height: px(0.1),
+            },
+            ScaleFactor::new(1.0),
+        );
+        assert_eq!(
+            cell,
+            CellSize {
+                width: 1,
+                height: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_length_short_of_a_device_pixel_only_by_float_error_reaches_it() {
+        let scale = ScaleFactor::new(1.25);
+        assert_eq!(scale.whole_device_pixels(px(799.9999)), 1000);
+        assert_eq!(scale.whole_device_pixels(px(799.5)), 999);
+        assert_eq!(scale.whole_device_pixels(px(0.0)), 1);
+    }
+
+    #[test]
+    fn a_nonsensical_scale_falls_back_to_unscaled() {
+        for scale in [0.0, -2.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(ScaleFactor::new(scale), ScaleFactor::new(1.0));
+        }
+    }
+
+    #[test]
+    fn the_grid_origin_snaps_onto_a_device_pixel() {
+        let snapped = ScaleFactor::new(2.0).snap(point(px(14.3), px(14.2)));
+        assert_eq!(snapped, point(px(14.5), px(14.0)));
     }
 
     #[test]
@@ -229,21 +372,6 @@ mod tests {
                 .expect("terminal font needs fallbacks")
                 .fallback_list(),
             TERMINAL_FALLBACKS
-        );
-    }
-
-    #[test]
-    fn line_height_contract_is_16px_times_1_point_2_then_shared_snap() {
-        let raw_height =
-            terminal_line_height(px(TERMINAL_FONT_SIZE), TERMINAL_LINE_HEIGHT_MULTIPLIER);
-        assert_eq!(raw_height, px(19.2));
-        assert_eq!(
-            snapped_cell(Size {
-                width: px(9.0),
-                height: raw_height
-            })
-            .height,
-            px(20.0)
         );
     }
 

@@ -115,8 +115,10 @@ Text defaults to the `MonaspiceNe Nerd Font` family with explicit `Noto
 Color Emoji`, `Monaspace Neon`, and macOS symbol/monospace fallbacks so prompt
 and directory glyphs do not depend on GPUI's default fallback selection.
 Terminal text defaults to 16px with a 1.2 line-height multiplier; that
-raw 19.2px line height is snapped once to the shared 20px device-pixel cell
-used by both GPUI painting and Rio resizing.
+raw 19.2px line height is snapped once, with the font's advance, to whole device
+pixels: 19px at 1x and 38 device pixels at 2x, so columns and rows land on device
+pixels at any scale. GPUI painting and Rio resizing share that one cell, and the
+sizes the PTY reports are in device pixels.
 The focused label and cursor follow GPUI's current focus handle, including blur.
 Rio
 colour semantics (default, indexed, RGB, bold, dim, inverse, and hidden) stay
@@ -181,8 +183,11 @@ snapshots still decode, with no name.
 The renderer uses one custom GPUI element, merges compatible background spans,
 and shapes adjacent compatible cells as fixed-width text batches. Renderer cell
 width is measured from the selected font, while line height follows the configured
-font size and line-height multiplier; both are snapped once to shared device-pixel
-cell dimensions used by painting and Rio resizing. The current Rio public
+font size and line-height multiplier; both are rounded once to whole device pixels
+at the window's scale factor, and painting, hit testing, and Rio resizing all use
+that cell. The surface is measured in device pixels too, so the grid the PTY is
+told about is exactly the one painted, and moving a window between displays
+resizes it. The current Rio public
 snapshot adapter preserves backend-declared cluster text, wide-cell occupancy,
 and wrapped placeholders. Complete IME, ZWJ shaping, hyperlink, and emoji
 presentation correctness is deliberately not claimed.

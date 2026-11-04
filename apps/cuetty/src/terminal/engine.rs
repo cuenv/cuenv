@@ -10,7 +10,7 @@ use super::model::{CursorShape, Known, Rgb, TerminalCell, TerminalFrame, Underli
 #[cfg(test)]
 use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
-use super::presentation::{TerminalMetrics, TerminalTheme, gpui_rgb};
+use super::presentation::{ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
 use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
 use super::workspace_shell::{
@@ -314,6 +314,11 @@ impl Element for TerminalGrid {
     ) {
         let grid_cell = self.metrics.render_cell();
         let overlays = self.overlays.spans(&self.frame);
+        // Cells are whole device pixels, so a whole-pixel origin puts every edge on one.
+        let bounds = Bounds {
+            origin: self.metrics.scale.snap(bounds.origin),
+            ..bounds
+        };
         for row in 0..self.frame.dimensions.rows as usize {
             let cells = frame_row(&self.frame, row);
             if cells.is_empty() {
@@ -538,8 +543,6 @@ fn shell_notice(error: ShellError) -> String {
     format!("workspace action unavailable: {error}")
 }
 
-type ViewportBounds = (f32, f32, f32, f32);
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SessionGeneration(u64);
 
@@ -558,8 +561,10 @@ pub(super) struct PaneState {
     scroll_remainder: f32,
     /// What the terminal is doing, which is what its tab is named after.
     activity: PaneActivity,
+    /// The terminal surface in device pixels, as the grid is sized from it.
     measured_bounds: Arc<Mutex<(u32, u32)>>,
-    viewport_bounds: Arc<Mutex<ViewportBounds>>,
+    /// Where the surface starts in window coordinates, for hit testing.
+    viewport_origin: Arc<Mutex<(f32, f32)>>,
     error: Option<String>,
     pub(super) cuenv: CuenvPaneState,
     cuenv_source: Option<ConfigSource>,
@@ -582,7 +587,7 @@ impl PaneState {
             scroll_remainder: 0.0,
             activity: PaneActivity::default(),
             measured_bounds: Arc::new(Mutex::new((width, height))),
-            viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
+            viewport_origin: Arc::new(Mutex::new((0.0, 0.0))),
             error: None,
             cuenv: CuenvPaneState::default(),
             cuenv_source: None,
@@ -945,6 +950,17 @@ const APP_TITLE: &str = "Cuetty";
 /// The key that toggles the sidebar with the application chord.
 pub(super) const SIDEBAR_TOGGLE_KEY: &str = "b";
 
+/// The logical size assumed for the terminal surface until a draw has measured it.
+const UNMEASURED_SURFACE: (f32, f32) = (720.0, 432.0);
+
+/// The surface to start a session on before any draw has measured one, in device pixels.
+fn unmeasured_surface(scale: ScaleFactor) -> (u32, u32) {
+    (
+        scale.whole_device_pixels(px(UNMEASURED_SURFACE.0)),
+        scale.whole_device_pixels(px(UNMEASURED_SURFACE.1)),
+    )
+}
+
 /// How long a window's first frame may wait on the global configuration. Going over
 /// only means the configuration arrives after the frame, as a directory's does.
 const FIRST_FRAME_CONFIG_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
@@ -1222,11 +1238,13 @@ impl TerminalView {
         })
         .detach();
         let config = TerminalConfig::default();
-        let metrics = TerminalMetrics::from_config(cx.text_system(), &config);
+        let scale = ScaleFactor::new(window.scale_factor());
+        let metrics = TerminalMetrics::from_config(cx.text_system(), &config, scale);
         let theme = TerminalTheme::from_config(&config);
         let window_background = theme.window_background();
         let factory: Arc<dyn TerminalSessionFactory> = Arc::new(RioTerminalFactory);
-        match SessionRegistry::start(factory.clone(), 720, 432, metrics.rio_cell()) {
+        let (width, height) = unmeasured_surface(scale);
+        match SessionRegistry::start(factory.clone(), width, height, metrics.device_cell()) {
             Ok((mut registry, wake_rx)) => {
                 let pane = registry.active_pane().expect("initial workspace pane");
                 // The window's first frame sizes the grid, so what shapes it has to be
@@ -1254,7 +1272,7 @@ impl TerminalView {
                     theme,
                     focus: cx.focus_handle(),
                     renderer: Box::new(GridRenderer),
-                    workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
+                    workspace_bounds: Arc::new(Mutex::new(UNMEASURED_SURFACE)),
                     window_background,
                     window_decorations: Decorations::default(),
                     task_palette_open: false,
@@ -1285,7 +1303,7 @@ impl TerminalView {
                     theme,
                     focus: cx.focus_handle(),
                     renderer: Box::new(GridRenderer),
-                    workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
+                    workspace_bounds: Arc::new(Mutex::new(UNMEASURED_SURFACE)),
                     window_background,
                     window_decorations: Decorations::default(),
                     task_palette_open: false,
@@ -1522,7 +1540,8 @@ impl TerminalView {
     fn sync_active_config(&mut self, cx: &mut Context<Self>) {
         let config = self.registry.active_terminal_config();
         if self.config != config {
-            self.metrics = TerminalMetrics::from_config(cx.text_system(), &config);
+            self.metrics =
+                TerminalMetrics::from_config(cx.text_system(), &config, self.metrics.scale);
             self.theme = TerminalTheme::from_config(&config);
             self.config = config;
         }
@@ -1639,11 +1658,20 @@ impl TerminalView {
         }
     }
     pub(super) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let width = 720;
-        let height = 432;
+        // A tab shares the surface its siblings measured, so its shell starts on the
+        // right grid rather than getting a resize right after its first prompt.
+        let (width, height) = self.active_state().map_or_else(
+            || unmeasured_surface(self.metrics.scale),
+            |state| {
+                *state
+                    .measured_bounds
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            },
+        );
         match self
             .registry
-            .start_tab(width, height, self.metrics.rio_cell())
+            .start_tab(width, height, self.metrics.device_cell())
         {
             Ok((pane, generation, wake_rx)) => {
                 self.spawn_wake(cx, pane, generation, wake_rx);
@@ -1678,10 +1706,10 @@ impl TerminalView {
                 super::selection::LogicalPosition { line: 0, column: 0 },
             );
         };
-        let (x, y, _, _) = *state
-            .viewport_bounds
+        let (x, y) = *state
+            .viewport_origin
             .lock()
-            .expect("viewport mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let cell = self.metrics.render_cell();
         let hit_test = CellHitTest {
             cell_width: f32::from(cell.width),
@@ -2114,6 +2142,7 @@ impl Render for TerminalView {
         }
         // The active pane controls both painting and PTY geometry. Background
         // configuration updates must never alter the visible pane's metrics.
+        self.metrics.scale = ScaleFactor::new(window.scale_factor());
         self.sync_active_config(cx);
         let window_background = self.theme.window_background();
         if self.window_background != window_background {
@@ -2157,7 +2186,7 @@ impl Render for TerminalView {
         let interaction = state.interaction.clone();
         let pane_error = state.error.clone();
         let measured = Arc::clone(&state.measured_bounds);
-        let viewport_bounds = Arc::clone(&state.viewport_bounds);
+        let viewport_origin = Arc::clone(&state.viewport_origin);
         let entity = cx.weak_entity();
         let terminal_focused = terminal_has_focus(self.focus.is_focused(window), true);
         if let Some(error) = &pane_error {
@@ -2193,7 +2222,7 @@ impl Render for TerminalView {
             let bounds = *state.measured_bounds.lock().expect("bounds mutex poisoned");
             if let Err(error) = state
                 .session
-                .resize(bounds.0, bounds.1, self.metrics.rio_cell())
+                .resize(bounds.0, bounds.1, self.metrics.device_cell())
             {
                 state.error = Some(error);
             }
@@ -2248,7 +2277,7 @@ impl Render for TerminalView {
                 .overflow_hidden();
             if pane_id == active_pane {
                 let pane_measured = Arc::clone(&measured);
-                let pane_viewport_bounds = Arc::clone(&viewport_bounds);
+                let pane_viewport_origin = Arc::clone(&viewport_origin);
                 let pane_entity = entity.clone();
                 let live_content = content
                     .take()
@@ -2274,21 +2303,18 @@ impl Render for TerminalView {
                         .on_scroll_wheel(cx.listener(Self::scroll_wheel))
                         .child(
                             canvas(
-                                move |bounds, _, app| {
+                                move |bounds, window, app| {
+                                    let scale = ScaleFactor::new(window.scale_factor());
                                     let next = (
-                                        f32::from(bounds.size.width).max(1.0) as u32,
-                                        f32::from(bounds.size.height).max(1.0) as u32,
+                                        scale.whole_device_pixels(bounds.size.width),
+                                        scale.whole_device_pixels(bounds.size.height),
                                     );
                                     if store_if_changed(&pane_measured, next) {
                                         redraw_after_this_frame(pane_entity, app);
                                     }
-                                    *pane_viewport_bounds
-                                        .lock()
-                                        .expect("viewport mutex poisoned") = (
-                                        f32::from(bounds.origin.x),
-                                        f32::from(bounds.origin.y),
-                                        f32::from(bounds.size.width),
-                                        f32::from(bounds.size.height),
+                                    store_if_changed(
+                                        &pane_viewport_origin,
+                                        (f32::from(bounds.origin.x), f32::from(bounds.origin.y)),
                                     );
                                 },
                                 |_, _, _, _| {},
