@@ -1,4 +1,5 @@
 use super::chrome::{ChromeAssets, render_shell_message, resolve_ui_font, traffic_light_position};
+use super::color::dimmed;
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
 use super::glyphs::{GlyphShape, drawn_glyph, is_drawn};
@@ -816,7 +817,7 @@ fn colors(cell: &TerminalCell, theme: &TerminalTheme, layer: CellLayer) -> (Rgb,
         std::mem::swap(&mut foreground, &mut background);
     }
     if cell.style.dim {
-        foreground = Rgb(foreground.0 / 2, foreground.1 / 2, foreground.2 / 2);
+        foreground = dimmed(foreground, background);
     }
     if cell.style.hidden {
         foreground = background;
@@ -3371,6 +3372,24 @@ mod tests {
         let mut inverse = default;
         inverse.style.inverse = true;
         assert!(!uses_terminal_surface_background(&inverse));
+    }
+
+    #[test]
+    fn dim_text_fades_towards_the_background_it_is_drawn_on() {
+        let mut cell = TerminalCell::narrow('x');
+        cell.foreground = Color::Rgb(Rgb(100, 100, 100));
+        cell.background = Color::Rgb(Rgb(200, 200, 200));
+        cell.style.dim = true;
+        assert_eq!(
+            colors(&cell, &TerminalTheme::default(), CellLayer::Cell).0,
+            Rgb(150, 150, 150)
+        );
+        // An inverse cell fades towards what is now behind it.
+        cell.style.inverse = true;
+        assert_eq!(
+            colors(&cell, &TerminalTheme::default(), CellLayer::Cell).0,
+            Rgb(150, 150, 150)
+        );
     }
 
     #[test]

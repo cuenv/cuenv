@@ -1,4 +1,5 @@
 mod chrome;
+mod color;
 pub mod config;
 mod engine;
 mod events;

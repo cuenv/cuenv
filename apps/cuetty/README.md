@@ -185,8 +185,9 @@ Adjacent cells sharing a font are shaped together, even across colours, so a fon
 contextual alternates see the surrounding text. Every glyph is then placed from the
 column its source text belongs to, never from the font's advances, so `calt`,
 combining marks, and fallback fonts cannot shift a column, and all rows share one
-baseline taken from the configured font. Concealed text paints no glyph at all.
-Renderer cell
+baseline taken from the configured font. Dim text blends halfway towards the
+background it is drawn on, so it reads as quieter on a light theme as well as a dark
+one, and concealed text paints no glyph at all. Renderer cell
 width is measured from the selected font, while line height follows the configured
 font size and line-height multiplier; both are rounded once to whole device pixels
 at the window's scale factor, and painting, hit testing, and Rio resizing all use
