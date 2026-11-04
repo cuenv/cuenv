@@ -142,11 +142,14 @@ transparency: 10
 | `font.size` | Font size in pixels, 1–128 | 16 |
 | `font.lineHeight` | Line-height multiplier, 0.5–3 | 1.2 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 8 each |
-| `transparency` | Integer percent, 0–100; affects the terminal canvas | 0 |
+| `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and rail share this opacity | 0 |
 
 Fields are optional. The active tab's settings determine the rendered grid,
-terminal inset, and terminal background. Unknown top-level and nested fields
-are rejected.
+terminal inset, and window material. At `transparency: 0` the whole window is
+opaque. Above 0, the terminal and structural chrome share one opacity over the
+native blur, so the window reads as one material; text, controls, and the
+floating task panels stay opaque for legibility. Unknown top-level and nested
+fields are rejected.
 
 The cuenv repository includes a root `cuetty.cue` with a `cuenv` banner and a
 Catppuccin Mocha blue rail. It applies while the shell is in the repository

@@ -1,4 +1,4 @@
-use super::tokens::{ChromeColors, border, radius, size, space, text};
+use super::tokens::{ChromeColors, border, material_color, radius, size, space, text};
 use crate::integrations::cuenv::RailColor;
 use crate::terminal::engine::TerminalView;
 use crate::terminal::model::Rgb;
@@ -137,7 +137,7 @@ impl TerminalView {
             .active_state()
             .and_then(|state| state.cuenv.presentation.rail)
             .map_or(colors.material, |RailColor(red, green, blue)| {
-                ChromeColors::tinted_material(Rgb(red, green, blue))
+                material_color(theme, Rgb(red, green, blue))
             });
         let mut rail = div()
             .relative()

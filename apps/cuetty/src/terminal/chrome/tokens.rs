@@ -95,32 +95,30 @@ pub(super) mod elevation {
     }
 }
 
-const CHROME_GLASS_OPACITY: f32 = 0.72;
-
-fn with_opacity(color: Rgb, opacity: f32) -> Rgba {
-    Rgba {
-        a: opacity.clamp(0.0, 1.0),
-        ..gpui::rgb(gpui_rgb(color))
-    }
-}
-
 fn opaque(color: Rgb) -> Rgba {
     gpui::rgb(gpui_rgb(color))
 }
 
-/// The terminal's own background layer at the configured opacity.
-pub(in crate::terminal) fn terminal_background_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
-    with_opacity(color, theme.background_opacity)
+/// The window's one material: the terminal background and structural chrome
+/// share this opacity, so the window never reads as glass beside paint.
+pub(in crate::terminal) fn material_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
+    Rgba {
+        a: theme.background_opacity.clamp(0.0, 1.0),
+        ..opaque(color)
+    }
 }
 
 /// Semantic chrome colours resolved from the active theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ChromeColors {
-    /// Structural chrome: the title strip and rail.
+    /// Structural chrome: the title strip and rail. Shares the terminal's
+    /// opacity.
     pub(super) material: Rgba,
-    /// Floating panels above the terminal.
+    /// Floating panels. Always opaque, because they cover terminal text that
+    /// would otherwise show through their own.
     pub(super) panel: Rgba,
-    /// Hovered and active controls on structural material.
+    /// Hovered and active controls on structural material. Always opaque, so
+    /// interaction stays visible at any transparency.
     pub(super) state: Rgba,
     /// Hovered and selected rows inside a panel.
     pub(super) panel_state: Rgba,
@@ -139,11 +137,11 @@ pub(super) struct ChromeColors {
 impl ChromeColors {
     pub(super) fn from_theme(theme: &TerminalTheme) -> Self {
         Self {
-            material: Self::tinted_material(theme.title_surface),
-            panel: with_opacity(theme.raised_surface, CHROME_GLASS_OPACITY),
-            state: with_opacity(theme.raised_surface, CHROME_GLASS_OPACITY),
-            panel_state: with_opacity(theme.selection, CHROME_GLASS_OPACITY),
-            well: with_opacity(theme.surface, CHROME_GLASS_OPACITY),
+            material: material_color(theme, theme.title_surface),
+            panel: opaque(theme.raised_surface),
+            state: opaque(theme.raised_surface),
+            panel_state: opaque(theme.selection),
+            well: opaque(theme.surface),
             mark: opaque(theme.cursor),
             mark_text: opaque(theme.cursor_text),
             text: opaque(theme.text),
@@ -153,9 +151,41 @@ impl ChromeColors {
             accent: opaque(theme.accent),
         }
     }
+}
 
-    /// Structural material in another base colour.
-    pub(super) fn tinted_material(color: Rgb) -> Rgba {
-        with_opacity(color, CHROME_GLASS_OPACITY)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal::config::TerminalConfig;
+
+    fn theme_with_transparency(percent: u8) -> TerminalTheme {
+        TerminalTheme::from_config(&TerminalConfig {
+            terminal_transparency_percent: percent,
+            ..TerminalConfig::default()
+        })
+    }
+
+    #[test]
+    fn zero_transparency_makes_chrome_and_terminal_fully_opaque() {
+        let theme = theme_with_transparency(0);
+        assert_eq!(ChromeColors::from_theme(&theme).material.a, 1.0);
+        assert_eq!(material_color(&theme, theme.surface).a, 1.0);
+    }
+
+    #[test]
+    fn chrome_and_terminal_share_one_opacity_above_zero_transparency() {
+        let theme = theme_with_transparency(65);
+        let chrome = ChromeColors::from_theme(&theme).material.a;
+        assert!((chrome - 0.35).abs() < f32::EPSILON);
+        assert_eq!(chrome, material_color(&theme, theme.surface).a);
+    }
+
+    #[test]
+    fn panels_and_interaction_states_stay_legible_at_full_transparency() {
+        let colors = ChromeColors::from_theme(&theme_with_transparency(100));
+        assert_eq!(colors.material.a, 0.0);
+        for fill in [colors.panel, colors.state, colors.panel_state, colors.well] {
+            assert_eq!(fill.a, 1.0);
+        }
     }
 }

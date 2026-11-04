@@ -113,10 +113,13 @@ Font family, font size, line height, terminal padding, and terminal transparency
 through global and per-directory CUE files. Padding is independently configurable
 on the top, right, bottom, and left and is applied outside the measured terminal
 viewport so Rio receives the actual remaining grid size. Transparency spans 0%
-(opaque) through 100% (fully transparent) and changes only the terminal canvas.
-The title strip and right-side tab rail retain a fixed dark translucent layer
-over native macOS blur, while terminal text, the cursor, tab pills, selection,
-and controls remain opaque. The native Cuetty menu contains Quit Cuetty and
+(opaque) through 100% (fully transparent). The terminal canvas, title strip, and
+right-side tab rail share that one opacity, so the window reads as one material:
+at 0% nothing shows through and the compositor treats the window as opaque, and
+above 0% everything sits over native blur together. Terminal text, the cursor,
+tab pills, selection, hover states, and controls remain opaque, as do the floating
+task panels, whose own text would otherwise compete with the terminal text they
+cover. The native Cuetty menu contains Quit Cuetty and
 Cmd-Q uses the same application action. Before calling the POC visually usable,
 check that native window
 controls and the rail remain visible, the prompt fills the terminal surface

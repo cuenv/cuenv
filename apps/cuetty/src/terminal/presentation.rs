@@ -1,7 +1,7 @@
 use super::config::{Rgb as ConfigRgb, TerminalConfig};
 use super::model::{Color, Rgb};
 use super::sizing::CellSize;
-use gpui::{Font, FontFallbacks, Pixels, Size, TextSystem, font, px};
+use gpui::{Font, FontFallbacks, Pixels, Size, TextSystem, WindowBackgroundAppearance, font, px};
 
 #[cfg(test)]
 const TERMINAL_FONT_FAMILY: &str = "MonaspiceNe Nerd Font";
@@ -35,8 +35,9 @@ fn font_from_config(config: &TerminalConfig) -> Font {
 /// by another host renderer without changing the terminal session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminalTheme {
-    /// Alpha applied only to terminal background fills. Window chrome uses a
-    /// separate fixed glass material, while glyphs and overlays remain opaque.
+    /// Alpha shared by terminal background fills and structural chrome, so the
+    /// window reads as one material. Glyphs, overlays, and floating panels
+    /// remain opaque.
     pub background_opacity: f32,
     pub surface: Rgb,
     pub title_surface: Rgb,
@@ -88,6 +89,17 @@ impl TerminalTheme {
             ansi: theme.ansi.map(rgb),
         }
     }
+
+    /// How the platform should composite the window behind this theme. A fully
+    /// opaque window lets the compositor skip whatever is behind it.
+    pub fn window_background(&self) -> WindowBackgroundAppearance {
+        if self.background_opacity >= 1.0 {
+            WindowBackgroundAppearance::Opaque
+        } else {
+            WindowBackgroundAppearance::Blurred
+        }
+    }
+
     pub fn resolve(&self, color: Color, _foreground: bool) -> Rgb {
         match color {
             Color::DefaultForeground => self.text,
@@ -270,7 +282,27 @@ mod tests {
     }
 
     #[test]
-    fn transparency_only_changes_terminal_background_opacity() {
+    fn only_full_opacity_gives_the_compositor_an_opaque_window() {
+        let theme = |terminal_transparency_percent| {
+            TerminalTheme::from_config(&TerminalConfig {
+                terminal_transparency_percent,
+                ..TerminalConfig::default()
+            })
+        };
+        assert_eq!(
+            theme(0).window_background(),
+            WindowBackgroundAppearance::Opaque
+        );
+        for percent in [1, 100] {
+            assert_eq!(
+                theme(percent).window_background(),
+                WindowBackgroundAppearance::Blurred
+            );
+        }
+    }
+
+    #[test]
+    fn transparency_changes_background_opacity_but_not_text_or_cursor() {
         let config = TerminalConfig {
             terminal_transparency_percent: 65,
             ..TerminalConfig::default()

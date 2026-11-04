@@ -9,4 +9,4 @@ mod task_palette;
 mod task_sidebar;
 mod tokens;
 
-pub(super) use tokens::terminal_background_color;
+pub(super) use tokens::material_color;

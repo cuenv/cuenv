@@ -1,4 +1,4 @@
-use super::chrome::terminal_background_color;
+use super::chrome::material_color;
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
 use super::host::{
@@ -754,6 +754,7 @@ pub(super) struct TerminalView {
     focus: FocusHandle,
     renderer: Box<dyn TerminalRenderer>,
     workspace_bounds: Arc<Mutex<(f32, f32)>>,
+    window_background: WindowBackgroundAppearance,
     pub(super) task_palette_open: bool,
     pub(super) task_sidebar_open: bool,
     pub(super) task_query: String,
@@ -924,6 +925,7 @@ impl TerminalView {
         let config = TerminalConfig::default();
         let metrics = TerminalMetrics::from_config(cx.text_system(), &config);
         let theme = TerminalTheme::from_config(&config);
+        let window_background = theme.window_background();
         let factory: Arc<dyn TerminalSessionFactory> = Arc::new(RioTerminalFactory);
         match SessionRegistry::start(factory.clone(), 720, 432, metrics.rio_cell()) {
             Ok((registry, wake_rx)) => {
@@ -937,6 +939,7 @@ impl TerminalView {
                     focus: cx.focus_handle(),
                     renderer: Box::new(GridRenderer),
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
+                    window_background,
                     task_palette_open: false,
                     task_sidebar_open: false,
                     task_query: String::new(),
@@ -959,6 +962,7 @@ impl TerminalView {
                     focus: cx.focus_handle(),
                     renderer: Box::new(GridRenderer),
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
+                    window_background,
                     task_palette_open: false,
                     task_sidebar_open: false,
                     task_query: String::new(),
@@ -1709,6 +1713,11 @@ impl Render for TerminalView {
         // The active pane controls both painting and PTY geometry. Background
         // configuration updates must never alter the visible pane's metrics.
         self.sync_active_config(cx);
+        let window_background = self.theme.window_background();
+        if self.window_background != window_background {
+            window.set_background_appearance(window_background);
+            self.window_background = window_background;
+        }
         let theme = self.theme.clone();
         let metrics = self.metrics.clone();
         let padding = self.config.terminal_padding;
@@ -1727,7 +1736,7 @@ impl Render for TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(terminal_background_color(&theme, theme.surface))
+                    .bg(material_color(&theme, theme.surface))
                     .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
                     .child(message)
                     .into_any_element(),
@@ -1755,7 +1764,7 @@ impl Render for TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(terminal_background_color(&theme, theme.surface))
+                    .bg(material_color(&theme, theme.surface))
                     .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
                     .child(format!("Cuetty terminal error: {error}"))
                     .into_any_element(),
@@ -1917,7 +1926,7 @@ impl Render for TerminalView {
             // Keep the inset in the terminal's surface colour. The host
             // chrome still owns the title strip and rail; the terminal area
             // should read as one continuous canvas rather than a framed box.
-            .bg(terminal_background_color(&theme, theme.surface))
+            .bg(material_color(&theme, theme.surface))
             .child(
                 terminal_surface
                     .absolute()
@@ -1965,7 +1974,7 @@ pub fn run() {
                         appears_transparent: true,
                         traffic_light_position: Some(point(px(12.0), px(9.0))),
                     }),
-                    window_background: WindowBackgroundAppearance::Blurred,
+                    window_background: TerminalTheme::default().window_background(),
                     // Matches the installed `cuetty.desktop` so Linux
                     // compositors associate windows with the launcher entry.
                     app_id: Some("cuetty".to_string()),
