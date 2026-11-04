@@ -151,9 +151,9 @@ transparency: 10
 Fields are optional. The active tab's settings determine the rendered grid,
 terminal inset, and window material. At `transparency: 0` the whole window is
 opaque. Above 0, the terminal and structural chrome share one opacity over the
-native blur, so the window reads as one material, dividers included; text,
-controls, and the floating task panels and their outlines stay opaque for
-legibility. Unknown top-level and nested
+native blur, so the window reads as one material, dividers and the rail's hover
+and active-tab fills included; text, the active tab's marker, and the floating
+task panels and their outlines stay opaque for legibility. Unknown top-level and nested
 fields are rejected.
 
 The cuenv repository includes a root `cuetty.cue` with a `cuenv` banner and a

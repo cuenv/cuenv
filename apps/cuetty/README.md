@@ -118,10 +118,10 @@ viewport so Rio receives the actual remaining grid size. Transparency spans 0%
 right-side tab rail share that one opacity, so the window reads as one material:
 at 0% nothing shows through and the compositor treats the window as opaque, and
 above 0% everything sits over native blur together, including the dividers
-between those regions. Terminal text, the cursor, selection, hover states,
-controls, and the active tab's marker remain opaque, as do the floating task
-panels and their outlines, whose own text would otherwise compete with the
-terminal text they cover. The native Cuetty menu contains Quit Cuetty and
+between those regions and the rail's hover and active-tab fills. Terminal text,
+the cursor, selection, chrome text, and the active tab's marker remain opaque, as
+do the floating task panels and their outlines, whose own text would otherwise
+compete with the terminal text they cover. The native Cuetty menu contains Quit Cuetty and
 Cmd-Q uses the same application action. Before calling the POC visually usable,
 check that native window
 controls and the rail remain visible, the prompt fills the terminal surface

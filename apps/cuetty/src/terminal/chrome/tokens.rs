@@ -130,8 +130,9 @@ pub(super) struct ChromeColors {
     /// Floating panels. Always opaque, because they cover terminal text that
     /// would otherwise show through their own.
     pub(super) panel: Rgba,
-    /// Hovered and active controls on structural material. Always opaque, so
-    /// interaction stays visible at any transparency.
+    /// Hovered and active controls on structural material, in the same opacity
+    /// as that material. The rail stays one material at any transparency; the
+    /// marker and text weight carry the active tab where this fill fades out.
     pub(super) state: Rgba,
     /// The keyboard-selected row in a panel. Muted text is not legible on this
     /// fill, so that row's metadata uses secondary text.
@@ -159,7 +160,7 @@ impl ChromeColors {
         Self {
             material: material_color(theme, theme.title_surface),
             panel: opaque(theme.raised_surface),
-            state: opaque(theme.raised_surface),
+            state: material_color(theme, theme.raised_surface),
             panel_selected: opaque(theme.selection),
             panel_hover: opaque(theme.hover_surface),
             well: opaque(theme.surface),
@@ -208,12 +209,17 @@ mod tests {
     }
 
     #[test]
-    fn panels_and_interaction_states_stay_legible_at_full_transparency() {
+    fn structural_control_states_share_the_material_opacity() {
+        let colors = ChromeColors::from_theme(&theme_with_transparency(65));
+        assert_eq!(colors.state.a, colors.material.a);
+    }
+
+    #[test]
+    fn floating_panels_stay_legible_at_full_transparency() {
         let colors = ChromeColors::from_theme(&theme_with_transparency(100));
         assert_eq!(colors.material.a, 0.0);
         for fill in [
             colors.panel,
-            colors.state,
             colors.panel_selected,
             colors.panel_hover,
             colors.well,
