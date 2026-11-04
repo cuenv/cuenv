@@ -2607,7 +2607,8 @@ impl TerminalView {
 
     /// Toggles the task palette, returning whether the active pane has a
     /// task catalogue to show.
-    fn toggle_task_palette(&mut self) -> bool {
+    pub(super) fn toggle_task_palette(&mut self) -> bool {
+        self.commit_tab_rename();
         if self
             .active_state()
             .is_none_or(|state| state.task_catalogue().is_empty())

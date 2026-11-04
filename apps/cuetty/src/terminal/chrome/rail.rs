@@ -231,6 +231,39 @@ impl TerminalView {
             ))
             .on_click(cx.listener(|view, _event, _window, cx| view.toggle_sidebar(cx)))
             .child(toggle_icon.element(colors.text_secondary));
+        // Only said where the chord works: without a task catalogue, or a shell left to
+        // run one, the key is left alone. A collapsed sidebar has no room for it, and the tasks button's
+        // tooltip says the same.
+        let palette_hint = (has_tasks && mode == SidebarMode::Expanded).then(|| {
+            let hover = colors.state;
+            div()
+                .id("cuetty-palette-hint")
+                .mx(space::SM)
+                .mt(space::SM)
+                .px(space::SM)
+                .py(space::XS)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(space::MD)
+                .rounded(radius::CONTROL)
+                .hover(move |this| this.bg(hover))
+                .cursor_pointer()
+                .text_size(text::CAPTION)
+                .text_color(colors.text_muted)
+                .on_click(cx.listener(|view, _event, window, cx| {
+                    view.toggle_task_palette();
+                    view.focus_terminal(window);
+                    cx.notify();
+                }))
+                .child(div().min_w_0().truncate().child("Search tasks"))
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family(self.mono_font_family())
+                        .child(palette_chord.clone()),
+                )
+        });
         let footer = div()
             .w_full()
             .flex_shrink_0()
@@ -263,6 +296,7 @@ impl TerminalView {
             .border(border::HAIRLINE)
             .border_color(colors.divider)
             .child(tabs)
+            .children(palette_hint)
             .child(footer)
             .into_any_element()
     }

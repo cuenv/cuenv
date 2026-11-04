@@ -123,6 +123,9 @@ The current usable slice includes:
   emptied, which hands the tab back to its derived name.
 - Dragging a tab onto another moves it to that tab's place in the list, which the number
   keys and tab switching then follow.
+- A hint at the foot of the expanded sidebar naming the active tab's task palette chord,
+  such as `⌘K` or `Ctrl+K`, shown only where the directory has a task catalogue and a live
+  shell to run it, and so the chord does something. Clicking it opens the palette.
 - A muted second line on each expanded tab, such as `cuenv · main`: its directory,
   unless the tab is already named after it, and the git branch that directory is on, or
   a detached commit's short form. Cuetty reads the repository's `HEAD` file every couple
