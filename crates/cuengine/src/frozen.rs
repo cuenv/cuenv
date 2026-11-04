@@ -341,8 +341,9 @@ impl FrozenInstance {
     ///
     /// # Errors
     /// Returns a value-free error for invalid fills, unsupported references,
-    /// missing required values, or failed CUE constraints. Exhausted shared
-    /// capacity returns a typed worker error without starting evaluation.
+    /// missing required values, or failed CUE constraints. Shared capacity that
+    /// stays exhausted until the evaluation timeout returns a typed worker error
+    /// without starting evaluation.
     pub fn specialize(&self, options: &SpecializationOptions) -> Result<SpecializationResult> {
         let _permit = crate::frozen_worker::admit()?;
         let snapshot = encode_snapshot(&self.snapshot)?;

@@ -111,7 +111,8 @@ impl PreparedInstance {
     ///
     /// # Errors
     /// Returns a value-free error for an unauthorized projection/source/deferred
-    /// pair, failed constraints, incomplete data, or exhausted worker capacity.
+    /// pair, failed constraints, incomplete data, or worker capacity that stays
+    /// exhausted until the evaluation timeout.
     pub fn specialize(
         &self,
         options: &PreparedSpecializationOptions,
@@ -131,12 +132,13 @@ impl PreparedInstance {
 
     /// Check that real values change nothing outside the declared references.
     ///
-    /// This shares frozen worker capacity and has no deadline of its own, like
-    /// [`Self::specialize`]. It authorizes nothing and returns no values.
+    /// This shares frozen worker capacity, like [`Self::specialize`]. It
+    /// authorizes nothing and returns no values.
     ///
     /// # Errors
     /// Returns a value-free error when the values conflict with CUE constraints or
-    /// change a value outside `mutable`, or when worker capacity is exhausted.
+    /// change a value outside `mutable`, or when worker capacity stays exhausted
+    /// until the evaluation timeout.
     pub fn verify(&self, options: &VerificationOptions) -> Result<()> {
         let _permit = crate::frozen_worker::admit()?;
         let snapshot = encode_snapshot(&self.instance.snapshot)?;
