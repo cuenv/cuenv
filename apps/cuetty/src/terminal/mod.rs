@@ -1,3 +1,4 @@
+mod chrome;
 pub mod config;
 mod engine;
 mod events;

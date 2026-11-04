@@ -1,3 +1,4 @@
+use super::chrome::terminal_background_color;
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
 use super::host::{
@@ -16,20 +17,18 @@ use super::workspace_shell::{
 };
 use crate::integrations::cuenv::{
     ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation, KeyChord,
-    NativeCuenvProvider, RailColor, TaskEvaluation, TitlebarVisibility,
+    NativeCuenvProvider, TaskEvaluation,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, TabId};
 use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Edges, Element,
     FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
     KeyBinding, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, Size,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
+    ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, SharedString, Size,
+    StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
     UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowOptions, actions, canvas, div, point, prelude::FluentBuilder, px,
-    quad, size,
+    WindowOptions, actions, canvas, div, point, px, quad, size,
 };
-use gpui_component::tooltip::Tooltip;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -59,26 +58,6 @@ impl TerminalRenderer for GridRenderer {
         )
         .into_any_element()
     }
-}
-
-fn shell_notice_text(notice: Option<&str>) -> Option<String> {
-    notice.map(|notice| format!("• {notice}"))
-}
-
-const CHROME_GLASS_OPACITY: f32 = 0.72;
-
-fn color_with_opacity(color: Rgb, opacity: f32) -> Rgba {
-    let mut color = gpui::rgb(gpui_rgb(color));
-    color.a = opacity.clamp(0.0, 1.0);
-    color
-}
-
-fn terminal_background_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
-    color_with_opacity(color, theme.background_opacity)
-}
-
-fn chrome_glass_color(color: Rgb) -> Rgba {
-    color_with_opacity(color, CHROME_GLASS_OPACITY)
 }
 
 fn uses_terminal_surface_background(cell: &TerminalCell) -> bool {
@@ -520,17 +499,17 @@ struct CuenvUpdateTarget {
     config_generation: u64,
 }
 
-struct PaneState {
+pub(super) struct PaneState {
     generation: SessionGeneration,
     session: Box<dyn TerminalSession>,
     frame: TerminalFrame,
     interaction: InteractionState,
     scroll_remainder: f32,
-    title: String,
+    pub(super) title: String,
     measured_bounds: Arc<Mutex<(u32, u32)>>,
     viewport_bounds: Arc<Mutex<ViewportBounds>>,
     error: Option<String>,
-    cuenv: CuenvPaneState,
+    pub(super) cuenv: CuenvPaneState,
     cuenv_source: Option<ConfigSource>,
     cuenv_watcher: Option<Box<dyn CuenvWatcher>>,
     cuenv_watch_retry_at: Option<std::time::Instant>,
@@ -562,12 +541,12 @@ struct WakeOutcome {
 /// Owns the workspace/session invariant independently of GPUI. The host
 /// delegates creation, wake handling, and close ordering here so those
 /// transitions can be tested with a fake session factory.
-struct SessionRegistry {
-    sessions: HashMap<crate::workspace::PaneId, PaneState>,
+pub(super) struct SessionRegistry {
+    pub(super) sessions: HashMap<crate::workspace::PaneId, PaneState>,
     factory: Arc<dyn TerminalSessionFactory>,
     next_generation: u64,
-    workspace: WorkspaceShell,
-    notice: Option<String>,
+    pub(super) workspace: WorkspaceShell,
+    pub(super) notice: Option<String>,
     close_window_requested: bool,
 }
 
@@ -766,8 +745,8 @@ impl SessionRegistry {
     }
 }
 
-struct TerminalView {
-    registry: SessionRegistry,
+pub(super) struct TerminalView {
+    pub(super) registry: SessionRegistry,
     cuenv: Arc<dyn CuenvProvider>,
     config: TerminalConfig,
     metrics: TerminalMetrics,
@@ -775,16 +754,11 @@ struct TerminalView {
     focus: FocusHandle,
     renderer: Box<dyn TerminalRenderer>,
     workspace_bounds: Arc<Mutex<(f32, f32)>>,
-    task_palette_open: bool,
-    task_sidebar_open: bool,
-    task_query: String,
-    task_selection: usize,
+    pub(super) task_palette_open: bool,
+    pub(super) task_sidebar_open: bool,
+    pub(super) task_query: String,
+    pub(super) task_selection: usize,
 }
-
-const TAB_RAIL_WIDTH: f32 = 56.0;
-const TAB_RAIL_FOOTER_HEIGHT: f32 = 112.0;
-const SHELL_TITLEBAR_HEIGHT: f32 = 34.0;
-const TASK_SIDEBAR_WIDTH: f32 = 280.0;
 
 struct CuenvIntegrationUpdate {
     presentation: Evaluation,
@@ -797,7 +771,7 @@ enum TaskLaunch {
     EditRequiredArguments,
 }
 
-fn filtered_tasks<'a>(tasks: &'a [CuenvTask], query: &str) -> Vec<&'a CuenvTask> {
+pub(super) fn filtered_tasks<'a>(tasks: &'a [CuenvTask], query: &str) -> Vec<&'a CuenvTask> {
     let query = query.trim().to_ascii_lowercase();
     tasks
         .iter()
@@ -842,24 +816,6 @@ fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32)
     let lines = total.trunc().clamp(i32::MIN as f32, i32::MAX as f32) as i32;
     *remainder = total - lines as f32;
     lines
-}
-
-fn sidebar_tab_label(label: &str) -> String {
-    let path = label
-        .split_whitespace()
-        .rev()
-        .find(|part| part.starts_with('/') || part.starts_with('~'))
-        .unwrap_or(label);
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return "/".into();
-    }
-    trimmed
-        .rsplit('/')
-        .next()
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or(trimmed)
-        .to_string()
 }
 
 /// Modifier chord that addresses Cuetty itself instead of the shell.
@@ -1261,7 +1217,7 @@ impl TerminalView {
     fn active_pane(&self) -> Option<crate::workspace::PaneId> {
         self.registry.active_pane()
     }
-    fn active_state(&self) -> Option<&PaneState> {
+    pub(super) fn active_state(&self) -> Option<&PaneState> {
         self.active_pane()
             .and_then(|pane| self.registry.sessions.get(&pane))
     }
@@ -1272,7 +1228,12 @@ impl TerminalView {
     fn active_tab(&self) -> Option<TabId> {
         self.registry.workspace.active_tab()
     }
-    fn select_terminal_tab(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn select_terminal_tab(
+        &mut self,
+        tab: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match self.registry.workspace.apply(ShellAction::ActivateTab(tab)) {
             Ok(_) => {
                 self.focus.focus(window);
@@ -1334,7 +1295,7 @@ impl TerminalView {
             self.reconcile_task_ui();
         }
     }
-    fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let width = 720;
         let height = 432;
         match self
@@ -1484,7 +1445,7 @@ impl TerminalView {
         true
     }
 
-    fn launch_task(&mut self, task: CuenvTask, cx: &mut Context<Self>) {
+    pub(super) fn launch_task(&mut self, task: CuenvTask, cx: &mut Context<Self>) {
         let Some(cwd) = self
             .active_state()
             .and_then(|state| state.cuenv.cwd.clone())
@@ -1737,478 +1698,6 @@ impl TerminalView {
             state.interaction.end_selection();
         }
         cx.notify();
-    }
-
-    fn render_sidebar(
-        &self,
-        active_tab: Option<TabId>,
-        theme: &TerminalTheme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let mut tabs = div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .p(px(8.0))
-            .overflow_hidden();
-        for (index, tab) in self
-            .registry
-            .workspace
-            .workspace()
-            .tabs()
-            .iter()
-            .enumerate()
-        {
-            let tab_id = tab.id;
-            let selected = active_tab == Some(tab_id);
-            let label = self
-                .registry
-                .sessions
-                .get(&tab.focused)
-                .map(|state| state.title.clone())
-                .unwrap_or_else(|| tab.title.clone());
-            let tooltip_label = self
-                .registry
-                .sessions
-                .get(&tab.focused)
-                .and_then(|state| state.cuenv.presentation.banner.clone())
-                .unwrap_or_else(|| sidebar_tab_label(&label));
-            let number = format!("{:02}", index + 1);
-            let mut tab_button = div()
-                .id(("cuetty-rail-tab", tab_id.get()))
-                .w_full()
-                .min_h(px(40.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(px(2.0))
-                .rounded(px(7.0))
-                .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-                .cursor_pointer()
-                .on_click(cx.listener(move |view, _event, window, cx| {
-                    view.select_terminal_tab(tab_id, window, cx);
-                }))
-                .tooltip(move |window, cx| Tooltip::new(tooltip_label.clone()).build(window, cx));
-            tab_button = tab_button.child(
-                div()
-                    .w(px(30.0))
-                    .h(px(30.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(8.0))
-                    .when(selected, |this| this.bg(gpui::rgb(gpui_rgb(theme.cursor))))
-                    .text_center()
-                    .text_size(px(12.0))
-                    .font_weight(if selected {
-                        FontWeight::SEMIBOLD
-                    } else {
-                        FontWeight::NORMAL
-                    })
-                    .text_color(gpui::rgb(gpui_rgb(if selected {
-                        theme.cursor_text
-                    } else {
-                        theme.title_text
-                    })))
-                    .child(number),
-            );
-            tabs = tabs.child(tab_button);
-        }
-        let integration_notice = active_tab
-            .and_then(|tab_id| {
-                self.registry
-                    .workspace
-                    .workspace()
-                    .tabs()
-                    .iter()
-                    .find(|tab| tab.id == tab_id)
-            })
-            .and_then(|tab| self.registry.sessions.get(&tab.focused))
-            .and_then(|state| {
-                state
-                    .cuenv
-                    .notice
-                    .as_deref()
-                    .or(state.cuenv.task_notice.as_deref())
-            });
-        let notice = shell_notice_text(self.registry.notice.as_deref().or(integration_notice));
-        let has_tasks = self
-            .active_state()
-            .is_some_and(|state| !state.cuenv.tasks.is_empty());
-        // A matching `package cuetty` tints the rail for the active tab;
-        // terminal content itself is never framed.
-        let rail_background = self
-            .active_state()
-            .and_then(|state| state.cuenv.presentation.rail)
-            .map_or(theme.title_surface, |RailColor(red, green, blue)| {
-                Rgb(red, green, blue)
-            });
-        let mut rail = div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .bg(chrome_glass_color(rail_background))
-            .border_l_1()
-            .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-            .child(tabs);
-        if let Some(notice) = notice {
-            rail = rail.child(
-                div()
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .text_size(px(10.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .child(notice),
-            );
-        }
-        let mut footer = div()
-            .h(px(TAB_RAIL_FOOTER_HEIGHT))
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .px(px(6.0))
-            .border_t_1()
-            .border_color(gpui::rgb(gpui_rgb(theme.host_background)));
-        let new_tab = div()
-            .id("cuetty-new-tab")
-            .flex_1()
-            .h(px(30.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(7.0))
-            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .text_size(px(12.0))
-            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-            .cursor_pointer()
-            .tooltip(|window, cx| Tooltip::new("New tab").build(window, cx))
-            .on_click(cx.listener(|view, _event, window, cx| {
-                view.new_tab(window, cx);
-            }))
-            .child("+");
-        let tasks = div()
-            .id("cuetty-tasks")
-            .w(px(34.0))
-            .h(px(30.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(7.0))
-            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .text_size(px(13.0))
-            .when(self.task_sidebar_open, |this| {
-                this.bg(chrome_glass_color(theme.surface))
-            })
-            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-            .cursor_pointer()
-            .tooltip(|window, cx| Tooltip::new("Cuenv tasks · ⌘K to search").build(window, cx))
-            .on_click(cx.listener(|view, _event, _window, cx| {
-                view.task_sidebar_open = !view.task_sidebar_open;
-                cx.notify();
-            }))
-            .child("▤");
-        footer = footer
-            .flex_col()
-            .child(new_tab)
-            .when(has_tasks, |this| this.child(tasks));
-        rail.child(footer).into_any_element()
-    }
-
-    fn render_task_sidebar(
-        &self,
-        theme: &TerminalTheme,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        if !self.task_sidebar_open {
-            return None;
-        }
-        let state = self.active_state()?;
-        if state.cuenv.tasks.is_empty() {
-            return None;
-        }
-        let mut list = div().flex().flex_col().gap(px(4.0));
-        for (index, task) in state.cuenv.tasks.iter().take(12).enumerate() {
-            let task_to_run = task.clone();
-            let detail = task
-                .description
-                .clone()
-                .unwrap_or_else(|| task.kind.label().to_ascii_lowercase());
-            list = list.child(
-                div()
-                    .id(("cuetty-task-sidebar-row", index))
-                    .w_full()
-                    .px(px(10.0))
-                    .py(px(7.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .rounded(px(7.0))
-                    .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |view, _event, _window, cx| {
-                        view.launch_task(task_to_run.clone(), cx);
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                            .child(task.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                            .child(detail),
-                    ),
-            );
-        }
-        let hidden = state.cuenv.tasks.len().saturating_sub(12);
-        let cwd = state
-            .cuenv
-            .cwd
-            .as_deref()
-            .and_then(std::path::Path::file_name)
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or("cuenv");
-        Some(
-            div()
-                .absolute()
-                .top(px(12.0))
-                .right(px(12.0))
-                .bottom(px(12.0))
-                .w(px(TASK_SIDEBAR_WIDTH))
-                .p(px(12.0))
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .rounded(px(12.0))
-                .border_1()
-                .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-                .bg(chrome_glass_color(theme.title_surface))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.0))
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                        .child("Cuenv tasks"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(10.0))
-                                        .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                        .child(cwd.to_string()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                .child("⌘K"),
-                        ),
-                )
-                .child(div().flex_1().overflow_hidden().child(list))
-                .when(hidden > 0, |this| {
-                    this.child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                            .child(format!("{hidden} more · use ⌘K")),
-                    )
-                })
-                .into_any_element(),
-        )
-    }
-
-    fn render_task_palette(
-        &self,
-        theme: &TerminalTheme,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        if !self.task_palette_open {
-            return None;
-        }
-        let state = self.active_state()?;
-        let tasks = filtered_tasks(&state.cuenv.tasks, &self.task_query);
-        let mut results = div().flex().flex_col().gap(px(3.0));
-        for (index, task) in tasks.iter().take(9).enumerate() {
-            let selected = index == self.task_selection;
-            let task_to_run = (*task).clone();
-            results = results.child(
-                div()
-                    .id(("cuetty-task-palette-row", index))
-                    .w_full()
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .rounded(px(7.0))
-                    .when(selected, |this| this.bg(chrome_glass_color(theme.surface)))
-                    .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |view, _event, _window, cx| {
-                        view.launch_task(task_to_run.clone(), cx);
-                    }))
-                    .child(
-                        div()
-                            .w(px(64.0))
-                            .text_size(px(9.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                            .child(if task.requires_parameters {
-                                "ARGS"
-                            } else {
-                                task.kind.label()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(12.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                            .child(task.name.clone()),
-                    ),
-            );
-        }
-        if tasks.is_empty() {
-            results = results.child(
-                div()
-                    .px(px(10.0))
-                    .py(px(18.0))
-                    .text_size(px(12.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .child("No matching tasks"),
-            );
-        }
-        let query = if self.task_query.is_empty() {
-            "Type to filter tasks…".into()
-        } else {
-            self.task_query.clone()
-        };
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .justify_center()
-                .pt(px(54.0))
-                .child(
-                    div()
-                        .w(px(520.0))
-                        .max_h(px(430.0))
-                        .p(px(12.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.0))
-                        .rounded(px(12.0))
-                        .border_1()
-                        .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-                        .bg(chrome_glass_color(theme.title_surface))
-                        .child(
-                            div()
-                                .w_full()
-                                .h(px(38.0))
-                                .px(px(12.0))
-                                .flex()
-                                .items_center()
-                                .rounded(px(8.0))
-                                .bg(chrome_glass_color(theme.surface))
-                                .text_size(px(13.0))
-                                .text_color(gpui::rgb(gpui_rgb(if self.task_query.is_empty() {
-                                    theme.title_text
-                                } else {
-                                    theme.text
-                                })))
-                                .child(query),
-                        )
-                        .child(results)
-                        .child(
-                            div()
-                                .text_size(px(9.0))
-                                .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                .child("↑↓ select · return run · esc close"),
-                        ),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn render_shell_layout(
-        &self,
-        sidebar: gpui::AnyElement,
-        content: gpui::AnyElement,
-        theme: &TerminalTheme,
-        _cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let workspace = div()
-            .flex_1()
-            .flex()
-            // The content panel must establish a flex formatting context.
-            // Otherwise a child's `flex_1` has no parent flex layout during
-            // the first window pass and AppKit's white backing surface leaks
-            // through until a later resize happens to trigger a relayout.
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .min_h(px(0.0))
-                    .flex()
-                    .child(content),
-            )
-            .child(div().w(px(TAB_RAIL_WIDTH)).flex_shrink_0().child(sidebar));
-        let titlebar_visibility = self
-            .active_state()
-            .map(|state| state.cuenv.presentation.titlebar)
-            .unwrap_or_default();
-        let shell = div().size_full().flex().flex_col();
-        if titlebar_visibility == TitlebarVisibility::Hidden {
-            // The terminal grid is resized from its measured bounds, so it
-            // reclaims the strip's height without extra arithmetic here.
-            return shell.child(workspace).into_any_element();
-        }
-        let titlebar = div()
-            .h(px(SHELL_TITLEBAR_HEIGHT))
-            .w_full()
-            .flex()
-            .items_center()
-            .bg(chrome_glass_color(theme.title_surface))
-            .border_b_1()
-            .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-            .child(
-                div()
-                    .h_full()
-                    .w(px(82.0))
-                    .window_control_area(WindowControlArea::Drag),
-            )
-            .child(
-                div()
-                    .h_full()
-                    .px(px(8.0))
-                    .flex()
-                    .items_center()
-                    .text_size(px(13.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                    .child("Cuetty"),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .window_control_area(WindowControlArea::Drag),
-            );
-        shell.child(titlebar).child(workspace).into_any_element()
     }
 }
 
@@ -2652,17 +2141,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_notice_keeps_live_action_failures_visible() {
-        assert_eq!(
-            shell_notice_text(Some(
-                "workspace action unavailable: split panes are unavailable"
-            )),
-            Some("• workspace action unavailable: split panes are unavailable".into())
-        );
-        assert_eq!(shell_notice_text(None), None);
-    }
-
-    #[test]
     fn wheel_scrolling_preserves_system_direction_and_accumulates_pixels() {
         let mut remainder = 0.0;
         assert_eq!(
@@ -2686,17 +2164,6 @@ mod tests {
             wheel_scroll_lines(ScrollDelta::Lines(point(0.0, -2.0)), 20.0, &mut remainder),
             -1
         );
-    }
-
-    #[test]
-    fn sidebar_labels_use_a_stable_single_line_name() {
-        assert_eq!(
-            sidebar_tab_label("~/Code/src/github.com/cuenv/cuenv"),
-            "cuenv"
-        );
-        assert_eq!(sidebar_tab_label("/"), "/");
-        assert_eq!(sidebar_tab_label("build"), "build");
-        assert_eq!(sidebar_tab_label("sleep 5 ~/Code/cuenv"), "cuenv");
     }
 
     #[test]
