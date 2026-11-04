@@ -374,6 +374,9 @@ pub(super) struct ChromeColors {
     /// Hovered and active controls in the sidebar, in the window's opacity down to
     /// a floor that keeps them visible.
     pub(super) state: Rgba,
+    /// A control on a row already filled with `state`, one step off that fill, with
+    /// the same opacity. In an opaque window `state` over itself would show nothing.
+    pub(super) state_on_row: Rgba,
     /// The keyboard-selected row in a panel. Muted text is not legible on this
     /// fill, so that row's metadata uses secondary text.
     pub(super) panel_selected: Rgba,
@@ -414,6 +417,7 @@ impl ChromeColors {
             },
             panel: opaque(theme.raised_surface),
             state: state_color(theme, theme.raised_surface),
+            state_on_row: state_color(theme, theme.hover_surface),
             panel_selected: opaque(theme.selection),
             panel_hover: opaque(theme.hover_surface),
             well: opaque(theme.surface),
@@ -600,6 +604,16 @@ mod tests {
     fn structural_control_states_share_the_material_opacity() {
         let colors = ChromeColors::from_theme(&theme_with_transparency(30));
         assert_eq!(colors.state.a, colors.material.a);
+    }
+
+    #[test]
+    fn a_control_on_a_filled_row_shows_against_it_at_the_rows_own_opacity() {
+        for percent in [0, 30, 100] {
+            let colors = ChromeColors::from_theme(&theme_with_transparency(percent));
+            let color = |fill: Rgba| (fill.r, fill.g, fill.b);
+            assert_ne!(color(colors.state_on_row), color(colors.state));
+            assert_eq!(colors.state_on_row.a, colors.state.a);
+        }
     }
 
     #[test]

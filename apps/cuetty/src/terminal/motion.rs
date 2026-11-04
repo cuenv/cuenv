@@ -280,6 +280,8 @@ pub(super) enum SearchButton {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum HoverTarget {
     Tab(TabId),
+    /// The close button on a tab's row, which lights up by itself inside the row's hover.
+    TabClose(TabId),
     Button(SidebarButton),
     PaletteRow(usize),
     TaskRow(usize),

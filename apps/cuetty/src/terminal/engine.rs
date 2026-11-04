@@ -1736,7 +1736,10 @@ pub(super) struct TerminalView {
 }
 
 /// What besides the tabs is on screen for the pointer to be over.
+#[derive(Debug, Default)]
 struct LiveHoverTargets {
+    /// Only an expanded sidebar has room for tabs' close buttons.
+    tab_close_buttons: bool,
     notice: bool,
     tasks: bool,
     palette_hint: bool,
@@ -3076,6 +3079,7 @@ impl TerminalView {
         }
         self.motion.forget_hovers(now, |target| match *target {
             HoverTarget::Tab(tab) => tabs.contains(&tab),
+            HoverTarget::TabClose(tab) => live.tab_close_buttons && tabs.contains(&tab),
             HoverTarget::Button(button) => live.button(button),
             HoverTarget::PaletteRow(_) => live.palette,
             HoverTarget::TaskRow(_) => live.task_sidebar,
@@ -3095,6 +3099,7 @@ impl TerminalView {
             .active_state()
             .is_some_and(|state| !state.task_catalogue().is_empty());
         LiveHoverTargets {
+            tab_close_buttons: self.sidebar_mode() == SidebarMode::Expanded,
             notice: self.registry.notice.is_some()
                 || self
                     .active_state()

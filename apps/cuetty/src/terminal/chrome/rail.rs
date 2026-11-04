@@ -148,6 +148,7 @@ impl TerminalView {
                             .flatten(),
                         selected: active_tab == Some(tab.id),
                         hover: self.motion.hover_level(HoverTarget::Tab(tab.id), now),
+                        close_hover: self.motion.hover_level(HoverTarget::TabClose(tab.id), now),
                         active: self.motion.active_level(tab.id, now),
                         mode,
                         colors,
@@ -414,6 +415,8 @@ struct CloseButton {
     pane: PaneId,
     /// How far its row's hover has come, which it fades in with.
     reveal: f32,
+    /// How far the pointer's hover over the button itself has come.
+    hover: f32,
     colors: ChromeColors,
 }
 
@@ -424,9 +427,9 @@ fn render_close_button(button: CloseButton, cx: &mut Context<TerminalView>) -> S
         id,
         pane,
         reveal,
+        hover,
         colors,
     } = button;
-    let hover = colors.panel_hover;
     div()
         .id(("cuetty-rail-tab-close", id.get()))
         .flex()
@@ -434,7 +437,9 @@ fn render_close_button(button: CloseButton, cx: &mut Context<TerminalView>) -> S
         .justify_center()
         .rounded(radius::CONTROL)
         .opacity(reveal)
-        .hover(move |this| this.bg(hover))
+        // The row beneath is already filled with `state` while the pointer is on it.
+        .bg(faded(colors.state_on_row, hover))
+        .on_hover(hover_fade(HoverTarget::TabClose(id), cx))
         .cursor_pointer()
         .tooltip(chrome_tooltip(
             format!("Close tab · {}", app_chord_label("w")),
@@ -475,6 +480,8 @@ struct TabRow {
     selected: bool,
     /// How far the pointer's hover over this row has faded in.
     hover: f32,
+    /// How far the pointer's hover over its close button has faded in.
+    close_hover: f32,
     /// How strongly the row shows as the active one, which fades as tabs switch.
     active: f32,
     mode: SidebarMode,
@@ -496,6 +503,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         number,
         selected,
         hover,
+        close_hover,
         active,
         mode,
         colors,
@@ -622,6 +630,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                                     id,
                                     pane,
                                     reveal: hover,
+                                    hover: close_hover,
                                     colors,
                                 },
                                 cx,

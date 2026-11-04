@@ -148,8 +148,8 @@ The current usable slice includes:
   window's material does not change; emoji, which bring their own colours, stay as they
   are. Chrome keeps its colours, and the fade costs an idle window no redraws.
 - Chrome that moves briefly, and only in answer to something: the sidebar's controls and
-  rows fade their hover over 100ms, and on a switch of tab one marker slides to its new
-  place over 140ms while the row fills hand over. The task palette fades in over 120ms,
+  rows and their close buttons fade their hover over 100ms, and on a switch of tab one
+  marker slides to its new place over 140ms while the row fills hand over. The task palette fades in over 120ms,
   already taking keys as it does. Nothing draws once it has landed, and
   `motion: "reduced"`, or the platform's own setting, makes all of it land at once.
 - A designed state in place of a terminal that cannot be shown. A tab whose session broke
