@@ -1208,16 +1208,20 @@ fn window_presence(window: &Window) -> WindowPresence {
 
 /// Whether a key dismisses a tab whose shell has exited. Enter is what the tab says to
 /// press, and Ctrl-D is what a shell that exited with its last command's status was
-/// most likely just given.
-fn closes_exited_tab(key: &str, modifiers: gpui::Modifiers) -> bool {
+/// most likely just given. It takes a fresh press: a key still held from before the
+/// shell died was not meant for the tab, and would take the output it stayed to show.
+fn closes_exited_tab(event: &gpui::KeyDownEvent) -> bool {
     let gpui::Modifiers {
         control,
         alt,
         shift,
         platform,
         function: _,
-    } = modifiers;
-    match key {
+    } = event.keystroke.modifiers;
+    if event.is_held {
+        return false;
+    }
+    match event.keystroke.key.as_str() {
         "enter" => !(control || alt || shift || platform),
         "d" => control && !(alt || shift || platform),
         _ => false,
@@ -2921,7 +2925,7 @@ impl TerminalView {
         }
         // Nothing is left to type at, though search and copy above still read the output.
         if self.active_state().is_some_and(PaneState::has_exited) {
-            if closes_exited_tab(key, modifiers)
+            if closes_exited_tab(event)
                 && let Some(pane) = self.active_pane()
             {
                 self.close_pane(pane, cx);
@@ -3404,6 +3408,17 @@ mod tests {
                 .expect("fake factory mutex poisoned")
                 .pop_front()
                 .unwrap_or_else(|| Err("fake factory exhausted".into()))
+        }
+    }
+
+    fn key_press(key: &str, modifiers: gpui::Modifiers) -> gpui::KeyDownEvent {
+        gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke {
+                modifiers,
+                key: key.into(),
+                key_char: None,
+            },
+            is_held: false,
         }
     }
 
@@ -5094,16 +5109,34 @@ mod tests {
             control: true,
             ..plain
         };
-        assert!(closes_exited_tab("enter", plain));
-        assert!(closes_exited_tab("d", control));
-        assert!(!closes_exited_tab("d", plain));
-        assert!(!closes_exited_tab("enter", control));
-        assert!(!closes_exited_tab("x", plain));
+        assert!(closes_exited_tab(&key_press("enter", plain)));
+        assert!(closes_exited_tab(&key_press("d", control)));
+        assert!(!closes_exited_tab(&key_press("d", plain)));
+        assert!(!closes_exited_tab(&key_press("enter", control)));
+        assert!(!closes_exited_tab(&key_press("x", plain)));
         let shifted = gpui::Modifiers {
             shift: true,
             ..control
         };
-        assert!(!closes_exited_tab("d", shifted));
+        assert!(!closes_exited_tab(&key_press("d", shifted)));
+    }
+
+    #[test]
+    fn a_key_still_held_from_before_the_shell_died_leaves_its_tab_open() {
+        let control = gpui::Modifiers {
+            control: true,
+            ..gpui::Modifiers::default()
+        };
+        for press in [
+            key_press("enter", gpui::Modifiers::default()),
+            key_press("d", control),
+        ] {
+            let repeat = gpui::KeyDownEvent {
+                is_held: true,
+                ..press
+            };
+            assert!(!closes_exited_tab(&repeat));
+        }
     }
 
     #[test]

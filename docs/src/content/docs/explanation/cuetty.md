@@ -149,7 +149,8 @@ The current usable slice includes:
   output saying how it ended. The strip takes its room from the grid rather than covering
   it: blank rows go first, then the oldest rows move into scrollback, so the last lines
   stay visible, as they do if the window is resized afterwards. Search, copy, and
-  scrollback still work; Enter, Ctrl-D, the close chord, or closing the tab dismiss it.
+  scrollback still work; a fresh press of Enter or Ctrl-D, the close chord, or closing the
+  tab dismiss it, while a key still held from before the shell died does not.
   The tab offers no tasks any more, since nothing is left to run them, which also hands
   a palette chord back to whatever else it means. A shell that exits cleanly closes its
   tab at once, as does
