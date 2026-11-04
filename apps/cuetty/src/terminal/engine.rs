@@ -18,7 +18,7 @@ use super::model::{
 #[cfg(test)]
 use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
-use super::presentation::{ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
+use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
 use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
 use super::workspace_shell::{
@@ -244,21 +244,17 @@ impl TerminalGrid {
             &[run],
             None,
         );
-        let grid_cell = self.metrics.render_cell();
-        let cell_x =
-            |cluster: usize| row.origin.x + grid_cell.width * (columns.start + cluster) as f32;
-        let baseline = row.origin.y + grid_cell.height * row.row as f32 + self.baseline(window);
+        let grid = DeviceGrid::new(row.origin, &self.metrics);
+        let baseline = grid.glyph_baseline(row.row, self.baseline(window));
         let font_size = self.metrics.font_size;
-        let line = Bounds {
-            origin: point(cell_x(0), row.origin.y + grid_cell.height * row.row as f32),
-            size: size(grid_cell.width * cells.len() as f32, grid_cell.height),
-        };
+        let line = self.cell_bounds(row.origin, row.row, columns.start, columns.len());
         window.paint_layer(line, |window| {
             let mut placer = GlyphPlacer::new(&cluster_starts);
             for run in &shaped.runs {
                 for glyph in &run.glyphs {
                     let placed = placer.place(glyph.index, f32::from(glyph.position.x));
-                    let origin = point(cell_x(placed.cluster) + px(placed.offset), baseline);
+                    let x = grid.glyph_x(columns.start + placed.cluster, px(placed.offset));
+                    let origin = point(x, baseline);
                     // A glyph that cannot be rasterized leaves its cell empty.
                     let _ = if glyph.is_emoji {
                         window.paint_emoji(origin, run.font_id, glyph.id, font_size)
@@ -271,10 +267,10 @@ impl TerminalGrid {
         });
     }
 
-    /// The distance from the top of a cell to the text's baseline, from the configured
-    /// font alone. A fallback glyph therefore sits on the same line as the text around
-    /// it, and every row's baseline lands on a device pixel.
-    fn baseline(&self, window: &Window) -> Pixels {
+    /// The distance in device pixels from the top of a cell to the text's baseline, from
+    /// the configured font alone. A fallback glyph therefore sits on the same line as the
+    /// text around it, and every row's baseline lands on a device pixel.
+    fn baseline(&self, window: &Window) -> i32 {
         let text_system = window.text_system();
         let font = text_system.resolve_font(&self.metrics.font);
         let offset = baseline_in_cell(
@@ -282,7 +278,7 @@ impl TerminalGrid {
             text_system.ascent(font, self.metrics.font_size),
             text_system.descent(font, self.metrics.font_size),
         );
-        self.metrics.scale.snap(point(px(0.0), offset)).y
+        self.metrics.scale.nearest_device_pixel(offset)
     }
 
     /// Underlines and strikethroughs follow the cells they decorate, so they are drawn
@@ -299,7 +295,10 @@ impl TerminalGrid {
         let font = text_system.resolve_font(&self.metrics.font);
         let ascent = text_system.ascent(font, self.metrics.font_size);
         let descent = text_system.descent(font, self.metrics.font_size).abs();
-        let baseline = self.baseline(window);
+        let baseline = self
+            .metrics
+            .scale
+            .logical_position(self.baseline(window) as f32);
         let top = row.origin.y + grid_cell.height * row.row as f32;
         let x = |column: usize| row.origin.x + grid_cell.width * column as f32;
         let underlines = merged_spans(cells.iter().enumerate().map(|(column, cell)| {

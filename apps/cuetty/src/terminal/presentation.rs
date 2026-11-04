@@ -156,6 +156,9 @@ impl ScaleFactor {
     /// A logical length that a float error leaves this far short of a whole device
     /// pixel still counts as reaching it.
     const WHOLE_PIXEL_TOLERANCE: f32 = 0.001;
+    /// Far more than a float error at any window size, and far less than the quarter
+    /// pixel that would change a glyph's subpixel variant.
+    const GLYPH_BIAS: f32 = 0.01;
 
     /// A platform reporting a nonsensical scale is treated as an unscaled display.
     pub fn new(scale: f32) -> Self {
@@ -189,6 +192,20 @@ impl ScaleFactor {
     /// The logical position of a fractional device pixel coordinate.
     pub fn logical_position(self, device_position: f32) -> Pixels {
         px(device_position / self.0)
+    }
+
+    /// The device pixel nearest a logical position.
+    pub fn nearest_device_pixel(self, logical: Pixels) -> i32 {
+        (f32::from(logical) * self.0).round() as i32
+    }
+
+    /// The logical position to hand a glyph painter for a device position. GPUI scales
+    /// this back up, floors it to choose the pixel, and takes a subpixel variant from
+    /// the fraction. Dividing by a fractional scale can land just short of the pixel,
+    /// which floors to the one before with the last variant: that glyph is rasterised
+    /// differently and sits off the grid. The bias keeps it just past instead.
+    fn glyph_position(self, device: f32) -> Pixels {
+        px((device + Self::GLYPH_BIAS) / self.0)
     }
 
     /// The nearest position that falls on a device pixel.
@@ -248,6 +265,40 @@ impl TerminalMetrics {
             width: self.scale.logical(cell.width),
             height: self.scale.logical(cell.height),
         }
+    }
+}
+
+/// The painted grid in device pixels, for placing glyphs exactly on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeviceGrid {
+    origin_x: i32,
+    origin_y: i32,
+    cell: CellSize,
+    scale: ScaleFactor,
+}
+
+impl DeviceGrid {
+    pub fn new(origin: Point<Pixels>, metrics: &TerminalMetrics) -> Self {
+        let scale = metrics.scale;
+        Self {
+            origin_x: scale.nearest_device_pixel(origin.x),
+            origin_y: scale.nearest_device_pixel(origin.y),
+            cell: metrics.device_cell(),
+            scale,
+        }
+    }
+
+    /// Where a glyph `offset` past the left edge of a column starts.
+    pub fn glyph_x(self, column: usize, offset: Pixels) -> Pixels {
+        let column_x = self.origin_x + self.cell.width as i32 * column as i32;
+        self.scale
+            .glyph_position(column_x as f32 + f32::from(offset) * self.scale.0)
+    }
+
+    /// Where a row's text sits, `baseline` device pixels below the top of its cells.
+    pub fn glyph_baseline(self, row: usize, baseline: i32) -> Pixels {
+        let top = self.origin_y + self.cell.height as i32 * row as i32;
+        self.scale.glyph_position((top + baseline) as f32)
     }
 }
 
@@ -365,6 +416,49 @@ mod tests {
                 "moving to {scale}x"
             );
         }
+    }
+
+    /// Which device pixel GPUI puts a glyph on, and the fraction it picks a subpixel
+    /// variant from, as `Window::paint_glyph` works them out.
+    fn painted_at(position: Pixels, scale: f32) -> (i32, f32) {
+        let device = f32::from(position) * scale;
+        (device.floor() as i32, device.fract())
+    }
+
+    #[test]
+    fn every_glyph_lands_on_its_own_device_pixel_at_any_scale() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 3.0] {
+            let metrics = metrics(scale);
+            let cell = metrics.device_cell();
+            for origin in [0.0, 14.0, 21.0, 37.5] {
+                let snapped = metrics.scale.snap(point(px(origin), px(origin)));
+                let grid = DeviceGrid::new(snapped, &metrics);
+                let first = metrics.scale.nearest_device_pixel(snapped.x);
+                for column in 0..600 {
+                    let expected = first + cell.width as i32 * column;
+                    let (pixel, fraction) =
+                        painted_at(grid.glyph_x(column as usize, px(0.0)), scale);
+                    assert_eq!(pixel, expected, "column {column} at {scale}x");
+                    assert!(fraction < 0.25, "column {column} at {scale}x: {fraction}");
+                }
+                for row in 0..200 {
+                    let expected = first + cell.height as i32 * row + 15;
+                    let (pixel, fraction) =
+                        painted_at(grid.glyph_baseline(row as usize, 15), scale);
+                    assert_eq!(pixel, expected, "row {row} at {scale}x");
+                    assert!(fraction < 0.25, "row {row} at {scale}x: {fraction}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_combining_mark_keeps_its_distance_from_the_glyph_it_sits_on() {
+        let metrics = metrics(1.5);
+        let grid = DeviceGrid::new(point(px(0.0), px(0.0)), &metrics);
+        let base = f32::from(grid.glyph_x(3, px(0.0)));
+        let mark = f32::from(grid.glyph_x(3, px(2.0)));
+        assert!((mark - base - 2.0).abs() < 0.001);
     }
 
     #[test]
