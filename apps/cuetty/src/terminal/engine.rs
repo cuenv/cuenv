@@ -1024,6 +1024,16 @@ fn acts_on_the_line(event: &TerminalKeyEvent) -> bool {
     }
 }
 
+/// What the poll can change about a pane, for telling whether it did.
+#[derive(Debug, PartialEq)]
+struct PolledPaneState {
+    pane: crate::workspace::PaneId,
+    activity: PaneActivity,
+    cwd: Option<std::path::PathBuf>,
+    notice: Option<String>,
+    task_notice: Option<String>,
+}
+
 #[derive(Debug, PartialEq)]
 enum RegistryError {
     Session(String),
@@ -1216,6 +1226,24 @@ impl SessionRegistry {
         self.sessions
             .values_mut()
             .for_each(|state| state.sample_foreground(now));
+    }
+
+    /// Everything a draw shows that the periodic poll can change, so an idle window
+    /// is only redrawn when something it shows did.
+    fn polled_state(&self) -> Vec<PolledPaneState> {
+        let mut panes: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|(pane, state)| PolledPaneState {
+                pane: *pane,
+                activity: state.activity.clone(),
+                cwd: state.cuenv.cwd.clone(),
+                notice: state.cuenv.notice.clone(),
+                task_notice: state.cuenv.task_notice.clone(),
+            })
+            .collect();
+        panes.sort_by_key(|state| state.pane);
+        panes
     }
 
     /// What `tab` is called right now.
@@ -1904,9 +1932,12 @@ impl TerminalView {
                 Timer::after(std::time::Duration::from_millis(500)).await;
                 if weak
                     .update(cx, |view, cx| {
+                        let shown = view.registry.polled_state();
                         view.registry.sample_foreground(std::time::Instant::now());
                         view.refresh_cuenv_integration(cx);
-                        cx.notify();
+                        if view.registry.polled_state() != shown {
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -2938,6 +2969,31 @@ mod tests {
         let mut combined = TerminalCell::narrow('\u{2500}');
         combined.text = Some("\u{2500}\u{0301}".into());
         assert_eq!(drawn_character(&combined), None);
+    }
+
+    #[test]
+    fn the_poll_sees_a_change_only_when_a_pane_shows_something_new() {
+        let (start, foreground, _) = fake_start_in_foreground("zsh");
+        let (mut registry, _) =
+            SessionRegistry::start(fake_factory(vec![Ok(start)]), 80, 40, test_cell()).unwrap();
+        let now = std::time::Instant::now();
+        registry.sample_foreground(now);
+        let shown = registry.polled_state();
+
+        registry.sample_foreground(now + std::time::Duration::from_secs(1));
+        assert_eq!(
+            registry.polled_state(),
+            shown,
+            "an idle shell changes nothing"
+        );
+
+        *foreground.lock().unwrap() = "vim notes.txt".into();
+        registry.sample_foreground(now + std::time::Duration::from_secs(2));
+        assert_ne!(
+            registry.polled_state(),
+            shown,
+            "a new program renames the tab"
+        );
     }
 
     #[test]
