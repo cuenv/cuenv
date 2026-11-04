@@ -51,6 +51,8 @@ pub struct TerminalTheme {
     /// The active visible search result remains distinct from selection where
     /// the two ranges overlap.
     pub current_search_match: Rgb,
+    /// Glyphs inside the active search result.
+    pub current_search_match_text: Rgb,
     /// The single restrained accent chrome may use for small markers.
     pub accent: Rgb,
     /// Hints and metadata, quieter than `title_text`.
@@ -84,6 +86,7 @@ impl TerminalTheme {
             cursor_text: rgb(theme.cursor_text),
             selection: rgb(theme.selection),
             current_search_match: rgb(theme.current_search_match),
+            current_search_match_text: rgb(theme.current_search_match_text),
             accent: rgb(theme.accent),
             muted_text: rgb(theme.muted_text),
             divider: rgb(theme.divider),
@@ -259,6 +262,7 @@ mod tests {
         let mut config = TerminalConfig::default();
         config.theme.selection = ConfigRgb(1, 1, 1);
         config.theme.current_search_match = ConfigRgb(2, 2, 2);
+        config.theme.current_search_match_text = ConfigRgb(8, 8, 8);
         config.theme.accent = ConfigRgb(3, 3, 3);
         config.theme.muted_text = ConfigRgb(4, 4, 4);
         config.theme.divider = ConfigRgb(5, 5, 5);
@@ -267,6 +271,7 @@ mod tests {
         let theme = TerminalTheme::from_config(&config);
         assert_eq!(theme.selection, Rgb(1, 1, 1));
         assert_eq!(theme.current_search_match, Rgb(2, 2, 2));
+        assert_eq!(theme.current_search_match_text, Rgb(8, 8, 8));
         assert_eq!(theme.accent, Rgb(3, 3, 3));
         assert_eq!(theme.muted_text, Rgb(4, 4, 4));
         assert_eq!(theme.divider, Rgb(5, 5, 5));

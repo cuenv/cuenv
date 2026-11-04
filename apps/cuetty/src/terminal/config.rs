@@ -70,6 +70,9 @@ pub struct ThemeColors {
     pub selection: Rgb,
     /// The active search result; stays distinct where it overlaps a selection.
     pub current_search_match: Rgb,
+    /// Glyphs inside the active search result, which sit on an opaque fill no
+    /// cell foreground was chosen to read against.
+    pub current_search_match_text: Rgb,
     /// The single restrained accent chrome may use for small markers.
     pub accent: Rgb,
     /// Hints and metadata, quieter than `title_text`.
@@ -226,6 +229,7 @@ impl ThemeColors {
             cursor_text: Rgb(30, 30, 46),
             selection: Rgb(69, 71, 90),
             current_search_match: Rgb(249, 226, 175),
+            current_search_match_text: Rgb(17, 17, 27),
             accent: Rgb(137, 180, 250),
             muted_text: Rgb(147, 153, 178),
             divider: Rgb(49, 50, 68),
@@ -416,6 +420,12 @@ mod tests {
     fn default_selected_row_metadata_stays_legible_on_the_selection_fill() {
         let theme = ThemeColors::default();
         assert!(contrast(theme.title_text, theme.selection) >= 4.5);
+    }
+
+    #[test]
+    fn default_current_search_match_text_stays_legible_on_its_fill() {
+        let theme = ThemeColors::default();
+        assert!(contrast(theme.current_search_match_text, theme.current_search_match) >= 4.5);
     }
 
     #[test]

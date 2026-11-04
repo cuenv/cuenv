@@ -123,6 +123,14 @@ impl TerminalGrid {
         }
     }
 
+    fn layer_at(&self, overlays: &[CellOverlaySpan], position: CellPosition) -> CellLayer {
+        cell_layer(
+            cursor_style_at(&self.frame, self.focused, position.row, position.column),
+            overlays,
+            position,
+        )
+    }
+
     fn font_for(&self, cell: &TerminalCell) -> Font {
         Font {
             family: self.metrics.font.family.clone(),
@@ -312,11 +320,11 @@ impl Element for TerminalGrid {
             // Merge adjacent cells with the same resolved background into one quad.
             let mut start = 0;
             while start < cells.len() {
-                let (_, background) = colors(&cells[start], &self.theme, false);
+                let (_, background) = colors(&cells[start], &self.theme, CellLayer::Cell);
                 let uses_default_background = uses_terminal_surface_background(&cells[start]);
                 let mut end = start + 1;
                 while end < cells.len()
-                    && colors(&cells[end], &self.theme, false).1 == background
+                    && colors(&cells[end], &self.theme, CellLayer::Cell).1 == background
                     && uses_default_background == uses_terminal_surface_background(&cells[end])
                 {
                     end += 1;
@@ -353,9 +361,8 @@ impl Element for TerminalGrid {
                     start += 1;
                     continue;
                 }
-                let cursor_block = cursor_style_at(&self.frame, self.focused, row, start)
-                    .is_some_and(|style| matches!(style, HostCursorStyle::Block));
-                let (foreground, _) = colors(cell, &self.theme, cursor_block);
+                let layer = self.layer_at(&overlays, CellPosition { row, column: start });
+                let (foreground, _) = colors(cell, &self.theme, layer);
                 let decoration_color = cell
                     .underline_color
                     .map(|color| self.theme.resolve(color))
@@ -366,9 +373,8 @@ impl Element for TerminalGrid {
                     if next.text.is_none() {
                         break;
                     }
-                    let next_cursor_block = cursor_style_at(&self.frame, self.focused, row, end)
-                        .is_some_and(|style| matches!(style, HostCursorStyle::Block));
-                    let (next_fg, _) = colors(next, &self.theme, next_cursor_block);
+                    let next_layer = self.layer_at(&overlays, CellPosition { row, column: end });
+                    let (next_fg, _) = colors(next, &self.theme, next_layer);
                     if next_fg != foreground
                         || next.style.bold != cell.style.bold
                         || next.style.italic != cell.style.italic
@@ -458,9 +464,52 @@ fn cursor_style_at(
         })
 }
 
-fn colors(cell: &TerminalCell, theme: &TerminalTheme, cursor: bool) -> (Rgb, Rgb) {
-    if cursor {
-        return (theme.cursor_text, theme.cursor);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CellPosition {
+    row: usize,
+    column: usize,
+}
+
+/// What decides a cell's colours: its own attributes, or an opaque layer painted
+/// beneath its glyph that those attributes were not chosen to read against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CellLayer {
+    Cell,
+    BlockCursor,
+    CurrentSearchMatch,
+}
+
+/// A block cursor stays on top of a search match, matching the paint order. A
+/// selection is not a layer here: its quiet tint is chosen to sit beneath any
+/// cell foreground, so glyphs keep their own colours on it.
+fn cell_layer(
+    cursor: Option<HostCursorStyle>,
+    overlays: &[CellOverlaySpan],
+    position: CellPosition,
+) -> CellLayer {
+    let in_current_match = || {
+        overlays.iter().any(|span| {
+            span.kind == OverlayKind::CurrentSearchMatch
+                && span.row == position.row
+                && (span.start_column..span.end_column).contains(&position.column)
+        })
+    };
+    if cursor == Some(HostCursorStyle::Block) {
+        CellLayer::BlockCursor
+    } else if in_current_match() {
+        CellLayer::CurrentSearchMatch
+    } else {
+        CellLayer::Cell
+    }
+}
+
+fn colors(cell: &TerminalCell, theme: &TerminalTheme, layer: CellLayer) -> (Rgb, Rgb) {
+    match layer {
+        CellLayer::BlockCursor => return (theme.cursor_text, theme.cursor),
+        CellLayer::CurrentSearchMatch => {
+            return (theme.current_search_match_text, theme.current_search_match);
+        }
+        CellLayer::Cell => {}
     }
     let mut foreground = theme.resolve(cell.foreground);
     let mut background = theme.resolve(cell.background);
@@ -2311,8 +2360,59 @@ mod tests {
         cell.background = Color::Rgb(Rgb(4, 5, 6));
         cell.style.inverse = true;
         assert_eq!(
-            colors(&cell, &TerminalTheme::default(), false),
+            colors(&cell, &TerminalTheme::default(), CellLayer::Cell),
             (Rgb(4, 5, 6), Rgb(1, 2, 3))
+        );
+    }
+
+    #[test]
+    fn current_search_match_replaces_the_cell_colours_with_its_own_pair() {
+        let theme = TerminalTheme::default();
+        let mut cell = TerminalCell::narrow('x');
+        cell.foreground = Color::Rgb(Rgb(1, 2, 3));
+        assert_eq!(
+            colors(&cell, &theme, CellLayer::CurrentSearchMatch),
+            (theme.current_search_match_text, theme.current_search_match)
+        );
+    }
+
+    #[test]
+    fn cell_layer_splits_at_the_edges_of_the_current_match_only() {
+        let span = |kind, row| CellOverlaySpan {
+            row,
+            start_column: 2,
+            end_column: 4,
+            kind,
+        };
+        let overlays = [
+            span(OverlayKind::Selection, 0),
+            span(OverlayKind::CurrentSearchMatch, 1),
+        ];
+        let at = |row, column| cell_layer(None, &overlays, CellPosition { row, column });
+        assert_eq!(at(1, 1), CellLayer::Cell);
+        assert_eq!(at(1, 2), CellLayer::CurrentSearchMatch);
+        assert_eq!(at(1, 3), CellLayer::CurrentSearchMatch);
+        assert_eq!(at(1, 4), CellLayer::Cell);
+        // A selection and another row's match leave the cell's own colours.
+        assert_eq!(at(0, 2), CellLayer::Cell);
+    }
+
+    #[test]
+    fn only_a_block_cursor_outranks_the_current_match() {
+        let overlays = [CellOverlaySpan {
+            row: 0,
+            start_column: 0,
+            end_column: 1,
+            kind: OverlayKind::CurrentSearchMatch,
+        }];
+        let position = CellPosition { row: 0, column: 0 };
+        assert_eq!(
+            cell_layer(Some(HostCursorStyle::Block), &overlays, position),
+            CellLayer::BlockCursor
+        );
+        assert_eq!(
+            cell_layer(Some(HostCursorStyle::Bar), &overlays, position),
+            CellLayer::CurrentSearchMatch
         );
     }
 
@@ -2339,7 +2439,7 @@ mod tests {
         cell.style.hidden = true;
 
         assert_eq!(
-            colors(&cell, &TerminalTheme::default(), false),
+            colors(&cell, &TerminalTheme::default(), CellLayer::Cell),
             (Rgb(4, 5, 6), Rgb(4, 5, 6))
         );
     }
