@@ -2,16 +2,19 @@ use super::icons::Icon;
 use super::tokens::{ChromeColors, border, opaque, radius, size, space, text};
 use super::tooltip::chrome_tooltip;
 use crate::integrations::cuenv::{RailColor, SidebarMode};
-use crate::terminal::engine::{SIDEBAR_TOGGLE_KEY, TerminalView, app_chord_label, tab_number_hint};
+use crate::terminal::engine::{
+    SIDEBAR_TOGGLE_KEY, TabClick, TerminalView, app_chord_label, tab_number_hint,
+};
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_label::{TabMarkSources, tab_mark, tab_subtitle, tab_tooltip};
+use crate::terminal::tab_rename::TabRename;
 use crate::terminal::tab_status::TabIndicator;
 use crate::terminal::workspace_shell::TabNumber;
 use crate::workspace::{PaneId, TabId};
 use gpui::{
-    Context, Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Rgba, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
+    ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Rgba,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
 };
 
 /// Names a tab's row to the parts of it that only show while it is hovered.
@@ -102,6 +105,12 @@ impl TerminalView {
                         pane: tab.focused,
                         label,
                         subtitle,
+                        editing: self
+                            .tab_rename
+                            .as_ref()
+                            .filter(|rename| rename.tab() == tab.id)
+                            .map(TabRename::text)
+                            .map(str::to_owned),
                         mark,
                         tooltip,
                         indicator,
@@ -266,6 +275,47 @@ fn render_indicator(indicator: TabIndicator, colors: &ChromeColors) -> Div {
     }
 }
 
+/// A tab's name being edited, in the palette's manner: text is typed at its end, so
+/// the caret leads a placeholder and follows typed text, and a name too long for the
+/// field clips at its start to keep the end being typed in view.
+fn render_name_field(editing: String, label: String, colors: &ChromeColors) -> Div {
+    let placeholder = editing.is_empty();
+    let caret = || {
+        div()
+            .flex_none()
+            .w(size::CARET_WIDTH)
+            .h(size::CARET_HEIGHT)
+            .bg(colors.accent)
+    };
+    div()
+        .flex()
+        .items_center()
+        .min_w_0()
+        .px(space::XS)
+        .rounded(radius::CONTROL)
+        .bg(colors.well)
+        .text_color(if placeholder {
+            colors.text_muted
+        } else {
+            colors.text
+        })
+        .when(placeholder, |this| this.child(caret()))
+        .child(
+            div()
+                .min_w_0()
+                .flex()
+                .justify_end()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .child(if placeholder { label } else { editing }),
+                ),
+        )
+        .when(!placeholder, |this| this.child(caret()))
+}
+
 /// Which tab a close button closes, and how it is drawn.
 struct CloseButton {
     id: TabId,
@@ -315,6 +365,8 @@ struct TabRow {
     label: String,
     /// The muted second line, left out when empty.
     subtitle: String,
+    /// The name being typed, while the user is renaming this tab.
+    editing: Option<String>,
     /// What stands in for the label when the sidebar is collapsed.
     mark: String,
     tooltip: String,
@@ -333,6 +385,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         pane,
         label,
         subtitle,
+        editing,
         mark,
         tooltip,
         indicator,
@@ -370,9 +423,24 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         .rounded(radius::CONTROL)
         .hover(move |this| this.bg(hover))
         .cursor_pointer()
-        .on_click(cx.listener(move |view, _event, window, cx| {
-            view.select_terminal_tab(id, window, cx);
+        .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
+            view.tab_row_clicked(
+                TabClick {
+                    tab: id,
+                    click_count: event.click_count(),
+                },
+                window,
+                cx,
+            );
         }))
+        // Runs before whatever was clicked, so it finds the edit settled. The row is what
+        // counts as inside, where a click leaves the edit alone.
+        .when(editing.is_some(), |this| {
+            this.on_mouse_down_out(cx.listener(|view, _event, _window, cx| {
+                view.commit_tab_rename();
+                cx.notify();
+            }))
+        })
         .tooltip(chrome_tooltip(tooltip, colors))
         .text_size(text::BODY)
         .text_color(text_color)
@@ -410,7 +478,10 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                         .flex()
                         .flex_col()
                         .line_height(text::LINE_HEIGHT)
-                        .child(div().truncate().child(label))
+                        .child(match editing {
+                            Some(editing) => render_name_field(editing, label, &colors),
+                            None => div().truncate().child(label),
+                        })
                         .when(!subtitle.is_empty(), |this| {
                             this.child(
                                 div()

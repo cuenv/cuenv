@@ -315,6 +315,17 @@ impl<C: Clone> Workspace<C> {
             Err(Error::UnknownTab)
         }
     }
+    /// Gives a tab a name of the user's own, or with `None` hands it back to the name
+    /// derived from its activity.
+    pub fn rename_tab(&mut self, tab_id: TabId, name: Option<String>) -> Result<(), Error> {
+        let tab = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == tab_id)
+            .ok_or(Error::UnknownTab)?;
+        tab.custom_name = name;
+        Ok(())
+    }
     /// Focuses an existing pane in the active tab.  A pane in another tab is
     /// intentionally not selected implicitly: callers must choose the tab
     /// first so tab changes remain explicit at the UI boundary.
@@ -690,6 +701,23 @@ fn remove_pane<C>(node: &mut Node<C>, id: PaneId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renaming_sets_and_clears_only_that_tabs_name() {
+        let mut workspace = Workspace::<String>::new();
+        let first = workspace.create_tab("first", "a".into()).unwrap();
+        let second = workspace.create_tab("second", "b".into()).unwrap();
+        workspace.rename_tab(first, Some("deploys".into())).unwrap();
+        assert_eq!(workspace.tabs()[0].custom_name.as_deref(), Some("deploys"));
+        assert_eq!(workspace.tabs()[1].custom_name, None);
+        assert_eq!(workspace.active_tab().map(|tab| tab.id), Some(second));
+        workspace.rename_tab(first, None).unwrap();
+        assert_eq!(workspace.tabs()[0].custom_name, None);
+        assert_eq!(
+            workspace.rename_tab(TabId::new(99), None),
+            Err(Error::UnknownTab)
+        );
+    }
     #[test]
     fn create_and_split() {
         let mut w = Workspace::new();

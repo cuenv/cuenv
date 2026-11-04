@@ -105,7 +105,9 @@ keeps what was last known (a pipeline whose first command has exited, as in
 Nix's `.name-wrapped`
 binaries are shown as `name`. A tab
 list taller than the window scrolls, and follows the active tab. Hovering a tab reveals a button that closes
-it. Each expanded tab has a muted
+it. Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place: Enter
+or clicking elsewhere keeps it, Escape abandons it, and an empty name hands the tab back to
+its derived one. Each expanded tab has a muted
 second line such as `cuenv · main`, with its directory, unless the tab is already named after
 it, and the branch that directory is on. `src/terminal/git_branch.rs` reads that from the
 repository's `HEAD` file every couple of seconds without spawning a process; with neither

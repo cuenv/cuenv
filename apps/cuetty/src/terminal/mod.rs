@@ -22,6 +22,7 @@ mod rio_adapter;
 mod rio_input;
 mod sizing;
 mod tab_label;
+mod tab_rename;
 mod tab_status;
 pub mod workspace_shell;
 

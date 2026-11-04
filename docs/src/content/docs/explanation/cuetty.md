@@ -117,6 +117,10 @@ The current usable slice includes:
 - A close button revealed on a tab's row when the pointer is over it. It takes over from
   the tab's indicator while it shows, and sits in the row's corner when the sidebar is
   collapsed.
+- Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place,
+  expanding the sidebar if it is collapsed. Enter or clicking elsewhere keeps the name and
+  Escape abandons the edit. The name then outranks every name Cuetty derives until it is
+  emptied, which hands the tab back to its derived name.
 - A muted second line on each expanded tab, such as `cuenv · main`: its directory,
   unless the tab is already named after it, and the git branch that directory is on, or
   a detached commit's short form. Cuetty reads the repository's `HEAD` file every couple
@@ -362,6 +366,7 @@ keybindings: palette: *"ctrl-shift-p" | string
 A chord is `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`)
 followed by a key, matched case-insensitively against that exact modifier set.
 Cmd-B on macOS and Ctrl-Shift-B elsewhere collapse and expand the sidebar.
+Cmd-R on macOS and Ctrl-Shift-R elsewhere rename the active tab.
 
 A palette chord takes precedence over the tab number and Ctrl-Page chords it
 conflicts with, as the binding the user chose.

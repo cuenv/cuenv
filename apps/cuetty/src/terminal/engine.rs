@@ -24,6 +24,7 @@ use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
 use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
+use super::tab_rename::{RenameKey, TabRename, rename_key};
 use super::tab_status::{SessionExit, StatusEvent, TabPresence, TabStatus};
 use super::workspace_shell::{
     ShellAction, ShellError, TabDirection, TabNumber, WorkspaceShell, WorkspaceShortcut,
@@ -1148,6 +1149,14 @@ impl PaneState {
     }
 }
 
+/// A click on a tab's row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TabClick {
+    pub(super) tab: TabId,
+    /// How many clicks in quick succession this is.
+    pub(super) click_count: usize,
+}
+
 /// How far launching a task got.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TaskLaunch {
@@ -1551,6 +1560,8 @@ pub(super) struct TerminalView {
     /// Whether the rail is showing each tab's number key. Stays off until the
     /// modifier has been held a moment, so typing Ctrl-C never flashes it.
     pub(super) tab_hints_visible: bool,
+    /// The tab whose name is being edited in place, which takes the keyboard.
+    pub(super) tab_rename: Option<TabRename>,
     /// Identifies the latest modifier change, so a delayed reveal can tell it has
     /// been overtaken.
     tab_hint_request: u64,
@@ -1567,6 +1578,9 @@ const APP_TITLE: &str = "Cuetty";
 
 /// The key that toggles the sidebar with the application chord.
 pub(super) const SIDEBAR_TOGGLE_KEY: &str = "b";
+
+/// The key that renames the active tab with the application chord.
+const RENAME_TAB_KEY: &str = "r";
 
 /// The logical size assumed for the terminal surface until a draw has measured it.
 const UNMEASURED_SURFACE: (f32, f32) = (720.0, 432.0);
@@ -1928,6 +1942,7 @@ impl TerminalView {
                     rail_scroll: ScrollHandle::new(),
                     rail_revealed_tab: None,
                     tab_hints_visible: false,
+                    tab_rename: None,
                     tab_hint_request: 0,
                     sidebar,
                     window_title: APP_TITLE.into(),
@@ -1968,6 +1983,7 @@ impl TerminalView {
                     rail_scroll: ScrollHandle::new(),
                     rail_revealed_tab: None,
                     tab_hints_visible: false,
+                    tab_rename: None,
                     tab_hint_request: 0,
                     sidebar: WindowSidebar::default(),
                     window_title: APP_TITLE.into(),
@@ -2268,6 +2284,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.commit_tab_rename();
         match self.registry.workspace.apply(ShellAction::ActivateTab(tab)) {
             Ok(_) => {
                 self.registry.notice = None;
@@ -2326,6 +2343,76 @@ impl TerminalView {
         }
         cx.notify();
     }
+    /// What a click on a tab's row does: a second click starts renaming what the first
+    /// selected, and clicks on the name being edited leave the edit alone.
+    pub(super) fn tab_row_clicked(
+        &mut self,
+        click: TabClick,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let TabClick { tab, click_count } = click;
+        if self.tab_rename.as_ref().map(TabRename::tab) == Some(tab) {
+            self.focus.focus(window);
+        } else if click_count >= 2 {
+            self.begin_tab_rename(tab, window, cx);
+        } else {
+            self.select_terminal_tab(tab, window, cx);
+        }
+    }
+
+    /// Starts editing a tab's name in its row, which needs the sidebar to be expanded.
+    fn begin_tab_rename(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_tab_rename();
+        let tabs = self.registry.workspace.workspace().tabs();
+        let Some(index) = tabs.iter().position(|candidate| candidate.id == tab) else {
+            return;
+        };
+        self.tab_rename = Some(TabRename::new(tab, tabs[index].custom_name.as_deref()));
+        self.task_palette_open = false;
+        // Settled, so that a first evaluation still on its way cannot collapse the row
+        // out from under the edit.
+        self.sidebar.expand();
+        // Keys go to the name until the edit ends, so the name has to be in sight.
+        self.rail_scroll.scroll_to_item(index);
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    /// Settles a name being edited, as anything but Escape does.
+    pub(super) fn commit_tab_rename(&mut self) {
+        if let Some(rename) = self.tab_rename.take()
+            && let Err(error) = self
+                .registry
+                .workspace
+                .rename_tab(rename.tab(), rename.into_name())
+        {
+            self.registry.notice = Some(shell_notice(error));
+        }
+    }
+
+    /// Whether the key belonged to a name being edited, which takes every key until the
+    /// edit ends so that nothing typed there can reach the shell.
+    fn handle_rename_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let Some(rename) = self.tab_rename.as_mut() else {
+            return false;
+        };
+        let keystroke = &event.keystroke;
+        match rename_key(
+            &keystroke.key,
+            keystroke.key_char.as_deref(),
+            keystroke.modifiers,
+        ) {
+            RenameKey::Commit => self.commit_tab_rename(),
+            RenameKey::Cancel => self.tab_rename = None,
+            RenameKey::Backspace => rename.backspace(),
+            RenameKey::Text(text) => rename.insert(text),
+            RenameKey::Ignored => {}
+        }
+        cx.notify();
+        true
+    }
+
     /// Hands the keyboard back to the terminal after a click in the chrome.
     pub(super) fn focus_terminal(&self, window: &mut Window) {
         self.focus.focus(window);
@@ -2334,11 +2421,15 @@ impl TerminalView {
         if let Err(error) = self.registry.close_pane(pane) {
             self.registry.notice = Some(format!("workspace action unavailable: {error}"));
         } else {
+            let tabs = self.registry.workspace.workspace().tabs();
+            self.tab_rename
+                .take_if(|rename| tabs.iter().all(|tab| tab.id != rename.tab()));
             self.sync_active_config(cx);
             self.reconcile_task_ui();
         }
     }
     pub(super) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_tab_rename();
         // A tab shares the surface its siblings measured, so its shell starts on the
         // right grid rather than getting a resize right after its first prompt.
         let surface = self
@@ -2498,6 +2589,8 @@ impl TerminalView {
     /// The terminal grid follows within a few frames: it is resized from the bounds
     /// measured in the layout this change causes.
     pub(super) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        // A collapsed tab has nowhere to show the name being edited.
+        self.commit_tab_rename();
         self.sidebar.toggle();
         // Rows change height between the two, which can leave the active tab off screen.
         self.rail_revealed_tab = None;
@@ -2679,6 +2772,9 @@ impl TerminalView {
     }
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handle_rename_key(event, cx) {
+            return;
+        }
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
         let palette = self.active_state().and_then(PaneState::palette_chord);
@@ -2727,6 +2823,12 @@ impl TerminalView {
         }
         if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case(SIDEBAR_TOGGLE_KEY) {
             self.toggle_sidebar(cx);
+            return;
+        }
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case(RENAME_TAB_KEY) {
+            if let Some(tab) = self.active_tab() {
+                self.begin_tab_rename(tab, window, cx);
+            }
             return;
         }
         // Every pane in the workspace registry owns a live Rio session. Keep

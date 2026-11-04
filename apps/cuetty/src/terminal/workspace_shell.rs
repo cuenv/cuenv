@@ -155,6 +155,9 @@ impl WorkspaceShell {
         let tab = self.workspace.create_tab(title, RIO_CONTENT.to_owned())?;
         self.target_for(tab)
     }
+    pub fn rename_tab(&mut self, tab: TabId, name: Option<String>) -> Result<(), ShellError> {
+        self.workspace.rename_tab(tab, name).map_err(Into::into)
+    }
     pub fn preflight_close_active_tab(&self) -> Result<TabTarget, ShellError> {
         self.target_for(self.active_tab().ok_or(WorkspaceError::NoTabs)?)
     }

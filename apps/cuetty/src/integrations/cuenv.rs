@@ -234,6 +234,11 @@ impl WindowSidebar {
     pub fn toggle(&mut self) {
         self.settled = Some(self.mode().toggled());
     }
+
+    /// Settles the sidebar open, for something that has to show there.
+    pub fn expand(&mut self) {
+        self.settled = Some(SidebarMode::Expanded);
+    }
 }
 
 impl SidebarMode {
@@ -1372,6 +1377,20 @@ mod tests {
         let mut sidebar = WindowSidebar::default();
         sidebar.observe(&Evaluation::Absent);
         sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    #[test]
+    fn a_sidebar_opened_for_an_edit_stays_open_whatever_is_still_being_evaluated() {
+        // Already showing expanded, but only because nothing has settled it yet.
+        let mut sidebar = WindowSidebar::default();
+        sidebar.expand();
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+
+        let mut sidebar =
+            WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        sidebar.expand();
         assert_eq!(sidebar.mode(), SidebarMode::Expanded);
     }
 
