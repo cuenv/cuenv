@@ -65,6 +65,8 @@ pub struct TerminalTheme {
     /// Passive selection uses a cool, readable tint. It is painted above cell
     /// backgrounds and below glyphs by host renderers.
     pub selection: Rgb,
+    /// Every other search result on screen, painted like a selection beneath its text.
+    pub search_match: Rgb,
     /// The active visible search result remains distinct from selection where
     /// the two ranges overlap.
     pub current_search_match: Rgb,
@@ -103,6 +105,7 @@ impl TerminalTheme {
             cursor: rgb(theme.cursor),
             cursor_text: rgb(theme.cursor_text),
             selection: rgb(theme.selection),
+            search_match: rgb(theme.search_match),
             current_search_match: rgb(theme.current_search_match),
             current_search_match_text: rgb(theme.current_search_match_text),
             accent: rgb(theme.accent),
@@ -564,6 +567,7 @@ mod tests {
     fn configured_chrome_and_overlay_colours_reach_the_theme() {
         let mut config = TerminalConfig::default();
         config.theme.selection = ConfigRgb(1, 1, 1);
+        config.theme.search_match = ConfigRgb(3, 3, 3);
         config.theme.current_search_match = ConfigRgb(2, 2, 2);
         config.theme.current_search_match_text = ConfigRgb(8, 8, 8);
         config.theme.accent = ConfigRgb(3, 3, 3);
@@ -573,6 +577,7 @@ mod tests {
         config.theme.hover_surface = ConfigRgb(7, 7, 7);
         let theme = TerminalTheme::from_config(&config);
         assert_eq!(theme.selection, Rgb(1, 1, 1));
+        assert_eq!(theme.search_match, Rgb(3, 3, 3));
         assert_eq!(theme.current_search_match, Rgb(2, 2, 2));
         assert_eq!(theme.current_search_match_text, Rgb(8, 8, 8));
         assert_eq!(theme.accent, Rgb(3, 3, 3));

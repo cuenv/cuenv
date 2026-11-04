@@ -12,6 +12,8 @@ use super::selection::{LogicalPosition, Selection};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayKind {
     Selection,
+    /// Any other match on screen, a quiet tint text keeps its own colours on.
+    SearchMatch,
     CurrentSearchMatch,
 }
 
@@ -24,16 +26,18 @@ pub struct CellOverlaySpan {
 }
 
 /// Renderer input which remains independent of both the terminal engine and
-/// the selected UI toolkit. Ordering is deliberate: a current search match is
-/// emitted after a selection so it remains distinguishable where they overlap.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// the selected UI toolkit. Ordering is deliberate: search matches are emitted after
+/// a selection and the current one after the rest, so each stays distinguishable where
+/// they overlap.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TerminalOverlays {
     pub selection: Option<Selection>,
+    pub search_matches: Vec<SearchMatch>,
     pub current_search_match: Option<SearchMatch>,
 }
 
 impl TerminalOverlays {
-    pub fn spans(self, frame: &TerminalFrame) -> Vec<CellOverlaySpan> {
+    pub fn spans(&self, frame: &TerminalFrame) -> Vec<CellOverlaySpan> {
         let mut spans = Vec::new();
         if let Some(selection) = self.selection {
             spans.extend(range_spans(
@@ -43,6 +47,14 @@ impl TerminalOverlays {
                 OverlayKind::Selection,
             ));
         }
+        spans.extend(self.search_matches.iter().flat_map(|search_match| {
+            range_spans(
+                frame,
+                search_match.start,
+                search_match.end,
+                OverlayKind::SearchMatch,
+            )
+        }));
         if let Some(search_match) = self.current_search_match {
             spans.extend(range_spans(
                 frame,
@@ -155,7 +167,7 @@ mod tests {
                     LogicalPosition { line: 0, column: 2 },
                     LogicalPosition { line: 0, column: 3 },
                 )),
-                current_search_match: None,
+                ..TerminalOverlays::default()
             }
             .spans(&frame),
             vec![CellOverlaySpan {
@@ -189,6 +201,7 @@ mod tests {
                     start: LogicalPosition { line: 1, column: 0 },
                     end: LogicalPosition { line: 1, column: 2 },
                 }),
+                ..TerminalOverlays::default()
             }
             .spans(&frame),
             vec![
@@ -223,10 +236,72 @@ mod tests {
                     LogicalPosition { line: 2, column: 0 },
                     LogicalPosition { line: 3, column: 0 },
                 )),
-                current_search_match: None,
+                ..TerminalOverlays::default()
             }
             .spans(&frame)
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn every_match_is_a_span_with_the_current_one_laid_over_the_rest() {
+        let frame = frame(vec![(
+            "one one one"
+                .chars()
+                .map(TerminalCell::narrow)
+                .collect::<Vec<_>>(),
+            false,
+        )]);
+        let word_at = |column| SearchMatch {
+            start: LogicalPosition { line: 0, column },
+            end: LogicalPosition {
+                line: 0,
+                column: column + 3,
+            },
+        };
+        let spans = TerminalOverlays {
+            search_matches: vec![word_at(0), word_at(4), word_at(8)],
+            current_search_match: Some(word_at(4)),
+            ..TerminalOverlays::default()
+        }
+        .spans(&frame);
+        let span = |start_column, kind| CellOverlaySpan {
+            row: 0,
+            start_column,
+            end_column: start_column + 3,
+            kind,
+        };
+        assert_eq!(
+            spans,
+            vec![
+                span(0, OverlayKind::SearchMatch),
+                span(4, OverlayKind::SearchMatch),
+                span(8, OverlayKind::SearchMatch),
+                span(4, OverlayKind::CurrentSearchMatch),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_match_wrapping_onto_the_next_row_is_highlighted_on_both() {
+        let frame = frame(vec![
+            ("hel".chars().map(TerminalCell::narrow).collect(), true),
+            ("lo!".chars().map(TerminalCell::narrow).collect(), false),
+        ]);
+        let spans = TerminalOverlays {
+            search_matches: vec![SearchMatch {
+                start: LogicalPosition { line: 0, column: 0 },
+                end: LogicalPosition { line: 1, column: 2 },
+            }],
+            ..TerminalOverlays::default()
+        }
+        .spans(&frame);
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| (span.row, span.start_column, span.end_column))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 3), (1, 0, 2)]
         );
     }
 }

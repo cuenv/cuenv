@@ -118,6 +118,9 @@ pub struct ThemeColors {
     pub cursor_text: Rgb,
     /// Selection tint painted between cell backgrounds and glyphs.
     pub selection: Rgb,
+    /// Every other search result on screen: a quiet tint beneath text that keeps its own
+    /// colours, as a selection is.
+    pub search_match: Rgb,
     /// The active search result; stays distinct where it overlaps a selection.
     pub current_search_match: Rgb,
     /// Glyphs inside the active search result, which sit on an opaque fill no
@@ -293,6 +296,9 @@ impl ThemeColors {
             cursor: Rgb(245, 224, 230),
             cursor_text: Rgb(30, 30, 46),
             selection: Rgb(69, 71, 90),
+            // Yellow, the current match's colour, a little over a quarter of the way up
+            // from Base, so the two read as one search.
+            search_match: Rgb(91, 85, 82),
             current_search_match: Rgb(249, 226, 175),
             current_search_match_text: Rgb(17, 17, 27),
             accent: Rgb(137, 180, 250),
@@ -488,6 +494,12 @@ mod tests {
     fn default_selected_row_metadata_stays_legible_on_the_selection_fill() {
         let theme = ThemeColors::default();
         assert!(contrast(theme.title_text, theme.selection) >= 4.5);
+    }
+
+    #[test]
+    fn default_text_stays_legible_on_a_search_match_tint() {
+        let theme = ThemeColors::default();
+        assert!(contrast(theme.text, theme.search_match) >= 4.5);
     }
 
     #[test]

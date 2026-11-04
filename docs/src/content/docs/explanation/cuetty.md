@@ -70,6 +70,9 @@ The current usable slice includes:
   tab labels, and a full-bleed terminal.
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
   selection, Rio-owned history navigation, and visible-frame literal search.
+- Every match of a search on screen is tinted, with the current one in its own colours on
+  top. The search follows output as it moves the text, keeping to the match it was on or
+  the nearest after it, and stays open as the view scrolls, searching what comes into view.
 - Wheel and trackpad input normally navigates Rio history. An application that
   enables a supported mouse-reporting mode receives wheel reports instead; an
   alternate-screen application with alternate scroll enabled and mouse

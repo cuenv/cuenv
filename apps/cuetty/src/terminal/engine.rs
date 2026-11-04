@@ -116,6 +116,7 @@ impl TerminalGrid {
     fn overlay_color(&self, kind: OverlayKind) -> Rgb {
         match kind {
             OverlayKind::Selection => self.theme.selection,
+            OverlayKind::SearchMatch => self.theme.search_match,
             OverlayKind::CurrentSearchMatch => self.theme.current_search_match,
         }
     }
@@ -147,17 +148,10 @@ impl TerminalGrid {
             row: row.row,
             column,
         };
-        let selection = is_selected(row.overlays, position).then_some(self.theme.selection);
+        let tint = quiet_tint_at(row.overlays, position, &self.theme);
         let layer = self.layer_at(row.overlays, position);
         if layer != CellLayer::BlockCursor {
-            return readable_foreground(
-                PaintedCell {
-                    cell,
-                    layer,
-                    selection,
-                },
-                &self.theme,
-            );
+            return readable_foreground(PaintedCell { cell, layer, tint }, &self.theme);
         }
         // A block cursor fading out hands its glyph back to what is underneath it.
         let beneath = cell_layer(None, row.overlays, position);
@@ -166,7 +160,7 @@ impl TerminalGrid {
                 PaintedCell {
                     cell,
                     layer: beneath,
-                    selection,
+                    tint,
                 },
                 &self.theme,
             ),
@@ -873,8 +867,8 @@ enum CellLayer {
 }
 
 /// A block cursor stays on top of a search match, matching the paint order. A
-/// selection is not a layer here: its quiet tint is chosen to sit beneath any
-/// cell foreground, so glyphs keep their own colours on it.
+/// selection or another search match is not a layer here: its quiet tint is chosen to
+/// sit beneath any cell foreground, so glyphs keep their own colours on it.
 fn cell_layer(
     cursor: Option<HostCursorStyle>,
     overlays: &[CellOverlaySpan],
@@ -930,13 +924,25 @@ fn styled_foreground(cell: &TerminalCell, foreground: Rgb, drawn_on: Rgb) -> Rgb
     }
 }
 
-/// Whether a cell lies inside a selection.
-fn is_selected(overlays: &[CellOverlaySpan], position: CellPosition) -> bool {
-    overlays.iter().any(|span| {
-        span.kind == OverlayKind::Selection
-            && span.row == position.row
-            && (span.start_column..span.end_column).contains(&position.column)
-    })
+/// The quiet tint beneath a cell, if any: the last painted of a selection and a search
+/// match, each chosen to sit under any foreground, so glyphs keep their colours on it.
+fn quiet_tint_at(
+    overlays: &[CellOverlaySpan],
+    position: CellPosition,
+    theme: &TerminalTheme,
+) -> Option<Rgb> {
+    overlays
+        .iter()
+        .rev()
+        .filter(|span| {
+            span.row == position.row
+                && (span.start_column..span.end_column).contains(&position.column)
+        })
+        .find_map(|span| match span.kind {
+            OverlayKind::Selection => Some(theme.selection),
+            OverlayKind::SearchMatch => Some(theme.search_match),
+            OverlayKind::CurrentSearchMatch => None,
+        })
 }
 
 /// A cell, and what its glyph is being painted over.
@@ -944,27 +950,23 @@ fn is_selected(overlays: &[CellOverlaySpan], position: CellPosition) -> bool {
 struct PaintedCell<'a> {
     cell: &'a TerminalCell,
     layer: CellLayer,
-    selection: Option<Rgb>,
+    tint: Option<Rgb>,
 }
 
-/// A glyph's colour against what is actually behind it, which is `selection` when one
-/// is painted beneath the cell: dim text fades towards that, and the minimum contrast
+/// A glyph's colour against what is actually behind it, which is `tint` when one is
+/// painted beneath the cell: dim text fades towards that, and the minimum contrast
 /// setting measures against it. A layer above the cell has its own colour pair.
 ///
 /// Colours an application spelled out in 24-bit are left alone, as are graphics: image
 /// previews and Powerline segments are built from them, and only line up when a cell's
 /// foreground matches its neighbour's background exactly.
 fn readable_foreground(painted: PaintedCell<'_>, theme: &TerminalTheme) -> Rgb {
-    let PaintedCell {
-        cell,
-        layer,
-        selection,
-    } = painted;
+    let PaintedCell { cell, layer, tint } = painted;
     if layer != CellLayer::Cell {
         return colors(cell, theme, layer).0;
     }
     let (foreground, background) = resolved_colors(cell, theme);
-    let drawn_on = selection.unwrap_or(background);
+    let drawn_on = tint.unwrap_or(background);
     let foreground = styled_foreground(cell, foreground, drawn_on);
     let explicit = if cell.style.inverse {
         cell.background
@@ -2743,8 +2745,8 @@ impl TerminalView {
         if let Some(state) = self.active_state_mut() {
             match state.session.scroll(action) {
                 Ok(()) => {
-                    state.interaction.viewport_changed();
                     state.frame = state.session.frame();
+                    state.interaction.viewport_changed(&state.frame);
                 }
                 // A program's mouse mode outlives it, and there is nothing left to tell.
                 Err(_) if state.has_exited() => {}
@@ -3344,7 +3346,6 @@ impl Render for TerminalView {
             let problem = self.render_session_problem(SessionProblem::Lost, &theme, cx);
             return self.render_shell_layout(panels, problem, &theme);
         };
-        let interaction = state.interaction.clone();
         let pane_error = state.error.clone();
         let exit_failure = state.status.failure();
         let measured = Arc::clone(&state.measured_bounds);
@@ -3391,6 +3392,7 @@ impl Render for TerminalView {
             state.fit_grid(width, height, self.metrics.device_cell());
             // Sampled after the resize, so the draw that resizes the grid also shows it.
             state.frame = state.session.frame();
+            state.interaction.refresh_search(&state.frame);
             state.frame.clone()
         });
         let Some(frame) = frame else {
@@ -3406,10 +3408,16 @@ impl Render for TerminalView {
         if let Some(error) = &fit_error {
             return self.render_pane_failure(panels, error, cx);
         }
-        let overlays = TerminalOverlays {
-            selection: interaction.selection(),
-            current_search_match: interaction.current_match(),
-        };
+        let overlays = self
+            .registry
+            .sessions
+            .get(&active_pane)
+            .map(|state| TerminalOverlays {
+                selection: state.interaction.selection(),
+                search_matches: state.interaction.search_matches().to_vec(),
+                current_search_match: state.interaction.current_match(),
+            })
+            .unwrap_or_default();
         let cursor = self.cursor_frame(
             CursorObservation {
                 pane: active_pane,
@@ -4451,12 +4459,42 @@ mod tests {
     }
 
     /// A cell with no layer above it, on a selection or not.
-    fn cell_painted(cell: &TerminalCell, selection: Option<Rgb>) -> PaintedCell<'_> {
+    fn cell_painted(cell: &TerminalCell, tint: Option<Rgb>) -> PaintedCell<'_> {
         PaintedCell {
             cell,
             layer: CellLayer::Cell,
-            selection,
+            tint,
         }
+    }
+
+    #[test]
+    fn a_search_match_tints_a_cell_as_a_selection_does_and_keeps_its_glyphs_colours() {
+        let theme = TerminalTheme::from_config(&TerminalConfig::default());
+        let at = |column| CellPosition { row: 0, column };
+        let span = |kind, start_column, end_column| CellOverlaySpan {
+            row: 0,
+            start_column,
+            end_column,
+            kind,
+        };
+        let overlays = [
+            span(OverlayKind::Selection, 0, 2),
+            span(OverlayKind::SearchMatch, 1, 3),
+            span(OverlayKind::CurrentSearchMatch, 3, 4),
+        ];
+        assert_eq!(
+            quiet_tint_at(&overlays, at(0), &theme),
+            Some(theme.selection)
+        );
+        assert_eq!(
+            quiet_tint_at(&overlays, at(1), &theme),
+            Some(theme.search_match),
+            "painted last where they overlap"
+        );
+        assert_eq!(quiet_tint_at(&overlays, at(3), &theme), None);
+        assert_eq!(quiet_tint_at(&overlays, at(4), &theme), None);
+        let matched_layer = cell_layer(None, &overlays, at(2));
+        assert_eq!(matched_layer, CellLayer::Cell);
     }
 
     #[test]
@@ -4530,7 +4568,7 @@ mod tests {
                 PaintedCell {
                     cell: &TerminalCell::narrow('x'),
                     layer: CellLayer::BlockCursor,
-                    selection: None,
+                    tint: None,
                 },
                 &theme,
             ),

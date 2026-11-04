@@ -200,10 +200,11 @@ active directory has a task catalogue, so Ctrl-K stays the shell's kill-line in
 ordinary directories. Cmd-D and
 Cmd-Shift-D report that split panes are unavailable; they never create a fake
 terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse
-selection and the current literal visible-frame search hit are painted directly
-over the terminal grid; Cmd-C copy and paste are live too. Rio-owned scrollback
-is live, but selection and search are cleared when the viewport moves because
-their coordinates are still visible-frame-only. It does not yet have live workspace restore,
+selection and every literal visible-frame search hit are painted directly
+over the terminal grid, with the current hit picked out from the rest; Cmd-C copy and paste
+are live too. Rio-owned scrollback is live, but a selection is cleared when the viewport moves
+because its coordinates are still visible-frame-only; an open search stays open and searches
+what has come into view. It does not yet have live workspace restore,
 plugin runtime, Kitty graphics, ligatures, or complete IME/non-Latin
 composition. Workspace persistence has a bounded versioned codec and atomic
 file store, but live restore and Rio session reconnect are not wired into the
@@ -233,7 +234,7 @@ presentation correctness is deliberately not claimed.
 
 The built-in colour scheme is Catppuccin Mocha: Base fills the window, Mantle sets
 the sidebar off from it when the window is opaque, Surface 0 draws faint dividers, Surface 1 tints
-selections, Yellow marks the current search match with Crust text on it, Blue is
+selections, Yellow marks the current search match with Crust text on it and tints the others, Blue is
 the accent, and the
 complete ANSI palette follows Catppuccin's Mocha mapping. Every one of these,
 plus muted text and the raised and hover surfaces used by floating panels, lives in
