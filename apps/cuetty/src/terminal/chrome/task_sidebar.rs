@@ -57,6 +57,7 @@ impl TerminalView {
             );
         }
         let hidden = state.cuenv.tasks.len().saturating_sub(12);
+        let palette_chord = self.palette_chord_label();
         let cwd = state
             .cuenv
             .cwd
@@ -108,7 +109,7 @@ impl TerminalView {
                             div()
                                 .text_size(text::CAPTION)
                                 .text_color(colors.text_muted)
-                                .child("⌘K"),
+                                .child(palette_chord.clone()),
                         ),
                 )
                 .child(div().flex_1().overflow_hidden().child(list))
@@ -117,7 +118,7 @@ impl TerminalView {
                         div()
                             .text_size(text::CAPTION)
                             .text_color(colors.text_muted)
-                            .child(format!("{hidden} more · use ⌘K")),
+                            .child(format!("{hidden} more · use {palette_chord}")),
                     )
                 })
                 .into_any_element(),

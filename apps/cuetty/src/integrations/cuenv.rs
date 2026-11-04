@@ -96,6 +96,58 @@ impl KeyChord {
             modifiers,
         })
     }
+
+    /// The chord as this platform writes it in UI hints.
+    pub fn label(&self) -> String {
+        if cfg!(target_os = "macos") {
+            self.glyph_label()
+        } else {
+            self.word_label()
+        }
+    }
+
+    /// Modifiers in the order macOS menus show them, for example `⇧⌘P`.
+    fn glyph_label(&self) -> String {
+        let ChordModifiers {
+            control,
+            alt,
+            shift,
+            platform,
+        } = self.modifiers;
+        [(control, "⌃"), (alt, "⌥"), (shift, "⇧"), (platform, "⌘")]
+            .into_iter()
+            .filter_map(|(held, glyph)| held.then_some(glyph))
+            .chain([self.key_label().as_str()])
+            .collect()
+    }
+
+    /// Conventional Linux spelling, for example `Ctrl+Shift+P`.
+    fn word_label(&self) -> String {
+        let ChordModifiers {
+            control,
+            alt,
+            shift,
+            platform,
+        } = self.modifiers;
+        [
+            (control, "Ctrl"),
+            (alt, "Alt"),
+            (shift, "Shift"),
+            (platform, "Super"),
+        ]
+        .into_iter()
+        .filter_map(|(held, word)| held.then_some(word))
+        .chain([self.key_label().as_str()])
+        .collect::<Vec<_>>()
+        .join("+")
+    }
+
+    fn key_label(&self) -> String {
+        let mut characters = self.key.chars();
+        characters.next().map_or_else(String::new, |first| {
+            first.to_uppercase().chain(characters).collect()
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1027,6 +1079,17 @@ mod tests {
         state.observe_cwd(PathBuf::from("/b"));
         assert!(state.tasks.is_empty());
         assert!(!state.apply_tasks(generation, TaskEvaluation::Valid(Vec::new())));
+    }
+
+    #[test]
+    fn chord_labels_follow_each_platform_convention() {
+        let chord = KeyChord::parse("ctrl-shift-p").unwrap();
+        assert_eq!(chord.word_label(), "Ctrl+Shift+P");
+        assert_eq!(chord.glyph_label(), "⌃⇧P");
+        let chord = KeyChord::parse("cmd-alt-pageup").unwrap();
+        assert_eq!(chord.word_label(), "Alt+Super+Pageup");
+        assert_eq!(chord.glyph_label(), "⌥⌘Pageup");
+        assert_eq!(KeyChord::parse("k").unwrap().word_label(), "K");
     }
 
     #[test]

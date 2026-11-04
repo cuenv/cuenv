@@ -232,8 +232,9 @@ the task graph, cache, hooks, or secret resolution.
 Ctrl-Page Up selects the previous tab and Ctrl-Page Down selects the next;
 both wrap around the tab list.
 
-The task palette opens with Cmd-K on macOS and plain Ctrl-K elsewhere. Rebind
-it from any `package cuetty`, global or per-directory:
+The task palette opens with Cmd-K on macOS and plain Ctrl-K elsewhere, and task
+hints always show the active chord. Rebind it from any `package cuetty`, global
+or per-directory:
 
 ```cue
 package cuetty

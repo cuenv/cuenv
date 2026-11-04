@@ -246,6 +246,7 @@ applies only the global package and checks for its directory on each poll.
 `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`) followed by a
 key and match that exact modifier set. Ctrl-Page Up and Ctrl-Page Down are
 reserved for tab switching and take precedence over a conflicting palette chord.
+Task hints show the active tab's chord in the platform's own spelling.
 
 Home Manager users can link their own CUE file as the global package:
 

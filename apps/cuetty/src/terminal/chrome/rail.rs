@@ -185,6 +185,7 @@ impl TerminalView {
                 view.new_tab(window, cx);
             }))
             .child("+");
+        let palette_chord = self.palette_chord_label();
         let tasks = div()
             .id("cuetty-tasks")
             .w(size::CONTROL_WIDTH)
@@ -198,7 +199,9 @@ impl TerminalView {
             .when(self.task_sidebar_open, |this| this.bg(colors.state))
             .hover(|this| this.bg(colors.state))
             .cursor_pointer()
-            .tooltip(|window, cx| Tooltip::new("Cuenv tasks · ⌘K to search").build(window, cx))
+            .tooltip(move |window, cx| {
+                Tooltip::new(format!("Cuenv tasks · {palette_chord} to search")).build(window, cx)
+            })
             .on_click(cx.listener(|view, _event, _window, cx| {
                 view.task_sidebar_open = !view.task_sidebar_open;
                 cx.notify();
