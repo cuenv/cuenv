@@ -101,7 +101,8 @@ foreground program or a title it set, then the directory, then `Terminal`. A tit
 lasts only as long as the program it was set under, one that names a directory stands
 in only while the working directory is unknown, a foreground that cannot be named
 keeps what was last known (a pipeline whose first command has exited, as in
-`git log | less`, cannot be), and Nix's `.name-wrapped`
+`git log | less`, cannot be), a shell running a script is named after the script, and
+Nix's `.name-wrapped`
 binaries are shown as `name`. A tab
 list taller than the window scrolls, and follows the active tab. Restrained
 active-tab treatment and compact footer controls keep the sidebar readable
@@ -315,7 +316,13 @@ When the same directory contains an evaluable `package cuenv`, Cuetty also
 discovers its `tasks` map. The task button in the sidebar's footer opens a
 floating, non-resizing task sidebar; Cmd-K (Ctrl-K off macOS, configurable
 through `keybindings.palette`) opens a searchable command palette. Selecting a task invokes the existing CLI in the same terminal pane
-whose working directory supplied the catalogue. The
+whose working directory supplied the catalogue, pasting the command and pressing Enter
+separately, because a shell in bracketed paste mode takes a pasted newline as text. Enter
+is pressed only while the foreground is an interactive shell, judged from the process's
+name and start-up arguments, so a program or a shell running a script (`bash deploy.sh`)
+cannot be made to submit something the user was still writing or to answer a script's
+question. A shell's builtin, such as `read`, or a subshell looks the same as its prompt
+from outside, so a command launched during one does get an Enter. The
 `cuenv task --path … --package cuenv …` CLI path preserves its graph, cache,
 hook, secret-redaction, cancellation, and exit behaviour. Tasks with required
 parameters are staged at the prompt for editing instead of running

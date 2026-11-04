@@ -2,6 +2,7 @@ mod chrome;
 pub mod config;
 mod engine;
 mod events;
+mod foreground;
 mod host;
 mod input;
 mod interaction;

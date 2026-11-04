@@ -1,9 +1,14 @@
 use super::events::{ControlEvent, EventBridge};
+use super::foreground::ForegroundProcess;
+#[cfg(unix)]
+use super::foreground::leader_arguments;
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::model::{SamplingToken, TerminalFrame};
 use super::rio_adapter::snapshot;
 use super::rio_input::{encode_key, encode_paste};
 use super::sizing::{CellSize, TerminalSize, terminal_size};
+#[cfg(unix)]
+use super::tab_label::is_shell;
 use rio_vt::ansi::CursorShape;
 use rio_vt::corcovado::channel::Sender;
 use rio_vt::crosswords::grid::Scroll;
@@ -49,9 +54,9 @@ pub trait TerminalSession: Send {
     fn frame(&mut self) -> TerminalFrame;
     /// OSC 7 directory, with a foreground-process fallback while the PTY is open.
     fn working_directory(&self) -> Option<String>;
-    /// The foreground process's name while the PTY is open, shells included. `None`
-    /// or a blank name means it could not be told, not that a shell is waiting.
-    fn foreground_process(&self) -> Option<String>;
+    /// The foreground process while the PTY is open, shells included. `None` or a
+    /// blank name means it could not be told, not that a shell is waiting.
+    fn foreground_process(&self) -> Option<ForegroundProcess>;
     fn drain_effects(&self) -> Vec<ControlEvent>;
     fn close(&mut self) -> Result<(), String>;
 }
@@ -500,17 +505,18 @@ impl TerminalSession for RioTerminalSession {
         None
     }
 
-    fn foreground_process(&self) -> Option<String> {
+    fn foreground_process(&self) -> Option<ForegroundProcess> {
         #[cfg(unix)]
         if self
             .io_thread
             .as_ref()
             .is_some_and(|thread| !thread.is_finished())
         {
-            return Some(teletypewriter::foreground_process_name(
-                self.main_fd,
-                self.shell_pid,
-            ));
+            let name = teletypewriter::foreground_process_name(self.main_fd, self.shell_pid);
+            let arguments = is_shell(name.trim())
+                .then(|| leader_arguments(self.main_fd, self.shell_pid))
+                .flatten();
+            return Some(ForegroundProcess { name, arguments });
         }
         None
     }
@@ -857,6 +863,21 @@ mod tests {
             wait_for_text(&mut session, expected);
             session.close().expect("close should succeed");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_tells_a_shell_running_a_script_from_a_prompt() {
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["raw", "3"]);
+        wait_for_text(&mut session, "M0-READY");
+        let process = session.foreground_process();
+        let mut activity = crate::terminal::tab_label::PaneActivity::default();
+        activity.sample(process.as_ref(), std::time::Instant::now());
+        assert!(!activity.at_prompt(), "{process:?}");
+        assert_eq!(activity.program(), Some("m0-pty-child.sh"), "{process:?}");
+        session.close().expect("close should succeed");
     }
 
     #[test]

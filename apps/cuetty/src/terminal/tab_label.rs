@@ -1,6 +1,7 @@
 //! What a tab is called. Everything here is pure, so the naming rules can be
 //! tested without a window or a terminal session.
 
+use super::foreground::{ForegroundProcess, ShellRun, shell_run};
 use std::borrow::Cow;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -8,8 +9,9 @@ use std::time::{Duration, Instant};
 /// The name of a tab nothing else can name.
 const FALLBACK_LABEL: &str = "Terminal";
 
-/// Foreground processes that mean the tab is sitting at a prompt. A nested shell
-/// says nothing about the tab that its title and directory do not say better.
+/// Foreground processes that may be sitting at a prompt, which their arguments
+/// settle. A nested shell at a prompt says nothing about the tab that its title and
+/// directory do not say better.
 const SHELLS: &[&str] = &[
     "bash", "dash", "elvish", "fish", "ksh", "mksh", "nu", "pwsh", "sh", "tcsh", "xonsh", "zsh",
 ];
@@ -185,7 +187,7 @@ fn unwrapped_name(name: &str) -> &str {
 }
 
 /// Whether a name is a shell's. Login shells report themselves as `-zsh`.
-fn is_shell(name: &str) -> bool {
+pub(super) fn is_shell(name: &str) -> bool {
     SHELLS.contains(&unwrapped_name(name.strip_prefix('-').unwrap_or(name)))
 }
 
@@ -200,6 +202,34 @@ fn foreground_program(process: &str) -> Option<&str> {
     } else {
         unwrapped
     })
+}
+
+/// What a sampled foreground process comes to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Foreground<'a> {
+    /// A shell reading from the terminal, as far as can be told. A builtin such as
+    /// `read`, or a subshell, runs in a process just like it.
+    Prompt,
+    Program(&'a str),
+    /// Nothing could be read, which is not the same as a prompt.
+    Unknown,
+}
+
+impl<'a> From<&'a ForegroundProcess> for Foreground<'a> {
+    fn from(process: &'a ForegroundProcess) -> Self {
+        let name = process.name.trim();
+        if !is_shell(name) {
+            return foreground_program(name).map_or(Self::Unknown, Self::Program);
+        }
+        match process.arguments.as_deref().map(shell_run) {
+            None => Self::Unknown,
+            Some(ShellRun::Interactive) => Self::Prompt,
+            Some(ShellRun::Script(script)) => Self::Program(path_basename(script)),
+            Some(ShellRun::Commands) => {
+                Self::Program(unwrapped_name(name.strip_prefix('-').unwrap_or(name)))
+            }
+        }
+    }
 }
 
 /// What a pane's terminal is doing, as far as naming its tab goes.
@@ -230,8 +260,9 @@ impl PaneActivity {
         self.task.as_ref().map(RunningTask::name)
     }
 
-    /// Whether the last sample found a shell waiting, as opposed to some program or
-    /// nothing it could name.
+    /// Whether the last sample found an interactive shell, as opposed to a program, a
+    /// shell running a script, or nothing it could read. A builtin such as `read`, or a
+    /// subshell, cannot be told from a prompt without help from the shell.
     pub(super) fn at_prompt(&self) -> bool {
         self.program.is_none() && !self.foreground_unknown
     }
@@ -242,15 +273,17 @@ impl PaneActivity {
     /// A missing or blank name is not a prompt. A pipeline's group outlives its
     /// leader, whose name is all the platform offers, so `git log | less` reads as
     /// nothing while `less` runs. What was known stands until a name comes back.
-    pub(super) fn sample(&mut self, process: Option<&str>, now: Instant) {
-        let process = nonblank(process);
-        self.foreground_unknown = process.is_none();
-        if let Some(process) = process {
-            let program = foreground_program(process);
-            if program != self.program.as_deref() {
-                self.title = None;
-                self.program = program.map(str::to_owned);
-            }
+    pub(super) fn sample(&mut self, process: Option<&ForegroundProcess>, now: Instant) {
+        let foreground = process.map_or(Foreground::Unknown, Foreground::from);
+        self.foreground_unknown = foreground == Foreground::Unknown;
+        let program = match foreground {
+            Foreground::Unknown => self.program.clone(),
+            Foreground::Prompt => None,
+            Foreground::Program(program) => Some(program.to_owned()),
+        };
+        if program != self.program {
+            self.title = None;
+            self.program = program;
         }
         self.task = self
             .task
@@ -315,6 +348,27 @@ impl RunningTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl PaneActivity {
+        /// A sample of a process with `name` and no arguments, which for a shell is
+        /// an interactive one.
+        fn sample_name(&mut self, name: Option<&str>, now: Instant) {
+            let process = name.map(|name| ForegroundProcess {
+                name: name.to_owned(),
+                arguments: Some(Vec::new()),
+            });
+            self.sample(process.as_ref(), now);
+        }
+
+        fn sample_shell(&mut self, name: &str, arguments: Option<&[&str]>) {
+            let process = ForegroundProcess {
+                name: name.to_owned(),
+                arguments: arguments
+                    .map(|arguments| arguments.iter().map(ToString::to_string).collect()),
+            };
+            self.sample(Some(&process), Instant::now());
+        }
+    }
 
     #[test]
     fn each_source_outranks_every_source_after_it() {
@@ -535,15 +589,15 @@ mod tests {
     fn a_title_goes_with_the_program_that_set_it() {
         let now = Instant::now();
         let mut activity = PaneActivity::default();
-        activity.sample(Some("deploy"), now);
+        activity.sample_name(Some("deploy"), now);
         activity.set_title("deploy logs".into());
         assert_eq!(label_of(&activity), "deploy logs");
-        activity.sample(Some("deploy"), now);
+        activity.sample_name(Some("deploy"), now);
         assert_eq!(label_of(&activity), "deploy logs");
 
-        activity.sample(Some("cargo"), now);
+        activity.sample_name(Some("cargo"), now);
         assert_eq!(label_of(&activity), "cargo");
-        activity.sample(Some("zsh"), now);
+        activity.sample_name(Some("zsh"), now);
         assert_eq!(label_of(&activity), "other");
     }
 
@@ -551,14 +605,14 @@ mod tests {
     fn a_title_set_at_the_prompt_lasts_until_a_program_runs() {
         let now = Instant::now();
         let mut activity = PaneActivity::default();
-        activity.sample(Some("zsh"), now);
+        activity.sample_name(Some("zsh"), now);
         activity.set_title("deploy logs".into());
-        activity.sample(Some("zsh"), now);
+        activity.sample_name(Some("zsh"), now);
         assert_eq!(label_of(&activity), "deploy logs");
 
-        activity.sample(Some("cargo"), now);
+        activity.sample_name(Some("cargo"), now);
         assert_eq!(label_of(&activity), "cargo");
-        activity.sample(Some("zsh"), now);
+        activity.sample_name(Some("zsh"), now);
         assert_eq!(label_of(&activity), "other");
     }
 
@@ -574,10 +628,10 @@ mod tests {
     fn a_busy_pane_never_gains_a_task() {
         let now = Instant::now();
         let mut activity = PaneActivity::default();
-        activity.sample(Some("vim"), now);
+        activity.sample_name(Some("vim"), now);
         activity.launch_task("build", now);
         assert_eq!(activity.task_name(), None);
-        activity.sample(Some("zsh"), now);
+        activity.sample_name(Some("zsh"), now);
         activity.launch_task("build", now);
         assert_eq!(activity.task_name(), Some("build"));
     }
@@ -586,17 +640,17 @@ mod tests {
     fn an_unreadable_foreground_keeps_the_program_and_its_title() {
         let now = Instant::now();
         let mut activity = PaneActivity::default();
-        activity.sample(Some("less"), now);
+        activity.sample_name(Some("less"), now);
         activity.set_title("README.md".into());
         for unreadable in [Some(""), Some("  "), None] {
-            activity.sample(unreadable, now);
+            activity.sample_name(unreadable, now);
             assert_eq!(activity.program(), Some("less"));
             assert_eq!(label_of(&activity), "README.md");
         }
         // The same program coming back into view is no change of program.
-        activity.sample(Some("less"), now);
+        activity.sample_name(Some("less"), now);
         assert_eq!(label_of(&activity), "README.md");
-        activity.sample(Some("zsh"), now);
+        activity.sample_name(Some("zsh"), now);
         assert_eq!(label_of(&activity), "other");
     }
 
@@ -605,16 +659,62 @@ mod tests {
         let now = Instant::now();
         let mut activity = PaneActivity::default();
         // A pipeline whose leader was gone before it was ever sampled.
-        activity.sample(Some("zsh"), now);
+        activity.sample_name(Some("zsh"), now);
         assert!(activity.at_prompt());
-        activity.sample(Some(""), now);
+        activity.sample_name(Some(""), now);
         assert!(!activity.at_prompt());
         activity.launch_task("build", now);
         assert_eq!(activity.task_name(), None);
 
-        activity.sample(Some("zsh"), now);
+        activity.sample_name(Some("zsh"), now);
         activity.launch_task("build", now);
         assert_eq!(activity.task_name(), Some("build"));
+    }
+
+    #[test]
+    fn a_shell_running_a_script_is_a_program_named_after_the_script() {
+        let mut activity = PaneActivity::default();
+        activity.sample_shell("bash", Some(&["-e", "./ops/deploy.sh", "--force"]));
+        assert!(!activity.at_prompt());
+        assert_eq!(activity.program(), Some("deploy.sh"));
+        activity.launch_task("build", Instant::now());
+        assert_eq!(activity.task_name(), None);
+    }
+
+    #[test]
+    fn a_shell_given_commands_is_a_program_named_after_the_shell() {
+        let mut activity = PaneActivity::default();
+        activity.sample_shell(".bash-wrapped", Some(&["-c", "make"]));
+        assert!(!activity.at_prompt());
+        assert_eq!(activity.program(), Some("bash"));
+    }
+
+    #[test]
+    fn an_interactive_shell_with_options_is_at_its_prompt() {
+        let mut activity = PaneActivity::default();
+        activity.sample_shell("bash", Some(&["--rcfile", "/tmp/nix-shell.abc"]));
+        assert!(activity.at_prompt());
+        activity.sample_shell("-zsh", Some(&[]));
+        assert!(activity.at_prompt());
+    }
+
+    #[test]
+    fn a_shell_whose_arguments_cannot_be_read_is_not_a_prompt() {
+        let mut activity = PaneActivity::default();
+        activity.sample_shell("deploy", Some(&[]));
+        activity.sample_shell("bash", None);
+        assert!(!activity.at_prompt());
+        // What was known stands, as with any foreground that cannot be read.
+        assert_eq!(activity.program(), Some("deploy"));
+    }
+
+    /// The limit of telling from outside the shell: `read -p` typed at a prompt, or a
+    /// subshell, runs under the very arguments the prompt does.
+    #[test]
+    fn a_builtin_waiting_for_input_cannot_be_told_from_a_prompt() {
+        let mut activity = PaneActivity::default();
+        activity.sample_shell("bash", Some(&[]));
+        assert!(activity.at_prompt());
     }
 
     #[test]
@@ -622,16 +722,16 @@ mod tests {
         let start = Instant::now();
         let mut activity = PaneActivity::default();
         activity.launch_task("build", start);
-        activity.sample(Some("cuenv"), start);
+        activity.sample_name(Some("cuenv"), start);
         let later = start + TASK_START_GRACE * 10;
-        activity.sample(Some(""), later);
+        activity.sample_name(Some(""), later);
         assert_eq!(activity.task_name(), Some("build"));
 
         let mut unseen = PaneActivity::default();
         unseen.launch_task("build", start);
-        unseen.sample(Some(""), start);
+        unseen.sample_name(Some(""), start);
         assert_eq!(unseen.task_name(), Some("build"));
-        unseen.sample(Some(""), later);
+        unseen.sample_name(Some(""), later);
         assert_eq!(unseen.task_name(), None);
     }
 
@@ -640,7 +740,7 @@ mod tests {
         let now = Instant::now();
         let mut activity = PaneActivity::default();
         activity.launch_task("build", now);
-        activity.sample(Some("vim"), now + TASK_START_GRACE / 2);
+        activity.sample_name(Some("vim"), now + TASK_START_GRACE / 2);
         assert_eq!(activity.task_name(), None);
         assert_eq!(label_of(&activity), "vim");
     }
@@ -650,9 +750,9 @@ mod tests {
         let now = Instant::now();
         let mut activity = PaneActivity::default();
         activity.launch_task("build", now);
-        activity.sample(Some(".cuenv-wrapped"), now);
+        activity.sample_name(Some(".cuenv-wrapped"), now);
         assert_eq!(activity.task_name(), Some("build"));
-        activity.sample(Some("vim"), now);
+        activity.sample_name(Some("vim"), now);
         assert_eq!(activity.task_name(), None);
     }
 

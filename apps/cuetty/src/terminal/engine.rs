@@ -594,17 +594,27 @@ impl PaneState {
     /// Records what the terminal is running now.
     fn sample_foreground(&mut self, now: std::time::Instant) {
         let process = self.session.foreground_process();
-        self.activity.sample(process.as_deref(), now);
+        self.activity.sample(process.as_ref(), now);
     }
 
     /// Paste the task's command into this pane's shell. A task that needs
     /// arguments is only staged at the prompt, so it is not running yet. The
     /// periodic sample may be out of date, and it decides where the paste went.
+    ///
+    /// A shell in bracketed paste mode takes a pasted newline as text, so running
+    /// the command takes an Enter of its own. That is for an interactive shell only:
+    /// in a program or a shell running a script it could submit whatever was being
+    /// held or answer a question, so there the command is left for the user to act on.
     fn launch_task(&mut self, command: &str, task: &CuenvTask) -> Result<(), String> {
         let now = std::time::Instant::now();
         self.sample_foreground(now);
         self.session.paste(command)?;
-        if !task.requires_parameters {
+        if !task.requires_parameters && self.activity.at_prompt() {
+            self.session.input(TerminalKeyEvent {
+                key: KeyInput::Enter,
+                modifiers: InputModifiers::default(),
+                repeat: false,
+            })?;
             self.activity.launch_task(task.name.clone(), now);
         }
         Ok(())
@@ -892,12 +902,6 @@ struct CuenvIntegrationUpdate {
     tasks: TaskEvaluation,
 }
 
-#[derive(Clone, Copy)]
-enum TaskLaunch {
-    Run,
-    EditRequiredArguments,
-}
-
 pub(super) fn filtered_tasks<'a>(tasks: &'a [CuenvTask], query: &str) -> Vec<&'a CuenvTask> {
     let query = query.trim().to_ascii_lowercase();
     tasks
@@ -917,17 +921,14 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn task_command(cwd: &std::path::Path, task: &CuenvTask, launch: TaskLaunch) -> String {
-    let mut command = format!(
-        "cuenv task --path {} --package cuenv {}",
+/// The command line for a task, ready for the arguments it may need to follow.
+fn task_command(cwd: &std::path::Path, task: &CuenvTask) -> String {
+    format!(
+        "cuenv task --path {} --package cuenv {}{}",
         shell_quote(&cwd.to_string_lossy()),
-        shell_quote(&task.name)
-    );
-    match launch {
-        TaskLaunch::Run => command.push('\n'),
-        TaskLaunch::EditRequiredArguments => command.push(' '),
-    }
-    command
+        shell_quote(&task.name),
+        if task.requires_parameters { " " } else { "" }
+    )
 }
 
 fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32) -> i32 {
@@ -1748,12 +1749,7 @@ impl TerminalView {
         let Some(active_pane) = self.active_pane() else {
             return;
         };
-        let launch = if task.requires_parameters {
-            TaskLaunch::EditRequiredArguments
-        } else {
-            TaskLaunch::Run
-        };
-        let command = task_command(&cwd, &task, launch);
+        let command = task_command(&cwd, &task);
         if let Some(state) = self.registry.sessions.get_mut(&active_pane) {
             if let Err(error) = state.launch_task(&command, &task) {
                 state.error = Some(error);
@@ -2334,9 +2330,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::foreground::ForegroundProcess;
     use crate::terminal::host::SessionStart;
     use crate::terminal::model::Color;
+    use crate::terminal::rio_input::{encode_key, encode_paste};
     use crate::terminal::selection::LogicalPosition;
+    use rio_vt::crosswords::Mode;
     use std::collections::VecDeque;
 
     struct FakeSession {
@@ -2344,6 +2343,8 @@ mod tests {
         effects: Arc<Mutex<Vec<ControlEvent>>>,
         close_error: Option<String>,
         foreground: Arc<Mutex<String>>,
+        /// What a shell with bracketed paste on would read from the PTY.
+        sent: Arc<Mutex<Vec<u8>>>,
     }
 
     impl TerminalSession for FakeSession {
@@ -2351,11 +2352,15 @@ mod tests {
             Ok(())
         }
 
-        fn input(&mut self, _: TerminalKeyEvent) -> Result<bool, String> {
+        fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
+            let bytes = encode_key(event, Mode::BRACKETED_PASTE, None).unwrap_or_default();
+            self.sent.lock().unwrap().extend(bytes);
             Ok(true)
         }
 
-        fn paste(&mut self, _: &str) -> Result<(), String> {
+        fn paste(&mut self, text: &str) -> Result<(), String> {
+            let bytes = encode_paste(text, Mode::BRACKETED_PASTE);
+            self.sent.lock().unwrap().extend(bytes);
             Ok(())
         }
 
@@ -2371,8 +2376,13 @@ mod tests {
             None
         }
 
-        fn foreground_process(&self) -> Option<String> {
-            Some(self.foreground.lock().unwrap().clone())
+        fn foreground_process(&self) -> Option<ForegroundProcess> {
+            let foreground = self.foreground.lock().unwrap();
+            let mut words = foreground.split_whitespace().map(str::to_owned);
+            Some(ForegroundProcess {
+                name: words.next().unwrap_or_default(),
+                arguments: Some(words.collect()),
+            })
         }
 
         fn drain_effects(&self) -> Vec<ControlEvent> {
@@ -2430,22 +2440,21 @@ mod tests {
 
     #[test]
     fn task_command_quotes_paths_and_stages_required_arguments() {
-        let task = CuenvTask {
+        let mut task = CuenvTask {
             name: "release's build".into(),
             description: None,
             kind: crate::integrations::cuenv::CuenvTaskKind::Task,
             requires_parameters: true,
         };
+        let directory = std::path::Path::new("/tmp/project's dir");
         assert_eq!(
-            task_command(
-                std::path::Path::new("/tmp/project's dir"),
-                &task,
-                TaskLaunch::EditRequiredArguments,
-            ),
+            task_command(directory, &task),
             "cuenv task --path '/tmp/project'\\''s dir' --package cuenv 'release'\\''s build' "
         );
-        assert!(
-            task_command(std::path::Path::new("/tmp/x"), &task, TaskLaunch::Run).ends_with('\n')
+        task.requires_parameters = false;
+        assert_eq!(
+            task_command(directory, &task),
+            "cuenv task --path '/tmp/project'\\''s dir' --package cuenv 'release'\\''s build'"
         );
     }
 
@@ -2462,6 +2471,7 @@ mod tests {
             effects: Arc::clone(&effects),
             close_error: close_error.map(str::to_owned),
             foreground: Arc::new(Mutex::new("zsh".into())),
+            sent: Arc::default(),
         };
         (
             SessionStart {
@@ -2483,6 +2493,7 @@ mod tests {
             effects: Arc::clone(&effects),
             close_error: None,
             foreground: Arc::clone(&foreground),
+            sent: Arc::default(),
         };
         (
             SessionStart {
@@ -3151,7 +3162,7 @@ mod tests {
             requires_parameters: false,
         };
         let state = registry.sessions.get_mut(&pane).unwrap();
-        state.launch_task("cuenv task docs.build\n", &task).unwrap();
+        state.launch_task("cuenv task docs.build", &task).unwrap();
         assert_eq!(registry.tab_label(&tab), "docs.build");
 
         let mut named = tab.clone();
@@ -3209,6 +3220,65 @@ mod tests {
         assert_eq!(registry.tab_label(&tab), "Terminal");
     }
 
+    /// A pane whose shell has bracketed paste on, and what it has been sent.
+    fn bracketed_pane(process: &str) -> (PaneState, Arc<Mutex<Vec<u8>>>) {
+        let sent = Arc::<Mutex<Vec<u8>>>::default();
+        let session = FakeSession {
+            frame: frame_with('a'),
+            effects: Arc::default(),
+            close_error: None,
+            foreground: Arc::new(Mutex::new(process.to_owned())),
+            sent: Arc::clone(&sent),
+        };
+        let pane = PaneState::new(SessionGeneration(1), Box::new(session), (80, 40));
+        (pane, sent)
+    }
+
+    fn runnable_task(name: &str) -> CuenvTask {
+        CuenvTask {
+            name: name.into(),
+            description: None,
+            kind: crate::integrations::cuenv::CuenvTaskKind::Task,
+            requires_parameters: false,
+        }
+    }
+
+    #[test]
+    fn running_a_task_presses_enter_outside_the_bracketed_paste() {
+        let (mut pane, sent) = bracketed_pane("zsh");
+        let task = runnable_task("docs.build");
+        let command = task_command(std::path::Path::new("/tmp/x"), &task);
+        pane.launch_task(&command, &task).unwrap();
+        let expected = format!("\x1b[200~{command}\x1b[201~\r");
+        assert_eq!(*sent.lock().unwrap(), expected.into_bytes());
+        assert_eq!(pane.activity.task_name(), Some("docs.build"));
+    }
+
+    #[test]
+    fn a_task_needing_arguments_is_left_at_the_prompt_unsent() {
+        let (mut pane, sent) = bracketed_pane("zsh");
+        let mut task = runnable_task("release");
+        task.requires_parameters = true;
+        let command = task_command(std::path::Path::new("/tmp/x"), &task);
+        pane.launch_task(&command, &task).unwrap();
+        let expected = format!("\x1b[200~{command}\x1b[201~");
+        assert_eq!(*sent.lock().unwrap(), expected.into_bytes());
+    }
+
+    #[test]
+    fn enter_is_never_pressed_for_a_program_or_a_foreground_that_cannot_be_named() {
+        // Enter would submit whatever the program holds, such as an agent's prompt.
+        // In a shell running a script, it would answer whatever the script is asking.
+        for process in ["claude", "", "bash deploy.sh", "sh -c make"] {
+            let (mut pane, sent) = bracketed_pane(process);
+            let task = runnable_task("docs.build");
+            pane.launch_task("cuenv task docs.build", &task).unwrap();
+            let expected = "\x1b[200~cuenv task docs.build\x1b[201~";
+            assert_eq!(*sent.lock().unwrap(), expected.as_bytes());
+            assert_eq!(pane.activity.task_name(), None);
+        }
+    }
+
     #[test]
     fn a_task_needing_arguments_or_a_busy_pane_is_not_marked_running() {
         let (initial, foreground, _) = fake_start_in_foreground("zsh");
@@ -3228,7 +3298,7 @@ mod tests {
         // Vim started after the last periodic sample, which still says the shell.
         task.requires_parameters = false;
         *foreground.lock().unwrap() = "vim".into();
-        state.launch_task("cuenv task release\n", &task).unwrap();
+        state.launch_task("cuenv task release", &task).unwrap();
         assert_eq!(state.activity.task_name(), None);
     }
 

@@ -102,7 +102,8 @@ The current usable slice includes:
   program it was set under, a title that merely names a shell is ignored, a title that
   names a directory stands in only while the working directory is unknown, a foreground
   that cannot be named keeps what was last known (a pipeline whose first command has
-  exited, as in `git log | less`, cannot be), and Nix's
+  exited, as in `git log | less`, cannot be), a shell running a script is named after
+  the script, and Nix's
   `.name-wrapped` binaries are shown as `name`. A tab list taller than the window scrolls, and
   follows the active tab.
 - One design token set for all chrome spacing, radii, type sizes, border widths,
@@ -279,8 +280,14 @@ terminal text they cover, and clicking outside the palette closes it. The sideba
 lists every task and scrolls. The palette
 shows up to nine matches and sizes itself to them; in a short window its results
 scroll under a fixed field and hint, following the keyboard selection. Launching a
-task delegates to `cuenv task` in the same pane that supplied the catalogue;
-required task parameters leave an editable command at the prompt. The app does not duplicate
+task delegates to `cuenv task` in the same pane that supplied the catalogue, pasting
+the command and pressing Enter separately, because a shell in bracketed paste mode
+takes a pasted newline as text. Enter is pressed only while the foreground is an
+interactive shell, judged from the name and start-up arguments of the process that
+holds it: a program, or a shell running a script (`bash deploy.sh`, `sh -c …`), gets the
+command but no Enter, so it cannot submit something the user was still writing or
+answer a script's question. A shell's builtin, such as `read`, or a subshell looks the
+same as its prompt from outside, so a command launched during one does get an Enter. Required task parameters leave an editable command at the prompt. The app does not duplicate
 the task graph, cache, hooks, or secret resolution.
 
 ### Keybindings
