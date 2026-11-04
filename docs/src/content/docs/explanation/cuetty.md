@@ -86,6 +86,8 @@ The current usable slice includes:
   wrapping at either end. The task palette is configurable (see below).
 - A fixed 56px right-side vertical tab rail. It shows tab ordinals with stable
   path-name tooltips and deliberately has no resize or expand mode.
+- One design token set for all chrome spacing, radii, type sizes, border widths,
+  elevation, and colours, with faint dividers between regions.
 - Global and per-directory CUE configuration for font family, font size, line height,
   padding, and transparency. There is no in-app Settings page. The native
   Cuetty menu exposes Quit Cuetty and Cmd-Q uses the same application-level

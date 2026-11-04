@@ -1,9 +1,9 @@
-use super::chrome_glass_color;
+use super::tokens::{ChromeColors, border, elevation, radius, size, space, text};
 use crate::terminal::engine::{TerminalView, filtered_tasks};
-use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
+use crate::terminal::presentation::TerminalTheme;
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
-    div, prelude::FluentBuilder, px,
+    div, prelude::FluentBuilder,
 };
 
 impl TerminalView {
@@ -16,8 +16,9 @@ impl TerminalView {
             return None;
         }
         let state = self.active_state()?;
+        let colors = ChromeColors::from_theme(theme);
         let tasks = filtered_tasks(&state.cuenv.tasks, &self.task_query);
-        let mut results = div().flex().flex_col().gap(px(3.0));
+        let mut results = div().flex().flex_col().gap(space::XS);
         for (index, task) in tasks.iter().take(9).enumerate() {
             let selected = index == self.task_selection;
             let task_to_run = (*task).clone();
@@ -25,23 +26,23 @@ impl TerminalView {
                 div()
                     .id(("cuetty-task-palette-row", index))
                     .w_full()
-                    .px(px(10.0))
-                    .py(px(8.0))
+                    .px(space::LG)
+                    .py(space::MD)
                     .flex()
                     .items_center()
-                    .gap(px(10.0))
-                    .rounded(px(7.0))
-                    .when(selected, |this| this.bg(chrome_glass_color(theme.surface)))
-                    .hover(|this| this.bg(chrome_glass_color(theme.surface)))
+                    .gap(space::MD)
+                    .rounded(radius::CONTROL)
+                    .when(selected, |this| this.bg(colors.state))
+                    .hover(|this| this.bg(colors.state))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);
                     }))
                     .child(
                         div()
-                            .w(px(64.0))
-                            .text_size(px(9.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                            .w(size::PALETTE_KIND_WIDTH)
+                            .text_size(text::CAPTION)
+                            .text_color(colors.text_secondary)
                             .child(if task.requires_parameters {
                                 "ARGS"
                             } else {
@@ -51,8 +52,8 @@ impl TerminalView {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(12.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                            .text_size(text::LABEL)
+                            .text_color(colors.text)
                             .child(task.name.clone()),
                     ),
             );
@@ -60,10 +61,10 @@ impl TerminalView {
         if tasks.is_empty() {
             results = results.child(
                 div()
-                    .px(px(10.0))
-                    .py(px(18.0))
-                    .text_size(px(12.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                    .px(space::LG)
+                    .py(space::XL)
+                    .text_size(text::LABEL)
+                    .text_color(colors.text_secondary)
                     .child("No matching tasks"),
             );
         }
@@ -78,41 +79,42 @@ impl TerminalView {
                 .inset_0()
                 .flex()
                 .justify_center()
-                .pt(px(54.0))
+                .pt(size::PALETTE_TOP_OFFSET)
                 .child(
                     div()
-                        .w(px(520.0))
-                        .max_h(px(430.0))
-                        .p(px(12.0))
+                        .w(size::PALETTE_WIDTH)
+                        .max_h(size::PALETTE_MAX_HEIGHT)
+                        .p(space::LG)
                         .flex()
                         .flex_col()
-                        .gap(px(10.0))
-                        .rounded(px(12.0))
-                        .border_1()
-                        .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-                        .bg(chrome_glass_color(theme.title_surface))
+                        .gap(space::MD)
+                        .rounded(radius::PANEL)
+                        .border(border::HAIRLINE)
+                        .border_color(colors.divider)
+                        .bg(colors.panel)
+                        .shadow(elevation::overlay())
                         .child(
                             div()
                                 .w_full()
-                                .h(px(38.0))
-                                .px(px(12.0))
+                                .h(size::PALETTE_FIELD_HEIGHT)
+                                .px(space::LG)
                                 .flex()
                                 .items_center()
-                                .rounded(px(8.0))
-                                .bg(chrome_glass_color(theme.surface))
-                                .text_size(px(13.0))
-                                .text_color(gpui::rgb(gpui_rgb(if self.task_query.is_empty() {
-                                    theme.title_text
+                                .rounded(radius::CONTROL)
+                                .bg(colors.state)
+                                .text_size(text::BODY)
+                                .text_color(if self.task_query.is_empty() {
+                                    colors.text_secondary
                                 } else {
-                                    theme.text
-                                })))
+                                    colors.text
+                                })
                                 .child(query),
                         )
                         .child(results)
                         .child(
                             div()
-                                .text_size(px(9.0))
-                                .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                                .text_size(text::CAPTION)
+                                .text_color(colors.text_secondary)
                                 .child("↑↓ select · return run · esc close"),
                         ),
                 )

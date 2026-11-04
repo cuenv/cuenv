@@ -1,7 +1,7 @@
-use super::{SHELL_TITLEBAR_HEIGHT, TAB_RAIL_WIDTH, chrome_glass_color};
+use super::tokens::{ChromeColors, border, size, space, text};
 use crate::integrations::cuenv::TitlebarVisibility;
 use crate::terminal::engine::TerminalView;
-use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
+use crate::terminal::presentation::TerminalTheme;
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, Styled, WindowControlArea, div, px,
 };
@@ -14,6 +14,7 @@ impl TerminalView {
         theme: &TerminalTheme,
         _cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let colors = ChromeColors::from_theme(theme);
         let workspace = div()
             .flex_1()
             .flex()
@@ -29,7 +30,7 @@ impl TerminalView {
                     .flex()
                     .child(content),
             )
-            .child(div().w(px(TAB_RAIL_WIDTH)).flex_shrink_0().child(sidebar));
+            .child(div().w(size::RAIL_WIDTH).flex_shrink_0().child(sidebar));
         let titlebar_visibility = self
             .active_state()
             .map(|state| state.cuenv.presentation.titlebar)
@@ -41,27 +42,27 @@ impl TerminalView {
             return shell.child(workspace).into_any_element();
         }
         let titlebar = div()
-            .h(px(SHELL_TITLEBAR_HEIGHT))
+            .h(size::TITLEBAR_HEIGHT)
             .w_full()
             .flex()
             .items_center()
-            .bg(chrome_glass_color(theme.title_surface))
-            .border_b_1()
-            .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
+            .bg(colors.material)
+            .border_b(border::HAIRLINE)
+            .border_color(colors.divider)
             .child(
                 div()
                     .h_full()
-                    .w(px(82.0))
+                    .w(size::WINDOW_CONTROLS_WIDTH)
                     .window_control_area(WindowControlArea::Drag),
             )
             .child(
                 div()
                     .h_full()
-                    .px(px(8.0))
+                    .px(space::MD)
                     .flex()
                     .items_center()
-                    .text_size(px(13.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                    .text_size(text::BODY)
+                    .text_color(colors.text)
                     .child("Cuetty"),
             )
             .child(

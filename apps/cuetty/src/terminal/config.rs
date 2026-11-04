@@ -60,13 +60,14 @@ pub enum CursorPreference {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeColors {
-    pub host_background: Rgb,
     pub surface: Rgb,
     pub title_surface: Rgb,
     pub title_text: Rgb,
     pub text: Rgb,
     pub cursor: Rgb,
     pub cursor_text: Rgb,
+    /// Faint line separating chrome regions and outlining floating panels.
+    pub divider: Rgb,
     pub ansi: [Rgb; 16],
 }
 
@@ -201,14 +202,14 @@ impl ThemeColors {
     /// the same defaults.
     pub fn catppuccin_mocha() -> Self {
         Self {
-            // Crust and mantle frame the app chrome; base fills the terminal.
-            host_background: Rgb(17, 17, 27),
+            // Mantle forms the app chrome; base fills the terminal.
             surface: Rgb(30, 30, 46),
             title_surface: Rgb(24, 24, 37),
             title_text: Rgb(186, 194, 222),
             text: Rgb(205, 214, 244),
             cursor: Rgb(245, 224, 230),
             cursor_text: Rgb(30, 30, 46),
+            divider: Rgb(49, 50, 68),
             ansi: [
                 Rgb(69, 71, 90),
                 Rgb(243, 139, 168),
@@ -342,7 +343,6 @@ mod tests {
         assert_eq!(config.font.line_height_multiplier, 1.2);
         assert_eq!(config.terminal_transparency_percent, 0);
         assert_eq!(config.terminal_padding, TerminalPadding::default());
-        assert_eq!(config.theme.host_background, Rgb(17, 17, 27));
         assert_eq!(config.theme.surface, Rgb(30, 30, 46));
         assert_eq!(config.theme.title_surface, Rgb(24, 24, 37));
         assert_eq!(config.theme.text, Rgb(205, 214, 244));

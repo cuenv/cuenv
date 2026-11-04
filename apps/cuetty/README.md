@@ -155,9 +155,13 @@ snapshot adapter preserves backend-declared cluster text, wide-cell occupancy,
 and wrapped placeholders. Complete IME, ZWJ shaping, hyperlink, and emoji
 presentation correctness is deliberately not claimed.
 
-The built-in colour scheme is Catppuccin Mocha: Crust frames the host, Mantle
-frames the rail, Base fills the terminal, and the complete ANSI palette follows
-Catppuccin's Mocha mapping.
+The built-in colour scheme is Catppuccin Mocha: Mantle forms the title strip and
+rail, Base fills the terminal, Surface 0 draws faint dividers, and the complete
+ANSI palette follows Catppuccin's Mocha mapping.
+
+All chrome spacing, radii, type sizes, border widths, elevation, and colours come
+from one token set in `src/terminal/chrome/tokens.rs`; chrome views do not write
+their own literals.
 
 The terminal render resizes Rio from the pane canvas measured inside GPUI's
 actual content panel. The measurement therefore already excludes the title

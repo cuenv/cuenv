@@ -1,9 +1,9 @@
-use super::{TASK_SIDEBAR_WIDTH, chrome_glass_color};
+use super::tokens::{ChromeColors, border, elevation, radius, size, space, text};
 use crate::terminal::engine::TerminalView;
-use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
+use crate::terminal::presentation::TerminalTheme;
 use gpui::{
-    Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
+    Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+    div, prelude::FluentBuilder,
 };
 
 impl TerminalView {
@@ -19,7 +19,8 @@ impl TerminalView {
         if state.cuenv.tasks.is_empty() {
             return None;
         }
-        let mut list = div().flex().flex_col().gap(px(4.0));
+        let colors = ChromeColors::from_theme(theme);
+        let mut list = div().flex().flex_col().gap(space::XS);
         for (index, task) in state.cuenv.tasks.iter().take(12).enumerate() {
             let task_to_run = task.clone();
             let detail = task
@@ -30,27 +31,27 @@ impl TerminalView {
                 div()
                     .id(("cuetty-task-sidebar-row", index))
                     .w_full()
-                    .px(px(10.0))
-                    .py(px(7.0))
+                    .px(space::LG)
+                    .py(space::SM)
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
-                    .rounded(px(7.0))
-                    .hover(|this| this.bg(chrome_glass_color(theme.surface)))
+                    .gap(space::XXS)
+                    .rounded(radius::CONTROL)
+                    .hover(|this| this.bg(colors.state))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);
                     }))
                     .child(
                         div()
-                            .text_size(px(12.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                            .text_size(text::LABEL)
+                            .text_color(colors.text)
                             .child(task.name.clone()),
                     )
                     .child(
                         div()
-                            .text_size(px(10.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                            .text_size(text::CAPTION)
+                            .text_color(colors.text_secondary)
                             .child(detail),
                     ),
             );
@@ -66,18 +67,19 @@ impl TerminalView {
         Some(
             div()
                 .absolute()
-                .top(px(12.0))
-                .right(px(12.0))
-                .bottom(px(12.0))
-                .w(px(TASK_SIDEBAR_WIDTH))
-                .p(px(12.0))
+                .top(space::LG)
+                .right(space::LG)
+                .bottom(space::LG)
+                .w(size::TASK_SIDEBAR_WIDTH)
+                .p(space::LG)
                 .flex()
                 .flex_col()
-                .gap(px(10.0))
-                .rounded(px(12.0))
-                .border_1()
-                .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-                .bg(chrome_glass_color(theme.title_surface))
+                .gap(space::MD)
+                .rounded(radius::PANEL)
+                .border(border::HAIRLINE)
+                .border_color(colors.divider)
+                .bg(colors.panel)
+                .shadow(elevation::overlay())
                 .child(
                     div()
                         .flex()
@@ -87,24 +89,25 @@ impl TerminalView {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(2.0))
+                                .gap(space::XXS)
                                 .child(
                                     div()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                                        .text_size(text::TITLE)
+                                        .font_weight(text::STRONG)
+                                        .text_color(colors.text)
                                         .child("Cuenv tasks"),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(10.0))
-                                        .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                                        .text_size(text::CAPTION)
+                                        .text_color(colors.text_secondary)
                                         .child(cwd.to_string()),
                                 ),
                         )
                         .child(
                             div()
-                                .text_size(px(10.0))
-                                .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                                .text_size(text::CAPTION)
+                                .text_color(colors.text_secondary)
                                 .child("⌘K"),
                         ),
                 )
@@ -112,8 +115,8 @@ impl TerminalView {
                 .when(hidden > 0, |this| {
                     this.child(
                         div()
-                            .text_size(px(10.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                            .text_size(text::CAPTION)
+                            .text_color(colors.text_secondary)
                             .child(format!("{hidden} more · use ⌘K")),
                     )
                 })

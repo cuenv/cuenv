@@ -41,13 +41,14 @@ pub struct TerminalTheme {
     /// Alpha applied only to terminal background fills. Window chrome uses a
     /// separate fixed glass material, while glyphs and overlays remain opaque.
     pub background_opacity: f32,
-    pub host_background: Rgb,
     pub surface: Rgb,
     pub title_surface: Rgb,
     pub title_text: Rgb,
     pub text: Rgb,
     pub cursor: Rgb,
     pub cursor_text: Rgb,
+    /// Faint line between chrome regions.
+    pub divider: Rgb,
     /// Passive selection uses a cool, readable tint. It is painted above cell
     /// backgrounds and below glyphs by host renderers.
     pub selection: Rgb,
@@ -68,11 +69,6 @@ impl TerminalTheme {
         let theme = &config.theme;
         Self {
             background_opacity: 1.0 - f32::from(config.terminal_transparency_percent) / 100.0,
-            host_background: Rgb(
-                theme.host_background.0,
-                theme.host_background.1,
-                theme.host_background.2,
-            ),
             surface: Rgb(theme.surface.0, theme.surface.1, theme.surface.2),
             title_surface: Rgb(
                 theme.title_surface.0,
@@ -87,6 +83,7 @@ impl TerminalTheme {
                 theme.cursor_text.1,
                 theme.cursor_text.2,
             ),
+            divider: Rgb(theme.divider.0, theme.divider.1, theme.divider.2),
             selection: CATPPUCCIN_SELECTION,
             current_search_match: CATPPUCCIN_CURRENT_SEARCH_MATCH,
             ansi: theme.ansi.map(|color| Rgb(color.0, color.1, color.2)),
@@ -247,7 +244,6 @@ mod tests {
     fn default_theme_is_catppuccin_mocha() {
         let theme = TerminalTheme::default();
         assert_eq!(theme.background_opacity, 1.0);
-        assert_eq!(theme.host_background, Rgb(17, 17, 27));
         assert_eq!(theme.surface, Rgb(30, 30, 46));
         assert_eq!(theme.title_surface, Rgb(24, 24, 37));
         assert_eq!(theme.text, Rgb(205, 214, 244));

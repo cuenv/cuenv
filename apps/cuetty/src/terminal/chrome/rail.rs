@@ -1,12 +1,12 @@
-use super::{TAB_RAIL_FOOTER_HEIGHT, chrome_glass_color};
+use super::tokens::{ChromeColors, border, radius, size, space, text};
 use crate::integrations::cuenv::RailColor;
 use crate::terminal::engine::TerminalView;
 use crate::terminal::model::Rgb;
-use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
+use crate::terminal::presentation::TerminalTheme;
 use crate::workspace::TabId;
 use gpui::{
     Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
 };
 use gpui_component::tooltip::Tooltip;
 
@@ -39,12 +39,13 @@ impl TerminalView {
         theme: &TerminalTheme,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let colors = ChromeColors::from_theme(theme);
         let mut tabs = div()
             .flex_1()
             .flex()
             .flex_col()
-            .gap(px(6.0))
-            .p(px(8.0))
+            .gap(space::SM)
+            .p(space::MD)
             .overflow_hidden();
         for (index, tab) in self
             .registry
@@ -72,13 +73,13 @@ impl TerminalView {
             let mut tab_button = div()
                 .id(("cuetty-rail-tab", tab_id.get()))
                 .w_full()
-                .min_h(px(40.0))
+                .min_h(size::TAB_ROW_HEIGHT)
                 .flex()
                 .items_center()
                 .justify_center()
-                .px(px(2.0))
-                .rounded(px(7.0))
-                .hover(|this| this.bg(chrome_glass_color(theme.surface)))
+                .px(space::XXS)
+                .rounded(radius::CONTROL)
+                .hover(|this| this.bg(colors.state))
                 .cursor_pointer()
                 .on_click(cx.listener(move |view, _event, window, cx| {
                     view.select_terminal_tab(tab_id, window, cx);
@@ -86,25 +87,25 @@ impl TerminalView {
                 .tooltip(move |window, cx| Tooltip::new(tooltip_label.clone()).build(window, cx));
             tab_button = tab_button.child(
                 div()
-                    .w(px(30.0))
-                    .h(px(30.0))
+                    .w(size::TAB_MARK)
+                    .h(size::TAB_MARK)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.0))
-                    .when(selected, |this| this.bg(gpui::rgb(gpui_rgb(theme.cursor))))
+                    .rounded(radius::CONTROL)
+                    .when(selected, |this| this.bg(colors.mark))
                     .text_center()
-                    .text_size(px(12.0))
+                    .text_size(text::LABEL)
                     .font_weight(if selected {
-                        FontWeight::SEMIBOLD
+                        text::STRONG
                     } else {
                         FontWeight::NORMAL
                     })
-                    .text_color(gpui::rgb(gpui_rgb(if selected {
-                        theme.cursor_text
+                    .text_color(if selected {
+                        colors.mark_text
                     } else {
-                        theme.title_text
-                    })))
+                        colors.text_secondary
+                    })
                     .child(number),
             );
             tabs = tabs.child(tab_button);
@@ -135,8 +136,8 @@ impl TerminalView {
         let rail_background = self
             .active_state()
             .and_then(|state| state.cuenv.presentation.rail)
-            .map_or(theme.title_surface, |RailColor(red, green, blue)| {
-                Rgb(red, green, blue)
+            .map_or(colors.material, |RailColor(red, green, blue)| {
+                ChromeColors::tinted_material(Rgb(red, green, blue))
             });
         let mut rail = div()
             .relative()
@@ -144,40 +145,40 @@ impl TerminalView {
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .bg(chrome_glass_color(rail_background))
-            .border_l_1()
-            .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
+            .bg(rail_background)
+            .border_l(border::HAIRLINE)
+            .border_color(colors.divider)
             .child(tabs);
         if let Some(notice) = notice {
             rail = rail.child(
                 div()
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .text_size(px(10.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                    .px(space::LG)
+                    .py(space::SM)
+                    .text_size(text::CAPTION)
+                    .text_color(colors.text_secondary)
                     .child(notice),
             );
         }
         let mut footer = div()
-            .h(px(TAB_RAIL_FOOTER_HEIGHT))
+            .h(size::RAIL_FOOTER_HEIGHT)
             .w_full()
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .px(px(6.0))
-            .border_t_1()
-            .border_color(gpui::rgb(gpui_rgb(theme.host_background)));
+            .gap(space::SM)
+            .px(space::SM)
+            .border_t(border::HAIRLINE)
+            .border_color(colors.divider);
         let new_tab = div()
             .id("cuetty-new-tab")
             .flex_1()
-            .h(px(30.0))
+            .h(size::CONTROL_HEIGHT)
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(7.0))
-            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .text_size(px(12.0))
-            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
+            .rounded(radius::CONTROL)
+            .text_color(colors.text_secondary)
+            .text_size(text::LABEL)
+            .hover(|this| this.bg(colors.state))
             .cursor_pointer()
             .tooltip(|window, cx| Tooltip::new("New tab").build(window, cx))
             .on_click(cx.listener(|view, _event, window, cx| {
@@ -186,18 +187,16 @@ impl TerminalView {
             .child("+");
         let tasks = div()
             .id("cuetty-tasks")
-            .w(px(34.0))
-            .h(px(30.0))
+            .w(size::CONTROL_WIDTH)
+            .h(size::CONTROL_HEIGHT)
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(7.0))
-            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .text_size(px(13.0))
-            .when(self.task_sidebar_open, |this| {
-                this.bg(chrome_glass_color(theme.surface))
-            })
-            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
+            .rounded(radius::CONTROL)
+            .text_color(colors.text_secondary)
+            .text_size(text::BODY)
+            .when(self.task_sidebar_open, |this| this.bg(colors.state))
+            .hover(|this| this.bg(colors.state))
             .cursor_pointer()
             .tooltip(|window, cx| Tooltip::new("Cuenv tasks · ⌘K to search").build(window, cx))
             .on_click(cx.listener(|view, _event, _window, cx| {
