@@ -72,7 +72,8 @@ The current usable slice includes:
 - The active pane's post-layout GPUI canvas is the source of truth for each Rio
   resize, so the measured width already excludes the title strip, terminal
   inset, and the sidebar in its current state instead of leaving a stale
-  frame clipped in the viewport, so toggling the sidebar resizes the grid.
+  frame clipped in the viewport, so toggling the sidebar or the title strip resizes the
+  grid within a few frames, even at an idle prompt.
 - The terminal surface defaults to a 14px inset from the host chrome; the
   inset uses the same terminal surface colour and is subtracted from the Rio grid
   dimensions as well as the rendered bounds. Its opposing edges constrain the

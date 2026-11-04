@@ -1100,6 +1100,26 @@ fn single_character(text: &str) -> Option<char> {
     characters.next().is_none().then_some(character)
 }
 
+/// Records a measurement, returning whether it differs from the last one. A panic
+/// elsewhere cannot leave one half-written, so a poisoned lock is still good.
+fn store_if_changed<T: PartialEq>(slot: &Mutex<T>, next: T) -> bool {
+    let mut current = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let changed = *current != next;
+    *current = next;
+    changed
+}
+
+/// Asks for another frame from inside prepaint, where a notify marks nothing dirty and
+/// is lost: GPUI ignores invalidation while it draws. Deferred effects run once the
+/// draw has finished.
+fn redraw_after_this_frame(view: gpui::WeakEntity<TerminalView>, cx: &mut gpui::App) {
+    cx.defer(move |cx| {
+        let _ = view.update(cx, |_view, cx| cx.notify());
+    });
+}
+
 impl TerminalView {
     #[cfg(test)]
     fn empty_frame() -> TerminalFrame {
@@ -1695,7 +1715,7 @@ impl TerminalView {
         self.sidebar.mode()
     }
 
-    /// The terminal grid follows on its own: it is resized from the bounds
+    /// The terminal grid follows within a few frames: it is resized from the bounds
     /// measured in the layout this change causes.
     pub(super) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar.toggle();
@@ -2079,7 +2099,6 @@ impl Render for TerminalView {
             .sessions
             .get(&active_pane)
             .expect("active pane registry invariant");
-        let frame = state.frame.clone();
         let interaction = state.interaction.clone();
         let pane_error = state.error.clone();
         let measured = Arc::clone(&state.measured_bounds);
@@ -2112,7 +2131,7 @@ impl Render for TerminalView {
                 MinSizePolicy::new(1.0, 1.0),
             )
             .unwrap_or_default();
-        if let Some(state) = self.registry.sessions.get_mut(&active_pane) {
+        let frame = self.registry.sessions.get_mut(&active_pane).map(|state| {
             // The canvas is inside the actual content panel, so this includes
             // the title strip, terminal inset, and the sidebar at its current
             // width without trying to reconstruct GPUI's layout arithmetic.
@@ -2123,8 +2142,17 @@ impl Render for TerminalView {
             {
                 state.error = Some(error);
             }
+            // Sampled after the resize, so the draw that resizes the grid also shows it.
             state.frame = state.session.frame();
-        }
+            state.frame.clone()
+        });
+        let Some(frame) = frame else {
+            return self.render_shell_layout(
+                sidebar,
+                render_shell_message("Cuetty lost this tab's terminal session", &theme),
+                &theme,
+            );
+        };
         let overlays = TerminalOverlays {
             selection: interaction.selection(),
             current_search_match: interaction.current_match(),
@@ -2143,19 +2171,8 @@ impl Render for TerminalView {
                         f32::from(bounds.size.width).max(1.0),
                         f32::from(bounds.size.height).max(1.0),
                     );
-                    let changed = {
-                        let mut current = workspace_bounds
-                            .lock()
-                            .expect("workspace bounds mutex poisoned");
-                        if *current != next {
-                            *current = next;
-                            true
-                        } else {
-                            false
-                        }
-                    };
-                    if changed {
-                        let _ = workspace_entity.update(app, |_view, cx| cx.notify());
+                    if store_if_changed(&workspace_bounds, next) {
+                        redraw_after_this_frame(workspace_entity, app);
                     }
                 },
                 |_, _, _, _| {},
@@ -2207,18 +2224,8 @@ impl Render for TerminalView {
                                         f32::from(bounds.size.width).max(1.0) as u32,
                                         f32::from(bounds.size.height).max(1.0) as u32,
                                     );
-                                    let changed = {
-                                        let mut current =
-                                            pane_measured.lock().expect("bounds mutex poisoned");
-                                        if *current != next {
-                                            *current = next;
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    };
-                                    if changed {
-                                        let _ = pane_entity.update(app, |_view, cx| cx.notify());
+                                    if store_if_changed(&pane_measured, next) {
+                                        redraw_after_this_frame(pane_entity, app);
                                     }
                                     *pane_viewport_bounds
                                         .lock()
@@ -2710,6 +2717,15 @@ mod tests {
                 "Ctrl+Shift+B"
             }
         );
+    }
+
+    #[test]
+    fn a_measurement_reports_a_change_only_when_it_differs() {
+        let slot = Mutex::new((1, 2));
+        assert!(!store_if_changed(&slot, (1, 2)));
+        assert!(store_if_changed(&slot, (3, 2)));
+        assert_eq!(*slot.lock().unwrap(), (3, 2));
+        assert!(!store_if_changed(&slot, (3, 2)));
     }
 
     #[test]

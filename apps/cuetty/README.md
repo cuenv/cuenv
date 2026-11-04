@@ -214,7 +214,10 @@ actual content panel. The measurement therefore already excludes the title
 strip, terminal inset, and the sidebar's current width instead of trying to
 reconstruct those dimensions from the outer window. This keeps window and sidebar
 changes on the same grid, preserves one-cell clamping and resize deduplication,
-and prevents a stale wider frame from clipping long output. Startup,
+and prevents a stale wider frame from clipping long output. A measurement taken while
+GPUI draws asks for a new frame once that draw has finished, because invalidation
+during a draw is ignored, so the grid follows within a few frames even at an idle
+prompt. Startup,
 input, resize, paste, and close failures remain visible in the view rather than
 being dropped.
 
