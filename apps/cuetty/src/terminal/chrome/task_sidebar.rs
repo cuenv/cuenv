@@ -3,8 +3,15 @@ use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
-    div, prelude::FluentBuilder,
+    div,
 };
+
+fn task_count_label(count: usize) -> String {
+    match count {
+        1 => "1 task".into(),
+        count => format!("{count} tasks"),
+    }
+}
 
 impl TerminalView {
     pub(in crate::terminal) fn render_task_sidebar(
@@ -21,7 +28,7 @@ impl TerminalView {
         }
         let colors = ChromeColors::from_theme(theme);
         let mut list = div().flex().flex_col().gap(space::XS);
-        for (index, task) in state.cuenv.tasks.iter().take(12).enumerate() {
+        for (index, task) in state.cuenv.tasks.iter().enumerate() {
             let task_to_run = task.clone();
             let detail = task
                 .description
@@ -56,7 +63,6 @@ impl TerminalView {
                     ),
             );
         }
-        let hidden = state.cuenv.tasks.len().saturating_sub(12);
         let palette_chord = self.palette_chord_label();
         let cwd = state
             .cuenv
@@ -84,13 +90,18 @@ impl TerminalView {
                 .border_color(colors.panel_outline)
                 .bg(colors.panel)
                 .shadow(elevation::overlay())
+                .line_height(text::LINE_HEIGHT)
                 .child(
                     div()
+                        .flex_shrink_0()
                         .flex()
                         .items_center()
                         .justify_between()
+                        .gap(space::MD)
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
                                 .flex()
                                 .flex_col()
                                 .gap(space::XXS)
@@ -105,26 +116,41 @@ impl TerminalView {
                                     div()
                                         .text_size(text::CAPTION)
                                         .text_color(colors.text_muted)
-                                        .child(cwd.to_string()),
+                                        .truncate()
+                                        .child(format!(
+                                            "{cwd} · {}",
+                                            task_count_label(state.cuenv.tasks.len())
+                                        )),
                                 ),
                         )
                         .child(
                             div()
+                                .flex_shrink_0()
                                 .text_size(text::CAPTION)
                                 .text_color(colors.text_muted)
-                                .child(palette_chord.clone()),
+                                .child(palette_chord),
                         ),
                 )
-                .child(div().flex_1().overflow_hidden().child(list))
-                .when(hidden > 0, |this| {
-                    this.child(
-                        div()
-                            .text_size(text::CAPTION)
-                            .text_color(colors.text_muted)
-                            .child(format!("{hidden} more · use {palette_chord}")),
-                    )
-                })
+                .child(
+                    div()
+                        .id("cuetty-task-sidebar-list")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(list),
+                )
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_count_reads_naturally_for_one_task() {
+        assert_eq!(task_count_label(1), "1 task");
+        assert_eq!(task_count_label(14), "14 tasks");
     }
 }

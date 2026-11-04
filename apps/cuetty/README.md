@@ -272,7 +272,7 @@ hook, secret-redaction, cancellation, and exit behaviour. Tasks with required
 parameters are staged at the prompt for editing instead of running
 incompletely. Both panels take pointer input for themselves rather than passing
 it to the terminal beneath, and clicking outside the palette closes it. The
-palette shows up to nine matches and sizes itself to them; in a short window its
+sidebar lists every task and scrolls. The palette shows up to nine matches and sizes itself to them; in a short window its
 results scroll under a fixed field and hint, following the keyboard selection. Directories without a task catalogue remain ordinary terminals.
 
 On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal

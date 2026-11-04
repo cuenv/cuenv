@@ -226,7 +226,8 @@ surfaces its task, group, and sequence names in a floating sidebar and a
 command palette. These overlays do not participate in terminal layout, so
 opening them does not change the PTY's reported rows or columns. They take
 pointer input for themselves, so clicks, drags, and scrolling never reach the
-terminal text they cover, and clicking outside the palette closes it. The palette
+terminal text they cover, and clicking outside the palette closes it. The sidebar
+lists every task and scrolls. The palette
 shows up to nine matches and sizes itself to them; in a short window its results
 scroll under a fixed field and hint, following the keyboard selection. Launching a
 task delegates to `cuenv task` in the same pane that supplied the catalogue;
