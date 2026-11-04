@@ -137,6 +137,9 @@ The current usable slice includes:
   place over 140ms while the row fills hand over. The task palette fades in over 120ms,
   already taking keys as it does. Nothing draws once it has landed, and
   `motion: "reduced"`, or the platform's own setting, makes all of it land at once.
+- Three elevations for whatever floats over the terminal, each one token for its shadow,
+  outline, fill, and corners: tooltips and a dragged tab sit just off the surface, the task
+  sidebar floats, and the task palette is the highest thing in the window.
 - A hint at the foot of the expanded sidebar naming the active tab's task palette chord,
   such as `⌘K` or `Ctrl+K`, shown only where the directory has a task catalogue and a live
   shell to run it, and so the chord does something. Clicking it opens the palette.

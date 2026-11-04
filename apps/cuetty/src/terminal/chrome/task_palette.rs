@@ -1,5 +1,5 @@
 use super::tokens::{
-    ChromeColors, border, elevation, faded, palette_height, radius, size, space, text,
+    ChromeColors, Elevation, elevated, faded, palette_height, radius, size, space, text,
 };
 use super::{fading_in, hover_fade};
 use crate::terminal::engine::{PALETTE_RESULT_LIMIT, TerminalView, filtered_tasks};
@@ -105,7 +105,7 @@ impl TerminalView {
         } else {
             self.task_query.clone()
         };
-        let panel = div()
+        let panel = elevated(div(), Elevation::Modal, &colors)
             .occlude()
             .on_mouse_down_out(cx.listener(|view, _event, _window, cx| {
                 view.close_task_palette(cx);
@@ -115,11 +115,6 @@ impl TerminalView {
             .flex()
             .flex_col()
             .gap(space::MD)
-            .rounded(radius::PANEL)
-            .border(border::HAIRLINE)
-            .border_color(colors.panel_outline)
-            .bg(colors.panel)
-            .shadow(elevation::overlay())
             .line_height(text::LINE_HEIGHT)
             .child(
                 div()

@@ -7,7 +7,9 @@
 use crate::integrations::cuenv::TitlebarVisibility;
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
-use gpui::{BoxShadow, Decorations, Pixels, Point, Rgba, TextSystem, font, point};
+use gpui::{
+    BoxShadow, Decorations, Pixels, Point, Rgba, Styled, TextSystem, font, hsla, point, px,
+};
 use std::sync::OnceLock;
 
 /// Spacing scale for padding, gaps, and offsets.
@@ -164,29 +166,57 @@ pub(super) mod size {
 /// a glance where typing would go.
 pub(in crate::terminal) const UNFOCUSED_TERMINAL_FADE: f32 = 0.2;
 
-/// Elevation of chrome that floats above the terminal.
-pub(super) mod elevation {
-    use super::BoxShadow;
-    use gpui::{hsla, point, px};
+/// How far something floats above the terminal, which sets its shadow, its corners, and
+/// the outline and fill every floating surface shares.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Elevation {
+    /// A small label just off what it belongs to: tooltips and a tab being dragged.
+    Raised,
+    /// A panel beside the terminal that the user can keep working around.
+    Floating,
+    /// A panel the keyboard has moved into, above everything else.
+    Modal,
+}
 
-    /// A soft, tight shadow; enough to lift a panel off terminal text without
-    /// reading as a glow.
-    pub(in crate::terminal::chrome) fn overlay() -> Vec<BoxShadow> {
-        vec![
-            BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, 0.28),
-                offset: point(px(0.0), px(8.0)),
-                blur_radius: px(24.0),
-                spread_radius: px(-4.0),
-            },
-            BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, 0.18),
-                offset: point(px(0.0), px(2.0)),
-                blur_radius: px(6.0),
-                spread_radius: px(-2.0),
-            },
-        ]
+impl Elevation {
+    fn shadows(self) -> Vec<BoxShadow> {
+        let contact = |alpha| BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, alpha),
+            offset: point(px(0.0), px(2.0)),
+            blur_radius: px(6.0),
+            spread_radius: px(-2.0),
+        };
+        let cast = |alpha, offset, blur| BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, alpha),
+            offset: point(px(0.0), px(offset)),
+            blur_radius: px(blur),
+            spread_radius: px(-4.0),
+        };
+        match self {
+            Self::Raised => vec![contact(0.24)],
+            Self::Floating => vec![cast(0.28, 8.0, 24.0), contact(0.18)],
+            Self::Modal => vec![cast(0.36, 16.0, 40.0), contact(0.18)],
+        }
     }
+
+    const fn corners(self) -> Pixels {
+        match self {
+            Self::Raised => radius::CONTROL,
+            Self::Floating | Self::Modal => radius::PANEL,
+        }
+    }
+}
+
+/// Floats an element over the terminal: opaque, because it covers text that would
+/// otherwise show through its own, with an outline to hold its edge on a dark theme
+/// where a shadow alone would not.
+pub(super) fn elevated<E: Styled>(element: E, level: Elevation, colors: &ChromeColors) -> E {
+    element
+        .rounded(level.corners())
+        .border(border::HAIRLINE)
+        .border_color(colors.panel_outline)
+        .bg(colors.panel)
+        .shadow(level.shadows())
 }
 
 /// The palette height that holds `rows` results along with its field, hint,
@@ -471,6 +501,26 @@ mod tests {
             let below = size::TAB_ROW_TWO_LINE_HEIGHT - size::TAB_MARKER_HEIGHT - above;
             assert_eq!(above, below);
         }
+    }
+
+    #[test]
+    fn a_higher_surface_casts_a_longer_softer_shadow() {
+        let reach = |level: Elevation| {
+            level
+                .shadows()
+                .iter()
+                .map(|shadow| (shadow.offset.y, shadow.blur_radius))
+                .fold((gpui::px(0.0), gpui::px(0.0)), |far, next| {
+                    (far.0.max(next.0), far.1.max(next.1))
+                })
+        };
+        let (raised, floating, modal) = (
+            reach(Elevation::Raised),
+            reach(Elevation::Floating),
+            reach(Elevation::Modal),
+        );
+        assert!(raised.0 < floating.0 && floating.0 < modal.0);
+        assert!(raised.1 < floating.1 && floating.1 < modal.1);
     }
 
     #[test]

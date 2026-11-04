@@ -1,8 +1,8 @@
 use super::hover_fade;
 use super::icons::Icon;
 use super::tokens::{
-    ChromeColors, border, elevation, faded, opaque, radius, size, space, tab_marker_top, text,
-    ui_font_family,
+    ChromeColors, Elevation, border, elevated, faded, opaque, radius, size, space, tab_marker_top,
+    text, ui_font_family,
 };
 use super::tooltip::chrome_tooltip;
 use crate::integrations::cuenv::{RailColor, SidebarMode};
@@ -33,17 +33,12 @@ struct DraggedTab {
 
 impl Render for DraggedTab {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        elevated(div(), Elevation::Raised, &self.colors)
             .max_w(size::SIDEBAR_EXPANDED_WIDTH)
             .h(size::TAB_ROW_HEIGHT)
             .px(space::LG)
             .flex()
             .items_center()
-            .rounded(radius::CONTROL)
-            .bg(self.colors.panel)
-            .border(border::HAIRLINE)
-            .border_color(self.colors.panel_outline)
-            .shadow(elevation::overlay())
             .font_family(ui_font_family())
             .text_size(text::BODY)
             .text_color(self.colors.text)

@@ -1,5 +1,5 @@
 use super::hover_fade;
-use super::tokens::{ChromeColors, border, elevation, faded, radius, size, space, text};
+use super::tokens::{ChromeColors, Elevation, elevated, faded, radius, size, space, text};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
@@ -77,7 +77,7 @@ impl TerminalView {
             .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("cuenv");
         Some(
-            div()
+            elevated(div(), Elevation::Floating, &colors)
                 .absolute()
                 // The panel covers the terminal, so pointer input stops here
                 // instead of selecting or scrolling text beneath it.
@@ -90,11 +90,6 @@ impl TerminalView {
                 .flex()
                 .flex_col()
                 .gap(space::MD)
-                .rounded(radius::PANEL)
-                .border(border::HAIRLINE)
-                .border_color(colors.panel_outline)
-                .bg(colors.panel)
-                .shadow(elevation::overlay())
                 .line_height(text::LINE_HEIGHT)
                 .child(
                     div()

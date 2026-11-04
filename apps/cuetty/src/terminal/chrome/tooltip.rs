@@ -1,5 +1,5 @@
 use super::tokens::{
-    ChromeColors, border, elevation, radius, size, space, text, tooltip_max_height, ui_font_family,
+    ChromeColors, Elevation, elevated, size, space, text, tooltip_max_height, ui_font_family,
 };
 use gpui::{
     AnyView, App, AppContext, Context, IntoElement, ParentElement, Render, SharedString, Styled,
@@ -58,15 +58,10 @@ impl Render for ChromeTooltip {
         // The outer element keeps the margin from being absorbed by the
         // tooltip's own positioned root.
         div().font_family(ui_font_family()).child(
-            div()
+            elevated(div(), Elevation::Raised, &self.colors)
                 .m(space::MD)
                 .px(space::MD)
                 .py(space::XS)
-                .rounded(radius::CONTROL)
-                .border(border::HAIRLINE)
-                .border_color(self.colors.panel_outline)
-                .bg(self.colors.panel)
-                .shadow(elevation::overlay())
                 .when(tooltip_needs_wrapping(&self.label), |this| {
                     this.w(size::TOOLTIP_WRAP_WIDTH)
                 })
