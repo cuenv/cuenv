@@ -21,6 +21,7 @@ use super::model::{
 };
 #[cfg(test)]
 use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
+use super::motion::MotionPace;
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
@@ -1625,6 +1626,8 @@ pub(super) struct TerminalView {
     cursor_animator: CursorAnimator,
     /// When the draw the cursor's animation has asked for is due.
     cursor_frame_due: Option<std::time::Instant>,
+    /// What the platform says about motion, read once as the window opens.
+    system_motion: MotionPace,
 }
 
 /// What the window is called with no tab to name it after.
@@ -2018,7 +2021,9 @@ impl TerminalView {
             window_title: APP_TITLE.into(),
             cursor_animator: CursorAnimator::new(std::time::Instant::now()),
             cursor_frame_due: None,
+            system_motion: MotionPace::default(),
         };
+        view.read_system_motion(cx);
         if let Some(session) = session {
             view.spawn_wake(session, cx);
         }
@@ -2027,6 +2032,22 @@ impl TerminalView {
         view.refresh_cuenv_integration(cx);
         view
     }
+    /// Asks the platform off the UI thread, since that takes a process. The chrome moves
+    /// as normal until the answer arrives, which is before anything has had reason to.
+    fn read_system_motion(&mut self, cx: &mut Context<Self>) {
+        let answer = cx.background_spawn(async { MotionPace::from_system() });
+        cx.spawn(async move |weak, cx| {
+            let system_motion = answer.await;
+            let _ = weak.update(cx, |view, _cx| view.system_motion = system_motion);
+        })
+        .detach();
+    }
+
+    /// How far the chrome may move right now.
+    pub(super) fn motion_pace(&self) -> MotionPace {
+        MotionPace::resolve(self.config.motion, self.system_motion)
+    }
+
     fn refresh_cuenv_integration(&mut self, cx: &mut Context<Self>) {
         let panes: Vec<_> = self.registry.sessions.keys().copied().collect();
         for pane in panes {
@@ -3133,7 +3154,7 @@ impl Render for TerminalView {
                     .filter(|_| frame.cursor.visible != Known::Known(false)),
                 focus,
                 blink: blink_wanted(self.config.cursor_blink, frame.cursor.blinking),
-                trail: self.config.cursor_trail,
+                trail: self.config.cursor_trail && self.motion_pace() == MotionPace::Full,
                 now: std::time::Instant::now(),
             },
             cx,

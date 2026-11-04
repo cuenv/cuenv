@@ -4,7 +4,9 @@
 //! validated representation, so configuration cannot reach a renderer or a
 //! session directly.
 
-use crate::terminal::config::{CursorBlink, MinimumContrast, Rgb, TerminalConfig};
+use crate::terminal::config::{
+    CursorBlink, MinimumContrast, MotionPreference, Rgb, TerminalConfig,
+};
 use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
@@ -317,6 +319,8 @@ struct CuettyDto {
     minimum_contrast: Option<f32>,
     #[serde(default)]
     cursor: Option<CursorDto>,
+    #[serde(default)]
+    motion: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -726,6 +730,10 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         }
         terminal.cursor_trail = cursor.trail.unwrap_or_default();
     }
+    match dto.motion.as_deref().map(parse_motion).transpose() {
+        Ok(motion) => terminal.motion = motion.unwrap_or_default(),
+        Err(error) => return Evaluation::Invalid(error),
+    }
     if let Err(error) = terminal.validate() {
         return Evaluation::Invalid(format!("invalid Cuetty terminal configuration: {error}"));
     }
@@ -749,6 +757,17 @@ fn parse_cursor_blink(value: &str) -> Result<CursorBlink, String> {
         "off" => Ok(CursorBlink::Off),
         _ => Err(format!(
             "cursor.blink must be \"terminal\", \"on\", or \"off\", got \"{value}\""
+        )),
+    }
+}
+
+fn parse_motion(value: &str) -> Result<MotionPreference, String> {
+    match value {
+        "system" => Ok(MotionPreference::System),
+        "full" => Ok(MotionPreference::Full),
+        "reduced" => Ok(MotionPreference::Reduced),
+        _ => Err(format!(
+            "motion must be \"system\", \"full\", or \"reduced\", got \"{value}\""
         )),
     }
 }
@@ -1096,6 +1115,27 @@ mod tests {
         assert!(trail(serde_json::json!({"cursor": {"trail": true}})));
         assert!(matches!(
             parse_value(serde_json::json!({"cursor": {"trail": "yes"}})),
+            Evaluation::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn motion_follows_the_platform_unless_a_valid_setting_says_otherwise() {
+        let motion = |value: serde_json::Value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal.motion,
+            other => panic!("expected a valid presentation, got {other:?}"),
+        };
+        assert_eq!(motion(serde_json::json!({})), MotionPreference::System);
+        assert_eq!(
+            motion(serde_json::json!({"motion": "reduced"})),
+            MotionPreference::Reduced
+        );
+        assert_eq!(
+            motion(serde_json::json!({"motion": "full"})),
+            MotionPreference::Full
+        );
+        assert!(matches!(
+            parse_value(serde_json::json!({"motion": "slow"})),
             Evaluation::Invalid(_)
         ));
     }

@@ -97,6 +97,17 @@ pub enum CursorBlink {
     Off,
 }
 
+/// How much the chrome may move.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MotionPreference {
+    /// As the platform's accessibility setting says, where one can be read.
+    #[default]
+    System,
+    Full,
+    /// Nothing travels: transitions land at once and the cursor leaves no trail.
+    Reduced,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeColors {
     pub surface: Rgb,
@@ -163,6 +174,7 @@ pub struct TerminalConfig {
     pub cursor_blink: CursorBlink,
     /// A short fading trail behind a cursor that jumps. Off unless asked for.
     pub cursor_trail: bool,
+    pub motion: MotionPreference,
     pub theme: ThemeColors,
     pub interaction: InteractionConfig,
     pub keybindings: KeybindingConfig,
@@ -246,6 +258,7 @@ impl Default for TerminalConfig {
             cursor: CursorPreference::Block,
             cursor_blink: CursorBlink::default(),
             cursor_trail: false,
+            motion: MotionPreference::default(),
             theme: ThemeColors::default(),
             interaction: InteractionConfig {
                 scrollback_limit: 10_000,

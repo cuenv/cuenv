@@ -10,6 +10,7 @@ mod glyphs;
 mod host;
 mod input;
 mod interaction;
+mod motion;
 pub mod overlay;
 pub mod scrollback;
 pub mod search;
