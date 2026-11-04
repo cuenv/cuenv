@@ -59,6 +59,8 @@ pub struct TerminalTheme {
     pub divider: Rgb,
     /// One step above the chrome: floating panels and hovered controls.
     pub raised_surface: Rgb,
+    /// Hovered rows on a floating panel, legible beneath muted metadata.
+    pub hover_surface: Rgb,
     pub ansi: [Rgb; 16],
 }
 
@@ -86,6 +88,7 @@ impl TerminalTheme {
             muted_text: rgb(theme.muted_text),
             divider: rgb(theme.divider),
             raised_surface: rgb(theme.raised_surface),
+            hover_surface: rgb(theme.hover_surface),
             ansi: theme.ansi.map(rgb),
         }
     }
@@ -260,6 +263,7 @@ mod tests {
         config.theme.muted_text = ConfigRgb(4, 4, 4);
         config.theme.divider = ConfigRgb(5, 5, 5);
         config.theme.raised_surface = ConfigRgb(6, 6, 6);
+        config.theme.hover_surface = ConfigRgb(7, 7, 7);
         let theme = TerminalTheme::from_config(&config);
         assert_eq!(theme.selection, Rgb(1, 1, 1));
         assert_eq!(theme.current_search_match, Rgb(2, 2, 2));
@@ -267,6 +271,7 @@ mod tests {
         assert_eq!(theme.muted_text, Rgb(4, 4, 4));
         assert_eq!(theme.divider, Rgb(5, 5, 5));
         assert_eq!(theme.raised_surface, Rgb(6, 6, 6));
+        assert_eq!(theme.hover_surface, Rgb(7, 7, 7));
     }
 
     #[test]

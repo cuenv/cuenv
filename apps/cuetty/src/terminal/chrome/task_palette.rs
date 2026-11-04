@@ -39,8 +39,10 @@ impl TerminalView {
                     .items_center()
                     .gap(space::MD)
                     .rounded(radius::CONTROL)
-                    .when(selected, |this| this.bg(colors.panel_state))
-                    .hover(|this| this.bg(colors.panel_state))
+                    .when(selected, |this| this.bg(colors.panel_selected))
+                    .when(!selected, |this| {
+                        this.hover(|this| this.bg(colors.panel_hover))
+                    })
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);
@@ -49,7 +51,11 @@ impl TerminalView {
                         div()
                             .w(size::PALETTE_KIND_WIDTH)
                             .text_size(text::CAPTION)
-                            .text_color(colors.text_muted)
+                            .text_color(if selected {
+                                colors.text_secondary
+                            } else {
+                                colors.text_muted
+                            })
                             .child(if task.requires_parameters {
                                 "ARGS"
                             } else {

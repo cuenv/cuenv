@@ -37,7 +37,7 @@ impl TerminalView {
                     .flex_col()
                     .gap(space::XXS)
                     .rounded(radius::CONTROL)
-                    .hover(|this| this.bg(colors.panel_state))
+                    .hover(|this| this.bg(colors.panel_hover))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);

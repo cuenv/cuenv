@@ -131,8 +131,13 @@ pub(super) struct ChromeColors {
     /// Hovered and active controls on structural material. Always opaque, so
     /// interaction stays visible at any transparency.
     pub(super) state: Rgba,
-    /// Hovered and selected rows inside a panel.
-    pub(super) panel_state: Rgba,
+    /// The keyboard-selected row in a panel. Muted text is not legible on this
+    /// fill, so that row's metadata uses secondary text.
+    pub(super) panel_selected: Rgba,
+    /// Hovered rows in a panel, on which muted metadata stays legible. A row's
+    /// text colour is fixed when GPUI lays it out, before hover is known, so
+    /// hover can only change a fill and never the text on top of it.
+    pub(super) panel_hover: Rgba,
     /// Input wells recessed into a panel.
     pub(super) well: Rgba,
     /// Fill of the active tab's mark, and the text on it.
@@ -151,7 +156,8 @@ impl ChromeColors {
             material: material_color(theme, theme.title_surface),
             panel: opaque(theme.raised_surface),
             state: opaque(theme.raised_surface),
-            panel_state: opaque(theme.selection),
+            panel_selected: opaque(theme.selection),
+            panel_hover: opaque(theme.hover_surface),
             well: opaque(theme.surface),
             mark: opaque(theme.cursor),
             mark_text: opaque(theme.cursor_text),
@@ -195,7 +201,13 @@ mod tests {
     fn panels_and_interaction_states_stay_legible_at_full_transparency() {
         let colors = ChromeColors::from_theme(&theme_with_transparency(100));
         assert_eq!(colors.material.a, 0.0);
-        for fill in [colors.panel, colors.state, colors.panel_state, colors.well] {
+        for fill in [
+            colors.panel,
+            colors.state,
+            colors.panel_selected,
+            colors.panel_hover,
+            colors.well,
+        ] {
             assert_eq!(fill.a, 1.0);
         }
     }

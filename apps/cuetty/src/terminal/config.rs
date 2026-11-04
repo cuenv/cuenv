@@ -78,6 +78,9 @@ pub struct ThemeColors {
     pub divider: Rgb,
     /// One step above the chrome: floating panels and hovered controls.
     pub raised_surface: Rgb,
+    /// Hovered rows on a floating panel. Rows keep muted metadata when hovered,
+    /// so this fill has to stay legible beneath it.
+    pub hover_surface: Rgb,
     pub ansi: [Rgb; 16],
 }
 
@@ -227,6 +230,7 @@ impl ThemeColors {
             // Between Base and Surface 0: Surface 0 itself is too bright to
             // fill a whole panel and would swallow the divider around it.
             raised_surface: Rgb(37, 37, 55),
+            hover_surface: Rgb(45, 45, 65),
             ansi: [
                 Rgb(69, 71, 90),
                 Rgb(243, 139, 168),
@@ -388,11 +392,28 @@ mod tests {
     }
 
     #[test]
-    fn default_muted_text_stays_legible_on_every_chrome_surface() {
+    fn default_muted_text_stays_legible_on_every_fill_it_is_painted_on() {
         let theme = ThemeColors::default();
-        for surface in [theme.title_surface, theme.surface, theme.raised_surface] {
+        for surface in [
+            theme.title_surface,
+            theme.surface,
+            theme.raised_surface,
+            theme.hover_surface,
+        ] {
             assert!(contrast(theme.muted_text, surface) >= 4.5);
         }
+    }
+
+    #[test]
+    fn default_row_hover_is_visible_on_a_panel() {
+        let theme = ThemeColors::default();
+        assert!(contrast(theme.hover_surface, theme.raised_surface) >= 1.1);
+    }
+
+    #[test]
+    fn default_selected_row_metadata_stays_legible_on_the_selection_fill() {
+        let theme = ThemeColors::default();
+        assert!(contrast(theme.title_text, theme.selection) >= 4.5);
     }
 
     #[test]

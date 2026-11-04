@@ -163,7 +163,7 @@ The built-in colour scheme is Catppuccin Mocha: Mantle forms the title strip and
 rail, Base fills the terminal, Surface 0 draws faint dividers, Surface 1 tints
 selections, Yellow marks the current search match, Blue is the accent, and the
 complete ANSI palette follows Catppuccin's Mocha mapping. Every one of these,
-plus muted text and the raised surface used by floating panels, lives in
+plus muted text and the raised and hover surfaces used by floating panels, lives in
 `ThemeColors`; none is hard-coded by a renderer.
 
 All chrome spacing, radii, type sizes, border widths, elevation, and colours come
