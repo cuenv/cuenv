@@ -37,7 +37,7 @@ persistence contracts are also more mature than the live product shell.
 | Input protocol | Direct-host input and mode-aware bracketed-paste encoding in source; local selection | Executable compatibility checks remain; mouse, keypad, focus and advanced keyboard integration are not qualified. |
 | Scrollback and search | Rio-owned wheel/keyboard history navigation is live; the UI searches only the visible frame | No selection/search across history or scrollbar. |
 | Tabs and splits | Each tab owns a live session; the pure layout model supports splits | Split shortcuts are intentionally rejected because session allocation is not wired. |
-| Configuration | Global and exact-CWD CUE packages configure font size, line height, padding, transparency, and Cuetty presentation | Font-family validation, theme selection, and stable working-directory policy remain open. |
+| Configuration | Global and exact-CWD CUE packages configure theme, font family, size, and line height, padding, transparency, and Cuetty presentation | Font-family validation and stable working-directory policy remain open. |
 | Distribution | Development bundle with ad-hoc signing and a local launch check | No signed/notarized release, installer, update path, or release-quality macOS CI. |
 
 The original `librio` pin exposed only one `char` per snapshot cell and left
@@ -252,10 +252,10 @@ day.
   Unicode correctness, and a predictable policy when an application has mouse
   reporting enabled.
 - [ ] Extend the existing global and per-directory CUE configuration with font
-  family and fallbacks, theme, cursor preference, scrollback limit, window
-  geometry, and working-directory policy. Font size, line height, padding, and
+  fallbacks, cursor preference, scrollback limit, window geometry, and
+  working-directory policy. Theme, font family, size, line height, padding, and
   transparency are already configured in CUE.
-- [ ] Treat the current hard-coded Monaspice/Catppuccin defaults as an
+- [ ] Treat the current Monaspice/Catppuccin defaults as an
   opinionated first-run profile, not a dependency. Detect unavailable fonts and
   fall back to a macOS monospaced font with a visible integration notice.
 - [ ] Provide familiar macOS actions before inventing a keybinding language:

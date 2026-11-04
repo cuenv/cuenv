@@ -88,7 +88,7 @@ one title strip that shares the terminal's surface, names the active tab, which
 also titles the window for window switchers and compositors, and signs itself with a
 small muted `cuetty` wordmark at its far end, a
 right-side tab sidebar floating inset from the window's edges so it sits comfortably
-with rounded window corners, and a full-bleed Catppuccin Mocha terminal surface. The sidebar is 200px wide and lists tabs by name. Its toggle, or
+with rounded window corners, and a full-bleed terminal surface in the chosen theme. The sidebar is 200px wide and lists tabs by name. Its toggle, or
 Cmd-B (Ctrl-Shift-B on Linux), slides it down to 56px, resizing the grid once rather than on every frame, with an initial for each tab, taken
 from its user-set name, project banner, or directory so it stays put as programs come
 and go, and the full name as a tooltip; `sidebar: "collapsed"` in CUE starts it that
@@ -241,11 +241,12 @@ presentation correctness is deliberately not claimed.
 uses Latte or Mocha to match the window's appearance and switches live as the desktop
 does; on Linux that comes from the XDG desktop portal, and no stated preference counts
 as light. Applications asking about colours (OSC 4, 10, 11, and 12) are told the palette
-their tab paints in, so Neovim and `bat` pick a light scheme on a light theme. A test
+their tab paints in, and a shell starts already knowing it, so Neovim and `bat` pick a
+light scheme on a light theme. A test
 holds all of them to one contrast contract, so a new token or theme cannot quietly
 ship text that does not read. On the default, Base fills the window, Mantle sets
-the sidebar off from it when the window is opaque, Surface 0 draws faint dividers, Surface 1 tints
-selections, Yellow marks the current search match with Crust text on it and tints the others, Blue is
+the sidebar off from it when the window is opaque, Surface 0 draws faint dividers, a tint just short
+of Surface 1 marks selections so ANSI colours still read on them, Yellow marks the current search match with Crust text on it and a dark Yellow tints the others, Blue is
 the accent, and the
 complete ANSI palette follows Catppuccin's Mocha mapping. Every one of these,
 plus muted text and the raised and hover surfaces used by floating panels, lives in
@@ -296,6 +297,7 @@ package cuetty
 
 banner: "Welcome to Cuetty"
 rail: "#ff0000"
+theme: "graphite"
 titlebar: false
 font: {
     family:     "Monaspace Neon"

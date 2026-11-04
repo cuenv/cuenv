@@ -20,8 +20,8 @@ Cuetty currently has:
   focused live shell behavior.
 - Negotiated Kitty and `modifyOtherKeys` input for the keypress, modifier,
   named-key, and repeat information exposed by the current GPUI host event.
-- A fixed vertical tab rail, global and per-directory CUE configuration for
-  font metrics, padding, and transparency, and a native Quit/Cmd-Q action.
+- A collapsible right-hand tab sidebar, global and per-directory CUE configuration
+  for theme, font metrics, padding, and transparency, and a native Quit/Cmd-Q action.
 - Static validation plus a signed macOS bundle check, local process launch, and
   a direct interactive shell/history smoke pass. The real daily-workload corpus
   still needs human acceptance.
@@ -49,8 +49,8 @@ behind replaceable traits.
 | Clipboard and paste | Cmd-V, OSC 52, mouse selection and Cmd-C copy | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
 | Scrollback and selection | Rio-owned history navigation live; selection remains visible-viewport-only | Present | Present | P1 |
 | Search | Literal visible-frame search live; regex/full history staged | Present | Inline/regex search | P1 |
-| Fonts, themes, configuration | CUE-configurable font size, line height, padding, and transparency; fixed font family and theme | Configurable themes, keybindings, fonts | Font family, themes, zoom, shell choice, and additional keybindings | P1 |
-| Tabs, splits, focus navigation | Independent local Rio tabs; fixed 56px rail; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
+| Fonts, themes, configuration | CUE-configurable font family, size, and line height, padding, transparency, keybinding for the palette, and four curated themes with `auto` following the desktop; custom palettes are not offered | Configurable themes, keybindings, fonts | Font family, themes, zoom, shell choice, and additional keybindings | P1 |
+| Tabs, splits, focus navigation | Independent local Rio tabs; 200px sidebar collapsible to 56px; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
 | Workspace persistence | Versioned codec and atomic file store; no live restore | Reusable layouts | Workspace/session restore | P2 |
 | Session persistence | Child shell only | Optional tmux control mode | dtach/tmux/screen backends | P3 |
 | Remote/API/plugin surface | Missing | FFI/native SDK and plugin/runtime crates | Remote HTTP/WebSocket and hooks | P3 |
@@ -84,8 +84,8 @@ Linux, and a live resize plus Unicode probe has visual evidence.
    duplicating terminal state.
 2. Wire copy, paste, selection export, and literal search into the live surface
    (regex remains a later capability).
-3. Move font, theme, line height, cursor, and keybindings into a serializable
-   configuration trait with sane platform defaults.
+3. Move the remaining cursor and keybinding preferences into configuration; font,
+   theme, and line height already live in CUE.
 4. Add the Termy/Okena box-drawing, block, sextant, and braille geometry path
    where font glyphs cannot provide stable full-cell coverage.
 

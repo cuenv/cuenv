@@ -62,8 +62,8 @@ The current usable slice includes:
 - Text shaped with the font's contextual alternates and placed cell by cell: every
   glyph starts on the column its source text belongs to, so substitutions, combining
   marks, and fallback fonts cannot shift a column.
-- Catppuccin Mocha is the built-in terminal colour scheme shared by Rio's
-  semantic resolver and the GPUI chrome.
+- Four complete themes, or `auto` to follow the desktop's light or dark, shared by Rio's
+  semantic resolver and the GPUI chrome. Catppuccin Mocha is the default.
 - Ghostty is the visual reference for restrained native chrome: traffic lights,
   one title strip that shares the terminal's surface, a sidebar floating inset from
   the window's edges so it sits comfortably with rounded corners, stable single-line
@@ -206,8 +206,8 @@ The current usable slice includes:
 - An original app icon, a lowercase c waiting at a block cursor, which the Nix package
   installs to the hicolor theme for its desktop entry. The macOS development bundle has
   no icon yet.
-- Global and per-directory CUE configuration for font family, font size, line height,
-  padding, and transparency. There is no in-app Settings page. The native
+- Global and per-directory CUE configuration for theme, accent, font family, font size,
+  line height, padding, and transparency. There is no in-app Settings page. The native
   Cuetty menu exposes Quit Cuetty and Cmd-Q uses the same application-level
   action.
 - Versioned, metadata-only workspace persistence and capability/session seams
@@ -216,6 +216,33 @@ The current usable slice includes:
 Termy and Okena remain reference projects for renderer and product-shell
 patterns. They are not vendored dependencies and their runtime models are not
 silently substituted for Rio.
+
+## Appearance
+
+Cuetty aims to be calm: the terminal is what you came for, and the chrome around it
+should not compete with it.
+
+- **One material.** The terminal, the title strip, and the sidebar read as one surface.
+  At `transparency: 0` the whole window is opaque; above that they share a single opacity
+  over the native blur, rather than a pane of glass beside a pane of paint.
+- **Neutral chrome, one accent.** The chrome takes its surfaces and text from the
+  [theme](#themes). A single accent colours only small marks: the active tab's marker,
+  the notice dot, an unread tab, the caret. A project's `rail` recolours that marker and
+  nothing else, so no setting can fill a region with colour.
+- **The sidebar is on the right.** It is 200px wide and lists tabs by name, and collapses
+  to a 56px strip of initials; `sidebar` chooses how a window starts.
+- **Type does the hierarchy.** Chrome text is the platform's sans-serif on a small scale
+  of 11 to 14px with three text colours; only paths and shortcuts are monospaced.
+- **Depth is for what floats.** The task palette, task sidebar, tooltips, and search bar
+  are opaque, with one shadow per level of elevation, softer on a light theme.
+- **One token set.** All of this comes from `apps/cuetty/src/terminal/chrome/tokens.rs`
+  and the theme, so chrome views write no literal colours, sizes, or radii.
+- **Identity stays small.** A muted `cuetty` wordmark in the title strip, and an
+  original icon for the launcher.
+
+Everything here that is a choice is a setting: `theme`, `accent`, `rail`, `transparency`,
+`titlebar`, `sidebar`, `font`, `padding`, `cursor`, `motion`, and `minimumContrast`, all
+described under [Cuetty CUE configuration](#cuetty-cue-configuration).
 
 ## Cuetty CUE configuration
 
@@ -247,6 +274,7 @@ Terminal appearance can be configured in the same package:
 ```cue
 package cuetty
 
+theme: "graphite"
 font: {
     family:     "Monaspace Neon"
     size:       18
@@ -304,7 +332,7 @@ assemble and no colour to get wrong.
 | Theme | Character |
 | --- | --- |
 | `catppuccin-mocha` | The default: soft dark blue-greys with a blue accent |
-| `catppuccin-latte` | Catppuccin's light flavour. Metadata tones, the cursor, and the ANSI green, yellow, magenta, and cyan are deepened from the published palette to hold the contrast below |
+| `catppuccin-latte` | Catppuccin's light flavour. Metadata tones, the cursor, and all six ANSI hues, red and blue included, are deepened from the published palette to hold the contrast below |
 | `graphite` | Neutral dark greys with a quiet steel accent |
 | `paper` | Warm light: ink on uncoated paper with a rust accent |
 
@@ -318,14 +346,23 @@ choose a theme by name on such a system.
 
 Applications that ask the terminal about colours (OSC 4, 10, 11, and 12), as Neovim and
 `bat` do to tell a light background from a dark one, are told the palette their tab
-paints in, so they pick the right scheme on a light theme. They are told once, at the
-time they ask: a program that has already chosen stays with its choice when `auto`
-switches underneath it, although everything it left in the default colours follows.
-Colours an application sets for itself are neither painted nor reported.
+paints in, so they pick the right scheme on a light theme. A shell starts already knowing
+that palette, so its startup files can ask. They are told once, at the time they ask: a
+program that has already chosen stays with its choice when `auto` switches underneath it,
+although everything it left in the default colours follows. Colours an application sets
+for itself are neither painted nor reported.
+
+Three moments can still give an earlier answer, because the real one is not known yet. A
+window's first shell waits half a second at most for the global configuration, and after
+that starts with the default palette. On Linux `auto` sees the appearance the window opens
+with until the portal answers. And a shell that has just changed directory answers for the
+look it carries over until that directory's configuration has evaluated, which does not
+wait for its tasks to be discovered.
 
 A unit test holds every theme to the same contrast: body and metadata text at least
-4.5:1 on each surface it is painted on, ANSI colours 4.5:1 on the page apart from the
-one faint neutral pair (black on a dark theme, white on a light one), and the accent
+4.5:1 on each surface it is painted on, ANSI colours 4.5:1 on the page, on a selection,
+and on a search match apart from the one faint neutral pair (black on a dark theme, white
+on a light one), which only has to stay visible on them, and the accent
 and the cursor at least 3:1. Floating panels cast half the shadow on a light theme,
 since black at the same strength reads as a smudge on a pale page.
 
@@ -364,6 +401,7 @@ as defaults:
 package cuetty
 
 rail:     *"#89b4fa" | string
+theme:    *"auto" | string
 titlebar: *false | bool
 font: {
     family:     *"Monaspace Neon" | string

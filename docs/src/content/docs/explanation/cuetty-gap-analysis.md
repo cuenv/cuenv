@@ -50,9 +50,9 @@ needs:
    search contract exists.
 2. Independent Rio sessions for each live split (tabs are already session-backed).
 3. Close/reopen lifecycle, titles, pane resizing, and live workspace restore.
-4. Configurable shell, working directory, environment policy, font family,
-   theme, scrollback, cursor, and additional keybindings. Font size and line
-   height can already be set in global or per-directory CUE configuration.
+4. Configurable shell, working directory, environment policy, scrollback, cursor
+   shape, and additional keybindings. Font family, size, line height, and theme
+   can already be set in global or per-directory CUE configuration.
 
 ### P2: Product shell
 
