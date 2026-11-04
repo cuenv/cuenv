@@ -192,7 +192,8 @@ impl CursorAnimator {
         }
         self.focus = seen.focus;
         let focused = seen.focus == CursorFocus::Focused;
-        let frame = if focused && seen.blink {
+        // A hidden cursor has nothing to fade, whatever it has been asked to do.
+        let frame = if focused && seen.blink && seen.position.is_some() {
             blink_frame(seen.now.saturating_duration_since(self.last_activity))
         } else {
             CursorFrame::SOLID
@@ -342,6 +343,24 @@ mod tests {
             }),
             CursorFrame::SOLID
         );
+    }
+
+    #[test]
+    fn a_hidden_cursor_asks_for_no_frames_however_it_was_told_to_blink() {
+        let start = Instant::now();
+        let mut animator = CursorAnimator::new(start);
+        let hidden = |now| CursorObservation {
+            position: None,
+            ..blinking(now)
+        };
+        // Through the pause, a hold, and a fade.
+        for after in [
+            ms(0),
+            BLINK_PAUSE + ms(10),
+            BLINK_PAUSE + BLINK_HOLD + ms(10),
+        ] {
+            assert_eq!(animator.frame(hidden(start + after)), CursorFrame::SOLID);
+        }
     }
 
     #[test]
