@@ -1,10 +1,10 @@
-use super::hover_fade;
 use super::icons::Icon;
 use super::tokens::{
     ChromeColors, Elevation, border, elevated, faded, opaque, radius, size, space, tab_marker_top,
     text, ui_font_family,
 };
 use super::tooltip::chrome_tooltip;
+use super::{hover_fade, hover_probe};
 use crate::integrations::cuenv::{RailColor, SidebarMode};
 use crate::terminal::engine::{
     SIDEBAR_TOGGLE_KEY, TabClick, TerminalView, app_chord_label, tab_number_hint,
@@ -263,6 +263,7 @@ impl TerminalView {
                 .rounded(radius::CONTROL)
                 .bg(faded(colors.state, self.hover_level(target)))
                 .on_hover(hover_fade(target, cx))
+                .child(hover_probe(target, cx))
                 .cursor_pointer()
                 .text_size(text::CAPTION)
                 .text_color(colors.text_muted)
@@ -341,6 +342,7 @@ impl TerminalView {
             .rounded(radius::CONTROL)
             .bg(faded(colors.state, self.hover_level(target)))
             .on_hover(hover_fade(target, cx))
+            .child(hover_probe(target, cx))
     }
 }
 
@@ -440,6 +442,7 @@ fn render_close_button(button: CloseButton, cx: &mut Context<TerminalView>) -> S
         // The row beneath is already filled with `state` while the pointer is on it.
         .bg(faded(colors.state_on_row, hover))
         .on_hover(hover_fade(HoverTarget::TabClose(id), cx))
+        .child(hover_probe(HoverTarget::TabClose(id), cx))
         .cursor_pointer()
         .tooltip(chrome_tooltip(
             format!("Close tab · {}", app_chord_label("w")),
@@ -537,6 +540,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         .rounded(radius::CONTROL)
         .bg(faded(colors.state, hover.max(active)))
         .on_hover(hover_fade(HoverTarget::Tab(id), cx))
+        .child(hover_probe(HoverTarget::Tab(id), cx))
         .cursor_pointer()
         .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
             view.tab_row_clicked(

@@ -4,7 +4,7 @@ use super::field::text_field;
 use super::icons::Icon;
 use super::tokens::{ChromeColors, Elevation, elevated, faded, radius, size, space, text};
 use super::tooltip::chrome_tooltip;
-use super::{fading_in, hover_fade};
+use super::{fading_in, hover_fade, hover_probe};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::interaction::SearchKey;
 use crate::terminal::motion::{HoverTarget, SearchButton};
@@ -148,6 +148,7 @@ impl TerminalView {
             .rounded(radius::CONTROL)
             .bg(faded(colors.panel_hover, self.hover_level(target)))
             .on_hover(hover_fade(target, cx))
+            .child(hover_probe(target, cx))
             .cursor_pointer()
             .tooltip(chrome_tooltip(button.tooltip(), *colors))
             .on_click(cx.listener(move |view, _event, window, cx| {

@@ -212,7 +212,9 @@ impl<K> Default for Fades<K> {
 }
 
 impl<K: Eq + Hash> Fades<K> {
-    fn set(&mut self, key: K, change: FadeChange) {
+    /// Sets `key` off towards a target, saying whether that changed anything. Off is where
+    /// everything unknown already is, so being told so again leaves nothing behind.
+    fn set(&mut self, key: K, change: FadeChange) -> bool {
         let FadeChange {
             target,
             duration,
@@ -222,10 +224,17 @@ impl<K: Eq + Hash> Fades<K> {
             FadeTarget::On => 1.0,
             FadeTarget::Off => 0.0,
         };
-        self.levels
-            .entry(key)
-            .or_insert_with(|| Tween::at(0.0, now))
-            .head_for(to, duration, now);
+        let mut tween = self
+            .levels
+            .get(&key)
+            .copied()
+            .unwrap_or_else(|| Tween::at(0.0, now));
+        if tween.to == to {
+            return false;
+        }
+        tween.head_for(to, duration, now);
+        self.levels.insert(key, tween);
+        true
     }
 
     fn level(&self, key: &K, now: Instant) -> f32 {
@@ -364,8 +373,8 @@ impl ChromeMotion {
         self.hover.retain(now, live);
     }
 
-    /// The pointer has arrived over `target`.
-    pub(super) fn hover_on(&mut self, target: HoverTarget, pace: MotionPace, now: Instant) {
+    /// The pointer has arrived over `target`. Says whether that is news.
+    pub(super) fn hover_on(&mut self, target: HoverTarget, pace: MotionPace, now: Instant) -> bool {
         self.hover.set(
             target,
             FadeChange {
@@ -373,11 +382,16 @@ impl ChromeMotion {
                 duration: pace.duration(HOVER_TRANSITION),
                 now,
             },
-        );
+        )
     }
 
-    /// The pointer has left `target`.
-    pub(super) fn hover_off(&mut self, target: HoverTarget, pace: MotionPace, now: Instant) {
+    /// The pointer has left `target`. Says whether that is news.
+    pub(super) fn hover_off(
+        &mut self,
+        target: HoverTarget,
+        pace: MotionPace,
+        now: Instant,
+    ) -> bool {
         self.hover.set(
             target,
             FadeChange {
@@ -385,7 +399,7 @@ impl ChromeMotion {
                 duration: pace.duration(HOVER_TRANSITION),
                 now,
             },
-        );
+        )
     }
 
     /// How lit something is under the pointer.
@@ -652,6 +666,22 @@ mod tests {
         assert_eq!(motion.hover_level(target, gone), 0.0);
         motion.forget_hovers(gone, |_| true);
         assert!(motion.hover.levels.is_empty());
+    }
+
+    #[test]
+    fn being_told_what_a_hover_already_is_changes_nothing_and_asks_for_no_frames() {
+        let now = Instant::now();
+        let target = HoverTarget::TaskRow(1);
+        let mut motion = ChromeMotion::default();
+        assert!(!motion.hover_off(target, MotionPace::Full, now));
+        assert!(motion.hover.levels.is_empty(), "nothing to remember");
+        assert_eq!(motion.next_frame(now, MotionPace::Full), None);
+
+        assert!(motion.hover_on(target, MotionPace::Full, now));
+        let lit = now + HOVER_TRANSITION;
+        assert!(!motion.hover_on(target, MotionPace::Full, lit));
+        assert_eq!(motion.next_frame(lit, MotionPace::Full), None);
+        assert_eq!(motion.hover_level(target, lit), 1.0);
     }
 
     #[test]

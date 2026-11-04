@@ -150,7 +150,8 @@ The current usable slice includes:
 - Chrome that moves briefly, and only in answer to something: the sidebar's controls and
   rows and their close buttons fade their hover over 100ms, and on a switch of tab one
   marker slides to its new place over 140ms while the row fills hand over. The task palette fades in over 120ms,
-  already taking keys as it does. Nothing draws once it has landed, and
+  already taking keys as it does. A hover stays true when the chrome moves under a still
+  pointer, as when the tab list scrolls. Nothing draws once it has landed, and
   `motion: "reduced"`, or the platform's own setting, makes all of it land at once.
 - A designed state in place of a terminal that cannot be shown. A tab whose session broke
   says what went wrong and offers Restart shell, which starts a fresh shell in the same tab

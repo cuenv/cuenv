@@ -1,5 +1,5 @@
-use super::hover_fade;
 use super::tokens::{ChromeColors, Elevation, elevated, faded, radius, size, space, text};
+use super::{hover_fade, hover_probe};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
@@ -49,6 +49,7 @@ impl TerminalView {
                     .rounded(radius::CONTROL)
                     .bg(faded(colors.panel_hover, self.hover_level(target)))
                     .on_hover(hover_fade(target, cx))
+                    .child(hover_probe(target, cx))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);

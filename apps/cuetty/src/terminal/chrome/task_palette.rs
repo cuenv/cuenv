@@ -2,7 +2,7 @@ use super::field::text_field;
 use super::tokens::{
     ChromeColors, Elevation, elevated, faded, palette_height, radius, size, space, text,
 };
-use super::{fading_in, hover_fade};
+use super::{fading_in, hover_fade, hover_probe};
 use crate::terminal::engine::{PALETTE_RESULT_LIMIT, TerminalView, filtered_tasks};
 use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
@@ -54,6 +54,7 @@ impl TerminalView {
                         faded(colors.panel_hover, self.hover_level(target))
                     })
                     .on_hover(hover_fade(target, cx))
+                    .child(hover_probe(target, cx))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);

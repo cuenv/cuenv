@@ -1,9 +1,9 @@
 //! What stands in for the terminal when a tab has none to show, and the way out.
 
 use super::clamp::TextBudget;
-use super::hover_fade;
 use super::icons::Icon;
 use super::tokens::{ChromeColors, border, faded, radius, size, space, text};
+use super::{hover_fade, hover_probe};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
@@ -213,6 +213,7 @@ impl TerminalView {
             })
             .cursor_pointer()
             .on_hover(hover_fade(target, cx))
+            .child(hover_probe(target, cx))
             .on_click(cx.listener(move |view, _event, window, cx| {
                 recovery.run(view, window, cx);
                 cx.notify();

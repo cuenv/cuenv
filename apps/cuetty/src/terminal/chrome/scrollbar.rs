@@ -1,8 +1,8 @@
 //! The overlay scrollbar: a thin thumb in the terminal's gutter, there while the view
 //! moves or the pointer comes looking for it, and draggable.
 
-use super::hover_fade;
 use super::tokens::{ChromeColors, faded, radius, size};
+use super::{hover_fade, hover_probe};
 use crate::terminal::engine::{TerminalView, redraw_after_this_frame, store_if_changed};
 use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
@@ -90,6 +90,7 @@ impl TerminalView {
                 // The press belongs to the thumb and starts no selection beneath it.
                 .occlude()
                 .on_hover(hover_fade(HoverTarget::Scrollbar, cx))
+                .child(hover_probe(HoverTarget::Scrollbar, cx))
                 .on_mouse_down(MouseButton::Left, on_press)
                 .on_scroll_wheel(cx.listener(Self::scroll_wheel))
                 .child(
