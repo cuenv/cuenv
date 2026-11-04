@@ -98,6 +98,10 @@ impl TerminalView {
                 .pt(size::PALETTE_TOP_OFFSET)
                 .child(
                     div()
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|view, _event, _window, cx| {
+                            view.close_task_palette(cx);
+                        }))
                         .w(size::PALETTE_WIDTH)
                         .max_h(size::PALETTE_MAX_HEIGHT)
                         .p(space::LG)

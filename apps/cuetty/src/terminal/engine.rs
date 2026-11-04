@@ -1473,6 +1473,10 @@ impl TerminalView {
                     Some(format!("Add arguments for '{}' and press Enter", task.name));
             }
         }
+        self.close_task_palette(cx);
+    }
+
+    pub(super) fn close_task_palette(&mut self, cx: &mut Context<Self>) {
         self.task_palette_open = false;
         self.task_query.clear();
         self.task_selection = 0;

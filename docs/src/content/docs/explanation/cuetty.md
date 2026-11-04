@@ -226,7 +226,7 @@ surfaces its task, group, and sequence names in a floating sidebar and a
 command palette. These overlays do not participate in terminal layout, so
 opening them does not change the PTY's reported rows or columns. They take
 pointer input for themselves, so clicks, drags, and scrolling never reach the
-terminal text they cover. Launching a
+terminal text they cover, and clicking outside the palette closes it. Launching a
 task delegates to `cuenv task` in the same pane that supplied the catalogue;
 required task parameters leave an editable command at the prompt. The app does not duplicate
 the task graph, cache, hooks, or secret resolution.
