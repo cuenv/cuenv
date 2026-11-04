@@ -5,7 +5,7 @@
 //! session directly.
 
 use crate::terminal::config::{
-    CursorBlink, MinimumContrast, MotionPreference, Rgb, TerminalConfig,
+    CursorBlink, MinimumContrast, MotionPreference, Rgb, TerminalConfig, ThemeName,
 };
 use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -303,6 +303,8 @@ struct CuettyDto {
     rail: Option<String>,
     #[serde(default)]
     accent: Option<String>,
+    #[serde(default)]
+    theme: Option<String>,
     #[serde(default)]
     titlebar: Option<bool>,
     #[serde(default)]
@@ -709,6 +711,11 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
             edges.left = left;
         }
     }
+    match dto.theme.as_deref().map(parse_theme).transpose() {
+        Ok(theme) => terminal.theme = theme.unwrap_or_default().colors(),
+        Err(error) => return Evaluation::Invalid(error),
+    }
+    // After the theme: an accent is a preference that holds across themes.
     if let Some(accent) = accent {
         terminal.theme.accent = accent;
     }
@@ -747,6 +754,13 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         sidebar,
         keybindings,
         terminal: Box::new(terminal),
+    })
+}
+
+fn parse_theme(value: &str) -> Result<ThemeName, String> {
+    ThemeName::from_id(value).ok_or_else(|| {
+        let known = ThemeName::ALL.map(|theme| format!("\"{}\"", theme.id()));
+        format!("theme must be one of {}, got \"{value}\"", known.join(", "))
     })
 }
 
@@ -1262,6 +1276,73 @@ mod tests {
             };
             assert!(error.starts_with(field), "{error}");
         }
+    }
+
+    #[test]
+    fn a_theme_is_chosen_by_name_and_mocha_is_the_default() {
+        let theme = |value: serde_json::Value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal.theme,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            theme(serde_json::json!({})),
+            ThemeName::CatppuccinMocha.colors()
+        );
+        for name in ThemeName::ALL {
+            assert_eq!(
+                theme(serde_json::json!({"theme": name.id()})),
+                name.colors(),
+                "{}",
+                name.id()
+            );
+        }
+    }
+
+    #[test]
+    fn an_accent_applies_on_top_of_the_chosen_theme() {
+        let Evaluation::Valid(presentation) =
+            parse_value(serde_json::json!({"theme": "paper", "accent": "#112233"}))
+        else {
+            panic!("expected a valid presentation");
+        };
+        let theme = &presentation.terminal.theme;
+        assert_eq!(theme.accent, Rgb(0x11, 0x22, 0x33));
+        assert_eq!(theme.surface, ThemeName::Paper.colors().surface);
+    }
+
+    #[test]
+    fn an_unknown_theme_is_rejected_and_says_what_is_on_offer() {
+        for invalid in [
+            serde_json::json!({"theme": "solarized"}),
+            serde_json::json!({"theme": ""}),
+        ] {
+            let Evaluation::Invalid(error) = parse_value(invalid) else {
+                panic!("expected a rejection");
+            };
+            assert!(error.contains("catppuccin-latte"), "{error}");
+        }
+        assert!(matches!(
+            parse_value(serde_json::json!({"theme": 1})),
+            Evaluation::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn a_directory_overrides_a_global_theme_and_keeps_its_accent() {
+        let (root, source) = layered_source(
+            "theme-layers",
+            Some("theme: \"paper\""),
+            Some("theme: *\"graphite\" | string\naccent: \"#a6e3a1\""),
+        );
+        let Evaluation::Valid(presentation) = source.evaluate() else {
+            panic!("expected a unified presentation");
+        };
+        assert_eq!(
+            presentation.terminal.theme.surface,
+            ThemeName::Paper.colors().surface
+        );
+        assert_eq!(presentation.terminal.theme.accent, Rgb(166, 227, 161));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

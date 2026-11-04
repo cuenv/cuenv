@@ -108,6 +108,48 @@ pub enum MotionPreference {
     Reduced,
 }
 
+/// A complete palette Cuetty ships, selected by the `theme` setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThemeName {
+    #[default]
+    CatppuccinMocha,
+    CatppuccinLatte,
+    Graphite,
+    Paper,
+}
+
+impl ThemeName {
+    pub const ALL: [Self; 4] = [
+        Self::CatppuccinMocha,
+        Self::CatppuccinLatte,
+        Self::Graphite,
+        Self::Paper,
+    ];
+
+    /// What the `theme` setting calls this palette.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::CatppuccinMocha => "catppuccin-mocha",
+            Self::CatppuccinLatte => "catppuccin-latte",
+            Self::Graphite => "graphite",
+            Self::Paper => "paper",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|theme| theme.id() == id)
+    }
+
+    pub fn colors(self) -> ThemeColors {
+        match self {
+            Self::CatppuccinMocha => ThemeColors::catppuccin_mocha(),
+            Self::CatppuccinLatte => ThemeColors::catppuccin_latte(),
+            Self::Graphite => ThemeColors::graphite(),
+            Self::Paper => ThemeColors::paper(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeColors {
     pub surface: Rgb,
@@ -295,10 +337,12 @@ impl ThemeColors {
             text: Rgb(205, 214, 244),
             cursor: Rgb(245, 224, 230),
             cursor_text: Rgb(30, 30, 46),
-            selection: Rgb(69, 71, 90),
-            // Yellow, the current match's colour, a little over a quarter of the way up
-            // from Base, so the two read as one search.
-            search_match: Rgb(91, 85, 82),
+            // Short of Surface 1, the tint Catppuccin publishes: on that, or on anything
+            // brighter, the ANSI red and blue an application prints fall under 4.5:1.
+            selection: Rgb(60, 61, 79),
+            // A dark Yellow, the current match's hue, so the two read as one search. It
+            // stops at the same brightness as the selection, for the same reason.
+            search_match: Rgb(68, 60, 50),
             current_search_match: Rgb(249, 226, 175),
             current_search_match_text: Rgb(17, 17, 27),
             accent: Rgb(137, 180, 250),
@@ -325,6 +369,132 @@ impl ThemeColors {
                 Rgb(245, 194, 231),
                 Rgb(148, 226, 213),
                 Rgb(166, 173, 200),
+            ],
+        }
+    }
+
+    /// Catppuccin Latte, for a light desktop.
+    ///
+    /// Latte's published colours are its neutrals and accents, but several of them were
+    /// not chosen to carry text at terminal sizes, where this has to hold 4.5:1: the
+    /// metadata tones are a step darker than Subtext, the cursor is Text rather than the
+    /// 2.4:1 Rosewater, and every ANSI hue, red and blue included, is deepened until it
+    /// reads on the selection as well as on the page. Hues stay Latte's. ANSI white stays
+    /// faint, as black does on a dark theme.
+    pub fn catppuccin_latte() -> Self {
+        Self {
+            surface: Rgb(239, 241, 245),
+            title_surface: Rgb(230, 233, 239),
+            title_text: Rgb(84, 87, 110),
+            text: Rgb(76, 79, 105),
+            cursor: Rgb(76, 79, 105),
+            cursor_text: Rgb(239, 241, 245),
+            selection: Rgb(217, 219, 227),
+            search_match: Rgb(241, 227, 196),
+            current_search_match: Rgb(223, 142, 29),
+            current_search_match_text: Rgb(17, 17, 27),
+            accent: Rgb(30, 102, 245),
+            muted_text: Rgb(95, 98, 122),
+            divider: Rgb(212, 216, 225),
+            // Above Base on a light theme means towards white, which is also how a
+            // panel lifts off the page beneath its shadow.
+            raised_surface: Rgb(247, 248, 250),
+            hover_surface: Rgb(228, 231, 237),
+            ansi: [
+                Rgb(76, 79, 105),
+                Rgb(190, 13, 51),
+                Rgb(40, 109, 25),
+                Rgb(131, 86, 10),
+                Rgb(24, 86, 210),
+                Rgb(159, 50, 136),
+                Rgb(14, 105, 111),
+                Rgb(172, 176, 190),
+                Rgb(91, 94, 115),
+                Rgb(190, 13, 51),
+                Rgb(40, 109, 25),
+                Rgb(131, 86, 10),
+                Rgb(24, 86, 210),
+                Rgb(159, 50, 136),
+                Rgb(14, 105, 111),
+                Rgb(188, 192, 204),
+            ],
+        }
+    }
+
+    /// A neutral dark theme: greys with no hue to them, one quiet steel accent.
+    pub fn graphite() -> Self {
+        Self {
+            surface: Rgb(27, 28, 31),
+            title_surface: Rgb(21, 22, 25),
+            title_text: Rgb(184, 187, 193),
+            text: Rgb(217, 219, 223),
+            cursor: Rgb(228, 229, 232),
+            cursor_text: Rgb(27, 28, 31),
+            selection: Rgb(56, 58, 65),
+            search_match: Rgb(61, 57, 47),
+            current_search_match: Rgb(227, 194, 122),
+            current_search_match_text: Rgb(20, 21, 24),
+            accent: Rgb(143, 176, 214),
+            muted_text: Rgb(146, 149, 156),
+            divider: Rgb(45, 47, 51),
+            raised_surface: Rgb(34, 35, 39),
+            hover_surface: Rgb(43, 45, 49),
+            ansi: [
+                Rgb(67, 69, 75),
+                Rgb(233, 139, 140),
+                Rgb(150, 195, 125),
+                Rgb(217, 184, 106),
+                Rgb(129, 168, 217),
+                Rgb(195, 148, 214),
+                Rgb(111, 191, 191),
+                Rgb(198, 200, 204),
+                Rgb(90, 93, 100),
+                Rgb(239, 143, 144),
+                Rgb(170, 211, 146),
+                Rgb(230, 200, 131),
+                Rgb(150, 184, 227),
+                Rgb(210, 169, 226),
+                Rgb(134, 207, 207),
+                Rgb(236, 238, 240),
+            ],
+        }
+    }
+
+    /// A warm light theme: ink on uncoated paper, one rust accent.
+    pub fn paper() -> Self {
+        Self {
+            surface: Rgb(247, 243, 234),
+            title_surface: Rgb(239, 233, 220),
+            title_text: Rgb(69, 63, 54),
+            text: Rgb(44, 40, 34),
+            cursor: Rgb(44, 40, 34),
+            cursor_text: Rgb(247, 243, 234),
+            selection: Rgb(228, 221, 206),
+            search_match: Rgb(240, 226, 180),
+            current_search_match: Rgb(201, 138, 27),
+            current_search_match_text: Rgb(23, 20, 15),
+            accent: Rgb(156, 90, 44),
+            muted_text: Rgb(100, 93, 81),
+            divider: Rgb(224, 217, 202),
+            raised_surface: Rgb(252, 250, 244),
+            hover_surface: Rgb(237, 231, 218),
+            ansi: [
+                Rgb(44, 40, 34),
+                Rgb(164, 51, 31),
+                Rgb(67, 100, 28),
+                Rgb(116, 87, 0),
+                Rgb(47, 92, 151),
+                Rgb(134, 64, 127),
+                Rgb(26, 101, 101),
+                Rgb(203, 195, 177),
+                Rgb(97, 90, 79),
+                Rgb(172, 57, 36),
+                Rgb(71, 106, 31),
+                Rgb(123, 92, 0),
+                Rgb(54, 97, 156),
+                Rgb(143, 69, 135),
+                Rgb(28, 107, 107),
+                Rgb(215, 207, 191),
             ],
         }
     }
@@ -471,51 +641,227 @@ mod tests {
         (first.max(second) + 0.05) / (first.min(second) + 0.05)
     }
 
-    #[test]
-    fn default_muted_text_stays_legible_on_every_fill_it_is_painted_on() {
-        let theme = ThemeColors::default();
-        for surface in [
-            theme.title_surface,
-            theme.surface,
-            theme.raised_surface,
-            theme.hover_surface,
-        ] {
-            assert!(contrast(theme.muted_text, surface) >= 4.5);
+    /// Whether a theme's page is light, which decides which ANSI neutral is the faint one.
+    fn is_light(theme: &ThemeColors) -> bool {
+        luminance(theme.surface) > 0.5
+    }
+
+    fn for_every_theme(check: impl Fn(ThemeName, &ThemeColors)) {
+        for name in ThemeName::ALL {
+            check(name, &name.colors());
+        }
+    }
+
+    fn assert_legible(name: ThemeName, what: &str, ink: Rgb, fills: &[Rgb]) {
+        for fill in fills {
+            let ratio = contrast(ink, *fill);
+            assert!(
+                ratio >= 4.5,
+                "{}: {what} {ink:?} on {fill:?} is only {ratio:.2}:1",
+                name.id()
+            );
         }
     }
 
     #[test]
-    fn default_row_hover_is_visible_on_a_panel() {
-        let theme = ThemeColors::default();
-        assert!(contrast(theme.hover_surface, theme.raised_surface) >= 1.1);
+    fn body_text_stays_legible_on_every_fill_it_is_painted_on() {
+        for_every_theme(|name, theme| {
+            assert_legible(
+                name,
+                "text",
+                theme.text,
+                &[
+                    theme.surface,
+                    theme.title_surface,
+                    theme.raised_surface,
+                    theme.hover_surface,
+                    theme.selection,
+                    theme.search_match,
+                ],
+            );
+        });
     }
 
     #[test]
-    fn default_selected_row_metadata_stays_legible_on_the_selection_fill() {
-        let theme = ThemeColors::default();
-        assert!(contrast(theme.title_text, theme.selection) >= 4.5);
+    fn secondary_text_stays_legible_on_selected_rows_as_well() {
+        for_every_theme(|name, theme| {
+            assert_legible(
+                name,
+                "title text",
+                theme.title_text,
+                &[
+                    theme.surface,
+                    theme.title_surface,
+                    theme.raised_surface,
+                    theme.hover_surface,
+                    theme.selection,
+                ],
+            );
+        });
     }
 
     #[test]
-    fn default_text_stays_legible_on_a_search_match_tint() {
-        let theme = ThemeColors::default();
-        assert!(contrast(theme.text, theme.search_match) >= 4.5);
+    fn muted_text_stays_legible_on_every_fill_it_is_painted_on() {
+        for_every_theme(|name, theme| {
+            assert_legible(
+                name,
+                "muted text",
+                theme.muted_text,
+                &[
+                    theme.title_surface,
+                    theme.surface,
+                    theme.raised_surface,
+                    theme.hover_surface,
+                ],
+            );
+        });
     }
 
     #[test]
-    fn default_current_search_match_text_stays_legible_on_its_fill() {
-        let theme = ThemeColors::default();
-        assert!(contrast(theme.current_search_match_text, theme.current_search_match) >= 4.5);
+    fn text_on_a_solid_fill_of_its_own_stays_legible() {
+        for_every_theme(|name, theme| {
+            assert_legible(name, "cursor text", theme.cursor_text, &[theme.cursor]);
+            assert_legible(
+                name,
+                "current match text",
+                theme.current_search_match_text,
+                &[theme.current_search_match],
+            );
+        });
+    }
+
+    /// Black on a dark theme and white on a light one are the colours applications use for
+    /// what they mean to be barely there, so those two only have to stay visible. Every
+    /// other colour is something an application prints for reading, and it keeps its colour
+    /// when selected or found, so it has to read on those tints as well as on the page.
+    #[test]
+    fn ansi_colours_are_legible_wherever_they_are_painted_apart_from_the_faint_neutrals() {
+        for_every_theme(|name, theme| {
+            let faint = if is_light(theme) { [7, 15] } else { [0, 8] };
+            let tints = [theme.selection, theme.search_match];
+            for (index, color) in theme.ansi.iter().enumerate() {
+                if faint.contains(&index) {
+                    let on_page = contrast(*color, theme.surface);
+                    assert!(on_page >= 1.3, "{}: {index} {on_page:.2}:1", name.id());
+                    for tint in tints {
+                        let on_tint = contrast(*color, tint);
+                        assert!(on_tint >= 1.1, "{}: {index} {on_tint:.2}:1", name.id());
+                    }
+                } else {
+                    assert_legible(name, "ANSI colour", *color, &[theme.surface]);
+                    assert_legible(name, "ANSI colour", *color, &tints);
+                }
+            }
+        });
     }
 
     #[test]
-    fn default_divider_and_raised_surface_stay_faint_but_visible() {
-        let theme = ThemeColors::default();
-        for surface in [theme.title_surface, theme.surface, theme.raised_surface] {
-            let divider = contrast(theme.divider, surface);
-            assert!((1.1..2.0).contains(&divider), "divider contrast {divider}");
+    fn the_failed_tab_mark_reads_on_the_sidebar_and_the_panels() {
+        for_every_theme(|name, theme| {
+            assert_legible(
+                name,
+                "danger",
+                theme.ansi[1],
+                &[theme.title_surface, theme.raised_surface],
+            );
+        });
+    }
+
+    #[test]
+    fn marks_that_carry_no_text_still_stand_out() {
+        for_every_theme(|name, theme| {
+            for fill in [
+                theme.surface,
+                theme.title_surface,
+                theme.raised_surface,
+                theme.hover_surface,
+            ] {
+                let accent = contrast(theme.accent, fill);
+                assert!(accent >= 3.0, "{}: accent {accent:.2}:1", name.id());
+            }
+            let cursor = contrast(theme.cursor, theme.surface);
+            assert!(cursor >= 3.0, "{}: cursor {cursor:.2}:1", name.id());
+        });
+    }
+
+    #[test]
+    fn dividers_stay_faint_but_visible_and_surfaces_stay_apart() {
+        for_every_theme(|name, theme| {
+            for surface in [theme.title_surface, theme.surface, theme.raised_surface] {
+                let divider = contrast(theme.divider, surface);
+                assert!(
+                    (1.1..2.0).contains(&divider),
+                    "{}: divider contrast {divider:.2}",
+                    name.id()
+                );
+            }
+            let steps = [
+                (
+                    "raised on sidebar",
+                    theme.raised_surface,
+                    theme.title_surface,
+                    1.03,
+                ),
+                ("raised on page", theme.raised_surface, theme.surface, 1.03),
+                ("sidebar on page", theme.title_surface, theme.surface, 1.03),
+                (
+                    "row hover on panel",
+                    theme.hover_surface,
+                    theme.raised_surface,
+                    1.1,
+                ),
+                (
+                    "selected row beside a hovered one",
+                    theme.selection,
+                    theme.hover_surface,
+                    1.05,
+                ),
+                ("selection on page", theme.selection, theme.surface, 1.2),
+                (
+                    "search match on page",
+                    theme.search_match,
+                    theme.surface,
+                    1.1,
+                ),
+                (
+                    "current match on page",
+                    theme.current_search_match,
+                    theme.surface,
+                    1.5,
+                ),
+            ];
+            for (what, fill, ground, least) in steps {
+                let step = contrast(fill, ground);
+                assert!(step >= least, "{}: {what} {step:.2}:1", name.id());
+            }
+        });
+    }
+
+    #[test]
+    fn every_theme_goes_by_the_name_the_setting_uses_for_it() {
+        for name in ThemeName::ALL {
+            assert_eq!(ThemeName::from_id(name.id()), Some(name));
         }
-        assert!(contrast(theme.raised_surface, theme.title_surface) > 1.0);
+        assert_eq!(ThemeName::from_id("Catppuccin Mocha"), None);
+        assert_eq!(ThemeColors::default(), ThemeName::default().colors());
+    }
+
+    #[test]
+    fn themes_are_told_apart_and_two_of_them_are_light() {
+        let surfaces: Vec<Rgb> = ThemeName::ALL
+            .iter()
+            .map(|name| name.colors().surface)
+            .collect();
+        for (index, surface) in surfaces.iter().enumerate() {
+            assert!(!surfaces[..index].contains(surface));
+        }
+        assert_eq!(
+            ThemeName::ALL
+                .into_iter()
+                .filter(|name| is_light(&name.colors()))
+                .count(),
+            2
+        );
     }
 
     #[test]

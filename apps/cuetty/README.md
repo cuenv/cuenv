@@ -235,7 +235,10 @@ and blocks meet with no seam at any line height. They keep the cell's foreground
 behave like text under a selection or a block cursor. Complete IME, ZWJ shaping, hyperlink, and emoji
 presentation correctness is deliberately not claimed.
 
-The built-in colour scheme is Catppuccin Mocha: Base fills the window, Mantle sets
+`theme` in CUE picks one of four complete palettes in `src/terminal/config.rs`:
+`catppuccin-mocha` (the default), `catppuccin-latte`, `graphite`, and `paper`. A test
+holds all of them to one contrast contract, so a new token or theme cannot quietly
+ship text that does not read. On the default, Base fills the window, Mantle sets
 the sidebar off from it when the window is opaque, Surface 0 draws faint dividers, Surface 1 tints
 selections, Yellow marks the current search match with Crust text on it and tints the others, Blue is
 the accent, and the
