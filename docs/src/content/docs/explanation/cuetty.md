@@ -228,7 +228,7 @@ name in its tooltip; `rail` is the project accent, so `rail: "#ff0000"` colours 
 small marker on the active tab while that tab is active and never fills the
 sidebar. Terminal panes are never framed, and the former `border` field is
 rejected as unknown. The title strip shows the active tab's name on the terminal's
-own surface, and the window takes the same name as its title in every titlebar state,
+own surface, with a small muted `cuetty` wordmark at its far end, and the window takes the same name as its title in every titlebar state,
 for window switchers and compositors. `titlebar: false` hides it while that tab is active and lets the
 terminal extend to the top of the window; it defaults to `true`. `keybindings: palette:` rebinds the task palette; see
 [Keybindings](#keybindings). Off macOS the strip draws only under client-side

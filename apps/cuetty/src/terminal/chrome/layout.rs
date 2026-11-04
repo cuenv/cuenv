@@ -63,6 +63,9 @@ pub(in crate::terminal) struct ShellPanels {
     pub(in crate::terminal) sidebar_frame: SidebarFrame,
 }
 
+/// What the title strip signs the window with.
+const WORDMARK: &str = "cuetty";
+
 /// Makes `this` move the window when dragged. GPUI's control area covers platforms
 /// that hit-test it, and Linux compositors have to be asked.
 fn draggable(this: Div) -> Div {
@@ -187,9 +190,23 @@ impl TerminalView {
             return shell.child(workspace).into_any_element();
         }
         let title = self.registry.active_tab_label();
+        // Sits in the margin the title leaves for the window controls' sake, over against
+        // them, so it can move neither the title nor the controls.
+        let wordmark = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(space::LG)
+            .flex()
+            .items_center()
+            .text_size(text::LABEL)
+            .font_weight(text::MEDIUM)
+            .text_color(colors.text_muted)
+            .child(WORDMARK);
         // No fill and no rule: the strip is the top of the window's one material,
         // holding the window controls and saying which tab is showing.
         let titlebar = draggable(div())
+            .relative()
             .h(size::TITLEBAR_HEIGHT)
             .w_full()
             .flex_shrink_0()
@@ -200,7 +217,8 @@ impl TerminalView {
             .px(size::WINDOW_CONTROLS_WIDTH)
             .text_size(text::LABEL)
             .text_color(colors.text_secondary)
-            .children(title.map(|title| div().min_w_0().truncate().child(title)));
+            .children(title.map(|title| div().min_w_0().truncate().child(title)))
+            .child(wordmark);
         shell.child(titlebar).child(workspace).into_any_element()
     }
 }
