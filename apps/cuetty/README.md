@@ -269,7 +269,8 @@ whose working directory supplied the catalogue. The
 `cuenv task --path … --package cuenv …` CLI path preserves its graph, cache,
 hook, secret-redaction, cancellation, and exit behaviour. Tasks with required
 parameters are staged at the prompt for editing instead of running
-incompletely. Directories without a task catalogue remain ordinary terminals.
+incompletely. Both panels take pointer input for themselves rather than passing
+it to the terminal beneath. Directories without a task catalogue remain ordinary terminals.
 
 On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
 compiler that GPUI needs. Runtime is only verified when

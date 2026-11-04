@@ -68,6 +68,9 @@ impl TerminalView {
         Some(
             div()
                 .absolute()
+                // The panel covers the terminal, so pointer input stops here
+                // instead of selecting or scrolling text beneath it.
+                .occlude()
                 .top(space::LG)
                 .right(space::LG)
                 .bottom(space::LG)

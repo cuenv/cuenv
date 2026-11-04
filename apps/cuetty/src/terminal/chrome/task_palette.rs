@@ -90,6 +90,9 @@ impl TerminalView {
             div()
                 .absolute()
                 .inset_0()
+                // The palette is modal over the terminal: pointer input stops
+                // here instead of selecting or scrolling text it covers.
+                .occlude()
                 .flex()
                 .justify_center()
                 .pt(size::PALETTE_TOP_OFFSET)
