@@ -1951,14 +1951,15 @@ impl TerminalView {
         let theme = TerminalTheme::from_config(&config);
         let window_background = theme.window_background();
         let factory: Arc<dyn TerminalSessionFactory> = Arc::new(RioTerminalFactory);
-        match SessionRegistry::start(
+        let started = SessionRegistry::start(
             factory.clone(),
             SessionGeometry {
                 surface: unmeasured_surface(),
                 scale,
                 cell: metrics.device_cell(),
             },
-        ) {
+        );
+        let (registry, sidebar, session) = match started {
             Ok((mut registry, wake_rx)) => {
                 let pane = registry.active_pane().expect("initial workspace pane");
                 registry.window_presence = window_presence(window);
@@ -1979,75 +1980,51 @@ impl TerminalView {
                         }
                         sidebar
                     });
-                let mut view = Self {
-                    registry,
-                    cuenv,
-                    config,
-                    metrics,
-                    theme,
-                    focus: cx.focus_handle(),
-                    renderer: Box::new(GridRenderer),
-                    workspace_bounds: Arc::new(Mutex::new(UNMEASURED_SURFACE)),
-                    window_background,
-                    window_decorations: Decorations::default(),
-                    task_palette_open: false,
-                    task_sidebar_open: false,
-                    task_query: String::new(),
-                    task_selection: 0,
-                    task_palette_scroll: ScrollHandle::new(),
-                    rail_scroll: ScrollHandle::new(),
-                    rail_revealed_tab: None,
-                    tab_hints_visible: false,
-                    tab_rename: None,
-                    tab_hint_request: 0,
-                    sidebar,
-                    window_title: APP_TITLE.into(),
-                    cursor_animator: CursorAnimator::new(std::time::Instant::now()),
-                    cursor_frame_due: None,
+                let session = StartedSession {
+                    pane,
+                    generation: SessionGeneration(1),
+                    wake_rx,
                 };
-                view.spawn_wake(
-                    StartedSession {
-                        pane,
-                        generation: SessionGeneration(1),
-                        wake_rx,
-                    },
-                    cx,
-                );
-                view.spawn_cwd_poll(cx);
-                view.refresh_cuenv_integration(cx);
-                view
+                (registry, sidebar, Some(session))
             }
             Err(error) => {
                 let mut registry = SessionRegistry::empty(factory);
                 registry.notice = Some(format!("Cuetty could not start Rio: {error}"));
-                Self {
-                    registry,
-                    cuenv,
-                    config,
-                    metrics,
-                    theme,
-                    focus: cx.focus_handle(),
-                    renderer: Box::new(GridRenderer),
-                    workspace_bounds: Arc::new(Mutex::new(UNMEASURED_SURFACE)),
-                    window_background,
-                    window_decorations: Decorations::default(),
-                    task_palette_open: false,
-                    task_sidebar_open: false,
-                    task_query: String::new(),
-                    task_selection: 0,
-                    task_palette_scroll: ScrollHandle::new(),
-                    rail_scroll: ScrollHandle::new(),
-                    rail_revealed_tab: None,
-                    tab_hints_visible: false,
-                    tab_rename: None,
-                    tab_hint_request: 0,
-                    sidebar: WindowSidebar::default(),
-                    window_title: APP_TITLE.into(),
-                    cursor_animator: CursorAnimator::new(std::time::Instant::now()),
-                    cursor_frame_due: None,
-                }
+                (registry, WindowSidebar::default(), None)
             }
+        };
+        let mut view = Self {
+            registry,
+            cuenv,
+            config,
+            metrics,
+            theme,
+            focus: cx.focus_handle(),
+            renderer: Box::new(GridRenderer),
+            workspace_bounds: Arc::new(Mutex::new(UNMEASURED_SURFACE)),
+            window_background,
+            window_decorations: Decorations::default(),
+            task_palette_open: false,
+            task_sidebar_open: false,
+            task_query: String::new(),
+            task_selection: 0,
+            task_palette_scroll: ScrollHandle::new(),
+            rail_scroll: ScrollHandle::new(),
+            rail_revealed_tab: None,
+            tab_hints_visible: false,
+            tab_rename: None,
+            tab_hint_request: 0,
+            sidebar,
+            window_title: APP_TITLE.into(),
+            cursor_animator: CursorAnimator::new(std::time::Instant::now()),
+            cursor_frame_due: None,
+        };
+        if let Some(session) = session {
+            view.spawn_wake(session, cx);
+            view.spawn_cwd_poll(cx);
+            view.refresh_cuenv_integration(cx);
         }
+        view
     }
     fn refresh_cuenv_integration(&mut self, cx: &mut Context<Self>) {
         let panes: Vec<_> = self.registry.sessions.keys().copied().collect();
