@@ -178,6 +178,7 @@ transparency: 10
 | `font.size` | Font size in pixels, 1–128 | 16 |
 | `font.lineHeight` | Line-height multiplier, 0.5–3 | 1.2 |
 | `font.calt` | Boolean: the font's contextual alternates, such as Monaspace's texture healing. Standard and contextual ligatures (`liga`, `clig`) stay off either way, and turning this off helps with a font whose `calt` draws ligatures | `true` |
+| `font.boldWeight` | Integer CSS weight for bold text, 100–900. A family without that exact weight uses its nearest | 600 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 14 each |
 | `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and sidebar share this opacity | 0 |
 | `accent` | Quoted `#RRGGBB`; the window's accent, for instance to match a compositor's window border. See [Accent colours](#accent-colours) | Catppuccin Mocha blue |

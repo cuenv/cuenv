@@ -301,6 +301,7 @@ The appearance fields are optional and apply to the active tab:
 | `font.size` | 1–128 pixels | 16 |
 | `font.lineHeight` | 0.5–3 multiplier | 1.2 |
 | `font.calt` | Boolean: the font's contextual alternates, such as Monaspace's texture healing. Ligatures stay off either way | `true` |
+| `font.boldWeight` | 100–900 integer; a family without that exact weight uses its nearest | 600 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | 0–128 integer pixels per edge | 14 each |
 | `transparency` | 0–100 integer percent | 0 |
 

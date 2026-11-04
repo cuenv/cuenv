@@ -2,8 +2,8 @@ use super::config::{FontConfig, Rgb as ConfigRgb, TerminalConfig};
 use super::model::{Color, Rgb};
 use super::sizing::CellSize;
 use gpui::{
-    Font, FontFallbacks, FontFeatures, Pixels, Point, Size, TextSystem, WindowBackgroundAppearance,
-    font, point, px,
+    Font, FontFallbacks, FontFeatures, FontWeight, Pixels, Point, Size, TextSystem,
+    WindowBackgroundAppearance, font, point, px,
 };
 
 use std::sync::Arc;
@@ -192,6 +192,7 @@ impl ScaleFactor {
 pub struct TerminalMetrics {
     pub font: Font,
     pub font_size: Pixels,
+    pub bold_weight: FontWeight,
     /// Raw font-derived geometry in logical pixels. It is only ever read through
     /// `device_cell`, so painting and Rio's resize boundary share one grid.
     pub cell: Size<Pixels>,
@@ -219,6 +220,7 @@ impl TerminalMetrics {
         Self {
             font,
             font_size,
+            bold_weight: FontWeight(f32::from(config.font.bold_weight)),
             cell: Size { width, height },
             scale,
         }
@@ -267,6 +269,7 @@ mod tests {
         TerminalMetrics {
             font: terminal_font(),
             font_size: px(TERMINAL_FONT_SIZE),
+            bold_weight: FontWeight::SEMIBOLD,
             cell: Size {
                 width: px(9.6),
                 height: terminal_line_height(

@@ -137,24 +137,6 @@ impl TerminalGrid {
         )
     }
 
-    fn font_for(&self, cell: &TerminalCell) -> Font {
-        Font {
-            family: self.metrics.font.family.clone(),
-            features: self.metrics.font.features.clone(),
-            fallbacks: self.metrics.font.fallbacks.clone(),
-            weight: if cell.style.bold {
-                FontWeight::BOLD
-            } else {
-                FontWeight::NORMAL
-            },
-            style: if cell.style.italic {
-                FontStyle::Italic
-            } else {
-                FontStyle::Normal
-            },
-        }
-    }
-
     /// The colour a cell's glyph is painted in.
     fn foreground_at(&self, cell: &TerminalCell, row: &RowPaint<'_>, column: usize) -> Rgb {
         let position = CellPosition {
@@ -242,7 +224,7 @@ impl TerminalGrid {
         };
         let run = TextRun {
             len: text.len(),
-            font: self.font_for(first),
+            font: cell_font(first, &self.metrics),
             // Colours are per glyph below; this only satisfies the shaper.
             color: Hsla::default(),
             background_color: None,
@@ -643,6 +625,25 @@ struct RowPaint<'a> {
     row: usize,
     cells: &'a [TerminalCell],
     overlays: &'a [CellOverlaySpan],
+}
+
+/// The font a cell's text is shaped in.
+fn cell_font(cell: &TerminalCell, metrics: &TerminalMetrics) -> Font {
+    Font {
+        family: metrics.font.family.clone(),
+        features: metrics.font.features.clone(),
+        fallbacks: metrics.font.fallbacks.clone(),
+        weight: if cell.style.bold {
+            metrics.bold_weight
+        } else {
+            FontWeight::NORMAL
+        },
+        style: if cell.style.italic {
+            FontStyle::Italic
+        } else {
+            FontStyle::Normal
+        },
+    }
 }
 
 /// Centres a font's line in a cell. Platforms report the descent as negative, which is
@@ -3390,6 +3391,23 @@ mod tests {
             colors(&cell, &TerminalTheme::default(), CellLayer::Cell).0,
             Rgb(150, 150, 150)
         );
+    }
+
+    #[test]
+    fn bold_cells_take_the_configured_weight() {
+        let mut config = TerminalConfig::default();
+        config.font.bold_weight = 800;
+        let metrics = TerminalMetrics {
+            font: gpui::font("Test"),
+            font_size: px(16.0),
+            bold_weight: FontWeight(f32::from(config.font.bold_weight)),
+            cell: size(px(9.0), px(19.0)),
+            scale: ScaleFactor::new(1.0),
+        };
+        let mut cell = TerminalCell::narrow('x');
+        assert_eq!(cell_font(&cell, &metrics).weight, FontWeight::NORMAL);
+        cell.style.bold = true;
+        assert_eq!(cell_font(&cell, &metrics).weight, FontWeight(800.0));
     }
 
     #[test]

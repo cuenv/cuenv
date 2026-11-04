@@ -33,6 +33,10 @@ pub struct FontConfig {
     /// Whether the font's contextual alternates (`calt`) apply, which is what Monaspace's
     /// texture healing is built on. Ligatures (`liga`, `clig`) are always off.
     pub contextual_alternates: bool,
+    /// CSS weight for bold text, 100 to 900. A monospaced 700 fills in small counters
+    /// at terminal sizes, so the default stops short of it; a family without this exact
+    /// weight uses its nearest.
+    pub bold_weight: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +138,7 @@ pub enum ConfigError {
     EmptyFontFamily,
     InvalidFontSize(f32),
     InvalidLineHeight(f32),
+    InvalidBoldWeight(u16),
     InvalidTerminalTransparency(u8),
     InvalidTerminalPadding(u16),
     InvalidScrollback,
@@ -155,6 +160,9 @@ impl fmt::Display for ConfigError {
                 f,
                 "line-height multiplier must be between 0.5 and 3, got {value}"
             ),
+            Self::InvalidBoldWeight(value) => {
+                write!(f, "bold weight must be between 100 and 900, got {value}")
+            }
             Self::InvalidTerminalTransparency(value) => write!(
                 f,
                 "terminal transparency must be between 0 and 100%, got {value}%"
@@ -194,6 +202,7 @@ impl Default for TerminalConfig {
                 size_px: 16.0,
                 line_height_multiplier: 1.2,
                 contextual_alternates: true,
+                bold_weight: 600,
             },
             terminal_transparency_percent: 0,
             terminal_padding: TerminalPadding::default(),
@@ -289,6 +298,9 @@ impl TerminalConfig {
             return Err(ConfigError::InvalidLineHeight(
                 self.font.line_height_multiplier,
             ));
+        }
+        if !(100..=900).contains(&self.font.bold_weight) {
+            return Err(ConfigError::InvalidBoldWeight(self.font.bold_weight));
         }
         if self.terminal_transparency_percent > 100 {
             return Err(ConfigError::InvalidTerminalTransparency(
@@ -475,6 +487,14 @@ mod tests {
             config.validate(),
             Err(ConfigError::InvalidTerminalPadding(129))
         );
+        for weight in [99, 901] {
+            let mut config = TerminalConfig::default();
+            config.font.bold_weight = weight;
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::InvalidBoldWeight(weight))
+            );
+        }
     }
 
     #[test]

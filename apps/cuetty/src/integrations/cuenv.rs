@@ -321,6 +321,8 @@ struct FontDto {
     line_height: Option<f32>,
     #[serde(default)]
     calt: Option<bool>,
+    #[serde(default)]
+    bold_weight: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -666,6 +668,9 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         if let Some(calt) = font.calt {
             terminal.font.contextual_alternates = calt;
         }
+        if let Some(bold_weight) = font.bold_weight {
+            terminal.font.bold_weight = bold_weight;
+        }
     }
     if let Some(padding) = dto.padding {
         let edges = &mut terminal.terminal_padding;
@@ -978,6 +983,20 @@ mod tests {
         assert_eq!(terminal.terminal_padding.bottom, 14);
         assert_eq!(terminal.terminal_padding.left, 2);
         assert_eq!(terminal.terminal_transparency_percent, 40);
+    }
+
+    #[test]
+    fn the_bold_weight_reaches_the_terminal_and_is_validated() {
+        let Evaluation::Valid(presentation) =
+            parse_value(serde_json::json!({"font": {"boldWeight": 700}}))
+        else {
+            panic!("expected a valid presentation");
+        };
+        assert_eq!(presentation.terminal.font.bold_weight, 700);
+        for invalid in [50.0, 950.0, 600.5] {
+            let value = serde_json::json!({"font": {"boldWeight": invalid}});
+            assert!(matches!(parse_value(value), Evaluation::Invalid(_)));
+        }
     }
 
     #[test]
