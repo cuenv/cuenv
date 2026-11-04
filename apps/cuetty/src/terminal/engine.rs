@@ -1,5 +1,6 @@
 use super::chrome::{
-    ChromeAssets, render_exit_notice, render_shell_message, resolve_ui_font, traffic_light_position,
+    ChromeAssets, UNFOCUSED_TERMINAL_OPACITY, render_exit_notice, render_shell_message,
+    resolve_ui_font, traffic_light_position,
 };
 use super::color::{blend, dimmed, with_minimum_contrast};
 use super::config::TerminalConfig;
@@ -42,7 +43,7 @@ use gpui::{
     MouseUpEvent, ParentElement, PathBuilder, Pixels, Render, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, SharedString, Size, StrikethroughStyle, Styled, SystemMenuType, TextRun,
     Timer, UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions, actions, canvas, div, point, px, quad, size,
+    WindowOptions, actions, canvas, div, point, prelude::FluentBuilder, px, quad, size,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -3038,7 +3039,8 @@ impl Render for TerminalView {
         let viewport_origin = Arc::clone(&state.viewport_origin);
         let entity = cx.weak_entity();
         // Focus stays with the terminal while another window is active, but keys don't.
-        let focus = if self.focus.is_focused(window) && window.is_window_active() {
+        let window_active = window.is_window_active();
+        let focus = if self.focus.is_focused(window) && window_active {
             CursorFocus::Focused
         } else {
             CursorFocus::Unfocused
@@ -3158,6 +3160,9 @@ impl Render for TerminalView {
                     div()
                         .relative()
                         .size_full()
+                        .when(!window_active, |this| {
+                            this.opacity(UNFOCUSED_TERMINAL_OPACITY)
+                        })
                         .track_focus(&self.focus)
                         .on_key_down(cx.listener(Self::key))
                         .on_modifiers_changed(cx.listener(Self::modifiers_changed))

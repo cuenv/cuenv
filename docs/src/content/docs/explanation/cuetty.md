@@ -123,6 +123,9 @@ The current usable slice includes:
   emptied, which hands the tab back to its derived name.
 - Dragging a tab onto another moves it to that tab's place in the list, which the number
   keys and tab switching then follow.
+- The terminal fades back slightly while its window does not have the keyboard, and the
+  cursor becomes an outline, so it is clear at a glance where typing would go. Chrome keeps
+  its colours, and the fade costs an idle window no redraws.
 - A hint at the foot of the expanded sidebar naming the active tab's task palette chord,
   such as `⌘K` or `Ctrl+K`, shown only where the directory has a task catalogue and a live
   shell to run it, and so the chord does something. Clicking it opens the palette.
@@ -399,7 +402,8 @@ support:
 - Rich task progress, cancellation controls, and source-linked diagnostics;
   the current task surface launches the canonical CLI in a terminal tab.
 - Wasm plugins and a plugin/component-tree runtime.
-- Split-pane session allocation, plus live workspace restore/reconnect.
+- Split-pane session allocation, plus live workspace restore/reconnect. Dimming an inactive
+  pane waits on this too, since a window only ever shows one pane.
 
 Earlier implementation work recorded focused Rust validation and macOS bundle
 verification. For the current direct-`rio-vt` path, Linux app compilation and
