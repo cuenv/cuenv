@@ -257,7 +257,8 @@ pub(super) struct ChromeColors {
     pub(super) divider: Rgba,
     /// Outline of floating panels, opaque like the panels themselves.
     pub(super) panel_outline: Rgba,
-    /// The theme accent. A project accent replaces it on the active tab marker.
+    /// The window's accent: the `accent` setting or the theme's. A project's `rail`
+    /// replaces it on the active tab marker only.
     pub(super) accent: Rgba,
 }
 

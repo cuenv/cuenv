@@ -168,6 +168,7 @@ transparency: 10
 | `font.lineHeight` | Line-height multiplier, 0.5–3 | 1.2 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 14 each |
 | `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and sidebar share this opacity | 0 |
+| `accent` | Quoted `#RRGGBB`; the window's accent, for instance to match a compositor's window border. See [Accent colours](#accent-colours) | Catppuccin Mocha blue |
 | `sidebar` | `"expanded"` or `"collapsed"`: how a window's sidebar starts. A window opens with the global package's look and sidebar when that evaluates within half a second, so its first frame is already the right size, then its first directory's evaluation settles the setting. Only that first configuration is read, so changing directory or editing the value later does not move it, and the toggle and its shortcut outrank it for the life of the window | `"expanded"` |
 
 Fields are optional. The active tab's settings determine the rendered grid,
@@ -186,6 +187,22 @@ Catppuccin Mocha blue project accent. It applies while the shell is in the repos
 root; subdirectories can provide their own `package cuetty` configuration.
 When using the CUE CLI at the root, select the package explicitly, for example
 `cue export .:cuetty` or `cue export .:cuenv`.
+
+### Accent colours
+
+Two settings colour the chrome, and neither ever fills a region:
+
+- `accent` is the window's accent. It marks the active tab, the integration notice,
+  and the task palette's caret. Set it in the global package to match something
+  outside Cuetty, such as a compositor's window border.
+- `rail` is a project's accent. It colours only the active tab's marker, and only
+  while that tab is in a directory that sets it.
+
+The active tab's marker therefore uses `rail`, then `accent`, then the theme's
+accent. Everything else uses `accent`, then the theme's accent. A global `accent`
+and a directory's `rail` are different fields, so they never conflict during
+unification. To keep the marker on your `accent` everywhere, leave `rail` unset in
+the directories you control.
 
 ### Global configuration
 

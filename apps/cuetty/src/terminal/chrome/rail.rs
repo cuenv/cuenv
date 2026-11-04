@@ -13,8 +13,8 @@ use gpui::{
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
 };
 
-/// The active tab's marker: the project accent from a matching `package cuetty`,
-/// or the theme accent. The colour only ever fills this small mark, so a project
+/// The active tab's marker: the project's `rail` from a matching `package cuetty`,
+/// or the window's accent. The colour only ever fills this small mark, so a project
 /// can never choose a fill the rail's text has to survive.
 fn active_tab_marker_color(project_accent: Option<RailColor>, colors: &ChromeColors) -> Rgba {
     project_accent.map_or(colors.accent, |RailColor(red, green, blue)| {

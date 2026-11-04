@@ -248,7 +248,10 @@ transparency: 10
 
 `banner` is a bounded single line and `rail` must be a quoted `#RRGGBB`
 project accent. It colours the small marker on the active tab while that tab is
-active, in place of the theme accent, and never fills the sidebar. Terminal panes are
+active, in place of the window's accent, and never fills the sidebar. `accent`, also
+a quoted `#RRGGBB`, is that window accent, for instance to match a compositor's
+window border: the marker uses `rail`, then `accent`, then the theme's accent, and
+the notice marker and palette caret use `accent`, then the theme's. Terminal panes are
 never framed; the legacy `border` field is rejected. `titlebar: false` hides
 the Cuetty title strip while that tab is active so the terminal extends to the
 top of the window; it defaults to `true`. With the strip hidden only the small gap

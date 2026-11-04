@@ -4,7 +4,7 @@
 //! validated representation, so configuration cannot reach a renderer or a
 //! session directly.
 
-use crate::terminal::config::TerminalConfig;
+use crate::terminal::config::{Rgb, TerminalConfig};
 use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
@@ -281,6 +281,8 @@ struct CuettyDto {
     banner: Option<String>,
     #[serde(default)]
     rail: Option<String>,
+    #[serde(default)]
+    accent: Option<String>,
     #[serde(default)]
     titlebar: Option<bool>,
     #[serde(default)]
@@ -607,10 +609,19 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         value => value,
     };
     let rail = match dto.rail {
-        Some(value) => match parse_color(&value) {
+        Some(value) => match parse_color("rail", &value) {
             Ok(color) => Some(color),
             Err(error) => return Evaluation::Invalid(error),
         },
+        None => None,
+    };
+    let accent = match dto
+        .accent
+        .as_deref()
+        .map(|value| parse_color("accent", value))
+    {
+        Some(Ok(RailColor(red, green, blue))) => Some(Rgb(red, green, blue)),
+        Some(Err(error)) => return Evaluation::Invalid(error),
         None => None,
     };
     let sidebar = match dto.sidebar.as_deref().map(SidebarMode::parse).transpose() {
@@ -653,6 +664,9 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
             edges.left = left;
         }
     }
+    if let Some(accent) = accent {
+        terminal.theme.accent = accent;
+    }
     if let Some(transparency) = dto.transparency {
         terminal.terminal_transparency_percent = transparency;
     }
@@ -672,15 +686,13 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
     })
 }
 
-fn parse_color(value: &str) -> Result<RailColor, String> {
+fn parse_color(field: &str, value: &str) -> Result<RailColor, String> {
+    let invalid = || format!("{field} must use quoted #RRGGBB syntax");
     let bytes = value.as_bytes();
     if bytes.len() != 7 || bytes[0] != b'#' || !bytes[1..].iter().all(u8::is_ascii_hexdigit) {
-        return Err("rail must use quoted #RRGGBB syntax".into());
+        return Err(invalid());
     }
-    let channel = |from| {
-        u8::from_str_radix(&value[from..from + 2], 16)
-            .map_err(|_| "rail must use quoted #RRGGBB syntax".to_string())
-    };
+    let channel = |from| u8::from_str_radix(&value[from..from + 2], 16).map_err(|_| invalid());
     Ok(RailColor(channel(1)?, channel(3)?, channel(5)?))
 }
 
@@ -1020,6 +1032,55 @@ mod tests {
             parse_value(serde_json::json!({"titlebar": "no"})),
             Evaluation::Invalid(_)
         ));
+    }
+
+    #[test]
+    fn the_accent_sets_the_theme_and_leaves_the_project_rail_alone() {
+        let Evaluation::Valid(presentation) =
+            parse_value(serde_json::json!({"accent": "#a6e3a1", "rail": "#ff0000"}))
+        else {
+            panic!("expected a valid presentation");
+        };
+        assert_eq!(presentation.terminal.theme.accent, Rgb(166, 227, 161));
+        assert_eq!(presentation.rail, Some(RailColor(255, 0, 0)));
+
+        let Evaluation::Valid(presentation) = parse_value(serde_json::json!({"rail": "#ff0000"}))
+        else {
+            panic!("expected a valid presentation");
+        };
+        assert_eq!(
+            presentation.terminal.theme.accent,
+            TerminalConfig::default().theme.accent
+        );
+    }
+
+    #[test]
+    fn colour_errors_name_the_field_at_fault() {
+        for (value, field) in [
+            (serde_json::json!({"accent": "green"}), "accent"),
+            (serde_json::json!({"accent": "#aéabc"}), "accent"),
+            (serde_json::json!({"rail": "red"}), "rail"),
+        ] {
+            let Evaluation::Invalid(error) = parse_value(value) else {
+                panic!("expected an invalid presentation");
+            };
+            assert!(error.starts_with(field), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_global_accent_coexists_with_a_directory_rail() {
+        let (root, source) = layered_source(
+            "accent-layered",
+            Some("rail: \"#ff0000\""),
+            Some("accent: \"#a6e3a1\""),
+        );
+        let Evaluation::Valid(presentation) = source.evaluate() else {
+            panic!("expected a unified presentation");
+        };
+        assert_eq!(presentation.terminal.theme.accent, Rgb(166, 227, 161));
+        assert_eq!(presentation.rail, Some(RailColor(255, 0, 0)));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
