@@ -3,8 +3,8 @@ use crate::integrations::cuenv::{SidebarMode, TitlebarVisibility};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
 use gpui::{
-    InteractiveElement, IntoElement, ParentElement, SharedString, Styled, WindowControlArea, div,
-    px,
+    Div, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString, Styled,
+    WindowControlArea, div, px,
 };
 
 /// A centred status line that stands in for the terminal when a pane has no
@@ -24,6 +24,15 @@ pub(in crate::terminal) fn render_shell_message(
         .text_color(colors.text_secondary)
         .child(message.into())
         .into_any_element()
+}
+
+/// Makes `this` move the window when dragged. GPUI's control area covers platforms
+/// that hit-test it, and Linux compositors have to be asked.
+fn draggable(this: Div) -> Div {
+    this.window_control_area(WindowControlArea::Drag)
+        .on_mouse_down(MouseButton::Left, |_event, window, _cx| {
+            window.start_window_move();
+        })
 }
 
 impl TerminalView {
@@ -86,12 +95,7 @@ impl TerminalView {
             .bg(colors.material)
             .border_b(border::HAIRLINE)
             .border_color(colors.divider)
-            .child(
-                div()
-                    .h_full()
-                    .w(size::WINDOW_CONTROLS_WIDTH)
-                    .window_control_area(WindowControlArea::Drag),
-            )
+            .child(draggable(div().h_full().w(size::WINDOW_CONTROLS_WIDTH)))
             .child(
                 div()
                     .h_full()
@@ -102,12 +106,7 @@ impl TerminalView {
                     .text_color(colors.text)
                     .child("Cuetty"),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .window_control_area(WindowControlArea::Drag),
-            );
+            .child(draggable(div().flex_1().h_full()));
         shell.child(titlebar).child(workspace).into_any_element()
     }
 }
