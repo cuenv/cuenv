@@ -52,6 +52,11 @@ pub(super) mod text {
     /// newline-separated lines alike, rather than filling the window, as an
     /// evaluation error can run to many lines.
     pub(in crate::terminal::chrome) const TOOLTIP_MAX_LINES: usize = 12;
+    /// How much of an error a tab shows in place of its terminal; a session's errors are
+    /// a sentence or two, but they are not ours and can run on.
+    pub(in crate::terminal::chrome) const SESSION_STATE_DETAIL_LINES: usize = 6;
+    /// Characters of `BODY` text that sit comfortably on one line of that message.
+    pub(in crate::terminal::chrome) const SESSION_STATE_DETAIL_LINE_CHARS: usize = 64;
     pub(in crate::terminal::chrome) const REGULAR: FontWeight = FontWeight::NORMAL;
     pub(in crate::terminal::chrome) const MEDIUM: FontWeight = FontWeight::MEDIUM;
     pub(in crate::terminal::chrome) const STRONG: FontWeight = FontWeight::SEMIBOLD;
@@ -159,6 +164,8 @@ pub(super) mod size {
     /// so neither appearing moves the name.
     pub(in crate::terminal::chrome) const TAB_ACTION: Pixels = px(20.0);
     pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
+    /// The measure of the message a tab shows in place of its terminal.
+    pub(in crate::terminal::chrome) const SESSION_STATE_WIDTH: Pixels = px(440.0);
 }
 
 /// How far the terminal's colours move towards its background while its window does

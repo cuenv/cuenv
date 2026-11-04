@@ -18,6 +18,7 @@ use rio_vt::event::{EventListener, Msg, RioEvent, WindowId, WindowSize};
 use rio_vt::performer::{Machine, State};
 use rio_vt::teletypewriter::{self, Pty};
 use std::borrow::Cow;
+use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
@@ -26,8 +27,18 @@ pub struct SessionStart {
     pub wake_rx: async_channel::Receiver<()>,
 }
 
+/// The session a factory is asked for.
+#[derive(Clone, Copy, Debug)]
+pub struct SessionRequest<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub cell: CellSize,
+    /// Where its shell starts. `None` leaves that to the default.
+    pub working_directory: Option<&'a Path>,
+}
+
 pub trait TerminalSessionFactory: Send + Sync {
-    fn start(&self, width: u32, height: u32, cell: CellSize) -> Result<SessionStart, String>;
+    fn start(&self, request: SessionRequest<'_>) -> Result<SessionStart, String>;
 }
 
 fn default_working_directory() -> Option<String> {
@@ -36,10 +47,19 @@ fn default_working_directory() -> Option<String> {
         .filter(|directory| !directory.is_empty())
 }
 
+/// Where a shell asked to start in `requested` starts. A path the PTY cannot be handed
+/// as text goes to the default like an absent one.
+fn working_directory_for(requested: Option<&Path>) -> Option<String> {
+    requested
+        .and_then(Path::to_str)
+        .map(str::to_owned)
+        .or_else(default_working_directory)
+}
+
 pub struct RioTerminalFactory;
 impl TerminalSessionFactory for RioTerminalFactory {
-    fn start(&self, width: u32, height: u32, cell: CellSize) -> Result<SessionStart, String> {
-        RioTerminalSession::new(width, height, cell).map(|(session, wake_rx)| SessionStart {
+    fn start(&self, request: SessionRequest<'_>) -> Result<SessionStart, String> {
+        RioTerminalSession::new(request).map(|(session, wake_rx)| SessionStart {
             session: Box::new(session),
             wake_rx,
         })
@@ -293,14 +313,13 @@ pub struct RioTerminalSession {
 }
 
 impl RioTerminalSession {
-    pub fn new(
-        width: u32,
-        height: u32,
-        cell: CellSize,
-    ) -> Result<(Self, async_channel::Receiver<()>), String> {
+    pub fn new(request: SessionRequest<'_>) -> Result<(Self, async_channel::Receiver<()>), String> {
         Self::with_options(
-            terminal_size(width, height, cell),
-            SessionOptions::default(),
+            terminal_size(request.width, request.height, request.cell),
+            SessionOptions {
+                working_directory: working_directory_for(request.working_directory),
+                ..SessionOptions::default()
+            },
         )
     }
 
@@ -593,6 +612,19 @@ impl Drop for RioTerminalSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_requested_directory_is_where_the_shell_starts() {
+        assert_eq!(
+            working_directory_for(Some(Path::new("/srv/project"))).as_deref(),
+            Some("/srv/project")
+        );
+    }
+
+    #[test]
+    fn with_no_directory_requested_the_shell_starts_at_the_default() {
+        assert_eq!(working_directory_for(None), default_working_directory());
+    }
 
     // Rio's process-wide Unix child notifications must not overlap between
     // these host integration probes. Recover poison so one failed regression

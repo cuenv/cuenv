@@ -1,3 +1,4 @@
+use super::clamp::TextBudget;
 use super::tokens::{
     ChromeColors, Elevation, elevated, size, space, text, tooltip_max_height, ui_font_family,
 };
@@ -12,38 +13,14 @@ fn tooltip_needs_wrapping(label: &str) -> bool {
     label.contains('\n') || label.chars().count() > text::TOOLTIP_LINE_CHARS
 }
 
-/// Lines `line` takes up once wrapped. An estimate from its length: wrapping
-/// happens on word boundaries in a proportional font.
-fn tooltip_line_cost(line: &str) -> usize {
-    line.chars()
-        .count()
-        .div_ceil(text::TOOLTIP_LINE_CHARS)
-        .max(1)
-}
+/// How much a tooltip says.
+const TOOLTIP_BUDGET: TextBudget = TextBudget {
+    lines: text::TOOLTIP_MAX_LINES,
+    line_chars: text::TOOLTIP_LINE_CHARS,
+};
 
-/// Cuts `label` to the tooltip's line limit, ending in an ellipsis when it has to
-/// cut. GPUI's `line_clamp` only limits soft wraps, so each newline in a message
-/// would otherwise add a line it never counts.
 fn clamped_tooltip_label(label: &str) -> String {
-    let label = label.trim_end();
-    let lines: usize = label.lines().map(tooltip_line_cost).sum();
-    if lines <= text::TOOLTIP_MAX_LINES {
-        return label.to_string();
-    }
-    label
-        .lines()
-        .scan(text::TOOLTIP_MAX_LINES - 1, |remaining, line| {
-            let kept = tooltip_line_cost(line).min(*remaining);
-            *remaining -= kept;
-            (kept > 0).then(|| {
-                line.chars()
-                    .take(kept * text::TOOLTIP_LINE_CHARS)
-                    .collect::<String>()
-            })
-        })
-        .chain(std::iter::once("…".to_string()))
-        .collect::<Vec<_>>()
-        .join("\n")
+    TOOLTIP_BUDGET.clamp(label)
 }
 
 /// A tooltip painted from the chrome tokens. GPUI draws tooltips as their own
@@ -103,7 +80,10 @@ mod tests {
     }
 
     fn visual_lines(label: &str) -> usize {
-        label.lines().map(tooltip_line_cost).sum()
+        label
+            .lines()
+            .map(|line| TOOLTIP_BUDGET.line_cost(line))
+            .sum()
     }
 
     #[test]

@@ -137,6 +137,12 @@ The current usable slice includes:
   place over 140ms while the row fills hand over. The task palette fades in over 120ms,
   already taking keys as it does. Nothing draws once it has landed, and
   `motion: "reduced"`, or the platform's own setting, makes all of it land at once.
+- A designed state in place of a terminal that cannot be shown. A tab whose session broke
+  says what went wrong and offers Restart shell, which starts a fresh shell in the same tab
+  and the same directory with the same look, or Close tab. A directory that has since gone
+  starts it in the home directory instead. A window with no terminal, because no shell would
+  start, says why and offers New tab. Enter takes the first of these and the usual chords
+  keep working. Restarting that fails stays put and says why.
 - Three elevations for whatever floats over the terminal, each one token for its shadow,
   outline, fill, and corners: tooltips and a dragged tab sit just off the surface, the task
   sidebar floats, and the task palette is the highest thing in the window.

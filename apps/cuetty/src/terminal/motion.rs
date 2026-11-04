@@ -271,6 +271,8 @@ pub(super) enum HoverTarget {
     Button(SidebarButton),
     PaletteRow(usize),
     TaskRow(usize),
+    /// A way out of a tab with no terminal to show, by its place among them.
+    SessionAction(usize),
 }
 
 /// The tabs as this draw has them.

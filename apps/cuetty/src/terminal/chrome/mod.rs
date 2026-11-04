@@ -3,18 +3,19 @@
 //! The terminal engine owns sessions and input; this module only turns view
 //! state into GPUI elements around the terminal surface.
 
+mod clamp;
 mod icons;
 mod layout;
 mod rail;
+mod session_state;
 mod task_palette;
 mod task_sidebar;
 mod tokens;
 mod tooltip;
 
 pub(super) use icons::ChromeAssets;
-pub(super) use layout::{
-    ShellPanels, exit_notice_height, render_exit_notice, render_shell_message, sidebar_width,
-};
+pub(super) use layout::{ShellPanels, exit_notice_height, render_exit_notice, sidebar_width};
+pub(super) use session_state::SessionProblem;
 pub(super) use tokens::{UNFOCUSED_TERMINAL_FADE, resolve_ui_font, traffic_light_position};
 
 use super::engine::TerminalView;

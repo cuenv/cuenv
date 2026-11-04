@@ -1,6 +1,6 @@
 use super::chrome::{
-    ChromeAssets, ShellPanels, UNFOCUSED_TERMINAL_FADE, exit_notice_height, render_exit_notice,
-    render_shell_message, resolve_ui_font, sidebar_width, traffic_light_position,
+    ChromeAssets, SessionProblem, ShellPanels, UNFOCUSED_TERMINAL_FADE, exit_notice_height,
+    render_exit_notice, resolve_ui_font, sidebar_width, traffic_light_position,
 };
 use super::color::{blend, dimmed, with_minimum_contrast};
 use super::config::TerminalConfig;
@@ -11,8 +11,8 @@ use super::events::ControlEvent;
 use super::git_branch::BranchProbe;
 use super::glyphs::{GlyphShape, drawn_glyph, is_drawn, is_graphic};
 use super::host::{
-    RioTerminalFactory, SessionStart, TerminalScroll, TerminalSession, TerminalSessionFactory,
-    TerminalWheel,
+    RioTerminalFactory, SessionRequest, SessionStart, TerminalScroll, TerminalSession,
+    TerminalSessionFactory, TerminalWheel,
 };
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::interaction::{CellHitTest, InteractionState, SearchKey};
@@ -1139,10 +1139,10 @@ impl PaneState {
         self.status.failure().is_some()
     }
 
-    /// The tasks this pane can run. A shell that has gone has nowhere to run them, so
-    /// nothing should go on offering any.
+    /// The tasks this pane can run. A shell that has gone or broken has nowhere to run
+    /// them, so nothing should go on offering any.
     pub(super) fn task_catalogue(&self) -> &[CuenvTask] {
-        if self.has_exited() {
+        if self.has_exited() || self.error.is_some() {
             &[]
         } else {
             &self.cuenv.tasks
@@ -1256,10 +1256,22 @@ fn closes_exited_tab(event: &gpui::KeyDownEvent) -> bool {
         return false;
     }
     match event.keystroke.key.as_str() {
-        "enter" => !(control || alt || shift || platform),
         "d" => control && !(alt || shift || platform),
-        _ => false,
+        _ => takes_offered_action(event),
     }
+}
+
+/// Whether a key takes the action a tab with no working terminal is offering: a fresh
+/// press of a plain Enter, since one held from before the failure was not meant for it.
+fn takes_offered_action(event: &gpui::KeyDownEvent) -> bool {
+    let gpui::Modifiers {
+        control,
+        alt,
+        shift,
+        platform,
+        function: _,
+    } = event.keystroke.modifiers;
+    !event.is_held && event.keystroke.key == "enter" && !(control || alt || shift || platform)
 }
 
 /// What the poll can change about a pane, for telling whether it did.
@@ -1333,7 +1345,7 @@ impl SessionRegistry {
         geometry: SessionGeometry,
     ) -> Result<(Self, async_channel::Receiver<()>), RegistryError> {
         let start = geometry
-            .start_session(factory.as_ref())
+            .start_session(factory.as_ref(), None)
             .map_err(RegistryError::Session)?;
         let workspace = WorkspaceShell::new()
             .map_err(ShellError::from)
@@ -1387,7 +1399,7 @@ impl SessionRegistry {
         RegistryError,
     > {
         let mut start = geometry
-            .start_session(self.factory.as_ref())
+            .start_session(self.factory.as_ref(), None)
             .map_err(RegistryError::Session)?;
         let presentation = self
             .active_pane()
@@ -1401,16 +1413,55 @@ impl SessionRegistry {
                 return Err(RegistryError::Workspace(error));
             }
         };
-        let generation = SessionGeneration(self.next_generation);
-        self.next_generation = self
-            .next_generation
-            .checked_add(1)
-            .expect("session generation exhausted");
+        let generation = self.take_generation();
         let mut state = PaneState::new(generation, start.session, geometry.surface);
         state.cuenv.presentation = presentation;
         self.sessions.insert(target.pane, state);
         self.notice = None;
         Ok((target.pane, generation, start.wake_rx))
+    }
+
+    fn take_generation(&mut self) -> SessionGeneration {
+        let generation = SessionGeneration(self.next_generation);
+        // Even a session a millisecond would take half a billion years to get here.
+        self.next_generation = self.next_generation.wrapping_add(1);
+        generation
+    }
+
+    /// Replaces a pane's session with a fresh shell, in the same tab and the same directory
+    /// where that still exists. All the pane knows from that directory stays, its project's
+    /// look included, until the shell is seen to be somewhere else. The new generation
+    /// leaves anything the old session still has on the way to be ignored. If no shell will
+    /// start, the pane stays as it was.
+    fn restart_pane(
+        &mut self,
+        pane: crate::workspace::PaneId,
+        geometry: SessionGeometry,
+    ) -> Result<StartedSession, RegistryError> {
+        let directory = self
+            .sessions
+            .get(&pane)
+            .ok_or(RegistryError::MissingSession(pane))?
+            .cuenv
+            .cwd
+            .clone()
+            .filter(|directory| directory.is_dir());
+        let start = geometry
+            .start_session(self.factory.as_ref(), directory.as_deref())
+            .map_err(RegistryError::Session)?;
+        let generation = self.take_generation();
+        let mut fresh = PaneState::new(generation, start.session, geometry.surface);
+        if let Some(previous) = self.sessions.get_mut(&pane) {
+            fresh.cuenv = std::mem::take(&mut previous.cuenv);
+            std::mem::swap(previous, &mut fresh);
+            // What is being replaced had already failed, so its closing has nothing to add.
+            let _ = fresh.session.close();
+        }
+        Ok(StartedSession {
+            pane,
+            generation,
+            wake_rx: start.wake_rx,
+        })
     }
 
     fn apply_wake(
@@ -1640,6 +1691,7 @@ struct LiveHoverTargets {
     palette_hint: bool,
     palette: bool,
     task_sidebar: bool,
+    session_actions: bool,
 }
 
 impl LiveHoverTargets {
@@ -1685,9 +1737,18 @@ struct SessionGeometry {
 }
 
 impl SessionGeometry {
-    fn start_session(self, factory: &dyn TerminalSessionFactory) -> Result<SessionStart, String> {
+    fn start_session(
+        self,
+        factory: &dyn TerminalSessionFactory,
+        working_directory: Option<&std::path::Path>,
+    ) -> Result<SessionStart, String> {
         let (width, height) = self.scale.whole_device_size(self.surface);
-        factory.start(width, height, self.cell)
+        factory.start(SessionRequest {
+            width,
+            height,
+            cell: self.cell,
+            working_directory,
+        })
     }
 }
 
@@ -2015,7 +2076,7 @@ impl TerminalView {
             }
             Err(error) => {
                 let mut registry = SessionRegistry::empty(factory);
-                registry.notice = Some(format!("Cuetty could not start Rio: {error}"));
+                registry.notice = Some(format!("Could not start a shell: {error}"));
                 (registry, WindowSidebar::default(), None)
             }
         };
@@ -2542,16 +2603,64 @@ impl TerminalView {
                 if self.active_tab().is_some() {
                     self.focus.focus(window);
                 }
-                cx.notify();
             }
-            Err(RegistryError::Session(_)) => {
-                self.registry.notice = Some("unable to start a new Rio session".into())
+            Err(RegistryError::Session(error)) => {
+                self.registry.notice = Some(format!("Could not start a shell: {error}"))
             }
             Err(error) => {
                 self.registry.notice = Some(format!("workspace action unavailable: {error}"))
             }
         }
+        // Whichever way it went there is something new to show, and a failure has only this.
+        cx.notify();
     }
+    /// Starts a fresh shell in the active tab, in place of one that stopped working. If
+    /// none will start the tab stays as it is, saying why.
+    pub(super) fn restart_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.active_pane() else {
+            return;
+        };
+        let surface = self
+            .active_state()
+            .map_or_else(unmeasured_surface, PaneState::surface_for_sibling);
+        match self.registry.restart_pane(
+            pane,
+            SessionGeometry {
+                surface,
+                scale: self.metrics.scale,
+                cell: self.metrics.device_cell(),
+            },
+        ) {
+            Ok(session) => {
+                self.spawn_wake(session, cx);
+                self.refresh_cuenv_pane(pane, cx);
+                self.sync_active_config(cx);
+                self.focus.focus(window);
+            }
+            Err(error) => {
+                if let Some(state) = self.active_state_mut() {
+                    state.error = Some(format!("Could not restart the shell: {error}"));
+                }
+            }
+        }
+    }
+
+    /// Closes the active tab and hands the keyboard back to whichever tab is left.
+    pub(super) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pane) = self.active_pane() {
+            self.close_pane(pane, cx);
+            self.focus.focus(window);
+        }
+    }
+
+    /// Makes `element` take the keys the terminal would, for what stands in for it.
+    pub(super) fn focused_for_keys(&self, element: gpui::Div, cx: &mut Context<Self>) -> gpui::Div {
+        element
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key))
+            .on_modifiers_changed(cx.listener(Self::modifiers_changed))
+    }
+
     fn hit_test(
         &self,
         position: gpui::Point<Pixels>,
@@ -2852,6 +2961,7 @@ impl TerminalView {
             HoverTarget::Button(button) => live.button(button),
             HoverTarget::PaletteRow(_) => live.palette,
             HoverTarget::TaskRow(_) => live.task_sidebar,
+            HoverTarget::SessionAction(_) => live.session_actions,
         });
         if let Some(delay) = self.motion.next_frame(now) {
             self.request_frame(now + delay, delay, cx);
@@ -2873,6 +2983,9 @@ impl TerminalView {
             palette_hint: has_tasks && self.sidebar_mode() == SidebarMode::Expanded,
             palette: self.task_palette_open,
             task_sidebar: self.task_sidebar_open,
+            session_actions: self
+                .active_state()
+                .is_none_or(|state| state.error.is_some()),
         }
     }
 
@@ -2970,6 +3083,21 @@ impl TerminalView {
         // Every pane in the workspace registry owns a live Rio session. Keep
         // input, search, copy, and paste routed through that registry entry.
         if self.active_state().is_none() {
+            if takes_offered_action(event) {
+                self.new_tab(window, cx);
+            }
+            return;
+        }
+        // In place of a terminal that stopped working there is only what it offers.
+        if self
+            .active_state()
+            .is_some_and(|state| state.error.is_some())
+        {
+            if takes_offered_action(event) {
+                self.restart_shell(window, cx);
+            }
+            // Whatever failed may have asked for no draw, and then this key is what shows it.
+            cx.notify();
             return;
         }
         if modifiers.shift {
@@ -3042,6 +3170,7 @@ impl TerminalView {
                 && let Err(error) = state.session.paste(&text)
             {
                 state.error = Some(error);
+                cx.notify();
             }
             return;
         }
@@ -3109,6 +3238,27 @@ impl TerminalView {
     }
 }
 
+impl TerminalView {
+    /// The padding configured above the terminal.
+    pub(super) fn top_padding(&self) -> Pixels {
+        px(f32::from(self.config.terminal_padding.top))
+    }
+
+    /// A draw of the active tab in place of a terminal that stopped working.
+    fn render_pane_failure(
+        &mut self,
+        panels: ShellPanels,
+        error: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        // The panels it would have shown over have gone, and must not go on taking keys.
+        self.reconcile_task_ui();
+        let theme = self.theme.clone();
+        let problem = self.render_session_problem(SessionProblem::Failed { error }, &theme, cx);
+        self.render_shell_layout(panels, problem, &theme)
+    }
+}
+
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         if self.registry.close_window_requested {
@@ -3142,26 +3292,25 @@ impl Render for TerminalView {
         self.reveal_active_rail_tab(active_tab);
         self.registry.note_active_pane();
         let sidebar = self.render_sidebar(active_tab, &theme, cx);
-        let Some(active_pane) = self.active_pane() else {
-            let message = self
-                .registry
-                .notice
-                .clone()
-                .unwrap_or_else(|| "Cuetty has no live terminal session".into());
-            return self.render_shell_layout(
-                ShellPanels {
-                    sidebar,
-                    sidebar_frame,
-                },
-                render_shell_message(message, &theme),
-                &theme,
-            );
+        let panels = ShellPanels {
+            sidebar,
+            sidebar_frame,
         };
-        let state = self
-            .registry
-            .sessions
-            .get(&active_pane)
-            .expect("active pane registry invariant");
+        let Some(active_pane) = self.active_pane() else {
+            let notice = self.registry.notice.clone();
+            let problem = self.render_session_problem(
+                SessionProblem::NoSession {
+                    notice: notice.as_deref(),
+                },
+                &theme,
+                cx,
+            );
+            return self.render_shell_layout(panels, problem, &theme);
+        };
+        let Some(state) = self.registry.sessions.get(&active_pane) else {
+            let problem = self.render_session_problem(SessionProblem::Lost, &theme, cx);
+            return self.render_shell_layout(panels, problem, &theme);
+        };
         let interaction = state.interaction.clone();
         let pane_error = state.error.clone();
         let exit_failure = state.status.failure();
@@ -3176,14 +3325,7 @@ impl Render for TerminalView {
             CursorFocus::Unfocused
         };
         if let Some(error) = &pane_error {
-            return self.render_shell_layout(
-                ShellPanels {
-                    sidebar,
-                    sidebar_frame,
-                },
-                render_shell_message(format!("Cuetty terminal error: {error}"), &theme),
-                &theme,
-            );
+            return self.render_pane_failure(panels, error, cx);
         }
         let workspace_bounds = Arc::clone(&self.workspace_bounds);
         let workspace_entity = cx.weak_entity();
@@ -3219,15 +3361,18 @@ impl Render for TerminalView {
             state.frame.clone()
         });
         let Some(frame) = frame else {
-            return self.render_shell_layout(
-                ShellPanels {
-                    sidebar,
-                    sidebar_frame,
-                },
-                render_shell_message("Cuetty lost this tab's terminal session", &theme),
-                &theme,
-            );
+            let problem = self.render_session_problem(SessionProblem::Lost, &theme, cx);
+            return self.render_shell_layout(panels, problem, &theme);
         };
+        // Fitting the grid just above is the one failure that happens during a draw.
+        let fit_error = self
+            .registry
+            .sessions
+            .get(&active_pane)
+            .and_then(|state| state.error.clone());
+        if let Some(error) = &fit_error {
+            return self.render_pane_failure(panels, error, cx);
+        }
         let overlays = TerminalOverlays {
             selection: interaction.selection(),
             current_search_match: interaction.current_match(),
@@ -3335,7 +3480,7 @@ impl Render for TerminalView {
         if let Some(task_palette) = self.render_task_palette(&theme, cx) {
             terminal_surface = terminal_surface.child(task_palette);
         }
-        let top_padding = px(f32::from(padding.top));
+        let top_padding = self.top_padding();
         let surface = div()
             .relative()
             .size_full()
@@ -3350,14 +3495,7 @@ impl Render for TerminalView {
             )
             .children(exit_failure.map(|failure| render_exit_notice(failure, &theme)))
             .children(self.window_controls_band(top_padding));
-        self.render_shell_layout(
-            ShellPanels {
-                sidebar,
-                sidebar_frame,
-            },
-            surface.into_any_element(),
-            &theme,
-        )
+        self.render_shell_layout(panels, surface.into_any_element(), &theme)
     }
 }
 
@@ -3419,9 +3557,7 @@ pub fn run() {
             // its key handler receives input without an initial mouse click.
             window
                 .update(cx, |view, window, _cx| {
-                    if view.active_state().is_some() {
-                        view.focus.focus(window);
-                    }
+                    view.focus.focus(window);
                 })
                 .expect("focus Cuetty terminal");
             cx.activate(true);
@@ -3516,10 +3652,18 @@ mod tests {
 
     struct FakeFactory {
         starts: Mutex<VecDeque<Result<SessionStart, String>>>,
+        directories: Arc<StartDirectories>,
     }
 
+    /// The directory each session was asked to start in, oldest first.
+    type StartDirectories = Mutex<Vec<Option<std::path::PathBuf>>>;
+
     impl TerminalSessionFactory for FakeFactory {
-        fn start(&self, _: u32, _: u32, _: CellSize) -> Result<SessionStart, String> {
+        fn start(&self, request: SessionRequest<'_>) -> Result<SessionStart, String> {
+            self.directories
+                .lock()
+                .expect("fake factory mutex poisoned")
+                .push(request.working_directory.map(std::path::Path::to_path_buf));
             self.starts
                 .lock()
                 .expect("fake factory mutex poisoned")
@@ -3782,9 +3926,18 @@ mod tests {
     }
 
     fn fake_factory(plans: Vec<Result<SessionStart, String>>) -> Arc<dyn TerminalSessionFactory> {
-        Arc::new(FakeFactory {
+        fake_factory_recording(plans).0
+    }
+
+    fn fake_factory_recording(
+        plans: Vec<Result<SessionStart, String>>,
+    ) -> (Arc<dyn TerminalSessionFactory>, Arc<StartDirectories>) {
+        let directories = Arc::new(StartDirectories::default());
+        let factory = Arc::new(FakeFactory {
             starts: Mutex::new(plans.into_iter().collect()),
-        })
+            directories: Arc::clone(&directories),
+        });
+        (factory, directories)
     }
 
     fn test_cell() -> CellSize {
@@ -4485,6 +4638,185 @@ mod tests {
         assert_eq!(registry.active_pane(), Some(active));
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
         assert_eq!(registry.sessions.len(), 1);
+    }
+
+    #[test]
+    fn restarting_a_broken_pane_gives_it_a_fresh_session_in_the_same_tab() {
+        let (initial, old_effects) = fake_start('a', Vec::new(), None);
+        let (replacement, new_effects) = fake_start('b', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(initial), Ok(replacement)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let old_generation = registry.sessions[&pane].generation;
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.error = Some("pipe gone".into());
+        state.cuenv.presentation.banner = Some("project".into());
+        state.cuenv.presentation.rail =
+            Some(crate::integrations::cuenv::RailColor(0x89, 0xb4, 0xfa));
+        state
+            .cuenv
+            .presentation
+            .terminal
+            .terminal_transparency_percent = 40;
+
+        let restarted = registry.restart_pane(pane, test_geometry()).unwrap();
+
+        assert_eq!(registry.active_pane(), Some(pane));
+        assert_eq!(registry.workspace.workspace().tabs().len(), 1);
+        let state = &registry.sessions[&pane];
+        assert_eq!(state.error, None);
+        assert_eq!(state.generation, restarted.generation);
+        assert_ne!(state.generation, old_generation);
+        assert_eq!(
+            state
+                .cuenv
+                .presentation
+                .terminal
+                .terminal_transparency_percent,
+            40,
+            "it keeps its look"
+        );
+        assert_eq!(
+            state.cuenv.presentation.banner.as_deref(),
+            Some("project"),
+            "it stays in that project"
+        );
+        assert!(state.cuenv.presentation.rail.is_some());
+
+        old_effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::Title("stale".into()));
+        assert!(
+            !registry
+                .apply_wake(pane, old_generation, Some(pane))
+                .accepted,
+            "a wake from the old session is ignored"
+        );
+        new_effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::Title("fresh".into()));
+        assert!(
+            registry
+                .apply_wake(pane, restarted.generation, Some(pane))
+                .accepted
+        );
+        assert_eq!(registry.sessions[&pane].activity.title(), Some("fresh"));
+    }
+
+    #[test]
+    fn a_restarted_shell_starts_where_the_broken_one_was_and_keeps_that_directorys_look() {
+        let directory = std::env::temp_dir();
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let (replacement, _) = fake_start('b', Vec::new(), None);
+        let (factory, directories) = fake_factory_recording(vec![Ok(initial), Ok(replacement)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.cuenv.observe_cwd(directory.clone());
+        state.cuenv.presentation.banner = Some("project".into());
+
+        registry.restart_pane(pane, test_geometry()).unwrap();
+
+        assert_eq!(
+            directories.lock().unwrap().as_slice(),
+            [None, Some(directory.clone())]
+        );
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        assert!(
+            !state.cuenv.observe_cwd(directory),
+            "the new shell reporting that directory is no news"
+        );
+        assert_eq!(state.cuenv.presentation.banner.as_deref(), Some("project"));
+
+        state
+            .cuenv
+            .observe_cwd(std::path::PathBuf::from("/elsewhere"));
+        assert_eq!(
+            state.cuenv.presentation.banner, None,
+            "somewhere else, the project's look goes"
+        );
+    }
+
+    #[test]
+    fn a_restart_from_a_directory_that_has_gone_starts_at_the_default() {
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let (replacement, _) = fake_start('b', Vec::new(), None);
+        let (factory, directories) = fake_factory_recording(vec![Ok(initial), Ok(replacement)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        registry
+            .sessions
+            .get_mut(&pane)
+            .unwrap()
+            .cuenv
+            .observe_cwd(std::env::temp_dir().join("cuetty-no-such-directory"));
+
+        registry.restart_pane(pane, test_geometry()).unwrap();
+
+        assert_eq!(directories.lock().unwrap().as_slice(), [None, None]);
+    }
+
+    #[test]
+    fn a_restart_that_cannot_start_a_shell_leaves_the_pane_as_it_was() {
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(initial), Err("no pty".into())]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        registry.sessions.get_mut(&pane).unwrap().error = Some("pipe gone".into());
+
+        let error = registry.restart_pane(pane, test_geometry()).err();
+
+        assert_eq!(error, Some(RegistryError::Session("no pty".into())));
+        let state = &registry.sessions[&pane];
+        assert_eq!(state.generation, generation);
+        assert_eq!(state.error.as_deref(), Some("pipe gone"));
+    }
+
+    #[test]
+    fn a_window_that_opened_with_no_shell_can_still_start_one() {
+        let (start, _) = fake_start('a', Vec::new(), None);
+        let mut registry = SessionRegistry::empty(fake_factory(vec![Ok(start)]));
+        registry.notice = Some("Could not start a shell: no pty".into());
+        assert_eq!(registry.active_pane(), None);
+
+        let (pane, _, _) = registry.start_tab(test_geometry()).unwrap();
+
+        assert_eq!(registry.active_pane(), Some(pane));
+        assert_eq!(registry.notice, None);
+    }
+
+    #[test]
+    fn a_broken_pane_offers_no_tasks() {
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.cuenv.tasks = vec![runnable_task("build")];
+        assert!(!state.task_catalogue().is_empty());
+        state.error = Some("pipe gone".into());
+        assert!(state.task_catalogue().is_empty());
+    }
+
+    #[test]
+    fn only_a_fresh_plain_enter_takes_the_action_on_offer() {
+        let plain = gpui::Modifiers::default();
+        assert!(takes_offered_action(&key_press("enter", plain)));
+        assert!(!takes_offered_action(&key_press("x", plain)));
+        assert!(!takes_offered_action(&key_press(
+            "enter",
+            gpui::Modifiers {
+                shift: true,
+                ..plain
+            }
+        )));
+        assert!(!takes_offered_action(&gpui::KeyDownEvent {
+            is_held: true,
+            ..key_press("enter", plain)
+        }));
     }
 
     #[test]

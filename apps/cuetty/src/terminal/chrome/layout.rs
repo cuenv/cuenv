@@ -8,28 +8,9 @@ use crate::terminal::motion::SidebarFrame;
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_status::ExitFailure;
 use gpui::{
-    Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, SharedString, Styled,
+    Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Styled,
     WindowControlArea, div, px,
 };
-
-/// A centred status line that stands in for the terminal when a pane has no
-/// live session or failed.
-pub(in crate::terminal) fn render_shell_message(
-    message: impl Into<SharedString>,
-    theme: &TerminalTheme,
-) -> gpui::AnyElement {
-    let colors = ChromeColors::from_theme(theme);
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .p(space::XL)
-        .text_size(text::BODY)
-        .text_color(colors.text_secondary)
-        .child(message.into())
-        .into_any_element()
-}
 
 /// Says below a failed shell's final output why nothing responds to typing any more,
 /// and how to be rid of the tab. It has its own room, which [`TerminalView::bottom_inset`]

@@ -322,6 +322,10 @@ successful action. So does a task pasted without running, on its own pane, until
 or Ctrl-C finishes the line or the foreground changes; a configuration error there
 takes priority. Unknown fields are rejected.
 
+A tab whose session breaks shows what went wrong with Restart shell and Close tab in place of
+its terminal, and a window with no terminal because no shell would start says why and offers
+New tab. Enter takes the first of these.
+
 The appearance fields are optional and apply to the active tab:
 
 | Field | Range | Default |
