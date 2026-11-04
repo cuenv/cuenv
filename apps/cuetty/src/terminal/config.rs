@@ -87,6 +87,16 @@ pub enum CursorPreference {
     Underline,
 }
 
+/// Whether the cursor blinks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CursorBlink {
+    /// As the running application asks, which leaves it steady at most prompts.
+    #[default]
+    Terminal,
+    On,
+    Off,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeColors {
     pub surface: Rgb,
@@ -150,6 +160,7 @@ pub struct TerminalConfig {
     pub terminal_padding: TerminalPadding,
     pub minimum_contrast: MinimumContrast,
     pub cursor: CursorPreference,
+    pub cursor_blink: CursorBlink,
     pub theme: ThemeColors,
     pub interaction: InteractionConfig,
     pub keybindings: KeybindingConfig,
@@ -231,6 +242,7 @@ impl Default for TerminalConfig {
             terminal_padding: TerminalPadding::default(),
             minimum_contrast: MinimumContrast::OFF,
             cursor: CursorPreference::Block,
+            cursor_blink: CursorBlink::default(),
             theme: ThemeColors::default(),
             interaction: InteractionConfig {
                 scrollback_limit: 10_000,

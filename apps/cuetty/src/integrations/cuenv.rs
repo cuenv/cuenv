@@ -4,7 +4,7 @@
 //! validated representation, so configuration cannot reach a renderer or a
 //! session directly.
 
-use crate::terminal::config::{MinimumContrast, Rgb, TerminalConfig};
+use crate::terminal::config::{CursorBlink, MinimumContrast, Rgb, TerminalConfig};
 use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
@@ -310,6 +310,8 @@ struct CuettyDto {
     transparency: Option<u8>,
     #[serde(default, rename = "minimumContrast")]
     minimum_contrast: Option<f32>,
+    #[serde(default)]
+    cursor: Option<CursorDto>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -325,6 +327,13 @@ struct FontDto {
     calt: Option<bool>,
     #[serde(default)]
     bold_weight: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CursorDto {
+    #[serde(default)]
+    blink: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -703,6 +712,12 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         };
         terminal.minimum_contrast = minimum_contrast;
     }
+    if let Some(cursor) = dto.cursor {
+        match cursor.blink.as_deref().map(parse_cursor_blink).transpose() {
+            Ok(blink) => terminal.cursor_blink = blink.unwrap_or_default(),
+            Err(error) => return Evaluation::Invalid(error),
+        }
+    }
     if let Err(error) = terminal.validate() {
         return Evaluation::Invalid(format!("invalid Cuetty terminal configuration: {error}"));
     }
@@ -717,6 +732,17 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         keybindings,
         terminal: Box::new(terminal),
     })
+}
+
+fn parse_cursor_blink(value: &str) -> Result<CursorBlink, String> {
+    match value {
+        "terminal" => Ok(CursorBlink::Terminal),
+        "on" => Ok(CursorBlink::On),
+        "off" => Ok(CursorBlink::Off),
+        _ => Err(format!(
+            "cursor.blink must be \"terminal\", \"on\", or \"off\", got \"{value}\""
+        )),
+    }
 }
 
 fn parse_color(field: &str, value: &str) -> Result<RailColor, String> {
@@ -1012,6 +1038,37 @@ mod tests {
             serde_json::json!({"font": {"boldWeight": 50}}),
             serde_json::json!({"font": {"boldWeight": 950}}),
             serde_json::json!({"font": {"boldWeight": 600.5}}),
+        ] {
+            assert!(
+                matches!(parse_value(invalid.clone()), Evaluation::Invalid(_)),
+                "{invalid} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cursor_blink_setting_is_parsed_and_validated() {
+        let blink = |value: serde_json::Value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal.cursor_blink,
+            other => panic!("expected a valid presentation, got {other:?}"),
+        };
+        assert_eq!(blink(serde_json::json!({})), CursorBlink::Terminal);
+        assert_eq!(
+            blink(serde_json::json!({"cursor": {}})),
+            CursorBlink::Terminal
+        );
+        assert_eq!(
+            blink(serde_json::json!({"cursor": {"blink": "on"}})),
+            CursorBlink::On
+        );
+        assert_eq!(
+            blink(serde_json::json!({"cursor": {"blink": "off"}})),
+            CursorBlink::Off
+        );
+        for invalid in [
+            serde_json::json!({"cursor": {"blink": "sometimes"}}),
+            serde_json::json!({"cursor": {"blink": true}}),
+            serde_json::json!({"cursor": {"colour": "red"}}),
         ] {
             assert!(
                 matches!(parse_value(invalid.clone()), Evaluation::Invalid(_)),

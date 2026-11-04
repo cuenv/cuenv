@@ -215,6 +215,7 @@ mod tests {
                 position: None,
                 shape: Known::Known(CursorShape::Block),
                 visible: Known::Known(true),
+                blinking: Known::Unknown,
             },
             viewport_offset: None,
             sampling_token: SamplingToken(1),

@@ -55,6 +55,7 @@ pub(crate) fn snapshot<U: EventListener>(
                 .zip(u16::try_from(cursor.pos.col.0).ok()),
             shape,
             visible: Known::Known(cursor.content != RioCursorShape::Hidden),
+            blinking: Known::Known(terminal.blinking_cursor),
         },
         viewport_offset: Some(terminal.display_offset()),
         sampling_token,
@@ -288,6 +289,22 @@ mod tests {
     }
 
     #[test]
+    fn public_parser_snapshot_observes_whether_the_application_wants_a_blink() {
+        let mut terminal = terminal();
+        let mut parser = Processor::default();
+        let blinking = |terminal: &Crosswords<VoidListener>| {
+            snapshot(terminal, SamplingToken(1)).cursor.blinking
+        };
+        assert_eq!(blinking(&terminal), Known::Known(false));
+        parser.advance(&mut terminal, b"\x1b[5 q");
+        assert_eq!(blinking(&terminal), Known::Known(true));
+        parser.advance(&mut terminal, b"\x1b[6 q");
+        assert_eq!(blinking(&terminal), Known::Known(false));
+        parser.advance(&mut terminal, b"\x1b[?12h");
+        assert_eq!(blinking(&terminal), Known::Known(true));
+    }
+
+    #[test]
     fn styles_and_text_are_owned_across_grid_swaps() {
         let mut terminal = terminal();
         let mut parser = Processor::default();
@@ -410,6 +427,7 @@ mod tests {
                 position: Some((1, 2)),
                 shape: Known::Unknown,
                 visible: Known::Unknown,
+                blinking: Known::Unknown,
             },
             viewport_offset: Some(0),
             sampling_token: SamplingToken(1),

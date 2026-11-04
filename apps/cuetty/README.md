@@ -119,7 +119,11 @@ raw 19.2px line height is snapped once, with the font's advance, to whole device
 pixels: 19px at 1x and 38 device pixels at 2x, so columns and rows land on device
 pixels at any scale. GPUI painting and Rio resizing share that one cell, and the
 sizes the PTY reports are in device pixels.
-The focused label and cursor follow GPUI's current focus handle, including blur.
+The focused label follows GPUI's current focus handle, including blur. The cursor
+blinks only if the application asks, with `cursor.blink` to override that: it fades
+rather than toggles, stays solid for a moment after output or a key press, and
+settles solid after about half a minute of nothing happening, so an idle window
+stops drawing. Unfocused, or with another window active, it is a hollow outline.
 Rio
 colour semantics (default, indexed, RGB, bold, dim, inverse, and hidden) stay
 in `TerminalFrame` until the renderer resolves them through the theme.
@@ -303,6 +307,7 @@ The appearance fields are optional and apply to the active tab:
 | `font.calt` | Boolean: the font's contextual alternates, such as Monaspace's texture healing. Ligatures stay off either way | `true` |
 | `font.boldWeight` | 100–900 integer; a family without that exact weight uses its nearest | 600 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | 0–128 integer pixels per edge | 14 each |
+| `cursor.blink` | `"terminal"` to blink as the running application asks, `"on"`, or `"off"` | `"terminal"` |
 | `minimumContrast` | 1–21 contrast ratio text is kept to against its background. 1 is off | 1 |
 | `transparency` | 0–100 integer percent | 0 |
 

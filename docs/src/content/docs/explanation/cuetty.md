@@ -56,6 +56,9 @@ The current usable slice includes:
   explicit wide-cell and soft-wrap occupancy.
 - Box drawing, block elements, shades, and Powerline separators drawn as shapes on
   the cell's device pixels, so rules and blocks meet with no seam at any line height.
+- A cursor that fades when the application asks it to blink, turns to a hollow outline
+  without keyboard focus, and asks for no frames at rest, so an idle window stops
+  drawing.
 - Text shaped with the font's contextual alternates and placed cell by cell: every
   glyph starts on the column its source text belongs to, so substitutions, combining
   marks, and fallback fonts cannot shift a column.
@@ -180,6 +183,7 @@ transparency: 10
 | `font.calt` | Boolean: the font's contextual alternates, such as Monaspace's texture healing. Standard and contextual ligatures (`liga`, `clig`) stay off either way, and turning this off helps with a font whose `calt` draws ligatures | `true` |
 | `font.boldWeight` | Integer CSS weight for bold text, 100–900. A family without that exact weight uses its nearest | 600 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 14 each |
+| `cursor.blink` | `"terminal"` blinks as the running application asks, which leaves the cursor steady at most prompts; `"on"` and `"off"` override it. A blink fades rather than toggles, holds solid for a moment after output or a key press, and settles solid after about half a minute of nothing happening | `"terminal"` |
 | `minimumContrast` | Contrast ratio from 1 to 21 that text is kept to against what it is drawn on, including a selection; 1 is off. Colours an application spelled out in 24-bit, drawn box and Powerline shapes, and the cursor and search match, which have their own colours, are left alone so image previews and Powerline segments still line up | 1 |
 | `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and sidebar share this opacity | 0 |
 | `accent` | Quoted `#RRGGBB`; the window's accent, for instance to match a compositor's window border. See [Accent colours](#accent-colours) | Catppuccin Mocha blue |

@@ -1,6 +1,7 @@
 mod chrome;
 mod color;
 pub mod config;
+mod cursor;
 mod engine;
 mod events;
 mod foreground;

@@ -1,6 +1,7 @@
 use super::chrome::{ChromeAssets, render_shell_message, resolve_ui_font, traffic_light_position};
-use super::color::{dimmed, with_minimum_contrast};
+use super::color::{blend, dimmed, with_minimum_contrast};
 use super::config::TerminalConfig;
+use super::cursor::{CursorAnimator, CursorFocus, CursorObservation, blink_wanted};
 use super::events::ControlEvent;
 use super::glyphs::{GlyphShape, drawn_glyph, is_drawn};
 use super::host::{
@@ -44,7 +45,8 @@ struct RenderRequest<'a> {
     frame: &'a TerminalFrame,
     metrics: &'a TerminalMetrics,
     theme: &'a TerminalTheme,
-    focused: bool,
+    focus: CursorFocus,
+    cursor_opacity: f32,
     overlays: TerminalOverlays,
 }
 
@@ -55,14 +57,7 @@ trait TerminalRenderer: Send + Sync {
 struct GridRenderer;
 impl TerminalRenderer for GridRenderer {
     fn render(&self, request: RenderRequest<'_>) -> gpui::AnyElement {
-        TerminalGrid::new(
-            request.frame,
-            request.metrics,
-            request.theme,
-            request.focused,
-            request.overlays,
-        )
-        .into_any_element()
+        TerminalGrid::new(request).into_any_element()
     }
 }
 
@@ -77,24 +72,20 @@ struct TerminalGrid {
     frame: TerminalFrame,
     metrics: TerminalMetrics,
     theme: TerminalTheme,
-    focused: bool,
+    focus: CursorFocus,
+    cursor_opacity: f32,
     overlays: TerminalOverlays,
 }
 
 impl TerminalGrid {
-    fn new(
-        frame: &TerminalFrame,
-        metrics: &TerminalMetrics,
-        theme: &TerminalTheme,
-        focused: bool,
-        overlays: TerminalOverlays,
-    ) -> Self {
+    fn new(request: RenderRequest<'_>) -> Self {
         Self {
-            frame: frame.clone(),
-            metrics: metrics.clone(),
-            theme: theme.clone(),
-            focused,
-            overlays,
+            frame: request.frame.clone(),
+            metrics: request.metrics.clone(),
+            theme: request.theme.clone(),
+            focus: request.focus,
+            cursor_opacity: request.cursor_opacity,
+            overlays: request.overlays,
         }
     }
 
@@ -131,7 +122,7 @@ impl TerminalGrid {
 
     fn layer_at(&self, overlays: &[CellOverlaySpan], position: CellPosition) -> CellLayer {
         cell_layer(
-            cursor_style_at(&self.frame, self.focused, position.row, position.column),
+            cursor_style_at(&self.frame, self.focus, position.row, position.column),
             overlays,
             position,
         )
@@ -143,12 +134,17 @@ impl TerminalGrid {
             row: row.row,
             column,
         };
+        let selection = is_selected(row.overlays, position).then_some(self.theme.selection);
         let layer = self.layer_at(row.overlays, position);
-        readable_foreground(
-            cell,
-            &self.theme,
-            layer,
-            is_selected(row.overlays, position).then_some(self.theme.selection),
+        if layer != CellLayer::BlockCursor {
+            return readable_foreground(cell, &self.theme, layer, selection);
+        }
+        // A block cursor fading out hands its glyph back to what is underneath it.
+        let beneath = cell_layer(None, row.overlays, position);
+        blend(
+            readable_foreground(cell, &self.theme, beneath, selection),
+            self.theme.cursor_text,
+            self.cursor_opacity,
         )
     }
 
@@ -439,7 +435,7 @@ impl TerminalGrid {
     ) {
         let Some(style) = cursor_style_at(
             &self.frame,
-            self.focused,
+            self.focus,
             row,
             self.frame
                 .cursor
@@ -454,46 +450,44 @@ impl TerminalGrid {
         if col as usize >= self.frame.dimensions.columns as usize {
             return;
         }
-        if matches!(style, HostCursorStyle::Block) != block_layer {
+        if matches!(style, HostCursorStyle::Block) != block_layer || self.cursor_opacity <= 0.0 {
             return;
         }
         let bounds = self.cell_bounds(origin, row, col as usize, 1);
-        match style {
-            HostCursorStyle::Block => window.paint_quad(quad(
+        let scale = self.metrics.scale;
+        let color = gpui::Rgba {
+            a: self.cursor_opacity,
+            ..gpui::rgb(gpui_rgb(self.theme.cursor))
+        };
+        let line = scale.logical(scale.whole_device_pixels(px(2.0)));
+        let fill = |bounds| {
+            quad(
                 bounds,
                 px(0.0),
-                gpui::rgb(gpui_rgb(self.theme.cursor)),
+                color,
                 Edges::default(),
                 Hsla::transparent_black(),
                 BorderStyle::default(),
-            )),
-            HostCursorStyle::Underline => window.paint_quad(quad(
-                Bounds {
-                    origin: point(bounds.origin.x, bounds.bottom() - px(2.0)),
-                    size: Size {
-                        width: bounds.size.width,
-                        height: px(2.0),
-                    },
-                },
+            )
+        };
+        match style {
+            HostCursorStyle::Block => window.paint_quad(fill(bounds)),
+            HostCursorStyle::Underline => window.paint_quad(fill(Bounds {
+                origin: point(bounds.origin.x, bounds.bottom() - line),
+                size: size(bounds.size.width, line),
+            })),
+            HostCursorStyle::Bar => window.paint_quad(fill(Bounds {
+                origin: bounds.origin,
+                size: size(line, bounds.size.height),
+            })),
+            // A device pixel of outline stays crisp and lets the glyph keep its colours.
+            HostCursorStyle::Hollow => window.paint_quad(quad(
+                bounds,
                 px(0.0),
-                gpui::rgb(gpui_rgb(self.theme.cursor)),
-                Edges::default(),
                 Hsla::transparent_black(),
-                BorderStyle::default(),
-            )),
-            HostCursorStyle::Bar => window.paint_quad(quad(
-                Bounds {
-                    origin: bounds.origin,
-                    size: Size {
-                        width: px(2.0),
-                        height: bounds.size.height,
-                    },
-                },
-                px(0.0),
-                gpui::rgb(gpui_rgb(self.theme.cursor)),
-                Edges::default(),
-                Hsla::transparent_black(),
-                BorderStyle::default(),
+                Edges::all(scale.logical(1)),
+                color,
+                BorderStyle::Solid,
             )),
         }
     }
@@ -744,31 +738,32 @@ fn frame_row(frame: &TerminalFrame, row: usize) -> &[TerminalCell] {
     frame.rows.get(row).map_or(&[], |row| row.cells.as_slice())
 }
 
-/// The pinned Rio API exposes cursor position but not shape or visibility.
-/// While focused, P0 renders an unknown cursor as a visible block;
-/// `Known(false)` suppresses it and known shapes are rendered exactly.
+/// While focused, an unknown shape renders as a visible block; `Known(false)`
+/// suppresses the cursor and known shapes are rendered exactly. Unfocused, any cursor
+/// is an outline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostCursorStyle {
     Block,
     Underline,
     Bar,
+    /// An outline, whatever its shape: the cursor of a terminal keys are not going to.
+    Hollow,
 }
 
 fn cursor_style_at(
     frame: &TerminalFrame,
-    focused: bool,
+    focus: CursorFocus,
     row: usize,
     column: usize,
 ) -> Option<HostCursorStyle> {
-    focused
-        .then_some(())
-        .filter(|_| !matches!(frame.cursor.visible, Known::Known(false)))
-        .filter(|_| frame.cursor.position == Some((row as u16, column as u16)))
-        .map(|_| match frame.cursor.shape {
-            Known::Known(CursorShape::Underline) => HostCursorStyle::Underline,
-            Known::Known(CursorShape::Bar) => HostCursorStyle::Bar,
-            Known::Known(CursorShape::Block) | Known::Unknown => HostCursorStyle::Block,
-        })
+    let shown = !matches!(frame.cursor.visible, Known::Known(false))
+        && frame.cursor.position == Some((row as u16, column as u16));
+    shown.then_some(match (focus, frame.cursor.shape) {
+        (CursorFocus::Unfocused, _) => HostCursorStyle::Hollow,
+        (_, Known::Known(CursorShape::Underline)) => HostCursorStyle::Underline,
+        (_, Known::Known(CursorShape::Bar)) => HostCursorStyle::Bar,
+        (_, Known::Known(CursorShape::Block) | Known::Unknown) => HostCursorStyle::Block,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -871,13 +866,6 @@ fn readable_foreground(
         selection.unwrap_or(background),
         theme.minimum_contrast,
     )
-}
-
-/// Focus only counts as terminal focus while the active workspace pane owns
-/// the live Rio session. Multi-session actions are rejected before a second
-/// pane can be rendered.
-fn terminal_has_focus(window_has_focus: bool, active_pane_is_live: bool) -> bool {
-    window_has_focus && active_pane_is_live
 }
 
 fn shell_notice(error: ShellError) -> String {
@@ -1311,6 +1299,9 @@ pub(super) struct TerminalView {
     sidebar: WindowSidebar,
     /// What the window manager was last told this window is called.
     window_title: String,
+    cursor_animator: CursorAnimator,
+    /// When the draw the cursor's animation has asked for is due.
+    cursor_frame_due: Option<std::time::Instant>,
 }
 
 /// What the window is called with no tab to name it after.
@@ -1578,6 +1569,7 @@ impl TerminalView {
                 position: None,
                 shape: Known::Unknown,
                 visible: Known::Unknown,
+                blinking: Known::Unknown,
             },
             viewport_offset: None,
             sampling_token: SamplingToken(0),
@@ -1604,6 +1596,8 @@ impl TerminalView {
             if !window.is_window_active() {
                 view.hide_tab_hints(cx);
             }
+            // The cursor shows whether this window has the keyboard.
+            cx.notify();
         })
         .detach();
         let config = TerminalConfig::default();
@@ -1655,6 +1649,8 @@ impl TerminalView {
                     tab_hint_request: 0,
                     sidebar,
                     window_title: APP_TITLE.into(),
+                    cursor_animator: CursorAnimator::new(std::time::Instant::now()),
+                    cursor_frame_due: None,
                 };
                 view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
                 view.spawn_cwd_poll(cx);
@@ -1686,6 +1682,8 @@ impl TerminalView {
                     tab_hint_request: 0,
                     sidebar: WindowSidebar::default(),
                     window_title: APP_TITLE.into(),
+                    cursor_animator: CursorAnimator::new(std::time::Instant::now()),
+                    cursor_frame_due: None,
                 }
             }
         }
@@ -2012,6 +2010,9 @@ impl TerminalView {
         if !outcome.accepted {
             return;
         }
+        if self.active_pane() == Some(pane) {
+            self.cursor_animator.touch(std::time::Instant::now());
+        }
         self.refresh_cuenv_pane(pane, cx);
         for text in outcome.clipboard {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -2316,6 +2317,39 @@ impl TerminalView {
         .detach();
     }
 
+    /// Works out the cursor's look for this draw, and asks for the next draw if it is
+    /// animating. A cursor at rest asks for none, so an idle window stops drawing.
+    fn cursor_opacity(&mut self, seen: CursorObservation, cx: &mut Context<Self>) -> f32 {
+        let frame = self.cursor_animator.frame(seen);
+        if let Some(delay) = frame.next_frame {
+            self.request_cursor_frame(seen.now + delay, delay, cx);
+        }
+        frame.opacity
+    }
+
+    /// One timer is enough: only one sooner than any already waiting replaces it.
+    fn request_cursor_frame(
+        &mut self,
+        due: std::time::Instant,
+        delay: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) {
+        if self.cursor_frame_due.is_some_and(|waiting| waiting <= due) {
+            return;
+        }
+        self.cursor_frame_due = Some(due);
+        cx.spawn(async move |weak, cx| {
+            Timer::after(delay).await;
+            let _ = weak.update(cx, |view, cx| {
+                if view.cursor_frame_due == Some(due) {
+                    view.cursor_frame_due = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn hide_tab_hints(&mut self, cx: &mut Context<Self>) {
         self.tab_hint_request = self.tab_hint_request.wrapping_add(1);
         if self.tab_hints_visible {
@@ -2471,6 +2505,9 @@ impl TerminalView {
         {
             state.error = Some(error);
         }
+        // A key with no echo, such as at a password prompt, still shows the cursor.
+        self.cursor_animator.touch(std::time::Instant::now());
+        cx.notify();
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -2560,7 +2597,12 @@ impl Render for TerminalView {
         let measured = Arc::clone(&state.measured_bounds);
         let viewport_origin = Arc::clone(&state.viewport_origin);
         let entity = cx.weak_entity();
-        let terminal_focused = terminal_has_focus(self.focus.is_focused(window), true);
+        // Focus stays with the terminal while another window is active, but keys don't.
+        let focus = if self.focus.is_focused(window) && window.is_window_active() {
+            CursorFocus::Focused
+        } else {
+            CursorFocus::Unfocused
+        };
         if let Some(error) = &pane_error {
             return self.render_shell_layout(
                 sidebar,
@@ -2613,11 +2655,20 @@ impl Render for TerminalView {
             selection: interaction.selection(),
             current_search_match: interaction.current_match(),
         };
+        let cursor_opacity = self.cursor_opacity(
+            CursorObservation {
+                focus,
+                blink: blink_wanted(self.config.cursor_blink, frame.cursor.blinking),
+                now: std::time::Instant::now(),
+            },
+            cx,
+        );
         let mut content = Some(self.renderer.render(RenderRequest {
             frame: &frame,
             metrics: &metrics,
             theme: &theme,
-            focused: terminal_focused,
+            focus,
+            cursor_opacity,
             overlays,
         }));
         let mut terminal_surface = div().relative().overflow_hidden().child(
@@ -3592,21 +3643,37 @@ mod tests {
         let mut frame = TerminalView::empty_frame();
         frame.cursor.position = Some((0, 0));
         assert_eq!(
-            cursor_style_at(&frame, true, 0, 0),
+            cursor_style_at(&frame, CursorFocus::Focused, 0, 0),
             Some(HostCursorStyle::Block)
         );
-        assert_eq!(cursor_style_at(&frame, false, 0, 0), None);
-        assert_eq!(cursor_style_at(&frame, true, 0, 1), None);
+        assert_eq!(cursor_style_at(&frame, CursorFocus::Focused, 0, 1), None);
         frame.cursor.visible = Known::Known(false);
-        assert_eq!(cursor_style_at(&frame, true, 0, 0), None);
+        assert_eq!(cursor_style_at(&frame, CursorFocus::Focused, 0, 0), None);
     }
 
     #[test]
-    fn terminal_focus_requires_a_live_pane_as_well_as_window_focus() {
-        assert!(terminal_has_focus(true, true));
-        assert!(!terminal_has_focus(false, true));
-        assert!(!terminal_has_focus(true, false));
-        assert!(!terminal_has_focus(false, false));
+    fn an_unfocused_cursor_is_an_outline_unless_it_is_hidden() {
+        let mut frame = TerminalView::empty_frame();
+        frame.cursor.position = Some((0, 0));
+        for shape in [CursorShape::Block, CursorShape::Bar, CursorShape::Underline] {
+            frame.cursor.shape = Known::Known(shape);
+            assert_eq!(
+                cursor_style_at(&frame, CursorFocus::Unfocused, 0, 0),
+                Some(HostCursorStyle::Hollow)
+            );
+        }
+        assert_eq!(cursor_style_at(&frame, CursorFocus::Unfocused, 0, 1), None);
+        frame.cursor.visible = Known::Known(false);
+        assert_eq!(cursor_style_at(&frame, CursorFocus::Unfocused, 0, 0), None);
+    }
+
+    #[test]
+    fn an_outline_leaves_the_glyph_inside_it_its_own_colours() {
+        let position = CellPosition { row: 0, column: 0 };
+        assert_eq!(
+            cell_layer(Some(HostCursorStyle::Hollow), &[], position),
+            CellLayer::Cell
+        );
     }
 
     #[test]

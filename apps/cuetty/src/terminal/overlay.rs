@@ -130,6 +130,7 @@ mod tests {
                 position: None,
                 shape: Known::Unknown,
                 visible: Known::Unknown,
+                blinking: Known::Unknown,
             },
             viewport_offset: None,
             sampling_token: SamplingToken(0),

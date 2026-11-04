@@ -163,6 +163,8 @@ pub struct CursorState {
     pub position: Option<(u16, u16)>,
     pub shape: Known<CursorShape>,
     pub visible: Known<bool>,
+    /// Whether the application asked for a blinking cursor.
+    pub blinking: Known<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -464,6 +466,7 @@ mod tests {
                 position: Some((0, 0)),
                 shape: Known::Unknown,
                 visible: Known::Unknown,
+                blinking: Known::Unknown,
             },
             viewport_offset: Some(0),
             sampling_token: SamplingToken(1),
