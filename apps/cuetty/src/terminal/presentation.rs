@@ -173,6 +173,14 @@ impl ScaleFactor {
             .max(1.0) as u32
     }
 
+    /// A surface as laid out, in the whole device pixels it covers at this scale.
+    pub fn whole_device_size(self, surface: Size<Pixels>) -> (u32, u32) {
+        (
+            self.whole_device_pixels(surface.width),
+            self.whole_device_pixels(surface.height),
+        )
+    }
+
     /// The logical length of a run of device pixels.
     pub fn logical(self, device_pixels: u32) -> Pixels {
         px(device_pixels as f32 / self.0)
@@ -317,11 +325,8 @@ mod tests {
             width: px(900.0),
             height: px(600.0),
         };
-        let grid = terminal_size(
-            metrics.scale.whole_device_pixels(surface.width),
-            metrics.scale.whole_device_pixels(surface.height),
-            cell,
-        );
+        let (width, height) = metrics.scale.whole_device_size(surface);
+        let grid = terminal_size(width, height, cell);
         let painted = metrics.render_cell();
         // Everything the PTY was told about is painted, and it all fits.
         assert!(f32::from(painted.width) * f32::from(grid.cols) <= f32::from(surface.width));
@@ -332,6 +337,34 @@ mod tests {
             assert!((x - x.round()).abs() < 0.01, "column {column} is at {x}");
         }
         assert_eq!(grid.pixels_width, u32::from(grid.cols) * cell.width);
+    }
+
+    #[test]
+    fn a_surface_measured_at_one_scale_gives_the_same_grid_at_another() {
+        let surface = Size {
+            width: px(1000.0),
+            height: px(600.0),
+        };
+        let grid_at = |scale| {
+            let scale = ScaleFactor::new(scale);
+            let (width, height) = scale.whole_device_size(surface);
+            let cell = device_cell(
+                Size {
+                    width: px(10.0),
+                    height: px(19.0),
+                },
+                scale,
+            );
+            terminal_size(width, height, cell)
+        };
+        assert_eq!((grid_at(1.0).cols, grid_at(1.0).rows), (100, 31));
+        for scale in [2.0, 3.0] {
+            assert_eq!(
+                (grid_at(scale).cols, grid_at(scale).rows),
+                (100, 31),
+                "moving to {scale}x"
+            );
+        }
     }
 
     #[test]

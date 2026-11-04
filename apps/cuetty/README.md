@@ -195,9 +195,9 @@ one, and concealed text paints no glyph at all. Renderer cell
 width is measured from the selected font, while line height follows the configured
 font size and line-height multiplier; both are rounded once to whole device pixels
 at the window's scale factor, and painting, hit testing, and Rio resizing all use
-that cell. The surface is measured in device pixels too, so the grid the PTY is
-told about is exactly the one painted, and moving a window between displays
-resizes it. The current Rio public
+that cell. The surface is measured in logical pixels and turned into device pixels
+at each draw's own scale, so the grid the PTY is told about is exactly the one
+painted, and moving a window between displays keeps the grid it had. The current Rio public
 snapshot adapter preserves backend-declared cluster text, wide-cell occupancy,
 and wrapped placeholders. Box drawing (U+2500–257F, including rounded corners and diagonals), block elements
 (U+2580–259F, including shades), and the Powerline separators (U+E0B0–E0B3) are

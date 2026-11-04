@@ -7,7 +7,8 @@ use super::cursor::{
 use super::events::ControlEvent;
 use super::glyphs::{GlyphShape, drawn_glyph, is_drawn};
 use super::host::{
-    RioTerminalFactory, TerminalScroll, TerminalSession, TerminalSessionFactory, TerminalWheel,
+    RioTerminalFactory, SessionStart, TerminalScroll, TerminalSession, TerminalSessionFactory,
+    TerminalWheel,
 };
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::interaction::{CellHitTest, InteractionState, SearchKey};
@@ -921,8 +922,10 @@ pub(super) struct PaneState {
     scroll_remainder: f32,
     /// What the terminal is doing, which is what its tab is named after.
     activity: PaneActivity,
-    /// The terminal surface in device pixels, as the grid is sized from it.
-    measured_bounds: Arc<Mutex<(u32, u32)>>,
+    /// The terminal surface as laid out, in logical pixels. The grid is worked out from
+    /// this at each draw's own scale, so no draw pairs one scale's surface with
+    /// another's cell, however long ago the surface was measured.
+    measured_bounds: Arc<Mutex<Size<Pixels>>>,
     /// Where the surface starts in window coordinates, for hit testing.
     viewport_origin: Arc<Mutex<(f32, f32)>>,
     error: Option<String>,
@@ -936,7 +939,7 @@ impl PaneState {
     fn new(
         generation: SessionGeneration,
         mut session: Box<dyn TerminalSession>,
-        (width, height): (u32, u32),
+        surface: Size<Pixels>,
     ) -> Self {
         let frame = session.frame();
         Self {
@@ -946,7 +949,7 @@ impl PaneState {
             interaction: InteractionState::default(),
             scroll_remainder: 0.0,
             activity: PaneActivity::default(),
-            measured_bounds: Arc::new(Mutex::new((width, height))),
+            measured_bounds: Arc::new(Mutex::new(surface)),
             viewport_origin: Arc::new(Mutex::new((0.0, 0.0))),
             error: None,
             cuenv: CuenvPaneState::default(),
@@ -1102,12 +1105,10 @@ impl SessionRegistry {
 
     fn start(
         factory: Arc<dyn TerminalSessionFactory>,
-        width: u32,
-        height: u32,
-        cell: CellSize,
+        geometry: SessionGeometry,
     ) -> Result<(Self, async_channel::Receiver<()>), RegistryError> {
-        let start = factory
-            .start(width, height, cell)
+        let start = geometry
+            .start_session(factory.as_ref())
             .map_err(RegistryError::Session)?;
         let workspace = WorkspaceShell::new()
             .map_err(ShellError::from)
@@ -1121,7 +1122,7 @@ impl SessionRegistry {
         let mut sessions = HashMap::new();
         sessions.insert(
             pane,
-            PaneState::new(SessionGeneration(1), start.session, (width, height)),
+            PaneState::new(SessionGeneration(1), start.session, geometry.surface),
         );
         Ok((
             Self {
@@ -1149,9 +1150,7 @@ impl SessionRegistry {
 
     fn start_tab(
         &mut self,
-        width: u32,
-        height: u32,
-        cell: CellSize,
+        geometry: SessionGeometry,
     ) -> Result<
         (
             crate::workspace::PaneId,
@@ -1160,9 +1159,8 @@ impl SessionRegistry {
         ),
         RegistryError,
     > {
-        let mut start = self
-            .factory
-            .start(width, height, cell)
+        let mut start = geometry
+            .start_session(self.factory.as_ref())
             .map_err(RegistryError::Session)?;
         let presentation = self
             .active_pane()
@@ -1181,7 +1179,7 @@ impl SessionRegistry {
             .next_generation
             .checked_add(1)
             .expect("session generation exhausted");
-        let mut state = PaneState::new(generation, start.session, (width, height));
+        let mut state = PaneState::new(generation, start.session, geometry.surface);
         state.cuenv.presentation = presentation;
         self.sessions.insert(target.pane, state);
         self.notice = None;
@@ -1344,12 +1342,23 @@ pub(super) const SIDEBAR_TOGGLE_KEY: &str = "b";
 /// The logical size assumed for the terminal surface until a draw has measured it.
 const UNMEASURED_SURFACE: (f32, f32) = (720.0, 432.0);
 
-/// The surface to start a session on before any draw has measured one, in device pixels.
-fn unmeasured_surface(scale: ScaleFactor) -> (u32, u32) {
-    (
-        scale.whole_device_pixels(px(UNMEASURED_SURFACE.0)),
-        scale.whole_device_pixels(px(UNMEASURED_SURFACE.1)),
-    )
+fn unmeasured_surface() -> Size<Pixels> {
+    size(px(UNMEASURED_SURFACE.0), px(UNMEASURED_SURFACE.1))
+}
+
+/// The grid a session starts on.
+#[derive(Debug, Clone, Copy)]
+struct SessionGeometry {
+    surface: Size<Pixels>,
+    scale: ScaleFactor,
+    cell: CellSize,
+}
+
+impl SessionGeometry {
+    fn start_session(self, factory: &dyn TerminalSessionFactory) -> Result<SessionStart, String> {
+        let (width, height) = self.scale.whole_device_size(self.surface);
+        factory.start(width, height, self.cell)
+    }
 }
 
 /// How long a window's first frame may wait on the global configuration. Going over
@@ -1637,8 +1646,14 @@ impl TerminalView {
         let theme = TerminalTheme::from_config(&config);
         let window_background = theme.window_background();
         let factory: Arc<dyn TerminalSessionFactory> = Arc::new(RioTerminalFactory);
-        let (width, height) = unmeasured_surface(scale);
-        match SessionRegistry::start(factory.clone(), width, height, metrics.device_cell()) {
+        match SessionRegistry::start(
+            factory.clone(),
+            SessionGeometry {
+                surface: unmeasured_surface(),
+                scale,
+                cell: metrics.device_cell(),
+            },
+        ) {
             Ok((mut registry, wake_rx)) => {
                 let pane = registry.active_pane().expect("initial workspace pane");
                 // The window's first frame sizes the grid, so what shapes it has to be
@@ -2064,19 +2079,19 @@ impl TerminalView {
     pub(super) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A tab shares the surface its siblings measured, so its shell starts on the
         // right grid rather than getting a resize right after its first prompt.
-        let (width, height) = self.active_state().map_or_else(
-            || unmeasured_surface(self.metrics.scale),
-            |state| {
+        let surface = self
+            .active_state()
+            .map_or_else(unmeasured_surface, |state| {
                 *state
                     .measured_bounds
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-            },
-        );
-        match self
-            .registry
-            .start_tab(width, height, self.metrics.device_cell())
-        {
+            });
+        match self.registry.start_tab(SessionGeometry {
+            surface,
+            scale: self.metrics.scale,
+            cell: self.metrics.device_cell(),
+        }) {
             Ok((pane, generation, wake_rx)) => {
                 self.spawn_wake(cx, pane, generation, wake_rx);
                 self.refresh_cuenv_integration(cx);
@@ -2664,10 +2679,14 @@ impl Render for TerminalView {
             // The canvas is inside the actual content panel, so this includes
             // the title strip, terminal inset, and the sidebar at its current
             // width without trying to reconstruct GPUI's layout arithmetic.
-            let bounds = *state.measured_bounds.lock().expect("bounds mutex poisoned");
+            let surface = *state
+                .measured_bounds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (width, height) = self.metrics.scale.whole_device_size(surface);
             if let Err(error) = state
                 .session
-                .resize(bounds.0, bounds.1, self.metrics.device_cell())
+                .resize(width, height, self.metrics.device_cell())
             {
                 state.error = Some(error);
             }
@@ -2763,13 +2782,8 @@ impl Render for TerminalView {
                         .on_scroll_wheel(cx.listener(Self::scroll_wheel))
                         .child(
                             canvas(
-                                move |bounds, window, app| {
-                                    let scale = ScaleFactor::new(window.scale_factor());
-                                    let next = (
-                                        scale.whole_device_pixels(bounds.size.width),
-                                        scale.whole_device_pixels(bounds.size.height),
-                                    );
-                                    if store_if_changed(&pane_measured, next) {
+                                move |bounds, _, app| {
+                                    if store_if_changed(&pane_measured, bounds.size) {
                                         redraw_after_this_frame(pane_entity, app);
                                     }
                                     store_if_changed(
@@ -2883,7 +2897,6 @@ mod tests {
     use super::*;
     use crate::terminal::color::contrast_ratio;
     use crate::terminal::foreground::ForegroundProcess;
-    use crate::terminal::host::SessionStart;
     use crate::terminal::model::Color;
     use crate::terminal::rio_input::{encode_key, encode_paste};
     use crate::terminal::selection::LogicalPosition;
@@ -3063,7 +3076,7 @@ mod tests {
     fn the_poll_sees_a_change_only_when_a_pane_shows_something_new() {
         let (start, foreground, _) = fake_start_in_foreground("zsh");
         let (mut registry, _) =
-            SessionRegistry::start(fake_factory(vec![Ok(start)]), 80, 40, test_cell()).unwrap();
+            SessionRegistry::start(fake_factory(vec![Ok(start)]), test_geometry()).unwrap();
         let now = std::time::Instant::now();
         registry.sample_foreground(now);
         let shown = registry.polled_state();
@@ -3182,6 +3195,14 @@ mod tests {
         CellSize {
             width: 8,
             height: 16,
+        }
+    }
+
+    fn test_geometry() -> SessionGeometry {
+        SessionGeometry {
+            surface: size(px(80.0), px(40.0)),
+            scale: ScaleFactor::new(1.0),
+            cell: test_cell(),
         }
     }
 
@@ -3746,11 +3767,11 @@ mod tests {
     fn failed_tab_creation_leaves_workspace_and_registry_unchanged() {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Err("spawn failed".into())]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let active = registry.active_pane().unwrap();
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
         assert_eq!(registry.sessions.len(), 1);
-        let error = registry.start_tab(80, 40, test_cell()).unwrap_err();
+        let error = registry.start_tab(test_geometry()).unwrap_err();
         assert_eq!(error, RegistryError::Session("spawn failed".into()));
         assert_eq!(registry.active_pane(), Some(active));
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
@@ -3762,7 +3783,7 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let first_pane = registry.active_pane().unwrap();
         let first_tab = registry.workspace.active_tab().unwrap();
         registry
@@ -3776,7 +3797,7 @@ mod tests {
             .size_px = 20.0;
         assert_eq!(registry.active_terminal_config().font.size_px, 20.0);
 
-        let (second_pane, _, _) = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (second_pane, _, _) = registry.start_tab(test_geometry()).unwrap();
         registry
             .sessions
             .get_mut(&second_pane)
@@ -3831,9 +3852,9 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let first_pane = registry.active_pane().unwrap();
-        let (second_pane, _, _) = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (second_pane, _, _) = registry.start_tab(test_geometry()).unwrap();
         assert_eq!(registry.workspace.workspace().tabs().len(), 2);
         assert_eq!(registry.sessions.len(), 2);
 
@@ -3853,8 +3874,8 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), Some("already exited"));
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
-        let _ = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let _ = registry.start_tab(test_geometry()).unwrap();
         let second_pane = registry.active_pane().unwrap();
         registry.close_pane(second_pane).unwrap();
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
@@ -3879,9 +3900,9 @@ mod tests {
             None,
         );
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let first_pane = registry.active_pane().unwrap();
-        let (second_pane, generation, _) = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (second_pane, generation, _) = registry.start_tab(test_geometry()).unwrap();
 
         let background = registry.apply_wake(second_pane, generation, Some(first_pane));
         assert!(background.accepted);
@@ -3909,7 +3930,7 @@ mod tests {
     fn a_program_clearing_its_title_leaves_the_tab_untitled() {
         let (initial, effects) = fake_start('a', vec![ControlEvent::Title("vim".into())], None);
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let pane = registry.active_pane().unwrap();
         let generation = registry.sessions[&pane].generation;
         registry.apply_wake(pane, generation, Some(pane));
@@ -3927,7 +3948,7 @@ mod tests {
     fn a_tab_is_named_after_its_task_while_it_runs_and_its_program_otherwise() {
         let (initial, foreground, _) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let pane = registry.active_pane().unwrap();
         let tab = registry.workspace.workspace().tabs()[0].clone();
         assert_eq!(registry.tab_label(&tab), "Terminal");
@@ -3962,7 +3983,7 @@ mod tests {
     fn the_active_tab_label_follows_the_active_tab_and_goes_with_it() {
         let (initial, foreground, _) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         assert_eq!(registry.active_tab_label().as_deref(), Some("Terminal"));
 
         *foreground.lock().unwrap() = "claude".into();
@@ -3977,7 +3998,7 @@ mod tests {
     fn a_title_lasts_exactly_as_long_as_the_program_that_set_it() {
         let (initial, foreground, effects) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let pane = registry.active_pane().unwrap();
         let generation = registry.sessions[&pane].generation;
         let tab = registry.workspace.workspace().tabs()[0].clone();
@@ -4007,7 +4028,11 @@ mod tests {
             foreground: Arc::new(Mutex::new(process.to_owned())),
             sent: Arc::clone(&sent),
         };
-        let pane = PaneState::new(SessionGeneration(1), Box::new(session), (80, 40));
+        let pane = PaneState::new(
+            SessionGeneration(1),
+            Box::new(session),
+            test_geometry().surface,
+        );
         (pane, sent)
     }
 
@@ -4121,7 +4146,7 @@ mod tests {
     fn a_task_needing_arguments_or_a_busy_pane_is_not_marked_running() {
         let (initial, foreground, _) = fake_start_in_foreground("zsh");
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         let mut task = CuenvTask {
@@ -4144,7 +4169,7 @@ mod tests {
     fn close_wake_samples_the_final_frame_before_requesting_pane_removal() {
         let (initial, _) = fake_start('z', vec![ControlEvent::Close], None);
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         let generation = state.generation;
@@ -4168,9 +4193,9 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
         let first_pane = registry.active_pane().unwrap();
-        let (second_pane, _, _) = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (second_pane, _, _) = registry.start_tab(test_geometry()).unwrap();
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,
