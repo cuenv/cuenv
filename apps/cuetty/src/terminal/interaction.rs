@@ -213,20 +213,20 @@ impl InteractionState {
                 query.push(character);
                 search.set_query(query);
                 let _ = search.rebuild(&FrameTextSource::new(frame));
-                search.next()
+                search.next_match()
             }
             SearchKey::Backspace => {
                 let mut query = search.query().to_owned();
                 query.pop();
                 search.set_query(query);
                 let _ = search.rebuild(&FrameTextSource::new(frame));
-                search.next()
+                search.next_match()
             }
             SearchKey::Enter { reverse } => {
                 if reverse {
-                    search.previous()
+                    search.previous_match()
                 } else {
-                    search.next()
+                    search.next_match()
                 }
             }
         };

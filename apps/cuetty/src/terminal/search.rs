@@ -204,11 +204,10 @@ impl LiteralSearch {
             character.to_lowercase().collect::<Vec<_>>().into_iter()
         }
     }
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Option<SearchMatch> {
+    pub fn next_match(&mut self) -> Option<SearchMatch> {
         self.move_by(1)
     }
-    pub fn previous(&mut self) -> Option<SearchMatch> {
+    pub fn previous_match(&mut self) -> Option<SearchMatch> {
         self.move_by(-1)
     }
     fn move_by(&mut self, delta: i32) -> Option<SearchMatch> {
@@ -323,15 +322,15 @@ mod tests {
         );
         q.rebuild(&s).unwrap();
         assert_eq!(q.matches().len(), 3);
-        assert_eq!(q.next().unwrap().start.column, 0);
-        assert_eq!(q.previous().unwrap().start.line, 1);
+        assert_eq!(q.next_match().unwrap().start.column, 0);
+        assert_eq!(q.previous_match().unwrap().start.line, 1);
     }
     #[test]
     fn a_refresh_stays_on_the_match_or_moves_to_the_nearest_after_it() {
         let mut search = LiteralSearch::new("one", SearchOptions::default());
         search.rebuild(&lines(&["one", "one", "one"])).unwrap();
-        search.next();
-        search.next();
+        search.next_match();
+        search.next_match();
         assert_eq!(search.current_index(), Some(1));
 
         search.refresh(&lines(&["one", "one", "one"])).unwrap();
@@ -368,7 +367,7 @@ mod tests {
         search
             .rebuild(&lines(&["top", "one", "mid", "one"]))
             .unwrap();
-        search.next();
+        search.next_match();
         assert_eq!(search.current_index(), Some(0));
 
         search
@@ -388,8 +387,8 @@ mod tests {
         search
             .rebuild(&lines(&["top", "one", "mid", "one", "$ par"]))
             .unwrap();
-        search.next();
-        search.next();
+        search.next_match();
+        search.next_match();
         assert_eq!(search.current_index(), Some(1));
 
         search
@@ -407,7 +406,7 @@ mod tests {
         search
             .rebuild(&lines(&["one", "mid", "low", "one"]))
             .unwrap();
-        search.next();
+        search.next_match();
 
         search
             .refresh(&lines(&["mid", "low", "one", "new"]))
@@ -451,10 +450,10 @@ mod tests {
             },
         );
         q.rebuild(&s).unwrap();
-        q.next();
-        q.next();
-        q.next();
-        assert!(q.next().is_none());
+        q.next_match();
+        q.next_match();
+        q.next_match();
+        assert!(q.next_match().is_none());
     }
     #[test]
     fn regex_is_explicitly_unsupported() {

@@ -235,8 +235,8 @@ mod tests {
     #[test]
     fn the_count_says_which_match_navigation_is_on() {
         let mut search = searched("on", "one one one");
-        search.next();
-        search.next();
+        search.next_match();
+        search.next_match();
         assert_eq!(count_label(&search).as_deref(), Some("2 of 3"));
     }
 }
