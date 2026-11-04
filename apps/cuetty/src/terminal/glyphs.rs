@@ -233,6 +233,13 @@ fn double_strokes(extent: u32, pen: Pen) -> (Span, Span) {
     )
 }
 
+/// How long an axis is, and the pen drawing along it.
+#[derive(Debug, Clone, Copy)]
+struct AxisPen {
+    extent: u32,
+    pen: Pen,
+}
+
 /// One axis of a junction, so that horizontal and vertical arms share one set of rules.
 #[derive(Debug, Clone, Copy)]
 struct AxisArms {
@@ -244,16 +251,25 @@ struct AxisArms {
     after: Weight,
 }
 
+/// A light or heavy arm, and the arm facing it across the junction.
+#[derive(Debug, Clone, Copy)]
+struct SingleArm {
+    side: Side,
+    opposite: Weight,
+}
+
 /// Where a light or heavy arm stops. It reaches across the line it meets, unless that
 /// is a double line it does not cross, which it stops at the near stroke of.
-fn single_stop(side: Side, opposite: Weight, arms: AxisArms, extent: u32, pen: Pen) -> u32 {
+fn single_stop(arm: SingleArm, arms: AxisArms, axis: AxisPen) -> u32 {
+    let SingleArm { side, opposite } = arm;
+    let AxisPen { extent, pen } = axis;
     let own = match side {
         Side::Start => arms.start,
         Side::End => arms.end,
     };
     if arms.before == Weight::Double || arms.after == Weight::Double {
         if arms.before == arms.after && opposite == Weight::None {
-            inner_edge(side, extent, pen)
+            inner_edge(side, axis)
         } else {
             side.far_edge(centred(extent, pen.width(Weight::Double)))
         }
@@ -265,27 +281,42 @@ fn single_stop(side: Side, opposite: Weight, arms: AxisArms, extent: u32, pen: P
 }
 
 /// The edge of a double line's nearer stroke, on the side away from this arm's own edge.
-fn inner_edge(side: Side, extent: u32, pen: Pen) -> u32 {
-    let (first, second) = double_strokes(extent, pen);
+fn inner_edge(side: Side, axis: AxisPen) -> u32 {
+    let (first, second) = double_strokes(axis.extent, axis.pen);
     match side {
         Side::Start => first.end,
         Side::End => second.start,
     }
 }
 
-/// Where one stroke of a double arm stops. `beside` is the crossing arm on this stroke's
-/// side and `other` the one on its far side: a double arm beside it turns the stroke
-/// into an inner corner, and a stroke with nothing beside it runs around the outside.
-fn double_stop(side: Side, (beside, other): (Weight, Weight), extent: u32, pen: Pen) -> u32 {
+/// One stroke of a double arm, and the crossing arms on either side of that stroke.
+#[derive(Debug, Clone, Copy)]
+struct DoubleStroke {
+    side: Side,
+    /// The crossing arm on this stroke's side.
+    beside: Weight,
+    /// The crossing arm on this stroke's far side.
+    other: Weight,
+}
+
+/// Where one stroke of a double arm stops: a double arm beside it turns the stroke into
+/// an inner corner, and a stroke with nothing beside it runs around the outside.
+fn double_stop(stroke: DoubleStroke, axis: AxisPen) -> u32 {
+    let DoubleStroke {
+        side,
+        beside,
+        other,
+    } = stroke;
     match (beside, other) {
-        (Weight::Double, _) => inner_edge(side, extent, pen),
-        (Weight::None, Weight::None) => extent / 2,
-        (Weight::None, met) | (met, _) => side.far_edge(centred(extent, pen.width(met))),
+        (Weight::Double, _) => inner_edge(side, axis),
+        (Weight::None, Weight::None) => axis.extent / 2,
+        (Weight::None, met) | (met, _) => side.far_edge(centred(axis.extent, axis.pen.width(met))),
     }
 }
 
 /// The strokes along one axis, as a run along it and a band across it.
-fn axis_strokes(main: u32, cross: u32, arms: AxisArms, pen: Pen) -> Vec<(Span, Span)> {
+fn axis_strokes(along: AxisPen, cross: u32, arms: AxisArms) -> Vec<(Span, Span)> {
+    let AxisPen { extent: main, pen } = along;
     [
         (Side::Start, arms.start, arms.end),
         (Side::End, arms.end, arms.start),
@@ -294,7 +325,7 @@ fn axis_strokes(main: u32, cross: u32, arms: AxisArms, pen: Pen) -> Vec<(Span, S
     .flat_map(|(side, weight, opposite)| match weight {
         Weight::None => Vec::new(),
         Weight::Light | Weight::Heavy => vec![(
-            side.run(main, single_stop(side, opposite, arms, main, pen)),
+            side.run(main, single_stop(SingleArm { side, opposite }, arms, along)),
             centred(cross, pen.width(weight)),
         )],
         Weight::Double => {
@@ -303,14 +334,28 @@ fn axis_strokes(main: u32, cross: u32, arms: AxisArms, pen: Pen) -> Vec<(Span, S
                 (
                     side.run(
                         main,
-                        double_stop(side, (arms.before, arms.after), main, pen),
+                        double_stop(
+                            DoubleStroke {
+                                side,
+                                beside: arms.before,
+                                other: arms.after,
+                            },
+                            along,
+                        ),
                     ),
                     first,
                 ),
                 (
                     side.run(
                         main,
-                        double_stop(side, (arms.after, arms.before), main, pen),
+                        double_stop(
+                            DoubleStroke {
+                                side,
+                                beside: arms.after,
+                                other: arms.before,
+                            },
+                            along,
+                        ),
                     ),
                     second,
                 ),
@@ -332,7 +377,10 @@ fn rect_from(x: Span, y: Span) -> Option<GlyphShape> {
 fn junction(arms: Arms, cell: CellSize) -> Vec<GlyphShape> {
     let pen = Pen::for_cell(cell);
     let horizontal = axis_strokes(
-        cell.width,
+        AxisPen {
+            extent: cell.width,
+            pen,
+        },
         cell.height,
         AxisArms {
             start: arms.left,
@@ -340,10 +388,12 @@ fn junction(arms: Arms, cell: CellSize) -> Vec<GlyphShape> {
             before: arms.up,
             after: arms.down,
         },
-        pen,
     );
     let vertical = axis_strokes(
-        cell.height,
+        AxisPen {
+            extent: cell.height,
+            pen,
+        },
         cell.width,
         AxisArms {
             start: arms.up,
@@ -351,7 +401,6 @@ fn junction(arms: Arms, cell: CellSize) -> Vec<GlyphShape> {
             before: arms.left,
             after: arms.right,
         },
-        pen,
     );
     horizontal
         .into_iter()
@@ -366,8 +415,39 @@ enum Axis {
     Vertical,
 }
 
-/// `count` dashes, each centred in an equal slot so the pattern continues across cells.
-fn dashes(axis: Axis, weight: Weight, count: u32, cell: CellSize) -> Vec<GlyphShape> {
+/// A line broken into dashes.
+#[derive(Debug, Clone, Copy)]
+struct DashRun {
+    axis: Axis,
+    weight: Weight,
+    count: u32,
+}
+
+impl DashRun {
+    const fn horizontal(weight: Weight, count: u32) -> Self {
+        Self {
+            axis: Axis::Horizontal,
+            weight,
+            count,
+        }
+    }
+
+    const fn vertical(weight: Weight, count: u32) -> Self {
+        Self {
+            axis: Axis::Vertical,
+            weight,
+            count,
+        }
+    }
+}
+
+/// Each dash is centred in an equal slot, so the pattern continues across cells.
+fn dashes(run: DashRun, cell: CellSize) -> Vec<GlyphShape> {
+    let DashRun {
+        axis,
+        weight,
+        count,
+    } = run;
     let pen = Pen::for_cell(cell);
     let (main, cross) = match axis {
         Axis::Horizontal => (cell.width, cell.height),
@@ -483,18 +563,18 @@ fn box_drawing(character: char, cell: CellSize) -> Vec<GlyphShape> {
         vertical,
     };
     match character {
-        '\u{2504}' => dashes(Axis::Horizontal, Weight::Light, 3, cell),
-        '\u{2505}' => dashes(Axis::Horizontal, Weight::Heavy, 3, cell),
-        '\u{2506}' => dashes(Axis::Vertical, Weight::Light, 3, cell),
-        '\u{2507}' => dashes(Axis::Vertical, Weight::Heavy, 3, cell),
-        '\u{2508}' => dashes(Axis::Horizontal, Weight::Light, 4, cell),
-        '\u{2509}' => dashes(Axis::Horizontal, Weight::Heavy, 4, cell),
-        '\u{250A}' => dashes(Axis::Vertical, Weight::Light, 4, cell),
-        '\u{250B}' => dashes(Axis::Vertical, Weight::Heavy, 4, cell),
-        '\u{254C}' => dashes(Axis::Horizontal, Weight::Light, 2, cell),
-        '\u{254D}' => dashes(Axis::Horizontal, Weight::Heavy, 2, cell),
-        '\u{254E}' => dashes(Axis::Vertical, Weight::Light, 2, cell),
-        '\u{254F}' => dashes(Axis::Vertical, Weight::Heavy, 2, cell),
+        '\u{2504}' => dashes(DashRun::horizontal(Weight::Light, 3), cell),
+        '\u{2505}' => dashes(DashRun::horizontal(Weight::Heavy, 3), cell),
+        '\u{2506}' => dashes(DashRun::vertical(Weight::Light, 3), cell),
+        '\u{2507}' => dashes(DashRun::vertical(Weight::Heavy, 3), cell),
+        '\u{2508}' => dashes(DashRun::horizontal(Weight::Light, 4), cell),
+        '\u{2509}' => dashes(DashRun::horizontal(Weight::Heavy, 4), cell),
+        '\u{250A}' => dashes(DashRun::vertical(Weight::Light, 4), cell),
+        '\u{250B}' => dashes(DashRun::vertical(Weight::Heavy, 4), cell),
+        '\u{254C}' => dashes(DashRun::horizontal(Weight::Light, 2), cell),
+        '\u{254D}' => dashes(DashRun::horizontal(Weight::Heavy, 2), cell),
+        '\u{254E}' => dashes(DashRun::vertical(Weight::Light, 2), cell),
+        '\u{254F}' => dashes(DashRun::vertical(Weight::Heavy, 2), cell),
         '\u{256D}' => arc(corner(Side::End, Side::End), cell),
         '\u{256E}' => arc(corner(Side::Start, Side::End), cell),
         '\u{256F}' => arc(corner(Side::Start, Side::Start), cell),

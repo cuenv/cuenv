@@ -101,21 +101,10 @@ impl TerminalGrid {
         }
     }
 
-    fn paint_row_overlays(
-        &self,
-        origin: gpui::Point<Pixels>,
-        row: usize,
-        overlays: &[CellOverlaySpan],
-        window: &mut Window,
-    ) {
-        for span in overlays.iter().filter(|span| span.row == row) {
+    fn paint_row_overlays(&self, row: &RowPaint<'_>, window: &mut Window) {
+        for span in row.overlays.iter().filter(|span| span.row == row.row) {
             window.paint_quad(quad(
-                self.cell_bounds(
-                    origin,
-                    span.row,
-                    span.start_column,
-                    span.end_column - span.start_column,
-                ),
+                self.cell_bounds(row.origin, span.row, span.start_column..span.end_column),
                 px(0.0),
                 gpui::rgb(gpui_rgb(self.overlay_color(span.kind))),
                 Edges::default(),
@@ -127,7 +116,7 @@ impl TerminalGrid {
 
     fn layer_at(&self, overlays: &[CellOverlaySpan], position: CellPosition) -> CellLayer {
         cell_layer(
-            cursor_style_at(&self.frame, self.focus, position.row, position.column),
+            cursor_style_at(&self.frame, self.focus, position),
             overlays,
             position,
         )
@@ -142,12 +131,26 @@ impl TerminalGrid {
         let selection = is_selected(row.overlays, position).then_some(self.theme.selection);
         let layer = self.layer_at(row.overlays, position);
         if layer != CellLayer::BlockCursor {
-            return readable_foreground(cell, &self.theme, layer, selection);
+            return readable_foreground(
+                PaintedCell {
+                    cell,
+                    layer,
+                    selection,
+                },
+                &self.theme,
+            );
         }
         // A block cursor fading out hands its glyph back to what is underneath it.
         let beneath = cell_layer(None, row.overlays, position);
         blend(
-            readable_foreground(cell, &self.theme, beneath, selection),
+            readable_foreground(
+                PaintedCell {
+                    cell,
+                    layer: beneath,
+                    selection,
+                },
+                &self.theme,
+            ),
             self.theme.cursor_text,
             self.cursor_opacity,
         )
@@ -176,8 +179,8 @@ impl TerminalGrid {
                         character,
                         row: row.row,
                         column: start,
+                        color: self.foreground_at(cell, row, start),
                     },
-                    self.foreground_at(cell, row, start),
                     window,
                 );
                 start += 1;
@@ -247,7 +250,7 @@ impl TerminalGrid {
         let grid = DeviceGrid::new(row.origin, &self.metrics);
         let baseline = grid.glyph_baseline(row.row, self.baseline(window));
         let font_size = self.metrics.font_size;
-        let line = self.cell_bounds(row.origin, row.row, columns.start, columns.len());
+        let line = self.cell_bounds(row.origin, row.row, columns.clone());
         window.paint_layer(line, |window| {
             let mut placer = GlyphPlacer::new(&cluster_starts);
             for run in &shaped.runs {
@@ -346,17 +349,16 @@ impl TerminalGrid {
         &self,
         origin: gpui::Point<Pixels>,
         row: usize,
-        start: usize,
-        len: usize,
+        columns: std::ops::Range<usize>,
     ) -> Bounds<Pixels> {
         let grid_cell = self.metrics.render_cell();
         Bounds {
             origin: point(
-                origin.x + grid_cell.width * start as f32,
+                origin.x + grid_cell.width * columns.start as f32,
                 origin.y + grid_cell.height * row as f32,
             ),
             size: Size {
-                width: grid_cell.width * len as f32,
+                width: grid_cell.width * columns.len() as f32,
                 height: grid_cell.height,
             },
         }
@@ -369,15 +371,14 @@ impl TerminalGrid {
         &self,
         origin: gpui::Point<Pixels>,
         glyph: DrawnGlyph,
-        color: Rgb,
         window: &mut Window,
     ) {
         let Some(shapes) = drawn_glyph(glyph.character, self.metrics.device_cell()) else {
             return;
         };
-        let cell = self.cell_bounds(origin, glyph.row, glyph.column, 1);
+        let cell = self.cell_bounds(origin, glyph.row, glyph.column..glyph.column + 1);
         let scale = self.metrics.scale;
-        let solid = gpui::rgb(gpui_rgb(color));
+        let solid = gpui::rgb(gpui_rgb(glyph.color));
         let fill = |bounds, color: gpui::Rgba| {
             quad(
                 bounds,
@@ -456,34 +457,25 @@ impl TerminalGrid {
         ));
     }
 
-    fn paint_cursor(
-        &self,
-        origin: gpui::Point<Pixels>,
-        row: usize,
-        block_layer: bool,
-        window: &mut Window,
-    ) {
-        let Some(style) = cursor_style_at(
-            &self.frame,
-            self.focus,
-            row,
-            self.frame
-                .cursor
-                .position
-                .map_or(usize::MAX, |(_, col)| col as usize),
-        ) else {
+    fn paint_cursor(&self, row: &RowPaint<'_>, layer: CursorLayer, window: &mut Window) {
+        let Some((_, column)) = self.frame.cursor.position else {
             return;
         };
-        let Some((_, col)) = self.frame.cursor.position else {
+        let column = usize::from(column);
+        let position = CellPosition {
+            row: row.row,
+            column,
+        };
+        let Some(style) = cursor_style_at(&self.frame, self.focus, position) else {
             return;
         };
-        if col as usize >= self.frame.dimensions.columns as usize {
+        if column >= usize::from(self.frame.dimensions.columns)
+            || style.layer() != layer
+            || self.cursor_opacity <= 0.0
+        {
             return;
         }
-        if matches!(style, HostCursorStyle::Block) != block_layer || self.cursor_opacity <= 0.0 {
-            return;
-        }
-        let bounds = self.cell_bounds(origin, row, col as usize, 1);
+        let bounds = self.cell_bounds(row.origin, row.row, column..column + 1);
         let scale = self.metrics.scale;
         let color = gpui::Rgba {
             a: self.cursor_opacity,
@@ -601,6 +593,12 @@ impl Element for TerminalGrid {
             if cells.is_empty() {
                 break;
             }
+            let row_paint = RowPaint {
+                origin: bounds.origin,
+                row,
+                cells,
+                overlays: &overlays,
+            };
             // Merge adjacent cells with the same resolved background into one quad.
             let mut start = 0;
             while start < cells.len() {
@@ -619,7 +617,7 @@ impl Element for TerminalGrid {
                 // Explicit TUI backgrounds stay opaque for contrast.
                 if !uses_default_background {
                     window.paint_quad(quad(
-                        self.cell_bounds(bounds.origin, row, start, end - start),
+                        self.cell_bounds(bounds.origin, row, start..end),
                         px(0.0),
                         gpui::rgb(gpui_rgb(background)),
                         Edges::default(),
@@ -632,19 +630,13 @@ impl Element for TerminalGrid {
             // Overlays are painted after semantic cell backgrounds but before
             // glyphs and cursor layers. This preserves terminal colours and
             // keeps both block and line cursors visible.
-            self.paint_row_overlays(bounds.origin, row, &overlays, window);
+            self.paint_row_overlays(&row_paint, window);
             // A block cursor is deliberately below text; line cursors are
             // painted after glyphs so they remain visible.
-            self.paint_cursor(bounds.origin, row, true, window);
-            let row_paint = RowPaint {
-                origin: bounds.origin,
-                row,
-                cells,
-                overlays: &overlays,
-            };
+            self.paint_cursor(&row_paint, CursorLayer::BelowText, window);
             self.paint_row_text(&row_paint, window);
             self.paint_row_decorations(&row_paint, window);
-            self.paint_cursor(bounds.origin, row, false, window);
+            self.paint_cursor(&row_paint, CursorLayer::AboveText, window);
         }
         self.paint_cursor_trail(bounds.origin, window);
     }
@@ -753,6 +745,7 @@ struct DrawnGlyph {
     character: char,
     row: usize,
     column: usize,
+    color: Rgb,
 }
 
 /// The character a cell draws as a shape rather than through the font. Only a lone
@@ -789,14 +782,31 @@ enum HostCursorStyle {
     Hollow,
 }
 
+/// Which side of a row's text a cursor is painted on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorLayer {
+    BelowText,
+    AboveText,
+}
+
+impl HostCursorStyle {
+    /// A block sits beneath its glyph, which takes the cursor's text colour. Anything
+    /// thinner would be covered by the glyph, so it goes on top.
+    fn layer(self) -> CursorLayer {
+        match self {
+            Self::Block => CursorLayer::BelowText,
+            Self::Underline | Self::Bar | Self::Hollow => CursorLayer::AboveText,
+        }
+    }
+}
+
 fn cursor_style_at(
     frame: &TerminalFrame,
     focus: CursorFocus,
-    row: usize,
-    column: usize,
+    position: CellPosition,
 ) -> Option<HostCursorStyle> {
     let shown = !matches!(frame.cursor.visible, Known::Known(false))
-        && frame.cursor.position == Some((row as u16, column as u16));
+        && frame.cursor.position == Some((position.row as u16, position.column as u16));
     shown.then_some(match (focus, frame.cursor.shape) {
         (CursorFocus::Unfocused, _) => HostCursorStyle::Hollow,
         (_, Known::Known(CursorShape::Underline)) => HostCursorStyle::Underline,
@@ -887,6 +897,14 @@ fn is_selected(overlays: &[CellOverlaySpan], position: CellPosition) -> bool {
     })
 }
 
+/// A cell, and what its glyph is being painted over.
+#[derive(Debug, Clone, Copy)]
+struct PaintedCell<'a> {
+    cell: &'a TerminalCell,
+    layer: CellLayer,
+    selection: Option<Rgb>,
+}
+
 /// A glyph's colour against what is actually behind it, which is `selection` when one
 /// is painted beneath the cell: dim text fades towards that, and the minimum contrast
 /// setting measures against it. A layer above the cell has its own colour pair.
@@ -894,12 +912,12 @@ fn is_selected(overlays: &[CellOverlaySpan], position: CellPosition) -> bool {
 /// Colours an application spelled out in 24-bit are left alone, as are graphics: image
 /// previews and Powerline segments are built from them, and only line up when a cell's
 /// foreground matches its neighbour's background exactly.
-fn readable_foreground(
-    cell: &TerminalCell,
-    theme: &TerminalTheme,
-    layer: CellLayer,
-    selection: Option<Rgb>,
-) -> Rgb {
+fn readable_foreground(painted: PaintedCell<'_>, theme: &TerminalTheme) -> Rgb {
+    let PaintedCell {
+        cell,
+        layer,
+        selection,
+    } = painted;
     if layer != CellLayer::Cell {
         return colors(cell, theme, layer).0;
     }
@@ -1377,6 +1395,13 @@ fn unmeasured_surface() -> Size<Pixels> {
     size(px(UNMEASURED_SURFACE.0), px(UNMEASURED_SURFACE.1))
 }
 
+/// A session that has just started, and how it says it has something new to show.
+struct StartedSession {
+    pane: crate::workspace::PaneId,
+    generation: SessionGeneration,
+    wake_rx: async_channel::Receiver<()>,
+}
+
 /// The grid a session starts on.
 #[derive(Debug, Clone, Copy)]
 struct SessionGeometry {
@@ -1729,7 +1754,14 @@ impl TerminalView {
                     cursor_animator: CursorAnimator::new(std::time::Instant::now()),
                     cursor_frame_due: None,
                 };
-                view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
+                view.spawn_wake(
+                    StartedSession {
+                        pane,
+                        generation: SessionGeneration(1),
+                        wake_rx,
+                    },
+                    cx,
+                );
                 view.spawn_cwd_poll(cx);
                 view.refresh_cuenv_integration(cx);
                 view
@@ -2058,13 +2090,12 @@ impl TerminalView {
         }
         cx.notify();
     }
-    fn spawn_wake(
-        &mut self,
-        cx: &mut Context<Self>,
-        pane: crate::workspace::PaneId,
-        generation: SessionGeneration,
-        wake_rx: async_channel::Receiver<()>,
-    ) {
+    fn spawn_wake(&mut self, session: StartedSession, cx: &mut Context<Self>) {
+        let StartedSession {
+            pane,
+            generation,
+            wake_rx,
+        } = session;
         cx.spawn(async move |weak, cx| {
             while wake_rx.recv().await.is_ok() {
                 if weak
@@ -2128,7 +2159,14 @@ impl TerminalView {
             cell: self.metrics.device_cell(),
         }) {
             Ok((pane, generation, wake_rx)) => {
-                self.spawn_wake(cx, pane, generation, wake_rx);
+                self.spawn_wake(
+                    StartedSession {
+                        pane,
+                        generation,
+                        wake_rx,
+                    },
+                    cx,
+                );
                 self.refresh_cuenv_integration(cx);
                 self.sync_active_config(cx);
                 self.reconcile_task_ui();
@@ -3683,14 +3721,23 @@ mod tests {
         );
     }
 
+    /// A cell with no layer above it, on a selection or not.
+    fn cell_painted(cell: &TerminalCell, selection: Option<Rgb>) -> PaintedCell<'_> {
+        PaintedCell {
+            cell,
+            layer: CellLayer::Cell,
+            selection,
+        }
+    }
+
     #[test]
     fn selected_dim_text_fades_towards_the_selection_behind_it() {
         let theme = TerminalTheme::default();
         let mut cell = TerminalCell::narrow('x');
         cell.style.dim = true;
-        let selected = readable_foreground(&cell, &theme, CellLayer::Cell, Some(theme.selection));
+        let selected = readable_foreground(cell_painted(&cell, Some(theme.selection)), &theme);
         assert_eq!(selected, dimmed(theme.text, theme.selection));
-        let unselected = readable_foreground(&cell, &theme, CellLayer::Cell, None);
+        let unselected = readable_foreground(cell_painted(&cell, None), &theme);
         assert_eq!(unselected, dimmed(theme.text, theme.surface));
         assert!(
             contrast_ratio(selected, theme.selection) > contrast_ratio(unselected, theme.selection),
@@ -3711,7 +3758,7 @@ mod tests {
         let theme = contrast_theme();
         let surface = theme.surface;
         let readable = |cell: &TerminalCell, selection| {
-            readable_foreground(cell, &theme, CellLayer::Cell, selection)
+            readable_foreground(cell_painted(cell, selection), &theme)
         };
         let mut palette = TerminalCell::narrow('x');
         // ANSI black sits close to the default surface.
@@ -3736,9 +3783,9 @@ mod tests {
         let theme = contrast_theme();
         let mut cell = TerminalCell::narrow('x');
         cell.foreground = Color::Indexed(7);
-        let plain = readable_foreground(&cell, &theme, CellLayer::Cell, None);
+        let plain = readable_foreground(cell_painted(&cell, None), &theme);
         let selected = Rgb(170, 170, 180);
-        let on_selection = readable_foreground(&cell, &theme, CellLayer::Cell, Some(selected));
+        let on_selection = readable_foreground(cell_painted(&cell, Some(selected)), &theme);
         assert_ne!(plain, on_selection);
         assert!(contrast_ratio(on_selection, selected) >= 4.5);
     }
@@ -3751,10 +3798,12 @@ mod tests {
         };
         assert_eq!(
             readable_foreground(
-                &TerminalCell::narrow('x'),
+                PaintedCell {
+                    cell: &TerminalCell::narrow('x'),
+                    layer: CellLayer::BlockCursor,
+                    selection: None,
+                },
                 &theme,
-                CellLayer::BlockCursor,
-                None
             ),
             theme.cursor_text
         );
@@ -3796,12 +3845,30 @@ mod tests {
         let mut frame = TerminalView::empty_frame();
         frame.cursor.position = Some((0, 0));
         assert_eq!(
-            cursor_style_at(&frame, CursorFocus::Focused, 0, 0),
+            cursor_style_at(
+                &frame,
+                CursorFocus::Focused,
+                CellPosition { row: 0, column: 0 }
+            ),
             Some(HostCursorStyle::Block)
         );
-        assert_eq!(cursor_style_at(&frame, CursorFocus::Focused, 0, 1), None);
+        assert_eq!(
+            cursor_style_at(
+                &frame,
+                CursorFocus::Focused,
+                CellPosition { row: 0, column: 1 }
+            ),
+            None
+        );
         frame.cursor.visible = Known::Known(false);
-        assert_eq!(cursor_style_at(&frame, CursorFocus::Focused, 0, 0), None);
+        assert_eq!(
+            cursor_style_at(
+                &frame,
+                CursorFocus::Focused,
+                CellPosition { row: 0, column: 0 }
+            ),
+            None
+        );
     }
 
     #[test]
@@ -3811,13 +3878,31 @@ mod tests {
         for shape in [CursorShape::Block, CursorShape::Bar, CursorShape::Underline] {
             frame.cursor.shape = Known::Known(shape);
             assert_eq!(
-                cursor_style_at(&frame, CursorFocus::Unfocused, 0, 0),
+                cursor_style_at(
+                    &frame,
+                    CursorFocus::Unfocused,
+                    CellPosition { row: 0, column: 0 }
+                ),
                 Some(HostCursorStyle::Hollow)
             );
         }
-        assert_eq!(cursor_style_at(&frame, CursorFocus::Unfocused, 0, 1), None);
+        assert_eq!(
+            cursor_style_at(
+                &frame,
+                CursorFocus::Unfocused,
+                CellPosition { row: 0, column: 1 }
+            ),
+            None
+        );
         frame.cursor.visible = Known::Known(false);
-        assert_eq!(cursor_style_at(&frame, CursorFocus::Unfocused, 0, 0), None);
+        assert_eq!(
+            cursor_style_at(
+                &frame,
+                CursorFocus::Unfocused,
+                CellPosition { row: 0, column: 0 }
+            ),
+            None
+        );
     }
 
     #[test]
