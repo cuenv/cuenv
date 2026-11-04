@@ -151,7 +151,8 @@ their coordinates are still visible-frame-only. It does not yet have live worksp
 plugin runtime, Kitty graphics, ligatures, or complete IME/non-Latin
 composition. Workspace persistence has a bounded versioned codec and atomic
 file store, but live restore and Rio session reconnect are not wired into the
-product shell.
+product shell. Schema 2 records each tab's optional user-set name; schema 1
+snapshots still decode, with no name.
 The renderer uses one custom GPUI element, merges compatible background spans,
 and shapes adjacent compatible cells as fixed-width text batches. Renderer cell
 width is measured from the selected font, while line height follows the configured

@@ -201,6 +201,9 @@ pub(crate) fn validate_tab<C>(tab: &Tab<C>) -> bool {
 pub struct Tab<C = String> {
     pub id: TabId,
     pub title: String,
+    /// A name the user chose for this tab. It outranks every name Cuetty derives
+    /// from the tab's activity and is absent until the user sets one.
+    pub custom_name: Option<String>,
     pub root: Node<C>,
     pub focused: PaneId,
 }
@@ -330,6 +333,7 @@ impl<C: Clone> Workspace<C> {
         let tab = Tab {
             id: TabId(tab_id),
             title: title.into(),
+            custom_name: None,
             root: Node::Pane(Pane {
                 id: PaneId(pane_id),
                 content,
@@ -816,6 +820,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(99),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Pane(Pane {
                     id: PaneId::new(100),
                     content: "saved",
@@ -835,6 +840,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(99),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Split {
                     id: SplitId::new(101),
                     axis: Axis::Horizontal,
@@ -875,6 +881,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(1),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Pane(Pane {
                     id: PaneId::new(u64::MAX),
                     content: "saved",
@@ -894,6 +901,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(u64::MAX),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Pane(Pane {
                     id: PaneId::new(1),
                     content: "saved",
@@ -914,6 +922,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(1),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Split {
                     id: SplitId::new(u64::MAX),
                     axis: Axis::Horizontal,
@@ -947,6 +956,7 @@ mod tests {
         let valid_tab = |id| Tab {
             id,
             title: "x".into(),
+            custom_name: None,
             root: Node::Split {
                 id: split,
                 axis: Axis::Horizontal,
@@ -983,6 +993,7 @@ mod tests {
             Tab {
                 id: TabId::new(2),
                 title: "y".into(),
+                custom_name: None,
                 root: Node::Split {
                     id: split,
                     axis: Axis::Horizontal,

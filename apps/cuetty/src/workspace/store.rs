@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 const MAGIC: &[u8; 4] = b"CWS1";
 const MAX_PAYLOAD: usize = 8 * 1024 * 1024;
@@ -57,9 +57,8 @@ impl WorkspaceSnapshot {
                 version: self.schema_version,
             });
         }
-        if self.schema_version == 0 {
-            self.schema_version = CURRENT_SCHEMA_VERSION;
-        }
+        // Older schemas only lack fields that decode to their empty form.
+        self.schema_version = CURRENT_SCHEMA_VERSION;
         self.validate()?;
         Ok(self)
     }
@@ -206,13 +205,7 @@ impl SnapshotCodec for BinarySnapshotCodec {
         for session in &snapshot.sessions {
             put_string(&mut out, &session.session_id)?;
             put_string(&mut out, &session.command)?;
-            match &session.working_directory {
-                Some(path) => {
-                    out.push(1);
-                    put_string(&mut out, path)?;
-                }
-                None => out.push(0),
-            }
+            put_optional_string(&mut out, session.working_directory.as_deref())?;
         }
         if out.len() > MAX_PAYLOAD {
             return Err(StoreError::Codec("snapshot too large".into()));
@@ -233,7 +226,7 @@ impl SnapshotCodec for BinarySnapshotCodec {
             return Err(StoreError::Codec("invalid magic".into()));
         }
         let schema_version = r.u32()?;
-        let tree = read_tree(&mut r, 0)?;
+        let tree = read_tree(&mut r, schema_version)?;
         let pane_count = r.count()?;
         let mut panes = Vec::with_capacity(pane_count);
         for _ in 0..pane_count {
@@ -247,11 +240,7 @@ impl SnapshotCodec for BinarySnapshotCodec {
         for _ in 0..session_count {
             let session_id = r.string()?;
             let command = r.string()?;
-            let working_directory = match r.byte()? {
-                0 => None,
-                1 => Some(r.string()?),
-                _ => return Err(StoreError::Codec("unknown optional string tag".into())),
-            };
+            let working_directory = r.optional_string()?;
             sessions.push(SessionMetadata {
                 session_id,
                 command,
@@ -290,9 +279,22 @@ fn put_string(out: &mut Vec<u8>, value: &str) -> Result<(), StoreError> {
     out.extend_from_slice(value.as_bytes());
     Ok(())
 }
+fn put_optional_string(out: &mut Vec<u8>, value: Option<&str>) -> Result<(), StoreError> {
+    match value {
+        Some(value) => {
+            out.push(1);
+            put_string(out, value)
+        }
+        None => {
+            out.push(0);
+            Ok(())
+        }
+    }
+}
 fn put_tree(out: &mut Vec<u8>, tree: &SavedTree<PaneId>) -> Result<(), StoreError> {
     put_u64(out, tree.tab.id.get());
     put_string(out, &tree.tab.title)?;
+    put_optional_string(out, tree.tab.custom_name.as_deref())?;
     put_node(out, &tree.tab.root, 0)?;
     put_u64(out, tree.tab.focused.get());
     Ok(())
@@ -377,16 +379,30 @@ impl<'a> Reader<'a> {
         String::from_utf8(self.take(n)?.to_vec())
             .map_err(|_| StoreError::Codec("invalid utf-8".into()))
     }
+    fn optional_string(&mut self) -> Result<Option<String>, StoreError> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => self.string().map(Some),
+            _ => Err(StoreError::Codec("unknown optional string tag".into())),
+        }
+    }
 }
-fn read_tree(r: &mut Reader<'_>, depth: usize) -> Result<SavedTree<PaneId>, StoreError> {
+fn read_tree(r: &mut Reader<'_>, schema_version: u32) -> Result<SavedTree<PaneId>, StoreError> {
     let id = super::TabId::new(r.u64()?);
     let title = r.string()?;
-    let root = read_node(r, depth)?;
+    // Schema 1 predates user-set tab names.
+    let custom_name = if schema_version >= 2 {
+        r.optional_string()?
+    } else {
+        None
+    };
+    let root = read_node(r, 0)?;
     let focused = PaneId::new(r.u64()?);
     Ok(SavedTree {
         tab: super::Tab {
             id,
             title,
+            custom_name,
             root,
             focused,
         },
@@ -573,6 +589,7 @@ mod tests {
                 tab: Tab {
                     id: TabId::new(1),
                     title: "main".into(),
+                    custom_name: None,
                     root: Node::Pane(Pane {
                         id: pane,
                         content: pane,
@@ -622,9 +639,31 @@ mod tests {
         invalid[20] = 0xff;
         assert!(codec.decode(&invalid).is_err());
         let mut unknown_tag = codec.encode(&snapshot()).unwrap();
-        // magic, schema, tab id, title length, and the four title bytes.
-        unknown_tag[24] = 7;
+        unknown_tag[CUSTOM_NAME_TAG_OFFSET] = 7;
         assert!(codec.decode(&unknown_tag).is_err());
+    }
+
+    /// Where the custom name's tag sits: after the magic, schema, tab id, title
+    /// length, and the four bytes of the fixture's title.
+    const CUSTOM_NAME_TAG_OFFSET: usize = 24;
+
+    #[test]
+    fn a_custom_tab_name_survives_the_codec() {
+        let codec = BinarySnapshotCodec;
+        let mut named = snapshot();
+        named.tree.tab.custom_name = Some("deploys".into());
+        let decoded = codec.decode(&codec.encode(&named).unwrap()).unwrap();
+        assert_eq!(decoded.tree.tab.custom_name.as_deref(), Some("deploys"));
+    }
+
+    #[test]
+    fn a_schema_one_payload_decodes_with_no_custom_name() {
+        let codec = BinarySnapshotCodec;
+        let mut payload = codec.encode(&snapshot()).unwrap();
+        // Schema 1 is this payload without the custom name's tag.
+        payload.remove(CUSTOM_NAME_TAG_OFFSET);
+        payload[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&1_u32.to_le_bytes());
+        assert_eq!(codec.decode(&payload).unwrap(), snapshot());
     }
 
     #[test]
