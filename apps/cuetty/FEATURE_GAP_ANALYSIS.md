@@ -86,8 +86,9 @@ Linux, and a live resize plus Unicode probe has visual evidence.
    (regex remains a later capability).
 3. Move the remaining cursor and keybinding preferences into configuration; font,
    theme, and line height already live in CUE.
-4. Add the Termy/Okena box-drawing, block, sextant, and braille geometry path
-   where font glyphs cannot provide stable full-cell coverage.
+4. Extend the drawn glyph path, which already covers box-drawing, block, and
+   Powerline characters, to sextant and braille where font glyphs cannot provide
+   stable full-cell coverage.
 
 **Exit gate:** a user can select/copy/search a long colored Unicode transcript,
 change font/line-height, restart, and retain the intended settings.
