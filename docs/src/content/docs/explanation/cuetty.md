@@ -114,6 +114,15 @@ The current usable slice includes:
   the script, and Nix's
   `.name-wrapped` binaries are shown as `name`. A tab list taller than the window scrolls, and
   follows the active tab.
+- A small indicator on each tab, beside its name or on its collapsed mark, with its
+  meaning in the tab's tooltip: a bell for a bell rung in a tab not on screen, a ring
+  while a task launched from Cuetty runs, counted from the Enter that runs it if it
+  needed arguments, a check once that task hands the foreground
+  back, and a dot for text that changed in a tab not on screen. Every state has its own
+  shape, so colour is never all that tells them apart. Arriving at a tab clears what was
+  waiting there, and typing moves on from a finished task. Only tasks launched from
+  Cuetty count as running, since a program in the foreground may just as well be an
+  editor left open.
 - One design token set for all chrome spacing, radii, type sizes, border widths,
   elevation, and colours, with faint dividers between regions, and one bundled
   Lucide icon set for chrome controls. Chrome text uses the platform's sans-serif

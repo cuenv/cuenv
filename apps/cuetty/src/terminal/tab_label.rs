@@ -246,6 +246,8 @@ pub(super) struct PaneActivity {
     task: Option<RunningTask>,
     /// What a task pasted here but not run is waiting for.
     staged_hint: Option<String>,
+    /// The task whose command is at the prompt waiting for its arguments.
+    staged_task: Option<String>,
 }
 
 impl PaneActivity {
@@ -272,6 +274,20 @@ impl PaneActivity {
         self.staged_hint = hint;
     }
 
+    /// Records the task an Enter would run once its arguments are typed, which goes on
+    /// the same terms as the hint about it.
+    pub(super) fn set_staged_task(&mut self, task: Option<String>) {
+        self.staged_task = task;
+    }
+
+    pub(super) fn has_staged_task(&self) -> bool {
+        self.staged_task.is_some()
+    }
+
+    pub(super) fn take_staged_task(&mut self) -> Option<String> {
+        self.staged_task.take()
+    }
+
     /// Whether the last sample found an interactive shell, as opposed to a program, a
     /// shell running a script, or nothing it could read. A builtin such as `read`, or a
     /// subshell, cannot be told from a prompt without help from the shell.
@@ -296,6 +312,7 @@ impl PaneActivity {
         if program != self.program {
             self.title = None;
             self.staged_hint = None;
+            self.staged_task = None;
             self.program = program;
         }
         self.task = self

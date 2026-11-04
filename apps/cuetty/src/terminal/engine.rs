@@ -21,6 +21,7 @@ use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
 use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
+use super::tab_status::{StatusEvent, TabPresence, TabStatus};
 use super::workspace_shell::{
     ShellAction, ShellError, TabDirection, TabNumber, WorkspaceShell, WorkspaceShortcut,
 };
@@ -983,6 +984,8 @@ pub(super) struct PaneState {
     scroll_remainder: f32,
     /// What the terminal is doing, which is what its tab is named after.
     activity: PaneActivity,
+    /// What the tab's indicator reports.
+    pub(super) status: TabStatus,
     /// The terminal surface as laid out, in logical pixels. The grid is worked out from
     /// this at each draw's own scale, so no draw pairs one scale's surface with
     /// another's cell, however long ago the surface was measured.
@@ -1010,6 +1013,7 @@ impl PaneState {
             interaction: InteractionState::default(),
             scroll_remainder: 0.0,
             activity: PaneActivity::default(),
+            status: TabStatus::default(),
             measured_bounds: Arc::new(Mutex::new(surface)),
             viewport_origin: Arc::new(Mutex::new((0.0, 0.0))),
             error: None,
@@ -1023,7 +1027,11 @@ impl PaneState {
     /// Records what the terminal is running now.
     fn sample_foreground(&mut self, now: std::time::Instant) {
         let process = self.session.foreground_process();
+        let task_was_running = self.activity.task_name().is_some();
         self.activity.sample(process.as_ref(), now);
+        if task_was_running && self.activity.task_name().is_none() {
+            self.status.apply(StatusEvent::TaskEnded);
+        }
     }
 
     /// Paste the task's command into this pane's shell. A task that needs
@@ -1051,18 +1059,45 @@ impl PaneState {
                 modifiers: InputModifiers::default(),
                 repeat: false,
             })?;
-            self.activity.launch_task(task.name.clone(), now);
+            self.track_task(task.name.clone(), now);
         }
         self.activity.set_staged_hint(launch.hint(&task.name));
+        self.activity
+            .set_staged_task((launch == TaskLaunch::AwaitingArguments).then(|| task.name.clone()));
         Ok(launch)
+    }
+
+    /// Reports a task that has just been run in this pane's shell.
+    fn track_task(&mut self, name: String, now: std::time::Instant) {
+        self.activity.launch_task(name, now);
+        if self.activity.task_name().is_some() {
+            self.status.apply(StatusEvent::TaskStarted);
+        }
+    }
+
+    /// Ends what was staged on the line a key acted on, returning the task that key runs.
+    /// That has to be read before the key is sent, while the foreground is still the
+    /// shell, and a foreground that has changed hands since has lost the staged task.
+    fn finish_staged_line(&mut self, event: &TerminalKeyEvent) -> Option<String> {
+        let submits = matches!(event.key, KeyInput::Enter);
+        if submits && self.activity.has_staged_task() {
+            self.sample_foreground(std::time::Instant::now());
+        }
+        self.activity.set_staged_hint(None);
+        self.activity.take_staged_task().filter(|_| submits)
     }
 
     /// Sends a key the user pressed to the terminal.
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
-        if acts_on_the_line(&event) {
-            self.activity.set_staged_hint(None);
+        let submitted_task = acts_on_the_line(&event)
+            .then(|| self.finish_staged_line(&event))
+            .flatten();
+        self.status.apply(StatusEvent::Input);
+        let sent = self.session.input(event)?;
+        if let Some(task) = submitted_task {
+            self.track_task(task, std::time::Instant::now());
         }
-        self.session.input(event)
+        Ok(sent)
     }
 
     /// What the sidebar's notice marker says for this pane. A broken configuration
@@ -1098,6 +1133,14 @@ impl TaskLaunch {
     }
 }
 
+/// Whether a later frame of the same terminal shows output the earlier one did not. A
+/// view scrolled back stays on the same text as lines arrive, by moving further from the
+/// live screen, so that move is output too. Text rewritten in place below such a view
+/// cannot be told from here.
+fn shows_new_output(earlier: &TerminalFrame, later: &TerminalFrame) -> bool {
+    later.rows != earlier.rows || later.viewport_offset != earlier.viewport_offset
+}
+
 /// Whether a key finishes with the line being edited, by submitting or abandoning it.
 fn acts_on_the_line(event: &TerminalKeyEvent) -> bool {
     match event.key {
@@ -1112,6 +1155,7 @@ fn acts_on_the_line(event: &TerminalKeyEvent) -> bool {
 struct PolledPaneState {
     pane: crate::workspace::PaneId,
     activity: PaneActivity,
+    status: TabStatus,
     cwd: Option<std::path::PathBuf>,
     notice: Option<String>,
     task_notice: Option<String>,
@@ -1150,6 +1194,8 @@ pub(super) struct SessionRegistry {
     pub(super) workspace: WorkspaceShell,
     pub(super) notice: Option<String>,
     close_window_requested: bool,
+    /// The pane last on screen, for telling when the user arrives at another.
+    seen_pane: Option<crate::workspace::PaneId>,
 }
 
 impl SessionRegistry {
@@ -1161,6 +1207,7 @@ impl SessionRegistry {
             workspace: WorkspaceShell::empty(),
             notice: None,
             close_window_requested: false,
+            seen_pane: None,
         }
     }
 
@@ -1193,6 +1240,7 @@ impl SessionRegistry {
                 workspace,
                 notice: None,
                 close_window_requested: false,
+                seen_pane: None,
             },
             start.wake_rx,
         ))
@@ -1253,6 +1301,11 @@ impl SessionRegistry {
         generation: SessionGeneration,
         active_pane: Option<crate::workspace::PaneId>,
     ) -> WakeOutcome {
+        let presence = if active_pane == Some(pane) {
+            TabPresence::Shown
+        } else {
+            TabPresence::Hidden
+        };
         let effects = match self.sessions.get_mut(&pane) {
             Some(state) if state.generation == generation => {
                 let effects = state.session.drain_effects();
@@ -1260,7 +1313,11 @@ impl SessionRegistry {
                 // state before the caller removes the pane. This preserves
                 // the final frame for consumers, not a visible exited tab:
                 // handle_wake still closes the pane after this returns.
-                state.frame = state.session.frame();
+                let frame = state.session.frame();
+                if shows_new_output(&state.frame, &frame) {
+                    state.status.apply(StatusEvent::Output(presence));
+                }
+                state.frame = frame;
                 effects
             }
             _ => {
@@ -1288,7 +1345,13 @@ impl SessionRegistry {
                         state.activity.set_title(title);
                     }
                 }
-                ControlEvent::Bell => {}
+                ControlEvent::Bell => {
+                    if let Some(state) = self.sessions.get_mut(&pane)
+                        && state.generation == generation
+                    {
+                        state.status.apply(StatusEvent::Bell(presence));
+                    }
+                }
                 ControlEvent::ChildExited(_) => {}
                 ControlEvent::Close => should_close = true,
             }
@@ -1297,6 +1360,18 @@ impl SessionRegistry {
             accepted: true,
             clipboard,
             should_close,
+        }
+    }
+
+    /// Tells the tab now on screen it has been seen, once for each arrival, so what
+    /// happens while it stays on screen is still reported.
+    fn note_active_pane(&mut self) {
+        let active = self.active_pane();
+        if active != self.seen_pane {
+            self.seen_pane = active;
+            if let Some(state) = active.and_then(|pane| self.sessions.get_mut(&pane)) {
+                state.status.apply(StatusEvent::Seen);
+            }
         }
     }
 
@@ -1315,6 +1390,7 @@ impl SessionRegistry {
             .map(|(pane, state)| PolledPaneState {
                 pane: *pane,
                 activity: state.activity.clone(),
+                status: state.status,
                 cwd: state.cuenv.cwd.clone(),
                 notice: state.cuenv.notice.clone(),
                 task_notice: state.cuenv.task_notice.clone(),
@@ -2716,6 +2792,7 @@ impl Render for TerminalView {
         let padding = self.config.terminal_padding;
         let active_tab = self.active_tab();
         self.reveal_active_rail_tab(active_tab);
+        self.registry.note_active_pane();
         let sidebar = self.render_sidebar(active_tab, &theme, cx);
         let Some(active_pane) = self.active_pane() else {
             let message = self
@@ -2996,6 +3073,7 @@ mod tests {
     use crate::terminal::model::Color;
     use crate::terminal::rio_input::{encode_key, encode_paste};
     use crate::terminal::selection::LogicalPosition;
+    use crate::terminal::tab_status::TabIndicator;
     use rio_vt::crosswords::Mode;
     use std::collections::VecDeque;
 
@@ -4415,6 +4493,179 @@ mod tests {
         *foreground.lock().unwrap() = "vim".into();
         state.launch_task("cuenv task release", &task).unwrap();
         assert_eq!(state.activity.task_name(), None);
+    }
+
+    /// A registry with two tabs, the second of them on screen and the first scripted
+    /// to report `effects` on its next wake.
+    fn background_tab_with(
+        effects: Vec<ControlEvent>,
+    ) -> (SessionRegistry, crate::workspace::PaneId, SessionGeneration) {
+        let (first, _) = fake_start('z', effects, None);
+        let (second, _) = fake_start('b', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(first), Ok(second)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.generation;
+        // What the tab last showed, which its next wake's 'z' differs from.
+        state.frame = frame_with('a');
+        registry.start_tab(test_geometry()).unwrap();
+        registry.note_active_pane();
+        (registry, pane, generation)
+    }
+
+    #[test]
+    fn a_background_tab_reports_new_output_and_a_bell_until_it_is_arrived_at() {
+        let (mut registry, pane, generation) = background_tab_with(Vec::new());
+        let active = registry.active_pane();
+        registry.apply_wake(pane, generation, active);
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Unread)
+        );
+
+        let (mut registry, pane, generation) = background_tab_with(vec![ControlEvent::Bell]);
+        let active = registry.active_pane();
+        registry.apply_wake(pane, generation, active);
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Bell)
+        );
+
+        let tab = registry
+            .workspace
+            .workspace()
+            .tabs()
+            .iter()
+            .find(|tab| tab.focused == pane)
+            .map(|tab| tab.id)
+            .unwrap();
+        registry
+            .workspace
+            .apply(ShellAction::ActivateTab(tab))
+            .unwrap();
+        registry.note_active_pane();
+        assert_eq!(registry.sessions[&pane].status.indicator(), None);
+    }
+
+    #[test]
+    fn the_tab_on_screen_collects_neither_output_nor_a_bell() {
+        let (initial, _) = fake_start('z', vec![ControlEvent::Bell], None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.generation;
+        state.frame = frame_with('a');
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(registry.sessions[&pane].status.indicator(), None);
+    }
+
+    #[test]
+    fn a_wake_that_changes_no_text_is_not_new_output() {
+        let (mut registry, pane, generation) = background_tab_with(Vec::new());
+        let unchanged = registry.sessions.get_mut(&pane).unwrap().session.frame();
+        registry.sessions.get_mut(&pane).unwrap().frame = unchanged;
+        let active = registry.active_pane();
+        registry.apply_wake(pane, generation, active);
+        assert_eq!(registry.sessions[&pane].status.indicator(), None);
+    }
+
+    #[test]
+    fn output_arriving_under_a_scrolled_back_view_is_new_output() {
+        let earlier = TerminalFrame {
+            viewport_offset: Some(40),
+            ..frame_with('a')
+        };
+        let later = TerminalFrame {
+            viewport_offset: Some(41),
+            ..frame_with('a')
+        };
+        assert!(shows_new_output(&earlier, &later));
+        assert!(!shows_new_output(&earlier, &earlier));
+    }
+
+    #[test]
+    fn a_launched_task_reports_running_then_finished_until_the_user_moves_on() {
+        let (mut state, _) = bracketed_pane("nu");
+        let now = std::time::Instant::now();
+        state.sample_foreground(now);
+        state
+            .launch_task("cuenv task build\n", &runnable_task("build"))
+            .unwrap();
+        assert_eq!(state.status.indicator(), Some(TabIndicator::Running));
+
+        // The task's program has come and gone, which the foreground only shows
+        // after the grace period for a task that has yet to appear.
+        state.sample_foreground(now + std::time::Duration::from_secs(60));
+        assert_eq!(state.status.indicator(), Some(TabIndicator::Finished));
+
+        state
+            .input(pressed(KeyInput::Character('x'), InputModifiers::default()))
+            .unwrap();
+        assert_eq!(state.status.indicator(), None);
+    }
+
+    fn pane_with_a_task_awaiting_arguments() -> (PaneState, FakeForeground) {
+        let session = FakeSession {
+            frame: TerminalView::empty_frame(),
+            sent: Arc::default(),
+            foreground: Arc::new(Mutex::new("nu".to_owned())),
+            effects: Arc::default(),
+            close_error: None,
+            cursor: None,
+        };
+        let foreground = Arc::clone(&session.foreground);
+        let mut state = PaneState::new(
+            SessionGeneration(1),
+            Box::new(session),
+            test_geometry().surface,
+        );
+        state.sample_foreground(std::time::Instant::now());
+        let mut task = runnable_task("build");
+        task.requires_parameters = true;
+        state.launch_task("cuenv task build ", &task).unwrap();
+        (state, foreground)
+    }
+
+    #[test]
+    fn a_task_given_its_arguments_reports_running_from_the_enter_that_runs_it() {
+        let (mut state, _) = pane_with_a_task_awaiting_arguments();
+        let plain = InputModifiers::default();
+        state
+            .input(pressed(KeyInput::Character('x'), plain))
+            .unwrap();
+        assert_eq!(state.status.indicator(), None);
+        state.input(pressed(KeyInput::Enter, plain)).unwrap();
+        assert_eq!(state.status.indicator(), Some(TabIndicator::Running));
+        assert_eq!(state.activity.task_name(), Some("build"));
+    }
+
+    #[test]
+    fn a_staged_task_abandoned_or_overtaken_never_reports_running() {
+        let plain = InputModifiers::default();
+        let (mut abandoned, _) = pane_with_a_task_awaiting_arguments();
+        abandoned
+            .input(pressed(KeyInput::Character('c'), InputModifiers::CONTROL))
+            .unwrap();
+        abandoned.input(pressed(KeyInput::Enter, plain)).unwrap();
+        assert_eq!(abandoned.status.indicator(), None);
+
+        // Something else took the foreground, so this Enter is that program's.
+        let (mut overtaken, foreground) = pane_with_a_task_awaiting_arguments();
+        *foreground.lock().unwrap() = "vim".to_owned();
+        overtaken.input(pressed(KeyInput::Enter, plain)).unwrap();
+        assert_eq!(overtaken.status.indicator(), None);
+    }
+
+    #[test]
+    fn a_task_left_waiting_for_arguments_reports_nothing() {
+        let (mut state, _) = bracketed_pane("nu");
+        state.sample_foreground(std::time::Instant::now());
+        let mut task = runnable_task("build");
+        task.requires_parameters = true;
+        state.launch_task("cuenv task build", &task).unwrap();
+        assert_eq!(state.status.indicator(), None);
     }
 
     #[test]

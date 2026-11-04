@@ -6,6 +6,7 @@ use crate::terminal::engine::{SIDEBAR_TOGGLE_KEY, TerminalView, app_chord_label,
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_label::{TabMarkSources, tab_mark, tab_tooltip};
+use crate::terminal::tab_status::TabIndicator;
 use crate::terminal::workspace_shell::TabNumber;
 use crate::workspace::TabId;
 use gpui::{
@@ -74,7 +75,16 @@ impl TerminalView {
                     .get(&tab.focused)
                     .map(|state| &state.cuenv);
                 let banner = cuenv.and_then(|cuenv| cuenv.presentation.banner.as_deref());
+                let indicator = self
+                    .registry
+                    .sessions
+                    .get(&tab.focused)
+                    .and_then(|state| state.status.indicator());
                 let tooltip = tab_tooltip(&label, banner);
+                let tooltip = match indicator {
+                    Some(indicator) => format!("{tooltip}\n{}", indicator.description()),
+                    None => tooltip,
+                };
                 let mark = tab_mark(TabMarkSources {
                     custom_name: tab.custom_name.as_deref(),
                     banner,
@@ -87,6 +97,7 @@ impl TerminalView {
                         label,
                         mark,
                         tooltip,
+                        indicator,
                         number: self
                             .tab_hints_visible
                             .then(|| TabNumber::of_position(index, tab_list.len()))
@@ -224,6 +235,29 @@ fn control(colors: &ChromeColors, id: &'static str) -> Stateful<Div> {
         .hover(move |this| this.bg(hover))
 }
 
+/// A tab's status at a glance. Every state has its own shape, so it reads the same
+/// whatever colours the theme gives it.
+fn render_indicator(indicator: TabIndicator, colors: &ChromeColors) -> Div {
+    let slot = div()
+        .size(size::STATUS_ICON)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center();
+    let icon = |icon: Icon, color: Rgba| icon.element(color).size(size::STATUS_ICON);
+    match indicator {
+        TabIndicator::Bell => slot.child(icon(Icon::Bell, colors.accent)),
+        TabIndicator::Running => slot.child(icon(Icon::Running, colors.text_secondary)),
+        TabIndicator::Finished => slot.child(icon(Icon::Finished, colors.text_secondary)),
+        TabIndicator::Unread => slot.child(
+            div()
+                .size(size::NOTICE_MARK)
+                .rounded(radius::CONTROL)
+                .bg(colors.accent),
+        ),
+    }
+}
+
 /// What a row in the tab list shows.
 struct TabRow {
     id: TabId,
@@ -231,6 +265,7 @@ struct TabRow {
     /// What stands in for the label when the sidebar is collapsed.
     mark: String,
     tooltip: String,
+    indicator: Option<TabIndicator>,
     number: Option<TabNumber>,
     selected: bool,
     mode: SidebarMode,
@@ -245,6 +280,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         label,
         mark,
         tooltip,
+        indicator,
         number,
         selected,
         mode,
@@ -311,17 +347,27 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                         .text_color(colors.text_muted)
                         .font_weight(text::REGULAR)
                         .child(tab_number_hint(number))
-                })),
+                }))
+                .children(indicator.map(|indicator| render_indicator(indicator, &colors))),
             // Only a character fits, so the hint stands in for the mark.
-            SidebarMode::Collapsed => this.justify_center().child(match number {
-                Some(number) => div()
-                    .font_family(mono.clone())
-                    .text_size(text::LABEL)
-                    .text_color(colors.text_muted)
-                    .font_weight(text::REGULAR)
-                    .child(number.digit().to_string()),
-                None => div().child(mark),
-            }),
+            SidebarMode::Collapsed => this
+                .justify_center()
+                .child(match number {
+                    Some(number) => div()
+                        .font_family(mono.clone())
+                        .text_size(text::LABEL)
+                        .text_color(colors.text_muted)
+                        .font_weight(text::REGULAR)
+                        .child(number.digit().to_string()),
+                    None => div().child(mark),
+                })
+                .children(indicator.map(|indicator| {
+                    div()
+                        .absolute()
+                        .right(space::XXS)
+                        .bottom(space::XXS)
+                        .child(render_indicator(indicator, &colors))
+                })),
         })
 }
 

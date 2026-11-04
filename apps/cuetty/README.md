@@ -104,7 +104,13 @@ keeps what was last known (a pipeline whose first command has exited, as in
 `git log | less`, cannot be), a shell running a script is named after the script, and
 Nix's `.name-wrapped`
 binaries are shown as `name`. A tab
-list taller than the window scrolls, and follows the active tab. Restrained
+list taller than the window scrolls, and follows the active tab. `src/terminal/tab_status.rs`
+works out each tab's indicator: a bell for a bell rung while the tab was not on screen, a
+ring while a task launched from Cuetty runs, counted from the Enter that runs it if it
+needed arguments, a check once it hands the foreground back,
+and a dot for text that changed while the tab was not on screen. Each has its own shape
+and its meaning in the tab's tooltip. Arriving at a tab clears what was waiting there,
+and typing moves on from a finished task. Restrained
 active-tab treatment and compact footer controls keep the sidebar readable
 without competing with terminal content. By default, the Rio surface sits in a
 14px inset below the title strip beside the sidebar. The inset, and any space left

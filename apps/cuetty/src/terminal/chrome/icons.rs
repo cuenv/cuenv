@@ -15,14 +15,23 @@ pub(super) enum Icon {
     SidebarCollapse,
     /// Expands the sidebar away from the window edge.
     SidebarExpand,
+    /// A tab rang its bell.
+    Bell,
+    /// A tab's task is running. Drawn still: an idle window never redraws for it.
+    Running,
+    /// A tab's task has finished.
+    Finished,
 }
 
 impl Icon {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 7] = [
         Self::Plus,
         Self::Tasks,
         Self::SidebarCollapse,
         Self::SidebarExpand,
+        Self::Bell,
+        Self::Running,
+        Self::Finished,
     ];
 
     const fn path(self) -> &'static str {
@@ -31,6 +40,9 @@ impl Icon {
             Self::Tasks => "icons/list-todo.svg",
             Self::SidebarCollapse => "icons/panel-right-close.svg",
             Self::SidebarExpand => "icons/panel-right-open.svg",
+            Self::Bell => "icons/bell.svg",
+            Self::Running => "icons/loader-circle.svg",
+            Self::Finished => "icons/check.svg",
         }
     }
 
@@ -40,6 +52,9 @@ impl Icon {
             Self::Tasks => include_bytes!("../../../assets/icons/list-todo.svg"),
             Self::SidebarCollapse => include_bytes!("../../../assets/icons/panel-right-close.svg"),
             Self::SidebarExpand => include_bytes!("../../../assets/icons/panel-right-open.svg"),
+            Self::Bell => include_bytes!("../../../assets/icons/bell.svg"),
+            Self::Running => include_bytes!("../../../assets/icons/loader-circle.svg"),
+            Self::Finished => include_bytes!("../../../assets/icons/check.svg"),
         }
     }
 

@@ -143,6 +143,8 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const CARET_WIDTH: Pixels = px(2.0);
     pub(in crate::terminal::chrome) const CARET_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const NOTICE_MARK: Pixels = px(6.0);
+    /// A tab's status indicator, small enough to sit beside its name or its mark.
+    pub(in crate::terminal::chrome) const STATUS_ICON: Pixels = px(12.0);
     pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
 }
 
