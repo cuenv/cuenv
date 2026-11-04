@@ -8,6 +8,7 @@ mod rail;
 mod task_palette;
 mod task_sidebar;
 mod tokens;
+mod tooltip;
 
 pub(super) use layout::render_shell_message;
 pub(super) use tokens::traffic_light_position;

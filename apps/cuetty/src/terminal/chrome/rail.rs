@@ -1,4 +1,5 @@
 use super::tokens::{ChromeColors, border, opaque, radius, size, space, text};
+use super::tooltip::chrome_tooltip;
 use crate::integrations::cuenv::RailColor;
 use crate::terminal::engine::TerminalView;
 use crate::terminal::model::Rgb;
@@ -8,7 +9,6 @@ use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, Rgba, StatefulInteractiveElement,
     Styled, div, prelude::FluentBuilder,
 };
-use gpui_component::tooltip::Tooltip;
 
 fn shell_notice_text(notice: Option<&str>) -> Option<String> {
     notice.map(|notice| format!("• {notice}"))
@@ -99,7 +99,7 @@ impl TerminalView {
                 .on_click(cx.listener(move |view, _event, window, cx| {
                     view.select_terminal_tab(tab_id, window, cx);
                 }))
-                .tooltip(move |window, cx| Tooltip::new(tooltip_label.clone()).build(window, cx));
+                .tooltip(chrome_tooltip(tooltip_label, colors));
             tab_button = tab_button
                 .when(selected, |this| {
                     this.child(
@@ -206,7 +206,7 @@ impl TerminalView {
             .text_size(text::LABEL)
             .hover(|this| this.bg(colors.state))
             .cursor_pointer()
-            .tooltip(|window, cx| Tooltip::new("New tab").build(window, cx))
+            .tooltip(chrome_tooltip("New tab", colors))
             .on_click(cx.listener(|view, _event, window, cx| {
                 view.new_tab(window, cx);
             }))
@@ -225,9 +225,10 @@ impl TerminalView {
             .when(self.task_sidebar_open, |this| this.bg(colors.state))
             .hover(|this| this.bg(colors.state))
             .cursor_pointer()
-            .tooltip(move |window, cx| {
-                Tooltip::new(format!("Cuenv tasks · {palette_chord} to search")).build(window, cx)
-            })
+            .tooltip(chrome_tooltip(
+                format!("Cuenv tasks · {palette_chord} to search"),
+                colors,
+            ))
             .on_click(cx.listener(|view, _event, _window, cx| {
                 view.task_sidebar_open = !view.task_sidebar_open;
                 cx.notify();

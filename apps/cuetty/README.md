@@ -168,8 +168,8 @@ plus muted text and the raised and hover surfaces used by floating panels, lives
 `ThemeColors`; none is hard-coded by a renderer.
 
 All chrome spacing, radii, type sizes, border widths, elevation, and colours come
-from one token set in `src/terminal/chrome/tokens.rs`; chrome views do not write
-their own literals.
+from one token set in `src/terminal/chrome/tokens.rs`; chrome views, tooltips
+included, do not write their own literals.
 
 The terminal render resizes Rio from the pane canvas measured inside GPUI's
 actual content panel. The measurement therefore already excludes the title
