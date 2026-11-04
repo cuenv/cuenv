@@ -368,6 +368,19 @@ declaration is corrected or the resource destroyed. Generated provider types dec
 correct type. A declared output the provider never returns, or returns as null, is not
 checked; a reference to one still fails when it is resolved.
 
+The end-to-end suite runs the tests sharing one `sqld` at most eight at a time. With thirty-two at
+once on a 32-core machine, `sqld` 0.24.32 stopped serving writes in three of four full flake runs
+and once in six runs of the suite under CPU and disk load. The revision before this work did so
+once in about forty-five of those loaded runs, so the fault predates it, though this work's extra
+tests may make it more likely. The log shows the write slot still held by a connection that had
+failed with `SQLITE_BUSY_SNAPSHOT` and closed, and every other writer spinning on that slot. Eight
+at a time gave no hang in 35 loaded runs, and a stall now fails its test after five minutes instead
+of blocking the check forever.
+
+One of those 35 runs failed differently, as did five of 27 at four at a time: the store gave up on
+`SQLITE_BUSY` after four attempts, about 1.4 seconds of backoff. A real apply that hits this after
+changing a resource stops with an unrecorded change and a recovery file.
+
 ## Proof and integration gates
 
 1. Prove in-memory specialization against the pinned CUE fork and bridge,
