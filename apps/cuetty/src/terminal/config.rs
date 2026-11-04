@@ -220,7 +220,7 @@ impl ThemeColors {
     /// the same defaults.
     pub fn catppuccin_mocha() -> Self {
         Self {
-            // Mantle forms the app chrome; base fills the terminal.
+            // Base fills the window; Mantle sets the sidebar off from it.
             surface: Rgb(30, 30, 46),
             title_surface: Rgb(24, 24, 37),
             title_text: Rgb(186, 194, 222),

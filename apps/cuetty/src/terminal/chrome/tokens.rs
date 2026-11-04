@@ -209,18 +209,36 @@ pub(super) fn material_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
     }
 }
 
+/// The least opacity of the sidebar's outline and of hover and active fills. These
+/// mark an edge or a state rather than fill a region, and in a very transparent window
+/// they would otherwise leave the panel undrawn and its controls without feedback.
+const STATE_MIN_ALPHA: f32 = 0.5;
+
+/// A mark of an edge or a state: in the window's material, but never fading out.
+fn state_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
+    let material = material_color(theme, color);
+    Rgba {
+        a: material.a.max(STATE_MIN_ALPHA),
+        ..material
+    }
+}
+
 /// Semantic chrome colours resolved from the active theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ChromeColors {
-    /// Structural chrome: the title strip and rail. Shares the terminal's
-    /// opacity.
+    /// The one layer behind the terminal, the title strip, and the sidebar's
+    /// surroundings. Nothing structural paints a second layer over it, because
+    /// alpha would compound and the window would stop reading as one material.
     pub(super) material: Rgba,
+    /// The floating sidebar's fill: a neutral step off the terminal in an opaque
+    /// window, and nothing in a translucent one, where a fill could only be a
+    /// second layer. There the outline, which never fades out, draws the panel.
+    pub(super) sidebar: Rgba,
     /// Floating panels. Always opaque, because they cover terminal text that
     /// would otherwise show through their own.
     pub(super) panel: Rgba,
-    /// Hovered and active controls on structural material, in the same opacity
-    /// as that material. The rail stays one material at any transparency; the
-    /// marker and text weight carry the active tab where this fill fades out.
+    /// Hovered and active controls in the sidebar, in the window's opacity down to
+    /// a floor that keeps them visible.
     pub(super) state: Rgba,
     /// The keyboard-selected row in a panel. Muted text is not legible on this
     /// fill, so that row's metadata uses secondary text.
@@ -234,8 +252,8 @@ pub(super) struct ChromeColors {
     pub(super) text: Rgba,
     pub(super) text_secondary: Rgba,
     pub(super) text_muted: Rgba,
-    /// Lines between structural regions. Shares the material's opacity, so a
-    /// transparent window has no solid lines left floating in it.
+    /// The sidebar's outline. Shares the material's opacity down to a floor, so a
+    /// transparent window has no solid lines in it and still shows the panel.
     pub(super) divider: Rgba,
     /// Outline of floating panels, opaque like the panels themselves.
     pub(super) panel_outline: Rgba,
@@ -246,16 +264,21 @@ pub(super) struct ChromeColors {
 impl ChromeColors {
     pub(super) fn from_theme(theme: &TerminalTheme) -> Self {
         Self {
-            material: material_color(theme, theme.title_surface),
+            material: material_color(theme, theme.surface),
+            sidebar: if theme.background_opacity >= 1.0 {
+                opaque(theme.title_surface)
+            } else {
+                gpui::transparent_black().to_rgb()
+            },
             panel: opaque(theme.raised_surface),
-            state: material_color(theme, theme.raised_surface),
+            state: state_color(theme, theme.raised_surface),
             panel_selected: opaque(theme.selection),
             panel_hover: opaque(theme.hover_surface),
             well: opaque(theme.surface),
             text: opaque(theme.text),
             text_secondary: opaque(theme.title_text),
             text_muted: opaque(theme.muted_text),
-            divider: material_color(theme, theme.divider),
+            divider: state_color(theme, theme.divider),
             panel_outline: opaque(theme.divider),
             accent: opaque(theme.accent),
         }
@@ -309,22 +332,45 @@ mod tests {
     #[test]
     fn chrome_and_terminal_share_one_opacity_above_zero_transparency() {
         let theme = theme_with_transparency(65);
-        let chrome = ChromeColors::from_theme(&theme).material.a;
-        assert!((chrome - 0.35).abs() < f32::EPSILON);
-        assert_eq!(chrome, material_color(&theme, theme.surface).a);
+        let chrome = ChromeColors::from_theme(&theme).material;
+        assert!((chrome.a - 0.35).abs() < f32::EPSILON);
+        assert_eq!(chrome, material_color(&theme, theme.surface));
+    }
+
+    #[test]
+    fn the_sidebar_is_a_neutral_fill_when_opaque_and_no_layer_when_translucent() {
+        let theme = theme_with_transparency(0);
+        assert_eq!(
+            ChromeColors::from_theme(&theme).sidebar,
+            opaque(theme.title_surface)
+        );
+        for percent in [1, 65, 100] {
+            let colors = ChromeColors::from_theme(&theme_with_transparency(percent));
+            assert_eq!(colors.sidebar.a, 0.0);
+        }
     }
 
     #[test]
     fn structural_dividers_fade_with_the_material_but_panel_outlines_do_not() {
-        let colors = ChromeColors::from_theme(&theme_with_transparency(65));
+        let colors = ChromeColors::from_theme(&theme_with_transparency(30));
         assert_eq!(colors.divider.a, colors.material.a);
         assert_eq!(colors.panel_outline.a, 1.0);
     }
 
     #[test]
     fn structural_control_states_share_the_material_opacity() {
-        let colors = ChromeColors::from_theme(&theme_with_transparency(65));
+        let colors = ChromeColors::from_theme(&theme_with_transparency(30));
         assert_eq!(colors.state.a, colors.material.a);
+    }
+
+    #[test]
+    fn the_sidebar_outline_and_control_states_survive_any_transparency() {
+        for percent in [90, 100] {
+            let colors = ChromeColors::from_theme(&theme_with_transparency(percent));
+            assert!(colors.material.a < STATE_MIN_ALPHA);
+            assert_eq!(colors.divider.a, STATE_MIN_ALPHA);
+            assert_eq!(colors.state.a, STATE_MIN_ALPHA);
+        }
     }
 
     #[test]

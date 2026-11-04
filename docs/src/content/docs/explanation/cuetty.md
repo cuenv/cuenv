@@ -57,7 +57,9 @@ The current usable slice includes:
 - Catppuccin Mocha is the built-in terminal colour scheme shared by Rio's
   semantic resolver and the GPUI chrome.
 - Ghostty is the visual reference for restrained native chrome: traffic lights,
-  one title strip, stable single-line tab labels, and a full-bleed terminal.
+  one title strip, a sidebar floating inset from
+  the window's edges so it sits comfortably with rounded corners, stable single-line
+  tab labels, and a full-bleed terminal.
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
   selection, Rio-owned history navigation, and visible-frame literal search.
 - Wheel and trackpad input normally navigates Rio history. An application that
@@ -69,7 +71,7 @@ The current usable slice includes:
   Physical device input and macOS still need interactive verification.
 - The active pane's post-layout GPUI canvas is the source of truth for each Rio
   resize, so the measured width already excludes the title strip, terminal
-  inset, divider, and the sidebar in its current state instead of leaving a stale
+  inset, and the sidebar in its current state instead of leaving a stale
   frame clipped in the viewport, so toggling the sidebar resizes the grid.
 - The terminal surface defaults to a 14px inset from the host chrome; the
   inset uses the same terminal surface colour and is subtracted from the Rio grid
@@ -131,12 +133,12 @@ fail through normal CUE evaluation. A matching package may provide a
 single-line `banner` and a quoted `rail: "#RRGGBB"`. The banner joins the tab's
 name in its tooltip; `rail` is the project accent, so `rail: "#ff0000"` colours the
 small marker on the active tab while that tab is active and never fills the
-rail. Terminal panes are never framed, and the former `border` field is
+sidebar. Terminal panes are never framed, and the former `border` field is
 rejected as unknown. `titlebar: false` hides the Cuetty title strip while that
-tab is active and lets the terminal extend to the top of the window; it
-defaults to `true`. `keybindings: palette:` rebinds the task palette; see
-[Keybindings](#keybindings). A hidden strip removes the window drag region, and on macOS
-the traffic lights float over the terminal's top-left corner.
+tab is active and lets the terminal extend to the top of the window; it defaults to `true`. `keybindings: palette:` rebinds the task palette; see
+[Keybindings](#keybindings). A hidden strip leaves only the small gap above the
+sidebar to move the window by, and on macOS the traffic lights float over the
+terminal's top-left corner.
 
 Terminal appearance can be configured in the same package:
 
@@ -163,14 +165,17 @@ transparency: 10
 | `font.size` | Font size in pixels, 1–128 | 16 |
 | `font.lineHeight` | Line-height multiplier, 0.5–3 | 1.2 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 14 each |
-| `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and rail share this opacity | 0 |
+| `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and sidebar share this opacity | 0 |
 | `sidebar` | `"expanded"` or `"collapsed"`: how a window's sidebar starts. A window opens with the global package's look and sidebar when that evaluates within half a second, so its first frame is already the right size, then its first directory's evaluation settles the setting. Only that first configuration is read, so changing directory or editing the value later does not move it, and the toggle and its shortcut outrank it for the life of the window | `"expanded"` |
 
 Fields are optional. The active tab's settings determine the rendered grid,
 terminal inset, and window material. At `transparency: 0` the whole window is
 opaque. Above 0, the terminal and structural chrome share one opacity over the
-native blur, so the window reads as one material, dividers and the rail's hover
-and active-tab fills included; text, the active tab's marker, and the floating
+native blur, so the window reads as one material. The sidebar has no fill of its own
+there, since a second layer would be more opaque than the rest of the window, so its
+outline draws the panel and hover and active-tab fills sit directly on the material.
+Those marks stop fading at 50% opacity, so a very transparent window still shows the
+panel and gives feedback; text, the active tab's marker, and the floating
 task panels and their outlines stay opaque for legibility. Unknown top-level and nested
 fields are rejected.
 
@@ -238,7 +243,7 @@ individual fields should be overridable per directory. If you used the former
 Directory and module-metadata changes are watched natively. Evaluation and
 validation occur off the GPUI thread. Invalid matching CUE keeps the last
 valid presentation for that directory and exposes an integration notice: a small
-accent marker above the rail's controls, with the message in its tooltip. The
+accent marker beside the sidebar's controls, with the message in its tooltip. The
 tooltip stops at twelve lines; `cue eval .:cuetty` in that directory prints a
 whole evaluation error.
 

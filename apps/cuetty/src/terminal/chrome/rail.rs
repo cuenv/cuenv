@@ -184,8 +184,6 @@ impl TerminalView {
             .flex()
             .gap(space::XS)
             .p(space::SM)
-            .border_t(border::HAIRLINE)
-            .border_color(colors.divider)
             .map(|this| match mode {
                 SidebarMode::Expanded => this.flex_row().items_center(),
                 SidebarMode::Collapsed => this.flex_col().items_center(),
@@ -201,12 +199,15 @@ impl TerminalView {
             .child(toggle);
         div()
             .relative()
-            .size_full()
+            .w_full()
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
-            .flex_shrink_0()
-            .bg(colors.material)
-            .border_l(border::HAIRLINE)
+            .overflow_hidden()
+            .rounded(radius::PANEL)
+            .bg(colors.sidebar)
+            .border(border::HAIRLINE)
             .border_color(colors.divider)
             .child(tabs)
             .child(footer)

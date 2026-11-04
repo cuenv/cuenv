@@ -1,4 +1,4 @@
-use super::tokens::{ChromeColors, border, material_color, size, space, text, ui_font_family};
+use super::tokens::{ChromeColors, border, size, space, text, ui_font_family};
 use crate::integrations::cuenv::{SidebarMode, TitlebarVisibility};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
@@ -43,8 +43,33 @@ impl TerminalView {
         theme: &TerminalTheme,
     ) -> gpui::AnyElement {
         let colors = ChromeColors::from_theme(theme);
+        let titlebar_visibility = self
+            .active_state()
+            .map(|state| state.cuenv.presentation.titlebar)
+            .unwrap_or_default();
+        // The sidebar floats inset from the window's edges, so its corners stay
+        // concentric with a rounded window instead of meeting them in a hard line.
+        let inset_above_sidebar = div().h(space::MD).flex_shrink_0();
+        let sidebar_slot = div()
+            .w(match self.sidebar_mode() {
+                SidebarMode::Expanded => size::SIDEBAR_EXPANDED_WIDTH,
+                SidebarMode::Collapsed => size::SIDEBAR_COLLAPSED_WIDTH,
+            })
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .pr(space::MD)
+            .pb(space::MD)
+            // With no title strip this is all that is left to move the window by.
+            .child(if titlebar_visibility == TitlebarVisibility::Hidden {
+                draggable(inset_above_sidebar)
+            } else {
+                inset_above_sidebar
+            })
+            .child(sidebar);
         let workspace = div()
             .flex_1()
+            .min_h(px(0.0))
             .flex()
             // The content panel must establish a flex formatting context.
             // Otherwise a child's `flex_1` has no parent flex layout during
@@ -56,32 +81,19 @@ impl TerminalView {
                     .min_w(px(0.0))
                     .min_h(px(0.0))
                     .flex()
-                    // This panel is the single terminal background layer. The
-                    // grid only fills whole cells, so padding and whatever is
-                    // left over past the last row and column read as one
-                    // continuous canvas. Default-background cells never repaint
-                    // it, and no child may, or the alpha would compound.
-                    .bg(material_color(theme, theme.surface))
                     .child(content),
             )
-            .child(
-                div()
-                    .w(match self.sidebar_mode() {
-                        SidebarMode::Expanded => size::SIDEBAR_EXPANDED_WIDTH,
-                        SidebarMode::Collapsed => size::SIDEBAR_COLLAPSED_WIDTH,
-                    })
-                    .flex_shrink_0()
-                    .child(sidebar),
-            );
-        let titlebar_visibility = self
-            .active_state()
-            .map(|state| state.cuenv.presentation.titlebar)
-            .unwrap_or_default();
+            .child(sidebar_slot);
+        // This root is the single background layer. The grid only fills whole
+        // cells, so padding and whatever is left over past the last row and column
+        // read as one continuous canvas with the chrome. Default-background cells
+        // never repaint it, and no structural child may, or the alpha would compound.
         let shell = div()
             .size_full()
             .flex()
             .flex_col()
-            .font_family(ui_font_family());
+            .font_family(ui_font_family())
+            .bg(colors.material);
         if titlebar_visibility == TitlebarVisibility::Hidden {
             // The terminal grid is resized from its measured bounds, so it
             // reclaims the strip's height without extra arithmetic here.
@@ -90,9 +102,9 @@ impl TerminalView {
         let titlebar = div()
             .h(size::TITLEBAR_HEIGHT)
             .w_full()
+            .flex_shrink_0()
             .flex()
             .items_center()
-            .bg(colors.material)
             .border_b(border::HAIRLINE)
             .border_color(colors.divider)
             .child(draggable(div().h_full().w(size::WINDOW_CONTROLS_WIDTH)))

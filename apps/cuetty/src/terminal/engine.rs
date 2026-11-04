@@ -2083,7 +2083,7 @@ impl Render for TerminalView {
             .unwrap_or_default();
         if let Some(state) = self.registry.sessions.get_mut(&active_pane) {
             // The canvas is inside the actual content panel, so this includes
-            // the title strip, terminal inset, divider, and the current rail
+            // the title strip, terminal inset, and the sidebar at its current
             // width without trying to reconstruct GPUI's layout arithmetic.
             let bounds = *state.measured_bounds.lock().expect("bounds mutex poisoned");
             if let Err(error) = state

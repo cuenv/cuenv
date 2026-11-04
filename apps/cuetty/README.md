@@ -84,8 +84,9 @@ write; shell control chords such as Ctrl-C and Ctrl-U; a new tab opening in
 ## Visual contract
 
 The shell follows Ghostty's restrained presentation: native traffic lights,
-one dark title strip, a right-side tab sidebar, and a full-bleed Catppuccin Mocha
-terminal surface. The sidebar is 200px wide and lists tabs by name. Its toggle, or
+one title strip, a
+right-side tab sidebar floating inset from the window's edges so it sits comfortably
+with rounded window corners, and a full-bleed Catppuccin Mocha terminal surface. The sidebar is 200px wide and lists tabs by name. Its toggle, or
 Cmd-B (Ctrl-Shift-B on Linux), collapses it to 56px with an initial for each tab, taken
 from its user-set name, project banner, or directory so it stays put as programs come
 and go, and the full name as a tooltip; `sidebar: "collapsed"` in CUE starts it that
@@ -102,9 +103,9 @@ keeps what was last known (a pipeline whose first command has exited, as in
 `git log | less`, cannot be), and Nix's `.name-wrapped`
 binaries are shown as `name`. A tab
 list taller than the window scrolls, and follows the active tab. Restrained
-active-tab treatment and compact footer controls keep the rail readable
+active-tab treatment and compact footer controls keep the sidebar readable
 without competing with terminal content. By default, the Rio surface sits in a
-14px inset below the title strip beside the rail. The inset, and any space left
+14px inset below the title strip beside the sidebar. The inset, and any space left
 over past the grid's last whole column and row, use the same surface colour from
 one background layer, so they read as breathing room inside one continuous
 terminal canvas rather than a contrasting frame or strip. Clicking the terminal viewport requests focus.
@@ -130,16 +131,19 @@ through global and per-directory CUE files. Padding is independently configurabl
 on the top, right, bottom, and left and is applied outside the measured terminal
 viewport so Rio receives the actual remaining grid size. Transparency spans 0%
 (opaque) through 100% (fully transparent). The terminal canvas, title strip, and
-right-side tab rail share that one opacity, so the window reads as one material:
+right-side sidebar share that one opacity from a single layer, so the window reads
+as one material:
 at 0% nothing shows through and the compositor treats the window as opaque, and
-above 0% everything sits over native blur together, including the dividers
-between those regions and the rail's hover and active-tab fills. Terminal text,
+above 0% everything sits over native blur together, including the sidebar's outline
+and its hover and active-tab fills, which stop fading at 50% opacity so a very
+transparent window still shows the panel and gives feedback. The sidebar has no fill
+of its own above 0%, because a second layer would be more opaque than the rest. Terminal text,
 the cursor, selection, chrome text, and the active tab's marker remain opaque, as
 do the floating task panels and their outlines, whose own text would otherwise
 compete with the terminal text they cover. The native Cuetty menu contains Quit Cuetty and
 Cmd-Q uses the same application action. Before calling the POC visually usable,
 check that native window
-controls and the rail remain visible, the prompt fills the terminal surface
+controls and the sidebar remain visible, the prompt fills the terminal surface
 without a second frame, the cursor changes with focus, ANSI colour and Unicode
 remain correct, and resizing changes the shell's `stty size` without stealing
 tab clicks.
@@ -181,8 +185,8 @@ snapshot adapter preserves backend-declared cluster text, wide-cell occupancy,
 and wrapped placeholders. Complete IME, ZWJ shaping, hyperlink, and emoji
 presentation correctness is deliberately not claimed.
 
-The built-in colour scheme is Catppuccin Mocha: Mantle forms the title strip and
-rail, Base fills the terminal, Surface 0 draws faint dividers, Surface 1 tints
+The built-in colour scheme is Catppuccin Mocha: Base fills the window, Mantle sets
+the sidebar off from it when the window is opaque, Surface 0 draws faint dividers, Surface 1 tints
 selections, Yellow marks the current search match with Crust text on it, Blue is
 the accent, and the
 complete ANSI palette follows Catppuccin's Mocha mapping. Every one of these,
@@ -206,7 +210,7 @@ licence is alongside them. Add a glyph there rather than using a text character.
 
 The terminal render resizes Rio from the pane canvas measured inside GPUI's
 actual content panel. The measurement therefore already excludes the title
-strip, terminal inset, divider, and the sidebar's current width instead of trying to
+strip, terminal inset, and the sidebar's current width instead of trying to
 reconstruct those dimensions from the outer window. This keeps window and sidebar
 changes on the same grid, preserves one-cell clamping and resize deduplication,
 and prevents a stale wider frame from clipping long output. Startup,
@@ -243,16 +247,16 @@ transparency: 10
 
 `banner` is a bounded single line and `rail` must be a quoted `#RRGGBB`
 project accent. It colours the small marker on the active tab while that tab is
-active, in place of the theme accent, and never fills the rail. Terminal panes are
+active, in place of the theme accent, and never fills the sidebar. Terminal panes are
 never framed; the legacy `border` field is rejected. `titlebar: false` hides
 the Cuetty title strip while that tab is active so the terminal extends to the
-top of the window; it defaults to `true`. With the strip hidden there is no
-drag region, and on macOS the traffic lights float over the terminal's top-left
+top of the window; it defaults to `true`. With the strip hidden only the small gap
+above the sidebar moves the window, and on macOS the traffic lights float over the terminal's top-left
 corner. Rio reports shell CWD changes through its public working-directory API;
 Cuetty re-evaluates and rebinds its native directory watcher after `cd`.
 Malformed matching configuration retains the last valid presentation for that
 directory, if one exists, and shows an integration notice: a small accent marker
-above the rail's controls, with the message in its tooltip. The tooltip stops
+beside the sidebar's controls, with the message in its tooltip. The tooltip stops
 at twelve lines; `cue eval .:cuetty` in that directory prints a whole evaluation
 error. Workspace action failures appear the same way. Unknown fields are
 rejected.
@@ -298,7 +302,7 @@ The file should declare `package cuetty` and use defaults for any values that
 per-directory packages should override.
 
 When the same directory contains an evaluable `package cuenv`, Cuetty also
-discovers its `tasks` map. The task button in the fixed right rail opens a
+discovers its `tasks` map. The task button in the sidebar's footer opens a
 floating, non-resizing task sidebar; Cmd-K (Ctrl-K off macOS, configurable
 through `keybindings.palette`) opens a searchable command palette. Selecting a task invokes the existing CLI in the same terminal pane
 whose working directory supplied the catalogue. The
