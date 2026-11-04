@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Cuetty">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#26282c"/>
+      <stop offset="1" stop-color="#17181b"/>
+    </linearGradient>
+  </defs>
+  <!-- The tile: a window's material with a hairline catching the light along its edge. -->
+  <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#tile)"/>
+  <rect x="17.5" y="17.5" width="221" height="221" rx="50.5" fill="none" stroke="#ffffff" stroke-opacity="0.09" stroke-width="3"/>
+  <!-- A lowercase c, drawn as an open arc, for cue. -->
+  <path d="M 153.1 82.1 A 56 56 0 1 0 153.1 173.9" fill="none" stroke="#e4e5e8" stroke-width="28" stroke-linecap="round"/>
+  <!-- The block cursor it is waiting at, for tty. -->
+  <rect x="168" y="102" width="32" height="52" rx="6" fill="#8fb0d6"/>
+</svg>

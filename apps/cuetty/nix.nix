@@ -91,7 +91,7 @@ let
           genericName = "Terminal";
           comment = "Cuenv's GPUI terminal backed by pinned Rio";
           exec = "cuetty";
-          icon = "utilities-terminal";
+          icon = "cuetty";
           terminal = false;
           startupWMClass = "cuetty";
           categories = [
@@ -105,6 +105,9 @@ let
           ];
         })
       ];
+      postInstall = lib.optionalString pkgs.stdenv.isLinux ''
+        install -Dm644 ${./assets/app/cuetty.svg} "$out/share/icons/hicolor/scalable/apps/cuetty.svg"
+      '';
       postFixup = lib.optionalString pkgs.stdenv.isLinux ''
         # GPUI loads some libraries with dlopen, so keep their paths after
         # Nix's RPATH shrinking without exporting them to terminal children.
@@ -117,6 +120,10 @@ let
         # The installed entry point must be an ELF executable, not a wrapper
         # that modifies the environment inherited by the user's shell.
         patchelf --print-interpreter "$out/bin/cuetty" > /dev/null
+
+        # The launcher entry names its icon, which has to be where desktops look for it.
+        grep -qx 'Icon=cuetty' "$out/share/applications/cuetty.desktop"
+        test -s "$out/share/icons/hicolor/scalable/apps/cuetty.svg"
 
         # Exercise dynamically loaded libraries using the installed ELF's
         # search path, without relying on the build environment's library path.

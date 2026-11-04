@@ -203,6 +203,9 @@ The current usable slice includes:
   UI font, or on Linux the first of Inter, Adwaita Sans, Cantarell, Ubuntu, Noto
   Sans, DejaVu Sans, and Liberation Sans that is installed; only paths and
   shortcuts use the terminal's monospaced family.
+- An original app icon, a lowercase c waiting at a block cursor, which the Nix package
+  installs to the hicolor theme for its desktop entry. The macOS development bundle has
+  no icon yet.
 - Global and per-directory CUE configuration for font family, font size, line height,
   padding, and transparency. There is no in-app Settings page. The native
   Cuetty menu exposes Quit Cuetty and Cmd-Q uses the same application-level

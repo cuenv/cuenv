@@ -266,6 +266,11 @@ in `assets/icons`, compiled into the binary and served through GPUI's asset sour
 at a slightly lighter stroke than upstream to sit beside the text. Lucide's ISC
 licence is alongside them. Add a glyph there rather than using a text character.
 
+The app's own icon is `assets/app/cuetty.svg`, an original mark: a lowercase c, for cue,
+waiting at a block cursor, for tty. The Nix package installs it as the `cuetty` icon in
+the hicolor theme and the desktop entry names it. The macOS development bundle has no
+icon yet: that takes an `.icns` built on a Mac.
+
 The terminal render resizes Rio from the pane canvas measured inside GPUI's
 actual content panel. The measurement therefore already excludes the title
 strip, terminal inset, and the sidebar's current width instead of trying to
