@@ -112,6 +112,17 @@ impl InteractionState {
         self.search.as_ref().map_or(&[], LiteralSearch::matches)
     }
 
+    /// Takes in the sample of the screen after a scroll, and says whether the view moved.
+    /// One that did not, because an application took the wheel or history had run out,
+    /// leaves the selection and the search where they were: nothing has moved under them.
+    pub fn scrolled_from(&mut self, before: Option<usize>, frame: &TerminalFrame) -> bool {
+        let moved = frame.viewport_offset != before;
+        if moved {
+            self.viewport_changed(frame);
+        }
+        moved
+    }
+
     /// Visible-frame coordinates cannot be carried across a history viewport
     /// change without pointing at different content. A search stays open for the
     /// text that has come into view, with navigation starting over.
@@ -275,6 +286,7 @@ mod tests {
                 blinking: Known::Unknown,
             },
             viewport_offset: None,
+            scrollback_rows: None,
             sampling_token: SamplingToken(1),
             stable_revision: None,
         }
@@ -590,6 +602,50 @@ mod tests {
             2,
             "the search stays open and looks at what came into view"
         );
+    }
+
+    #[test]
+    fn a_scroll_that_does_not_move_the_view_keeps_the_selection_and_navigation() {
+        let at_bottom = TerminalFrame {
+            viewport_offset: Some(0),
+            ..frame(vec![("one ", false), ("one ", false)])
+        };
+        let mut state = InteractionState::default();
+        state.enter_search(&at_bottom);
+        state.search_key(SearchKey::Character('o'), &at_bottom);
+        let matched = state.search_key(SearchKey::Enter { reverse: false }, &at_bottom);
+        state.select_match(matched.unwrap());
+        let selection = state.selection();
+
+        assert!(!state.scrolled_from(Some(0), &at_bottom));
+
+        assert_eq!(state.selection(), selection);
+        assert_eq!(state.current_match(), matched);
+        assert_eq!(
+            state.search().and_then(LiteralSearch::current_index),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_scroll_that_moves_the_view_lets_go_of_what_was_on_screen() {
+        let at_bottom = TerminalFrame {
+            viewport_offset: Some(0),
+            ..frame(vec![("one ", false)])
+        };
+        let mut state = InteractionState::default();
+        state.enter_search(&at_bottom);
+        let matched = state.search_key(SearchKey::Character('o'), &at_bottom);
+        state.select_match(matched.unwrap());
+
+        let scrolled = TerminalFrame {
+            viewport_offset: Some(1),
+            ..at_bottom.clone()
+        };
+        assert!(state.scrolled_from(Some(0), &scrolled));
+
+        assert_eq!(state.selection(), None);
+        assert_eq!(state.current_match(), None);
     }
 
     #[test]

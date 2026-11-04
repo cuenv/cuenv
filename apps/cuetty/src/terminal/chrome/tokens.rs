@@ -169,6 +169,13 @@ pub(super) mod size {
     /// is beside it. Its buttons and count take about half of this.
     pub(in crate::terminal::chrome) const SEARCH_BAR_MIN_WIDTH: Pixels = px(240.0);
     pub(in crate::terminal::chrome) const SEARCH_BUTTON: Pixels = px(26.0);
+    /// How much of the terminal's edge answers to the pointer. Within its default padding,
+    /// so a selection can still start in the last column.
+    pub(in crate::terminal::chrome) const SCROLLBAR_HIT_WIDTH: Pixels = px(12.0);
+    pub(in crate::terminal::chrome) const SCROLLBAR_THUMB_WIDTH: Pixels = px(5.0);
+    /// The thumb's gap from the terminal's edge.
+    pub(in crate::terminal::chrome) const SCROLLBAR_INSET: Pixels = px(3.0);
+    pub(in crate::terminal::chrome) const SCROLLBAR_MIN_THUMB: Pixels = px(28.0);
     /// The measure of the message a tab shows in place of its terminal.
     pub(in crate::terminal::chrome) const SESSION_STATE_WIDTH: Pixels = px(440.0);
 }
@@ -332,6 +339,9 @@ fn state_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
     }
 }
 
+/// How strong the scrollbar's thumb is against the same colour once the pointer is on it.
+const SCROLLBAR_RESTING_STRENGTH: f32 = 0.55;
+
 /// `color` part of the way in, for something fading: a hover, or a tab becoming active.
 pub(super) fn faded(color: Rgba, level: f32) -> Rgba {
     Rgba {
@@ -381,6 +391,10 @@ pub(super) struct ChromeColors {
     pub(super) divider: Rgba,
     /// Outline of floating panels, opaque like the panels themselves.
     pub(super) panel_outline: Rgba,
+    /// The scrollbar's thumb while the view moves, quiet enough to sit over terminal text.
+    pub(super) scrollbar: Rgba,
+    /// The thumb once the pointer is on it.
+    pub(super) scrollbar_active: Rgba,
     /// The window's accent: the `accent` setting or the theme's. A project's `rail`
     /// replaces it on the active tab marker only.
     pub(super) accent: Rgba,
@@ -408,6 +422,8 @@ impl ChromeColors {
             text_muted: opaque(theme.muted_text),
             divider: state_color(theme, theme.divider),
             panel_outline: opaque(theme.divider),
+            scrollbar: faded(opaque(theme.muted_text), SCROLLBAR_RESTING_STRENGTH),
+            scrollbar_active: opaque(theme.muted_text),
             accent: opaque(theme.accent),
             danger: opaque(theme.ansi[1]),
         }

@@ -70,6 +70,12 @@ The current usable slice includes:
   tab labels, and a full-bleed terminal.
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
   selection, Rio-owned history navigation, and visible-frame literal search.
+- A thin overlay scrollbar in the terminal's right gutter, where there is history to scroll.
+  An open task sidebar leaves it in reach, and only the task palette covers it.
+  It shows while the view moves, holds a moment, and fades over 150ms, and comes back when
+  the pointer reaches the edge. Its thumb can be dragged and a press beside it jumps there.
+  It takes no room from the grid, and an application's wheel or an alternate screen with no
+  history leaves it hidden. With padding under its 12px strip it overlaps the last column.
 - A search bar at the terminal's top right while a search is open, from Cmd-F (Ctrl-Shift-F
   on Linux): the query, where navigation has got to or how many matches there are, and
   buttons for the previous and next match and for closing it, which are Shift-Enter, Enter,

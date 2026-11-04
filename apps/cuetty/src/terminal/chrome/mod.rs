@@ -8,6 +8,7 @@ mod field;
 mod icons;
 mod layout;
 mod rail;
+mod scrollbar;
 mod search_bar;
 mod session_state;
 mod task_palette;
@@ -17,6 +18,7 @@ mod tooltip;
 
 pub(super) use icons::ChromeAssets;
 pub(super) use layout::{ShellPanels, exit_notice_height, render_exit_notice, sidebar_width};
+pub(super) use scrollbar::{ScrollbarRequest, track_of};
 pub(super) use session_state::SessionProblem;
 pub(super) use tokens::{UNFOCUSED_TERMINAL_FADE, resolve_ui_font, traffic_light_position};
 

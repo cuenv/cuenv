@@ -42,6 +42,7 @@ pub(crate) fn snapshot<U: EventListener>(
         rows,
         cursor: cursor_state(terminal),
         viewport_offset: Some(terminal.display_offset()),
+        scrollback_rows: Some(terminal.history_size()),
         sampling_token,
         stable_revision: None,
     }
@@ -451,6 +452,7 @@ mod tests {
                 blinking: Known::Unknown,
             },
             viewport_offset: Some(0),
+            scrollback_rows: None,
             sampling_token: SamplingToken(1),
             stable_revision: None,
         };

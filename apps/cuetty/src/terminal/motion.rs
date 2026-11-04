@@ -18,6 +18,10 @@ const SIDEBAR_TRANSITION: Duration = Duration::from_millis(150);
 const TAB_TRANSITION: Duration = Duration::from_millis(140);
 /// How long a floating panel takes to fade in.
 pub(super) const PANEL_FADE_IN: Duration = Duration::from_millis(120);
+/// How long the scrollbar stays after the view last moved before it starts to fade.
+const SCROLLBAR_HOLD: Duration = Duration::from_millis(800);
+/// How long it then takes to fade away.
+const SCROLLBAR_FADE: Duration = Duration::from_millis(150);
 /// How long a hover takes to show or clear: quick, since it answers the pointer.
 const HOVER_TRANSITION: Duration = Duration::from_millis(100);
 
@@ -282,6 +286,7 @@ pub(super) enum HoverTarget {
     /// A way out of a tab with no terminal to show, by its place among them.
     SessionAction(usize),
     SearchButton(SearchButton),
+    Scrollbar,
 }
 
 /// The tabs as this draw has them.
@@ -300,6 +305,8 @@ pub(super) struct ChromeMotion {
     hover: Fades<HoverTarget>,
     /// How strongly each tab shows as the active one.
     active: Fades<TabId>,
+    /// When the terminal's view last moved, which the scrollbar shows for a while.
+    scrolled: Option<Instant>,
 }
 
 impl ChromeMotion {
@@ -389,6 +396,38 @@ impl ChromeMotion {
         self.active.level(&tab, now)
     }
 
+    /// The terminal's view has just moved, so the scrollbar shows.
+    pub(super) fn view_scrolled(&mut self, now: Instant) {
+        self.scrolled = Some(now);
+    }
+
+    /// How visible the view's last move leaves the scrollbar: held there a while and then
+    /// fading, or at a reduced pace simply gone once the hold is over.
+    pub(super) fn scrollbar_level(&self, now: Instant, pace: MotionPace) -> f32 {
+        let Some(scrolled) = self.scrolled else {
+            return 0.0;
+        };
+        let since = now.saturating_duration_since(scrolled);
+        let Some(fading_for) = since.checked_sub(SCROLLBAR_HOLD) else {
+            return 1.0;
+        };
+        let fade = pace.duration(SCROLLBAR_FADE);
+        if fading_for >= fade {
+            return 0.0;
+        }
+        1.0 - fading_for.as_secs_f32() / fade.as_secs_f32()
+    }
+
+    /// When the scrollbar next looks different because of the view's last move. A hold
+    /// needs nothing until it ends, and only the fade needs every frame.
+    fn scrollbar_next_frame(&self, now: Instant, pace: MotionPace) -> Option<Duration> {
+        let since = now.saturating_duration_since(self.scrolled?);
+        match since.checked_sub(SCROLLBAR_HOLD) {
+            None => Some(SCROLLBAR_HOLD - since),
+            Some(fading_for) => (fading_for < pace.duration(SCROLLBAR_FADE)).then_some(FRAME),
+        }
+    }
+
     /// Where the active tab's marker is, as a fractional place in the tab list.
     pub(super) fn marker_place(&self, now: Instant) -> Option<f32> {
         self.marker.map(|marker| marker.value(now))
@@ -396,14 +435,18 @@ impl ChromeMotion {
 
     /// When the next draw is due, if anything is still moving. Nothing moving asks for
     /// nothing, which leaves an idle window idle.
-    pub(super) fn next_frame(&self, now: Instant) -> Option<Duration> {
+    pub(super) fn next_frame(&self, now: Instant, pace: MotionPace) -> Option<Duration> {
         let moving = self
             .sidebar
             .is_some_and(|sidebar| sidebar.panel.is_running(now))
             || self.marker.is_some_and(|marker| marker.is_running(now))
             || self.hover.is_running(now)
             || self.active.is_running(now);
-        moving.then_some(FRAME)
+        moving
+            .then_some(FRAME)
+            .into_iter()
+            .chain(self.scrollbar_next_frame(now, pace))
+            .min()
     }
 }
 
@@ -597,7 +640,7 @@ mod tests {
         let target = HoverTarget::PaletteRow(1);
         let mut motion = ChromeMotion::default();
         motion.hover_on(target, MotionPace::Full, now);
-        assert!(motion.next_frame(now).is_some());
+        assert!(motion.next_frame(now, MotionPace::Full).is_some());
         let lit = now + HOVER_TRANSITION;
         assert_eq!(motion.hover_level(target, lit), 1.0);
         motion.hover_off(target, MotionPace::Full, lit);
@@ -621,18 +664,82 @@ mod tests {
     }
 
     #[test]
+    fn the_scrollbar_holds_after_the_view_moves_and_then_fades_away() {
+        let now = Instant::now();
+        let mut motion = ChromeMotion::default();
+        assert_eq!(motion.scrollbar_level(now, MotionPace::Full), 0.0);
+        motion.view_scrolled(now);
+        let level = |at| motion.scrollbar_level(at, MotionPace::Full);
+        assert_eq!(level(now), 1.0);
+        assert_eq!(level(now + SCROLLBAR_HOLD - Duration::from_millis(1)), 1.0);
+        let fading = level(now + SCROLLBAR_HOLD + SCROLLBAR_FADE / 2);
+        assert!(fading > 0.0 && fading < 1.0, "{fading}");
+        assert_eq!(level(now + SCROLLBAR_HOLD + SCROLLBAR_FADE), 0.0);
+    }
+
+    #[test]
+    fn a_reduced_pace_drops_the_scrollbar_without_a_fade() {
+        let now = Instant::now();
+        let mut motion = ChromeMotion::default();
+        motion.view_scrolled(now);
+        let level = |at| motion.scrollbar_level(at, MotionPace::Reduced);
+        assert_eq!(level(now + SCROLLBAR_HOLD - Duration::from_millis(1)), 1.0);
+        assert_eq!(level(now + SCROLLBAR_HOLD), 0.0);
+    }
+
+    #[test]
+    fn a_held_scrollbar_only_asks_for_the_draw_that_ends_the_hold() {
+        let now = Instant::now();
+        let mut motion = ChromeMotion::default();
+        motion.view_scrolled(now);
+        assert_eq!(
+            motion.next_frame(now, MotionPace::Full),
+            Some(SCROLLBAR_HOLD)
+        );
+        assert_eq!(
+            motion.next_frame(
+                now + SCROLLBAR_HOLD + Duration::from_millis(1),
+                MotionPace::Full
+            ),
+            Some(FRAME)
+        );
+        assert_eq!(
+            motion.next_frame(now + SCROLLBAR_HOLD + SCROLLBAR_FADE, MotionPace::Full),
+            None
+        );
+    }
+
+    #[test]
+    fn a_reduced_pace_asks_for_nothing_once_the_scrollbars_hold_has_ended() {
+        let now = Instant::now();
+        let mut motion = ChromeMotion::default();
+        motion.view_scrolled(now);
+        assert_eq!(
+            motion.next_frame(now, MotionPace::Reduced),
+            Some(SCROLLBAR_HOLD)
+        );
+        assert_eq!(
+            motion.next_frame(now + SCROLLBAR_HOLD, MotionPace::Reduced),
+            None
+        );
+    }
+
+    #[test]
     fn frames_are_asked_for_only_while_something_moves() {
         let now = Instant::now();
         let mut motion = ChromeMotion::default();
         motion.sidebar_frame(EXPANDED, MotionPace::Full, now);
         assert_eq!(
-            motion.next_frame(now),
+            motion.next_frame(now, MotionPace::Full),
             None,
             "a first draw does not animate"
         );
         motion.sidebar_frame(COLLAPSED, MotionPace::Full, now);
-        assert_eq!(motion.next_frame(now), Some(FRAME));
-        assert_eq!(motion.next_frame(now + SIDEBAR_TRANSITION), None);
+        assert_eq!(motion.next_frame(now, MotionPace::Full), Some(FRAME));
+        assert_eq!(
+            motion.next_frame(now + SIDEBAR_TRANSITION, MotionPace::Full),
+            None
+        );
     }
 
     #[test]

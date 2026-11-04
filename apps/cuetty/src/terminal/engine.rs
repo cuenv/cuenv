@@ -1,6 +1,7 @@
 use super::chrome::{
-    ChromeAssets, SessionProblem, ShellPanels, UNFOCUSED_TERMINAL_FADE, exit_notice_height,
-    render_exit_notice, resolve_ui_font, sidebar_width, traffic_light_position,
+    ChromeAssets, ScrollbarRequest, SessionProblem, ShellPanels, UNFOCUSED_TERMINAL_FADE,
+    exit_notice_height, render_exit_notice, resolve_ui_font, sidebar_width, track_of,
+    traffic_light_position,
 };
 use super::color::{blend, dimmed, with_minimum_contrast};
 use super::config::TerminalConfig;
@@ -26,6 +27,7 @@ use super::motion::{
 };
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
+use super::scrollbar::ScrollExtent;
 use super::sizing::CellSize;
 use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
 use super::tab_rename::{RenameKey, TabRename, rename_key};
@@ -1722,6 +1724,10 @@ pub(super) struct TerminalView {
     /// What the window manager was last told this window is called.
     window_title: String,
     cursor_animator: CursorAnimator,
+    /// Where the scrollbar's track is in the window and how tall, as last measured.
+    scrollbar_track: Arc<Mutex<(f32, f32)>>,
+    /// Where along the thumb a drag took hold, while one is going.
+    pub(super) scrollbar_grab: Option<f32>,
     /// When the draw an animation has asked for is due.
     frame_due: Option<std::time::Instant>,
     /// What the platform says about motion, read once as the window opens.
@@ -1738,6 +1744,7 @@ struct LiveHoverTargets {
     task_sidebar: bool,
     session_actions: bool,
     search: bool,
+    scrollbar: bool,
 }
 
 impl LiveHoverTargets {
@@ -2014,7 +2021,7 @@ fn single_character(text: &str) -> Option<char> {
 
 /// Records a measurement, returning whether it differs from the last one. A panic
 /// elsewhere cannot leave one half-written, so a poisoned lock is still good.
-fn store_if_changed<T: PartialEq>(slot: &Mutex<T>, next: T) -> bool {
+pub(super) fn store_if_changed<T: PartialEq>(slot: &Mutex<T>, next: T) -> bool {
     let mut current = slot
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2026,7 +2033,7 @@ fn store_if_changed<T: PartialEq>(slot: &Mutex<T>, next: T) -> bool {
 /// Asks for another frame from inside prepaint, where a notify marks nothing dirty and
 /// is lost: GPUI ignores invalidation while it draws. Deferred effects run once the
 /// draw has finished.
-fn redraw_after_this_frame(view: gpui::WeakEntity<TerminalView>, cx: &mut gpui::App) {
+pub(super) fn redraw_after_this_frame(view: gpui::WeakEntity<TerminalView>, cx: &mut gpui::App) {
     cx.defer(move |cx| {
         let _ = view.update(cx, |_view, cx| cx.notify());
     });
@@ -2049,6 +2056,7 @@ impl TerminalView {
                 blinking: Known::Unknown,
             },
             viewport_offset: None,
+            scrollback_rows: None,
             sampling_token: SamplingToken(0),
             stable_revision: None,
         }
@@ -2150,6 +2158,8 @@ impl TerminalView {
             sidebar,
             window_title: APP_TITLE.into(),
             cursor_animator: CursorAnimator::new(std::time::Instant::now()),
+            scrollbar_track: Arc::new(Mutex::new((0.0, 1.0))),
+            scrollbar_grab: None,
             frame_due: None,
             system_motion: MotionPace::default(),
             motion: ChromeMotion::default(),
@@ -2760,8 +2770,11 @@ impl TerminalView {
         if let Some(state) = self.active_state_mut() {
             match state.session.scroll(action) {
                 Ok(()) => {
+                    let before = state.frame.viewport_offset;
                     state.frame = state.session.frame();
-                    state.interaction.viewport_changed(&state.frame);
+                    if state.interaction.scrolled_from(before, &state.frame) {
+                        self.motion.view_scrolled(std::time::Instant::now());
+                    }
                 }
                 // A program's mouse mode outlives it, and there is nothing left to tell.
                 Err(_) if state.has_exited() => {}
@@ -2770,7 +2783,53 @@ impl TerminalView {
         }
     }
 
-    fn scroll_wheel(
+    /// Where the scrollbar's track is in the window and how tall.
+    pub(super) fn scrollbar_track(&self) -> (f32, f32) {
+        *self
+            .scrollbar_track
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Where a draw records the scrollbar's track.
+    pub(super) fn scrollbar_track_handle(&self) -> Arc<Mutex<(f32, f32)>> {
+        Arc::clone(&self.scrollbar_track)
+    }
+
+    pub(super) fn begin_scrollbar_drag(&mut self, grab: f32, cx: &mut Context<Self>) {
+        self.scrollbar_grab = Some(grab);
+        cx.notify();
+    }
+
+    /// Brings the viewport to where a drag has the thumb, with the pointer this far down
+    /// the track.
+    pub(super) fn drag_scrollbar_to(&mut self, pointer: f32, cx: &mut Context<Self>) {
+        let Some(grab) = self.scrollbar_grab else {
+            return;
+        };
+        let (_, height) = self.scrollbar_track();
+        let track = track_of(height);
+        let target = self
+            .active_state()
+            .and_then(|state| ScrollExtent::of_frame(&state.frame))
+            .map(|extent| extent.offset_at(pointer - grab, track));
+        let current = self
+            .active_state()
+            .and_then(|state| state.frame.viewport_offset);
+        if let Some(target) = target.filter(|target| Some(*target) != current) {
+            self.scroll_active(TerminalScroll::ToOffset(target));
+            cx.notify();
+        }
+    }
+
+    pub(super) fn end_scrollbar_drag(&mut self, cx: &mut Context<Self>) {
+        self.scrollbar_grab = None;
+        // The thumb has been showing itself, so it starts its hold from here.
+        self.motion.view_scrolled(std::time::Instant::now());
+        cx.notify();
+    }
+
+    pub(super) fn scroll_wheel(
         &mut self,
         event: &ScrollWheelEvent,
         _window: &mut Window,
@@ -3011,6 +3070,10 @@ impl TerminalView {
             now,
         );
         let live = self.live_hover_targets();
+        // A drag's listeners go with the scrollbar, so nothing else would ever end it.
+        if !live.scrollbar {
+            self.scrollbar_grab = None;
+        }
         self.motion.forget_hovers(now, |target| match *target {
             HoverTarget::Tab(tab) => tabs.contains(&tab),
             HoverTarget::Button(button) => live.button(button),
@@ -3018,8 +3081,9 @@ impl TerminalView {
             HoverTarget::TaskRow(_) => live.task_sidebar,
             HoverTarget::SessionAction(_) => live.session_actions,
             HoverTarget::SearchButton(_) => live.search,
+            HoverTarget::Scrollbar => live.scrollbar,
         });
-        if let Some(delay) = self.motion.next_frame(now) {
+        if let Some(delay) = self.motion.next_frame(now, pace) {
             self.request_frame(now + delay, delay, cx);
         }
         sidebar
@@ -3045,6 +3109,10 @@ impl TerminalView {
             search: self
                 .active_state()
                 .is_some_and(|state| state.interaction.search().is_some()),
+            scrollbar: !self.task_palette_open
+                && self
+                    .active_state()
+                    .is_some_and(|state| ScrollExtent::of_frame(&state.frame).is_some()),
         }
     }
 
@@ -3556,6 +3624,15 @@ impl Render for TerminalView {
                     .bottom(self.bottom_inset(px(f32::from(padding.bottom))))
                     .left(px(f32::from(padding.left))),
             )
+            .children(self.render_scrollbar(
+                ScrollbarRequest {
+                    extent: ScrollExtent::of_frame(&frame),
+                    top: self.top_inset(top_padding),
+                    bottom: self.bottom_inset(px(f32::from(padding.bottom))),
+                    theme: &theme,
+                },
+                cx,
+            ))
             .children(exit_failure.map(|failure| render_exit_notice(failure, &theme)))
             .children(self.window_controls_band(top_padding));
         self.render_shell_layout(panels, surface.into_any_element(), &theme)

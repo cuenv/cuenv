@@ -145,6 +145,7 @@ mod tests {
                 blinking: Known::Unknown,
             },
             viewport_offset: None,
+            scrollback_rows: None,
             sampling_token: SamplingToken(0),
             stable_revision: None,
         }

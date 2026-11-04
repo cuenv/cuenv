@@ -203,7 +203,9 @@ terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse
 selection and every literal visible-frame search hit, opened with Cmd-F (Ctrl-Shift-F on
 Linux) into a search bar at the terminal's top right, are painted directly
 over the terminal grid, with the current hit picked out from the rest; Cmd-C copy and paste
-are live too. Rio-owned scrollback is live, but a selection is cleared when the viewport moves
+are live too. Rio-owned scrollback is live, with a thin overlay scrollbar that shows while
+the view moves or the pointer comes to the terminal's edge, fades away, and can be dragged, but
+a selection is cleared when the viewport moves
 because its coordinates are still visible-frame-only; an open search stays open and searches
 what has come into view. It does not yet have live workspace restore,
 plugin runtime, Kitty graphics, ligatures, or complete IME/non-Latin

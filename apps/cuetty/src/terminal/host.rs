@@ -105,6 +105,18 @@ pub enum TerminalScroll {
     PageDown,
     Top,
     Bottom,
+    /// Puts the viewport this many rows above the live screen, for a dragged scrollbar.
+    /// That is the user moving the view, which no application has a say in.
+    ToOffset(usize),
+}
+
+/// The move that takes a viewport from one offset to another. Rio takes it as an `i32`
+/// and clamps the outcome to its history, so an impossible distance only needs to stay
+/// large.
+fn scroll_delta_to(current: usize, target: usize) -> i32 {
+    let distance =
+        |from: usize, to: usize| i32::try_from(to.saturating_sub(from)).unwrap_or(i32::MAX);
+    distance(current, target) - distance(target, current)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -515,6 +527,10 @@ impl TerminalSession for RioTerminalSession {
             TerminalScroll::PageDown => Scroll::PageDown,
             TerminalScroll::Top => Scroll::Top,
             TerminalScroll::Bottom => Scroll::Bottom,
+            TerminalScroll::ToOffset(target) => {
+                let current = self.terminal.lock().display_offset();
+                Scroll::Delta(scroll_delta_to(current, target))
+            }
         };
         self.terminal.lock().scroll_display(action);
         self.listener.bridge.wake();
@@ -637,6 +653,15 @@ mod tests {
         REAL_PTY_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn a_dragged_scrollbar_moves_the_viewport_by_the_difference() {
+        assert_eq!(scroll_delta_to(10, 25), 15);
+        assert_eq!(scroll_delta_to(25, 10), -15);
+        assert_eq!(scroll_delta_to(7, 7), 0);
+        assert_eq!(scroll_delta_to(0, usize::MAX), i32::MAX);
+        assert_eq!(scroll_delta_to(usize::MAX, 0), -i32::MAX);
     }
 
     #[test]
@@ -1151,6 +1176,12 @@ mod tests {
         let top = session.frame();
         assert!(frame_text(&top).contains("M0-HISTORY-01"));
         assert!(top.viewport_offset.is_some_and(|offset| offset > 0));
+        assert_eq!(top.viewport_offset, top.scrollback_rows);
+
+        session
+            .scroll(TerminalScroll::ToOffset(2))
+            .expect("a dragged scrollbar should place the viewport");
+        assert_eq!(session.frame().viewport_offset, Some(2));
 
         session
             .scroll(TerminalScroll::Bottom)

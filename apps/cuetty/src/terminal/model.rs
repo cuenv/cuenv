@@ -173,6 +173,8 @@ pub struct TerminalFrame {
     pub rows: Vec<TerminalRow>,
     pub cursor: CursorState,
     pub viewport_offset: Option<usize>,
+    /// Rows of history above the screen, where the backend can say.
+    pub scrollback_rows: Option<usize>,
     pub sampling_token: SamplingToken,
     pub stable_revision: Option<StableRevision>,
 }
@@ -469,6 +471,7 @@ mod tests {
                 blinking: Known::Unknown,
             },
             viewport_offset: Some(0),
+            scrollback_rows: None,
             sampling_token: SamplingToken(1),
             stable_revision: None,
         }
