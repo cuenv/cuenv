@@ -1,4 +1,6 @@
-use super::chrome::{ChromeAssets, render_shell_message, resolve_ui_font, traffic_light_position};
+use super::chrome::{
+    ChromeAssets, render_exit_notice, render_shell_message, resolve_ui_font, traffic_light_position,
+};
 use super::color::{blend, dimmed, with_minimum_contrast};
 use super::config::TerminalConfig;
 use super::cursor::{
@@ -21,7 +23,7 @@ use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
 use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
-use super::tab_status::{StatusEvent, TabPresence, TabStatus};
+use super::tab_status::{SessionExit, StatusEvent, TabPresence, TabStatus};
 use super::workspace_shell::{
     ShellAction, ShellError, TabDirection, TabNumber, WorkspaceShell, WorkspaceShortcut,
 };
@@ -1100,6 +1102,37 @@ impl PaneState {
         Ok(sent)
     }
 
+    /// Whether this pane's shell has gone and only its final output is left.
+    fn has_exited(&self) -> bool {
+        self.status.failure().is_some()
+    }
+
+    /// The tasks this pane can run. A shell that has gone has nowhere to run them, so
+    /// nothing should go on offering any.
+    pub(super) fn task_catalogue(&self) -> &[CuenvTask] {
+        if self.has_exited() {
+            &[]
+        } else {
+            &self.cuenv.tasks
+        }
+    }
+
+    /// The chord that opens the palette here, where there are tasks for it to find. A
+    /// chord with nothing to open is left to whatever else it means.
+    fn palette_chord(&self) -> Option<&KeyChord> {
+        (!self.task_catalogue().is_empty()).then_some(&self.cuenv.presentation.keybindings.palette)
+    }
+
+    /// Fits the grid to the surface. Only a live shell can be told, but an exited one's
+    /// output still has to fit, or its last lines end up below the edge of the surface.
+    fn fit_grid(&mut self, width: u32, height: u32, cell: CellSize) {
+        if self.has_exited() {
+            self.session.reflow_output(width, height, cell);
+        } else if let Err(error) = self.session.resize(width, height, cell) {
+            self.error = Some(error);
+        }
+    }
+
     /// What the sidebar's notice marker says for this pane. A broken configuration
     /// matters more than a reminder about a pasted task.
     pub(super) fn marker_notice(&self) -> Option<&str> {
@@ -1146,6 +1179,24 @@ fn acts_on_the_line(event: &TerminalKeyEvent) -> bool {
     match event.key {
         KeyInput::Enter => true,
         KeyInput::Character('c' | 'C') => event.modifiers.contains(InputModifiers::CONTROL),
+        _ => false,
+    }
+}
+
+/// Whether a key dismisses a tab whose shell has exited. Enter is what the tab says to
+/// press, and Ctrl-D is what a shell that exited with its last command's status was
+/// most likely just given.
+fn closes_exited_tab(key: &str, modifiers: gpui::Modifiers) -> bool {
+    let gpui::Modifiers {
+        control,
+        alt,
+        shift,
+        platform,
+        function: _,
+    } = modifiers;
+    match key {
+        "enter" => !(control || alt || shift || platform),
+        "d" => control && !(alt || shift || platform),
         _ => false,
     }
 }
@@ -1310,9 +1361,8 @@ impl SessionRegistry {
             Some(state) if state.generation == generation => {
                 let effects = state.session.drain_effects();
                 // Rio publishes Close after its final PTY drain. Sample that
-                // state before the caller removes the pane. This preserves
-                // the final frame for consumers, not a visible exited tab:
-                // handle_wake still closes the pane after this returns.
+                // state before the caller removes the pane, or, for a shell that
+                // failed, leaves its final output on screen.
                 let frame = state.session.frame();
                 if shows_new_output(&state.frame, &frame) {
                     state.status.apply(StatusEvent::Output(presence));
@@ -1352,8 +1402,25 @@ impl SessionRegistry {
                         state.status.apply(StatusEvent::Bell(presence));
                     }
                 }
-                ControlEvent::ChildExited(_) => {}
-                ControlEvent::Close => should_close = true,
+                ControlEvent::ChildExited(status) => {
+                    if let SessionExit::Failed(failure) = SessionExit::from_wait_status(status)
+                        && let Some(state) = self.sessions.get_mut(&pane)
+                        && state.generation == generation
+                    {
+                        state.status.apply(StatusEvent::SessionFailed(failure));
+                        // The session closes before this wake reaches the window, so a
+                        // draw or key in that gap can have failed on it. The tab's final
+                        // output and exit notice say more, and that message would hide them.
+                        state.error = None;
+                    }
+                }
+                // A failed shell's tab stays until the user has read it and closes it.
+                ControlEvent::Close => {
+                    should_close = self
+                        .sessions
+                        .get(&pane)
+                        .is_none_or(|state| !state.has_exited());
+                }
             }
         }
         WakeOutcome {
@@ -1904,6 +1971,15 @@ impl TerminalView {
     }
 
     fn refresh_cuenv_pane(&mut self, pane: crate::workspace::PaneId, cx: &mut Context<Self>) {
+        // An exited shell has no directory to follow, and keeps its look and its name.
+        if self
+            .registry
+            .sessions
+            .get(&pane)
+            .is_some_and(PaneState::has_exited)
+        {
+            return;
+        }
         let (session_generation, cwd) = self
             .registry
             .sessions
@@ -2125,7 +2201,7 @@ impl TerminalView {
     fn reconcile_task_ui(&mut self) {
         let count = self
             .active_state()
-            .map_or(0, |state| state.cuenv.tasks.len());
+            .map_or(0, |state| state.task_catalogue().len());
         if count == 0 {
             self.task_palette_open = false;
             self.task_sidebar_open = false;
@@ -2225,6 +2301,8 @@ impl TerminalView {
             self.cursor_animator.touch(std::time::Instant::now());
         }
         self.refresh_cuenv_pane(pane, cx);
+        // The shell may just have gone from under an open palette.
+        self.reconcile_task_ui();
         for text in outcome.clipboard {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
@@ -2329,6 +2407,8 @@ impl TerminalView {
                     state.interaction.viewport_changed();
                     state.frame = state.session.frame();
                 }
+                // A program's mouse mode outlives it, and there is nothing left to tell.
+                Err(_) if state.has_exited() => {}
                 Err(error) => state.error = Some(error),
             }
         }
@@ -2408,7 +2488,7 @@ impl TerminalView {
     fn toggle_task_palette(&mut self) -> bool {
         if self
             .active_state()
-            .is_none_or(|state| state.cuenv.tasks.is_empty())
+            .is_none_or(|state| state.task_catalogue().is_empty())
         {
             return false;
         }
@@ -2431,6 +2511,7 @@ impl TerminalView {
         };
         let command = task_command(&cwd, &task);
         if let Some(state) = self.registry.sessions.get_mut(&active_pane)
+            && !state.has_exited()
             && let Err(error) = state.launch_task(&command, &task)
         {
             state.error = Some(error);
@@ -2579,10 +2660,7 @@ impl TerminalView {
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
-        let palette = self
-            .active_state()
-            .filter(|state| !state.cuenv.tasks.is_empty())
-            .map(|state| &state.cuenv.presentation.keybindings.palette);
+        let palette = self.active_state().and_then(PaneState::palette_chord);
         let route = route_chord(
             key,
             modifiers,
@@ -2685,6 +2763,16 @@ impl TerminalView {
                 .and_then(|state| state.interaction.copy(&state.frame))
             {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            return;
+        }
+        // Nothing is left to type at, though search and copy above still read the output.
+        if self.active_state().is_some_and(PaneState::has_exited) {
+            if closes_exited_tab(key, modifiers)
+                && let Some(pane) = self.active_pane()
+            {
+                self.close_pane(pane, cx);
+                cx.notify();
             }
             return;
         }
@@ -2813,6 +2901,7 @@ impl Render for TerminalView {
             .expect("active pane registry invariant");
         let interaction = state.interaction.clone();
         let pane_error = state.error.clone();
+        let exit_failure = state.status.failure();
         let measured = Arc::clone(&state.measured_bounds);
         let viewport_origin = Arc::clone(&state.viewport_origin);
         let entity = cx.weak_entity();
@@ -2857,12 +2946,7 @@ impl Render for TerminalView {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (width, height) = self.metrics.scale.whole_device_size(surface);
-            if let Err(error) = state
-                .session
-                .resize(width, height, self.metrics.device_cell())
-            {
-                state.error = Some(error);
-            }
+            state.fit_grid(width, height, self.metrics.device_cell());
             // Sampled after the resize, so the draw that resizes the grid also shows it.
             state.frame = state.session.frame();
             state.frame.clone()
@@ -2990,9 +3074,10 @@ impl Render for TerminalView {
                     .absolute()
                     .top(self.top_inset(top_padding))
                     .right(px(f32::from(padding.right)))
-                    .bottom(px(f32::from(padding.bottom)))
+                    .bottom(self.bottom_inset(px(f32::from(padding.bottom))))
                     .left(px(f32::from(padding.left))),
             )
+            .children(exit_failure.map(|failure| render_exit_notice(failure, &theme)))
             .children(self.window_controls_band(top_padding));
         self.render_shell_layout(sidebar, surface.into_any_element(), &theme)
     }
@@ -3091,6 +3176,12 @@ mod tests {
     impl TerminalSession for FakeSession {
         fn resize(&mut self, _: u32, _: u32, _: CellSize) -> Result<(), String> {
             Ok(())
+        }
+
+        fn reflow_output(&mut self, _: u32, height: u32, cell: CellSize) {
+            self.frame
+                .rows
+                .truncate((height / cell.height.max(1)) as usize);
         }
 
         fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
@@ -4668,6 +4759,166 @@ mod tests {
         assert_eq!(state.status.indicator(), None);
     }
 
+    fn wake_with(effects: Vec<ControlEvent>) -> (SessionRegistry, crate::workspace::PaneId, bool) {
+        let (initial, _) = fake_start('z', effects, None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        let outcome = registry.apply_wake(pane, generation, Some(pane));
+        (registry, pane, outcome.should_close)
+    }
+
+    #[test]
+    fn a_shell_that_exits_cleanly_or_unknowably_takes_its_tab_with_it() {
+        for status in [Some(0), None] {
+            let (registry, pane, should_close) =
+                wake_with(vec![ControlEvent::ChildExited(status), ControlEvent::Close]);
+            assert!(should_close, "status {status:?}");
+            assert_eq!(registry.sessions[&pane].status.indicator(), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_that_fails_leaves_its_tab_and_its_output_until_it_is_closed() {
+        let (mut registry, pane, should_close) = wake_with(vec![
+            ControlEvent::ChildExited(Some(1 << 8)),
+            ControlEvent::Close,
+        ]);
+        assert!(!should_close);
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Failed)
+        );
+        assert_eq!(
+            registry.sessions[&pane].frame.rows[0].cells[0]
+                .text
+                .as_deref(),
+            Some("z")
+        );
+        registry.close_pane(pane).unwrap();
+        assert!(registry.sessions.is_empty());
+        assert!(registry.close_window_requested);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_close_arriving_on_a_later_wake_still_leaves_a_failed_shells_tab() {
+        let (initial, _, effects) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::ChildExited(Some(9)));
+        registry.apply_wake(pane, generation, Some(pane));
+        effects.lock().unwrap().push(ControlEvent::Close);
+        assert!(
+            !registry
+                .apply_wake(pane, generation, Some(pane))
+                .should_close
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_shell_shows_its_output_even_if_something_hit_the_closed_session_first() {
+        let (initial, _, effects) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.generation;
+        state.error = Some("terminal session is closed or its child has exited".into());
+        effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::ChildExited(Some(1 << 8)));
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(registry.sessions[&pane].error, None);
+    }
+
+    #[test]
+    fn only_a_failed_shell_has_its_grid_refit_without_being_told() {
+        let (mut state, _) = bracketed_pane("zsh");
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let rows = state.session.frame().rows.len();
+        state.fit_grid(800, 0, cell);
+        assert_eq!(state.session.frame().rows.len(), rows);
+        state.status.apply(StatusEvent::SessionFailed(
+            crate::terminal::tab_status::ExitFailure::Code(1),
+        ));
+        state.fit_grid(800, 0, cell);
+        assert_eq!(state.session.frame().rows.len(), 0);
+        assert_eq!(state.error, None);
+    }
+
+    #[test]
+    fn a_failed_shells_palette_chord_goes_back_to_selecting_tabs() {
+        let tabs = shell_with_tabs(1);
+        let held = tab_number_modifiers_for_test();
+        let (mut state, _) = bracketed_pane("zsh");
+        state.cuenv.tasks = vec![runnable_task("build")];
+        state.cuenv.presentation.keybindings.palette = KeyChord {
+            key: "1".into(),
+            modifiers: tab_number_modifiers(),
+        };
+        let route = |state: &PaneState| {
+            route_chord(
+                "1",
+                held,
+                &ChordTargets {
+                    palette: state.palette_chord(),
+                    tabs: &tabs,
+                },
+            )
+        };
+        assert_eq!(route(&state), ChordRoute::OpenPalette);
+        state.status.apply(StatusEvent::SessionFailed(
+            crate::terminal::tab_status::ExitFailure::Code(1),
+        ));
+        assert_eq!(
+            route(&state),
+            ChordRoute::SelectTab(tabs.active_tab().unwrap()),
+        );
+    }
+
+    #[test]
+    fn a_failed_shell_offers_no_tasks() {
+        let (mut state, _) = bracketed_pane("zsh");
+        state.cuenv.tasks = vec![runnable_task("build")];
+        assert_eq!(state.task_catalogue().len(), 1);
+        state.status.apply(StatusEvent::SessionFailed(
+            crate::terminal::tab_status::ExitFailure::Code(1),
+        ));
+        assert!(state.task_catalogue().is_empty());
+    }
+
+    #[test]
+    fn enter_or_ctrl_d_alone_dismiss_an_exited_tab() {
+        let plain = gpui::Modifiers::default();
+        let control = gpui::Modifiers {
+            control: true,
+            ..plain
+        };
+        assert!(closes_exited_tab("enter", plain));
+        assert!(closes_exited_tab("d", control));
+        assert!(!closes_exited_tab("d", plain));
+        assert!(!closes_exited_tab("enter", control));
+        assert!(!closes_exited_tab("x", plain));
+        let shifted = gpui::Modifiers {
+            shift: true,
+            ..control
+        };
+        assert!(!closes_exited_tab("d", shifted));
+    }
+
     #[test]
     fn close_wake_samples_the_final_frame_before_requesting_pane_removal() {
         let (initial, _) = fake_start('z', vec![ControlEvent::Close], None);
@@ -4687,8 +4938,7 @@ mod tests {
                 .as_deref(),
             Some("z")
         );
-        // The UI may now remove the pane; this is an ordering guarantee,
-        // not a promise to retain exited output on screen.
+        // The UI may now remove the pane; this is an ordering guarantee.
     }
 
     #[test]

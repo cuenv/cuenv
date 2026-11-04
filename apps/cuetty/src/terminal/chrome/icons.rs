@@ -21,10 +21,12 @@ pub(super) enum Icon {
     Running,
     /// A tab's task has finished.
     Finished,
+    /// A tab's shell failed.
+    Failed,
 }
 
 impl Icon {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Plus,
         Self::Tasks,
         Self::SidebarCollapse,
@@ -32,6 +34,7 @@ impl Icon {
         Self::Bell,
         Self::Running,
         Self::Finished,
+        Self::Failed,
     ];
 
     const fn path(self) -> &'static str {
@@ -43,6 +46,7 @@ impl Icon {
             Self::Bell => "icons/bell.svg",
             Self::Running => "icons/loader-circle.svg",
             Self::Finished => "icons/check.svg",
+            Self::Failed => "icons/triangle-alert.svg",
         }
     }
 
@@ -55,6 +59,7 @@ impl Icon {
             Self::Bell => include_bytes!("../../../assets/icons/bell.svg"),
             Self::Running => include_bytes!("../../../assets/icons/loader-circle.svg"),
             Self::Finished => include_bytes!("../../../assets/icons/check.svg"),
+            Self::Failed => include_bytes!("../../../assets/icons/triangle-alert.svg"),
         }
     }
 

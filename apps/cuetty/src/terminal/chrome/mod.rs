@@ -12,7 +12,7 @@ mod tokens;
 mod tooltip;
 
 pub(super) use icons::ChromeAssets;
-pub(super) use layout::render_shell_message;
+pub(super) use layout::{render_exit_notice, render_shell_message};
 pub(super) use tokens::{resolve_ui_font, traffic_light_position};
 
 use super::engine::TerminalView;

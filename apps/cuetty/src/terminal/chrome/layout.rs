@@ -1,10 +1,11 @@
 use super::tokens::{
-    ChromeColors, WindowControls, drawn_titlebar, size, space, terminal_top_inset, text,
+    ChromeColors, WindowControls, border, drawn_titlebar, size, space, terminal_top_inset, text,
     ui_font_family,
 };
 use crate::integrations::cuenv::{SidebarMode, TitlebarVisibility};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
+use crate::terminal::tab_status::ExitFailure;
 use gpui::{
     Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, SharedString, Styled,
     WindowControlArea, div, px,
@@ -26,6 +27,37 @@ pub(in crate::terminal) fn render_shell_message(
         .text_size(text::BODY)
         .text_color(colors.text_secondary)
         .child(message.into())
+        .into_any_element()
+}
+
+/// Says below a failed shell's final output why nothing responds to typing any more,
+/// and how to be rid of the tab. It has its own room, which [`TerminalView::bottom_inset`]
+/// keeps the grid out of, because the last lines are what the tab stayed open to show.
+pub(in crate::terminal) fn render_exit_notice(
+    failure: ExitFailure,
+    theme: &TerminalTheme,
+) -> gpui::AnyElement {
+    let colors = ChromeColors::from_theme(theme);
+    div()
+        .absolute()
+        .bottom_0()
+        .left_0()
+        .right_0()
+        .h(size::EXIT_NOTICE_HEIGHT)
+        .flex()
+        .items_center()
+        .justify_center()
+        .px(space::LG)
+        .border_t(border::HAIRLINE)
+        .border_color(colors.divider)
+        .text_size(text::LABEL)
+        .text_color(colors.text_secondary)
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .child(format!("{} · Enter closes this tab", failure.summary())),
+        )
         .into_any_element()
 }
 
@@ -56,6 +88,16 @@ impl TerminalView {
             self.titlebar_visibility(),
             WindowControls::current(),
         )
+    }
+
+    /// Where the terminal stops above the bottom of its panel: past its padding, and past
+    /// the exit notice while there is one.
+    pub(in crate::terminal) fn bottom_inset(&self, padding: Pixels) -> Pixels {
+        padding
+            + self
+                .active_state()
+                .and_then(|state| state.status.failure())
+                .map_or(px(0.0), |_| size::EXIT_NOTICE_HEIGHT)
     }
 
     /// The room left for native window controls, which moves the window as a title

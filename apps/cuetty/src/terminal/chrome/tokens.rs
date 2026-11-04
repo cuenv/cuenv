@@ -143,6 +143,8 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const CARET_WIDTH: Pixels = px(2.0);
     pub(in crate::terminal::chrome) const CARET_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const NOTICE_MARK: Pixels = px(6.0);
+    /// The strip below an exited shell's output.
+    pub(in crate::terminal::chrome) const EXIT_NOTICE_HEIGHT: Pixels = px(28.0);
     /// A tab's status indicator, small enough to sit beside its name or its mark.
     pub(in crate::terminal::chrome) const STATUS_ICON: Pixels = px(12.0);
     pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
@@ -311,6 +313,9 @@ pub(super) struct ChromeColors {
     /// The window's accent: the `accent` setting or the theme's. A project's `rail`
     /// replaces it on the active tab marker only.
     pub(super) accent: Rgba,
+    /// The one thing that is not calm: a tab whose shell failed. It comes from the
+    /// terminal's own palette, so it is the red the user already reads as an error.
+    pub(super) danger: Rgba,
 }
 
 impl ChromeColors {
@@ -333,6 +338,7 @@ impl ChromeColors {
             divider: state_color(theme, theme.divider),
             panel_outline: opaque(theme.divider),
             accent: opaque(theme.accent),
+            danger: opaque(theme.ansi[1]),
         }
     }
 }

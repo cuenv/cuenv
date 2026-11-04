@@ -18,7 +18,7 @@ use rio_vt::event::{EventListener, Msg, RioEvent, WindowId, WindowSize};
 use rio_vt::performer::{Machine, State};
 use rio_vt::teletypewriter::{self, Pty};
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 pub struct SessionStart {
@@ -48,6 +48,10 @@ impl TerminalSessionFactory for RioTerminalFactory {
 
 pub trait TerminalSession: Send {
     fn resize(&mut self, width: u32, height: u32, cell: CellSize) -> Result<(), String>;
+    /// Fits the grid to a size without telling the child, for when there is no child left
+    /// to tell. Rows that no longer fit move into scrollback, starting from the top, and
+    /// blank rows below the cursor go first.
+    fn reflow_output(&mut self, width: u32, height: u32, cell: CellSize);
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String>;
     fn paste(&mut self, text: &str) -> Result<(), String>;
     fn scroll(&mut self, action: TerminalScroll) -> Result<(), String>;
@@ -416,19 +420,41 @@ impl RioTerminalSession {
         terminal.selection = None;
         Ok(())
     }
+
+    /// Resizes the grid, returning whether that changed anything. The size lock is not
+    /// held across the grid's, which the PTY thread answers size requests under.
+    fn resize_grid(&self, size: WindowSize) -> bool {
+        let unchanged = *self
+            .listener
+            .size
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            == size;
+        if !unchanged {
+            self.terminal.lock().resize(grid_size(size));
+            *self
+                .listener
+                .size
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = size;
+        }
+        !unchanged
+    }
 }
 
 impl TerminalSession for RioTerminalSession {
     fn resize(&mut self, width: u32, height: u32, cell: CellSize) -> Result<(), String> {
         self.ensure_open()?;
         let size = window_size(terminal_size(width, height, cell));
-        if *self.listener.size.lock().expect("PTY size poisoned") != size {
-            self.terminal.lock().resize(grid_size(size));
-            *self.listener.size.lock().expect("PTY size poisoned") = size;
+        if self.resize_grid(size) {
             self.send(Msg::Resize(size))?;
             self.listener.bridge.wake();
         }
         Ok(())
+    }
+
+    fn reflow_output(&mut self, width: u32, height: u32, cell: CellSize) {
+        self.resize_grid(window_size(terminal_size(width, height, cell)));
     }
 
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
@@ -452,8 +478,9 @@ impl TerminalSession for RioTerminalSession {
         self.write(bytes)
     }
 
+    /// Scrollback outlives the shell, so reading a failed shell's output stays possible.
+    /// Only a wheel event a program claimed has to reach the PTY, which `write` checks.
     fn scroll(&mut self, action: TerminalScroll) -> Result<(), String> {
-        self.ensure_open()?;
         let action = match action {
             TerminalScroll::Wheel(wheel) => {
                 // Do not retain Rio's grid lock while sending input: `write`
@@ -837,6 +864,8 @@ mod tests {
                 )
                 .is_err()
         );
+        // A failed shell's tab stays open, and its output has to stay readable.
+        assert!(session.scroll(TerminalScroll::Top).is_ok());
         session.close().expect("close should succeed");
         session.close().expect("close should be idempotent");
         assert!(session.paste("x").is_err());
@@ -852,6 +881,59 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[cfg(unix)]
+    fn wait_for_close(session: &RioTerminalSession) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !session.drain_effects().contains(&ControlEvent::Close) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child exit was not delivered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn exited_output_refits_with_its_last_lines_on_screen_and_the_rest_in_scrollback() {
+        let _serial = serial_pty_test();
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let mut session = fixture(&["full-exit"]);
+        wait_for_text(&mut session, "M0-FINAL-OUTPUT");
+        wait_for_close(&session);
+        session.reflow_output(800, 160, cell);
+        let frame = session.frame();
+        assert_eq!(frame.rows.len(), 10);
+        assert!(frame_text(&frame).contains("M0-FINAL-OUTPUT"));
+        session
+            .scroll(TerminalScroll::Top)
+            .expect("scrollback outlives the shell");
+        assert!(frame_text(&session.frame()).contains("M0-HISTORY-01"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn exited_output_that_fits_keeps_its_place_when_the_grid_shrinks() {
+        let _serial = serial_pty_test();
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let mut session = fixture(&["exit"]);
+        wait_for_text(&mut session, "M0-FINAL-OUTPUT");
+        wait_for_close(&session);
+        session.reflow_output(800, 80, cell);
+        let text = frame_text(&session.frame());
+        assert!(text.contains("M0-READY"), "{text:?}");
+        assert!(text.contains("M0-FINAL-OUTPUT"), "{text:?}");
+        assert_eq!(session.frame().viewport_offset, Some(0));
     }
 
     #[test]

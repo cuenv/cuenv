@@ -110,7 +110,12 @@ ring while a task launched from Cuetty runs, counted from the Enter that runs it
 needed arguments, a check once it hands the foreground back,
 and a dot for text that changed while the tab was not on screen. Each has its own shape
 and its meaning in the tab's tooltip. Arriving at a tab clears what was waiting there,
-and typing moves on from a finished task. Restrained
+and typing moves on from a finished task. A shell that exits with a failing status or
+dies on a signal keeps its tab, with a warning triangle and its final output still
+readable above a strip saying how it ended, until Enter, Ctrl-D, or the close chord
+dismisses it, and it offers no tasks in the meantime; one that exits cleanly
+closes its tab at once. A task launched from Cuetty cannot report failure, because it
+runs in the shell and Rio discards the status shells report through OSC 133. Restrained
 active-tab treatment and compact footer controls keep the sidebar readable
 without competing with terminal content. By default, the Rio surface sits in a
 14px inset below the title strip beside the sidebar. The inset, and any space left

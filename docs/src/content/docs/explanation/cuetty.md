@@ -123,6 +123,19 @@ The current usable slice includes:
   waiting there, and typing moves on from a finished task. Only tasks launched from
   Cuetty count as running, since a program in the foreground may just as well be an
   editor left open.
+- A shell that exits with a failing status or dies on a signal leaves its tab open
+  with its final output on screen, a warning triangle on the tab, and a strip below the
+  output saying how it ended. The strip takes its room from the grid rather than covering
+  it: blank rows go first, then the oldest rows move into scrollback, so the last lines
+  stay visible, as they do if the window is resized afterwards. Search, copy, and
+  scrollback still work; Enter, Ctrl-D, the close chord, or closing the tab dismiss it.
+  The tab offers no tasks any more, since nothing is left to run them, which also hands
+  a palette chord back to whatever else it means. A shell that exits cleanly closes its
+  tab at once, as does
+  one whose status the platform did not report. Shells exit with their last command's
+  status, so `exit` straight after a failed command also leaves the tab open. Tasks
+  launched from Cuetty report only that they finished: they run in the shell, and Rio
+  discards the exit status shells report through OSC 133.
 - One design token set for all chrome spacing, radii, type sizes, border widths,
   elevation, and colours, with faint dividers between regions, and one bundled
   Lucide icon set for chrome controls. Chrome text uses the platform's sans-serif

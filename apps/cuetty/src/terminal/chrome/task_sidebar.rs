@@ -23,7 +23,7 @@ impl TerminalView {
             return None;
         }
         let state = self.active_state()?;
-        if state.cuenv.tasks.is_empty() {
+        if state.task_catalogue().is_empty() {
             return None;
         }
         let colors = ChromeColors::from_theme(theme);

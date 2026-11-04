@@ -147,7 +147,7 @@ impl TerminalView {
             });
         let has_tasks = self
             .active_state()
-            .is_some_and(|state| !state.cuenv.tasks.is_empty());
+            .is_some_and(|state| !state.task_catalogue().is_empty());
         let new_tab = control(&colors, "cuetty-new-tab")
             .cursor_pointer()
             .tooltip(chrome_tooltip(
@@ -246,6 +246,7 @@ fn render_indicator(indicator: TabIndicator, colors: &ChromeColors) -> Div {
         .justify_center();
     let icon = |icon: Icon, color: Rgba| icon.element(color).size(size::STATUS_ICON);
     match indicator {
+        TabIndicator::Failed => slot.child(icon(Icon::Failed, colors.danger)),
         TabIndicator::Bell => slot.child(icon(Icon::Bell, colors.accent)),
         TabIndicator::Running => slot.child(icon(Icon::Running, colors.text_secondary)),
         TabIndicator::Finished => slot.child(icon(Icon::Finished, colors.text_secondary)),

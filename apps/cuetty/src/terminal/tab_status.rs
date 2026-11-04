@@ -9,6 +9,58 @@ pub(super) enum TabPresence {
     Hidden,
 }
 
+/// How a tab's shell ended, read from its raw wait status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SessionExit {
+    Clean,
+    Failed(ExitFailure),
+    /// The platform did not say, which is no reason to keep a tab around.
+    Unknown,
+}
+
+impl SessionExit {
+    pub(super) fn from_wait_status(status: Option<i32>) -> Self {
+        let Some(status) = status else {
+            return Self::Unknown;
+        };
+        ExitFailure::from_wait_status(status).map_or(Self::Clean, Self::Failed)
+    }
+}
+
+/// What went wrong with a shell that did not exit cleanly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ExitFailure {
+    Code(i32),
+    Signal(i32),
+}
+
+impl ExitFailure {
+    #[cfg(unix)]
+    fn from_wait_status(status: i32) -> Option<Self> {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(status);
+        match (status.code(), status.signal()) {
+            (Some(0), _) => None,
+            (Some(code), _) => Some(Self::Code(code)),
+            (None, Some(signal)) => Some(Self::Signal(signal)),
+            (None, None) => None,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn from_wait_status(status: i32) -> Option<Self> {
+        (status != 0).then_some(Self::Code(status))
+    }
+
+    /// What happened, in a sentence fragment for the user.
+    pub(super) fn summary(self) -> String {
+        match self {
+            Self::Code(code) => format!("Shell exited with status {code}"),
+            Self::Signal(signal) => format!("Shell ended by signal {signal}"),
+        }
+    }
+}
+
 /// How far the task launched in a tab has got.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum TaskPhase {
@@ -33,12 +85,15 @@ pub(super) enum StatusEvent {
     Seen,
     /// The user typed into this tab.
     Input,
+    /// The tab's shell ended badly, which outlasts any visit to the tab.
+    SessionFailed(ExitFailure),
 }
 
 /// What a tab's indicator shows. Each has its own shape and description, so colour is
 /// never the only way to tell them apart.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TabIndicator {
+    Failed,
     Bell,
     Running,
     Finished,
@@ -49,6 +104,7 @@ impl TabIndicator {
     /// What this indicator means, in the words its tooltip uses.
     pub(super) const fn description(self) -> &'static str {
         match self {
+            Self::Failed => "Shell failed",
             Self::Bell => "Rang the bell",
             Self::Running => "Task running",
             Self::Finished => "Task finished",
@@ -63,6 +119,7 @@ pub(super) struct TabStatus {
     task: TaskPhase,
     bell: bool,
     unread: bool,
+    failure: Option<ExitFailure>,
 }
 
 impl TabStatus {
@@ -82,6 +139,10 @@ impl TabStatus {
                 self.clear_finished();
             }
             StatusEvent::Input => self.clear_finished(),
+            StatusEvent::SessionFailed(failure) => {
+                self.failure = Some(failure);
+                self.task = TaskPhase::Idle;
+            }
         }
     }
 
@@ -91,9 +152,18 @@ impl TabStatus {
         }
     }
 
-    /// What the tab shows when several things are true at once: what asks for the
-    /// user, then what is still going on, then what merely happened.
+    /// How the tab's shell failed, if it did. Such a tab stays open with its final
+    /// output on screen until the user closes it.
+    pub(super) const fn failure(self) -> Option<ExitFailure> {
+        self.failure
+    }
+
+    /// What the tab shows when several things are true at once: what went wrong, then
+    /// what asks for the user, then what is still going on, then what merely happened.
     pub(super) fn indicator(self) -> Option<TabIndicator> {
+        if self.failure.is_some() {
+            return Some(TabIndicator::Failed);
+        }
         if self.bell {
             return Some(TabIndicator::Bell);
         }
@@ -196,6 +266,51 @@ mod tests {
             StatusEvent::TaskStarted,
         ]);
         assert_eq!(status.indicator(), Some(TabIndicator::Running));
+    }
+
+    #[test]
+    fn only_a_failure_keeps_a_session_exit_from_passing_unremarked() {
+        assert_eq!(SessionExit::from_wait_status(None), SessionExit::Unknown);
+        assert_eq!(SessionExit::from_wait_status(Some(0)), SessionExit::Clean);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wait_status_is_read_as_an_exit_code_or_a_signal() {
+        // A process's exit code sits in the high byte of its wait status.
+        assert_eq!(
+            SessionExit::from_wait_status(Some(7 << 8)),
+            SessionExit::Failed(ExitFailure::Code(7))
+        );
+        assert_eq!(
+            SessionExit::from_wait_status(Some(9)),
+            SessionExit::Failed(ExitFailure::Signal(9))
+        );
+    }
+
+    #[test]
+    fn a_failed_session_outranks_everything_and_outlasts_a_visit() {
+        let failure = ExitFailure::Code(1);
+        let mut status = after(&[
+            StatusEvent::TaskStarted,
+            StatusEvent::Bell(TabPresence::Hidden),
+            StatusEvent::SessionFailed(failure),
+        ]);
+        assert_eq!(status.indicator(), Some(TabIndicator::Failed));
+        status.apply(StatusEvent::Seen);
+        assert_eq!(status.indicator(), Some(TabIndicator::Failed));
+        assert_eq!(status.failure(), Some(failure));
+    }
+
+    #[test]
+    fn a_task_cannot_finish_in_a_shell_that_failed_under_it() {
+        let status = after(&[
+            StatusEvent::TaskStarted,
+            StatusEvent::SessionFailed(ExitFailure::Signal(9)),
+            StatusEvent::TaskEnded,
+            StatusEvent::Seen,
+        ]);
+        assert_eq!(status.indicator(), Some(TabIndicator::Failed));
     }
 
     #[test]
