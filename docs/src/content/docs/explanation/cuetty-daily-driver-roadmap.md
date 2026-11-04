@@ -37,7 +37,7 @@ persistence contracts are also more mature than the live product shell.
 | Input protocol | Direct-host input and mode-aware bracketed-paste encoding in source; local selection | Executable compatibility checks remain; mouse, keypad, focus and advanced keyboard integration are not qualified. |
 | Scrollback and search | Rio-owned wheel/keyboard history navigation is live; the UI searches only the visible frame | No selection/search across history or scrollbar. |
 | Tabs and splits | Each tab owns a live session; the pure layout model supports splits | Split shortcuts are intentionally rejected because session allocation is not wired. |
-| Settings | Font size and line-height controls are session-only | No durable configuration, font validation, theme selection, or stable working-directory policy. |
+| Configuration | Global and exact-CWD CUE packages configure font size, line height, padding, transparency, and Cuetty presentation | Font-family validation, theme selection, and stable working-directory policy remain open. |
 | Distribution | Development bundle with ad-hoc signing and a local launch check | No signed/notarized release, installer, update path, or release-quality macOS CI. |
 
 The original `librio` pin exposed only one `char` per snapshot cell and left
@@ -251,13 +251,13 @@ day.
 - [ ] Finish selection: word and line selection, copy from history, multi-line
   Unicode correctness, and a predictable policy when an application has mouse
   reporting enabled.
-- [ ] Persist a versioned configuration in the platform application-support
-  location. Start with font family and fallbacks, font size, line height, theme,
-  cursor preference, scrollback limit, window geometry, and working-directory
-  policy.
+- [ ] Extend the existing global and per-directory CUE configuration with font
+  family and fallbacks, theme, cursor preference, scrollback limit, window
+  geometry, and working-directory policy. Font size, line height, padding, and
+  transparency are already configured in CUE.
 - [ ] Treat the current hard-coded Monaspice/Catppuccin defaults as an
   opinionated first-run profile, not a dependency. Detect unavailable fonts and
-  fall back to a macOS monospaced font with a visible settings error.
+  fall back to a macOS monospaced font with a visible integration notice.
 - [ ] Provide familiar macOS actions before inventing a keybinding language:
   new tab, close tab, copy, paste, find, next/previous result, zoom, and reset
   zoom.
@@ -328,7 +328,7 @@ needed for routine terminal tasks.
 **Goal:** make Cuetty meaningfully better for Cuenv projects while keeping the
 terminal useful everywhere else.
 
-- [x] Keep the existing per-directory banner and border path bounded,
+- [x] Keep the existing per-directory banner and rail path bounded,
   asynchronous, and last-known-good.
 - [ ] Add a redacted project context surface: project name, selected
   environment, task status, and safe diagnostics. Never render resolved secrets

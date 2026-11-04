@@ -21,7 +21,7 @@ case "${1:-}" in
     shell-level)
         printf 'M0-SHLVL:%s\r\n' "${SHLVL:-missing}"
         ;;
-    raw|bracketed|kitty|modify-other-keys)
+    raw|bracketed|kitty|modify-other-keys|mouse-sgr|codex-sgr|alt-scroll|alt-scroll-app|alt-scroll-kitty)
         count=${2:?expected input byte count}
         case "$count" in
             ''|*[!0-9]*) exit 64 ;;
@@ -33,6 +33,16 @@ case "${1:-}" in
             printf '\033[>1u'
         elif test "$1" = modify-other-keys; then
             printf '\033[>4;2m'
+        elif test "$1" = mouse-sgr; then
+            printf '\033[?1000h\033[?1006h'
+        elif test "$1" = codex-sgr; then
+            printf '\033[?1049h\033[?1007l\033[?1000h\033[?1002h\033[?1003h\033[?1006h'
+        elif test "$1" = alt-scroll; then
+            printf '\033[?1049h\033[?1007h'
+        elif test "$1" = alt-scroll-app; then
+            printf '\033[?1049h\033[?1007h\033[?1h'
+        elif test "$1" = alt-scroll-kitty; then
+            printf '\033[?1049h\033[?1007h\033[?1h\033[>3u'
         fi
         printf 'M0-READY\r\n'
         bytes=$(dd bs=1 count="$count" 2>/dev/null | od -An -tx1 | tr -d ' \n')
@@ -56,7 +66,7 @@ case "${1:-}" in
         printf 'M0-UNEXPECTED-INPUT:%s\r\n' "$command"
         ;;
     *)
-        printf 'usage: m0-pty-child.sh exit|resize|shell-level|raw COUNT|bracketed COUNT|kitty COUNT|modify-other-keys COUNT|hold|history\n' >&2
+        printf 'usage: m0-pty-child.sh exit|resize|shell-level|raw COUNT|bracketed COUNT|kitty COUNT|modify-other-keys COUNT|mouse-sgr COUNT|codex-sgr COUNT|alt-scroll COUNT|alt-scroll-app COUNT|alt-scroll-kitty COUNT|hold|history\n' >&2
         exit 64
         ;;
 esac

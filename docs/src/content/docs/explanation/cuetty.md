@@ -60,12 +60,19 @@ The current usable slice includes:
   one title strip, stable single-line tab labels, and a full-bleed terminal.
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
   selection, Rio-owned history navigation, and visible-frame literal search.
+- Wheel and trackpad input normally navigates Rio history. An application that
+  enables a supported mouse-reporting mode receives wheel reports instead; an
+  alternate-screen application with alternate scroll enabled and mouse
+  reporting disabled receives arrow keys. Shift-wheel requests local history
+  when available in the current screen. An isolated Linux Xvfb/Niri run with
+  Codex 0.166.0 confirmed wheel-up and wheel-down through a local transcript.
+  Physical device input and macOS still need interactive verification.
 - The active pane's post-layout GPUI canvas is the source of truth for each Rio
   resize, so the measured width already excludes the title strip, terminal
   inset, divider, and fixed rail width instead of leaving a stale frame
   clipped in the viewport.
-- The terminal surface keeps an 8px inset from the host chrome; the inset uses
-  the same terminal surface colour and is subtracted from the Rio grid
+- The terminal surface defaults to an 8px inset from the host chrome; the
+  inset uses the same terminal surface colour and is subtracted from the Rio grid
   dimensions as well as the rendered bounds. Its opposing edges constrain the
   surface size so the last row remains inside the content panel.
 - Independent live Rio sessions for each tab with a replaceable workspace
@@ -78,9 +85,10 @@ The current usable slice includes:
   task palette is the one configurable exception (see below).
 - A fixed 56px right-side vertical tab rail. It shows tab ordinals with stable
   path-name tooltips and deliberately has no resize or expand mode.
-- A session-only Settings destination with transactional Apply, Cancel, and
-  Reset controls for font size and line height. The native Cuetty menu exposes
-  Quit Cuetty and Cmd-Q uses the same application-level action.
+- Global and per-directory CUE configuration for font size, line height,
+  padding, and transparency. There is no in-app Settings page. The native
+  Cuetty menu exposes Quit Cuetty and Cmd-Q uses the same application-level
+  action.
 - Versioned, metadata-only workspace persistence and capability/session seams
   for later product integrations.
 
@@ -88,7 +96,7 @@ Termy and Okena remain reference projects for renderer and product-shell
 patterns. They are not vendored dependencies and their runtime models are not
 silently substituted for Rio.
 
-## Per-directory Cuenv presentation
+## Cuetty CUE configuration
 
 For the active Rio tab, Cuetty asks Rio for the shell's current working
 directory and evaluates package `cuetty` in that exact directory. The nearest
@@ -105,6 +113,35 @@ tab is active and lets the terminal extend to the top of the window; it
 defaults to `true`. `keybindings: palette:` rebinds the task palette; see
 [Keybindings](#keybindings). A hidden strip removes the window drag region, and on macOS
 the traffic lights float over the terminal's top-left corner.
+
+Terminal appearance can be configured in the same package:
+
+```cue
+package cuetty
+
+font: {
+    size:       18
+    lineHeight: 1.3
+}
+padding: {
+    top:    12
+    right:  8
+    bottom: 12
+    left:   8
+}
+transparency: 10
+```
+
+| Field | Meaning and allowed values | Default |
+| --- | --- | --- |
+| `font.size` | Font size in pixels, 1–128 | 16 |
+| `font.lineHeight` | Line-height multiplier, 0.5–3 | 1.2 |
+| `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 8 each |
+| `transparency` | Integer percent, 0–100; affects the terminal canvas | 0 |
+
+Fields are optional. The active tab's settings determine the rendered grid,
+terminal inset, and terminal background. Unknown top-level and nested fields
+are rejected.
 
 The cuenv repository includes a root `cuetty.cue` with a `cuenv` banner and a
 Catppuccin Mocha blue rail. It applies while the shell is in the repository
@@ -128,13 +165,28 @@ package cuetty
 
 rail:     *"#89b4fa" | string
 titlebar: *false | bool
+font: {
+    size:       *16 | number
+    lineHeight: *1.2 | number
+}
+padding: {
+    top:    *8 | int
+    right:  *8 | int
+    bottom: *8 | int
+    left:   *8 | int
+}
+transparency: *0 | int
 ```
 
+A directory can override individual fields, including one padding edge,
+without redefining the other global defaults.
 A directory without package `cuetty` uses the global package alone. A
 conflict or an invalid global package is reported like any invalid matching
-configuration and keeps the last good presentation. The global directory is
-watched alongside the active directory when it exists; one created later is
-picked up on the next directory change.
+configuration and keeps the last good presentation for that directory, if one
+exists. The global directory is watched alongside the active directory when it
+exists; if created later while the working directory is known, it is picked up
+on the next directory change. If the shell's working directory is unavailable,
+Cuetty applies only the global package and checks for its directory on each poll.
 
 #### Home Manager
 
@@ -151,6 +203,9 @@ installs Cuetty and writes the global package to
       rail = "#89b4fa";
       titlebar = false;
       keybindings.palette = "ctrl-shift-p";
+      font = { size = 16.0; lineHeight = 1.2; };
+      padding = { top = 8; right = 8; bottom = 8; left = 8; };
+      transparency = 0;
     };
     extraConfig = ''
       banner: *"home" | string
@@ -202,6 +257,10 @@ support:
 - Full-history selection and search; history navigation is live, but current
   selection/search coordinates cover one visible viewport and search is
   literal-only.
+- Application mouse reporting covers wheel events only. Clicks, drags, and
+  pointer motion are not reported to applications; local text selection remains
+  available. Original X10 mouse mode has no wheel reports, and legacy non-SGR
+  reports have coordinate limits.
 - Complete Unicode behaviour, including combining marks, ZWJ sequences,
   emoji presentation, and IME correctness.
 - Kitty graphics and other image protocols.
@@ -212,17 +271,18 @@ support:
 - Split-pane session allocation, plus live workspace restore/reconnect.
 
 Earlier implementation work recorded focused Rust validation and macOS bundle
-verification. Those results do not validate the new direct-`rio-vt` migration:
-app compilation, the real PTY lifecycle suite, and an Apple Silicon smoke run
-are still required for this change. The GPUI-representable Kitty and
+verification. For the current direct-`rio-vt` path, Linux app compilation and
+the real PTY lifecycle suite pass; a private Xvfb/Niri smoke also exercised
+initial keyboard focus and Codex transcript scrolling. An Apple Silicon smoke
+run is still required. The GPUI-representable Kitty and
 `modifyOtherKeys` subset now has deterministic coverage; IME, focus reporting,
 application keypad identity, key releases, alternate-key reporting, and
 hyperlinks remain qualification items.
 Human visual and input acceptance remains a separate caveat:
 the terminal must still be exercised interactively for font metrics, line
 spacing, selection, search focus, clipboard behaviour, resize, and shell
-lifecycle before a release claim. macOS with Apple's Metal toolchain is the
-only runtime-verified platform at present; Linux and Windows are unverified.
+lifecycle before a release claim. The isolated Linux smoke is not physical
+desktop acceptance; macOS and Windows still require validation of this revision.
 
 ## Development
 

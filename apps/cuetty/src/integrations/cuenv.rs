@@ -4,6 +4,7 @@
 //! validated representation, so configuration cannot reach a renderer or a
 //! session directly.
 
+use crate::terminal::config::TerminalConfig;
 use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
@@ -17,12 +18,13 @@ pub const PROJECT_PACKAGE: &str = "cuenv";
 const GLOBAL_CONFIG_DIR: &str = "cuetty";
 const MAX_BANNER_BYTES: usize = 120;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CuettyPresentation {
     pub banner: Option<String>,
     pub rail: Option<RailColor>,
     pub titlebar: TitlebarVisibility,
     pub keybindings: Keybindings,
+    pub terminal: Box<TerminalConfig>,
 }
 
 /// Application chords configured through `keybindings` in package `cuetty`.
@@ -156,6 +158,34 @@ struct CuettyDto {
     titlebar: Option<bool>,
     #[serde(default)]
     keybindings: Option<KeybindingsDto>,
+    #[serde(default)]
+    font: Option<FontDto>,
+    #[serde(default)]
+    padding: Option<PaddingDto>,
+    #[serde(default)]
+    transparency: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct FontDto {
+    #[serde(default)]
+    size: Option<f32>,
+    #[serde(default)]
+    line_height: Option<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaddingDto {
+    #[serde(default)]
+    top: Option<u16>,
+    #[serde(default)]
+    right: Option<u16>,
+    #[serde(default)]
+    bottom: Option<u16>,
+    #[serde(default)]
+    left: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,7 +195,7 @@ struct KeybindingsDto {
     palette: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Evaluation {
     Absent,
     Valid(CuettyPresentation),
@@ -175,7 +205,7 @@ pub enum Evaluation {
 /// Per-pane presentation state kept independent from the GPUI view. The
 /// generation is advanced whenever the shell enters a new directory or a new
 /// source binding, so late worker results cannot cross a CWD boundary.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CuenvPaneState {
     pub cwd: Option<PathBuf>,
     pub generation: u64,
@@ -187,10 +217,18 @@ pub struct CuenvPaneState {
 
 impl CuenvPaneState {
     pub fn observe_cwd(&mut self, cwd: PathBuf) -> bool {
-        if self.cwd.as_ref() == Some(&cwd) {
+        self.set_cwd(Some(cwd))
+    }
+
+    pub fn forget_cwd(&mut self) -> bool {
+        self.set_cwd(None)
+    }
+
+    fn set_cwd(&mut self, cwd: Option<PathBuf>) -> bool {
+        if self.cwd == cwd {
             return false;
         }
-        self.cwd = Some(cwd);
+        self.cwd = cwd;
         self.generation = self.generation.wrapping_add(1);
         self.presentation = CuettyPresentation::default();
         self.tasks.clear();
@@ -251,10 +289,23 @@ pub struct ConfigSource {
 }
 
 impl ConfigSource {
-    /// Select configuration from the shell's current working directory,
-    /// unified with the global package under the XDG config home.
-    pub fn from_cwd(start: &Path) -> Result<Self, String> {
-        Self::in_dir(start).map(|source| source.with_global_dir(global_config_dir()))
+    /// Use the exact shell directory when known; otherwise load only the
+    /// global package until the terminal reports a working directory.
+    pub fn from_working_directory(cwd: Option<&Path>) -> Result<Option<Self>, String> {
+        Self::from_directories(cwd, global_config_dir())
+    }
+
+    fn from_directories(
+        cwd: Option<&Path>,
+        global: Option<PathBuf>,
+    ) -> Result<Option<Self>, String> {
+        match cwd {
+            Some(cwd) => Self::in_dir(cwd).map(|source| Some(source.with_global_dir(global))),
+            None => global
+                .filter(|dir| dir.is_dir())
+                .map(|dir| Self::in_dir(&dir))
+                .transpose(),
+        }
     }
 
     /// Select configuration from exactly one directory, without a global
@@ -438,6 +489,38 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         },
         None => Keybindings::default(),
     };
+    // Apply built-in defaults only after global and directory CUE packages
+    // have unified, so any individual setting can be overridden locally.
+    let mut terminal = TerminalConfig::default();
+    if let Some(font) = dto.font {
+        if let Some(size) = font.size {
+            terminal.font.size_px = size;
+        }
+        if let Some(line_height) = font.line_height {
+            terminal.font.line_height_multiplier = line_height;
+        }
+    }
+    if let Some(padding) = dto.padding {
+        let edges = &mut terminal.terminal_padding;
+        if let Some(top) = padding.top {
+            edges.top = top;
+        }
+        if let Some(right) = padding.right {
+            edges.right = right;
+        }
+        if let Some(bottom) = padding.bottom {
+            edges.bottom = bottom;
+        }
+        if let Some(left) = padding.left {
+            edges.left = left;
+        }
+    }
+    if let Some(transparency) = dto.transparency {
+        terminal.terminal_transparency_percent = transparency;
+    }
+    if let Err(error) = terminal.validate() {
+        return Evaluation::Invalid(format!("invalid Cuetty terminal configuration: {error}"));
+    }
     Evaluation::Valid(CuettyPresentation {
         banner,
         rail,
@@ -446,12 +529,13 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
             .map(TitlebarVisibility::from)
             .unwrap_or_default(),
         keybindings,
+        terminal: Box::new(terminal),
     })
 }
 
 fn parse_color(value: &str) -> Result<RailColor, String> {
     let bytes = value.as_bytes();
-    if bytes.len() != 7 || bytes[0] != b'#' {
+    if bytes.len() != 7 || bytes[0] != b'#' || !bytes[1..].iter().all(u8::is_ascii_hexdigit) {
         return Err("rail must use quoted #RRGGBB syntax".into());
     }
     let channel = |from| {
@@ -685,8 +769,74 @@ mod tests {
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
                 keybindings: Keybindings::default(),
+                terminal: Box::default(),
             })
         );
+    }
+
+    #[test]
+    fn terminal_presentation_supports_partial_configuration_and_defaults() {
+        let Evaluation::Valid(presentation) = parse_value(serde_json::json!({
+            "font": {"size": 21, "lineHeight": 1.5},
+            "padding": {"left": 2, "top": 12},
+            "transparency": 40
+        })) else {
+            panic!("expected valid terminal presentation");
+        };
+        let terminal = presentation.terminal;
+        assert_eq!(terminal.font.size_px, 21.0);
+        assert_eq!(terminal.font.line_height_multiplier, 1.5);
+        assert_eq!(terminal.terminal_padding.top, 12);
+        assert_eq!(terminal.terminal_padding.right, 8);
+        assert_eq!(terminal.terminal_padding.bottom, 8);
+        assert_eq!(terminal.terminal_padding.left, 2);
+        assert_eq!(terminal.terminal_transparency_percent, 40);
+    }
+
+    #[test]
+    fn terminal_presentation_rejects_invalid_fields_and_values() {
+        for value in [
+            serde_json::json!({"font": {"size": 0}}),
+            serde_json::json!({"font": {"size": 129}}),
+            serde_json::json!({"font": {"lineHeight": 0.49}}),
+            serde_json::json!({"font": {"lineHeight": 3.01}}),
+            serde_json::json!({"font": {"family": "unknown"}}),
+            serde_json::json!({"padding": {"top": -1}}),
+            serde_json::json!({"padding": {"right": 129}}),
+            serde_json::json!({"padding": {"left": 1.5}}),
+            serde_json::json!({"padding": {"horizontal": 2}}),
+            serde_json::json!({"transparency": 101}),
+            serde_json::json!({"transparency": -1}),
+        ] {
+            assert!(
+                matches!(parse_value(value.clone()), Evaluation::Invalid(_)),
+                "{value}"
+            );
+        }
+        for value in [
+            serde_json::json!({"font": {"size": 1, "lineHeight": 0.5}, "padding": {"top": 0}, "transparency": 0}),
+            serde_json::json!({"font": {"size": 128, "lineHeight": 3}, "padding": {"top": 128}, "transparency": 100}),
+        ] {
+            assert!(
+                matches!(parse_value(value.clone()), Evaluation::Valid(_)),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_terminal_reload_keeps_the_previous_presentation() {
+        let mut state = CuenvPaneState::default();
+        state.observe_cwd(PathBuf::from("/a"));
+        let generation = state.begin_source();
+        let valid = parse_value(serde_json::json!({"padding": {"left": 15}}));
+        assert!(state.apply(generation, valid));
+        assert!(state.apply(
+            generation,
+            parse_value(serde_json::json!({"padding": {"left": 129}}))
+        ));
+        assert_eq!(state.presentation.terminal.terminal_padding.left, 15);
+        assert!(state.notice.is_some());
     }
 
     #[test]
@@ -725,6 +875,7 @@ mod tests {
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
                 keybindings: Keybindings::default(),
+                terminal: Box::default(),
             })
         ));
         assert!(state.observe_cwd(PathBuf::from("/b")));
@@ -736,7 +887,45 @@ mod tests {
                 rail: None,
                 titlebar: TitlebarVisibility::Shown,
                 keybindings: Keybindings::default(),
+                terminal: Box::default(),
             })
+        ));
+    }
+
+    #[test]
+    fn losing_cwd_fences_the_old_source_and_preserves_global_reloads() {
+        let mut state = CuenvPaneState::default();
+        assert!(state.observe_cwd(PathBuf::from("/project")));
+        let old_generation = state.begin_source();
+        assert!(state.apply(
+            old_generation,
+            parse_value(serde_json::json!({"padding": {"left": 4}}))
+        ));
+
+        assert!(state.forget_cwd());
+        assert_eq!(state.presentation.terminal.terminal_padding.left, 8);
+        assert!(!state.apply(
+            old_generation,
+            parse_value(serde_json::json!({"padding": {"left": 9}}))
+        ));
+
+        let global_generation = state.begin_source();
+        assert!(state.apply(
+            global_generation,
+            parse_value(serde_json::json!({"padding": {"left": 12}}))
+        ));
+        assert!(!state.forget_cwd());
+        assert_eq!(state.presentation.terminal.terminal_padding.left, 12);
+        assert!(state.apply(
+            global_generation,
+            parse_value(serde_json::json!({"padding": {"left": 129}}))
+        ));
+        assert_eq!(state.presentation.terminal.terminal_padding.left, 12);
+
+        assert!(state.observe_cwd(PathBuf::from("/project")));
+        assert!(!state.apply(
+            global_generation,
+            parse_value(serde_json::json!({"padding": {"left": 7}}))
         ));
     }
 
@@ -750,6 +939,7 @@ mod tests {
             rail: None,
             titlebar: TitlebarVisibility::Shown,
             keybindings: Keybindings::default(),
+            terminal: Box::default(),
         };
         assert!(state.apply(generation, Evaluation::Valid(presentation.clone())));
         assert!(state.apply(generation, Evaluation::Invalid("broken".into())));
@@ -767,6 +957,7 @@ mod tests {
             rail: Some(RailColor(255, 0, 0)),
             titlebar: TitlebarVisibility::Shown,
             keybindings: Keybindings::default(),
+            terminal: Box::default(),
         };
         assert!(state.apply(first_generation, Evaluation::Valid(presentation.clone())));
 
@@ -876,6 +1067,12 @@ mod tests {
             parse_value(serde_json::json!({"rail": "red"})),
             Evaluation::Invalid(_)
         ));
+        // A seven-byte value can still split a UTF-8 character at a channel
+        // boundary; malformed input must be rejected without panicking.
+        assert!(matches!(
+            parse_value(serde_json::json!({"rail": "#aéabc"})),
+            Evaluation::Invalid(_)
+        ));
         // Pane borders were retired in favour of the rail colour.
         assert!(matches!(
             parse_value(serde_json::json!({"border": "#ff0000"})),
@@ -967,8 +1164,34 @@ mod tests {
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Hidden,
                 keybindings: Keybindings::default(),
+                terminal: Box::default(),
             })
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_settings_unify_before_defaults_are_applied() {
+        let (root, source) = layered_source(
+            "terminal-layered",
+            Some("font: size: 22\npadding: left: 3"),
+            Some(
+                "font: {size: *16 | number, lineHeight: *1.4 | number}\n\
+                 padding: {top: *10 | int, right: *11 | int, bottom: *12 | int, left: *13 | int}\n\
+                 transparency: *30 | int",
+            ),
+        );
+        let Evaluation::Valid(presentation) = source.evaluate() else {
+            panic!("expected unified terminal presentation");
+        };
+        let terminal = presentation.terminal;
+        assert_eq!(terminal.font.size_px, 22.0);
+        assert_eq!(terminal.font.line_height_multiplier, 1.4);
+        assert_eq!(terminal.terminal_padding.top, 10);
+        assert_eq!(terminal.terminal_padding.right, 11);
+        assert_eq!(terminal.terminal_padding.bottom, 12);
+        assert_eq!(terminal.terminal_padding.left, 3);
+        assert_eq!(terminal.terminal_transparency_percent, 30);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1018,6 +1241,54 @@ mod tests {
             Some(PathBuf::from("/home/me/.config/cuetty"))
         );
         assert_eq!(global_config_dir_from(None, None), None);
+    }
+
+    #[test]
+    fn global_source_is_available_without_a_working_directory() {
+        let root =
+            std::env::temp_dir().join(format!("cuetty-global-without-cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let global = root.join("config/cuetty");
+        assert_eq!(
+            ConfigSource::from_directories(None, Some(global.clone())).unwrap(),
+            None
+        );
+
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(
+            global.join("config.cue"),
+            "package cuetty\npadding: left: 6\n",
+        )
+        .unwrap();
+        let source = ConfigSource::from_directories(None, Some(global.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ConfigSource::from_directories(None, Some(global.clone())).unwrap(),
+            Some(source.clone())
+        );
+        assert!(
+            matches!(source.evaluate(), Evaluation::Valid(presentation) if presentation.terminal.terminal_padding.left == 6)
+        );
+
+        // Discovering the global path as the actual CWD changes the binding,
+        // so task discovery is enabled and any prior worker is fenced.
+        assert_ne!(
+            ConfigSource::from_directories(Some(&global), Some(global.clone())).unwrap(),
+            Some(source)
+        );
+        std::fs::remove_dir_all(&global).unwrap();
+        assert_eq!(
+            ConfigSource::from_directories(None, Some(global.clone())).unwrap(),
+            None
+        );
+        std::fs::create_dir_all(&global).unwrap();
+        assert!(
+            ConfigSource::from_directories(None, Some(global))
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

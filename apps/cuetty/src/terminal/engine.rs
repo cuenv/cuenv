@@ -1,6 +1,8 @@
-use super::config::{MAX_TERMINAL_PADDING, TerminalConfig};
+use super::config::TerminalConfig;
 use super::events::ControlEvent;
-use super::host::{RioTerminalFactory, TerminalScroll, TerminalSession, TerminalSessionFactory};
+use super::host::{
+    RioTerminalFactory, TerminalScroll, TerminalSession, TerminalSessionFactory, TerminalWheel,
+};
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::interaction::{CellHitTest, InteractionState, SearchKey};
 use super::model::{CursorShape, Known, Rgb, TerminalCell, TerminalFrame, UnderlineStyle};
@@ -8,7 +10,6 @@ use super::model::{CursorShape, Known, Rgb, TerminalCell, TerminalFrame, Underli
 use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{TerminalMetrics, TerminalTheme, gpui_rgb};
-use super::settings::SettingsDraft;
 use super::sizing::CellSize;
 use super::workspace_shell::{ShellAction, ShellError, WorkspaceShell, WorkspaceShortcut};
 use crate::integrations::cuenv::{
@@ -26,7 +27,6 @@ use gpui::{
     WindowControlArea, WindowOptions, actions, canvas, div, point, prelude::FluentBuilder, px,
     quad, size,
 };
-use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::tooltip::Tooltip;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -636,6 +636,13 @@ impl SessionRegistry {
         self.workspace.active_pane()
     }
 
+    fn active_terminal_config(&self) -> TerminalConfig {
+        self.active_pane()
+            .and_then(|pane| self.sessions.get(&pane))
+            .map(|state| state.cuenv.presentation.terminal.as_ref().clone())
+            .unwrap_or_default()
+    }
+
     fn start_tab(
         &mut self,
         width: u32,
@@ -766,10 +773,6 @@ struct TerminalView {
     focus: FocusHandle,
     renderer: Box<dyn TerminalRenderer>,
     workspace_bounds: Arc<Mutex<(f32, f32)>>,
-    destination: Destination,
-    settings_draft: Option<SettingsDraft>,
-    settings_error: Option<String>,
-    transparency_slider: gpui::Entity<SliderState>,
     task_palette_open: bool,
     task_sidebar_open: bool,
     task_query: String,
@@ -822,14 +825,6 @@ fn task_command(cwd: &std::path::Path, task: &CuenvTask, launch: TaskLaunch) -> 
         TaskLaunch::EditRequiredArguments => command.push(' '),
     }
     command
-}
-
-#[derive(Clone, Copy)]
-enum PaddingEdge {
-    Top,
-    Right,
-    Bottom,
-    Left,
 }
 
 fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32) -> i32 {
@@ -933,12 +928,6 @@ fn single_character(text: &str) -> Option<char> {
     characters.next().is_none().then_some(character)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Destination {
-    Terminal(TabId),
-    Settings,
-}
-
 impl TerminalView {
     #[cfg(test)]
     fn empty_frame() -> TerminalFrame {
@@ -975,36 +964,12 @@ impl TerminalView {
         cx.observe_window_bounds(window, move |_, _, cx| cx.notify())
             .detach();
         let config = TerminalConfig::default();
-        let transparency_slider = cx.new(|_| {
-            SliderState::new()
-                .min(0.0)
-                .max(100.0)
-                .step(1.0)
-                .default_value(f32::from(config.terminal_transparency_percent))
-        });
-        cx.subscribe(&transparency_slider, |view, _, event: &SliderEvent, cx| {
-            let SliderEvent::Change(value) = event;
-            let percent = value.end().round().clamp(0.0, 100.0) as u8;
-            if let Some(draft) = view.settings_draft.as_mut() {
-                if let Err(error) = draft.set_terminal_transparency(percent) {
-                    view.settings_error = Some(error.to_string());
-                } else {
-                    view.settings_error = None;
-                }
-            }
-            cx.notify();
-        })
-        .detach();
         let metrics = TerminalMetrics::from_config(cx.text_system(), &config);
         let theme = TerminalTheme::from_config(&config);
         let factory: Arc<dyn TerminalSessionFactory> = Arc::new(RioTerminalFactory);
         match SessionRegistry::start(factory.clone(), 720, 432, metrics.rio_cell()) {
             Ok((registry, wake_rx)) => {
                 let pane = registry.active_pane().expect("initial workspace pane");
-                let tab = registry
-                    .workspace
-                    .active_tab()
-                    .expect("initial workspace tab");
                 let mut view = Self {
                     registry,
                     cuenv,
@@ -1014,10 +979,6 @@ impl TerminalView {
                     focus: cx.focus_handle(),
                     renderer: Box::new(GridRenderer),
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
-                    destination: Destination::Terminal(tab),
-                    settings_draft: None,
-                    settings_error: None,
-                    transparency_slider,
                     task_palette_open: false,
                     task_sidebar_open: false,
                     task_query: String::new(),
@@ -1040,10 +1001,6 @@ impl TerminalView {
                     focus: cx.focus_handle(),
                     renderer: Box::new(GridRenderer),
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
-                    destination: Destination::Settings,
-                    settings_draft: None,
-                    settings_error: None,
-                    transparency_slider,
                     task_palette_open: false,
                     task_sidebar_open: false,
                     task_query: String::new(),
@@ -1066,29 +1023,51 @@ impl TerminalView {
             .get(&pane)
             .map(|state| (state.generation, state.session.working_directory()))
             .expect("active pane registry invariant");
-        let Some(cwd) = cwd else {
-            return;
-        };
-        let cwd = std::path::PathBuf::from(cwd);
-        let canonical_cwd = cwd.canonicalize().unwrap_or(cwd);
-        let cwd_changed = self
-            .registry
-            .sessions
-            .get(&pane)
-            .is_some_and(|state| state.cuenv.cwd.as_ref() != Some(&canonical_cwd));
-        if cwd_changed {
+        let canonical_cwd = cwd.map(|cwd| {
+            let cwd = std::path::PathBuf::from(cwd);
+            cwd.canonicalize().unwrap_or(cwd)
+        });
+        let cwd_changed = {
             let state = self
                 .registry
                 .sessions
                 .get_mut(&pane)
                 .expect("active pane registry invariant");
-            state.cuenv.observe_cwd(canonical_cwd.clone());
-            state.cuenv_source = None;
-            state.cuenv_watcher = None;
-            state.cuenv_watch_retry_at = None;
+            let changed = match &canonical_cwd {
+                Some(cwd) => state.cuenv.observe_cwd(cwd.clone()),
+                None => state.cuenv.forget_cwd(),
+            };
+            if changed {
+                state.cuenv_source = None;
+                state.cuenv_watcher = None;
+                state.cuenv_watch_retry_at = None;
+            }
+            changed
+        };
+        if cwd_changed {
+            self.sync_active_config(cx);
+            if self.active_pane() == Some(pane) {
+                self.reconcile_task_ui();
+            }
         }
-        let source = match ConfigSource::from_cwd(&canonical_cwd) {
-            Ok(source) => source,
+        let source = ConfigSource::from_working_directory(canonical_cwd.as_deref());
+        let source = match source {
+            Ok(Some(source)) => source,
+            Ok(None) => {
+                let state = self
+                    .registry
+                    .sessions
+                    .get_mut(&pane)
+                    .expect("active pane registry invariant");
+                if state.cuenv_source.take().is_some() {
+                    let generation = state.cuenv.begin_source();
+                    state.cuenv.apply(generation, Evaluation::Absent);
+                    state.cuenv_watcher = None;
+                    state.cuenv_watch_retry_at = None;
+                    self.sync_active_config(cx);
+                }
+                return;
+            }
             Err(error) => {
                 if let Some(state) = self.registry.sessions.get_mut(&pane) {
                     state.cuenv.notice = Some(error);
@@ -1096,6 +1075,7 @@ impl TerminalView {
                 return;
             }
         };
+        let discover_tasks = canonical_cwd.is_some();
         let now = std::time::Instant::now();
         let Some(state) = self.registry.sessions.get_mut(&pane) else {
             return;
@@ -1166,7 +1146,11 @@ impl TerminalView {
             std::thread::spawn(move || {
                 let _ = result_tx.send_blocking(CuenvIntegrationUpdate {
                     presentation: initial_evaluator.evaluate(&initial_source),
-                    tasks: initial_evaluator.evaluate_tasks(&initial_source),
+                    tasks: if discover_tasks {
+                        initial_evaluator.evaluate_tasks(&initial_source)
+                    } else {
+                        TaskEvaluation::Absent
+                    },
                 });
             });
             let Ok(update) = result_rx.recv().await else {
@@ -1189,7 +1173,11 @@ impl TerminalView {
                 std::thread::spawn(move || {
                     let _ = result_tx.send_blocking(CuenvIntegrationUpdate {
                         presentation: evaluator.evaluate(&source),
-                        tasks: evaluator.evaluate_tasks(&source),
+                        tasks: if discover_tasks {
+                            evaluator.evaluate_tasks(&source)
+                        } else {
+                            TaskEvaluation::Absent
+                        },
                     });
                 });
                 let Ok(update) = result_rx.recv().await else {
@@ -1209,6 +1197,7 @@ impl TerminalView {
         update: CuenvIntegrationUpdate,
         cx: &mut Context<Self>,
     ) {
+        let is_active = self.active_pane() == Some(target.pane);
         let Some(state) = self.registry.sessions.get_mut(&target.pane) else {
             return;
         };
@@ -1224,14 +1213,31 @@ impl TerminalView {
         state
             .cuenv
             .apply_tasks(target.config_generation, update.tasks);
-        if state.cuenv.tasks.is_empty() {
+        if is_active {
+            self.reconcile_task_ui();
+        }
+        self.sync_active_config(cx);
+        cx.notify();
+    }
+
+    fn sync_active_config(&mut self, cx: &mut Context<Self>) {
+        let config = self.registry.active_terminal_config();
+        if self.config != config {
+            self.metrics = TerminalMetrics::from_config(cx.text_system(), &config);
+            self.theme = TerminalTheme::from_config(&config);
+            self.config = config;
+        }
+    }
+
+    fn reconcile_task_ui(&mut self) {
+        let count = self
+            .active_state()
+            .map_or(0, |state| state.cuenv.tasks.len());
+        if count == 0 {
             self.task_palette_open = false;
             self.task_sidebar_open = false;
         }
-        self.task_selection = self
-            .task_selection
-            .min(state.cuenv.tasks.len().saturating_sub(1));
-        cx.notify();
+        self.task_selection = self.task_selection.min(count.saturating_sub(1));
     }
     fn spawn_cwd_poll(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |weak, cx| {
@@ -1267,113 +1273,12 @@ impl TerminalView {
     fn select_terminal_tab(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
         match self.registry.workspace.apply(ShellAction::ActivateTab(tab)) {
             Ok(_) => {
-                self.destination = Destination::Terminal(tab);
-                self.settings_draft = None;
-                self.settings_error = None;
                 self.focus.focus(window);
                 self.refresh_cuenv_integration(cx);
+                self.sync_active_config(cx);
+                self.reconcile_task_ui();
             }
             Err(error) => self.registry.notice = Some(shell_notice(error)),
-        }
-        cx.notify();
-    }
-    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.destination, Destination::Settings) {
-            self.settings_draft = Some(SettingsDraft::new(self.config.clone()));
-            let transparency = self.config.terminal_transparency_percent;
-            self.transparency_slider.update(cx, |slider, cx| {
-                slider.set_value(f32::from(transparency), window, cx);
-            });
-            self.settings_error = None;
-            self.destination = Destination::Settings;
-        }
-        window.blur();
-        cx.notify();
-    }
-    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_draft = None;
-        self.settings_error = None;
-        if let Some(tab) = self.active_tab() {
-            self.destination = Destination::Terminal(tab);
-            self.focus.focus(window);
-        }
-        cx.notify();
-    }
-    fn apply_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(draft) = self.settings_draft.take() else {
-            self.close_settings(window, cx);
-            return;
-        };
-        match draft.apply() {
-            Ok(config) => {
-                window.set_background_appearance(WindowBackgroundAppearance::Blurred);
-                self.metrics = TerminalMetrics::from_config(cx.text_system(), &config);
-                self.theme = TerminalTheme::from_config(&config);
-                self.config = config;
-                self.settings_error = None;
-                if let Some(tab) = self.active_tab() {
-                    self.destination = Destination::Terminal(tab);
-                    self.focus.focus(window);
-                }
-            }
-            Err(error) => {
-                self.settings_error = Some(error.to_string());
-                self.settings_draft = Some(SettingsDraft::new(self.config.clone()));
-            }
-        }
-        cx.notify();
-    }
-    fn reset_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(draft) = self.settings_draft.as_mut() {
-            draft.reset_defaults();
-            self.transparency_slider.update(cx, |slider, cx| {
-                slider.set_value(
-                    f32::from(TerminalConfig::default().terminal_transparency_percent),
-                    window,
-                    cx,
-                );
-            });
-            self.settings_error = None;
-        }
-        cx.notify();
-    }
-    fn adjust_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
-        if let Some(draft) = self.settings_draft.as_mut() {
-            let next = draft.config().font.size_px + delta;
-            if let Err(error) = draft.set_font_size(next) {
-                self.settings_error = Some(error.to_string());
-            } else {
-                self.settings_error = None;
-            }
-        }
-        cx.notify();
-    }
-    fn adjust_line_height(&mut self, delta: f32, cx: &mut Context<Self>) {
-        if let Some(draft) = self.settings_draft.as_mut() {
-            let next = draft.config().font.line_height_multiplier + delta;
-            if let Err(error) = draft.set_line_height_multiplier(next) {
-                self.settings_error = Some(error.to_string());
-            } else {
-                self.settings_error = None;
-            }
-        }
-        cx.notify();
-    }
-    fn adjust_terminal_padding(&mut self, edge: PaddingEdge, delta: i16, cx: &mut Context<Self>) {
-        if let Some(draft) = self.settings_draft.as_mut() {
-            let mut padding = draft.config().terminal_padding;
-            let value = match edge {
-                PaddingEdge::Top => &mut padding.top,
-                PaddingEdge::Right => &mut padding.right,
-                PaddingEdge::Bottom => &mut padding.bottom,
-                PaddingEdge::Left => &mut padding.left,
-            };
-            *value = value.saturating_add_signed(delta).min(MAX_TERMINAL_PADDING);
-            if let Err(error) = draft.set_terminal_padding(padding) {
-                self.settings_error = Some(error.to_string());
-            } else {
-                self.settings_error = None;
-            }
         }
         cx.notify();
     }
@@ -1415,23 +1320,16 @@ impl TerminalView {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
         if outcome.should_close {
-            self.close_pane(pane);
+            self.close_pane(pane, cx);
         }
         cx.notify();
     }
-    fn close_pane(&mut self, pane: crate::workspace::PaneId) {
-        let was_visible = self.active_pane() == Some(pane)
-            && matches!(self.destination, Destination::Terminal(_));
+    fn close_pane(&mut self, pane: crate::workspace::PaneId, cx: &mut Context<Self>) {
         if let Err(error) = self.registry.close_pane(pane) {
             self.registry.notice = Some(format!("workspace action unavailable: {error}"));
-        } else if was_visible {
-            self.destination = self
-                .active_tab()
-                .map(Destination::Terminal)
-                .unwrap_or(Destination::Settings);
-            if matches!(self.destination, Destination::Settings) {
-                self.settings_draft = None;
-            }
+        } else {
+            self.sync_active_config(cx);
+            self.reconcile_task_ui();
         }
     }
     fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1444,10 +1342,9 @@ impl TerminalView {
             Ok((pane, generation, wake_rx)) => {
                 self.spawn_wake(cx, pane, generation, wake_rx);
                 self.refresh_cuenv_integration(cx);
-                if let Some(tab) = self.active_tab() {
-                    self.destination = Destination::Terminal(tab);
-                    self.settings_draft = None;
-                    self.settings_error = None;
+                self.sync_active_config(cx);
+                self.reconcile_task_ui();
+                if self.active_tab().is_some() {
                     self.focus.focus(window);
                 }
                 cx.notify();
@@ -1519,10 +1416,29 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         let line_height = f32::from(self.metrics.render_cell().height);
+        let (_, position) = self.hit_test(event.position);
+        let mut bits = 0;
+        if event.modifiers.control {
+            bits |= InputModifiers::CONTROL.bits();
+        }
+        if event.modifiers.alt {
+            bits |= InputModifiers::ALT.bits();
+        }
+        if event.modifiers.shift {
+            bits |= InputModifiers::SHIFT.bits();
+        }
+        if event.modifiers.platform {
+            bits |= InputModifiers::SUPER.bits();
+        }
         let action = self.active_state_mut().and_then(|state| {
             // Retain sub-line trackpad motion per pane.
             let lines = wheel_scroll_lines(event.delta, line_height, &mut state.scroll_remainder);
-            (lines != 0).then_some(TerminalScroll::Lines(lines))
+            (lines != 0).then_some(TerminalScroll::Wheel(TerminalWheel {
+                lines,
+                column: u16::try_from(position.column).unwrap_or(u16::MAX),
+                row: u16::try_from(position.line).unwrap_or(u16::MAX),
+                modifiers: InputModifiers::from_bits(bits),
+            }))
         });
         if let Some(action) = action {
             self.scroll_active(action);
@@ -1671,7 +1587,7 @@ impl TerminalView {
                 WorkspaceShortcut::NewTab => self.new_tab(_window, cx),
                 WorkspaceShortcut::CloseTab => {
                     if let Some(pane) = self.active_pane() {
-                        self.close_pane(pane);
+                        self.close_pane(pane, cx);
                     }
                 }
                 _ => self.apply_workspace_action(ShellAction::Shortcut(shortcut)),
@@ -1825,8 +1741,7 @@ impl TerminalView {
             .enumerate()
         {
             let tab_id = tab.id;
-            let selected = matches!(self.destination, Destination::Terminal(id) if id == tab_id)
-                && active_tab == Some(tab_id);
+            let selected = active_tab == Some(tab_id);
             let label = self
                 .registry
                 .sessions
@@ -1955,23 +1870,6 @@ impl TerminalView {
                 view.new_tab(window, cx);
             }))
             .child("+");
-        let settings = div()
-            .id("cuetty-settings")
-            .w(px(34.0))
-            .h(px(30.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(7.0))
-            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .text_size(px(12.0))
-            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-            .cursor_pointer()
-            .tooltip(|window, cx| Tooltip::new("Settings").build(window, cx))
-            .on_click(cx.listener(|view, _event, window, cx| {
-                view.open_settings(window, cx);
-            }))
-            .child("⚙︎");
         let tasks = div()
             .id("cuetty-tasks")
             .w(px(34.0))
@@ -1996,8 +1894,7 @@ impl TerminalView {
         footer = footer
             .flex_col()
             .child(new_tab)
-            .when(has_tasks, |this| this.child(tasks))
-            .child(settings);
+            .when(has_tasks, |this| this.child(tasks));
         rail.child(footer).into_any_element()
     }
 
@@ -2228,378 +2125,6 @@ impl TerminalView {
         )
     }
 
-    fn render_settings(&self, theme: &TerminalTheme, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let values = self
-            .settings_draft
-            .as_ref()
-            .map(|draft| draft.config().clone())
-            .unwrap_or_else(|| self.config.clone());
-        let dirty = self
-            .settings_draft
-            .as_ref()
-            .is_some_and(SettingsDraft::is_dirty);
-        let font_size = values.font.size_px;
-        let line_height = values.font.line_height_multiplier;
-        let transparency = values.terminal_transparency_percent;
-        let padding = values.terminal_padding;
-        let button = |id: &'static str, label: String| {
-            div()
-                .id(id)
-                .min_w(px(30.0))
-                .h(px(28.0))
-                .px(px(8.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(4.0))
-                .bg(gpui::rgb(gpui_rgb(theme.title_surface)))
-                .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                .text_size(px(12.0))
-                .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.host_background))))
-                .cursor_pointer()
-                .child(label)
-        };
-        let padding_control = |label: &'static str,
-                               minus_id: &'static str,
-                               plus_id: &'static str,
-                               edge: PaddingEdge,
-                               value: u16| {
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(3.0))
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(3.0))
-                        .child(button(minus_id, "−".into()).on_click(cx.listener(
-                            move |view, _event, _window, cx| {
-                                view.adjust_terminal_padding(edge, -1, cx)
-                            },
-                        )))
-                        .child(
-                            div()
-                                .w(px(42.0))
-                                .text_center()
-                                .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                .child(format!("{value}px")),
-                        )
-                        .child(button(plus_id, "+".into()).on_click(cx.listener(
-                            move |view, _event, _window, cx| {
-                                view.adjust_terminal_padding(edge, 1, cx)
-                            },
-                        ))),
-                )
-        };
-        let mut content = div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(gpui::rgb(gpui_rgb(theme.surface)))
-            .p(px(28.0))
-            .gap(px(18.0))
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(
-                                div()
-                                    .text_size(px(20.0))
-                                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                    .child("Settings"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                    .child("Session-only terminal preferences"),
-                            ),
-                    )
-                    .child(button("settings-close", "×".into()).on_click(
-                        cx.listener(|view, _event, window, cx| view.close_settings(window, cx)),
-                    )),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.0))
-                            .child(
-                                div()
-                                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                    .child("Terminal padding"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                    .child("Top · right · bottom · left"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(padding_control(
-                                "Top",
-                                "settings-padding-top-minus",
-                                "settings-padding-top-plus",
-                                PaddingEdge::Top,
-                                padding.top,
-                            ))
-                            .child(padding_control(
-                                "Right",
-                                "settings-padding-right-minus",
-                                "settings-padding-right-plus",
-                                PaddingEdge::Right,
-                                padding.right,
-                            ))
-                            .child(padding_control(
-                                "Bottom",
-                                "settings-padding-bottom-minus",
-                                "settings-padding-bottom-plus",
-                                PaddingEdge::Bottom,
-                                padding.bottom,
-                            ))
-                            .child(padding_control(
-                                "Left",
-                                "settings-padding-left-minus",
-                                "settings-padding-left-plus",
-                                PaddingEdge::Left,
-                                padding.left,
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                            .child("Appearance"),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
-                                    .child(
-                                        div()
-                                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                            .child("Font size"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                            .child("Applied to every terminal tab"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.0))
-                                    .child(button("settings-font-minus", "−".into()).on_click(
-                                        cx.listener(|view, _event, _window, cx| {
-                                            view.adjust_font_size(-1.0, cx)
-                                        }),
-                                    ))
-                                    .child(
-                                        div()
-                                            .w(px(52.0))
-                                            .text_center()
-                                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                            .child(format!("{font_size:.0} px")),
-                                    )
-                                    .child(button("settings-font-plus", "+".into()).on_click(
-                                        cx.listener(|view, _event, _window, cx| {
-                                            view.adjust_font_size(1.0, cx)
-                                        }),
-                                    )),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
-                                    .child(
-                                        div()
-                                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                            .child("Line height"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(11.0))
-                                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                            .child("Controls vertical terminal rhythm"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.0))
-                                    .child(button("settings-line-minus", "−".into()).on_click(
-                                        cx.listener(|view, _event, _window, cx| {
-                                            view.adjust_line_height(-0.05, cx)
-                                        }),
-                                    ))
-                                    .child(
-                                        div()
-                                            .w(px(52.0))
-                                            .text_center()
-                                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                            .child(format!("{line_height:.2}×")),
-                                    )
-                                    .child(button("settings-line-plus", "+".into()).on_click(
-                                        cx.listener(|view, _event, _window, cx| {
-                                            view.adjust_line_height(0.05, cx)
-                                        }),
-                                    )),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.0))
-                            .child(
-                                div()
-                                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                    .child("Terminal transparency"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                    .child("0% opaque · 100% transparent"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w(px(260.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(12.0))
-                            .child(
-                                Slider::new(&self.transparency_slider)
-                                    .w(px(200.0))
-                                    .bg(gpui::rgb(gpui_rgb(theme.cursor)))
-                                    .text_color(gpui::rgb(gpui_rgb(theme.cursor))),
-                            )
-                            .child(
-                                div()
-                                    .w(px(48.0))
-                                    .text_right()
-                                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                    .child(format!("{transparency}%")),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .w_full()
-                    .text_size(px(12.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .child("Settings are kept in memory for this run and are not persisted yet."),
-            );
-        if let Some(error) = &self.settings_error {
-            content = content.child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(gpui::rgb(gpui_rgb(Rgb(230, 110, 100))))
-                    .child(error.clone()),
-            );
-        }
-        content
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                            .child(if dirty {
-                                "Unsaved changes"
-                            } else {
-                                "No changes"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(8.0))
-                            .child(button("settings-reset", "Reset defaults".into()).on_click(
-                                cx.listener(|view, _event, window, cx| {
-                                    view.reset_settings(window, cx)
-                                }),
-                            ))
-                            .child(button("settings-cancel", "Cancel".into()).on_click(
-                                cx.listener(|view, _event, window, cx| {
-                                    view.close_settings(window, cx)
-                                }),
-                            ))
-                            .child(
-                                button("settings-apply", "Apply".into()).on_click(cx.listener(
-                                    |view, _event, window, cx| view.apply_settings(window, cx),
-                                )),
-                            ),
-                    ),
-            )
-            .into_any_element()
-    }
-
     fn render_shell_layout(
         &self,
         sidebar: gpui::AnyElement,
@@ -2672,14 +2197,14 @@ impl Render for TerminalView {
         if self.registry.close_window_requested {
             window.remove_window();
         }
+        // The active pane controls both painting and PTY geometry. Background
+        // configuration updates must never alter the visible pane's metrics.
+        self.sync_active_config(cx);
         let theme = self.theme.clone();
         let metrics = self.metrics.clone();
         let padding = self.config.terminal_padding;
         let active_tab = self.active_tab();
         let sidebar = self.render_sidebar(active_tab, &theme, cx);
-        if matches!(self.destination, Destination::Settings) {
-            return self.render_shell_layout(sidebar, self.render_settings(&theme, cx), &theme, cx);
-        }
         let Some(active_pane) = self.active_pane() else {
             let message = self
                 .registry
@@ -2917,34 +2442,45 @@ pub fn run() {
             }
         })
         .detach();
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    window_size,
-                    cx,
-                ))),
-                window_min_size: Some(window_min_size),
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: None,
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(12.0), px(9.0))),
-                }),
-                window_background: WindowBackgroundAppearance::Blurred,
-                // Matches the installed `cuetty.desktop` so Linux
-                // compositors associate windows with the launcher entry.
-                app_id: Some("cuetty".to_string()),
-                ..WindowOptions::default()
-            },
-            |window, cx| {
-                // Cuetty owns its entire window surface. gpui-component's
-                // generic Root paints an opaque theme background behind its
-                // child, which prevents the terminal alpha from ever reaching
-                // the macOS compositor.
-                cx.new(|cx| TerminalView::new(window, cx))
-            },
-        )
-        .expect("open Cuetty window");
+        let window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        window_size,
+                        cx,
+                    ))),
+                    window_min_size: Some(window_min_size),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: None,
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(12.0), px(9.0))),
+                    }),
+                    window_background: WindowBackgroundAppearance::Blurred,
+                    // Matches the installed `cuetty.desktop` so Linux
+                    // compositors associate windows with the launcher entry.
+                    app_id: Some("cuetty".to_string()),
+                    ..WindowOptions::default()
+                },
+                |window, cx| {
+                    // Cuetty owns its entire window surface. gpui-component's
+                    // generic Root paints an opaque theme background behind its
+                    // child, which prevents the terminal alpha from ever reaching
+                    // the macOS compositor.
+                    cx.new(|cx| TerminalView::new(window, cx))
+                },
+            )
+            .expect("open Cuetty window");
+        // The native window being active does not select a GPUI focus
+        // target. Focus the live terminal once its view has been mounted so
+        // its key handler receives input without an initial mouse click.
+        window
+            .update(cx, |view, window, _cx| {
+                if view.active_state().is_some() {
+                    view.focus.focus(window);
+                }
+            })
+            .expect("focus Cuetty terminal");
         cx.activate(true);
     });
 }
@@ -3343,6 +2879,57 @@ mod tests {
         assert_eq!(registry.active_pane(), Some(active));
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
         assert_eq!(registry.sessions.len(), 1);
+    }
+
+    #[test]
+    fn terminal_configuration_follows_the_active_tab() {
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let (second, _) = fake_start('b', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(initial), Ok(second)]);
+        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let first_pane = registry.active_pane().unwrap();
+        let first_tab = registry.workspace.active_tab().unwrap();
+        registry
+            .sessions
+            .get_mut(&first_pane)
+            .unwrap()
+            .cuenv
+            .presentation
+            .terminal
+            .font
+            .size_px = 20.0;
+        assert_eq!(registry.active_terminal_config().font.size_px, 20.0);
+
+        let (second_pane, _, _) = registry.start_tab(80, 40, test_cell()).unwrap();
+        registry
+            .sessions
+            .get_mut(&second_pane)
+            .unwrap()
+            .cuenv
+            .presentation
+            .terminal
+            .terminal_padding
+            .left = 2;
+        assert_eq!(registry.active_terminal_config().font.size_px, 16.0);
+        assert_eq!(registry.active_terminal_config().terminal_padding.left, 2);
+
+        // Updating an inactive pane must not change the active configuration.
+        registry
+            .sessions
+            .get_mut(&first_pane)
+            .unwrap()
+            .cuenv
+            .presentation
+            .terminal
+            .font
+            .size_px = 24.0;
+        assert_eq!(registry.active_terminal_config().font.size_px, 16.0);
+        registry
+            .workspace
+            .apply(ShellAction::ActivateTab(first_tab))
+            .unwrap();
+        assert_eq!(registry.active_terminal_config().font.size_px, 24.0);
+        assert_eq!(registry.active_terminal_config().terminal_padding.left, 8);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use super::events::{ControlEvent, EventBridge};
-use super::input::TerminalKeyEvent;
+use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::model::{SamplingToken, TerminalFrame};
 use super::rio_adapter::snapshot;
 use super::rio_input::{encode_key, encode_paste};
@@ -7,7 +7,7 @@ use super::sizing::{CellSize, TerminalSize, terminal_size};
 use rio_vt::ansi::CursorShape;
 use rio_vt::corcovado::channel::Sender;
 use rio_vt::crosswords::grid::Scroll;
-use rio_vt::crosswords::{Crosswords, CrosswordsSize};
+use rio_vt::crosswords::{Crosswords, CrosswordsSize, Mode};
 use rio_vt::event::sync::FairMutex;
 use rio_vt::event::{EventListener, Msg, RioEvent, WindowId, WindowSize};
 use rio_vt::performer::{Machine, State};
@@ -53,15 +53,116 @@ pub trait TerminalSession: Send {
     fn close(&mut self) -> Result<(), String>;
 }
 
-/// Backend-neutral movement through the terminal engine's authoritative
-/// history. Positive line deltas move toward older output.
+/// A wheel gesture in viewport cell coordinates. Positive lines move up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalWheel {
+    pub lines: i32,
+    pub column: u16,
+    pub row: u16,
+    pub modifiers: InputModifiers,
+}
+
+/// Scrollback navigation or a wheel event that the terminal application may
+/// claim through its negotiated mouse or alternate-screen modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalScroll {
-    Lines(i32),
+    Wheel(TerminalWheel),
     PageUp,
     PageDown,
     Top,
     Bottom,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WheelAction {
+    Scroll(i32),
+    Input(Vec<u8>),
+    Ignore,
+}
+
+// An extreme synthetic event must not allocate gigabytes of PTY input.
+const MAX_WHEEL_EVENTS: u32 = 1024;
+
+/// Use Rio's live terminal modes: a reporting application owns the wheel;
+/// alternate-screen programs with alternate scroll receive cursor keys;
+/// otherwise terminals scroll their history. Shift requests local history.
+fn wheel_action(wheel: TerminalWheel, mode: Mode) -> WheelAction {
+    if wheel.lines == 0 {
+        return WheelAction::Ignore;
+    }
+    if wheel.modifiers.contains(InputModifiers::SHIFT) {
+        return WheelAction::Scroll(wheel.lines);
+    }
+
+    let count = wheel.lines.unsigned_abs().min(MAX_WHEEL_EVENTS) as usize;
+    if mode.intersects(Mode::MOUSE_MODE) {
+        // The original X10 mode reports only left, middle, and right presses.
+        if mode.contains(Mode::MOUSE_REPORT_X10) {
+            return WheelAction::Ignore;
+        }
+        let mut button = if wheel.lines > 0 { 64 } else { 65 };
+        if wheel.modifiers.contains(InputModifiers::ALT) {
+            button += 8;
+        }
+        if wheel.modifiers.contains(InputModifiers::CONTROL) {
+            button += 16;
+        }
+        let Some(report) = wheel_mouse_report(button, wheel, mode) else {
+            return WheelAction::Ignore;
+        };
+        return WheelAction::Input(report.repeat(count));
+    }
+
+    if mode.contains(Mode::ALT_SCREEN | Mode::ALTERNATE_SCROLL) {
+        let key = if wheel.lines > 0 {
+            KeyInput::Up
+        } else {
+            KeyInput::Down
+        };
+        let event = TerminalKeyEvent {
+            key,
+            modifiers: InputModifiers::default(),
+            repeat: false,
+        };
+        return match encode_key(event, mode, None) {
+            Some(sequence) => WheelAction::Input(sequence.repeat(count)),
+            None => WheelAction::Ignore,
+        };
+    }
+
+    WheelAction::Scroll(wheel.lines)
+}
+
+fn wheel_mouse_report(button: u8, wheel: TerminalWheel, mode: Mode) -> Option<Vec<u8>> {
+    if mode.contains(Mode::SGR_MOUSE) {
+        return Some(
+            format!(
+                "\x1b[<{};{};{}M",
+                button,
+                u32::from(wheel.column) + 1,
+                u32::from(wheel.row) + 1
+            )
+            .into_bytes(),
+        );
+    }
+
+    let utf8 = mode.contains(Mode::UTF8_MOUSE);
+    let max_coordinate = if utf8 { 2015 } else { 223 };
+    if wheel.column >= max_coordinate || wheel.row >= max_coordinate {
+        return None;
+    }
+    let mut report = vec![b'\x1b', b'[', b'M', 32 + button];
+    for coordinate in [wheel.column, wheel.row] {
+        let value = u32::from(coordinate) + 33;
+        if utf8 && coordinate >= 95 {
+            let character = char::from_u32(value)?;
+            let mut buffer = [0; 4];
+            report.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+        } else {
+            report.push(value as u8);
+        }
+    }
+    Some(report)
 }
 
 /// Explicit spawn configuration permits deterministic, GUI-free PTY tests.
@@ -344,7 +445,16 @@ impl TerminalSession for RioTerminalSession {
     fn scroll(&mut self, action: TerminalScroll) -> Result<(), String> {
         self.ensure_open()?;
         let action = match action {
-            TerminalScroll::Lines(lines) => Scroll::Delta(lines),
+            TerminalScroll::Wheel(wheel) => {
+                // Do not retain Rio's grid lock while sending input: `write`
+                // reacquires it to follow the live viewport.
+                let mode = self.terminal.lock().mode();
+                match wheel_action(wheel, mode) {
+                    WheelAction::Scroll(lines) => Scroll::Delta(lines),
+                    WheelAction::Input(bytes) => return self.write(bytes),
+                    WheelAction::Ignore => return Ok(()),
+                }
+            }
             TerminalScroll::PageUp => Scroll::PageUp,
             TerminalScroll::PageDown => Scroll::PageDown,
             TerminalScroll::Top => Scroll::Top,
@@ -482,6 +592,103 @@ mod tests {
             SessionOptions::default(),
         );
         assert!(result.is_err());
+    }
+
+    fn wheel(lines: i32, modifiers: InputModifiers) -> TerminalWheel {
+        TerminalWheel {
+            lines,
+            column: 4,
+            row: 2,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn wheel_routes_to_mouse_reporting_before_alternate_scroll() {
+        let mode = Mode::MOUSE_REPORT_CLICK | Mode::SGR_MOUSE | Mode::ALT_SCREEN;
+        assert_eq!(
+            wheel_action(wheel(2, InputModifiers::default()), mode),
+            WheelAction::Input(b"\x1b[<64;5;3M\x1b[<64;5;3M".to_vec())
+        );
+        let modifiers =
+            InputModifiers::from_bits(InputModifiers::CONTROL.bits() | InputModifiers::ALT.bits());
+        assert_eq!(
+            wheel_action(wheel(-1, modifiers), mode),
+            WheelAction::Input(b"\x1b[<89;5;3M".to_vec())
+        );
+        assert_eq!(
+            wheel_action(wheel(1, InputModifiers::SHIFT), mode),
+            WheelAction::Scroll(1)
+        );
+    }
+
+    #[test]
+    fn wheel_mouse_reports_honor_legacy_protocol_coordinate_limits() {
+        let mode = Mode::MOUSE_REPORT_CLICK;
+        assert_eq!(
+            wheel_action(wheel(1, InputModifiers::default()), mode),
+            WheelAction::Input(b"\x1b[M`%#".to_vec())
+        );
+        let mut outside = wheel(1, InputModifiers::default());
+        outside.column = 223;
+        assert_eq!(wheel_action(outside, mode), WheelAction::Ignore);
+        outside.column = 95;
+        assert_eq!(
+            wheel_action(outside, mode | Mode::UTF8_MOUSE),
+            WheelAction::Input(b"\x1b[M`\xc2\x80#".to_vec())
+        );
+        outside.column = 2015;
+        assert_eq!(
+            wheel_action(outside, mode | Mode::UTF8_MOUSE),
+            WheelAction::Ignore
+        );
+        assert_eq!(
+            wheel_action(wheel(1, InputModifiers::default()), Mode::MOUSE_REPORT_X10),
+            WheelAction::Ignore
+        );
+    }
+
+    #[test]
+    fn wheel_uses_alternate_cursor_keys_only_when_enabled() {
+        let alt = Mode::ALT_SCREEN | Mode::ALTERNATE_SCROLL;
+        assert_eq!(
+            wheel_action(wheel(1, InputModifiers::default()), alt),
+            WheelAction::Input(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            wheel_action(wheel(-2, InputModifiers::default()), alt | Mode::APP_CURSOR),
+            WheelAction::Input(b"\x1bOB\x1bOB".to_vec())
+        );
+        assert_eq!(
+            wheel_action(
+                wheel(1, InputModifiers::default()),
+                alt | Mode::APP_CURSOR | Mode::REPORT_EVENT_TYPES,
+            ),
+            WheelAction::Input(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            wheel_action(wheel(2, InputModifiers::default()), Mode::ALT_SCREEN),
+            WheelAction::Scroll(2)
+        );
+        assert_eq!(
+            wheel_action(wheel(-2, InputModifiers::default()), Mode::default()),
+            WheelAction::Scroll(-2)
+        );
+        assert_eq!(
+            wheel_action(wheel(0, InputModifiers::default()), alt),
+            WheelAction::Ignore
+        );
+    }
+
+    #[test]
+    fn wheel_input_is_bounded_for_extreme_deltas() {
+        let WheelAction::Input(bytes) = wheel_action(
+            wheel(i32::MIN, InputModifiers::default()),
+            Mode::ALT_SCREEN | Mode::ALTERNATE_SCROLL,
+        ) else {
+            panic!("alternate scroll should produce input");
+        };
+        assert_eq!(bytes.len(), 3 * MAX_WHEEL_EVENTS as usize);
     }
 
     #[cfg(unix)]
@@ -637,6 +844,31 @@ mod tests {
     #[test]
     #[cfg(unix)]
     #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_wheel_input_obeys_negotiated_modes() {
+        let _serial = serial_pty_test();
+        for (mode, count, lines, expected) in [
+            ("mouse-sgr", "10", 1, "M0-BYTES:1b5b3c36343b353b334d"),
+            ("codex-sgr", "10", 1, "M0-BYTES:1b5b3c36343b353b334d"),
+            ("alt-scroll", "3", 1, "M0-BYTES:1b5b41"),
+            ("alt-scroll-app", "3", -1, "M0-BYTES:1b4f42"),
+            ("alt-scroll-kitty", "3", 1, "M0-BYTES:1b5b41"),
+        ] {
+            let mut session = fixture(&[mode, count]);
+            wait_for_text(&mut session, "M0-READY");
+            session
+                .scroll(TerminalScroll::Wheel(wheel(
+                    lines,
+                    InputModifiers::default(),
+                )))
+                .expect("wheel input should reach the PTY");
+            wait_for_text(&mut session, expected);
+            session.close().expect("close should succeed");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
     fn real_session_input_encodes_printable_control_and_enter() {
         use super::super::input::{InputModifiers, KeyInput};
         let _serial = serial_pty_test();
@@ -748,6 +980,11 @@ mod tests {
         let _serial = serial_pty_test();
         let mut session = fixture(&["history"]);
         wait_for_text(&mut session, "M0-READY");
+
+        session
+            .scroll(TerminalScroll::Wheel(wheel(3, InputModifiers::default())))
+            .expect("wheel should scroll the terminal history");
+        assert_eq!(session.frame().viewport_offset, Some(3));
 
         session
             .scroll(TerminalScroll::Top)

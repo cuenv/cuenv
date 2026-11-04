@@ -14,13 +14,14 @@ Cuetty currently has:
 - Semantic `TerminalFrame` colors and style flags.
 - A replaceable `TerminalRenderer` implemented as one fixed-layout GPUI element.
 - Batched text shaping with ligatures disabled, explicit font fallbacks, merged
-  backgrounds, cursor layering, and a shared 16px/1.2 line-height contract.
+  backgrounds, cursor layering, and shared configurable font metrics for
+  rendering and terminal sizing (16px/1.2 by default).
 - Resize, keyboard input, paste, OSC 52 clipboard writes, close handling, and
   focused live shell behavior.
 - Negotiated Kitty and `modifyOtherKeys` input for the keypress, modifier,
   named-key, and repeat information exposed by the current GPUI host event.
-- A resizable vertical tab rail (50px compact to 280px expanded), session-only
-  Settings with Apply/Cancel/Reset, and a native Quit/Cmd-Q action.
+- A fixed vertical tab rail, global and per-directory CUE configuration for
+  font metrics, padding, and transparency, and a native Quit/Cmd-Q action.
 - Static validation plus a signed macOS bundle check, local process launch, and
   a direct interactive shell/history smoke pass. The real daily-workload corpus
   still needs human acceptance.
@@ -48,8 +49,8 @@ behind replaceable traits.
 | Clipboard and paste | Cmd-V, OSC 52, mouse selection and Cmd-C copy | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
 | Scrollback and selection | Rio-owned history navigation live; selection remains visible-viewport-only | Present | Present | P1 |
 | Search | Literal visible-frame search live; regex/full history staged | Present | Inline/regex search | P1 |
-| Fonts, themes, configuration | Initial explicit stack/theme | Configurable themes, keybindings, fonts | Settings, themes, zoom, shell choice | P1 |
-| Tabs, splits, focus navigation | Independent local Rio tabs; resizable 50px compact rail; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
+| Fonts, themes, configuration | CUE-configurable font size, line height, padding, and transparency; fixed font family and theme | Configurable themes, keybindings, fonts | Font family, themes, zoom, shell choice, and additional keybindings | P1 |
+| Tabs, splits, focus navigation | Independent local Rio tabs; fixed 56px rail; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
 | Workspace persistence | Versioned codec and atomic file store; no live restore | Reusable layouts | Workspace/session restore | P2 |
 | Session persistence | Child shell only | Optional tmux control mode | dtach/tmux/screen backends | P3 |
 | Remote/API/plugin surface | Missing | FFI/native SDK and plugin/runtime crates | Remote HTTP/WebSocket and hooks | P3 |
