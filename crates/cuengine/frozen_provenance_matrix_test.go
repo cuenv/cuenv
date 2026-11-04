@@ -94,6 +94,8 @@ func matrixCases() []matrixCase {
 		clean("validator_unrelated", matrixBase+"_u: \"x\"\nsystem: units: producer: settings: k: matchN(1, [_u]) & \"x\"", ""),
 		clean("json_unrelated", "import \"encoding/json\"\n"+matrixBase+"_u: \"x\"\nsystem: units: producer: settings: doc: json.Marshal({a: *(_u & \"x\") | \"z\"})", ""),
 
+		clean("default_over_absent_optional", matrixBase+"_x: {a?: string}\nsystem: units: consumer: settings: name: *_x.a | \"fallback\"", ""),
+		clean("imported_default_over_absent_optional", matrixImport+"system: schema.#O", "#O: {units: {producer: {outputs: id: string}, consumer: settings: name: *_x.a | \"fallback\"}, _x: {a?: string}}"),
 		clean("presence_of_absent_field", matrixBase+"_q: {if system.units.nope == _|_ {a: 1}}", ""),
 
 		// Supported references, with their exact edges.
@@ -212,6 +214,8 @@ func matrixCases() []matrixCase {
 		refused("for_let_interpolation", matrixBase+"_m: {a: \"b\"}\nsystem: units: producer: settings: tags: {for k, v in _m let z = \"p-\\(v)\" {(k): z}}", ""),
 		refused("list_for_let_interpolation", matrixBase+"_xs: [\"a\"]\nsystem: units: producer: settings: l: [for y in _xs let z = \"p-\\(y)\" {z}]", ""),
 		refused("optional_presence_guard_on_reference", matrixImport+matrixBase+matrixConfig+"schema.#C & {name: "+source+"}", "#C: {name?: string, if name != _|_ {has: true}}"),
+		detected("default_over_present_output", matrixBase+"_x: {a?: string, a: "+source+"}\nsystem: units: consumer: settings: name: *_x.a | \"fallback\"", ""),
+		detected("default_over_narrowed_optional", matrixBase+"_x: {a?: string, a: "+source+" & \"x\"}\nsystem: units: consumer: settings: name: *_x.a | \"fallback\"", ""),
 		detected("list_concat", "import \"list\"\n"+matrixBase+matrixConfig+"items: list.Concat([[{"+dynamic+"}]])", ""),
 	}
 }

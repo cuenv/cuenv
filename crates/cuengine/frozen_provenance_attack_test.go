@@ -451,8 +451,10 @@ func TestFrozenVerificationFollowsRealValues(t *testing.T) {
 			continue
 		}
 		mutable := append([]valuePath{}, sources...)
+		var references []deferredValue
 		for _, edge := range edges {
-			mutable = append(mutable, frozenPath(strings.SplitN(edge, "<-", 2)[0]))
+			parts := strings.SplitN(edge, "<-", 2)
+			references = append(references, deferredValue{Path: frozenPath(parts[0]), Target: frozenPath(parts[1])})
 		}
 		roots := []valuePath{frozenPath("system")}
 		rejected := false
@@ -470,7 +472,7 @@ func TestFrozenVerificationFollowsRealValues(t *testing.T) {
 			if !usable {
 				continue
 			}
-			if verifyFrozenInstance(base, frozenVerificationOptions{Fills: fills, Roots: roots, Mutable: mutable}) != nil {
+			if verifyFrozenInstance(base, frozenVerificationOptions{Fills: fills, Roots: roots, Mutable: mutable, References: references}) != nil {
 				rejected = true
 			}
 		}
@@ -497,4 +499,44 @@ func TestFrozenVerificationFollowsRealValues(t *testing.T) {
 		t.Fatalf("fixtures did not exercise verification: caught %d, consistent %d", caught, consistent)
 	}
 	t.Logf("caught %d output-dependent fixtures, accepted %d supported or unrelated", caught, consistent)
+}
+
+// A reference leaf must carry the value of the source it names. A recorded edge to
+// the wrong source would order and fill the consumer from the wrong producer.
+func TestFrozenChecksRefuseAWrongReferenceTarget(t *testing.T) {
+	_, snapshot := freezeTestModule(t, map[string]string{"env.cue": `package app
+system: units: {
+ a: outputs: id: string
+ b: outputs: id: string
+ consumer: settings: name: system.units.a.outputs.id
+}
+`})
+	var graph frozenGraph
+	if err := json.Unmarshal([]byte(snapshot), &graph); err != nil {
+		t.Fatal(err)
+	}
+	base, err := graph.build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := frozenPath("system.units.consumer.settings.name")
+	sourceA, sourceB := frozenPath("system.units.a.outputs.id"), frozenPath("system.units.b.outputs.id")
+	sources := []valuePath{sourceA, sourceB}
+	fills := []scalarFill{{Path: sourceA, Value: json.RawMessage(`"one"`)}, {Path: sourceB, Value: json.RawMessage(`"two"`)}}
+	roots := []valuePath{frozenPath("system")}
+	for name, test := range map[string]struct {
+		target valuePath
+		valid  bool
+	}{"right": {sourceA, true}, "wrong": {sourceB, false}} {
+		references := []deferredValue{{Path: leaf, Target: test.target}}
+		verified := verifyFrozenInstance(base, frozenVerificationOptions{Fills: fills, Roots: roots, Mutable: sources, References: references})
+		if (verified == nil) != test.valid {
+			t.Errorf("%s target, verification: %v", name, verified)
+		}
+		supported := []frozenReference{{Path: leaf, Target: test.target, PrimitiveType: "string", Supported: true}}
+		sampled := rejectSampledDependence(sampledDependence{base: base, sources: &sources, roots: roots, references: supported})
+		if (sampled == nil) != test.valid {
+			t.Errorf("%s target, sampling: %v", name, sampled)
+		}
+	}
 }

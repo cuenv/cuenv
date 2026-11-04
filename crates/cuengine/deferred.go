@@ -1057,6 +1057,15 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 				}
 			}
 			operand := resolve(expression)
+			// An absent optional field has nothing to read, wherever it is selected from.
+			if selector, ok := expression.(*ast.SelectorExpr); ok && operand.Err() != nil && plainReference(expression) {
+				if name, _, err := ast.LabelName(selector.Sel); err == nil {
+					base, label := resolve(selector.X), cue.Str(name)
+					if base.Err() == nil && !base.LookupPath(cue.MakePath(label)).Exists() && base.LookupPath(cue.MakePath(label.Optional())).Exists() {
+						return nil
+					}
+				}
+			}
 			// A presence test of a field that does not exist reads nothing.
 			if allowContainers > 0 && operand.Err() != nil && plainReference(expression) {
 				return nil
