@@ -70,6 +70,12 @@ The current usable slice includes:
   tab labels, and a full-bleed terminal.
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
   selection, Rio-owned history navigation, and visible-frame literal search.
+- A search bar at the terminal's top right while a search is open, from Cmd-F (Ctrl-Shift-F
+  on Linux): the query, where navigation has got to or how many matches there are, and
+  buttons for the previous and next match and for closing it, which are Shift-Enter, Enter,
+  and Escape from the keyboard. The search covers what is on screen, as its placeholder says.
+  It sits beside the task sidebar while that is open, moves over it when the terminal is too
+  narrow to have both, and narrows with the terminal so the query always stays in view.
 - Every match of a search on screen is tinted, with the current one in its own colours on
   top. The search follows output as it moves the text, keeping to the match it was on or
   the nearest after it, and stays open as the view scrolls, searching what comes into view.

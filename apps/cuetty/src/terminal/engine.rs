@@ -1136,6 +1136,11 @@ impl PaneState {
         Ok(sent)
     }
 
+    /// The search of this pane's screen, while one is open.
+    pub(super) fn search(&self) -> Option<&super::search::LiteralSearch> {
+        self.interaction.search()
+    }
+
     /// Whether this pane's shell has gone and only its final output is left.
     fn has_exited(&self) -> bool {
         self.status.failure().is_some()
@@ -1732,6 +1737,7 @@ struct LiveHoverTargets {
     palette: bool,
     task_sidebar: bool,
     session_actions: bool,
+    search: bool,
 }
 
 impl LiveHoverTargets {
@@ -2733,12 +2739,21 @@ impl TerminalView {
         )
     }
 
-    fn search_key(&mut self, key: SearchKey) {
+    pub(super) fn search_key(&mut self, key: SearchKey) {
         if let Some(state) = self.active_state_mut()
             && let Some(matched) = state.interaction.search_key(key, &state.frame)
         {
             state.interaction.select_match(matched);
         }
+    }
+
+    /// How wide the last draw measured the terminal's surface.
+    pub(super) fn terminal_width(&self) -> Pixels {
+        let (width, _) = *self
+            .workspace_bounds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        px(width)
     }
 
     fn scroll_active(&mut self, action: TerminalScroll) {
@@ -3002,6 +3017,7 @@ impl TerminalView {
             HoverTarget::PaletteRow(_) => live.palette,
             HoverTarget::TaskRow(_) => live.task_sidebar,
             HoverTarget::SessionAction(_) => live.session_actions,
+            HoverTarget::SearchButton(_) => live.search,
         });
         if let Some(delay) = self.motion.next_frame(now) {
             self.request_frame(now + delay, delay, cx);
@@ -3026,6 +3042,9 @@ impl TerminalView {
             session_actions: self
                 .active_state()
                 .is_none_or(|state| state.error.is_some()),
+            search: self
+                .active_state()
+                .is_some_and(|state| state.interaction.search().is_some()),
         }
     }
 
@@ -3517,6 +3536,9 @@ impl Render for TerminalView {
         }
         if let Some(task_sidebar) = self.render_task_sidebar(&theme, cx) {
             terminal_surface = terminal_surface.child(task_sidebar);
+        }
+        if let Some(search_bar) = self.render_search_bar(&theme, cx) {
+            terminal_surface = terminal_surface.child(search_bar);
         }
         if let Some(task_palette) = self.render_task_palette(&theme, cx) {
             terminal_surface = terminal_surface.child(task_palette);

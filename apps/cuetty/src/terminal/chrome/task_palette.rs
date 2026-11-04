@@ -1,3 +1,4 @@
+use super::field::text_field;
 use super::tokens::{
     ChromeColors, Elevation, elevated, faded, palette_height, radius, size, space, text,
 };
@@ -7,7 +8,7 @@ use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
-    div, prelude::FluentBuilder,
+    div,
 };
 
 impl TerminalView {
@@ -21,13 +22,6 @@ impl TerminalView {
         }
         let state = self.active_state()?;
         let colors = ChromeColors::from_theme(theme);
-        let caret = || {
-            div()
-                .w(size::CARET_WIDTH)
-                .h(size::CARET_HEIGHT)
-                .flex_shrink_0()
-                .bg(colors.accent)
-        };
         let tasks = filtered_tasks(&state.cuenv.tasks, &self.task_query);
         // The field and hint stay put while this list gives up height, so a short
         // window clips results and never pushes the hint out of the panel.
@@ -100,11 +94,6 @@ impl TerminalView {
                     .child("No matching tasks"),
             );
         }
-        let query = if self.task_query.is_empty() {
-            "Type to filter tasks…".into()
-        } else {
-            self.task_query.clone()
-        };
         let panel = elevated(div(), Elevation::Modal, &colors)
             .occlude()
             .on_mouse_down_out(cx.listener(|view, _event, _window, cx| {
@@ -117,38 +106,12 @@ impl TerminalView {
             .gap(space::MD)
             .line_height(text::LINE_HEIGHT)
             .child(
-                div()
+                text_field(&self.task_query, "Type to filter tasks…", &colors)
                     .w_full()
                     .h(size::PALETTE_FIELD_HEIGHT)
                     .flex_shrink_0()
                     .px(space::LG)
-                    .flex()
-                    .items_center()
-                    .rounded(radius::CONTROL)
-                    .gap(space::XXS)
-                    .overflow_hidden()
-                    .bg(colors.well)
-                    .text_size(text::BODY)
-                    .text_color(if self.task_query.is_empty() {
-                        colors.text_muted
-                    } else {
-                        colors.text
-                    })
-                    // Filter text is typed at the end of the query, so an empty query
-                    // keeps the caret before the placeholder.
-                    .when(self.task_query.is_empty(), |this| this.child(caret()))
-                    // As wide as the query until the field runs out, then end-aligned
-                    // so the overflow clips at the start and the end being typed stays
-                    // beside the caret.
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .justify_end()
-                            .overflow_hidden()
-                            .child(div().flex_shrink_0().whitespace_nowrap().child(query)),
-                    )
-                    .when(!self.task_query.is_empty(), |this| this.child(caret())),
+                    .text_size(text::BODY),
             )
             .child(results)
             .child(

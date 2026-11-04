@@ -72,9 +72,18 @@ pub enum SearchKey {
     Escape,
 }
 
+/// Who made the selection, which decides whether search may take it back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum SelectionSource {
+    #[default]
+    User,
+    SearchMatch,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InteractionState {
     selection: Option<Selection>,
+    selection_source: SelectionSource,
     /// The cell where the pointer press began. This is intentionally kept
     /// separate from the half-open selection endpoints: when dragging
     /// backwards, the endpoint containing the press must be one cell past the
@@ -107,7 +116,7 @@ impl InteractionState {
     /// change without pointing at different content. A search stays open for the
     /// text that has come into view, with navigation starting over.
     pub fn viewport_changed(&mut self, frame: &TerminalFrame) {
-        self.selection = None;
+        self.place_selection(None, SelectionSource::User);
         self.pointer_origin = None;
         self.dragging = false;
         self.current_match = None;
@@ -125,14 +134,17 @@ impl InteractionState {
         };
         let _ = search.refresh(&FrameTextSource::new(frame));
         let current = search.current_match();
-        if self.selection == self.current_match.map(match_selection) {
-            self.selection = current.map(match_selection);
-        }
         self.current_match = current;
+        if self.selection_source == SelectionSource::SearchMatch {
+            self.place_selection(current.map(match_selection), SelectionSource::SearchMatch);
+        }
     }
 
     pub fn begin_selection(&mut self, _hit: CellHitTest, position: LogicalPosition) {
-        self.selection = Some(Selection::new(position, position));
+        self.place_selection(
+            Some(Selection::new(position, position)),
+            SelectionSource::User,
+        );
         self.pointer_origin = Some(position);
         self.dragging = true;
     }
@@ -170,6 +182,7 @@ impl InteractionState {
         let mut search = LiteralSearch::new("", SearchOptions::default());
         let _ = search.rebuild(&FrameTextSource::new(frame));
         self.search = Some(search);
+        self.release_search_selection();
         self.current_match = None;
     }
 
@@ -182,7 +195,6 @@ impl InteractionState {
             return None;
         }
         let search = self.search.as_mut()?;
-        let previous = self.current_match;
         let matched = match key {
             SearchKey::Escape => None,
             SearchKey::Character(character) => {
@@ -208,15 +220,28 @@ impl InteractionState {
             }
         };
         // What was only marking the last match goes with it, when there is none to move to.
-        if matched.is_none() && self.selection == previous.map(match_selection) {
-            self.selection = None;
+        if matched.is_none() {
+            self.release_search_selection();
         }
         self.current_match = matched;
         matched
     }
 
     pub fn select_match(&mut self, matched: SearchMatch) {
-        self.selection = Some(match_selection(matched));
+        self.place_selection(Some(match_selection(matched)), SelectionSource::SearchMatch);
+    }
+
+    fn place_selection(&mut self, selection: Option<Selection>, source: SelectionSource) {
+        self.selection = selection;
+        self.selection_source = source;
+    }
+
+    /// Closing a search leaves its last match selected, to be copied, so this also finds a
+    /// selection from a search that has since closed. One the user made stays.
+    fn release_search_selection(&mut self) {
+        if self.selection_source == SelectionSource::SearchMatch {
+            self.place_selection(None, SelectionSource::User);
+        }
     }
 }
 
@@ -447,6 +472,95 @@ mod tests {
         assert_eq!(state.selection(), None);
         assert_eq!(state.current_match(), None);
         assert!(state.search_matches().is_empty());
+    }
+
+    #[test]
+    fn starting_over_lets_go_of_the_match_the_last_search_was_on() {
+        let sampled = frame(vec![("one ", false)]);
+        let mut state = InteractionState::default();
+        state.enter_search(&sampled);
+        let matched = state.search_key(SearchKey::Character('o'), &sampled);
+        state.select_match(matched.unwrap());
+
+        state.enter_search(&sampled);
+
+        assert_eq!(state.selection(), None);
+        assert_eq!(state.search().map(LiteralSearch::query), Some(""));
+    }
+
+    /// Finds "o" and closes the search again, the way the bar's Close button does.
+    fn closed_search_on_a_match(sampled: &TerminalFrame) -> InteractionState {
+        let mut state = InteractionState::default();
+        state.enter_search(sampled);
+        let matched = state.search_key(SearchKey::Character('o'), sampled);
+        state.select_match(matched.unwrap());
+        state.search_key(SearchKey::Escape, sampled);
+        state
+    }
+
+    #[test]
+    fn closing_a_search_leaves_its_match_selected_to_copy() {
+        let sampled = frame(vec![("one ", false)]);
+        let state = closed_search_on_a_match(&sampled);
+        assert_eq!(state.copy(&sampled).as_deref(), Some("o"));
+    }
+
+    #[test]
+    fn reopening_a_closed_search_lets_go_of_the_match_it_left_selected() {
+        let sampled = frame(vec![("one ", false)]);
+        let mut state = closed_search_on_a_match(&sampled);
+
+        state.enter_search(&sampled);
+        assert_eq!(state.selection(), None);
+
+        assert_eq!(state.search_key(SearchKey::Character('z'), &sampled), None);
+        assert_eq!(state.copy(&sampled), None);
+    }
+
+    #[test]
+    fn a_selection_made_after_a_closed_search_outlasts_the_next_one() {
+        let sampled = frame(vec![("one ", false)]);
+        let hit = CellHitTest {
+            cell_width: 1.0,
+            cell_height: 1.0,
+            rows: 1,
+            columns: 4,
+        };
+        let mut state = closed_search_on_a_match(&sampled);
+        state.begin_selection(hit, LogicalPosition { line: 0, column: 1 });
+        state.extend_selection(hit, LogicalPosition { line: 0, column: 2 });
+        state.end_selection();
+
+        state.enter_search(&sampled);
+        state.search_key(SearchKey::Character('z'), &sampled);
+
+        assert_eq!(state.copy(&sampled).as_deref(), Some("ne"));
+    }
+
+    #[test]
+    fn a_selection_that_happens_to_cover_the_match_is_still_the_users() {
+        let sampled = frame(vec![("one ", false)]);
+        let hit = CellHitTest {
+            cell_width: 1.0,
+            cell_height: 1.0,
+            rows: 1,
+            columns: 4,
+        };
+        let mut state = InteractionState::default();
+        state.enter_search(&sampled);
+        for key in "on".chars() {
+            let matched = state.search_key(SearchKey::Character(key), &sampled);
+            state.select_match(matched.unwrap());
+        }
+        let on_the_match = state.selection();
+        state.begin_selection(hit, LogicalPosition { line: 0, column: 0 });
+        state.extend_selection(hit, LogicalPosition { line: 0, column: 1 });
+        state.end_selection();
+        assert_eq!(state.selection(), on_the_match);
+
+        state.search_key(SearchKey::Character('z'), &sampled);
+
+        assert_eq!(state.selection(), on_the_match);
     }
 
     #[test]

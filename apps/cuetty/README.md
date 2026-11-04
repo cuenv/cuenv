@@ -200,7 +200,8 @@ active directory has a task catalogue, so Ctrl-K stays the shell's kill-line in
 ordinary directories. Cmd-D and
 Cmd-Shift-D report that split panes are unavailable; they never create a fake
 terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse
-selection and every literal visible-frame search hit are painted directly
+selection and every literal visible-frame search hit, opened with Cmd-F (Ctrl-Shift-F on
+Linux) into a search bar at the terminal's top right, are painted directly
 over the terminal grid, with the current hit picked out from the rest; Cmd-C copy and paste
 are live too. Rio-owned scrollback is live, but a selection is cleared when the viewport moves
 because its coordinates are still visible-frame-only; an open search stays open and searches

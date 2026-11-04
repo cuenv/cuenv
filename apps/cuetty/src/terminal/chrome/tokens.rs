@@ -164,6 +164,11 @@ pub(super) mod size {
     /// so neither appearing moves the name.
     pub(in crate::terminal::chrome) const TAB_ACTION: Pixels = px(20.0);
     pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
+    pub(in crate::terminal::chrome) const SEARCH_BAR_WIDTH: Pixels = px(360.0);
+    /// The least the search bar will be squeezed to before it stops making room for what
+    /// is beside it. Its buttons and count take about half of this.
+    pub(in crate::terminal::chrome) const SEARCH_BAR_MIN_WIDTH: Pixels = px(240.0);
+    pub(in crate::terminal::chrome) const SEARCH_BUTTON: Pixels = px(26.0);
     /// The measure of the message a tab shows in place of its terminal.
     pub(in crate::terminal::chrome) const SESSION_STATE_WIDTH: Pixels = px(440.0);
 }

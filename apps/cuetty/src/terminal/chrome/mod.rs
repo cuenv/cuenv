@@ -4,9 +4,11 @@
 //! state into GPUI elements around the terminal surface.
 
 mod clamp;
+mod field;
 mod icons;
 mod layout;
 mod rail;
+mod search_bar;
 mod session_state;
 mod task_palette;
 mod task_sidebar;

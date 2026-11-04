@@ -264,6 +264,14 @@ pub(super) enum SidebarButton {
     PaletteHint,
 }
 
+/// A button on the search bar.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum SearchButton {
+    Previous,
+    Next,
+    Close,
+}
+
 /// Something in the chrome that lights up under the pointer.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum HoverTarget {
@@ -273,6 +281,7 @@ pub(super) enum HoverTarget {
     TaskRow(usize),
     /// A way out of a tab with no terminal to show, by its place among them.
     SessionAction(usize),
+    SearchButton(SearchButton),
 }
 
 /// The tabs as this draw has them.
