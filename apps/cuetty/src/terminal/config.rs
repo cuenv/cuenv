@@ -66,8 +66,18 @@ pub struct ThemeColors {
     pub text: Rgb,
     pub cursor: Rgb,
     pub cursor_text: Rgb,
+    /// Selection tint painted between cell backgrounds and glyphs.
+    pub selection: Rgb,
+    /// The active search result; stays distinct where it overlaps a selection.
+    pub current_search_match: Rgb,
+    /// The single restrained accent chrome may use for small markers.
+    pub accent: Rgb,
+    /// Hints and metadata, quieter than `title_text`.
+    pub muted_text: Rgb,
     /// Faint line separating chrome regions and outlining floating panels.
     pub divider: Rgb,
+    /// One step above the chrome: floating panels and hovered controls.
+    pub raised_surface: Rgb,
     pub ansi: [Rgb; 16],
 }
 
@@ -209,7 +219,14 @@ impl ThemeColors {
             text: Rgb(205, 214, 244),
             cursor: Rgb(245, 224, 230),
             cursor_text: Rgb(30, 30, 46),
+            selection: Rgb(69, 71, 90),
+            current_search_match: Rgb(249, 226, 175),
+            accent: Rgb(137, 180, 250),
+            muted_text: Rgb(147, 153, 178),
             divider: Rgb(49, 50, 68),
+            // Between Base and Surface 0: Surface 0 itself is too bright to
+            // fill a whole panel and would swallow the divider around it.
+            raised_surface: Rgb(37, 37, 55),
             ansi: [
                 Rgb(69, 71, 90),
                 Rgb(243, 139, 168),
@@ -350,6 +367,42 @@ mod tests {
         assert_eq!(config.theme.ansi[4], Rgb(137, 180, 250));
         assert_eq!(config.theme.ansi[5], Rgb(245, 194, 231));
         assert!(config.validate().is_ok());
+    }
+
+    /// WCAG 2.1 relative luminance.
+    fn luminance(Rgb(red, green, blue): Rgb) -> f64 {
+        let channel = |value: u8| {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.03928 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+    }
+
+    fn contrast(first: Rgb, second: Rgb) -> f64 {
+        let (first, second) = (luminance(first), luminance(second));
+        (first.max(second) + 0.05) / (first.min(second) + 0.05)
+    }
+
+    #[test]
+    fn default_muted_text_stays_legible_on_every_chrome_surface() {
+        let theme = ThemeColors::default();
+        for surface in [theme.title_surface, theme.surface, theme.raised_surface] {
+            assert!(contrast(theme.muted_text, surface) >= 4.5);
+        }
+    }
+
+    #[test]
+    fn default_divider_and_raised_surface_stay_faint_but_visible() {
+        let theme = ThemeColors::default();
+        for surface in [theme.title_surface, theme.surface, theme.raised_surface] {
+            let divider = contrast(theme.divider, surface);
+            assert!((1.1..2.0).contains(&divider), "divider contrast {divider}");
+        }
+        assert!(contrast(theme.raised_surface, theme.title_surface) > 1.0);
     }
 
     #[test]

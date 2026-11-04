@@ -17,6 +17,13 @@ impl TerminalView {
         }
         let state = self.active_state()?;
         let colors = ChromeColors::from_theme(theme);
+        let caret = || {
+            div()
+                .w(size::CARET_WIDTH)
+                .h(size::CARET_HEIGHT)
+                .flex_shrink_0()
+                .bg(colors.accent)
+        };
         let tasks = filtered_tasks(&state.cuenv.tasks, &self.task_query);
         let mut results = div().flex().flex_col().gap(space::XS);
         for (index, task) in tasks.iter().take(9).enumerate() {
@@ -32,8 +39,8 @@ impl TerminalView {
                     .items_center()
                     .gap(space::MD)
                     .rounded(radius::CONTROL)
-                    .when(selected, |this| this.bg(colors.state))
-                    .hover(|this| this.bg(colors.state))
+                    .when(selected, |this| this.bg(colors.panel_state))
+                    .hover(|this| this.bg(colors.panel_state))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);
@@ -42,7 +49,7 @@ impl TerminalView {
                         div()
                             .w(size::PALETTE_KIND_WIDTH)
                             .text_size(text::CAPTION)
-                            .text_color(colors.text_secondary)
+                            .text_color(colors.text_muted)
                             .child(if task.requires_parameters {
                                 "ARGS"
                             } else {
@@ -64,7 +71,7 @@ impl TerminalView {
                     .px(space::LG)
                     .py(space::XL)
                     .text_size(text::LABEL)
-                    .text_color(colors.text_secondary)
+                    .text_color(colors.text_muted)
                     .child("No matching tasks"),
             );
         }
@@ -101,20 +108,26 @@ impl TerminalView {
                                 .flex()
                                 .items_center()
                                 .rounded(radius::CONTROL)
-                                .bg(colors.state)
+                                .gap(space::XXS)
+                                .bg(colors.well)
                                 .text_size(text::BODY)
                                 .text_color(if self.task_query.is_empty() {
-                                    colors.text_secondary
+                                    colors.text_muted
                                 } else {
                                     colors.text
                                 })
-                                .child(query),
+                                // Filter text is typed at the end of the query,
+                                // so an empty query keeps the caret before the
+                                // placeholder.
+                                .when(self.task_query.is_empty(), |this| this.child(caret()))
+                                .child(query)
+                                .when(!self.task_query.is_empty(), |this| this.child(caret())),
                         )
                         .child(results)
                         .child(
                             div()
                                 .text_size(text::CAPTION)
-                                .text_color(colors.text_secondary)
+                                .text_color(colors.text_muted)
                                 .child("↑↓ select · return run · esc close"),
                         ),
                 )

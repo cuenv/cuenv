@@ -1,4 +1,4 @@
-use super::config::TerminalConfig;
+use super::config::{Rgb as ConfigRgb, TerminalConfig};
 use super::model::{Color, Rgb};
 use super::sizing::CellSize;
 use gpui::{Font, FontFallbacks, Pixels, Size, TextSystem, font, px};
@@ -19,9 +19,6 @@ const TERMINAL_FALLBACKS: &[&str] = &[
     "Monaco",
     "Apple Symbols",
 ];
-
-const CATPPUCCIN_SELECTION: Rgb = Rgb(69, 71, 90);
-const CATPPUCCIN_CURRENT_SEARCH_MATCH: Rgb = Rgb(249, 226, 175);
 
 #[cfg(test)]
 fn terminal_font() -> Font {
@@ -47,14 +44,20 @@ pub struct TerminalTheme {
     pub text: Rgb,
     pub cursor: Rgb,
     pub cursor_text: Rgb,
-    /// Faint line between chrome regions.
-    pub divider: Rgb,
     /// Passive selection uses a cool, readable tint. It is painted above cell
     /// backgrounds and below glyphs by host renderers.
     pub selection: Rgb,
     /// The active visible search result remains distinct from selection where
     /// the two ranges overlap.
     pub current_search_match: Rgb,
+    /// The single restrained accent chrome may use for small markers.
+    pub accent: Rgb,
+    /// Hints and metadata, quieter than `title_text`.
+    pub muted_text: Rgb,
+    /// Faint line between chrome regions.
+    pub divider: Rgb,
+    /// One step above the chrome: floating panels and hovered controls.
+    pub raised_surface: Rgb,
     pub ansi: [Rgb; 16],
 }
 
@@ -67,26 +70,22 @@ impl Default for TerminalTheme {
 impl TerminalTheme {
     pub fn from_config(config: &TerminalConfig) -> Self {
         let theme = &config.theme;
+        let rgb = |color: ConfigRgb| Rgb(color.0, color.1, color.2);
         Self {
             background_opacity: 1.0 - f32::from(config.terminal_transparency_percent) / 100.0,
-            surface: Rgb(theme.surface.0, theme.surface.1, theme.surface.2),
-            title_surface: Rgb(
-                theme.title_surface.0,
-                theme.title_surface.1,
-                theme.title_surface.2,
-            ),
-            title_text: Rgb(theme.title_text.0, theme.title_text.1, theme.title_text.2),
-            text: Rgb(theme.text.0, theme.text.1, theme.text.2),
-            cursor: Rgb(theme.cursor.0, theme.cursor.1, theme.cursor.2),
-            cursor_text: Rgb(
-                theme.cursor_text.0,
-                theme.cursor_text.1,
-                theme.cursor_text.2,
-            ),
-            divider: Rgb(theme.divider.0, theme.divider.1, theme.divider.2),
-            selection: CATPPUCCIN_SELECTION,
-            current_search_match: CATPPUCCIN_CURRENT_SEARCH_MATCH,
-            ansi: theme.ansi.map(|color| Rgb(color.0, color.1, color.2)),
+            surface: rgb(theme.surface),
+            title_surface: rgb(theme.title_surface),
+            title_text: rgb(theme.title_text),
+            text: rgb(theme.text),
+            cursor: rgb(theme.cursor),
+            cursor_text: rgb(theme.cursor_text),
+            selection: rgb(theme.selection),
+            current_search_match: rgb(theme.current_search_match),
+            accent: rgb(theme.accent),
+            muted_text: rgb(theme.muted_text),
+            divider: rgb(theme.divider),
+            raised_surface: rgb(theme.raised_surface),
+            ansi: theme.ansi.map(rgb),
         }
     }
     pub fn resolve(&self, color: Color, _foreground: bool) -> Rgb {
@@ -238,6 +237,24 @@ mod tests {
         let theme = TerminalTheme::from_config(&config);
         assert_eq!(theme.resolve(Color::DefaultForeground, true), Rgb(1, 2, 3));
         assert_eq!(theme.resolve(Color::DefaultBackground, false), Rgb(4, 5, 6));
+    }
+
+    #[test]
+    fn configured_chrome_and_overlay_colours_reach_the_theme() {
+        let mut config = TerminalConfig::default();
+        config.theme.selection = ConfigRgb(1, 1, 1);
+        config.theme.current_search_match = ConfigRgb(2, 2, 2);
+        config.theme.accent = ConfigRgb(3, 3, 3);
+        config.theme.muted_text = ConfigRgb(4, 4, 4);
+        config.theme.divider = ConfigRgb(5, 5, 5);
+        config.theme.raised_surface = ConfigRgb(6, 6, 6);
+        let theme = TerminalTheme::from_config(&config);
+        assert_eq!(theme.selection, Rgb(1, 1, 1));
+        assert_eq!(theme.current_search_match, Rgb(2, 2, 2));
+        assert_eq!(theme.accent, Rgb(3, 3, 3));
+        assert_eq!(theme.muted_text, Rgb(4, 4, 4));
+        assert_eq!(theme.divider, Rgb(5, 5, 5));
+        assert_eq!(theme.raised_surface, Rgb(6, 6, 6));
     }
 
     #[test]

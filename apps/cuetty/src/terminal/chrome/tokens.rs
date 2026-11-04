@@ -66,6 +66,8 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const PALETTE_TOP_OFFSET: Pixels = px(54.0);
     pub(in crate::terminal::chrome) const PALETTE_FIELD_HEIGHT: Pixels = px(38.0);
     pub(in crate::terminal::chrome) const PALETTE_KIND_WIDTH: Pixels = px(64.0);
+    pub(in crate::terminal::chrome) const CARET_WIDTH: Pixels = px(2.0);
+    pub(in crate::terminal::chrome) const CARET_HEIGHT: Pixels = px(16.0);
 }
 
 /// Elevation of chrome that floats above the terminal.
@@ -118,27 +120,37 @@ pub(super) struct ChromeColors {
     pub(super) material: Rgba,
     /// Floating panels above the terminal.
     pub(super) panel: Rgba,
-    /// Hovered and selected rows, active controls, and input wells.
+    /// Hovered and active controls on structural material.
     pub(super) state: Rgba,
+    /// Hovered and selected rows inside a panel.
+    pub(super) panel_state: Rgba,
+    /// Input wells recessed into a panel.
+    pub(super) well: Rgba,
     /// Fill of the active tab's mark, and the text on it.
     pub(super) mark: Rgba,
     pub(super) mark_text: Rgba,
     pub(super) text: Rgba,
     pub(super) text_secondary: Rgba,
+    pub(super) text_muted: Rgba,
     pub(super) divider: Rgba,
+    pub(super) accent: Rgba,
 }
 
 impl ChromeColors {
     pub(super) fn from_theme(theme: &TerminalTheme) -> Self {
         Self {
             material: Self::tinted_material(theme.title_surface),
-            panel: with_opacity(theme.title_surface, CHROME_GLASS_OPACITY),
-            state: with_opacity(theme.surface, CHROME_GLASS_OPACITY),
+            panel: with_opacity(theme.raised_surface, CHROME_GLASS_OPACITY),
+            state: with_opacity(theme.raised_surface, CHROME_GLASS_OPACITY),
+            panel_state: with_opacity(theme.selection, CHROME_GLASS_OPACITY),
+            well: with_opacity(theme.surface, CHROME_GLASS_OPACITY),
             mark: opaque(theme.cursor),
             mark_text: opaque(theme.cursor_text),
             text: opaque(theme.text),
             text_secondary: opaque(theme.title_text),
+            text_muted: opaque(theme.muted_text),
             divider: opaque(theme.divider),
+            accent: opaque(theme.accent),
         }
     }
 

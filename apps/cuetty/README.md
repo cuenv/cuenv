@@ -156,8 +156,11 @@ and wrapped placeholders. Complete IME, ZWJ shaping, hyperlink, and emoji
 presentation correctness is deliberately not claimed.
 
 The built-in colour scheme is Catppuccin Mocha: Mantle forms the title strip and
-rail, Base fills the terminal, Surface 0 draws faint dividers, and the complete
-ANSI palette follows Catppuccin's Mocha mapping.
+rail, Base fills the terminal, Surface 0 draws faint dividers, Surface 1 tints
+selections, Yellow marks the current search match, Blue is the accent, and the
+complete ANSI palette follows Catppuccin's Mocha mapping. Every one of these,
+plus muted text and the raised surface used by floating panels, lives in
+`ThemeColors`; none is hard-coded by a renderer.
 
 All chrome spacing, radii, type sizes, border widths, elevation, and colours come
 from one token set in `src/terminal/chrome/tokens.rs`; chrome views do not write

@@ -37,7 +37,7 @@ impl TerminalView {
                     .flex_col()
                     .gap(space::XXS)
                     .rounded(radius::CONTROL)
-                    .hover(|this| this.bg(colors.state))
+                    .hover(|this| this.bg(colors.panel_state))
                     .cursor_pointer()
                     .on_click(cx.listener(move |view, _event, _window, cx| {
                         view.launch_task(task_to_run.clone(), cx);
@@ -51,7 +51,7 @@ impl TerminalView {
                     .child(
                         div()
                             .text_size(text::CAPTION)
-                            .text_color(colors.text_secondary)
+                            .text_color(colors.text_muted)
                             .child(detail),
                     ),
             );
@@ -100,14 +100,14 @@ impl TerminalView {
                                 .child(
                                     div()
                                         .text_size(text::CAPTION)
-                                        .text_color(colors.text_secondary)
+                                        .text_color(colors.text_muted)
                                         .child(cwd.to_string()),
                                 ),
                         )
                         .child(
                             div()
                                 .text_size(text::CAPTION)
-                                .text_color(colors.text_secondary)
+                                .text_color(colors.text_muted)
                                 .child("⌘K"),
                         ),
                 )
@@ -116,7 +116,7 @@ impl TerminalView {
                     this.child(
                         div()
                             .text_size(text::CAPTION)
-                            .text_color(colors.text_secondary)
+                            .text_color(colors.text_muted)
                             .child(format!("{hidden} more · use ⌘K")),
                     )
                 })
