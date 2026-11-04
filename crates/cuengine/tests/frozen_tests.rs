@@ -3,7 +3,7 @@
 use cuengine::frozen::{
     DeferredValue, FreezeOptions, FrozenEvaluationOptions, FrozenInstance, FrozenValidationOptions,
     PreparationOptions, PreparedSpecializationOptions, ScalarFill, ScalarValue,
-    SpecializationOptions, ValuePath, ValueSelector,
+    SpecializationOptions, ValuePath, ValueSelector, VerificationOptions,
 };
 use serde_json::{Value, value::RawValue};
 use std::error::Error;
@@ -278,4 +278,54 @@ fn prepared_capability_preserves_fresh_validation_and_private_ownership() -> Tes
         }
         Ok(())
     })
+}
+
+#[test]
+fn verification_reports_what_real_values_change() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    fs::create_dir_all(directory.path().join("cue.mod"))?;
+    fs::write(
+        directory.path().join("cue.mod/module.cue"),
+        "module: \"example.com/verify@v0\"\nlanguage: version: \"v0.14.1\"\n",
+    )?;
+    fs::write(
+        directory.path().join("env.cue"),
+        "package app\nsource: id: string\nconsumer: {key: \"k\", direct: source.id}\n_o: source.id\nguarded: {if (_o & =~\"^bad\") != _|_ {extra: true}}\n",
+    )?;
+    let snapshot = FrozenInstance::load(&FreezeOptions {
+        module_root: directory.path().to_path_buf(),
+        directory: directory.path().to_path_buf(),
+        package: "app".to_owned(),
+    })?;
+    let prepared = snapshot.prepare(&PreparationOptions {
+        source_paths: Some(Vec::new()),
+        ..PreparationOptions::default()
+    })?;
+    let verify = |value: &str, roots: &[&str]| {
+        prepared.verify(&VerificationOptions {
+            fills: vec![ScalarFill {
+                path: path(&["source", "id"]),
+                value: ScalarValue::string(value).expect("a test string encodes"),
+            }],
+            roots: roots.iter().map(|root| path(&[root])).collect(),
+            references: vec![DeferredValue {
+                path: path(&["consumer", "direct"]),
+                target: path(&["source", "id"]),
+            }],
+            ..VerificationOptions::default()
+        })
+    };
+    verify("good", &["consumer", "guarded"])?;
+    let failure = verify("bad-value", &["consumer", "guarded"]).expect_err("structure changed");
+    assert!(!format!("{failure:?}").contains("bad-value"), "{failure:?}");
+    let undeclared = prepared.verify(&VerificationOptions {
+        fills: vec![ScalarFill {
+            path: path(&["source", "id"]),
+            value: ScalarValue::string("good")?,
+        }],
+        roots: vec![path(&["consumer"])],
+        ..VerificationOptions::default()
+    });
+    assert!(undeclared.is_err(), "an undeclared leaf changed");
+    Ok(())
 }

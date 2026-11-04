@@ -23,17 +23,37 @@ func constrainedReference(value, instance cue.Value, depth int) (cue.Path, error
 	}
 	root, path := value.ReferencePath()
 	if root.Exists() {
+		if root != instance && fileScopedReference(value) {
+			root = instance
+		}
 		if root != instance {
-			return cue.Path{}, nil
+			if packageRoot(root) && !selectsThroughLet(value) {
+				return cue.Path{}, nil
+			}
+			paths, err := letSelectedPaths(value, instance, depth)
+			if err != nil || len(paths) != 1 {
+				return cue.Path{}, err
+			}
+			return paths[0], nil
 		}
 		nested, err := constrainedReference(root.LookupPath(path), instance, depth+1)
 		if err != nil || len(nested.Selectors()) > 0 {
 			return nested, err
 		}
-		if typedPath(path) == nil {
+		if namesDefinition(path) {
 			return cue.Path{}, nil
 		}
 		return path, nil
+	}
+	if selectsThroughLet(value) {
+		if !plainLetSelection(value) {
+			return cue.Path{}, nil
+		}
+		paths, err := letSelectedPaths(value, instance, depth)
+		if err != nil || len(paths) != 1 {
+			return cue.Path{}, err
+		}
+		return paths[0], nil
 	}
 	if dereferenced := cue.Dereference(value); dereferenced != value {
 		return constrainedReference(dereferenced, instance, depth+1)
@@ -52,10 +72,14 @@ func constrainedReference(value, instance cue.Value, depth int) (cue.Path, error
 			return cue.Path{}, err
 		}
 		if len(candidate.Selectors()) > 0 {
-			if len(target.Selectors()) > 0 && target.String() != candidate.String() {
+			switch {
+			case len(target.Selectors()) == 0, target.String() == candidate.String(), typedPath(target) == nil && typedPath(candidate) != nil:
+				target = candidate
+			case typedPath(candidate) == nil:
+				// A hidden helper beside a declared source constrains it.
+			default:
 				return cue.Path{}, nil
 			}
-			target = candidate
 		} else {
 			// Reject reference-bearing transformations even if an independent
 			// direct operand also names the same source.
@@ -63,15 +87,17 @@ func constrainedReference(value, instance cue.Value, depth int) (cue.Path, error
 			if err != nil {
 				return cue.Path{}, err
 			}
-			if len(references) > 0 {
-				return cue.Path{}, nil
+			for _, reference := range references {
+				if instance.LookupPath(reference).Validate(cue.Concrete(true)) != nil {
+					return cue.Path{}, nil
+				}
 			}
 		}
 	}
 	return target, nil
 }
 
-func frozenReferences(instance cue.Value, root cue.Path) ([]frozenReference, error) {
+func frozenReferences(instance cue.Value, root cue.Path, sources []cue.Path) ([]frozenReference, error) {
 	references := make([]frozenReference, 0)
 	ancestors := structuralAncestors(instance.BuildInstance())
 	var visit func(cue.Value, cue.Path) error
@@ -96,11 +122,32 @@ func frozenReferences(instance cue.Value, root cue.Path) ([]frozenReference, err
 		if err != nil {
 			return err
 		}
-		targets := make(map[string]cue.Path)
-		for _, target := range candidates {
-			targets[target.String()] = target
+		// More than one declared source behind a single reference is not direct.
+		switch found := sourceTargets(direct, instance, sources); len(found) {
+		case 0:
+		case 1:
+			direct = found[0]
+		default:
+			direct = cue.Path{}
 		}
-		if len(direct.Selectors()) > 0 {
+		targets := make(map[string]cue.Path)
+		for _, candidate := range candidates {
+			found := sourceTargets(candidate, instance, sources)
+			if len(found) == 0 {
+				found = []cue.Path{candidate}
+			}
+			for _, target := range found {
+				if typedPath(target) != nil {
+					targets[target.String()] = target
+				}
+			}
+		}
+		for _, control := range controls {
+			for _, found := range sourceTargets(control, instance, sources) {
+				structural[found.String()] = true
+			}
+		}
+		if len(direct.Selectors()) > 0 && typedPath(direct) != nil {
 			targets[direct.String()] = direct
 		}
 		for _, target := range targets {
@@ -199,11 +246,15 @@ func specializeFrozenResponse(snapshot, optionsJSON string) (result string) {
 	if json.Unmarshal([]byte(snapshot), &graph) != nil || json.Unmarshal([]byte(optionsJSON), &options) != nil {
 		return frozenFailure(ErrorCodeInvalidInput, "Invalid CUE specialization options")
 	}
+	analysis, err := graph.buildAnalysis()
+	if err != nil {
+		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance could not be evaluated")
+	}
 	base, err := graph.build()
 	if err != nil {
 		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance could not be evaluated")
 	}
-	value, err := specializeValue(base, options)
+	value, err := specializeValue(analysis, base, options)
 	if err != nil {
 		return frozenFailure(ErrorCodeBuildValue, "CUE specialization did not satisfy the selected constraints")
 	}
@@ -214,14 +265,17 @@ func specializeFrozenResponse(snapshot, optionsJSON string) (result string) {
 	return createSuccessResponse(string(encoded))
 }
 
-func specializeValue(base cue.Value, options specializationOptions) (*specializationResult, error) {
+// Provenance comes from the analysis build; the fills and validation producing
+// the projected value run on a normally evaluated base.
+func specializeValue(analysis, base cue.Value, options specializationOptions) (*specializationResult, error) {
 	projection, err := options.Projection.cuePath()
-	if err != nil || !base.LookupPath(projection).Exists() {
+	if err != nil || !analysis.LookupPath(projection).Exists() {
 		return nil, errors.New("invalid projection")
 	}
 	// Inspect provenance before any fill. In particular, source & "literal"
 	// is unresolved until source is supplied even though its value is concrete.
-	references, err := frozenReferences(base, projection)
+	declared := declaredPaths(options.SourcePaths)
+	references, err := frozenReferences(analysis, projection, declared)
 	if err != nil {
 		return nil, err
 	}
@@ -231,13 +285,13 @@ func specializeValue(base cue.Value, options specializationOptions) (*specializa
 		if err != nil {
 			return nil, err
 		}
-		found, err := frozenReferences(base, path)
+		found, err := frozenReferences(analysis, path, declared)
 		if err != nil {
 			return nil, err
 		}
 		tracked = append(tracked, found...)
 	}
-	if err := validateUntrackedDependencies(dependencyInspection{instance: base, references: tracked, scope: frozenDependencyScope{SourcePaths: options.SourcePaths, IgnoredPaths: options.IgnoredPaths, IgnoredGroups: options.IgnoredGroups}}); err != nil {
+	if err := validateUntrackedDependencies(dependencyInspection{instance: analysis, references: tracked, scope: frozenDependencyScope{SourcePaths: options.SourcePaths, IgnoredPaths: options.IgnoredPaths, IgnoredGroups: options.IgnoredGroups}}); err != nil {
 		return nil, err
 	}
 	return specializeWithReferences(base, options, references)
@@ -282,18 +336,11 @@ func specializeWithReferences(base cue.Value, options specializationOptions, ref
 		if err != nil || len(path.Selectors()) == 0 || filled[path.String()] || primitiveDeclaration(base.LookupPath(path)) == "" {
 			return nil, errors.New("invalid scalar source path")
 		}
-		var scalar interface{}
-		decoder := json.NewDecoder(bytes.NewReader(fill.Value))
-		decoder.UseNumber()
-		if decoder.Decode(&scalar) != nil {
-			return nil, errors.New("invalid scalar value")
+		expression, err := scalarExpression(fill.Value)
+		if err != nil {
+			return nil, err
 		}
-		switch scalar.(type) {
-		case string, bool, json.Number:
-		default:
-			return nil, errors.New("source value is not a primitive")
-		}
-		literal := value.Context().CompileBytes(fill.Value)
+		literal := value.Context().BuildExpr(expression)
 		if literal.Validate(cue.Concrete(true), cue.Final()) != nil {
 			return nil, errors.New("invalid scalar literal")
 		}

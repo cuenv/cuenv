@@ -76,18 +76,13 @@ func validateUntrackedDependencies(request dependencyInspection) error {
 		ignored = append(ignored, paths)
 	}
 	relevant := func(consumer, target cue.Path) bool {
-		if typedPath(target) == nil {
-			return false
-		}
 		if request.scope.SourcePaths != nil {
-			found := false
-			for _, source := range sources {
-				found = found || pathWithin(target, source)
-			}
-			if !found {
+			found := sourceTargets(target, instance, sources)
+			if len(found) == 0 {
 				return false
 			}
-		} else if primitiveDeclaration(instance.LookupPath(target)) == "" {
+			target = found[0]
+		} else if typedPath(target) == nil || primitiveDeclaration(instance.LookupPath(target)) == "" {
 			return false
 		}
 		for _, group := range ignored {
@@ -137,6 +132,12 @@ func validateUntrackedDependencies(request dependencyInspection) error {
 		if err != nil {
 			return fmt.Errorf("expression inspection at %s: %w", path, err)
 		}
+		// A leaf of a container copy reports no reference of its own.
+		if len(candidates) == 0 && value.Kind() != cue.StructKind && value.Kind() != cue.ListKind && len(path.Selectors()) > 0 {
+			if len(sourceTargets(path, instance, sources)) > 0 && request.scope.SourcePaths != nil {
+				candidates = []cue.Path{path}
+			}
+		}
 		for _, target := range candidates {
 			if !relevant(path, target) || typedPath(path) != nil && approved[path.String()] {
 				continue
@@ -147,6 +148,10 @@ func validateUntrackedDependencies(request dependencyInspection) error {
 			}
 			primitive := primitiveDeclaration(value)
 			if samePath(direct, target) && primitive != "" && primitive == primitiveDeclaration(instance.LookupPath(target)) {
+				continue
+			}
+			// An untouched copy of a declared source is the source.
+			if resolved := sourceTargets(path, instance, sources); len(resolved) == 1 && primitive != "" && primitive == primitiveDeclaration(instance.LookupPath(resolved[0])) {
 				continue
 			}
 			used := false

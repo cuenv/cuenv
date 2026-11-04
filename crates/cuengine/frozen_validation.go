@@ -37,7 +37,7 @@ func validateFrozenResponse(snapshot, optionsJSON string) (result string) {
 	if json.Unmarshal([]byte(snapshot), &graph) != nil || json.Unmarshal([]byte(optionsJSON), &options) != nil {
 		return frozenFailure(ErrorCodeInvalidInput, "Invalid frozen CUE validation options")
 	}
-	instance, err := graph.build()
+	instance, err := graph.buildAnalysis()
 	if err != nil || validateFrozenInstance(instance, options) != nil {
 		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance did not satisfy the selected constraints")
 	}
@@ -71,6 +71,9 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 			return errors.New("invalid deferred source")
 		}
 		actual, err := constrainedReference(instance.LookupPath(path), instance, 0)
+		if found := sourceTargets(actual, instance, declaredPaths(options.SourcePaths)); len(found) == 1 {
+			actual = found[0]
+		}
 		if err != nil || actual.String() != target.String() {
 			return errors.New("deferred path does not match a direct reference")
 		}
@@ -109,7 +112,7 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 		if !value.Exists() || value.Validate(cue.Final()) != nil {
 			return errors.New("selected subtree is not final")
 		}
-		references, err := frozenReferences(instance, path)
+		references, err := frozenReferences(instance, path, declaredPaths(options.SourcePaths))
 		if err != nil {
 			return err
 		}

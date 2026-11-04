@@ -1,11 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
+	"sort"
+	"strings"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/format"
 	"cuelang.org/go/cue/parser"
 	"cuelang.org/go/cue/token"
@@ -123,7 +127,7 @@ func regularLabels(path cue.Path) []string {
 }
 
 // A declaration must be exactly one abstract primitive, without a default or
-// constraints that would be lost when the provider supplies its runtime value.
+// constraints that would be lost when its runtime value is supplied.
 func primitiveDeclaration(value cue.Value) string {
 	var primitive string
 	switch value.IncompleteKind() {
@@ -170,8 +174,14 @@ func expressionReferencePaths(value, instance cue.Value, depth int) ([]cue.Path,
 	}
 	root, path := value.ReferencePath()
 	if root.Exists() {
+		if root != instance && fileScopedReference(value) {
+			root = instance
+		}
 		if root != instance {
-			return nil, nil
+			if packageRoot(root) && !selectsThroughLet(value) {
+				return nil, nil
+			}
+			return letSelectedPaths(value, instance, depth)
 		}
 		nested, err := expressionReferencePaths(root.LookupPath(path), instance, depth+1)
 		if err != nil {
@@ -180,10 +190,15 @@ func expressionReferencePaths(value, instance cue.Value, depth int) ([]cue.Path,
 		if len(nested) > 0 {
 			return nested, nil
 		}
-		if typedPath(path) == nil {
+		if namesDefinition(path) {
 			return nil, nil
 		}
 		return []cue.Path{path}, nil
+	}
+	// Selecting through a let reports only the let's evaluated struct as a base,
+	// and dereferencing it lands on a declaration with no trace of the selection.
+	if selectsThroughLet(value) {
+		return letSelectedPaths(value, instance, depth)
 	}
 	dereferenced := cue.Dereference(value)
 	if dereferenced != value {
@@ -195,6 +210,13 @@ func expressionReferencePaths(value, instance cue.Value, depth int) ([]cue.Path,
 	operation, operands := value.Expr()
 	if operation == cue.NoOp {
 		return rawExpressionReferencePaths(value, instance, depth+1)
+	}
+	// A builtin can read struct arguments that have no path of their own and would
+	// be skipped as data below. Everything written in its call counts.
+	if operation == cue.CallOp {
+		if call, ok := retainedCall(value); ok {
+			return inspectRawReferencePaths(rawReferenceInspection{value: value, instance: instance, expression: call, depth: depth + 1, originalSource: true, containersAllowed: true})
+		}
 	}
 	if operation == cue.OrOp {
 		// Non-defaulted disjunction operands retain their evaluated scopes.
@@ -221,6 +243,283 @@ func expressionReferencePaths(value, instance cue.Value, depth int) ([]cue.Path,
 		references = append(references, found...)
 	}
 	return references, nil
+}
+
+// A selector through a let reports the let as its root, which has no path in the
+// instance. Its retained source names the value the let holds; references into an
+// imported package have no such binding and cannot reach this instance.
+func letSelectedPaths(value, instance cue.Value, depth int) ([]cue.Path, error) {
+	expression, identifier, ok := retainedSelection(value)
+	isLet := false
+	if ok {
+		_, isLet = identifier.Node.(*ast.LetClause)
+	}
+	if !isLet || expression == ast.Expr(identifier) {
+		// A concrete value has nothing left to be filled. If a source narrowed it,
+		// the expression that did so is inspected and sampled where it is written.
+		if value.Validate(cue.Concrete(true), cue.Final()) == nil {
+			return nil, nil
+		}
+		return nil, errUnknownReferenceRoot
+	}
+	return inspectRawReferencePaths(rawReferenceInspection{value: value, instance: instance, expression: expression, depth: depth + 1, originalSource: true})
+}
+
+// selectThroughBinding rewrites C.a.b for let C = source to source.a.b, and reads
+// C.a from a literal let C = {a: source}. CUE still binds the result, which keeps
+// its own identifiers' declarations.
+func selectThroughBinding(expression, binding ast.Expr) (ast.Expr, bool) {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok {
+		if wrapped, isParen := expression.(*ast.ParenExpr); isParen {
+			return selectThroughBinding(wrapped.X, binding)
+		}
+		return nil, false
+	}
+	if _, root := selector.X.(*ast.Ident); !root {
+		base, ok := selectThroughBinding(selector.X, binding)
+		if !ok {
+			return nil, false
+		}
+		return selectFrom(base, selector)
+	}
+	return selectFrom(binding, selector)
+}
+
+func selectFrom(base ast.Expr, selector *ast.SelectorExpr) (ast.Expr, bool) {
+	if wrapped, isParen := base.(*ast.ParenExpr); isParen {
+		return selectFrom(wrapped.X, selector)
+	}
+	if plainReference(base) {
+		selected := *selector
+		selected.X = base
+		return &selected, true
+	}
+	literal, ok := base.(*ast.StructLit)
+	if !ok {
+		return nil, false
+	}
+	name, _, err := ast.LabelName(selector.Sel)
+	if err != nil {
+		return nil, false
+	}
+	for _, declaration := range literal.Elts {
+		if field, ok := declaration.(*ast.Field); ok {
+			if label, _, err := ast.LabelName(field.Label); err == nil && label == name {
+				return field.Value, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func retainedCall(value cue.Value) (*ast.CallExpr, bool) {
+	var original ast.Node = value.Source()
+	if field, ok := original.(*ast.Field); ok {
+		original = field.Value
+	}
+	call, ok := original.(*ast.CallExpr)
+	if !ok {
+		return nil, false
+	}
+	// close only changes what a struct allows. Its fields are visited at their paths.
+	if name, isIdent := call.Fun.(*ast.Ident); isIdent && name.Name == "close" && name.Node == nil {
+		return nil, false
+	}
+	return call, true
+}
+
+// plainLetSelection reports whether a selection through lets ends at a plain
+// reference. Anything else computes the value it selects, so it is not direct.
+func plainLetSelection(value cue.Value) bool {
+	expression, _, ok := retainedSelection(value)
+	for depth := 0; ok && depth < 32; depth++ {
+		base := expression
+		for {
+			if selector, isSelector := base.(*ast.SelectorExpr); isSelector {
+				base = selector.X
+				continue
+			}
+			if wrapped, isParen := base.(*ast.ParenExpr); isParen {
+				base = wrapped.X
+				continue
+			}
+			break
+		}
+		identifier, isIdent := base.(*ast.Ident)
+		if !isIdent {
+			return false
+		}
+		binding, isLet := identifier.Node.(*ast.LetClause)
+		if !isLet {
+			return plainReference(expression)
+		}
+		expression, ok = selectThroughBinding(expression, binding.Expr)
+	}
+	return false
+}
+
+func selectsThroughLet(value cue.Value) bool {
+	expression, identifier, ok := retainedSelection(value)
+	if !ok || expression == ast.Expr(identifier) {
+		return false
+	}
+	_, isLet := identifier.Node.(*ast.LetClause)
+	return isLet
+}
+
+// retainedSelection returns the source expression behind a value and the
+// identifier its selectors are rooted in.
+func retainedSelection(value cue.Value) (ast.Expr, *ast.Ident, bool) {
+	var original ast.Node = value.Source()
+	if field, ok := original.(*ast.Field); ok {
+		original = field.Value
+	}
+	expression, ok := original.(ast.Expr)
+	if !ok {
+		return nil, nil, false
+	}
+	base := expression
+	for {
+		switch node := base.(type) {
+		case *ast.SelectorExpr:
+			base = node.X
+			continue
+		case *ast.ParenExpr:
+			base = node.X
+			continue
+		case *ast.Ident:
+			return expression, node, true
+		}
+		return nil, nil, false
+	}
+}
+
+// An embedded #Root reports a root without a source for a name declared at file
+// level. Treat it as this instance, where its fields are checked like any other.
+func fileScopedReference(value cue.Value) bool {
+	identifier, ok := value.Source().(*ast.Ident)
+	if !ok {
+		return false
+	}
+	_, file := identifier.Scope.(*ast.File)
+	return file
+}
+
+// A package root holds only its own declarations. It cannot hold a runtime source
+// of this instance: sources are filled on this instance's own paths.
+func packageRoot(root cue.Value) bool {
+	if root.BuildInstance() != nil {
+		return true
+	}
+	_, file := root.Source().(*ast.File)
+	return file
+}
+
+// A reference rooted in neither this instance, an imported package nor a let has
+// nothing to establish independence from, so it can never be reported as none.
+var errUnknownReferenceRoot = errors.New("CUE reference has an unknown root")
+
+// sourceTargets follows a reference toward everything it was unified from, stopping
+// each branch at the first declared source. Fills flow from a source to its aliases
+// and never back, so the walk is directional: with a: _s, a target already at a
+// declared path under a stays there even though it aliases _s.
+func sourceTargets(path cue.Path, instance cue.Value, sources []cue.Path) []cue.Path {
+	seen := make(map[string]bool)
+	found := make(map[string]cue.Path)
+	var walk func(cue.Path, int)
+	walk = func(candidate cue.Path, depth int) {
+		if depth > 32 || seen[candidate.String()] || len(candidate.Selectors()) == 0 {
+			return
+		}
+		seen[candidate.String()] = true
+		for _, source := range sources {
+			if pathWithin(candidate, source) {
+				found[candidate.String()] = candidate
+				return
+			}
+		}
+		selectors := candidate.Selectors()
+		for length := len(selectors); length >= 1; length-- {
+			prefix := instance.LookupPath(cue.MakePath(selectors[:length]...))
+			for _, reference := range containerReferences(prefix, instance, 0) {
+				walk(cue.MakePath(append(append([]cue.Selector{}, reference.Selectors()...), selectors[length:]...)...), depth+1)
+			}
+		}
+	}
+	walk(path, 0)
+	targets := make([]cue.Path, 0, len(found))
+	for _, target := range found {
+		targets = append(targets, target)
+	}
+	sort.Slice(targets, func(left, right int) bool { return targets[left].String() < targets[right].String() })
+	return targets
+}
+
+// A definition is a schema, never a runtime source. Its fields constrain what is
+// unified with it, and references it holds were already followed.
+func namesDefinition(path cue.Path) bool {
+	for _, selector := range path.Selectors() {
+		if selector.IsDefinition() {
+			return true
+		}
+	}
+	return false
+}
+
+// declaredPaths parses an explicit source list. Nil discovers bare primitives.
+func declaredPaths(sources *[]valuePath) []cue.Path {
+	if sources == nil {
+		return nil
+	}
+	paths := make([]cue.Path, 0, len(*sources))
+	for _, typed := range *sources {
+		if path, err := typed.cuePath(); err == nil {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+// containerReferences lists fields a value is directly unified from.
+func containerReferences(value, instance cue.Value, depth int) (references []cue.Path) {
+	if depth > 32 {
+		return nil
+	}
+	defer func() {
+		// Dereference and Expr can panic on values a comprehension produced.
+		if recover() != nil {
+			references = nil
+		}
+	}()
+	root, path := value.ReferencePath()
+	if root.Exists() {
+		if root == instance {
+			return []cue.Path{path}
+		}
+		return nil
+	}
+	if dereferenced := cue.Dereference(value); dereferenced != value {
+		return containerReferences(dereferenced, instance, depth+1)
+	}
+	if openBoundSliceSource(value) != nil {
+		return nil
+	}
+	operation, operands := value.Expr()
+	switch operation {
+	case cue.AndOp, cue.OrOp:
+	case cue.CallOp:
+		// close(source), or([source]) and and([source]) copy what they are given.
+		if len(operands) > 0 {
+			operands = operands[1:]
+		}
+	default:
+		return nil
+	}
+	for _, operand := range operands {
+		references = append(references, containerReferences(operand, instance, depth+1)...)
+	}
+	return references
 }
 
 // The pinned evaluator's Expr constructs operands for absent slice bounds and
@@ -273,7 +572,31 @@ func rawExpressionReferencePaths(value, instance cue.Value, depth int) ([]cue.Pa
 			}
 		}
 	}
-	return inspectRawReferencePaths(rawReferenceInspection{value: value, instance: instance, expression: expression, depth: depth})
+	found, err := inspectRawReferencePaths(rawReferenceInspection{value: value, instance: instance, expression: expression, depth: depth})
+	if err == nil {
+		return found, nil
+	}
+	// Raw syntax drops lexical declarations and source files. Retained source
+	// still has both, and is what the raw form was simplified from.
+	var original ast.Node = value.Source()
+	switch node := original.(type) {
+	case *ast.Field:
+		original = node.Value
+	case *ast.LetClause:
+		original = node.Expr
+	}
+	if retained, ok := original.(ast.Expr); ok {
+		// An identifier here resolves through its declaration, not the value's scope.
+		if identifier, ok := retained.(*ast.Ident); ok {
+			binding, isLet := identifier.Node.(*ast.LetClause)
+			if !isLet {
+				return nil, err
+			}
+			retained = binding.Expr
+		}
+		return inspectRawReferencePaths(rawReferenceInspection{value: value, instance: instance, expression: retained, depth: depth, originalSource: true})
+	}
+	return nil, err
 }
 
 type rawReferenceInspection struct {
@@ -281,6 +604,8 @@ type rawReferenceInspection struct {
 	expression      ast.Expr
 	depth           int
 	originalSource  bool
+	// containersAllowed reads a let being selected from, not a control over it.
+	containersAllowed bool
 }
 
 func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error) {
@@ -289,7 +614,7 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 		return nil, fmt.Errorf("CUE reference nesting exceeds 32 levels")
 	}
 	// Expr also exposes standalone predeclared operands from imported schemas.
-	// Rebuilding one in the value's scope can bind it to a quoted provider
+	// Rebuilding one in the value's scope can bind it to a quoted field
 	// attribute (for example "number"?) instead of the predeclared type. Only
 	// skip an identifier when its evaluated value equals its unscoped meaning;
 	// reference paths and dereferences were already inspected by the caller.
@@ -305,8 +630,18 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 	bindings := make(map[referenceBindingName]bool)
 	boundValues := make(referenceBindings)
 	allowContainers := 0
+	if request.containersAllowed {
+		allowContainers = 1
+	}
 	resolve := func(expression ast.Expr) cue.Value {
 		resolutionScope := value
+		owner, known := instanceIdentity(instance, expression)
+		original := expression
+		// Raw syntax has no source file. A hidden name there could bind to another
+		// package's field of the same name, so it must go through retained source.
+		if !known && namesHiddenField(expression) {
+			return value.Context().CompileString("_|_")
+		}
 		if request.originalSource {
 			base := expression
 			for {
@@ -321,7 +656,7 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 			}
 		originalBinding:
 			if identifier, ok := base.(*ast.Ident); ok && identifier.Scope != nil {
-				resolvedScope, err := originalBindingScope(value, instance, identifier.Scope)
+				resolvedScope, err := bindingScope(value, instance, identifier)
 				if err != nil {
 					return value.Context().CompileString("_|_")
 				}
@@ -332,7 +667,7 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 			// the expression being resolved and let CUE bind it in the original
 			// value scope. Imported identifiers were excluded by their resolved
 			// ImportSpec before reaching this function.
-			encoded, err := format.Node(expression)
+			encoded, err := format.Node(withDeclaredLabel(expression))
 			if err != nil {
 				return value.Context().CompileString("_|_")
 			}
@@ -343,8 +678,13 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 			expression = parsed
 		}
 		wrapper := ast.NewStruct(ast.NewString(""), expression)
-		resolved := value.Context().BuildExpr(wrapper, cue.Scope(resolutionScope))
+		resolved := value.Context().BuildExpr(wrapper, cue.Scope(resolutionScope), cue.ImportPath(owner))
 		if err := resolved.Err(); err != nil {
+			// A disjunction cannot act as a compile scope. Its declaring field is
+			// already identified, so select it instead of compiling the name.
+			if selected, ok := selectDeclared(resolutionScope, instance, original); ok {
+				return selected
+			}
 			return resolved
 		}
 		return resolved.LookupPath(cue.MakePath(cue.Str("")))
@@ -519,6 +859,8 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 			return visit(expression.Y)
 		case *ast.UnaryExpr:
 			return visit(expression.X)
+		case *ast.PostfixExpr:
+			return visit(expression.X)
 		case *ast.ParenExpr:
 			return visit(expression.X)
 		case *ast.Interpolation:
@@ -529,8 +871,11 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 			}
 			return nil
 		case *ast.CallExpr:
-			if err := visit(expression.Fun); err != nil {
-				return err
+			// A predeclared builtin resolves to nothing in this instance.
+			if identifier, ok := expression.Fun.(*ast.Ident); !ok || identifier.Node != nil {
+				if err := visit(expression.Fun); err != nil {
+					return err
+				}
 			}
 			if identifier, ok := expression.Fun.(*ast.Ident); ok && identifier.Name == "len" && identifier.Node == nil && len(expression.Args) == 1 && plainReference(expression.Args[0]) {
 				allowContainers++
@@ -642,6 +987,14 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 						}
 					}
 				}
+				// Selecting through a let reads what the let holds, not the whole of it.
+				if binding, ok := identifier.Node.(*ast.LetClause); ok && request.originalSource {
+					if _, selection := expression.(*ast.Ident); !selection {
+						if selected, ok := selectThroughBinding(expression, binding.Expr); ok {
+							return visit(selected)
+						}
+					}
+				}
 				if values, bound := boundValues.selectValues(expression, resolve); bound {
 					for _, operand := range values {
 						if request.originalSource && allowContainers == 0 && (operand.Kind() == cue.StructKind || operand.Kind() == cue.ListKind) && operand.Validate(cue.Concrete(true)) != nil {
@@ -652,7 +1005,7 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 							return err
 						}
 						references = append(references, found...)
-						path := operand.Path()
+						path := cue.MakePath(valuePathSelectors(operand)...)
 						if len(path.Selectors()) > 0 && instance.LookupPath(path) == operand {
 							references = append(references, path)
 						}
@@ -669,11 +1022,14 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 					return fmt.Errorf("CUE reference extraction cannot inspect an incomplete comprehension binding")
 				}
 				if binding, ok := identifier.Node.(*ast.LetClause); ok && request.originalSource {
-					bindingScope, err := originalBindingScope(value, instance, identifier.Scope)
+					// Every name in the binding carries its own lexical declaration,
+					// so an unmatched let scope only loses a resolution starting point.
+					letScope, err := originalBindingScope(value, instance, identifier.Scope)
 					if err != nil {
-						return err
+						letScope = value
 					}
-					found, err := inspectRawReferencePaths(rawReferenceInspection{value: bindingScope, instance: instance, expression: binding.Expr, depth: depth + 1, originalSource: true})
+					_, whole := expression.(*ast.Ident)
+					found, err := inspectRawReferencePaths(rawReferenceInspection{value: letScope, instance: instance, expression: binding.Expr, depth: depth + 1, originalSource: true, containersAllowed: !whole})
 					if err != nil {
 						return err
 					}
@@ -683,12 +1039,33 @@ func inspectRawReferencePaths(request rawReferenceInspection) ([]cue.Path, error
 			}
 			// The empty label has no identifier spelling, so the wrapper
 			// cannot shadow names used by the original expression.
+			// x given to (#F & {in: x}).out exists only on the instantiation's own
+			// conjuncts: inspect each of them for what in was given.
+			if identifier, ok := expression.(*ast.Ident); ok && request.originalSource && identifier.Scope != nil {
+				if conjuncts := selectedBaseOperands(value, instance, identifier.Scope); len(conjuncts) > 0 {
+					selector := identifierSelector(identifier, instance)
+					for _, conjunct := range conjuncts {
+						if child := conjunct.LookupPath(cue.MakePath(selector)); child.Exists() {
+							found, err := expressionReferencePaths(child, instance, depth+1)
+							if err != nil {
+								return err
+							}
+							references = append(references, found...)
+						}
+					}
+					return nil
+				}
+			}
 			operand := resolve(expression)
+			// A presence test of a field that does not exist reads nothing.
+			if allowContainers > 0 && operand.Err() != nil && plainReference(expression) {
+				return nil
+			}
 			if err := operand.Err(); err != nil {
 				if identifier, ok := expression.(*ast.Ident); ok && request.originalSource && identifier.Scope != nil {
-					bindingScope, scopeErr := originalBindingScope(value, instance, identifier.Scope)
-					selector := cue.Str(identifier.Name)
-					if scopeErr == nil && !bindingScope.LookupPath(cue.MakePath(selector)).Exists() && bindingScope.LookupPath(cue.MakePath(selector.Optional())).Exists() {
+					declaring, scopeErr := bindingScope(value, instance, identifier)
+					selector := identifierSelector(identifier, instance)
+					if scopeErr == nil && !declaring.LookupPath(cue.MakePath(selector)).Exists() && declaring.LookupPath(cue.MakePath(selector.Optional())).Exists() {
 						// Absent optional fields cannot be filled. Native CUE still
 						// evaluates their presence guards and enclosing controls.
 						return nil
@@ -930,4 +1307,48 @@ func validateConcreteExcept(request concreteValidation, options *ReferenceEvalua
 		}
 	}
 	return nil
+}
+
+// Hidden names belong to the package declaring them. The expression's source file
+// names that package; reparsing has to keep the identity to keep the binding.
+func instanceIdentity(instance cue.Value, expression ast.Expr) (string, bool) {
+	root := instance.BuildInstance()
+	filename := expression.Pos().Filename()
+	if filename == "" {
+		return root.ID(), false
+	}
+	seen := make(map[*build.Instance]bool)
+	var find func(*build.Instance) string
+	find = func(candidate *build.Instance) string {
+		if candidate == nil || seen[candidate] {
+			return ""
+		}
+		seen[candidate] = true
+		for _, file := range candidate.Files {
+			if file.Filename == filename {
+				return candidate.ID()
+			}
+		}
+		for _, imported := range candidate.Imports {
+			if found := find(imported); found != "" {
+				return found
+			}
+		}
+		return ""
+	}
+	if found := find(root); found != "" {
+		return found, true
+	}
+	return root.ID(), false
+}
+
+func namesHiddenField(expression ast.Expr) bool {
+	found := false
+	ast.Walk(expression, func(node ast.Node) bool {
+		if identifier, ok := node.(*ast.Ident); ok && strings.HasPrefix(identifier.Name, "_") {
+			found = true
+		}
+		return !found
+	}, nil)
+	return found
 }

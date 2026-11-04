@@ -224,9 +224,14 @@ func comprehensionControlBody(expression ast.Expr) ast.Expr {
 			// Parentheses, conjunctions and other expression nodes do not
 			// remove the controls nested inside a field's value. Inspect the
 			// original syntax rather than requiring a direct struct literal.
+			// A dynamic label decides structure whatever its field holds.
 			if hasControlStructure(declaration.Value) {
 				field := *declaration
 				field.Value = comprehensionControlBody(field.Value)
+				declarations = append(declarations, &field)
+			} else if dynamicLabel(declaration.Label) {
+				field := *declaration
+				field.Value = ast.NewNull()
 				declarations = append(declarations, &field)
 			}
 		}

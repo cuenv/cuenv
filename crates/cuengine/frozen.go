@@ -6,6 +6,7 @@ package main
 import "C"
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -80,45 +81,82 @@ func freezeInstanceResponse(optionsJSON string) (result string) {
 	if err != nil {
 		return frozenFailure(ErrorCodeInvalidInput, "Invalid CUE instance directory")
 	}
-	overlay, matched, err := packageFilterOverlay(dir, options.Package, false)
-	if err != nil || !matched {
-		return frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
-	}
 	registry, err := modconfig.NewRegistry(&modconfig.Config{Transport: http.DefaultTransport, ClientType: "cuengine"})
 	if err != nil {
 		return frozenFailure(ErrorCodeRegistryInit, "CUE snapshot registry could not be initialized")
 	}
-	// Capture precisely the bytes parsed by the loader, not a subsequent disk
-	// read or a formatted AST. This preserves positions and prevents a source
-	// change between loading and snapshotting from changing the selected input.
-	sources := make(map[*ast.File]string)
-	var sourceMutex sync.Mutex
-	parse := func(name string, source interface{}, config parser.Config) (*ast.File, error) {
-		data, err := frozenSourceBytes(name, source)
-		if err != nil {
-			return nil, err
-		}
-		file, err := parser.ParseFile(name, data, config)
-		if err == nil {
-			sourceMutex.Lock()
-			sources[file] = string(data)
-			sourceMutex.Unlock()
-		}
-		return file, err
-	}
-	instances := load.Instances([]string{"."}, &load.Config{Dir: dir, ModuleRoot: root, Package: options.Package, Overlay: overlay, Registry: registry, ParseFile: parse})
-	if len(instances) != 1 || instances[0].Err != nil || instances[0].Incomplete {
-		return frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
-	}
-	graph, err := freezeBuildGraph(instances[0], sources)
-	if err != nil {
-		return frozenFailure(ErrorCodeBuildValue, "CUE snapshot could not be captured")
+	graph, failure := freezeConsistentGraph(load.Config{Dir: dir, ModuleRoot: root, Package: options.Package, Registry: registry}, nil)
+	if failure != "" {
+		return failure
 	}
 	encoded, err := json.Marshal(graph)
 	if err != nil {
 		return frozenFailure(ErrorCodeJSONMarshal, "CUE snapshot could not be encoded")
 	}
 	return createSuccessResponse(string(encoded))
+}
+
+// Files are read one at a time, so an edit during loading can pair old bytes of one
+// file with new bytes of another: a revision that never existed. Accept a graph only
+// once two consecutive loads captured identical bytes.
+const frozenLoadAttempts = 4
+
+func freezeConsistentGraph(config load.Config, afterParse func(string)) (*frozenGraph, string) {
+	var previous []byte
+	for attempt := 0; attempt < frozenLoadAttempts; attempt++ {
+		graph, failure := freezeLoadedGraph(config, afterParse)
+		if failure != "" {
+			return nil, failure
+		}
+		encoded, err := json.Marshal(graph)
+		if err != nil {
+			return nil, frozenFailure(ErrorCodeJSONMarshal, "CUE snapshot could not be encoded")
+		}
+		if previous != nil && bytes.Equal(previous, encoded) {
+			return graph, ""
+		}
+		previous = encoded
+	}
+	return nil, frozenFailure(ErrorCodeLoadInstance, "CUE snapshot sources kept changing while being loaded")
+}
+
+func freezeLoadedGraph(config load.Config, afterParse func(string)) (*frozenGraph, string) {
+	// Package filtering also reads the directory, so each load decides afresh.
+	overlay, matched, err := packageFilterOverlay(config.Dir, config.Package, false)
+	if err != nil || !matched {
+		return nil, frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
+	}
+	config.Overlay = overlay
+	// Capture precisely the bytes parsed by the loader, not a subsequent disk
+	// read or a formatted AST. This preserves positions and prevents a source
+	// change between loading and snapshotting from changing the selected input.
+	sources := make(map[*ast.File]string)
+	var sourceMutex sync.Mutex
+	config.ParseFile = func(name string, source interface{}, parseConfig parser.Config) (*ast.File, error) {
+		data, err := frozenSourceBytes(name, source)
+		if err != nil {
+			return nil, err
+		}
+		file, err := parser.ParseFile(name, data, parseConfig)
+		if err == nil {
+			sourceMutex.Lock()
+			sources[file] = string(data)
+			sourceMutex.Unlock()
+		}
+		if afterParse != nil {
+			afterParse(name)
+		}
+		return file, err
+	}
+	instances := load.Instances([]string{"."}, &config)
+	if len(instances) != 1 || instances[0].Err != nil || instances[0].Incomplete {
+		return nil, frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
+	}
+	graph, err := freezeBuildGraph(instances[0], sources)
+	if err != nil {
+		return nil, frozenFailure(ErrorCodeBuildValue, "CUE snapshot could not be captured")
+	}
+	return graph, ""
 }
 
 func frozenSourceBytes(name string, source interface{}) ([]byte, error) {
@@ -177,7 +215,19 @@ func freezeBuildGraph(root *build.Instance, sources map[*ast.File]string) (*froz
 	return graph, err
 }
 
+// build evaluates the snapshot as CUE normally would. Exported values and filled
+// consumers come from this mode. Anything inspecting provenance uses buildAnalysis.
 func (graph frozenGraph) build() (cue.Value, error) {
+	return graph.evaluate(cuecontext.New())
+}
+
+// Structure sharing makes an un-unified imported definition report references by
+// its declared path. Provenance needs the path where the value was instantiated.
+func (graph frozenGraph) buildAnalysis() (cue.Value, error) {
+	return graph.evaluate(cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")))
+}
+
+func (graph frozenGraph) evaluate(runtime *cue.Context) (cue.Value, error) {
 	if len(graph.Nodes) == 0 {
 		return cue.Value{}, errors.New("empty frozen graph")
 	}
@@ -209,7 +259,7 @@ func (graph frozenGraph) build() (cue.Value, error) {
 			return cue.Value{}, errors.New("invalid frozen instance")
 		}
 	}
-	value := cuecontext.New().BuildInstance(instances[0])
+	value := runtime.BuildInstance(instances[0])
 	if value.Err() != nil {
 		return cue.Value{}, value.Err()
 	}
@@ -291,7 +341,7 @@ func evaluateFrozenResponse(snapshot, optionsJSON string) (result string) {
 	if json.Unmarshal([]byte(snapshot), &graph) != nil || json.Unmarshal([]byte(optionsJSON), &options) != nil {
 		return frozenFailure(ErrorCodeInvalidInput, "Invalid frozen CUE evaluation options")
 	}
-	value, err := graph.build()
+	value, err := graph.buildAnalysis()
 	if err != nil {
 		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance could not be evaluated")
 	}
@@ -301,7 +351,7 @@ func evaluateFrozenResponse(snapshot, optionsJSON string) (result string) {
 		if err != nil {
 			return frozenFailure(ErrorCodeInvalidInput, "Invalid frozen CUE reference path")
 		}
-		found, err := frozenReferences(value, parsed)
+		found, err := frozenReferences(value, parsed, declaredPaths(options.SourcePaths))
 		if err != nil {
 			return frozenFailure(ErrorCodeBuildValue, "Frozen CUE references could not be inspected")
 		}
@@ -310,7 +360,15 @@ func evaluateFrozenResponse(snapshot, optionsJSON string) (result string) {
 	if validateUntrackedDependencies(dependencyInspection{instance: value, references: references, scope: frozenDependencyScope{SourcePaths: options.SourcePaths, IgnoredPaths: options.IgnoredPaths, IgnoredGroups: options.IgnoredGroups}}) != nil {
 		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance contains an untracked runtime dependency")
 	}
-	// Inspection is intentionally lenient and must not authorize provider input.
+	if rejectSampledDependence(sampledDependence{base: value, sources: options.SourcePaths, roots: options.ReferencePaths, references: references}) != nil {
+		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance contains an untracked runtime dependency")
+	}
+	// Exported values are consumed as ordinary input, so they come from a normal build.
+	value, err = graph.build()
+	if err != nil {
+		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance could not be evaluated")
+	}
+	// Inspection is intentionally lenient and must not authorize consumer input.
 	// specializeFrozenResponse performs strict validation before projection.
 	projected := make(map[string]interface{})
 	ordered := append([]valuePath{}, options.ExportPaths...)

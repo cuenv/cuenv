@@ -1,7 +1,9 @@
 package main
 
 import (
+	"cuelang.org/go/cue/load"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -565,7 +567,7 @@ config: schema.#Configuration & {
 		var graph frozenGraph
 		_ = json.Unmarshal([]byte(snapshot), &graph)
 		value, _ := graph.build()
-		references, _ := frozenReferences(value, cue.ParsePath("config"))
+		references, _ := frozenReferences(value, cue.ParsePath("config"), nil)
 		t.Logf("imported fixture inspection cause: %v", validateUntrackedDependencies(dependencyInspection{instance: value, references: references}))
 	}
 	frozenPayload(t, response)
@@ -597,5 +599,64 @@ config: id: _alias
 	options.Fills[0].Value = json.RawMessage(`"bad"`)
 	if response := specializeFrozenResponse(snapshot, frozenJSON(t, options)); !strings.Contains(response, `"error"`) {
 		t.Fatalf("post-fill hidden semantic error was ignored: %s", response)
+	}
+}
+
+// Editing two files while they load must not freeze a revision that never existed.
+func TestFrozenSnapshotRefusesMixedRevisions(t *testing.T) {
+	version := func(name string) map[string]string {
+		return map[string]string{
+			"a.cue": "package app\nfirst: \"" + name + "\"\n",
+			"b.cue": "package app\nsecond: \"" + name + "\"\n",
+		}
+	}
+	dir := writeCueModule(t, version("old"))
+	write := func(files map[string]string) {
+		t.Helper()
+		for name, contents := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	config := load.Config{Dir: dir, ModuleRoot: dir, Package: "app"}
+	// The loader reads each file twice, imports first. Edit within the full pass.
+	reads := 0
+	editOnce := func(name string) {
+		if strings.HasSuffix(name, "a.cue") {
+			reads++
+			if reads == 2 {
+				write(version("new"))
+			}
+		}
+	}
+	mixed, failure := freezeLoadedGraph(config, editOnce)
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	sources := strings.Join([]string{mixed.Nodes[0].Files[0].Source, mixed.Nodes[0].Files[1].Source}, "")
+	if !strings.Contains(sources, "old") || !strings.Contains(sources, "new") {
+		t.Fatalf("a single load should reproduce the mixed revision: %s", sources)
+	}
+
+	write(version("old"))
+	reads = 0
+	graph, failure := freezeConsistentGraph(config, editOnce)
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	sources = strings.Join([]string{graph.Nodes[0].Files[0].Source, graph.Nodes[0].Files[1].Source}, "")
+	if strings.Contains(sources, "old") || !strings.Contains(sources, "new") {
+		t.Fatalf("consistent load kept a mixed revision: %s", sources)
+	}
+
+	counter := 0
+	if _, failure := freezeConsistentGraph(config, func(name string) {
+		if strings.HasSuffix(name, "a.cue") {
+			counter++
+			write(version(fmt.Sprintf("edit-%d", counter)))
+		}
+	}); !strings.Contains(failure, "kept changing") {
+		t.Fatalf("expected a refusal for continuous edits: %s", failure)
 	}
 }

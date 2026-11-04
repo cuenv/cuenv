@@ -41,6 +41,22 @@ pub struct PreparedSpecializationOptions {
     pub deferred: Vec<DeferredValue>,
 }
 
+/// Real runtime values and what they may legitimately change.
+///
+/// Analysis classifies expressions ahead of time. This asks CUE what the values
+/// that actually exist do to the instance, so it needs no model of the syntax.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct VerificationOptions {
+    /// Known source values to apply together.
+    pub fills: Vec<ScalarFill>,
+    /// Subtrees compared with and without the fills.
+    pub roots: Vec<ValuePath>,
+    /// Subtrees the fills are allowed to change.
+    pub mutable: Vec<ValuePath>,
+    /// Leaves that must equal their target once it is filled, which they may change.
+    pub references: Vec<DeferredValue>,
+}
+
 /// Private immutable provenance bound to one frozen graph and fixed scope.
 ///
 /// This capability owns only Rust source/proof bytes. No live CUE context or
@@ -116,6 +132,25 @@ impl PreparedInstance {
         };
         decode_result(pointer, "cue_specialize_prepared")
     }
+
+    /// Check that real values change nothing outside the declared references.
+    ///
+    /// This shares frozen worker capacity and has no deadline of its own, like
+    /// [`Self::specialize`]. It authorizes nothing and returns no values.
+    ///
+    /// # Errors
+    /// Returns a value-free error when the values conflict with CUE constraints or
+    /// change a value outside `mutable`, or when worker capacity is exhausted.
+    pub fn verify(&self, options: &VerificationOptions) -> Result<()> {
+        let _permit = crate::frozen_worker::admit()?;
+        let snapshot = encode_snapshot(&self.instance.snapshot)?;
+        let options = encode_options(options)?;
+        // SAFETY: both inputs remain alive throughout the synchronous call, and
+        // decode_result takes ownership of and frees its result allocation.
+        #[expect(unsafe_code, reason = "Required for frozen CUE verification FFI")]
+        let pointer = unsafe { cue_verify_frozen(snapshot.as_ptr(), options.as_ptr()) };
+        decode_result::<bool>(pointer, "cue_verify_frozen").map(|_| ())
+    }
 }
 
 #[cfg(not(docsrs))]
@@ -128,6 +163,7 @@ unsafe extern "C" {
         capability: *const c_char,
         options: *const c_char,
     ) -> *mut c_char;
+    fn cue_verify_frozen(snapshot: *const c_char, options: *const c_char) -> *mut c_char;
 }
 
 #[cfg(docsrs)]
@@ -141,5 +177,10 @@ unsafe fn cue_specialize_prepared(
     _: *const c_char,
     _: *const c_char,
 ) -> *mut c_char {
+    panic!("FFI not available in documentation builds")
+}
+
+#[cfg(docsrs)]
+unsafe fn cue_verify_frozen(_: *const c_char, _: *const c_char) -> *mut c_char {
     panic!("FFI not available in documentation builds")
 }

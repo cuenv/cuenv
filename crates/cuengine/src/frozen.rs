@@ -13,7 +13,9 @@
 
 mod prepared;
 
-pub use prepared::{PreparationOptions, PreparedInstance, PreparedSpecializationOptions};
+pub use prepared::{
+    PreparationOptions, PreparedInstance, PreparedSpecializationOptions, VerificationOptions,
+};
 
 use crate::{BridgeEnvelope, CueEngineError, Result, bridge_owned_c_string, extract_ffi_string};
 use serde::{Deserialize, Serialize};
