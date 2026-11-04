@@ -26,7 +26,7 @@ use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalThem
 use super::sizing::CellSize;
 use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
 use super::tab_rename::{RenameKey, TabRename, rename_key};
-use super::tab_status::{SessionExit, StatusEvent, TabPresence, TabStatus};
+use super::tab_status::{SessionExit, StatusEvent, TabPresence, TabStatus, WindowPresence};
 use super::workspace_shell::{
     ShellAction, ShellError, TabDirection, TabNumber, WorkspaceShell, WorkspaceShortcut,
 };
@@ -1197,6 +1197,15 @@ fn acts_on_the_line(event: &TerminalKeyEvent) -> bool {
     }
 }
 
+/// Whether the user is in this window.
+fn window_presence(window: &Window) -> WindowPresence {
+    if window.is_window_active() {
+        WindowPresence::Active
+    } else {
+        WindowPresence::Inactive
+    }
+}
+
 /// Whether a key dismisses a tab whose shell has exited. Enter is what the tab says to
 /// press, and Ctrl-D is what a shell that exited with its last command's status was
 /// most likely just given.
@@ -1260,8 +1269,11 @@ pub(super) struct SessionRegistry {
     pub(super) workspace: WorkspaceShell,
     pub(super) notice: Option<String>,
     close_window_requested: bool,
-    /// The pane last on screen, for telling when the user arrives at another.
+    /// The pane last on screen, for telling when the user arrives at another. `None`
+    /// while the user is in another window.
     seen_pane: Option<crate::workspace::PaneId>,
+    /// Kept here because wakes arrive with no window to ask.
+    window_presence: WindowPresence,
 }
 
 impl SessionRegistry {
@@ -1274,6 +1286,7 @@ impl SessionRegistry {
             notice: None,
             close_window_requested: false,
             seen_pane: None,
+            window_presence: WindowPresence::default(),
         }
     }
 
@@ -1307,6 +1320,7 @@ impl SessionRegistry {
                 notice: None,
                 close_window_requested: false,
                 seen_pane: None,
+                window_presence: WindowPresence::default(),
             },
             start.wake_rx,
         ))
@@ -1371,7 +1385,8 @@ impl SessionRegistry {
             TabPresence::Shown
         } else {
             TabPresence::Hidden
-        };
+        }
+        .within(self.window_presence);
         let effects = match self.sessions.get_mut(&pane) {
             Some(state) if state.generation == generation => {
                 let effects = state.session.drain_effects();
@@ -1446,12 +1461,15 @@ impl SessionRegistry {
     }
 
     /// Tells the tab now on screen it has been seen, once for each arrival, so what
-    /// happens while it stays on screen is still reported.
+    /// happens while it stays on screen is still reported. Coming back to the window
+    /// is an arrival too, and nothing is on screen for someone who is elsewhere.
     fn note_active_pane(&mut self) {
-        let active = self.active_pane();
-        if active != self.seen_pane {
-            self.seen_pane = active;
-            if let Some(state) = active.and_then(|pane| self.sessions.get_mut(&pane)) {
+        let shown = self
+            .active_pane()
+            .filter(|_| self.window_presence == WindowPresence::Active);
+        if shown != self.seen_pane {
+            self.seen_pane = shown;
+            if let Some(state) = shown.and_then(|pane| self.sessions.get_mut(&pane)) {
                 state.status.apply(StatusEvent::Seen);
             }
         }
@@ -1884,6 +1902,7 @@ impl TerminalView {
             .detach();
         // A modifier released while another window has focus is never reported.
         cx.observe_window_activation(window, |view, window, cx| {
+            view.registry.window_presence = window_presence(window);
             if !window.is_window_active() {
                 view.hide_tab_hints(cx);
             }
@@ -1907,6 +1926,7 @@ impl TerminalView {
         ) {
             Ok((mut registry, wake_rx)) => {
                 let pane = registry.active_pane().expect("initial workspace pane");
+                registry.window_presence = window_presence(window);
                 // The window's first frame sizes the grid, so what shapes it has to be
                 // known by then. A pane carries this look over until its directory
                 // has evaluated.
@@ -4786,6 +4806,36 @@ mod tests {
         let generation = state.generation;
         state.frame = frame_with('a');
         registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(registry.sessions[&pane].status.indicator(), None);
+    }
+
+    #[test]
+    fn the_tab_on_screen_reports_what_happens_while_its_window_is_in_the_background() {
+        let (initial, _) = fake_start('z', vec![ControlEvent::Bell], None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, test_geometry()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.generation;
+        state.frame = frame_with('a');
+        registry.note_active_pane();
+
+        registry.window_presence = WindowPresence::Inactive;
+        registry.note_active_pane();
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Bell)
+        );
+        // Redraws while the user is still elsewhere are not them coming back.
+        registry.note_active_pane();
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Bell)
+        );
+
+        registry.window_presence = WindowPresence::Active;
+        registry.note_active_pane();
         assert_eq!(registry.sessions[&pane].status.indicator(), None);
     }
 

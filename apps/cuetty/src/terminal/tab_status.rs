@@ -9,6 +9,25 @@ pub(super) enum TabPresence {
     Hidden,
 }
 
+/// Whether the user is in this window. Whatever it shows, nobody is looking at it while
+/// they are somewhere else, which is when a bell is most likely to be rung for them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum WindowPresence {
+    #[default]
+    Active,
+    Inactive,
+}
+
+impl TabPresence {
+    /// What a tab's place in its window comes to, given where the user is.
+    pub(super) const fn within(self, window: WindowPresence) -> Self {
+        match window {
+            WindowPresence::Active => self,
+            WindowPresence::Inactive => Self::Hidden,
+        }
+    }
+}
+
 /// How a tab's shell ended, read from its raw wait status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SessionExit {
@@ -206,6 +225,15 @@ mod tests {
             after(&[StatusEvent::Output(TabPresence::Hidden)]).indicator(),
             Some(TabIndicator::Unread)
         );
+    }
+
+    #[test]
+    fn a_tab_is_only_shown_while_its_window_is_active() {
+        use WindowPresence::{Active, Inactive};
+        assert_eq!(TabPresence::Shown.within(Active), TabPresence::Shown);
+        assert_eq!(TabPresence::Shown.within(Inactive), TabPresence::Hidden);
+        assert_eq!(TabPresence::Hidden.within(Active), TabPresence::Hidden);
+        assert_eq!(TabPresence::Hidden.within(Inactive), TabPresence::Hidden);
     }
 
     #[test]

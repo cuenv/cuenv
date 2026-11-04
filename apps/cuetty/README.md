@@ -114,12 +114,14 @@ second line such as `cuenv · main`, with its directory, unless the tab is alrea
 it, and the branch that directory is on. `src/terminal/git_branch.rs` reads that from the
 repository's `HEAD` file every couple of seconds without spawning a process; with neither
 known the line is absent. `src/terminal/tab_status.rs`
-works out each tab's indicator: a bell for a bell rung while the tab was not on screen, a
+works out each tab's indicator: a bell for a bell rung while the tab was not on screen,
+which it never is while the window is in the background, a
 ring while a task launched from Cuetty runs, counted from the Enter that runs it if it
 needed arguments, a flag once it hands the foreground back, which says it ended and
 not how,
 and a dot for text that changed while the tab was not on screen. Each has its own shape
-and its meaning in the tab's tooltip. Arriving at a tab clears what was waiting there,
+and its meaning in the tab's tooltip. Arriving at a tab, or back at the window with it on
+screen, clears what was waiting there,
 and typing moves on from a finished task. A shell that exits with a failing status or
 dies on a signal keeps its tab, with a warning triangle and its final output still
 readable above a strip saying how it ended, until Enter, Ctrl-D, or the close chord
