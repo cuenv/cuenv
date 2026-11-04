@@ -164,6 +164,8 @@ pub(super) struct CursorObservation {
 pub(super) struct CursorAnimator {
     last_activity: Instant,
     focus: CursorFocus,
+    /// The pane last drawn, even while its cursor is hidden.
+    pane: Option<PaneId>,
     /// Which pane's cursor was last seen and where, so switching tabs is not a jump.
     seen_at: Option<(PaneId, (u16, u16))>,
     jump: Option<CursorJump>,
@@ -174,6 +176,7 @@ impl CursorAnimator {
         Self {
             last_activity: now,
             focus: CursorFocus::Focused,
+            pane: None,
             seen_at: None,
             jump: None,
         }
@@ -185,12 +188,15 @@ impl CursorAnimator {
     }
 
     pub(super) fn frame(&mut self, seen: CursorObservation) -> CursorFrame {
-        // Coming back to a window starts the cycle from solid, so the cursor is easy
-        // to find rather than caught mid-blink.
-        if seen.focus == CursorFocus::Focused && self.focus == CursorFocus::Unfocused {
+        // Coming back to a window, or arriving at another tab by any route, starts the
+        // cycle from solid, so the cursor is easy to find rather than caught mid-blink.
+        let returned = seen.focus == CursorFocus::Focused && self.focus == CursorFocus::Unfocused;
+        let switched = self.pane.is_some_and(|pane| pane != seen.pane);
+        if returned || switched {
             self.touch(seen.now);
         }
         self.focus = seen.focus;
+        self.pane = Some(seen.pane);
         let focused = seen.focus == CursorFocus::Focused;
         // A hidden cursor has nothing to fade, whatever it has been asked to do.
         let frame = if focused && seen.blink && seen.position.is_some() {
@@ -479,6 +485,54 @@ mod tests {
             ..trailing((9, 9), start)
         };
         assert_eq!(animator.frame(other_pane).trail, None);
+    }
+
+    #[test]
+    fn switching_tabs_starts_the_blink_from_solid() {
+        let start = Instant::now();
+        let mut animator = CursorAnimator::new(start);
+        let off = start + BLINK_PAUSE + BLINK_HOLD + BLINK_FADE;
+        assert_eq!(animator.frame(blinking(off)).opacity, 0.0);
+        let other_pane = |now| CursorObservation {
+            pane: PaneId::new(2),
+            ..blinking(now)
+        };
+        assert_eq!(animator.frame(other_pane(off)).opacity, 1.0);
+        // Staying on the tab does not hold the blink back.
+        assert_eq!(
+            animator
+                .frame(other_pane(
+                    off + ms(1) + BLINK_PAUSE + BLINK_HOLD + BLINK_FADE
+                ))
+                .opacity,
+            0.0
+        );
+    }
+
+    #[test]
+    fn a_tab_that_asked_for_a_blink_wakes_a_settled_cursor() {
+        let start = Instant::now();
+        let mut animator = CursorAnimator::new(start);
+        let settled = start + BLINK_PAUSE + cycle() * BLINK_CYCLES;
+        assert_eq!(animator.frame(blinking(settled)), CursorFrame::SOLID);
+        let blinking_tab = CursorObservation {
+            pane: PaneId::new(2),
+            ..blinking(settled)
+        };
+        assert_eq!(animator.frame(blinking_tab).next_frame, Some(BLINK_PAUSE));
+    }
+
+    #[test]
+    fn coming_back_from_a_tab_with_a_hidden_cursor_starts_from_solid() {
+        let start = Instant::now();
+        let mut animator = CursorAnimator::new(start);
+        let off = start + BLINK_PAUSE + BLINK_HOLD + BLINK_FADE;
+        animator.frame(CursorObservation {
+            pane: PaneId::new(2),
+            position: None,
+            ..blinking(start)
+        });
+        assert_eq!(animator.frame(blinking(off)).opacity, 1.0);
     }
 
     #[test]

@@ -121,8 +121,8 @@ pixels at any scale. GPUI painting and Rio resizing share that one cell, and the
 sizes the PTY reports are in device pixels.
 The focused label follows GPUI's current focus handle, including blur. The cursor
 blinks only if the application asks, with `cursor.blink` to override that: it fades
-rather than toggles, stays solid for a moment after output or a key press, and
-settles solid after about half a minute of nothing happening, so an idle window
+rather than toggles, stays solid for a moment after output, a key press, or a
+switch of tab, and settles solid after about half a minute of nothing happening, so an idle window
 stops drawing. Rio raises no event for a program that only shows or hides its
 cursor, so the half-second poll notices that instead. Unfocused, or with another window active, it is a hollow outline.
 Rio
