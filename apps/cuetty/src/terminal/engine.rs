@@ -1,6 +1,6 @@
 use super::chrome::{
-    ChromeAssets, UNFOCUSED_TERMINAL_OPACITY, render_exit_notice, render_shell_message,
-    resolve_ui_font, traffic_light_position,
+    ChromeAssets, UNFOCUSED_TERMINAL_OPACITY, exit_notice_height, render_exit_notice,
+    render_shell_message, resolve_ui_font, traffic_light_position,
 };
 use super::color::{blend, dimmed, with_minimum_contrast};
 use super::config::TerminalConfig;
@@ -1093,6 +1093,19 @@ impl PaneState {
         }
         self.activity.set_staged_hint(None);
         self.activity.take_staged_task().filter(|_| submits)
+    }
+
+    /// The surface a new tab opened from this one will get: what this one measured,
+    /// with back the room for a failed shell's exit notice, which only this tab has.
+    fn surface_for_sibling(&self) -> Size<Pixels> {
+        let measured = *self
+            .measured_bounds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        size(
+            measured.width,
+            measured.height + exit_notice_height(self.status.failure()),
+        )
     }
 
     /// Sends a key the user pressed to the terminal.
@@ -2467,12 +2480,7 @@ impl TerminalView {
         // right grid rather than getting a resize right after its first prompt.
         let surface = self
             .active_state()
-            .map_or_else(unmeasured_surface, |state| {
-                *state
-                    .measured_bounds
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-            });
+            .map_or_else(unmeasured_surface, PaneState::surface_for_sibling);
         match self.registry.start_tab(SessionGeometry {
             surface,
             scale: self.metrics.scale,
@@ -5137,6 +5145,20 @@ mod tests {
             };
             assert!(!closes_exited_tab(&repeat));
         }
+    }
+
+    #[test]
+    fn a_new_tab_is_measured_without_the_exit_notice_its_sibling_gives_up_room_to() {
+        let (mut state, _) = bracketed_pane("zsh");
+        let measured = size(px(800.0), px(600.0));
+        *state.measured_bounds.lock().unwrap() = measured;
+        assert_eq!(state.surface_for_sibling(), measured);
+        state.status.apply(StatusEvent::SessionFailed(
+            crate::terminal::tab_status::ExitFailure::Code(1),
+        ));
+        let surface = state.surface_for_sibling();
+        assert_eq!(surface.width, measured.width);
+        assert!(surface.height > measured.height);
     }
 
     #[test]

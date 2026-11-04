@@ -61,6 +61,11 @@ pub(in crate::terminal) fn render_exit_notice(
         .into_any_element()
 }
 
+/// The room a tab's exit notice takes from the bottom of its surface.
+pub(in crate::terminal) fn exit_notice_height(failure: Option<ExitFailure>) -> Pixels {
+    failure.map_or(px(0.0), |_| size::EXIT_NOTICE_HEIGHT)
+}
+
 /// Makes `this` move the window when dragged. GPUI's control area covers platforms
 /// that hit-test it, and Linux compositors have to be asked.
 fn draggable(this: Div) -> Div {
@@ -93,11 +98,7 @@ impl TerminalView {
     /// Where the terminal stops above the bottom of its panel: past its padding, and past
     /// the exit notice while there is one.
     pub(in crate::terminal) fn bottom_inset(&self, padding: Pixels) -> Pixels {
-        padding
-            + self
-                .active_state()
-                .and_then(|state| state.status.failure())
-                .map_or(px(0.0), |_| size::EXIT_NOTICE_HEIGHT)
+        padding + exit_notice_height(self.active_state().and_then(|state| state.status.failure()))
     }
 
     /// The room left for native window controls, which moves the window as a title
