@@ -1954,6 +1954,43 @@ async fn output_dependent_structure_is_refused_before_any_provider_change() -> T
     Ok(())
 }
 
+/// An output declared as a scalar whose real value is a list stops the run by name.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_declared_scalar_output_with_a_list_value_stops_the_run() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "non-scalar-output",
+        &outputs_stack(
+            "producer: {type: \"fake_dyn\", outputs: data: string, configuration: name: \"producer\"}, later: {type: \"fake_plain\", dependsOn: [\"producer\"], configuration: name: \"later\"}",
+        ),
+    )?;
+    stack.fails(
+        &["apply", "--yes"],
+        "fake_dyn.producer.data is declared as a scalar",
+    )?;
+    assert!(!stack.creates().contains(&"later".to_string()));
+    assert!(stack.record("later").await.is_err());
+    Ok(())
+}
+
+/// A default over an absent optional field reads nothing, and stays ordinary CUE.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_default_over_an_absent_optional_field_is_ordinary_cue() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "optional-fallback",
+        &format!(
+            "_x: {{a?: string}}\n{}",
+            outputs_stack(
+                "consumer: {type: \"fake_plain\", configuration: name: *_x.a | \"fallback\"}"
+            )
+        ),
+    )?;
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(stack.record("consumer").await?.state["name"], "fallback");
+    Ok(())
+}
+
 fn token_stack(token: &str, source: &str) -> String {
     outputs_stack(&format!(
         "producer: {{type: \"fake_token_source\", outputs: token: string, configuration: name: \"{source}\"}}, consumer: {{type: \"fake_token_consumer\", configuration: config: {{token: {token}, label: \"ordinary-sibling\"}}}}"

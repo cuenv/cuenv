@@ -215,9 +215,11 @@ is a proof, and no layer treats an expression it does not model as safe.
    of planning, after each completed change of a resource declaring outputs, after a
    deferred read, and when apply finishes. It only uses outputs whose resource has no
    remaining work, because a recorded output about to be replaced says nothing about
-   what will be applied. Failing while planning changes nothing. Failing during apply
-   skips everything not yet started and reports an incomplete apply, exit code 5. It
-   cannot undo a change that already ran, so it does not replace the layers above.
+   what will be applied. A declared scalar whose real value is a list or object cannot
+   reach CUE, so it is refused rather than ignored. Failing while planning changes
+   nothing. Failing during apply skips everything not yet started, including deferred
+   reads, and reports an incomplete apply, exit code 5. It cannot undo a change that
+   already ran, so it does not replace the layers above.
 4. **Exported values stay ordinary CUE.** Exports, fills and final validation run on a
    normal build. Tests compare both modes on every accepted fixture and several values.
 
@@ -256,6 +258,8 @@ further syntax and ways of reaching a stack, and pins the exact lists of refused
 so a new refusal or panic fails the test. A fill oracle, which can show a dependency and
 never clear one, checks every accepted fixture. `TestFrozenVerificationFollowsRealValues`
 checks that verification refuses exactly the accepted fixtures that values change.
+`TestFrozenChecksRefuseAWrongReferenceTarget` gives sampling and verification a recorded
+edge to the wrong source; removing the equality check they share fails it.
 
 This is finite evidence, not a completeness proof. Review repeatedly found new classes
 of escape in analysis alone: default markers, `close`, container copies, defaults over
@@ -322,9 +326,11 @@ than continuing unverified.
 ### Limits
 
 An output declared with the wrong type in an untyped configuration, such as `number` for a
-string attribute, is not caught while planning: the resource is created and the run then
-stops naming that output, and plans stay refused until the declaration is corrected or the
-resource destroyed. Generated provider types declare the correct type.
+string attribute or `string` for a list, is not caught while planning: the resource is
+created and the run then stops naming that output, and plans stay refused until the
+declaration is corrected or the resource destroyed. Generated provider types declare the
+correct type. A declared output the provider never returns, or returns as null, is not
+checked; a reference to one still fails when it is resolved.
 
 ## Proof and integration gates
 

@@ -812,6 +812,7 @@ pub(super) struct ScheduleRun<'schedule, 'plan> {
     reported: BTreeSet<ResourceAddress>,
     deleted_not_recreated: BTreeSet<ResourceAddress>,
     created_not_recorded: BTreeSet<ResourceAddress>,
+    halted: bool,
 }
 
 /// What an operation that ended the run leaves behind, beyond the error.
@@ -835,12 +836,18 @@ impl<'schedule, 'plan> ScheduleRun<'schedule, 'plan> {
             reported: BTreeSet::new(),
             deleted_not_recreated: BTreeSet::new(),
             created_not_recorded: BTreeSet::new(),
+            halted: false,
         }
     }
 
     /// The schedule being run.
     pub(super) const fn schedule(&self) -> &'schedule Schedule<'plan> {
         self.schedule
+    }
+
+    /// Nothing may start any more, including provider reads.
+    pub(super) const fn is_halted(&self) -> bool {
+        self.halted
     }
 
     pub(super) fn is_skipped(&self, node: usize) -> bool {
@@ -895,6 +902,7 @@ impl<'schedule, 'plan> ScheduleRun<'schedule, 'plan> {
         on_event: &mut (dyn FnMut(ApplyEvent) + Send),
     ) {
         self.failures.push(failure);
+        self.halted = true;
         for node in 0..self.states.len() {
             if self.states[node] == OperationState::Pending {
                 self.skip(node, on_event);

@@ -1409,13 +1409,21 @@ impl cuenv_infrastructure::references::ConfigurationEvaluator for RefusingVerifi
     }
 }
 
-fn plain_output(name: &str) -> cuenv_infrastructure::references::OutputIdentity {
+fn declared_output(
+    resource_type: &str,
+    name: &str,
+    attribute: &str,
+) -> cuenv_infrastructure::references::OutputIdentity {
     cuenv_infrastructure::references::OutputIdentity {
         source: cuenv_infrastructure::references::SourceAddress::Resource(
-            cuenv_infrastructure::ResourceAddress::new("fake_plain", name),
+            cuenv_infrastructure::ResourceAddress::new(resource_type, name),
         ),
-        attribute: "id".to_string(),
+        attribute: attribute.to_string(),
     }
+}
+
+fn plain_output(name: &str) -> cuenv_infrastructure::references::OutputIdentity {
+    declared_output("fake_plain", name, "id")
 }
 
 impl Fake {
@@ -1425,7 +1433,16 @@ impl Fake {
         resources: &serde_json::Value,
         evaluator: Arc<RefusingVerification>,
     ) -> TestResult<Result<Converged, InfrastructureError>> {
-        let mut engine = self.engine(resources, &Cancellation::default())?;
+        self.converge_configuration_verifying(&json!({"resources": resources}), evaluator)
+            .await
+    }
+
+    async fn converge_configuration_verifying(
+        &self,
+        configuration: &serde_json::Value,
+        evaluator: Arc<RefusingVerification>,
+    ) -> TestResult<Result<Converged, InfrastructureError>> {
+        let mut engine = self.engine_configuration(configuration, &Cancellation::default())?;
         engine.set_configuration_evaluator(evaluator);
         let lock = self.store.lock(&self.tenant, "fake").await?;
         let converged = match engine.plan(PlanMode::Apply).await {
@@ -1537,6 +1554,123 @@ async fn fake_real_output_verification_ignores_outputs_about_to_change() -> Test
         seen.as_slice(),
         [vec![plain_output("alpha")], vec![plain_output("alpha")]]
     );
+    Ok(())
+}
+
+/// Nothing starts after a refusal: a deferred read is a provider call too.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_stops_deferred_reads() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = json!({
+        "resources": {
+            "alpha": {"type": "fake_plain", "configuration": {"name": "alpha"}},
+            "later": {"type": "fake_plain", "dependsOn": ["alpha"], "configuration": {"name": "later"}},
+        },
+        "data": {"lookup": {
+            "type": "fake_lookup",
+            "dependsOn": ["alpha"],
+            "configuration": {"name": "after-refusal"},
+        }},
+    });
+    let evaluator = Arc::new(RefusingVerification {
+        declared: vec![plain_output("alpha")],
+        refused: Some(plain_output("alpha")),
+        seen: std::sync::Mutex::default(),
+    });
+    let converged = fake
+        .converge_configuration_verifying(&configuration, evaluator)
+        .await?
+        .map_err(|error| format!("nothing is known while planning: {error}"))?;
+    let error = converged
+        .applied
+        .expect_err("verification must stop the run");
+    assert!(
+        matches!(error, InfrastructureError::ApplyIncomplete(_)),
+        "{error}"
+    );
+    let journal = fake.journal();
+    assert!(journal.contains("Create name=alpha"), "{journal}");
+    assert!(!journal.contains("Create name=later"), "{journal}");
+    assert!(!journal.contains("after-refusal"), "{journal}");
+    Ok(())
+}
+
+/// A declared scalar whose real value is a list can't reach CUE, so it is refused
+/// rather than ignored, as soon as it exists and again while planning.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_refuses_a_non_scalar_output() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({
+        "alpha": {"type": "fake_dyn", "configuration": {"name": "alpha"}},
+        "later": {"type": "fake_plain", "dependsOn": ["alpha"], "configuration": {"name": "later"}},
+    });
+    let evaluator = || {
+        Arc::new(RefusingVerification {
+            declared: vec![declared_output("fake_dyn", "alpha", "data")],
+            refused: None,
+            seen: std::sync::Mutex::default(),
+        })
+    };
+    let converged = fake
+        .converge_verifying(&resources, evaluator())
+        .await?
+        .map_err(|error| format!("nothing is known while planning: {error}"))?;
+    let error = converged
+        .applied
+        .expect_err("a list is not a declared scalar");
+    let InfrastructureError::ApplyIncomplete(incomplete) = &error else {
+        return Err(format!("expected an incomplete apply, got {error}").into());
+    };
+    assert!(
+        incomplete.failures[0]
+            .error
+            .to_string()
+            .contains("fake_dyn.alpha.data is declared as a scalar"),
+        "{error}"
+    );
+    assert!(fake.record("later").await.is_err(), "later must not start");
+
+    let Err(error) = fake.converge_verifying(&resources, evaluator()).await? else {
+        return Err("a recorded list must be refused while planning".into());
+    };
+    assert!(
+        error.to_string().contains("declared as a scalar"),
+        "{error}"
+    );
+    Ok(())
+}
+
+/// Replacing one resource and deleting another uses only outputs that have settled.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_follows_replacement_and_deletion() -> TestResult {
+    let fake = Fake::new().await?;
+    let initial = json!({
+        "kept": {"type": "fake_repl", "configuration": {"name": "first"}},
+        "gone": {"type": "fake_plain", "configuration": {"name": "gone"}},
+    });
+    fake.converge(&initial, PlanMode::Apply).await?.applied?;
+    let kept = declared_output("fake_repl", "kept", "id");
+    let evaluator = Arc::new(RefusingVerification {
+        declared: vec![kept.clone()],
+        refused: None,
+        seen: std::sync::Mutex::default(),
+    });
+    let changed = json!({"kept": {"type": "fake_repl", "configuration": {"name": "second"}}});
+    let converged = fake
+        .converge_verifying(&changed, Arc::clone(&evaluator))
+        .await?
+        .map_err(|error| error.to_string())?;
+    converged.applied?;
+    assert!(fake.record("gone").await.is_err(), "gone must be deleted");
+    assert_eq!(fake.record("kept").await?.state["name"], "second");
+    let seen = evaluator
+        .seen
+        .lock()
+        .map_err(|_| "test verification poisoned")?;
+    assert_eq!(seen.last(), Some(&vec![kept]), "{seen:?}");
     Ok(())
 }
 

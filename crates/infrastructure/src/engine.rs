@@ -1804,6 +1804,9 @@ impl InfrastructureEngine {
             execution.run.failed(index, error, execution.on_event);
         }
         self.record_refreshed(execution, &mut refreshed).await?;
+        if execution.run.is_halted() {
+            return Ok(());
+        }
         let reads = self
             .read_ready_data_sources(
                 runner,
@@ -1952,12 +1955,16 @@ impl InfrastructureEngine {
                 value
             }
         };
-        Ok(value.filter(|value| {
-            matches!(
-                value.untyped(),
-                Value::String(_) | Value::Number(_) | Value::Boolean(_)
-            )
-        }))
+        match value.as_ref().map(Value::untyped) {
+            None | Some(Value::Null | Value::Unknown) => Ok(None),
+            Some(Value::String(_) | Value::Number(_) | Value::Boolean(_)) => Ok(value),
+            // Outputs are declared as scalars. CUE would never see this value, so
+            // nothing downstream could notice that the declaration is wrong.
+            Some(_) => Err(InfrastructureError::configuration(format!(
+                "output {}.{} is declared as a scalar, but its real value is not one",
+                identity.source, identity.attribute
+            ))),
+        }
     }
 
     /// A source created during this apply was never planned with a known value:
