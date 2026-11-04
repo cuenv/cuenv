@@ -57,7 +57,7 @@ The current usable slice includes:
 - Catppuccin Mocha is the built-in terminal colour scheme shared by Rio's
   semantic resolver and the GPUI chrome.
 - Ghostty is the visual reference for restrained native chrome: traffic lights,
-  one title strip, a sidebar floating inset from
+  one title strip that shares the terminal's surface, a sidebar floating inset from
   the window's edges so it sits comfortably with rounded corners, stable single-line
   tab labels, and a full-bleed terminal.
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
@@ -134,8 +134,10 @@ single-line `banner` and a quoted `rail: "#RRGGBB"`. The banner joins the tab's
 name in its tooltip; `rail` is the project accent, so `rail: "#ff0000"` colours the
 small marker on the active tab while that tab is active and never fills the
 sidebar. Terminal panes are never framed, and the former `border` field is
-rejected as unknown. `titlebar: false` hides the Cuetty title strip while that
-tab is active and lets the terminal extend to the top of the window; it defaults to `true`. `keybindings: palette:` rebinds the task palette; see
+rejected as unknown. The title strip shows the active tab's name on the terminal's
+own surface, and the window takes the same name as its title in every titlebar state,
+for window switchers and compositors. `titlebar: false` hides it while that tab is active and lets the
+terminal extend to the top of the window; it defaults to `true`. `keybindings: palette:` rebinds the task palette; see
 [Keybindings](#keybindings). A hidden strip leaves only the small gap above the
 sidebar to move the window by, and on macOS the traffic lights float over the
 terminal's top-left corner.

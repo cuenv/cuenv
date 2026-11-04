@@ -813,6 +813,14 @@ impl SessionRegistry {
         })
     }
 
+    /// What the active tab is called right now, if there is one.
+    pub(super) fn active_tab_label(&self) -> Option<String> {
+        let active = self.workspace.active_tab()?;
+        let tabs = self.workspace.workspace().tabs();
+        let tab = tabs.iter().find(|tab| tab.id == active)?;
+        Some(self.tab_label(tab))
+    }
+
     fn close_pane(&mut self, pane: crate::workspace::PaneId) -> Result<(), RegistryError> {
         let target = self
             .workspace
@@ -855,7 +863,12 @@ pub(super) struct TerminalView {
     /// been overtaken.
     tab_hint_request: u64,
     sidebar: WindowSidebar,
+    /// What the window manager was last told this window is called.
+    window_title: String,
 }
+
+/// What the window is called with no tab to name it after.
+const APP_TITLE: &str = "Cuetty";
 
 /// The key that toggles the sidebar with the application chord.
 pub(super) const SIDEBAR_TOGGLE_KEY: &str = "b";
@@ -1170,6 +1183,7 @@ impl TerminalView {
                     tab_hints_visible: false,
                     tab_hint_request: 0,
                     sidebar,
+                    window_title: APP_TITLE.into(),
                 };
                 view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
                 view.spawn_cwd_poll(cx);
@@ -1199,6 +1213,7 @@ impl TerminalView {
                     tab_hints_visible: false,
                     tab_hint_request: 0,
                     sidebar: WindowSidebar::default(),
+                    window_title: APP_TITLE.into(),
                 }
             }
         }
@@ -2025,6 +2040,16 @@ impl Render for TerminalView {
             window.set_background_appearance(window_background);
             self.window_background = window_background;
         }
+        // Window switchers and compositors have only this to go by, and with the
+        // title strip hidden and the sidebar collapsed nothing else names the tab.
+        let window_title = self
+            .registry
+            .active_tab_label()
+            .unwrap_or_else(|| APP_TITLE.into());
+        if self.window_title != window_title {
+            window.set_window_title(&window_title);
+            self.window_title = window_title;
+        }
         let theme = self.theme.clone();
         let metrics = self.metrics.clone();
         let padding = self.config.terminal_padding;
@@ -2260,7 +2285,7 @@ pub fn run() {
                         ))),
                         window_min_size: Some(window_min_size),
                         titlebar: Some(gpui::TitlebarOptions {
-                            title: None,
+                            title: Some(APP_TITLE.into()),
                             appears_transparent: true,
                             traffic_light_position: Some(traffic_light_position()),
                         }),
@@ -3120,6 +3145,21 @@ mod tests {
         *foreground.lock().unwrap() = "cuenv".into();
         registry.sample_foreground(std::time::Instant::now());
         assert_eq!(registry.tab_label(&tab), "cuenv");
+    }
+
+    #[test]
+    fn the_active_tab_label_follows_the_active_tab_and_goes_with_it() {
+        let (initial, foreground, _) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        assert_eq!(registry.active_tab_label().as_deref(), Some("Terminal"));
+
+        *foreground.lock().unwrap() = "claude".into();
+        registry.sample_foreground(std::time::Instant::now());
+        assert_eq!(registry.active_tab_label().as_deref(), Some("claude"));
+
+        let empty = SessionRegistry::empty(fake_factory(Vec::new()));
+        assert_eq!(empty.active_tab_label(), None);
     }
 
     #[test]

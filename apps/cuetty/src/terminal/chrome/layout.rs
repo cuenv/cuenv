@@ -1,4 +1,4 @@
-use super::tokens::{ChromeColors, border, size, space, text, ui_font_family};
+use super::tokens::{ChromeColors, size, space, text, ui_font_family};
 use crate::integrations::cuenv::{SidebarMode, TitlebarVisibility};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
@@ -99,26 +99,21 @@ impl TerminalView {
             // reclaims the strip's height without extra arithmetic here.
             return shell.child(workspace).into_any_element();
         }
-        let titlebar = div()
+        let title = self.registry.active_tab_label();
+        // No fill and no rule: the strip is the top of the window's one material,
+        // holding the window controls and saying which tab is showing.
+        let titlebar = draggable(div())
             .h(size::TITLEBAR_HEIGHT)
             .w_full()
             .flex_shrink_0()
             .flex()
             .items_center()
-            .border_b(border::HAIRLINE)
-            .border_color(colors.divider)
-            .child(draggable(div().h_full().w(size::WINDOW_CONTROLS_WIDTH)))
-            .child(
-                div()
-                    .h_full()
-                    .px(space::MD)
-                    .flex()
-                    .items_center()
-                    .text_size(text::BODY)
-                    .text_color(colors.text)
-                    .child("Cuetty"),
-            )
-            .child(draggable(div().flex_1().h_full()));
+            .justify_center()
+            // Equal on both sides, so the title stays centred on the window.
+            .px(size::WINDOW_CONTROLS_WIDTH)
+            .text_size(text::LABEL)
+            .text_color(colors.text_secondary)
+            .children(title.map(|title| div().min_w_0().truncate().child(title)));
         shell.child(titlebar).child(workspace).into_any_element()
     }
 }

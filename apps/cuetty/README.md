@@ -84,7 +84,8 @@ write; shell control chords such as Ctrl-C and Ctrl-U; a new tab opening in
 ## Visual contract
 
 The shell follows Ghostty's restrained presentation: native traffic lights,
-one title strip, a
+one title strip that shares the terminal's surface and names the active tab, which
+also titles the window for window switchers and compositors, a
 right-side tab sidebar floating inset from the window's edges so it sits comfortably
 with rounded window corners, and a full-bleed Catppuccin Mocha terminal surface. The sidebar is 200px wide and lists tabs by name. Its toggle, or
 Cmd-B (Ctrl-Shift-B on Linux), collapses it to 56px with an initial for each tab, taken
