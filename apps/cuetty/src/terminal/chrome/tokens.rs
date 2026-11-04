@@ -132,9 +132,12 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const CONTROL_WIDTH: Pixels = px(34.0);
     pub(in crate::terminal::chrome) const ICON: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TAB_ROW_HEIGHT: Pixels = px(32.0);
-    /// An expanded tab's row. It has this height with or without a second line, so a
-    /// subtitle arriving never shifts the list.
+    /// A tab's row in the list, with room for a second line beneath the name, or for an
+    /// indicator beneath a collapsed tab's mark. It has this height with or without
+    /// them and in both sidebar modes, so neither arriving nor collapsing shifts the list.
     pub(in crate::terminal::chrome) const TAB_ROW_TWO_LINE_HEIGHT: Pixels = px(44.0);
+    /// The line a collapsed tab's mark sits on, in the middle of its row.
+    pub(in crate::terminal::chrome) const TAB_MARK_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = px(3.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TASK_SIDEBAR_WIDTH: Pixels = px(280.0);
@@ -153,8 +156,6 @@ pub(super) mod size {
     /// What a tab keeps free for its close button and its indicator, which share it,
     /// so neither appearing moves the name.
     pub(in crate::terminal::chrome) const TAB_ACTION: Pixels = px(20.0);
-    /// The close button in a collapsed tab's corner, where its mark needs the room.
-    pub(in crate::terminal::chrome) const TAB_ACTION_COMPACT: Pixels = px(14.0);
     pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
 }
 

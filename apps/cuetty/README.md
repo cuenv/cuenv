@@ -106,8 +106,8 @@ Nix's `.name-wrapped`
 binaries are shown as `name`. A tab
 list taller than the window scrolls, and follows the active tab. The terminal fades back slightly while its window does not have the keyboard; inactive
 panes have nothing to dim until split panes exist. The foot of the expanded sidebar names the task palette's chord wherever
-the directory has tasks for it to find and a live shell to run them. Dragging a tab onto another moves it to that tab's place in the list. Hovering a tab reveals a button that closes
-it. Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place: Enter
+the directory has tasks for it to find and a live shell to run them. Dragging a tab onto another moves it to that tab's place in the list. Hovering an expanded tab reveals a button that closes
+it; a collapsed tab is too narrow for one to stay clear of where a click selects it, so it is closed with the close chord. Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place: Enter
 or clicking elsewhere keeps it, Escape abandons it, and an empty name hands the tab back to
 its derived one. Each expanded tab has a muted
 second line such as `cuenv · main`, with its directory, unless the tab is already named after

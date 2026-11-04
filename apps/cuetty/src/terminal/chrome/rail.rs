@@ -488,10 +488,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         .group(TAB_ROW_GROUP)
         .relative()
         .w_full()
-        .h(match mode {
-            SidebarMode::Expanded => size::TAB_ROW_TWO_LINE_HEIGHT,
-            SidebarMode::Collapsed => size::TAB_ROW_HEIGHT,
-        })
+        .h(size::TAB_ROW_TWO_LINE_HEIGHT)
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -609,33 +606,35 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                                 .inset_0(),
                         ),
                 ),
-            // Only a character fits, so the hint stands in for the mark.
+            // Only a character fits, so the hint stands in for the mark. The row is too
+            // narrow for a close button to clear the mark, where a click on the tab lands,
+            // so a collapsed tab has none: selecting it and the close chord do that.
             SidebarMode::Collapsed => this
                 .justify_center()
-                .child(match number {
-                    Some(number) => div()
-                        .font_family(mono.clone())
-                        .text_size(text::LABEL)
-                        .text_color(colors.text_muted)
-                        .font_weight(text::REGULAR)
-                        .child(number.digit().to_string()),
-                    None => div().child(mark),
-                })
+                .child(
+                    div()
+                        .h(size::TAB_MARK_HEIGHT)
+                        .line_height(size::TAB_MARK_HEIGHT)
+                        .child(match number {
+                            Some(number) => div()
+                                .font_family(mono.clone())
+                                .text_size(text::LABEL)
+                                .text_color(colors.text_muted)
+                                .font_weight(text::REGULAR)
+                                .child(number.digit().to_string()),
+                            None => div().child(mark),
+                        }),
+                )
                 .children(indicator.map(|indicator| {
                     div()
                         .absolute()
-                        .right(space::XXS)
-                        .bottom(space::XXS)
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
                         .child(render_indicator(indicator, &colors))
-                }))
-                .child(
-                    render_close_button(CloseButton { id, pane, colors }, cx)
-                        .absolute()
-                        .top(space::XXS)
-                        .right(space::XXS)
-                        .size(size::TAB_ACTION_COMPACT)
-                        .bg(colors.panel),
-                ),
+                })),
         })
 }
 
@@ -643,6 +642,14 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
 mod tests {
     use super::*;
     use crate::terminal::config::TerminalConfig;
+
+    #[test]
+    fn a_collapsed_tabs_indicator_sits_clear_of_its_mark() {
+        let row = size::TAB_ROW_TWO_LINE_HEIGHT - border::HAIRLINE * 2.0;
+        let mark_bottom = (row + size::TAB_MARK_HEIGHT) / 2.0;
+        let indicator_top = row - size::STATUS_ICON;
+        assert!(mark_bottom <= indicator_top);
+    }
 
     #[test]
     fn active_tab_marker_prefers_the_project_accent_over_the_theme_accent() {

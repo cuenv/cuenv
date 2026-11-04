@@ -114,9 +114,10 @@ The current usable slice includes:
   the script, and Nix's
   `.name-wrapped` binaries are shown as `name`. A tab list taller than the window scrolls, and
   follows the active tab.
-- A close button revealed on a tab's row when the pointer is over it. It takes over from
-  the tab's indicator while it shows, and sits in the row's corner when the sidebar is
-  collapsed.
+- A close button revealed on an expanded tab's row when the pointer is over it. It takes
+  over from the tab's indicator while it shows. A collapsed row has none, because it is too
+  narrow for one to stay clear of where a click selects the tab: select it and use the
+  close chord, Cmd-W (Ctrl-Shift-W on Linux).
 - Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place,
   expanding the sidebar if it is collapsed. Enter or clicking elsewhere keeps the name and
   Escape abandons the edit. The name then outranks every name Cuetty derives until it is
@@ -134,7 +135,7 @@ The current usable slice includes:
   a detached commit's short form. Cuetty reads the repository's `HEAD` file every couple
   of seconds and spawns no process, following `.git` files for worktrees and submodules.
   With neither known the line is simply absent.
-- A small indicator on each tab, beside its name or on its collapsed mark, with its
+- A small indicator on each tab, beside its name or below its collapsed mark, with its
   meaning in the tab's tooltip: a bell for a bell rung in a tab not on screen, which
   includes every tab while the window is in the background, a ring
   while a task launched from Cuetty runs, counted from the Enter that runs it if it
