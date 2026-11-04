@@ -50,6 +50,7 @@ pub(super) mod text {
     /// evaluation error can run to many lines.
     pub(in crate::terminal::chrome) const TOOLTIP_MAX_LINES: usize = 12;
     pub(in crate::terminal::chrome) const REGULAR: FontWeight = FontWeight::NORMAL;
+    pub(in crate::terminal::chrome) const MEDIUM: FontWeight = FontWeight::MEDIUM;
     pub(in crate::terminal::chrome) const STRONG: FontWeight = FontWeight::SEMIBOLD;
 }
 
@@ -119,7 +120,8 @@ pub(super) mod border {
 pub(super) mod size {
     use gpui::{Pixels, px};
 
-    pub(in crate::terminal::chrome) const RAIL_WIDTH: Pixels = px(56.0);
+    pub(in crate::terminal::chrome) const SIDEBAR_EXPANDED_WIDTH: Pixels = px(200.0);
+    pub(in crate::terminal::chrome) const SIDEBAR_COLLAPSED_WIDTH: Pixels = px(56.0);
     pub(in crate::terminal::chrome) const TITLEBAR_HEIGHT: Pixels = px(34.0);
     /// Height of the native macOS window controls.
     pub(in crate::terminal::chrome) const WINDOW_CONTROLS_HEIGHT: Pixels = px(16.0);
@@ -128,8 +130,7 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const CONTROL_HEIGHT: Pixels = px(30.0);
     pub(in crate::terminal::chrome) const CONTROL_WIDTH: Pixels = px(34.0);
     pub(in crate::terminal::chrome) const ICON: Pixels = px(16.0);
-    pub(in crate::terminal::chrome) const TAB_ROW_HEIGHT: Pixels = px(40.0);
-    pub(in crate::terminal::chrome) const TAB_MARK: Pixels = px(30.0);
+    pub(in crate::terminal::chrome) const TAB_ROW_HEIGHT: Pixels = px(32.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = px(3.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TASK_SIDEBAR_WIDTH: Pixels = px(280.0);

@@ -84,9 +84,16 @@ write; shell control chords such as Ctrl-C and Ctrl-U; a new tab opening in
 ## Visual contract
 
 The shell follows Ghostty's restrained presentation: native traffic lights,
-one dark title strip, a compact right-side vertical tab rail, and a full-bleed
-Catppuccin Mocha terminal surface. The rail is fixed at a narrow 56px and shows
-the initial of each tab's name, with the full name as a tooltip. Names resolve in
+one dark title strip, a right-side tab sidebar, and a full-bleed Catppuccin Mocha
+terminal surface. The sidebar is 200px wide and lists tabs by name. Its toggle, or
+Cmd-B (Ctrl-Shift-B on Linux), collapses it to 56px with an initial for each tab, taken
+from its user-set name, project banner, or directory so it stays put as programs come
+and go, and the full name as a tooltip; `sidebar: "collapsed"` in CUE starts it that
+way. A window opens with the global package's look and sidebar when that evaluates
+within half a second, so its first frame is already the right size. Only the first
+configuration a window evaluates settles the sidebar, so neither `cd` nor a later
+edit moves it, and the toggle outranks that setting for the life of the
+window. Names resolve in
 `src/terminal/tab_label.rs`: a user-set name, then a running Cuenv task, then the
 foreground program or a title it set, then the directory, then `Terminal`. A title
 lasts only as long as the program it was set under, one that names a directory stands
@@ -199,8 +206,8 @@ licence is alongside them. Add a glyph there rather than using a text character.
 
 The terminal render resizes Rio from the pane canvas measured inside GPUI's
 actual content panel. The measurement therefore already excludes the title
-strip, terminal inset, divider, and fixed rail width instead of trying to
-reconstruct those dimensions from the outer window. This keeps window and rail
+strip, terminal inset, divider, and the sidebar's current width instead of trying to
+reconstruct those dimensions from the outer window. This keeps window and sidebar
 changes on the same grid, preserves one-cell clamping and resize deduplication,
 and prevents a stale wider frame from clipping long output. Startup,
 input, resize, paste, and close failures remain visible in the view rather than

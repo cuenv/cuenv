@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub const PACKAGE: &str = "cuetty";
 pub const PROJECT_PACKAGE: &str = "cuenv";
@@ -23,6 +24,7 @@ pub struct CuettyPresentation {
     pub banner: Option<String>,
     pub rail: Option<RailColor>,
     pub titlebar: TitlebarVisibility,
+    pub sidebar: SidebarMode,
     pub keybindings: Keybindings,
     pub terminal: Box<TerminalConfig>,
 }
@@ -167,6 +169,79 @@ impl From<bool> for TitlebarVisibility {
     }
 }
 
+/// How much room the tab sidebar takes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SidebarMode {
+    /// Tabs are listed by name.
+    #[default]
+    Expanded,
+    /// A narrow strip of initials, with names in tooltips.
+    Collapsed,
+}
+
+/// The sidebar of one window. `sidebar` says how it starts, so only the first
+/// configuration the window evaluates is read, and the toggle replaces even that.
+/// Following the configuration any longer would resize the grid on every `cd`.
+///
+/// That evaluation lands after the first frame, so until then the window goes by
+/// what the global package says, which it nearly always agrees with.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WindowSidebar {
+    settled: Option<SidebarMode>,
+    expected: SidebarMode,
+}
+
+impl WindowSidebar {
+    pub fn mode(self) -> SidebarMode {
+        self.settled.unwrap_or(self.expected)
+    }
+
+    /// A sidebar opening on what `global` says, until something settles it.
+    pub fn expecting(global: &Evaluation) -> Self {
+        Self {
+            settled: None,
+            expected: match global {
+                Evaluation::Valid(presentation) => presentation.sidebar,
+                Evaluation::Absent | Evaluation::Invalid(_) => SidebarMode::default(),
+            },
+        }
+    }
+
+    /// Settles the sidebar from an evaluation, unless something already has. An
+    /// invalid configuration says nothing, so the next valid one still counts.
+    pub fn observe(&mut self, evaluation: &Evaluation) {
+        let configured = match evaluation {
+            Evaluation::Valid(presentation) => presentation.sidebar,
+            Evaluation::Absent => SidebarMode::default(),
+            Evaluation::Invalid(_) => return,
+        };
+        self.settled.get_or_insert(configured);
+    }
+
+    pub fn toggle(&mut self) {
+        self.settled = Some(self.mode().toggled());
+    }
+}
+
+impl SidebarMode {
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Expanded => Self::Collapsed,
+            Self::Collapsed => Self::Expanded,
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "expanded" => Ok(Self::Expanded),
+            "collapsed" => Ok(Self::Collapsed),
+            _ => Err(format!(
+                "sidebar must be \"expanded\" or \"collapsed\", got \"{value}\""
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CuenvTaskKind {
     Task,
@@ -208,6 +283,8 @@ struct CuettyDto {
     rail: Option<String>,
     #[serde(default)]
     titlebar: Option<bool>,
+    #[serde(default)]
+    sidebar: Option<String>,
     #[serde(default)]
     keybindings: Option<KeybindingsDto>,
     #[serde(default)]
@@ -536,6 +613,10 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         },
         None => None,
     };
+    let sidebar = match dto.sidebar.as_deref().map(SidebarMode::parse).transpose() {
+        Ok(sidebar) => sidebar.unwrap_or_default(),
+        Err(error) => return Evaluation::Invalid(error),
+    };
     let keybindings = match dto.keybindings.and_then(|keys| keys.palette) {
         Some(value) => match KeyChord::parse(&value) {
             Ok(palette) => Keybindings { palette },
@@ -585,6 +666,7 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
             .titlebar
             .map(TitlebarVisibility::from)
             .unwrap_or_default(),
+        sidebar,
         keybindings,
         terminal: Box::new(terminal),
     })
@@ -813,6 +895,22 @@ impl CuenvProvider for NativeCuenvProvider {
     }
 }
 
+/// Evaluates `source` if that takes no longer than `wait`. For configuration that
+/// should be in place before something is shown, but must never hold it up for long:
+/// a slow evaluation is left to finish on its own, and its result dropped.
+pub fn evaluate_within(
+    provider: Arc<dyn CuenvProvider>,
+    source: ConfigSource,
+    wait: Duration,
+) -> Option<Evaluation> {
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // The receiver has gone if this took longer than it would wait.
+        let _ = result_tx.send(provider.evaluate(&source));
+    });
+    result_rx.recv_timeout(wait).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,6 +923,7 @@ mod tests {
                 banner: Some("Welcome to Cuetty".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
+                sidebar: SidebarMode::Expanded,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -924,6 +1023,158 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_defaults_to_expanded_and_can_start_collapsed() {
+        let sidebar = |value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.sidebar,
+            other => panic!("unexpected evaluation: {other:?}"),
+        };
+        assert_eq!(sidebar(serde_json::json!({})), SidebarMode::Expanded);
+        assert_eq!(
+            sidebar(serde_json::json!({"sidebar": "expanded"})),
+            SidebarMode::Expanded
+        );
+        assert_eq!(
+            sidebar(serde_json::json!({"sidebar": "collapsed"})),
+            SidebarMode::Collapsed
+        );
+        for invalid in [
+            serde_json::json!({"sidebar": "Collapsed"}),
+            serde_json::json!({"sidebar": "hidden"}),
+            serde_json::json!({"sidebar": false}),
+        ] {
+            assert!(
+                matches!(parse_value(invalid.clone()), Evaluation::Invalid(_)),
+                "{invalid}"
+            );
+        }
+    }
+
+    fn evaluation_with_sidebar(sidebar: SidebarMode) -> Evaluation {
+        Evaluation::Valid(CuettyPresentation {
+            sidebar,
+            ..CuettyPresentation::default()
+        })
+    }
+
+    #[test]
+    fn only_the_first_evaluation_a_window_sees_sets_its_sidebar() {
+        let mut sidebar = WindowSidebar::default();
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        sidebar.observe(&Evaluation::Invalid("broken".into()));
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+
+        // Neither another directory's setting nor having none moves it.
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Expanded));
+        sidebar.observe(&Evaluation::Absent);
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+    }
+
+    #[test]
+    fn a_window_opens_on_the_global_sidebar_until_an_evaluation_settles_it() {
+        let mut sidebar =
+            WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        // Saying nothing leaves it where it opened, not on the default.
+        sidebar.observe(&Evaluation::Invalid("broken".into()));
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        // The directory it opened in has the last word.
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Expanded));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    #[test]
+    fn a_broken_global_package_opens_on_the_default_sidebar() {
+        let sidebar = WindowSidebar::expecting(&Evaluation::Invalid("broken".into()));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        assert_eq!(
+            WindowSidebar::expecting(&Evaluation::Absent).mode(),
+            SidebarMode::Expanded
+        );
+    }
+
+    #[test]
+    fn the_toggle_works_from_where_the_window_opened() {
+        let mut sidebar =
+            WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        sidebar.toggle();
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    /// Evaluates once `release` says to, and to nothing in particular.
+    struct GatedProvider {
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl CuenvProvider for GatedProvider {
+        fn evaluate(&self, _source: &ConfigSource) -> Evaluation {
+            let _ = self.release.lock().unwrap().recv();
+            Evaluation::Absent
+        }
+
+        fn watch(
+            &self,
+            _source: &ConfigSource,
+            _notify: async_channel::Sender<()>,
+        ) -> Result<Box<dyn CuenvWatcher>, String> {
+            Err("not watched".into())
+        }
+    }
+
+    fn gated_provider() -> (Arc<dyn CuenvProvider>, std::sync::mpsc::Sender<()>) {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let provider = GatedProvider {
+            release: Mutex::new(release_rx),
+        };
+        (Arc::new(provider), release_tx)
+    }
+
+    fn any_source() -> ConfigSource {
+        ConfigSource {
+            module_root: None,
+            target_dir: PathBuf::from("/nowhere"),
+            global_dir: None,
+        }
+    }
+
+    #[test]
+    fn an_evaluation_in_time_is_returned() {
+        let (provider, release) = gated_provider();
+        release.send(()).unwrap();
+        let evaluation = evaluate_within(provider, any_source(), Duration::from_secs(30));
+        assert_eq!(evaluation, Some(Evaluation::Absent));
+    }
+
+    #[test]
+    fn an_evaluation_that_takes_too_long_is_given_up_on() {
+        // Never released, so it is still going when the wait runs out.
+        let (provider, _release) = gated_provider();
+        let evaluation = evaluate_within(provider, any_source(), Duration::from_millis(1));
+        assert_eq!(evaluation, None);
+    }
+
+    #[test]
+    fn a_directory_without_configuration_settles_the_sidebar_on_its_default() {
+        let mut sidebar = WindowSidebar::default();
+        sidebar.observe(&Evaluation::Absent);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    #[test]
+    fn the_toggle_outranks_an_evaluation_still_on_its_way() {
+        let mut sidebar = WindowSidebar::default();
+        sidebar.toggle();
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Expanded));
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        sidebar.toggle();
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    #[test]
     fn pane_state_clears_on_cwd_changes_and_rejects_stale_results() {
         let mut state = CuenvPaneState::default();
         assert!(state.observe_cwd(PathBuf::from("/a")));
@@ -934,6 +1185,7 @@ mod tests {
                 banner: Some("A".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
+                sidebar: SidebarMode::Expanded,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -946,6 +1198,7 @@ mod tests {
                 banner: Some("late A".into()),
                 rail: None,
                 titlebar: TitlebarVisibility::Shown,
+                sidebar: SidebarMode::Expanded,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -998,6 +1251,7 @@ mod tests {
             banner: Some("A".into()),
             rail: None,
             titlebar: TitlebarVisibility::Shown,
+            sidebar: SidebarMode::Expanded,
             keybindings: Keybindings::default(),
             terminal: Box::default(),
         };
@@ -1016,6 +1270,7 @@ mod tests {
             banner: Some("A".into()),
             rail: Some(RailColor(255, 0, 0)),
             titlebar: TitlebarVisibility::Shown,
+            sidebar: SidebarMode::Expanded,
             keybindings: Keybindings::default(),
             terminal: Box::default(),
         };
@@ -1234,6 +1489,7 @@ mod tests {
                 banner: Some("global".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Hidden,
+                sidebar: SidebarMode::Expanded,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })

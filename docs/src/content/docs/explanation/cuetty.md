@@ -69,8 +69,8 @@ The current usable slice includes:
   Physical device input and macOS still need interactive verification.
 - The active pane's post-layout GPUI canvas is the source of truth for each Rio
   resize, so the measured width already excludes the title strip, terminal
-  inset, divider, and fixed rail width instead of leaving a stale frame
-  clipped in the viewport.
+  inset, divider, and the sidebar in its current state instead of leaving a stale
+  frame clipped in the viewport, so toggling the sidebar resizes the grid.
 - The terminal surface defaults to a 14px inset from the host chrome; the
   inset uses the same terminal surface colour and is subtracted from the Rio grid
   dimensions as well as the rendered bounds. Its opposing edges constrain the
@@ -88,8 +88,10 @@ The current usable slice includes:
   is Ctrl-1 to Ctrl-9 selecting a tab that exists.
   Ctrl-Page Up and Ctrl-Page Down switch to the previous and next tab,
   wrapping at either end. The task palette is configurable (see below).
-- A fixed 56px right-side vertical tab rail. Each tab shows the initial of its
-  name, with the full name as a tooltip. A tab is named after, in order, the name
+- A right-side tab sidebar, 200px wide and listing tabs by name, that collapses
+  to 56px with its toggle or Cmd-B (Ctrl-Shift-B on Linux). Collapsed, each tab
+  shows an initial taken from its user-set name, project banner, or directory, so it
+  stays put as programs come and go, with the full name as a tooltip. A tab is named after, in order, the name
   the user gave it, the Cuenv task it is running, the program in its foreground or
   a title that program set, and finally its directory; with none of those it is
   `Terminal`. A task launched from Cuetty names its tab until `cuenv` hands the
@@ -162,6 +164,7 @@ transparency: 10
 | `font.lineHeight` | Line-height multiplier, 0.5–3 | 1.2 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 14 each |
 | `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and rail share this opacity | 0 |
+| `sidebar` | `"expanded"` or `"collapsed"`: how a window's sidebar starts. A window opens with the global package's look and sidebar when that evaluates within half a second, so its first frame is already the right size, then its first directory's evaluation settles the setting. Only that first configuration is read, so changing directory or editing the value later does not move it, and the toggle and its shortcut outrank it for the life of the window | `"expanded"` |
 
 Fields are optional. The active tab's settings determine the rendered grid,
 terminal inset, and window material. At `transparency: 0` the whole window is
@@ -274,6 +277,8 @@ keybindings: palette: *"ctrl-shift-p" | string
 
 A chord is `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`)
 followed by a key, matched case-insensitively against that exact modifier set.
+Cmd-B on macOS and Ctrl-Shift-B elsewhere collapse and expand the sidebar.
+
 A palette chord takes precedence over the tab number and Ctrl-Page chords it
 conflicts with, as the binding the user chose.
 The palette only claims its chord when the active directory has a task

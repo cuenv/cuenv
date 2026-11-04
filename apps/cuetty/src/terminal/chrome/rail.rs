@@ -1,16 +1,16 @@
 use super::icons::Icon;
 use super::tokens::{ChromeColors, border, opaque, radius, size, space, text};
 use super::tooltip::chrome_tooltip;
-use crate::integrations::cuenv::RailColor;
-use crate::terminal::engine::TerminalView;
+use crate::integrations::cuenv::{RailColor, SidebarMode};
+use crate::terminal::engine::{SIDEBAR_TOGGLE_KEY, TerminalView, app_chord_label, tab_number_hint};
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::TerminalTheme;
-use crate::terminal::tab_label::{tab_initial, tab_tooltip};
+use crate::terminal::tab_label::{TabMarkSources, tab_mark, tab_tooltip};
 use crate::terminal::workspace_shell::TabNumber;
 use crate::workspace::TabId;
 use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, Rgba, StatefulInteractiveElement,
-    Styled, div, prelude::FluentBuilder,
+    Context, Div, InteractiveElement, IntoElement, ParentElement, Rgba, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
 };
 
 /// The active tab's marker: the project accent from a matching `package cuetty`,
@@ -56,115 +56,64 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = ChromeColors::from_theme(theme);
+        let mode = self.sidebar_mode();
         let marker_color = active_tab_marker_color(
             self.active_state()
                 .and_then(|state| state.cuenv.presentation.rail),
             &colors,
         );
-        let mut tabs = div()
+        let tab_list = self.registry.workspace.workspace().tabs();
+        let tabs = tab_list
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let label = self.registry.tab_label(tab);
+                let cuenv = self
+                    .registry
+                    .sessions
+                    .get(&tab.focused)
+                    .map(|state| &state.cuenv);
+                let banner = cuenv.and_then(|cuenv| cuenv.presentation.banner.as_deref());
+                let tooltip = tab_tooltip(&label, banner);
+                let mark = tab_mark(TabMarkSources {
+                    custom_name: tab.custom_name.as_deref(),
+                    banner,
+                    directory: cuenv.and_then(|cuenv| cuenv.cwd.as_deref()),
+                    label: &label,
+                });
+                render_tab_row(
+                    TabRow {
+                        id: tab.id,
+                        label,
+                        mark,
+                        tooltip,
+                        number: self
+                            .tab_hints_visible
+                            .then(|| TabNumber::of_position(index, tab_list.len()))
+                            .flatten(),
+                        selected: active_tab == Some(tab.id),
+                        mode,
+                        marker_color,
+                        colors,
+                        mono: self.mono_font_family(),
+                    },
+                    cx,
+                )
+            })
+            .collect::<Vec<_>>();
+        let tabs = div()
             .id("cuetty-rail-tabs")
             .track_scroll(&self.rail_scroll)
             .overflow_y_scroll()
             .flex_1()
             .flex()
             .flex_col()
-            .gap(space::SM)
+            .gap(space::XXS)
             .p(space::MD)
-            .min_h_0();
-        let tab_list = self.registry.workspace.workspace().tabs();
-        for (index, tab) in tab_list.iter().enumerate() {
-            let tab_id = tab.id;
-            let selected = active_tab == Some(tab_id);
-            let label = self.registry.tab_label(tab);
-            let tooltip_label = tab_tooltip(
-                &label,
-                self.registry
-                    .sessions
-                    .get(&tab.focused)
-                    .and_then(|state| state.cuenv.presentation.banner.as_deref()),
-            );
-            let number = self
-                .tab_hints_visible
-                .then(|| TabNumber::of_position(index, tab_list.len()))
-                .flatten();
-            let mut tab_button = div()
-                .id(("cuetty-rail-tab", tab_id.get()))
-                .relative()
-                .w_full()
-                .min_h(size::TAB_ROW_HEIGHT)
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(space::XXS)
-                .rounded(radius::CONTROL)
-                .hover(|this| this.bg(colors.state))
-                .cursor_pointer()
-                .on_click(cx.listener(move |view, _event, window, cx| {
-                    view.select_terminal_tab(tab_id, window, cx);
-                }))
-                .tooltip(chrome_tooltip(tooltip_label, colors));
-            tab_button = tab_button
-                .when(selected, |this| {
-                    this.child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top_0()
-                            .bottom_0()
-                            .flex()
-                            .items_center()
-                            .child(
-                                div()
-                                    .w(size::TAB_MARKER_WIDTH)
-                                    .h(size::TAB_MARKER_HEIGHT)
-                                    .rounded(radius::CONTROL)
-                                    .bg(marker_color),
-                            ),
-                    )
-                })
-                .child(
-                    div()
-                        .w(size::TAB_MARK)
-                        .h(size::TAB_MARK)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(radius::CONTROL)
-                        .when(selected, |this| this.bg(colors.state))
-                        .text_center()
-                        .text_size(text::LABEL)
-                        .when(number.is_some(), |this| {
-                            this.font_family(self.mono_font_family())
-                        })
-                        .font_weight(if selected {
-                            text::STRONG
-                        } else {
-                            text::REGULAR
-                        })
-                        .text_color(if number.is_some() {
-                            colors.text_muted
-                        } else if selected {
-                            colors.text
-                        } else {
-                            colors.text_secondary
-                        })
-                        .child(number.map_or_else(
-                            || tab_initial(&label),
-                            |number| number.digit().to_string(),
-                        )),
-                );
-            tabs = tabs.child(tab_button);
-        }
+            .min_h_0()
+            .children(tabs);
         let integration_notice = active_tab
-            .and_then(|tab_id| {
-                self.registry
-                    .workspace
-                    .workspace()
-                    .tabs()
-                    .iter()
-                    .find(|tab| tab.id == tab_id)
-            })
+            .and_then(|tab_id| tab_list.iter().find(|tab| tab.id == tab_id))
             .and_then(|tab| self.registry.sessions.get(&tab.focused))
             .and_then(|state| {
                 state
@@ -173,24 +122,16 @@ impl TerminalView {
                     .as_deref()
                     .or(state.cuenv.task_notice.as_deref())
             });
-        // The rail is too narrow to read a message in, and an evaluation error can
-        // run to hundreds of characters. A marker reports that there is one and
-        // can never displace the tabs or controls.
+        // A message does not fit here, and an evaluation error can run to hundreds
+        // of characters. A marker reports that there is one and can never displace
+        // the tabs or controls.
         let notice_marker = self
             .registry
             .notice
             .as_deref()
             .or(integration_notice)
             .map(|notice| {
-                div()
-                    .id("cuetty-notice")
-                    .w(size::CONTROL_WIDTH)
-                    .h(size::CONTROL_HEIGHT)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(radius::CONTROL)
-                    .hover(|this| this.bg(colors.state))
+                control(&colors, "cuetty-notice")
                     .tooltip(chrome_tooltip(notice.to_string(), colors))
                     .child(
                         div()
@@ -202,52 +143,19 @@ impl TerminalView {
         let has_tasks = self
             .active_state()
             .is_some_and(|state| !state.cuenv.tasks.is_empty());
-        let rail = div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .bg(colors.material)
-            .border_l(border::HAIRLINE)
-            .border_color(colors.divider)
-            .child(tabs);
-        let mut footer = div()
-            .w_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(space::XS)
-            .py(space::SM)
-            .border_t(border::HAIRLINE)
-            .border_color(colors.divider);
-        let new_tab = div()
-            .id("cuetty-new-tab")
-            .w(size::CONTROL_WIDTH)
-            .h(size::CONTROL_HEIGHT)
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(radius::CONTROL)
-            .hover(|this| this.bg(colors.state))
+        let new_tab = control(&colors, "cuetty-new-tab")
             .cursor_pointer()
-            .tooltip(chrome_tooltip("New tab", colors))
+            .tooltip(chrome_tooltip(
+                format!("New tab · {}", app_chord_label("t")),
+                colors,
+            ))
             .on_click(cx.listener(|view, _event, window, cx| {
                 view.new_tab(window, cx);
             }))
             .child(Icon::Plus.element(colors.text_secondary));
         let palette_chord = self.palette_chord_label();
-        let tasks = div()
-            .id("cuetty-tasks")
-            .w(size::CONTROL_WIDTH)
-            .h(size::CONTROL_HEIGHT)
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(radius::CONTROL)
+        let tasks = control(&colors, "cuetty-tasks")
             .when(self.task_sidebar_open, |this| this.bg(colors.state))
-            .hover(|this| this.bg(colors.state))
             .cursor_pointer()
             .tooltip(chrome_tooltip(
                 format!("Cuenv tasks · {palette_chord} to search"),
@@ -258,12 +166,168 @@ impl TerminalView {
                 cx.notify();
             }))
             .child(Icon::Tasks.element(colors.text_secondary));
-        footer = footer
+        let (toggle_label, toggle_icon) = match mode {
+            SidebarMode::Expanded => ("Collapse sidebar", Icon::SidebarCollapse),
+            SidebarMode::Collapsed => ("Expand sidebar", Icon::SidebarExpand),
+        };
+        let toggle = control(&colors, "cuetty-sidebar-toggle")
+            .cursor_pointer()
+            .tooltip(chrome_tooltip(
+                format!("{toggle_label} · {}", app_chord_label(SIDEBAR_TOGGLE_KEY)),
+                colors,
+            ))
+            .on_click(cx.listener(|view, _event, _window, cx| view.toggle_sidebar(cx)))
+            .child(toggle_icon.element(colors.text_secondary));
+        let footer = div()
+            .w_full()
+            .flex_shrink_0()
+            .flex()
+            .gap(space::XS)
+            .p(space::SM)
+            .border_t(border::HAIRLINE)
+            .border_color(colors.divider)
+            .map(|this| match mode {
+                SidebarMode::Expanded => this.flex_row().items_center(),
+                SidebarMode::Collapsed => this.flex_col().items_center(),
+            })
             .children(notice_marker)
             .child(new_tab)
-            .when(has_tasks, |this| this.child(tasks));
-        rail.child(footer).into_any_element()
+            .when(has_tasks, |this| this.child(tasks))
+            // Expanded, the toggle sits at the far end of the row, where the
+            // collapsed sidebar's edge will be.
+            .when(mode == SidebarMode::Expanded, |this| {
+                this.child(div().flex_1())
+            })
+            .child(toggle);
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .bg(colors.material)
+            .border_l(border::HAIRLINE)
+            .border_color(colors.divider)
+            .child(tabs)
+            .child(footer)
+            .into_any_element()
     }
+}
+
+/// The square-ish hit target every sidebar control shares.
+fn control(colors: &ChromeColors, id: &'static str) -> Stateful<Div> {
+    let hover = colors.state;
+    div()
+        .id(id)
+        .w(size::CONTROL_WIDTH)
+        .h(size::CONTROL_HEIGHT)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(radius::CONTROL)
+        .hover(move |this| this.bg(hover))
+}
+
+/// What a row in the tab list shows.
+struct TabRow {
+    id: TabId,
+    label: String,
+    /// What stands in for the label when the sidebar is collapsed.
+    mark: String,
+    tooltip: String,
+    number: Option<TabNumber>,
+    selected: bool,
+    mode: SidebarMode,
+    marker_color: Rgba,
+    colors: ChromeColors,
+    mono: SharedString,
+}
+
+fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> {
+    let TabRow {
+        id,
+        label,
+        mark,
+        tooltip,
+        number,
+        selected,
+        mode,
+        marker_color,
+        colors,
+        mono,
+    } = row;
+    let hover = colors.state;
+    let text_color = if selected {
+        colors.text
+    } else {
+        colors.text_secondary
+    };
+    div()
+        .id(("cuetty-rail-tab", id.get()))
+        .relative()
+        .w_full()
+        .h(size::TAB_ROW_HEIGHT)
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .rounded(radius::CONTROL)
+        .hover(move |this| this.bg(hover))
+        .cursor_pointer()
+        .on_click(cx.listener(move |view, _event, window, cx| {
+            view.select_terminal_tab(id, window, cx);
+        }))
+        .tooltip(chrome_tooltip(tooltip, colors))
+        .text_size(text::BODY)
+        .text_color(text_color)
+        .font_weight(if selected {
+            text::MEDIUM
+        } else {
+            text::REGULAR
+        })
+        .when(selected, |this| {
+            this.bg(colors.state).child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(size::TAB_MARKER_WIDTH)
+                            .h(size::TAB_MARKER_HEIGHT)
+                            .rounded(radius::CONTROL)
+                            .bg(marker_color),
+                    ),
+            )
+        })
+        .map(|this| match mode {
+            SidebarMode::Expanded => this
+                .gap(space::MD)
+                .px(space::LG)
+                .child(div().flex_1().min_w_0().truncate().child(label))
+                .children(number.map(|number| {
+                    div()
+                        .flex_none()
+                        .font_family(mono.clone())
+                        .text_size(text::CAPTION)
+                        .text_color(colors.text_muted)
+                        .font_weight(text::REGULAR)
+                        .child(tab_number_hint(number))
+                })),
+            // Only a character fits, so the hint stands in for the mark.
+            SidebarMode::Collapsed => this.justify_center().child(match number {
+                Some(number) => div()
+                    .font_family(mono.clone())
+                    .text_size(text::LABEL)
+                    .text_color(colors.text_muted)
+                    .font_weight(text::REGULAR)
+                    .child(number.digit().to_string()),
+                None => div().child(mark),
+            }),
+        })
 }
 
 #[cfg(test)]

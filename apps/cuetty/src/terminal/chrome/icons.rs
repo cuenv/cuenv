@@ -11,15 +11,26 @@ use std::borrow::Cow;
 pub(super) enum Icon {
     Plus,
     Tasks,
+    /// Collapses the sidebar towards the window edge.
+    SidebarCollapse,
+    /// Expands the sidebar away from the window edge.
+    SidebarExpand,
 }
 
 impl Icon {
-    const ALL: [Self; 2] = [Self::Plus, Self::Tasks];
+    const ALL: [Self; 4] = [
+        Self::Plus,
+        Self::Tasks,
+        Self::SidebarCollapse,
+        Self::SidebarExpand,
+    ];
 
     const fn path(self) -> &'static str {
         match self {
             Self::Plus => "icons/plus.svg",
             Self::Tasks => "icons/list-todo.svg",
+            Self::SidebarCollapse => "icons/panel-right-close.svg",
+            Self::SidebarExpand => "icons/panel-right-open.svg",
         }
     }
 
@@ -27,6 +38,8 @@ impl Icon {
         match self {
             Self::Plus => include_bytes!("../../../assets/icons/plus.svg"),
             Self::Tasks => include_bytes!("../../../assets/icons/list-todo.svg"),
+            Self::SidebarCollapse => include_bytes!("../../../assets/icons/panel-right-close.svg"),
+            Self::SidebarExpand => include_bytes!("../../../assets/icons/panel-right-open.svg"),
         }
     }
 

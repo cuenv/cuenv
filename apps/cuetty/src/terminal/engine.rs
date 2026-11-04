@@ -18,7 +18,8 @@ use super::workspace_shell::{
 };
 use crate::integrations::cuenv::{
     ChordModifiers, ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher,
-    Evaluation, KeyChord, NativeCuenvProvider, TaskEvaluation,
+    Evaluation, KeyChord, NativeCuenvProvider, SidebarMode, TaskEvaluation, WindowSidebar,
+    evaluate_within,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
@@ -853,7 +854,15 @@ pub(super) struct TerminalView {
     /// Identifies the latest modifier change, so a delayed reveal can tell it has
     /// been overtaken.
     tab_hint_request: u64,
+    sidebar: WindowSidebar,
 }
+
+/// The key that toggles the sidebar with the application chord.
+pub(super) const SIDEBAR_TOGGLE_KEY: &str = "b";
+
+/// How long a window's first frame may wait on the global configuration. Going over
+/// only means the configuration arrives after the frame, as a directory's does.
+const FIRST_FRAME_CONFIG_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// How long the tab number modifier must be held before the hints appear.
 const TAB_HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(350);
@@ -975,6 +984,35 @@ fn tab_number_shortcut(key: &str, modifiers: gpui::Modifiers) -> Option<TabNumbe
         .flatten()
 }
 
+/// The modifiers of Cuetty's primary application chord, as [`app_chord`] reads it.
+fn app_chord_modifiers() -> ChordModifiers {
+    let macos = cfg!(target_os = "macos");
+    ChordModifiers {
+        control: !macos,
+        shift: !macos,
+        platform: macos,
+        ..ChordModifiers::default()
+    }
+}
+
+/// How the application chord on `key` is written on this platform.
+pub(super) fn app_chord_label(key: &str) -> String {
+    KeyChord {
+        key: key.into(),
+        modifiers: app_chord_modifiers(),
+    }
+    .label()
+}
+
+/// The chord shown for a tab's number key, such as `⌘1` or `Ctrl+1`.
+pub(super) fn tab_number_hint(number: TabNumber) -> String {
+    KeyChord {
+        key: number.digit().to_string(),
+        modifiers: tab_number_modifiers(),
+    }
+    .label()
+}
+
 /// Whether a key press is exactly the configured chord.
 fn chord_matches(chord: &KeyChord, key: &str, modifiers: gpui::Modifiers) -> bool {
     key.eq_ignore_ascii_case(&chord.key)
@@ -1093,8 +1131,25 @@ impl TerminalView {
         let window_background = theme.window_background();
         let factory: Arc<dyn TerminalSessionFactory> = Arc::new(RioTerminalFactory);
         match SessionRegistry::start(factory.clone(), 720, 432, metrics.rio_cell()) {
-            Ok((registry, wake_rx)) => {
+            Ok((mut registry, wake_rx)) => {
                 let pane = registry.active_pane().expect("initial workspace pane");
+                // The window's first frame sizes the grid, so what shapes it has to be
+                // known by then. A pane carries this look over until its directory
+                // has evaluated.
+                let sidebar = ConfigSource::from_working_directory(None)
+                    .ok()
+                    .flatten()
+                    .and_then(|source| {
+                        evaluate_within(Arc::clone(&cuenv), source, FIRST_FRAME_CONFIG_WAIT)
+                    })
+                    .map_or_else(WindowSidebar::default, |global| {
+                        let sidebar = WindowSidebar::expecting(&global);
+                        if let Some(state) = registry.sessions.get_mut(&pane) {
+                            let generation = state.cuenv.begin_source();
+                            state.cuenv.apply(generation, global);
+                        }
+                        sidebar
+                    });
                 let mut view = Self {
                     registry,
                     cuenv,
@@ -1114,6 +1169,7 @@ impl TerminalView {
                     rail_revealed_tab: None,
                     tab_hints_visible: false,
                     tab_hint_request: 0,
+                    sidebar,
                 };
                 view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
                 view.spawn_cwd_poll(cx);
@@ -1142,6 +1198,7 @@ impl TerminalView {
                     rail_revealed_tab: None,
                     tab_hints_visible: false,
                     tab_hint_request: 0,
+                    sidebar: WindowSidebar::default(),
                 }
             }
         }
@@ -1340,6 +1397,9 @@ impl TerminalView {
         };
         if state.generation != target.session_generation {
             return;
+        }
+        if is_active && state.cuenv.generation == target.config_generation {
+            self.sidebar.observe(&update.presentation);
         }
         if !state
             .cuenv
@@ -1610,6 +1670,17 @@ impl TerminalView {
         }
     }
 
+    pub(super) fn sidebar_mode(&self) -> SidebarMode {
+        self.sidebar.mode()
+    }
+
+    /// The terminal grid follows on its own: it is resized from the bounds
+    /// measured in the layout this change causes.
+    pub(super) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar.toggle();
+        cx.notify();
+    }
+
     /// Toggles the task palette, returning whether the active pane has a
     /// task catalogue to show.
     fn toggle_task_palette(&mut self) -> bool {
@@ -1806,6 +1877,10 @@ impl TerminalView {
                 _ => self.apply_workspace_action(ShellAction::Shortcut(shortcut)),
             }
             cx.notify();
+            return;
+        }
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case(SIDEBAR_TOGGLE_KEY) {
+            self.toggle_sidebar(cx);
             return;
         }
         // Every pane in the workspace registry owns a live Rio session. Keep
@@ -2563,6 +2638,46 @@ mod tests {
         assert_eq!(
             route_chord("1", held, &without_catalogue),
             ChordRoute::SelectTab(tabs.active_tab().unwrap()),
+        );
+    }
+
+    #[test]
+    fn the_tab_hint_names_the_chord_that_selects_the_tab() {
+        assert_eq!(
+            tab_number_hint(TabNumber::from_key("3").unwrap()),
+            if cfg!(target_os = "macos") {
+                "⌘3"
+            } else {
+                "Ctrl+3"
+            }
+        );
+    }
+
+    #[test]
+    fn the_app_chord_label_describes_a_chord_the_app_accepts() {
+        let ChordModifiers {
+            control,
+            alt,
+            shift,
+            platform,
+        } = app_chord_modifiers();
+        assert_eq!(
+            app_chord(gpui::Modifiers {
+                control,
+                alt,
+                shift,
+                platform,
+                function: false,
+            }),
+            Some(AppChord::Primary)
+        );
+        assert_eq!(
+            app_chord_label("b"),
+            if cfg!(target_os = "macos") {
+                "⌘B"
+            } else {
+                "Ctrl+Shift+B"
+            }
         );
     }
 

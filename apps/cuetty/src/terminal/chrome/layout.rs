@@ -1,5 +1,5 @@
 use super::tokens::{ChromeColors, border, material_color, size, space, text, ui_font_family};
-use crate::integrations::cuenv::TitlebarVisibility;
+use crate::integrations::cuenv::{SidebarMode, TitlebarVisibility};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
 use gpui::{
@@ -55,7 +55,15 @@ impl TerminalView {
                     .bg(material_color(theme, theme.surface))
                     .child(content),
             )
-            .child(div().w(size::RAIL_WIDTH).flex_shrink_0().child(sidebar));
+            .child(
+                div()
+                    .w(match self.sidebar_mode() {
+                        SidebarMode::Expanded => size::SIDEBAR_EXPANDED_WIDTH,
+                        SidebarMode::Collapsed => size::SIDEBAR_COLLAPSED_WIDTH,
+                    })
+                    .flex_shrink_0()
+                    .child(sidebar),
+            );
         let titlebar_visibility = self
             .active_state()
             .map(|state| state.cuenv.presentation.titlebar)
