@@ -14,19 +14,19 @@ use super::presentation::{TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
 use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
 use super::workspace_shell::{
-    ShellAction, ShellError, TabDirection, WorkspaceShell, WorkspaceShortcut,
+    ShellAction, ShellError, TabDirection, TabNumber, WorkspaceShell, WorkspaceShortcut,
 };
 use crate::integrations::cuenv::{
-    ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation, KeyChord,
-    NativeCuenvProvider, TaskEvaluation,
+    ChordModifiers, ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher,
+    Evaluation, KeyChord, NativeCuenvProvider, TaskEvaluation,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Edges, Element,
     FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyBinding, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Size,
-    StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
+    KeyBinding, Menu, MenuItem, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
+    SharedString, Size, StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
     UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
     WindowOptions, actions, canvas, div, point, px, quad, size,
 };
@@ -847,7 +847,16 @@ pub(super) struct TerminalView {
     pub(super) task_palette_scroll: ScrollHandle,
     pub(super) rail_scroll: ScrollHandle,
     pub(super) rail_revealed_tab: Option<TabId>,
+    /// Whether the rail is showing each tab's number key. Stays off until the
+    /// modifier has been held a moment, so typing Ctrl-C never flashes it.
+    pub(super) tab_hints_visible: bool,
+    /// Identifies the latest modifier change, so a delayed reveal can tell it has
+    /// been overtaken.
+    tab_hint_request: u64,
 }
+
+/// How long the tab number modifier must be held before the hints appear.
+const TAB_HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(350);
 
 /// How many filtered tasks the palette shows and the keyboard can reach.
 pub(super) const PALETTE_RESULT_LIMIT: usize = 9;
@@ -939,6 +948,33 @@ fn app_chord(modifiers: gpui::Modifiers) -> Option<AppChord> {
     })
 }
 
+/// The modifiers tabs are selected by number with: Command on macOS and Control
+/// elsewhere. Ctrl-2 to Ctrl-8 are also legacy aliases for control bytes, so a chord
+/// is only taken when it reaches a tab; see [`route_chord`].
+fn tab_number_modifiers() -> ChordModifiers {
+    let macos = cfg!(target_os = "macos");
+    ChordModifiers {
+        control: !macos,
+        platform: macos,
+        ..ChordModifiers::default()
+    }
+}
+
+/// Whether exactly the tab number modifiers are held.
+fn tab_number_modifiers_held(modifiers: gpui::Modifiers) -> bool {
+    let expected = tab_number_modifiers();
+    modifiers.control == expected.control
+        && modifiers.platform == expected.platform
+        && !modifiers.alt
+        && !modifiers.shift
+}
+
+fn tab_number_shortcut(key: &str, modifiers: gpui::Modifiers) -> Option<TabNumber> {
+    tab_number_modifiers_held(modifiers)
+        .then(|| TabNumber::from_key(key))
+        .flatten()
+}
+
 /// Whether a key press is exactly the configured chord.
 fn chord_matches(chord: &KeyChord, key: &str, modifiers: gpui::Modifiers) -> bool {
     key.eq_ignore_ascii_case(&chord.key)
@@ -946,6 +982,37 @@ fn chord_matches(chord: &KeyChord, key: &str, modifiers: gpui::Modifiers) -> boo
         && modifiers.alt == chord.modifiers.alt
         && modifiers.shift == chord.modifiers.shift
         && modifiers.platform == chord.modifiers.platform
+}
+
+/// Where a key press goes before the terminal gets a look at it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChordRoute {
+    OpenPalette,
+    SelectTab(TabId),
+    /// Not claimed here, which leaves it to the remaining shortcuts and the terminal.
+    Unclaimed,
+}
+
+/// What a key press could select.
+struct ChordTargets<'a> {
+    /// The palette's chord, when there is a task catalogue for it to open.
+    palette: Option<&'a KeyChord>,
+    tabs: &'a WorkspaceShell,
+}
+
+/// Routes a key press. The palette's chord comes first because the user chose it. A
+/// tab number that reaches no tab is unclaimed, since off macOS most of those chords
+/// are also control bytes an application may be waiting for.
+fn route_chord(key: &str, modifiers: gpui::Modifiers, targets: &ChordTargets<'_>) -> ChordRoute {
+    if targets
+        .palette
+        .is_some_and(|palette| chord_matches(palette, key, modifiers))
+    {
+        return ChordRoute::OpenPalette;
+    }
+    tab_number_shortcut(key, modifiers)
+        .and_then(|number| targets.tabs.tab_at_number(number))
+        .map_or(ChordRoute::Unclaimed, ChordRoute::SelectTab)
 }
 
 fn terminal_key_input(key: &str, key_char: Option<&str>) -> Option<KeyInput> {
@@ -1013,6 +1080,13 @@ impl TerminalView {
     ) -> Self {
         cx.observe_window_bounds(window, move |_, _, cx| cx.notify())
             .detach();
+        // A modifier released while another window has focus is never reported.
+        cx.observe_window_activation(window, |view, window, cx| {
+            if !window.is_window_active() {
+                view.hide_tab_hints(cx);
+            }
+        })
+        .detach();
         let config = TerminalConfig::default();
         let metrics = TerminalMetrics::from_config(cx.text_system(), &config);
         let theme = TerminalTheme::from_config(&config);
@@ -1038,6 +1112,8 @@ impl TerminalView {
                     task_palette_scroll: ScrollHandle::new(),
                     rail_scroll: ScrollHandle::new(),
                     rail_revealed_tab: None,
+                    tab_hints_visible: false,
+                    tab_hint_request: 0,
                 };
                 view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
                 view.spawn_cwd_poll(cx);
@@ -1064,6 +1140,8 @@ impl TerminalView {
                     task_palette_scroll: ScrollHandle::new(),
                     rail_scroll: ScrollHandle::new(),
                     rail_revealed_tab: None,
+                    tab_hints_visible: false,
+                    tab_hint_request: 0,
                 }
             }
         }
@@ -1647,26 +1725,71 @@ impl TerminalView {
         }
     }
 
+    /// Reveals the tab number hints once their modifier has been held a moment.
+    fn modifiers_changed(
+        &mut self,
+        event: &ModifiersChangedEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !tab_number_modifiers_held(event.modifiers) {
+            self.hide_tab_hints(cx);
+            return;
+        }
+        self.tab_hint_request = self.tab_hint_request.wrapping_add(1);
+        let request = self.tab_hint_request;
+        cx.spawn(async move |weak, cx| {
+            Timer::after(TAB_HINT_DELAY).await;
+            let _ = weak.update(cx, |view, cx| {
+                if view.tab_hint_request == request {
+                    view.tab_hints_visible = true;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn hide_tab_hints(&mut self, cx: &mut Context<Self>) {
+        self.tab_hint_request = self.tab_hint_request.wrapping_add(1);
+        if self.tab_hints_visible {
+            self.tab_hints_visible = false;
+            cx.notify();
+        }
+    }
+
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
+        let palette = self
+            .active_state()
+            .filter(|state| !state.cuenv.tasks.is_empty())
+            .map(|state| &state.cuenv.presentation.keybindings.palette);
+        let route = route_chord(
+            key,
+            modifiers,
+            &ChordTargets {
+                palette,
+                tabs: &self.registry.workspace,
+            },
+        );
+        // The hints stay up, so another number can follow without letting go.
+        if let ChordRoute::SelectTab(tab) = route {
+            self.select_terminal_tab(tab, window, cx);
+            return;
+        }
+        // The modifier was held for some other chord, such as Ctrl-C.
+        self.hide_tab_hints(cx);
+        // Without a task catalogue the chord is unclaimed, so a plain Ctrl-K palette
+        // binding still reaches the shell as kill-line.
+        if route == ChordRoute::OpenPalette && self.toggle_task_palette() {
+            cx.notify();
+            return;
+        }
         if let Some(direction) = Self::tab_shortcut(key, modifiers) {
             if let Some(tab) = self.registry.workspace.tab_in_direction(direction) {
                 self.select_terminal_tab(tab, window, cx);
             }
-            return;
-        }
-        let palette_chord = self.active_state().is_some_and(|state| {
-            chord_matches(
-                &state.cuenv.presentation.keybindings.palette,
-                key,
-                modifiers,
-            )
-        });
-        // Without a task catalogue the chord falls through, so a plain
-        // Ctrl-K palette binding still reaches the shell as kill-line.
-        if palette_chord && self.toggle_task_palette() {
-            cx.notify();
             return;
         }
         if self.handle_task_palette_key(event, cx) {
@@ -1962,6 +2085,7 @@ impl Render for TerminalView {
                         .size_full()
                         .track_focus(&self.focus)
                         .on_key_down(cx.listener(Self::key))
+                        .on_modifiers_changed(cx.listener(Self::modifiers_changed))
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                         .on_mouse_move(cx.listener(Self::mouse_move))
                         .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
@@ -2094,7 +2218,6 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::integrations::cuenv::ChordModifiers;
     use crate::terminal::host::SessionStart;
     use crate::terminal::model::Color;
     use crate::terminal::selection::LogicalPosition;
@@ -2351,6 +2474,93 @@ mod tests {
             Some(TabDirection::Previous)
         );
         assert_eq!(TerminalView::tab_shortcut("c", control), None);
+    }
+
+    #[test]
+    fn tabs_are_selected_by_number_on_the_platform_modifier_alone() {
+        let held = gpui::Modifiers {
+            control: !cfg!(target_os = "macos"),
+            platform: cfg!(target_os = "macos"),
+            ..Default::default()
+        };
+        let digit = |key| tab_number_shortcut(key, held).map(TabNumber::digit);
+        assert_eq!(digit("1"), Some(1));
+        assert_eq!(digit("9"), Some(9));
+        assert_eq!(digit("0"), None);
+        assert_eq!(digit("c"), None);
+        assert_eq!(tab_number_shortcut("1", gpui::Modifiers::default()), None);
+        for extra in [
+            gpui::Modifiers {
+                shift: true,
+                ..held
+            },
+            gpui::Modifiers { alt: true, ..held },
+        ] {
+            assert_eq!(tab_number_shortcut("1", extra), None);
+        }
+    }
+
+    /// The modifiers that select a tab by number on this platform.
+    fn tab_number_modifiers_for_test() -> gpui::Modifiers {
+        let expected = tab_number_modifiers();
+        gpui::Modifiers {
+            control: expected.control,
+            platform: expected.platform,
+            ..gpui::Modifiers::default()
+        }
+    }
+
+    fn shell_with_tabs(count: usize) -> WorkspaceShell {
+        let mut shell = WorkspaceShell::new().unwrap();
+        (1..count).for_each(|_| {
+            shell.create_tab("Terminal").unwrap();
+        });
+        shell
+    }
+
+    #[test]
+    fn a_number_reaching_no_tab_is_left_for_the_terminal() {
+        let tabs = shell_with_tabs(1);
+        let targets = ChordTargets {
+            palette: None,
+            tabs: &tabs,
+        };
+        let held = tab_number_modifiers_for_test();
+        assert_eq!(
+            route_chord("6", held, &targets),
+            ChordRoute::Unclaimed,
+            "Ctrl-6 has to stay RS for an application when there is no sixth tab",
+        );
+        assert_eq!(
+            route_chord("1", held, &targets),
+            ChordRoute::SelectTab(tabs.active_tab().unwrap()),
+        );
+    }
+
+    #[test]
+    fn a_palette_chord_on_a_digit_wins_only_when_there_is_a_catalogue() {
+        let tabs = shell_with_tabs(1);
+        let held = tab_number_modifiers_for_test();
+        let palette = KeyChord {
+            key: "1".into(),
+            modifiers: tab_number_modifiers(),
+        };
+        let with_catalogue = ChordTargets {
+            palette: Some(&palette),
+            tabs: &tabs,
+        };
+        assert_eq!(
+            route_chord("1", held, &with_catalogue),
+            ChordRoute::OpenPalette
+        );
+        let without_catalogue = ChordTargets {
+            palette: None,
+            tabs: &tabs,
+        };
+        assert_eq!(
+            route_chord("1", held, &without_catalogue),
+            ChordRoute::SelectTab(tabs.active_tab().unwrap()),
+        );
     }
 
     #[test]

@@ -25,6 +25,52 @@ pub enum TabDirection {
     Next,
 }
 
+/// A tab's place on the number keys, following the browser convention: 1 to 8
+/// count from the first tab and 9 is always the last.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TabNumber(u8);
+
+impl TabNumber {
+    const LAST: u8 = 9;
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        key.parse()
+            .ok()
+            .filter(|digit| (1..=Self::LAST).contains(digit))
+            .map(Self)
+    }
+
+    /// The number that reaches the tab at `index` of `count`, which only the
+    /// first eight tabs and the last one have.
+    pub fn of_position(index: usize, count: usize) -> Option<Self> {
+        if index >= count {
+            None
+        } else if index + 1 == count {
+            Some(Self(if count < usize::from(Self::LAST) {
+                (index + 1) as u8
+            } else {
+                Self::LAST
+            }))
+        } else if index + 1 < usize::from(Self::LAST) {
+            Some(Self((index + 1) as u8))
+        } else {
+            None
+        }
+    }
+
+    pub fn digit(self) -> u8 {
+        self.0
+    }
+
+    fn position(self, count: usize) -> Option<usize> {
+        if self.0 == Self::LAST {
+            count.checked_sub(1)
+        } else {
+            Some(usize::from(self.0) - 1).filter(|index| *index < count)
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShellAction {
     Shortcut(WorkspaceShortcut),
@@ -100,6 +146,10 @@ impl WorkspaceShell {
             TabDirection::Next => (index + 1) % tabs.len(),
         };
         Some(tabs[target].id)
+    }
+    pub fn tab_at_number(&self, number: TabNumber) -> Option<TabId> {
+        let tabs = self.workspace.tabs();
+        number.position(tabs.len()).map(|index| tabs[index].id)
     }
     pub fn create_tab(&mut self, title: &str) -> Result<TabTarget, ShellError> {
         let tab = self.workspace.create_tab(title, RIO_CONTENT.to_owned())?;
@@ -202,6 +252,64 @@ mod tests {
             shell.tab_in_direction(TabDirection::Previous),
             Some(first.tab)
         );
+    }
+
+    #[test]
+    fn only_the_digits_one_to_nine_are_tab_numbers() {
+        for key in ["0", "10", "a", ""] {
+            assert_eq!(TabNumber::from_key(key), None);
+        }
+        assert_eq!(TabNumber::from_key("1").map(TabNumber::digit), Some(1));
+        assert_eq!(TabNumber::from_key("9").map(TabNumber::digit), Some(9));
+    }
+
+    #[test]
+    fn number_keys_count_from_the_first_tab_and_nine_is_the_last() {
+        let mut shell = WorkspaceShell::empty();
+        let number = |key| TabNumber::from_key(key).unwrap();
+        assert_eq!(shell.tab_at_number(number("1")), None);
+        assert_eq!(shell.tab_at_number(number("9")), None);
+        let first = shell.create_tab("first").unwrap().tab;
+        let second = shell.create_tab("second").unwrap().tab;
+        let third = shell.create_tab("third").unwrap().tab;
+        assert_eq!(shell.tab_at_number(number("1")), Some(first));
+        assert_eq!(shell.tab_at_number(number("2")), Some(second));
+        assert_eq!(shell.tab_at_number(number("3")), Some(third));
+        assert_eq!(shell.tab_at_number(number("4")), None);
+        assert_eq!(shell.tab_at_number(number("9")), Some(third));
+    }
+
+    #[test]
+    fn a_hint_shows_a_number_that_reaches_that_tab() {
+        let digits = |count| {
+            (0..count)
+                .map(|index| TabNumber::of_position(index, count).map(TabNumber::digit))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(digits(3), [Some(1), Some(2), Some(3)]);
+        assert_eq!(digits(9).last(), Some(&Some(9)));
+        assert_eq!(digits(9)[7], Some(8));
+        // Past nine tabs the middle ones have no number, and the last keeps 9.
+        let many = digits(12);
+        assert_eq!(many[7], Some(8));
+        assert_eq!(many[8], None);
+        assert_eq!(many[10], None);
+        assert_eq!(many[11], Some(9));
+        assert_eq!(TabNumber::of_position(3, 3), None);
+    }
+
+    #[test]
+    fn every_hinted_number_selects_the_tab_it_is_shown_on() {
+        let mut shell = WorkspaceShell::empty();
+        for _ in 0..12 {
+            shell.create_tab("tab").unwrap();
+        }
+        let tabs = shell.workspace().tabs().to_vec();
+        for (index, tab) in tabs.iter().enumerate() {
+            if let Some(number) = TabNumber::of_position(index, tabs.len()) {
+                assert_eq!(shell.tab_at_number(number), Some(tab.id));
+            }
+        }
     }
 
     #[test]

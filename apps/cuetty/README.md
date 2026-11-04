@@ -144,8 +144,13 @@ Rio session behind each tab. Cmd-T creates a new session; Cmd-W closes only the
 active tab/session and closes the window when it is the final tab. Shortcuts
 shown as Cmd-* use Command on macOS and Ctrl-Shift on Linux (Ctrl-Shift-Alt for
 the Cmd-Shift-* forms), so plain Ctrl chords such as Ctrl-C, Ctrl-D, and Ctrl-W
-always reach the shell. Ctrl-Page Up and Ctrl-Page Down select the previous or
-next tab, wrapping at either end. The task palette defaults to
+reach the shell. Ctrl-Page Up and Ctrl-Page Down select the previous or
+next tab, wrapping at either end. Cmd-1 to Cmd-8 on macOS and Ctrl-1 to Ctrl-8
+elsewhere select a tab by position, and 9 selects the last. Those Ctrl chords are the
+one plain set Cuetty takes from applications, including the legacy aliases Ctrl-2 to
+Ctrl-8 for NUL, ESC, FS, GS, RS, US, and DEL, but only when that tab exists; with no
+such tab the key reaches the terminal, and a palette chord on a digit wins. Holding
+the modifier for a moment shows the numbers as faint hints. The task palette defaults to
 Cmd-K on macOS and plain Ctrl-K elsewhere, and only takes the chord when the
 active directory has a task catalogue, so Ctrl-K stays the shell's kill-line in
 ordinary directories. Cmd-D and
@@ -259,8 +264,8 @@ applies only the global package and checks for its directory on each poll.
 
 `keybindings: palette: "ctrl-shift-p"` rebinds the task palette. Chords are
 `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`) followed by a
-key and match that exact modifier set. Ctrl-Page Up and Ctrl-Page Down are
-reserved for tab switching and take precedence over a conflicting palette chord.
+key and match that exact modifier set. A palette chord takes precedence over the tab
+number and Ctrl-Page chords it conflicts with, as the binding the user chose.
 Task hints show the active tab's chord in the platform's own spelling.
 
 Home Manager users can link their own CUE file as the global package:

@@ -84,7 +84,8 @@ The current usable slice includes:
   split shortcuts are rejected with a visible notice until pane/session
   allocation is implemented, and the UI never presents a fake terminal pane.
   Application shortcuts written as Cmd-* use Command on macOS and Ctrl-Shift
-  on Linux, so plain Ctrl chords such as Ctrl-C always reach the shell.
+  on Linux, so plain Ctrl chords such as Ctrl-C reach the shell; the one exception
+  is Ctrl-1 to Ctrl-9 selecting a tab that exists.
   Ctrl-Page Up and Ctrl-Page Down switch to the previous and next tab,
   wrapping at either end. The task palette is configurable (see below).
 - A fixed 56px right-side vertical tab rail. Each tab shows the initial of its
@@ -250,7 +251,12 @@ the task graph, cache, hooks, or secret resolution.
 ### Keybindings
 
 Ctrl-Page Up selects the previous tab and Ctrl-Page Down selects the next;
-both wrap around the tab list.
+both wrap around the tab list. Cmd-1 to Cmd-8 on macOS, and Ctrl-1 to Ctrl-8
+elsewhere, select a tab by position, and 9 always selects the last one. Holding the
+modifier for a moment shows each tab's number as a faint hint. Off macOS these are
+taken from applications whenever that tab exists, including the legacy aliases Ctrl-2
+to Ctrl-8 for NUL, ESC, FS, GS, RS, US, and DEL. With no such tab, the key reaches the
+terminal.
 
 The task palette opens with Cmd-K on macOS and plain Ctrl-K elsewhere, and task
 hints always show the active chord. Rebind it from any `package cuetty`, global
@@ -264,8 +270,8 @@ keybindings: palette: *"ctrl-shift-p" | string
 
 A chord is `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`)
 followed by a key, matched case-insensitively against that exact modifier set.
-Ctrl-Page Up and Ctrl-Page Down are reserved for tab switching and take
-precedence over a conflicting palette chord.
+A palette chord takes precedence over the tab number and Ctrl-Page chords it
+conflicts with, as the binding the user chose.
 The palette only claims its chord when the active directory has a task
 catalogue; elsewhere the key reaches the shell, so the Ctrl-K default does not
 cost kill-line in ordinary directories. An unparseable chord or any other

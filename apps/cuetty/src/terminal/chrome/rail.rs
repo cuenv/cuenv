@@ -5,6 +5,7 @@ use crate::terminal::engine::TerminalView;
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_label::{tab_initial, tab_tooltip};
+use crate::terminal::workspace_shell::TabNumber;
 use crate::workspace::TabId;
 use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, Rgba, StatefulInteractiveElement,
@@ -69,7 +70,8 @@ impl TerminalView {
             .gap(space::SM)
             .p(space::MD)
             .min_h_0();
-        for tab in self.registry.workspace.workspace().tabs() {
+        let tab_list = self.registry.workspace.workspace().tabs();
+        for (index, tab) in tab_list.iter().enumerate() {
             let tab_id = tab.id;
             let selected = active_tab == Some(tab_id);
             let label = self.registry.tab_label(tab);
@@ -80,6 +82,10 @@ impl TerminalView {
                     .get(&tab.focused)
                     .and_then(|state| state.cuenv.presentation.banner.as_deref()),
             );
+            let number = self
+                .tab_hints_visible
+                .then(|| TabNumber::of_position(index, tab_list.len()))
+                .flatten();
             let mut tab_button = div()
                 .id(("cuetty-rail-tab", tab_id.get()))
                 .relative()
@@ -132,12 +138,17 @@ impl TerminalView {
                         } else {
                             text::REGULAR
                         })
-                        .text_color(if selected {
+                        .text_color(if number.is_some() {
+                            colors.text_muted
+                        } else if selected {
                             colors.text
                         } else {
                             colors.text_secondary
                         })
-                        .child(tab_initial(&label)),
+                        .child(number.map_or_else(
+                            || tab_initial(&label),
+                            |number| number.digit().to_string(),
+                        )),
                 );
             tabs = tabs.child(tab_button);
         }
