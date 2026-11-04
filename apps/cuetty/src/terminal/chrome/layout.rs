@@ -1,9 +1,11 @@
-use super::tokens::{ChromeColors, size, space, text, ui_font_family};
+use super::tokens::{
+    ChromeColors, WindowControls, size, space, terminal_top_inset, text, ui_font_family,
+};
 use crate::integrations::cuenv::{SidebarMode, TitlebarVisibility};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
 use gpui::{
-    Div, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString, Styled,
+    Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, SharedString, Styled,
     WindowControlArea, div, px,
 };
 
@@ -36,6 +38,36 @@ fn draggable(this: Div) -> Div {
 }
 
 impl TerminalView {
+    fn titlebar_visibility(&self) -> TitlebarVisibility {
+        self.active_state()
+            .map(|state| state.cuenv.presentation.titlebar)
+            .unwrap_or_default()
+    }
+
+    /// Where the terminal starts below the top of its panel.
+    pub(in crate::terminal) fn top_inset(&self, padding: Pixels) -> Pixels {
+        terminal_top_inset(
+            padding,
+            self.titlebar_visibility(),
+            WindowControls::current(),
+        )
+    }
+
+    /// The room left for native window controls, which moves the window as a title
+    /// strip would. `None` while nothing is left there.
+    pub(in crate::terminal) fn window_controls_band(&self, padding: Pixels) -> Option<Div> {
+        (self.titlebar_visibility() == TitlebarVisibility::Hidden
+            && WindowControls::current() == WindowControls::OverContent)
+            .then(|| {
+                draggable(div())
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(self.top_inset(padding))
+            })
+    }
+
     pub(in crate::terminal) fn render_shell_layout(
         &self,
         sidebar: gpui::AnyElement,
@@ -43,10 +75,7 @@ impl TerminalView {
         theme: &TerminalTheme,
     ) -> gpui::AnyElement {
         let colors = ChromeColors::from_theme(theme);
-        let titlebar_visibility = self
-            .active_state()
-            .map(|state| state.cuenv.presentation.titlebar)
-            .unwrap_or_default();
+        let titlebar_visibility = self.titlebar_visibility();
         // The sidebar floats inset from the window's edges, so its corners stay
         // concentric with a rounded window instead of meeting them in a hard line.
         let inset_above_sidebar = div().h(space::MD).flex_shrink_0();
@@ -95,8 +124,8 @@ impl TerminalView {
             .font_family(ui_font_family())
             .bg(colors.material);
         if titlebar_visibility == TitlebarVisibility::Hidden {
-            // The terminal grid is resized from its measured bounds, so it
-            // reclaims the strip's height without extra arithmetic here.
+            // The terminal grid is resized from its measured bounds, so it reclaims
+            // whatever the strip leaves without extra arithmetic here.
             return shell.child(workspace).into_any_element();
         }
         let title = self.registry.active_tab_label();

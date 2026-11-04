@@ -2248,14 +2248,20 @@ impl Render for TerminalView {
         if let Some(task_palette) = self.render_task_palette(&theme, cx) {
             terminal_surface = terminal_surface.child(task_palette);
         }
-        let surface = div().relative().size_full().overflow_hidden().child(
-            terminal_surface
-                .absolute()
-                .top(px(f32::from(padding.top)))
-                .right(px(f32::from(padding.right)))
-                .bottom(px(f32::from(padding.bottom)))
-                .left(px(f32::from(padding.left))),
-        );
+        let top_padding = px(f32::from(padding.top));
+        let surface = div()
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .child(
+                terminal_surface
+                    .absolute()
+                    .top(self.top_inset(top_padding))
+                    .right(px(f32::from(padding.right)))
+                    .bottom(px(f32::from(padding.bottom)))
+                    .left(px(f32::from(padding.left))),
+            )
+            .children(self.window_controls_band(top_padding));
         self.render_shell_layout(sidebar, surface.into_any_element(), &theme)
     }
 }

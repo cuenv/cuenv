@@ -258,9 +258,10 @@ window border: the marker uses `rail`, then `accent`, then the theme's accent, a
 the notice marker and palette caret use `accent`, then the theme's. Terminal panes are
 never framed; the legacy `border` field is rejected. `titlebar: false` hides
 the Cuetty title strip while that tab is active so the terminal extends to the
-top of the window; it defaults to `true`. With the strip hidden only the small gap
-above the sidebar moves the window, and on macOS the traffic lights float over the terminal's top-left
-corner. Rio reports shell CWD changes through its public working-directory API;
+top of the window; it defaults to `true`. With the strip hidden the small gap above the
+sidebar moves the window. GPUI cannot hide the traffic lights once a window exists, so on
+macOS the terminal starts below them instead, in a band the strip's height that also moves
+the window; a larger `padding.top` still applies. Rio reports shell CWD changes through its public working-directory API;
 Cuetty re-evaluates and rebinds its native directory watcher after `cd`. Until that
 evaluation lands, a tab keeps its look but drops the previous `banner` and `rail`, and
 a new tab starts from the look of the tab it opened from, so neither a `cd` nor a new

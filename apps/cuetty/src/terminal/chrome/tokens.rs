@@ -4,6 +4,7 @@
 //! from here and never write their own literals, so a design decision changes
 //! in a single place.
 
+use crate::integrations::cuenv::TitlebarVisibility;
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
 use gpui::{BoxShadow, Pixels, Point, Rgba, TextSystem, font, point};
@@ -196,6 +197,39 @@ pub(in crate::terminal) fn traffic_light_position() -> Point<Pixels> {
     )
 }
 
+/// Whether the platform draws window controls over the window's content. GPUI fixes
+/// that when it creates a window, so hiding the title strip cannot take them away.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WindowControls {
+    OverContent,
+    Elsewhere,
+}
+
+impl WindowControls {
+    pub(super) const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::OverContent
+        } else {
+            Self::Elsewhere
+        }
+    }
+}
+
+/// Where the terminal starts below the top of its panel: its padding, unless that
+/// would put the first row under window controls with no strip to hold them.
+pub(super) fn terminal_top_inset(
+    padding: Pixels,
+    titlebar: TitlebarVisibility,
+    controls: WindowControls,
+) -> Pixels {
+    match (titlebar, controls) {
+        (TitlebarVisibility::Hidden, WindowControls::OverContent) => {
+            padding.max(size::TITLEBAR_HEIGHT)
+        }
+        _ => padding,
+    }
+}
+
 pub(super) fn opaque(color: Rgb) -> Rgba {
     gpui::rgb(gpui_rgb(color))
 }
@@ -290,6 +324,33 @@ impl ChromeColors {
 mod tests {
     use super::*;
     use crate::terminal::config::TerminalConfig;
+
+    #[test]
+    fn a_hidden_strip_keeps_the_terminal_clear_of_controls_drawn_over_it() {
+        let inset = |padding| {
+            terminal_top_inset(
+                padding,
+                TitlebarVisibility::Hidden,
+                WindowControls::OverContent,
+            )
+        };
+        assert_eq!(inset(gpui::px(0.0)), size::TITLEBAR_HEIGHT);
+        assert_eq!(inset(gpui::px(14.0)), size::TITLEBAR_HEIGHT);
+        let generous = size::TITLEBAR_HEIGHT + gpui::px(1.0);
+        assert_eq!(inset(generous), generous);
+    }
+
+    #[test]
+    fn only_a_hidden_strip_over_drawn_controls_moves_the_terminal() {
+        let padding = gpui::px(14.0);
+        for (titlebar, controls) in [
+            (TitlebarVisibility::Shown, WindowControls::OverContent),
+            (TitlebarVisibility::Shown, WindowControls::Elsewhere),
+            (TitlebarVisibility::Hidden, WindowControls::Elsewhere),
+        ] {
+            assert_eq!(terminal_top_inset(padding, titlebar, controls), padding);
+        }
+    }
 
     fn theme_with_transparency(percent: u8) -> TerminalTheme {
         TerminalTheme::from_config(&TerminalConfig {
