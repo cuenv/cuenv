@@ -162,6 +162,11 @@ impl ScaleFactor {
         px(device_pixels as f32 / self.0)
     }
 
+    /// The logical position of a fractional device pixel coordinate.
+    pub fn logical_position(self, device_position: f32) -> Pixels {
+        px(device_position / self.0)
+    }
+
     /// The nearest position that falls on a device pixel.
     pub fn snap(self, position: Point<Pixels>) -> Point<Pixels> {
         let snap = |value: Pixels| px((f32::from(value) * self.0).round() / self.0);

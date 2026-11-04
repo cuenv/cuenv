@@ -189,7 +189,11 @@ that cell. The surface is measured in device pixels too, so the grid the PTY is
 told about is exactly the one painted, and moving a window between displays
 resizes it. The current Rio public
 snapshot adapter preserves backend-declared cluster text, wide-cell occupancy,
-and wrapped placeholders. Complete IME, ZWJ shaping, hyperlink, and emoji
+and wrapped placeholders. Box drawing (U+2500–257F, including rounded corners and diagonals), block elements
+(U+2580–259F, including shades), and the Powerline separators (U+E0B0–E0B3) are
+drawn as shapes on the cell's device pixels rather than through the font, so rules
+and blocks meet with no seam at any line height. They keep the cell's foreground and
+behave like text under a selection or a block cursor. Complete IME, ZWJ shaping, hyperlink, and emoji
 presentation correctness is deliberately not claimed.
 
 The built-in colour scheme is Catppuccin Mocha: Base fills the window, Mantle sets

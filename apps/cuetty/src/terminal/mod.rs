@@ -3,6 +3,7 @@ pub mod config;
 mod engine;
 mod events;
 mod foreground;
+mod glyphs;
 mod host;
 mod input;
 mod interaction;

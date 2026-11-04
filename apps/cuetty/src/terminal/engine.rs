@@ -1,12 +1,15 @@
 use super::chrome::{ChromeAssets, render_shell_message, resolve_ui_font, traffic_light_position};
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
+use super::glyphs::{GlyphShape, drawn_glyph, is_drawn};
 use super::host::{
     RioTerminalFactory, TerminalScroll, TerminalSession, TerminalSessionFactory, TerminalWheel,
 };
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::interaction::{CellHitTest, InteractionState, SearchKey};
-use super::model::{CursorShape, Known, Rgb, TerminalCell, TerminalFrame, UnderlineStyle};
+use super::model::{
+    CellOccupancy, CursorShape, Known, Rgb, TerminalCell, TerminalFrame, UnderlineStyle,
+};
 #[cfg(test)]
 use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
@@ -26,10 +29,10 @@ use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Decorations, Edges,
     Element, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement,
     IntoElement, KeyBinding, Menu, MenuItem, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, StrikethroughStyle, Styled, SystemMenuType, TextRun,
-    Timer, UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions, actions, canvas, div, point, px, quad, size,
+    MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels, Render, ScrollDelta,
+    ScrollHandle, ScrollWheelEvent, SharedString, Size, StrikethroughStyle, Styled, SystemMenuType,
+    TextRun, Timer, UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowOptions, actions, canvas, div, point, px, quad, size,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -173,6 +176,74 @@ impl TerminalGrid {
                 width: grid_cell.width * len as f32,
                 height: grid_cell.height,
             },
+        }
+    }
+
+    /// Paints a shape-drawn character in its cell, in device pixels, so it meets its
+    /// neighbours exactly. Its colour is worked out like any glyph's, so selections,
+    /// search matches, and a block cursor treat it the same as text.
+    fn paint_drawn_glyph(
+        &self,
+        origin: gpui::Point<Pixels>,
+        glyph: DrawnGlyph,
+        color: Rgb,
+        window: &mut Window,
+    ) {
+        let Some(shapes) = drawn_glyph(glyph.character, self.metrics.device_cell()) else {
+            return;
+        };
+        let cell = self.cell_bounds(origin, glyph.row, glyph.column, 1);
+        let scale = self.metrics.scale;
+        let solid = gpui::rgb(gpui_rgb(color));
+        let fill = |bounds, color: gpui::Rgba| {
+            quad(
+                bounds,
+                px(0.0),
+                color,
+                Edges::default(),
+                Hsla::transparent_black(),
+                BorderStyle::default(),
+            )
+        };
+        for shape in shapes {
+            match shape {
+                GlyphShape::Rect(rect) => window.paint_quad(fill(
+                    Bounds {
+                        origin: point(
+                            cell.origin.x + scale.logical(rect.x),
+                            cell.origin.y + scale.logical(rect.y),
+                        ),
+                        size: size(scale.logical(rect.width), scale.logical(rect.height)),
+                    },
+                    solid,
+                )),
+                GlyphShape::Shade(shade) => window.paint_quad(fill(
+                    cell,
+                    gpui::Rgba {
+                        a: shade.opacity(),
+                        ..solid
+                    },
+                )),
+                GlyphShape::Polygon(outline) => {
+                    let mut corners = outline.into_iter().map(|(x, y)| {
+                        point(
+                            cell.origin.x + scale.logical_position(x),
+                            cell.origin.y + scale.logical_position(y),
+                        )
+                    });
+                    let Some(first) = corners.next() else {
+                        continue;
+                    };
+                    let mut path = PathBuilder::fill();
+                    path.move_to(first);
+                    corners.for_each(|corner| path.line_to(corner));
+                    path.close();
+                    // A degenerate outline has nothing to fill.
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, solid);
+                    }
+                }
+            }
         }
     }
 
@@ -370,6 +441,20 @@ impl Element for TerminalGrid {
                 }
                 let layer = self.layer_at(&overlays, CellPosition { row, column: start });
                 let (foreground, _) = colors(cell, &self.theme, layer);
+                if let Some(character) = drawn_character(cell) {
+                    self.paint_drawn_glyph(
+                        bounds.origin,
+                        DrawnGlyph {
+                            character,
+                            row,
+                            column: start,
+                        },
+                        foreground,
+                        window,
+                    );
+                    start += 1;
+                    continue;
+                }
                 let decoration_color = cell
                     .underline_color
                     .map(|color| self.theme.resolve(color))
@@ -377,7 +462,7 @@ impl Element for TerminalGrid {
                 let mut end = start + 1;
                 while end < cells.len() {
                     let next = &cells[end];
-                    if next.text.is_none() {
+                    if next.text.is_none() || drawn_character(next).is_some() {
                         break;
                     }
                     let next_layer = self.layer_at(&overlays, CellPosition { row, column: end });
@@ -438,6 +523,27 @@ impl Element for TerminalGrid {
             self.paint_cursor(bounds.origin, row, false, window);
         }
     }
+}
+
+/// A character drawn as a shape, and where.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DrawnGlyph {
+    character: char,
+    row: usize,
+    column: usize,
+}
+
+/// The character a cell draws as a shape rather than through the font. Only a lone
+/// narrow character qualifies: combining marks need shaping, and a decoration is
+/// positioned by the text it decorates.
+fn drawn_character(cell: &TerminalCell) -> Option<char> {
+    (cell.occupancy == CellOccupancy::Narrow
+        && cell.style.underline.is_none()
+        && !cell.style.strikeout)
+        .then_some(cell.text.as_deref())
+        .flatten()
+        .and_then(single_character)
+        .filter(|character| is_drawn(*character))
 }
 
 fn frame_row(frame: &TerminalFrame, row: usize) -> &[TerminalCell] {
@@ -2506,6 +2612,20 @@ mod tests {
         let mut frame = TerminalView::empty_frame();
         frame.rows[0].cells[0] = TerminalCell::narrow(character);
         frame
+    }
+
+    #[test]
+    fn only_a_lone_narrow_line_or_block_character_is_drawn_as_a_shape() {
+        assert_eq!(
+            drawn_character(&TerminalCell::narrow('\u{2500}')),
+            Some('\u{2500}')
+        );
+        assert_eq!(drawn_character(&TerminalCell::narrow('a')), None);
+        assert_eq!(drawn_character(&TerminalCell::trailing_spacer()), None);
+        assert_eq!(drawn_character(&TerminalCell::wide('\u{2500}')), None);
+        let mut combined = TerminalCell::narrow('\u{2500}');
+        combined.text = Some("\u{2500}\u{0301}".into());
+        assert_eq!(drawn_character(&combined), None);
     }
 
     #[test]

@@ -54,6 +54,8 @@ The current usable slice includes:
   leaking the launcher's nesting into the prompt.
 - Fixed-width, fixed-row-height GPUI rendering with semantic colours and
   explicit wide-cell and soft-wrap occupancy.
+- Box drawing, block elements, shades, and Powerline separators drawn as shapes on
+  the cell's device pixels, so rules and blocks meet with no seam at any line height.
 - Catppuccin Mocha is the built-in terminal colour scheme shared by Rio's
   semantic resolver and the GPUI chrome.
 - Ghostty is the visual reference for restrained native chrome: traffic lights,
