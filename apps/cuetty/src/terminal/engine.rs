@@ -1,6 +1,6 @@
 use super::chrome::{
-    ChromeAssets, UNFOCUSED_TERMINAL_FADE, exit_notice_height, render_exit_notice,
-    render_shell_message, resolve_ui_font, traffic_light_position,
+    ChromeAssets, ShellPanels, UNFOCUSED_TERMINAL_FADE, exit_notice_height, render_exit_notice,
+    render_shell_message, resolve_ui_font, sidebar_width, traffic_light_position,
 };
 use super::color::{blend, dimmed, with_minimum_contrast};
 use super::config::TerminalConfig;
@@ -21,7 +21,7 @@ use super::model::{
 };
 #[cfg(test)]
 use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
-use super::motion::MotionPace;
+use super::motion::{ChromeMotion, MotionPace, SidebarFrame};
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
@@ -1624,10 +1624,11 @@ pub(super) struct TerminalView {
     /// What the window manager was last told this window is called.
     window_title: String,
     cursor_animator: CursorAnimator,
-    /// When the draw the cursor's animation has asked for is due.
-    cursor_frame_due: Option<std::time::Instant>,
+    /// When the draw an animation has asked for is due.
+    frame_due: Option<std::time::Instant>,
     /// What the platform says about motion, read once as the window opens.
     system_motion: MotionPace,
+    pub(super) motion: ChromeMotion,
 }
 
 /// What the window is called with no tab to name it after.
@@ -2020,8 +2021,9 @@ impl TerminalView {
             sidebar,
             window_title: APP_TITLE.into(),
             cursor_animator: CursorAnimator::new(std::time::Instant::now()),
-            cursor_frame_due: None,
+            frame_due: None,
             system_motion: MotionPace::default(),
+            motion: ChromeMotion::default(),
         };
         view.read_system_motion(cx);
         if let Some(session) = session {
@@ -2644,8 +2646,8 @@ impl TerminalView {
         self.sidebar.mode()
     }
 
-    /// The terminal grid follows within a few frames: it is resized from the bounds
-    /// measured in the layout this change causes.
+    /// The terminal grid follows once, from the bounds measured in the layout this change
+    /// causes, however long the panel takes to get there; see [`SidebarFrame`].
     pub(super) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         // A collapsed tab has nowhere to show the name being edited.
         self.commit_tab_rename();
@@ -2794,27 +2796,40 @@ impl TerminalView {
     fn cursor_frame(&mut self, seen: CursorObservation, cx: &mut Context<Self>) -> CursorFrame {
         let frame = self.cursor_animator.frame(seen);
         if let Some(delay) = frame.next_frame {
-            self.request_cursor_frame(seen.now + delay, delay, cx);
+            self.request_frame(seen.now + delay, delay, cx);
         }
         frame
     }
 
+    /// Works out the sidebar's width for this draw, and asks for the next draw while
+    /// anything in the chrome is moving.
+    fn animate_chrome(&mut self, cx: &mut Context<Self>) -> SidebarFrame {
+        let now = std::time::Instant::now();
+        let pace = self.motion_pace();
+        let width = sidebar_width(self.sidebar_mode());
+        let sidebar = self.motion.sidebar_frame(width, pace, now);
+        if let Some(delay) = self.motion.next_frame(now) {
+            self.request_frame(now + delay, delay, cx);
+        }
+        sidebar
+    }
+
     /// One timer is enough: only one sooner than any already waiting replaces it.
-    fn request_cursor_frame(
+    fn request_frame(
         &mut self,
         due: std::time::Instant,
         delay: std::time::Duration,
         cx: &mut Context<Self>,
     ) {
-        if self.cursor_frame_due.is_some_and(|waiting| waiting <= due) {
+        if self.frame_due.is_some_and(|waiting| waiting <= due) {
             return;
         }
-        self.cursor_frame_due = Some(due);
+        self.frame_due = Some(due);
         cx.spawn(async move |weak, cx| {
             Timer::after(delay).await;
             let _ = weak.update(cx, |view, cx| {
-                if view.cursor_frame_due == Some(due) {
-                    view.cursor_frame_due = None;
+                if view.frame_due == Some(due) {
+                    view.frame_due = None;
                     cx.notify();
                 }
             });
@@ -3060,6 +3075,7 @@ impl Render for TerminalView {
         let theme = self.theme.clone();
         let metrics = self.metrics.clone();
         let padding = self.config.terminal_padding;
+        let sidebar_frame = self.animate_chrome(cx);
         let active_tab = self.active_tab();
         self.reveal_active_rail_tab(active_tab);
         self.registry.note_active_pane();
@@ -3071,7 +3087,10 @@ impl Render for TerminalView {
                 .clone()
                 .unwrap_or_else(|| "Cuetty has no live terminal session".into());
             return self.render_shell_layout(
-                sidebar,
+                ShellPanels {
+                    sidebar,
+                    sidebar_frame,
+                },
                 render_shell_message(message, &theme),
                 &theme,
             );
@@ -3096,7 +3115,10 @@ impl Render for TerminalView {
         };
         if let Some(error) = &pane_error {
             return self.render_shell_layout(
-                sidebar,
+                ShellPanels {
+                    sidebar,
+                    sidebar_frame,
+                },
                 render_shell_message(format!("Cuetty terminal error: {error}"), &theme),
                 &theme,
             );
@@ -3136,7 +3158,10 @@ impl Render for TerminalView {
         });
         let Some(frame) = frame else {
             return self.render_shell_layout(
-                sidebar,
+                ShellPanels {
+                    sidebar,
+                    sidebar_frame,
+                },
                 render_shell_message("Cuetty lost this tab's terminal session", &theme),
                 &theme,
             );
@@ -3263,7 +3288,14 @@ impl Render for TerminalView {
             )
             .children(exit_failure.map(|failure| render_exit_notice(failure, &theme)))
             .children(self.window_controls_band(top_padding));
-        self.render_shell_layout(sidebar, surface.into_any_element(), &theme)
+        self.render_shell_layout(
+            ShellPanels {
+                sidebar,
+                sidebar_frame,
+            },
+            surface.into_any_element(),
+            &theme,
+        )
     }
 }
 

@@ -12,7 +12,9 @@ mod tokens;
 mod tooltip;
 
 pub(super) use icons::ChromeAssets;
-pub(super) use layout::{exit_notice_height, render_exit_notice, render_shell_message};
+pub(super) use layout::{
+    ShellPanels, exit_notice_height, render_exit_notice, render_shell_message, sidebar_width,
+};
 pub(super) use tokens::{UNFOCUSED_TERMINAL_FADE, resolve_ui_font, traffic_light_position};
 
 use super::engine::TerminalView;

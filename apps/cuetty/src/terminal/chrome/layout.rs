@@ -4,6 +4,7 @@ use super::tokens::{
 };
 use crate::integrations::cuenv::{SidebarMode, TitlebarVisibility};
 use crate::terminal::engine::TerminalView;
+use crate::terminal::motion::SidebarFrame;
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_status::ExitFailure;
 use gpui::{
@@ -66,6 +67,21 @@ pub(in crate::terminal) fn exit_notice_height(failure: Option<ExitFailure>) -> P
     failure.map_or(px(0.0), |_| size::EXIT_NOTICE_HEIGHT)
 }
 
+/// The width the sidebar settles at in a mode, along with the gap between it and the
+/// window's edge.
+pub(in crate::terminal) fn sidebar_width(mode: SidebarMode) -> f32 {
+    f32::from(match mode {
+        SidebarMode::Expanded => size::SIDEBAR_EXPANDED_WIDTH,
+        SidebarMode::Collapsed => size::SIDEBAR_COLLAPSED_WIDTH,
+    })
+}
+
+/// The sidebar as this draw has it, and how wide.
+pub(in crate::terminal) struct ShellPanels {
+    pub(in crate::terminal) sidebar: gpui::AnyElement,
+    pub(in crate::terminal) sidebar_frame: SidebarFrame,
+}
+
 /// Makes `this` move the window when dragged. GPUI's control area covers platforms
 /// that hit-test it, and Linux compositors have to be asked.
 fn draggable(this: Div) -> Div {
@@ -118,7 +134,7 @@ impl TerminalView {
 
     pub(in crate::terminal) fn render_shell_layout(
         &self,
-        sidebar: gpui::AnyElement,
+        panels: ShellPanels,
         content: gpui::AnyElement,
         theme: &TerminalTheme,
     ) -> gpui::AnyElement {
@@ -126,15 +142,20 @@ impl TerminalView {
         let titlebar_visibility = self.titlebar_visibility();
         // The sidebar floats inset from the window's edges, so its corners stay
         // concentric with a rounded window instead of meeting them in a hard line.
-        let inset_above_sidebar = div().h(space::MD).flex_shrink_0();
+        let inset_above_sidebar = div().w_full().h(space::MD).flex_shrink_0();
+        let ShellPanels {
+            sidebar,
+            sidebar_frame,
+        } = panels;
+        // The slot gives the layout the sidebar's room, which moves in one step. The panel
+        // travels inside it against the window's edge, where the room it has not reached
+        // yet is the same material as everything else.
         let sidebar_slot = div()
-            .w(match self.sidebar_mode() {
-                SidebarMode::Expanded => size::SIDEBAR_EXPANDED_WIDTH,
-                SidebarMode::Collapsed => size::SIDEBAR_COLLAPSED_WIDTH,
-            })
+            .w(px(sidebar_frame.slot))
             .flex_shrink_0()
             .flex()
             .flex_col()
+            .items_end()
             .pr(space::MD)
             .pb(space::MD)
             // With no title strip this is all that is left to move the window by.
@@ -143,7 +164,15 @@ impl TerminalView {
             } else {
                 inset_above_sidebar
             })
-            .child(sidebar);
+            .child(
+                div()
+                    .w(px(sidebar_frame.panel) - space::MD)
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(sidebar),
+            );
         let workspace = div()
             .flex_1()
             .min_h(px(0.0))
