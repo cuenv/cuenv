@@ -53,7 +53,6 @@ pub(super) mod size {
     use gpui::{Pixels, px};
 
     pub(in crate::terminal::chrome) const RAIL_WIDTH: Pixels = px(56.0);
-    pub(in crate::terminal::chrome) const RAIL_FOOTER_HEIGHT: Pixels = px(112.0);
     pub(in crate::terminal::chrome) const TITLEBAR_HEIGHT: Pixels = px(34.0);
     /// Height of the native macOS window controls.
     pub(in crate::terminal::chrome) const WINDOW_CONTROLS_HEIGHT: Pixels = px(16.0);

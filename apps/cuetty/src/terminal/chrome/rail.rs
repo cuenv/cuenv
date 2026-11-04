@@ -160,17 +160,17 @@ impl TerminalView {
             );
         }
         let mut footer = div()
-            .h(size::RAIL_FOOTER_HEIGHT)
             .w_full()
             .flex()
+            .flex_col()
             .items_center()
-            .gap(space::SM)
-            .px(space::SM)
+            .gap(space::XS)
+            .py(space::SM)
             .border_t(border::HAIRLINE)
             .border_color(colors.divider);
         let new_tab = div()
             .id("cuetty-new-tab")
-            .flex_1()
+            .w(size::CONTROL_WIDTH)
             .h(size::CONTROL_HEIGHT)
             .flex()
             .items_center()
@@ -208,7 +208,6 @@ impl TerminalView {
             }))
             .child("▤");
         footer = footer
-            .flex_col()
             .child(new_tab)
             .when(has_tasks, |this| this.child(tasks));
         rail.child(footer).into_any_element()
