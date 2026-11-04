@@ -62,6 +62,8 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const CONTROL_WIDTH: Pixels = px(34.0);
     pub(in crate::terminal::chrome) const TAB_ROW_HEIGHT: Pixels = px(40.0);
     pub(in crate::terminal::chrome) const TAB_MARK: Pixels = px(30.0);
+    pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = px(3.0);
+    pub(in crate::terminal::chrome) const TAB_MARKER_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TASK_SIDEBAR_WIDTH: Pixels = px(280.0);
     pub(in crate::terminal::chrome) const PALETTE_WIDTH: Pixels = px(520.0);
     pub(in crate::terminal::chrome) const PALETTE_MAX_HEIGHT: Pixels = px(430.0);
@@ -106,7 +108,7 @@ pub(in crate::terminal) fn traffic_light_position() -> Point<Pixels> {
     )
 }
 
-fn opaque(color: Rgb) -> Rgba {
+pub(super) fn opaque(color: Rgb) -> Rgba {
     gpui::rgb(gpui_rgb(color))
 }
 
@@ -140,13 +142,15 @@ pub(super) struct ChromeColors {
     pub(super) panel_hover: Rgba,
     /// Input wells recessed into a panel.
     pub(super) well: Rgba,
-    /// Fill of the active tab's mark, and the text on it.
-    pub(super) mark: Rgba,
-    pub(super) mark_text: Rgba,
     pub(super) text: Rgba,
     pub(super) text_secondary: Rgba,
     pub(super) text_muted: Rgba,
+    /// Lines between structural regions. Shares the material's opacity, so a
+    /// transparent window has no solid lines left floating in it.
     pub(super) divider: Rgba,
+    /// Outline of floating panels, opaque like the panels themselves.
+    pub(super) panel_outline: Rgba,
+    /// The theme accent. A project accent replaces it on the active tab marker.
     pub(super) accent: Rgba,
 }
 
@@ -159,12 +163,11 @@ impl ChromeColors {
             panel_selected: opaque(theme.selection),
             panel_hover: opaque(theme.hover_surface),
             well: opaque(theme.surface),
-            mark: opaque(theme.cursor),
-            mark_text: opaque(theme.cursor_text),
             text: opaque(theme.text),
             text_secondary: opaque(theme.title_text),
             text_muted: opaque(theme.muted_text),
-            divider: opaque(theme.divider),
+            divider: material_color(theme, theme.divider),
+            panel_outline: opaque(theme.divider),
             accent: opaque(theme.accent),
         }
     }
@@ -195,6 +198,13 @@ mod tests {
         let chrome = ChromeColors::from_theme(&theme).material.a;
         assert!((chrome - 0.35).abs() < f32::EPSILON);
         assert_eq!(chrome, material_color(&theme, theme.surface).a);
+    }
+
+    #[test]
+    fn structural_dividers_fade_with_the_material_but_panel_outlines_do_not() {
+        let colors = ChromeColors::from_theme(&theme_with_transparency(65));
+        assert_eq!(colors.divider.a, colors.material.a);
+        assert_eq!(colors.panel_outline.a, 1.0);
     }
 
     #[test]

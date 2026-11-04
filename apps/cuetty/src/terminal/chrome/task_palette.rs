@@ -103,7 +103,7 @@ impl TerminalView {
                         .gap(space::MD)
                         .rounded(radius::PANEL)
                         .border(border::HAIRLINE)
-                        .border_color(colors.divider)
+                        .border_color(colors.panel_outline)
                         .bg(colors.panel)
                         .shadow(elevation::overlay())
                         .child(

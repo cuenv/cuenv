@@ -110,8 +110,10 @@ pub struct KeybindingConfig {
 pub struct TerminalConfig {
     pub version: ConfigVersion,
     pub font: FontConfig,
-    /// Percentage of the terminal canvas background that remains transparent.
-    /// Zero is fully opaque and 100 is fully transparent.
+    /// Percentage of the window's one material that remains transparent: the
+    /// terminal canvas and structural chrome share it, and it selects an opaque
+    /// or blurred compositor appearance. Zero is fully opaque and 100 is fully
+    /// transparent.
     pub terminal_transparency_percent: u8,
     pub terminal_padding: TerminalPadding,
     pub cursor: CursorPreference,

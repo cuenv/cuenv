@@ -117,10 +117,11 @@ viewport so Rio receives the actual remaining grid size. Transparency spans 0%
 (opaque) through 100% (fully transparent). The terminal canvas, title strip, and
 right-side tab rail share that one opacity, so the window reads as one material:
 at 0% nothing shows through and the compositor treats the window as opaque, and
-above 0% everything sits over native blur together. Terminal text, the cursor,
-tab pills, selection, hover states, and controls remain opaque, as do the floating
-task panels, whose own text would otherwise compete with the terminal text they
-cover. The native Cuetty menu contains Quit Cuetty and
+above 0% everything sits over native blur together, including the dividers
+between those regions. Terminal text, the cursor, selection, hover states,
+controls, and the active tab's marker remain opaque, as do the floating task
+panels and their outlines, whose own text would otherwise compete with the
+terminal text they cover. The native Cuetty menu contains Quit Cuetty and
 Cmd-Q uses the same application action. Before calling the POC visually usable,
 check that native window
 controls and the rail remain visible, the prompt fills the terminal surface
@@ -208,7 +209,8 @@ transparency: 10
 ```
 
 `banner` is a bounded single line and `rail` must be a quoted `#RRGGBB`
-colour that tints the tab rail while that tab is active. Terminal panes are
+project accent. It colours the small marker on the active tab while that tab is
+active, in place of the theme accent, and never fills the rail. Terminal panes are
 never framed; the legacy `border` field is rejected. `titlebar: false` hides
 the Cuetty title strip while that tab is active so the terminal extends to the
 top of the window; it defaults to `true`. With the strip hidden there is no

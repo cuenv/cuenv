@@ -112,8 +112,9 @@ package. A directory without package `cuetty` is neutral. Standalone packages
 are evaluated in the exact directory; imports that require a module context
 fail through normal CUE evaluation. A matching package may provide a
 single-line `banner` and a quoted `rail: "#RRGGBB"`. The banner supplies the
-tab tooltip; for example, `rail: "#ff0000"` tints the tab rail while that tab
-is active. Terminal panes are never framed, and the former `border` field is
+tab tooltip; `rail` is the project accent, so `rail: "#ff0000"` colours the
+small marker on the active tab while that tab is active and never fills the
+rail. Terminal panes are never framed, and the former `border` field is
 rejected as unknown. `titlebar: false` hides the Cuetty title strip while that
 tab is active and lets the terminal extend to the top of the window; it
 defaults to `true`. `keybindings: palette:` rebinds the task palette; see
@@ -150,12 +151,13 @@ transparency: 10
 Fields are optional. The active tab's settings determine the rendered grid,
 terminal inset, and window material. At `transparency: 0` the whole window is
 opaque. Above 0, the terminal and structural chrome share one opacity over the
-native blur, so the window reads as one material; text, controls, and the
-floating task panels stay opaque for legibility. Unknown top-level and nested
+native blur, so the window reads as one material, dividers included; text,
+controls, and the floating task panels and their outlines stay opaque for
+legibility. Unknown top-level and nested
 fields are rejected.
 
 The cuenv repository includes a root `cuetty.cue` with a `cuenv` banner and a
-Catppuccin Mocha blue rail. It applies while the shell is in the repository
+Catppuccin Mocha blue project accent. It applies while the shell is in the repository
 root; subdirectories can provide their own `package cuetty` configuration.
 When using the CUE CLI at the root, select the package explicitly, for example
 `cue export .:cuetty` or `cue export .:cuenv`.

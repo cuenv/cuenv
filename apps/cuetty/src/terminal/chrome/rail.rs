@@ -1,17 +1,26 @@
-use super::tokens::{ChromeColors, border, material_color, radius, size, space, text};
+use super::tokens::{ChromeColors, border, opaque, radius, size, space, text};
 use crate::integrations::cuenv::RailColor;
 use crate::terminal::engine::TerminalView;
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::TerminalTheme;
 use crate::workspace::TabId;
 use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
-    div, prelude::FluentBuilder,
+    Context, InteractiveElement, IntoElement, ParentElement, Rgba, StatefulInteractiveElement,
+    Styled, div, prelude::FluentBuilder,
 };
 use gpui_component::tooltip::Tooltip;
 
 fn shell_notice_text(notice: Option<&str>) -> Option<String> {
     notice.map(|notice| format!("• {notice}"))
+}
+
+/// The active tab's marker: the project accent from a matching `package cuetty`,
+/// or the theme accent. The colour only ever fills this small mark, so a project
+/// can never choose a fill the rail's text has to survive.
+fn active_tab_marker_color(project_accent: Option<RailColor>, colors: &ChromeColors) -> Rgba {
+    project_accent.map_or(colors.accent, |RailColor(red, green, blue)| {
+        opaque(Rgb(red, green, blue))
+    })
 }
 
 fn sidebar_tab_label(label: &str) -> String {
@@ -40,6 +49,11 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = ChromeColors::from_theme(theme);
+        let marker_color = active_tab_marker_color(
+            self.active_state()
+                .and_then(|state| state.cuenv.presentation.rail),
+            &colors,
+        );
         let mut tabs = div()
             .flex_1()
             .flex()
@@ -72,6 +86,7 @@ impl TerminalView {
             let number = format!("{:02}", index + 1);
             let mut tab_button = div()
                 .id(("cuetty-rail-tab", tab_id.get()))
+                .relative()
                 .w_full()
                 .min_h(size::TAB_ROW_HEIGHT)
                 .flex()
@@ -85,29 +100,48 @@ impl TerminalView {
                     view.select_terminal_tab(tab_id, window, cx);
                 }))
                 .tooltip(move |window, cx| Tooltip::new(tooltip_label.clone()).build(window, cx));
-            tab_button = tab_button.child(
-                div()
-                    .w(size::TAB_MARK)
-                    .h(size::TAB_MARK)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(radius::CONTROL)
-                    .when(selected, |this| this.bg(colors.mark))
-                    .text_center()
-                    .text_size(text::LABEL)
-                    .font_weight(if selected {
-                        text::STRONG
-                    } else {
-                        text::REGULAR
-                    })
-                    .text_color(if selected {
-                        colors.mark_text
-                    } else {
-                        colors.text_secondary
-                    })
-                    .child(number),
-            );
+            tab_button = tab_button
+                .when(selected, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .w(size::TAB_MARKER_WIDTH)
+                                    .h(size::TAB_MARKER_HEIGHT)
+                                    .rounded(radius::CONTROL)
+                                    .bg(marker_color),
+                            ),
+                    )
+                })
+                .child(
+                    div()
+                        .w(size::TAB_MARK)
+                        .h(size::TAB_MARK)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(radius::CONTROL)
+                        .when(selected, |this| this.bg(colors.state))
+                        .text_center()
+                        .text_size(text::LABEL)
+                        .font_weight(if selected {
+                            text::STRONG
+                        } else {
+                            text::REGULAR
+                        })
+                        .text_color(if selected {
+                            colors.text
+                        } else {
+                            colors.text_secondary
+                        })
+                        .child(number),
+                );
             tabs = tabs.child(tab_button);
         }
         let integration_notice = active_tab
@@ -131,21 +165,13 @@ impl TerminalView {
         let has_tasks = self
             .active_state()
             .is_some_and(|state| !state.cuenv.tasks.is_empty());
-        // A matching `package cuetty` tints the rail for the active tab;
-        // terminal content itself is never framed.
-        let rail_background = self
-            .active_state()
-            .and_then(|state| state.cuenv.presentation.rail)
-            .map_or(colors.material, |RailColor(red, green, blue)| {
-                material_color(theme, Rgb(red, green, blue))
-            });
         let mut rail = div()
             .relative()
             .size_full()
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .bg(rail_background)
+            .bg(colors.material)
             .border_l(border::HAIRLINE)
             .border_color(colors.divider)
             .child(tabs);
@@ -217,6 +243,18 @@ impl TerminalView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::config::TerminalConfig;
+
+    #[test]
+    fn active_tab_marker_prefers_the_project_accent_over_the_theme_accent() {
+        let theme = TerminalTheme::from_config(&TerminalConfig::default());
+        let colors = ChromeColors::from_theme(&theme);
+        assert_eq!(active_tab_marker_color(None, &colors), colors.accent);
+        assert_eq!(
+            active_tab_marker_color(Some(RailColor(255, 0, 0)), &colors),
+            gpui::rgb(0xff0000)
+        );
+    }
 
     #[test]
     fn shell_notice_keeps_live_action_failures_visible() {
