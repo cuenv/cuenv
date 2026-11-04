@@ -140,7 +140,10 @@ rejected as unknown. The title strip shows the active tab's name on the terminal
 own surface, and the window takes the same name as its title in every titlebar state,
 for window switchers and compositors. `titlebar: false` hides it while that tab is active and lets the
 terminal extend to the top of the window; it defaults to `true`. `keybindings: palette:` rebinds the task palette; see
-[Keybindings](#keybindings). A hidden strip leaves the small gap above the
+[Keybindings](#keybindings). Off macOS the strip draws only under client-side
+decorations: Cuetty asks for server-side ones, and a window that gets them leaves its
+title and moving it to the windowing system, whether or not that shows a title bar, so
+`titlebar` has no effect there and the sidebar names the tab. A hidden strip leaves the small gap above the
 sidebar to move the window by. GPUI cannot hide the traffic lights once a window exists, so
 on macOS the terminal starts below them instead, in a band the strip's height that also
 moves the window; a larger `padding.top` still applies.

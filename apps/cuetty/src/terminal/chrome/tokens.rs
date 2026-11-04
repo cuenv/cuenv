@@ -7,7 +7,7 @@
 use crate::integrations::cuenv::TitlebarVisibility;
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
-use gpui::{BoxShadow, Pixels, Point, Rgba, TextSystem, font, point};
+use gpui::{BoxShadow, Decorations, Pixels, Point, Rgba, TextSystem, font, point};
 use std::sync::OnceLock;
 
 /// Spacing scale for padding, gaps, and offsets.
@@ -215,6 +215,21 @@ impl WindowControls {
     }
 }
 
+/// Whether the title strip draws, given what the window has around it. Server-side
+/// decorations leave the title and moving the window to the windowing system, so a
+/// strip would repeat a native title bar. macOS reports them too, but there the native
+/// bar is transparent and the strip sits behind the window controls as its only title.
+pub(super) fn drawn_titlebar(
+    configured: TitlebarVisibility,
+    controls: WindowControls,
+    decorations: Decorations,
+) -> TitlebarVisibility {
+    match (controls, decorations) {
+        (WindowControls::Elsewhere, Decorations::Server) => TitlebarVisibility::Hidden,
+        _ => configured,
+    }
+}
+
 /// Where the terminal starts below the top of its panel: its padding, unless that
 /// would put the first row under window controls with no strip to hold them.
 pub(super) fn terminal_top_inset(
@@ -350,6 +365,42 @@ mod tests {
         ] {
             assert_eq!(terminal_top_inset(padding, titlebar, controls), padding);
         }
+    }
+
+    #[test]
+    fn a_native_title_bar_replaces_the_strip_only_where_it_is_visible() {
+        let client = Decorations::Client {
+            tiling: gpui::Tiling::default(),
+        };
+        let drawn = |controls, decorations| {
+            drawn_titlebar(TitlebarVisibility::Shown, controls, decorations)
+        };
+        assert_eq!(
+            drawn(WindowControls::Elsewhere, Decorations::Server),
+            TitlebarVisibility::Hidden
+        );
+        assert_eq!(
+            drawn(WindowControls::Elsewhere, client),
+            TitlebarVisibility::Shown
+        );
+        assert_eq!(
+            drawn(WindowControls::OverContent, Decorations::Server),
+            TitlebarVisibility::Shown
+        );
+    }
+
+    #[test]
+    fn a_hidden_strip_stays_hidden_whatever_surrounds_the_window() {
+        assert_eq!(
+            drawn_titlebar(
+                TitlebarVisibility::Hidden,
+                WindowControls::OverContent,
+                Decorations::Client {
+                    tiling: gpui::Tiling::default(),
+                },
+            ),
+            TitlebarVisibility::Hidden
+        );
     }
 
     fn theme_with_transparency(percent: u8) -> TerminalTheme {

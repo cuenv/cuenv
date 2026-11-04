@@ -23,12 +23,12 @@ use crate::integrations::cuenv::{
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
-    App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Edges, Element,
-    FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyBinding, Menu, MenuItem, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
-    SharedString, Size, StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
-    UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
+    App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Decorations, Edges,
+    Element, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement,
+    IntoElement, KeyBinding, Menu, MenuItem, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Size, StrikethroughStyle, Styled, SystemMenuType, TextRun,
+    Timer, UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
     WindowOptions, actions, canvas, div, point, px, quad, size,
 };
 use std::collections::HashMap;
@@ -863,6 +863,7 @@ pub(super) struct TerminalView {
     renderer: Box<dyn TerminalRenderer>,
     workspace_bounds: Arc<Mutex<(f32, f32)>>,
     window_background: WindowBackgroundAppearance,
+    pub(super) window_decorations: Decorations,
     pub(super) task_palette_open: bool,
     pub(super) task_sidebar_open: bool,
     pub(super) task_query: String,
@@ -1198,6 +1199,7 @@ impl TerminalView {
                     renderer: Box::new(GridRenderer),
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
                     window_background,
+                    window_decorations: Decorations::default(),
                     task_palette_open: false,
                     task_sidebar_open: false,
                     task_query: String::new(),
@@ -1228,6 +1230,7 @@ impl TerminalView {
                     renderer: Box::new(GridRenderer),
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
                     window_background,
+                    window_decorations: Decorations::default(),
                     task_palette_open: false,
                     task_sidebar_open: false,
                     task_query: String::new(),
@@ -2062,6 +2065,7 @@ impl Render for TerminalView {
             window.set_background_appearance(window_background);
             self.window_background = window_background;
         }
+        self.window_decorations = window.window_decorations();
         // Window switchers and compositors have only this to go by, and with the
         // title strip hidden and the sidebar collapsed nothing else names the tab.
         let window_title = self

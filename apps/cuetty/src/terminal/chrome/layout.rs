@@ -1,5 +1,6 @@
 use super::tokens::{
-    ChromeColors, WindowControls, size, space, terminal_top_inset, text, ui_font_family,
+    ChromeColors, WindowControls, drawn_titlebar, size, space, terminal_top_inset, text,
+    ui_font_family,
 };
 use crate::integrations::cuenv::{SidebarMode, TitlebarVisibility};
 use crate::terminal::engine::TerminalView;
@@ -39,9 +40,13 @@ fn draggable(this: Div) -> Div {
 
 impl TerminalView {
     fn titlebar_visibility(&self) -> TitlebarVisibility {
-        self.active_state()
-            .map(|state| state.cuenv.presentation.titlebar)
-            .unwrap_or_default()
+        drawn_titlebar(
+            self.active_state()
+                .map(|state| state.cuenv.presentation.titlebar)
+                .unwrap_or_default(),
+            WindowControls::current(),
+            self.window_decorations,
+        )
     }
 
     /// Where the terminal starts below the top of its panel.
