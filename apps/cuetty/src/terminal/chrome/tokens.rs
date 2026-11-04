@@ -159,9 +159,10 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
 }
 
-/// How much of the terminal shows while its window does not have the keyboard: enough
-/// to go on reading it, and far enough back to tell at a glance where typing would go.
-pub(in crate::terminal) const UNFOCUSED_TERMINAL_OPACITY: f32 = 0.8;
+/// How far the terminal's colours move towards its background while its window does
+/// not have the keyboard: little enough to go on reading it, and far enough to tell at
+/// a glance where typing would go.
+pub(in crate::terminal) const UNFOCUSED_TERMINAL_FADE: f32 = 0.2;
 
 /// Elevation of chrome that floats above the terminal.
 pub(super) mod elevation {

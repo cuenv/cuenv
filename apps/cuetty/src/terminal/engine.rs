@@ -1,5 +1,5 @@
 use super::chrome::{
-    ChromeAssets, UNFOCUSED_TERMINAL_OPACITY, exit_notice_height, render_exit_notice,
+    ChromeAssets, UNFOCUSED_TERMINAL_FADE, exit_notice_height, render_exit_notice,
     render_shell_message, resolve_ui_font, traffic_light_position,
 };
 use super::color::{blend, dimmed, with_minimum_contrast};
@@ -43,7 +43,7 @@ use gpui::{
     MouseUpEvent, ParentElement, PathBuilder, Pixels, Render, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, SharedString, Size, StrikethroughStyle, Styled, SystemMenuType, TextRun,
     Timer, UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions, actions, canvas, div, point, prelude::FluentBuilder, px, quad, size,
+    WindowOptions, actions, canvas, div, point, px, quad, size,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -55,6 +55,7 @@ struct RenderRequest<'a> {
     metrics: &'a TerminalMetrics,
     theme: &'a TerminalTheme,
     focus: CursorFocus,
+    window: WindowPresence,
     cursor: CursorFrame,
     overlays: TerminalOverlays,
 }
@@ -82,6 +83,7 @@ struct TerminalGrid {
     metrics: TerminalMetrics,
     theme: TerminalTheme,
     focus: CursorFocus,
+    window: WindowPresence,
     cursor_opacity: f32,
     cursor_trail: Option<TrailSpan>,
     overlays: TerminalOverlays,
@@ -94,10 +96,18 @@ impl TerminalGrid {
             metrics: request.metrics.clone(),
             theme: request.theme.clone(),
             focus: request.focus,
+            window: request.window,
             cursor_opacity: request.cursor.opacity,
             cursor_trail: request.cursor.trail,
             overlays: request.overlays,
         }
+    }
+
+    /// What a colour is painted as, faded here rather than with an element's opacity:
+    /// GPUI applies that to each primitive on its own, so a drawn glyph's overlapping
+    /// strokes would blend twice and bead every box-drawing rule.
+    fn ink(&self, color: Rgb) -> gpui::Rgba {
+        gpui::rgb(gpui_rgb(window_ink(color, self.theme.surface, self.window)))
     }
 
     fn overlay_color(&self, kind: OverlayKind) -> Rgb {
@@ -112,7 +122,7 @@ impl TerminalGrid {
             window.paint_quad(quad(
                 self.cell_bounds(row.origin, span.row, span.start_column..span.end_column),
                 px(0.0),
-                gpui::rgb(gpui_rgb(self.overlay_color(span.kind))),
+                self.ink(self.overlay_color(span.kind)),
                 Edges::default(),
                 Hsla::transparent_black(),
                 BorderStyle::default(),
@@ -233,7 +243,7 @@ impl TerminalGrid {
         let foregrounds: Vec<Hsla> = cells
             .iter()
             .zip(columns.clone())
-            .map(|(cell, column)| gpui::rgb(gpui_rgb(self.foreground_at(cell, row, column))).into())
+            .map(|(cell, column)| self.ink(self.foreground_at(cell, row, column)).into())
             .collect();
         let Some(first) = cells.first() else {
             return;
@@ -330,7 +340,7 @@ impl TerminalGrid {
                     } else {
                         1.0
                     }),
-                    color: Some(gpui::rgb(gpui_rgb(color)).into()),
+                    color: Some(self.ink(color).into()),
                     wavy: matches!(style, UnderlineStyle::Curly),
                 },
             );
@@ -345,7 +355,7 @@ impl TerminalGrid {
                 grid_cell.width * columns.len() as f32,
                 &StrikethroughStyle {
                     thickness: px(1.0),
-                    color: Some(gpui::rgb(gpui_rgb(color)).into()),
+                    color: Some(self.ink(color).into()),
                 },
             );
         }
@@ -384,7 +394,7 @@ impl TerminalGrid {
         };
         let cell = self.cell_bounds(origin, glyph.row, glyph.column..glyph.column + 1);
         let scale = self.metrics.scale;
-        let solid = gpui::rgb(gpui_rgb(glyph.color));
+        let solid = self.ink(glyph.color);
         let fill = |bounds, color: gpui::Rgba| {
             quad(
                 bounds,
@@ -455,7 +465,7 @@ impl TerminalGrid {
             px(0.0),
             gpui::Rgba {
                 a: trail.opacity,
-                ..gpui::rgb(gpui_rgb(self.theme.cursor))
+                ..self.ink(self.theme.cursor)
             },
             Edges::default(),
             Hsla::transparent_black(),
@@ -485,7 +495,7 @@ impl TerminalGrid {
         let scale = self.metrics.scale;
         let color = gpui::Rgba {
             a: self.cursor_opacity,
-            ..gpui::rgb(gpui_rgb(self.theme.cursor))
+            ..self.ink(self.theme.cursor)
         };
         let line = scale.logical(scale.whole_device_pixels(px(2.0)));
         let fill = |bounds| {
@@ -625,7 +635,7 @@ impl Element for TerminalGrid {
                     window.paint_quad(quad(
                         self.cell_bounds(bounds.origin, row, start..end),
                         px(0.0),
-                        gpui::rgb(gpui_rgb(background)),
+                        self.ink(background),
                         Edges::default(),
                         Hsla::transparent_black(),
                         BorderStyle::default(),
@@ -1216,6 +1226,14 @@ fn window_presence(window: &Window) -> WindowPresence {
         WindowPresence::Active
     } else {
         WindowPresence::Inactive
+    }
+}
+
+/// The colour the grid paints `color` in, given where the user is.
+fn window_ink(color: Rgb, background: Rgb, window: WindowPresence) -> Rgb {
+    match window {
+        WindowPresence::Active => color,
+        WindowPresence::Inactive => blend(color, background, UNFOCUSED_TERMINAL_FADE),
     }
 }
 
@@ -3147,6 +3165,7 @@ impl Render for TerminalView {
             metrics: &metrics,
             theme: &theme,
             focus,
+            window: window_presence(window),
             cursor,
             overlays,
         }));
@@ -3192,9 +3211,6 @@ impl Render for TerminalView {
                     div()
                         .relative()
                         .size_full()
-                        .when(!window_active, |this| {
-                            this.opacity(UNFOCUSED_TERMINAL_OPACITY)
-                        })
                         .track_focus(&self.focus)
                         .on_key_down(cx.listener(Self::key))
                         .on_modifiers_changed(cx.listener(Self::modifiers_changed))
@@ -5127,6 +5143,17 @@ mod tests {
             ..control
         };
         assert!(!closes_exited_tab(&key_press("d", shifted)));
+    }
+
+    #[test]
+    fn an_inactive_window_fades_colours_towards_the_background_on_either_theme() {
+        let (text, dark, light) = (Rgb(205, 214, 244), Rgb(30, 30, 46), Rgb(239, 241, 245));
+        assert_eq!(window_ink(text, dark, WindowPresence::Active), text);
+        for background in [dark, light] {
+            let faded = window_ink(text, background, WindowPresence::Inactive);
+            assert!(contrast_ratio(faded, background) < contrast_ratio(text, background));
+        }
+        assert_eq!(window_ink(dark, dark, WindowPresence::Inactive), dark);
     }
 
     #[test]
