@@ -1676,7 +1676,9 @@ infrastructure: {{
 // ---------------------------------------------------------------------------
 
 const OUTPUT_STACK: &str = r#"package stack
+import "strings"
 Marker: 1
+#Parts: {in: string, out: strings.Split(in, ",")}
 #Good: {
 	resources: {
 		producer: {type: "fake_plain", outputs: id: string, configuration: name: "producer"}
@@ -2114,6 +2116,54 @@ async fn computed_values_wait_for_every_output_they_read() -> TestResult {
         stack.mutations(),
         mutations,
         "a converged stack must be a no-op"
+    );
+    Ok(())
+}
+
+/// CUE decides the shape of a computed value. A list cannot reach a destination that
+/// holds a list, as references need a scalar, and at a scalar one the type stops the run.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_computed_value_that_is_not_a_scalar_is_refused() -> TestResult {
+    let parts = format!("(stack.#Parts & {{in: {PRODUCER_ID}}}).out");
+    let into_a_set = OutputLifecycle::new(
+        "computed-list-destination",
+        &outputs_stack(&format!(
+            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_tags\", configuration: tags: {parts}}}"
+        )),
+    )?;
+    into_a_set.fails(&["plan"], "references require a scalar destination")?;
+    assert_eq!(into_a_set.mutations(), 0);
+
+    let into_a_string = OutputLifecycle::new(
+        "computed-list-scalar",
+        &outputs_stack(&format!(
+            "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: {parts}}}"
+        )),
+    )?;
+    into_a_string.lifecycle.run(&["plan"])?;
+    into_a_string.fails(&["apply", "--yes"], "wrong type for its destination")?;
+    assert_eq!(into_a_string.creates(), ["producer"]);
+    assert!(into_a_string.record("consumer").await.is_err());
+    Ok(())
+}
+
+/// A definition with a conditional field reading something outside of it used to
+/// crash the evaluator as soon as it was instantiated.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_conditional_field_in_a_definition_reads_what_is_outside_it() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "conditional-definition",
+        &format!(
+            "_name: \"from-outside\"\n#Settings: {{if true {{name: _name}}}}\n{}",
+            outputs_stack("consumer: {type: \"fake_plain\", configuration: #Settings}")
+        ),
+    )?;
+    stack.lifecycle.run(&["apply", "--yes"])?;
+    assert_eq!(
+        stack.record("consumer").await?.state["name"],
+        "from-outside"
     );
     Ok(())
 }

@@ -221,6 +221,33 @@ func matrixCases() []matrixCase {
 		detected("constrained_source_keeps_sampling", "import \"encoding/json\"\n"+matrixBase+matrixConfig+"{prefix: "+source+" & =~\"^[a-z-]+$\", doc: json.Marshal({a: *("+source+" & \"x\") | \"z\"})}", ""),
 		detected("let_selection_with_default", matrixBase+"let T = {v: *("+source+" & !=\"bad\") | \"z\"}\n"+matrixConfig+"prefix: T.v", ""),
 		detected("copy_closed_regex", matrixBase+"_c: close(system.units.producer)\n"+matrixConfig+"{if (_c.outputs.id & =~\"^x\") != _|_ {a: 1}}", ""),
+		// Arms of a disjunction a value can select, through a field no reference reads.
+		detected("tagged_union", matrixBase+matrixConfig+"(*{k: \"a\", v: 1} | {k: \"b\", v: 2}) & {k: "+source+"}", ""),
+		detected("tagged_union_hidden", matrixBase+matrixConfig+"(*{_k: \"a\", v: 1} | {_k: \"b\", v: 2}) & {_k: "+source+"}", ""),
+		detected("tagged_union_read", matrixBase+"_d: (*{k: \"a\", v: 1} | {k: \"b\", v: 2}) & {k: "+source+"}\n"+matrixConfig+"{if _d.v == 1 {a: 1}}", ""),
+		edges("single_remaining_arm", matrixBase+matrixConfig+"(null | {name: string}) & {name: "+source+"}", "", matrixEdge),
+		// What encloses a value without a path decides that it is there.
+		detected("selected_after_a_conditional_element", matrixBase+matrixConfig+"name: [if ("+source+" & \"x\") != _|_ {\"y\"}, \"z\"][0]", ""),
+		detected("label_of_a_selected_struct", matrixBase+matrixConfig+"name: *{("+source+" & \"x\"): 1}.x | 0", ""),
+		detected("function_with_a_conditional_label", matrixBase+"#F: {in: string, out: *\"d\" | string, if (in & \"x\") != _|_ {(\"out\"): \"e\"}}\n"+matrixConfig+"name: (#F & {in: "+source+"}).out", ""),
+		// An error in a let or an inline value fails nothing else.
+		detected("let_struct_presence", matrixBase+"let S = {z: "+source+" & \"x\"}\n"+matrixConfig+"{if S != _|_ {a: 1}}", ""),
+		detected("function_validating_its_argument", matrixBase+"#V: {in: _, ok: in != _|_}\n"+matrixConfig+"v: (#V & {in: {z: "+source+" & \"x\"}}).ok", ""),
+		detected("for_over_a_default_literal", matrixBase+matrixConfig+"{for k, _ in *{a: "+source+" & \"x\"} | {b: 2} {(k): 1}}", ""),
+		detected("for_over_a_default_let", matrixBase+"let D = *{a: "+source+" & \"x\"} | {b: 2}\n"+matrixConfig+"{for k, _ in D {(k): 1}}", ""),
+		edges("for_over_a_default_of_a_field", matrixBase+"_c: {name: "+source+"}\n"+matrixConfig+"{for k, v in *_c | {} {(k): v}}", "", matrixEdge),
+		// Hidden fields of the same name in different packages are different fields.
+		detected("hidden_name_collision_control", matrixImport+"system: schema.S & {units: consumer: settings: {_x: "+source+", if (_x & =~\"^x\") != _|_ {a: 1}}}", "S: {units: {producer: {outputs: id: string}, consumer: settings: {_x: units.producer.outputs.id}}}"),
+		edges("hidden_name_collision_value", matrixImport+"system: schema.S & {units: consumer: settings: {_x: "+source+", other: \"q-\\(_x)\"}}", "S: {units: {producer: {outputs: id: string}, consumer: settings: {_x: units.producer.outputs.id}}}", "system.units.consumer.settings.other<="+source),
+		// Nothing here reads the output's value.
+		clean("default_over_a_missing_field_of_a_unit", matrixBase+matrixConfig+"name: *system.units.producer.description | \"none\"", ""),
+		clean("default_over_a_missing_field", matrixBase+"_c: {a: "+source+"}\n"+matrixConfig+"name: *_c.missing | \"none\"", ""),
+		clean("default_over_an_optional_holding_a_reference", matrixBase+"_x: {a?: "+source+"}\n"+matrixConfig+"name: *_x.a | \"none\"", ""),
+		clean("len_of_a_struct_literal", matrixBase+matrixConfig+"n: len({a: "+source+"})", ""),
+		clean("len_of_a_list_literal", matrixBase+matrixConfig+"n: len(["+source+"])", ""),
+		clean("optional_field_holding_a_reference", matrixBase+matrixConfig+"{name: \"k\", extra?: "+source+"}", ""),
+		clean("long_concatenation", matrixBase+matrixConfig+"name: \"a\""+strings.Repeat(" + \"a\"", 600), ""),
+
 		// Valid CUE that used to be refused because independence could not be established.
 		edges("conditional_body_reference", matrixBase+"_e: true\n"+matrixConfig+"{if _e {name: "+source+"}}", "", matrixEdge),
 		clean("for_let_interpolation", matrixBase+"_m: {a: \"b\"}\nsystem: units: producer: settings: tags: {for k, v in _m let z = \"p-\\(v)\" {(k): z}}", ""),

@@ -12,7 +12,8 @@ evaluator commits on top of 0.16.1:
 - [`5a1f958`](https://github.com/rawkode/cue/commit/5a1f958250d657f19d94121d0070ddd1faca6805)
   shares typed references to values of the type.
 
-A later commit adds `cue/provenance` without changing evaluation; see
+Later commits add `cue/provenance`, and stop the sharing check from reading a field pushed
+down from a comprehension, which panicked; see
 `2026-11-03-infrastructure-nested-output-references.md`.
 
 The schema keeps its types. `dependsOn` on `#Task`, `#TaskGroup`,

@@ -739,3 +739,17 @@ config: {
 		t.Fatalf("accepted a source left out: %s", response)
 	}
 }
+
+// This shape used to crash the evaluator: the sharing check read a field pushed down from
+// a comprehension in an environment missing the levels of the comprehension's results.
+func TestFrozenConditionalFieldInAnInstantiatedDefinition(t *testing.T) {
+	_, snapshot := freezeTestModule(t, map[string]string{"env.cue": "package app\nx: 1\n#D: {if true {a: x}}\nconfig: #D\n"})
+	response := specializeFrozenResponse(snapshot, frozenJSON(t, specializationOptions{Projection: frozenPath("config")}))
+	var result specializationResult
+	if err := json.Unmarshal(frozenPayload(t, response), &result); err != nil {
+		t.Fatal(err)
+	}
+	if projected, _ := result.Value.(map[string]any); projected["a"] != float64(1) {
+		t.Fatalf("specialized %s", response)
+	}
+}

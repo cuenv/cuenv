@@ -154,13 +154,32 @@ func (graph *referenceGraph) sourcesOf(start *referenceNode) map[*referenceNode]
 	found := make(map[*referenceNode]provenance.Use)
 	seen := make(map[referenceRead]bool)
 	var read func(*referenceNode, provenance.Use)
+	// Which arm of a disjunction applies depends on what the fields it holds turn out
+	// to be. A source declared in it is not one of those: it has no value to compare.
+	var readHolders func(*referenceNode)
+	readHolders = func(node *referenceNode) {
+		for _, child := range node.children {
+			if graph.isSource(child) {
+				continue
+			}
+			if len(child.dependencies) > 0 {
+				read(child, provenance.Control)
+			}
+			readHolders(child)
+		}
+	}
 	follow := func(dependency provenance.Dependency, use provenance.Use) {
 		target := graph.node(dependency.Target)
-		if dependency.Use == provenance.Presence || use == provenance.Presence {
+		switch {
+		case dependency.Use == provenance.Alternatives:
+			if use != provenance.Presence {
+				readHolders(target)
+			}
+		case dependency.Use == provenance.Presence || use == provenance.Presence:
 			read(target, provenance.Presence)
-			return
+		default:
+			read(target, strongerUse(use, dependency.Use))
 		}
-		read(target, strongerUse(use, dependency.Use))
 	}
 	read = func(node *referenceNode, use provenance.Use) {
 		// A scalar is not there yet as far as CUE can tell while its value is unknown,
@@ -188,6 +207,8 @@ func (graph *referenceGraph) sourcesOf(start *referenceNode) map[*referenceNode]
 		for _, ancestor := range graph.ancestors(node.path) {
 			for _, dependency := range ancestor.node.dependencies {
 				switch dependency.Use {
+				case provenance.Alternatives:
+					readHolders(ancestor.node)
 				case provenance.Value:
 					projected := append(append([]cue.Selector{}, dependency.Target.Selectors()...), ancestor.rest...)
 					if len(projected) > maxReferencePath {
@@ -287,13 +308,18 @@ func (graph *referenceGraph) frozenReferences(root cue.Path) ([]frozenReference,
 		}
 		node := graph.node(path)
 		sources := graph.sourcesOf(node)
-		container := graph.instance.LookupPath(path).Exists() && graph.isContainer(node)
+		exists := graph.instance.LookupPath(path).Exists()
+		container := exists && graph.isContainer(node)
 		structural := false
 		for _, use := range sources {
 			structural = structural || use == provenance.Control || (container && use == provenance.Computed)
 		}
 		for source, use := range sources {
-			if container && use == provenance.Value {
+			// A field that is not there only matters if something could make it appear.
+			if (container || !exists) && use == provenance.Value {
+				continue
+			}
+			if !exists && !structural {
 				continue
 			}
 			primitive := primitiveDeclaration(graph.instance.LookupPath(source.path))

@@ -203,10 +203,14 @@ CUE fork now has one, tracked upstream as cue-lang/cue#4547.
    constrained), `Computed` (an operand), `Control` (a condition, label, index or the arm
    of a disjunction) or `Presence` (which fields exist). A let, a comprehension variable and
    a field of an inline value have no path of their own, so what they read is reported for
-   the field using them. Conditions are reported even when evaluation consumed them and
-   their results left no trace. A field pushed down from a comprehension is reported even
-   when its arc is gone because the condition did not resolve. Anything it cannot walk is
-   an error, and refuses the instance rather than being treated as independent.
+   the field using them, along with what decides they are there: in
+   `[if c {"a"}, "b"][0]`, `c` selects the element. Conditions are reported even when
+   evaluation consumed them and their results left no trace. A field pushed down from a
+   comprehension is reported even when its arc is gone because the condition did not
+   resolve. A field with more than one arm of a disjunction still alive reports
+   `Alternatives`, because what its fields turn out to hold can change the arm. Anything it
+   cannot walk is an error, and refuses the instance rather than being treated as
+   independent.
 2. **A graph from the configuration to the outputs.** `referenceGraph` in the bridge follows
    these from each exported value under the configuration roots. A value depends on what
    it refers to, on what decides that it exists, and when read whole on everything below
@@ -224,8 +228,8 @@ CUE fork now has one, tracked upstream as cue-lang/cue#4547.
 4. **Exported values stay ordinary CUE.** Exports, fills and final validation run on a
    normal build. Tests compare both modes on every accepted fixture and several values.
 
-The sampling step and the source analysis were removed: about 3,000 lines of bridge code
-against about 870 lines in the fork. Sampling could only refuse and tried values that real
+The sampling step and the source analysis were removed. Compared with the previous release
+the bridge is about 1,250 lines smaller, and the fork adds about 1,050. Sampling could only refuse and tried values that real
 outputs may never have, so it refused what depended on nothing real.
 
 ### Admitted and refused forms
@@ -267,10 +271,20 @@ accepted fixtures that values change, and every value CUE refuses.
 source. `TestFrozenComputedReferences` covers partly known values and violated constraints on
 computed ones.
 
+An independent adversarial review of this analysis generated about 8,000 programs and found
+six classes of missed dependence, all of which had passed the tests above: an arm selected
+by a field holding an output, a selected list element with a condition beside it, a let's error
+changing a comparison with bottom, an arm of a default in a `for` source, an explicitly opened
+reference, and hidden fields of the same name in different packages collapsing into one. Those
+are now tests. Verification had caught each of them with a real value, except where the value
+matched what the analysis assumed, which changes nothing. It also found a crash in the fork's
+own sharing patch, on `x: 1, #D: {if true {a: x}}, s: #D`, which is present in earlier releases.
+
 This is finite evidence, not a proof. The analysis now reads what the evaluator bound, so
 what it misses is limited to expressions the walker classifies wrongly rather than scoping it
-reimplements. A form it refuses to walk fails closed. One it walks and misclassifies is caught
-when its real value is known, which can be after an unrelated resource has changed.
+reimplements, but that review shows such cases existed after every earlier test passed. A form
+it refuses to walk fails closed. One it walks and misclassifies is caught when its real value
+is known, which can be after an unrelated resource has changed.
 
 The schema's checks moved into `_unresolved: {...}`. While they were comprehensions on the
 configuration itself, reading any field of it forced them, and they read every resource. A
@@ -308,11 +322,11 @@ resident set size. Time is wall clock.
 
 | Consumers | 0.65 plan | Plan | Plan peak | 0.65 apply | Apply | 0.65 apply peak | Apply peak |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.20 s | 0.36 s | 105 MB | 0.33 s | 0.44 s | 92 MB | 108 MB |
-| 8 | 0.31 s | 0.49 s | 132 MB | 0.50 s | 0.77 s | 97 MB | 136 MB |
-| 32 | 0.64 s | 0.97 s | 115 MB | 1.34 s | 1.84 s | 97 MB | 117 MB |
-| 64 | 1.40 s | 1.96 s | 156 MB | 2.90 s | 4.24 s | 105 MB | 126 MB |
-| 128 | 3.38 s | 4.66 s | 144 MB | not run | not run | not run | not run |
+| 1 | 0.20 s | 0.16 s | 68 MB | 0.33 s | 0.28 s | 92 MB | 71 MB |
+| 8 | 0.31 s | 0.22 s | 74 MB | 0.50 s | 0.47 s | 97 MB | 74 MB |
+| 32 | 0.64 s | 0.58 s | 79 MB | 1.34 s | 1.49 s | 97 MB | 84 MB |
+| 64 | 1.40 s | 1.13 s | 83 MB | 2.90 s | 3.40 s | 105 MB | 94 MB |
+| 128 | 3.38 s | 3.40 s | 98 MB | not run | not run | not run | not run |
 
 An earlier version filled one output at a time, which took 10 seconds and 538 MB to apply
 64 consumers and a measured 223 seconds for one verification of 500 resources with 5 outputs
@@ -323,7 +337,7 @@ above linear in such stacks. Larger stacks have not been measured through the CL
 ### Cancellation
 
 Deadlines apply per operation, with `CUENV_EVAL_TIMEOUT` defaulting to 60 seconds. At
-`CUENV_EVAL_TIMEOUT=1`, the 128-consumer plan finished in 4.65 seconds because no single
+`CUENV_EVAL_TIMEOUT=1`, the 128-consumer plan finished in 3.39 seconds because no single
 operation reached the deadline; an earlier, slower build stopped with exit code 3 after 1.42
 seconds, which is the behaviour when one does. CUE cannot be cancelled: the caller stops waiting, and an unfinished worker keeps its memory,
 including any filled values, and one of 16 process-wide slots until it returns or the
@@ -331,6 +345,21 @@ process exits. A verification that times out or finds no free slot stops the run
 than continuing unverified.
 
 ### Limits
+
+A value computed from an output can have any shape. `strings.Split(x, ",")` is refused while
+planning at a destination whose provider type is a list, because a reference needs a scalar
+destination. At a scalar destination it stops the apply with a type error once its value is
+known. CUE decides the shape of such a value, so analysis cannot say more ahead of time.
+
+Analysis evaluates with structure sharing off, which instantiates every definition. Definitions
+that fan out are exponential to evaluate this way even if nothing uses them: twenty levels of
+`#T1: {a: #T0, b: #T0}` took 9 seconds and 9 GB, against microseconds with sharing on. The
+evaluation timeout bounds the wait but not the memory, because CUE cannot be cancelled. Generated
+provider types form trees, which are linear, but no provider as large as Cloudflare has been
+measured through this path.
+
+A comprehension that adds a field with a dynamic label, beside a field the configuration reads,
+is refused if an output decides it, even when the labels differ: `(expr)` could produce any label.
 
 An output declared with the wrong type in an untyped configuration, such as `number` for a
 string attribute or `string` for a list, is not caught while planning: the resource is
