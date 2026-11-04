@@ -73,9 +73,12 @@ The current usable slice includes:
 - A thin overlay scrollbar in the terminal's right gutter, where there is history to scroll.
   An open task sidebar leaves it in reach, and only the task palette covers it.
   It shows while the view moves, holds a moment, and fades over 150ms, and comes back when
-  the pointer reaches the edge. Its thumb can be dragged and a press beside it jumps there.
+  the pointer reaches the padding it sits in. Its thumb can be dragged and a press beside it jumps there.
   It takes no room from the grid, and an application's wheel or an alternate screen with no
-  history leaves it hidden. With padding under its 12px strip it overlaps the last column.
+  history leaves it hidden. With less right padding than its 12px strip the thumb lies over
+  the last column, which stays the terminal's: crossing it reveals nothing, a selection
+  dragged through it carries on, and only a thumb the view's moving has just shown takes
+  a press.
 - A search bar at the terminal's top right while a search is open, from Cmd-F (Ctrl-Shift-F
   on Linux): the query, where navigation has got to or how many matches there are, and
   buttons for the previous and next match and for closing it, which are Shift-Enter, Enter,

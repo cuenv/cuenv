@@ -1143,6 +1143,11 @@ impl PaneState {
         self.interaction.search()
     }
 
+    /// Whether a press in this pane's terminal is being dragged into a selection.
+    pub(super) fn selecting(&self) -> bool {
+        self.interaction.selecting()
+    }
+
     /// Whether this pane's shell has gone and only its final output is left.
     fn has_exited(&self) -> bool {
         self.status.failure().is_some()
@@ -3652,6 +3657,7 @@ impl Render for TerminalView {
                     extent: ScrollExtent::of_frame(&frame),
                     top: self.top_inset(top_padding),
                     bottom: self.bottom_inset(px(f32::from(padding.bottom))),
+                    gutter: px(f32::from(padding.right)),
                     theme: &theme,
                 },
                 cx,

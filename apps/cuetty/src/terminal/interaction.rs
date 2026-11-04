@@ -99,6 +99,11 @@ impl InteractionState {
         self.selection
     }
 
+    /// Whether a press in the terminal is being dragged into a selection.
+    pub fn selecting(&self) -> bool {
+        self.dragging
+    }
+
     pub fn search(&self) -> Option<&LiteralSearch> {
         self.search.as_ref()
     }
