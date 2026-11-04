@@ -1283,6 +1283,17 @@ impl SessionRegistry {
         panes
     }
 
+    /// Whether the active pane's cursor differs from what was last sampled. Rio marks no
+    /// damage for DECTCEM or DECSCUSR, so a program that only shows or hides its cursor
+    /// wakes nothing, and this is what notices.
+    fn active_cursor_changed(&self) -> bool {
+        self.active_pane()
+            .and_then(|pane| self.sessions.get(&pane))
+            .is_some_and(|state| {
+                state.error.is_none() && state.session.cursor() != state.frame.cursor
+            })
+    }
+
     /// What `tab` is called right now.
     pub(super) fn tab_label(&self, tab: &Tab) -> String {
         let state = self.sessions.get(&tab.focused);
@@ -1999,7 +2010,11 @@ impl TerminalView {
                         let shown = view.registry.polled_state();
                         view.registry.sample_foreground(std::time::Instant::now());
                         view.refresh_cuenv_integration(cx);
-                        if view.registry.polled_state() != shown {
+                        let cursor_changed = view.registry.active_cursor_changed();
+                        if cursor_changed {
+                            view.cursor_animator.touch(std::time::Instant::now());
+                        }
+                        if cursor_changed || view.registry.polled_state() != shown {
                             cx.notify();
                         }
                     })
@@ -2930,6 +2945,8 @@ mod tests {
         foreground: Arc<Mutex<String>>,
         /// What a shell with bracketed paste on would read from the PTY.
         sent: Arc<Mutex<Vec<u8>>>,
+        /// A cursor a test can move, for a change that marks no damage.
+        cursor: Option<Arc<Mutex<CursorState>>>,
     }
 
     impl TerminalSession for FakeSession {
@@ -2954,7 +2971,14 @@ mod tests {
         }
 
         fn frame(&mut self) -> TerminalFrame {
+            self.frame.cursor = self.cursor();
             self.frame.clone()
+        }
+
+        fn cursor(&self) -> CursorState {
+            self.cursor
+                .as_ref()
+                .map_or(self.frame.cursor, |cursor| *cursor.lock().unwrap())
         }
 
         fn working_directory(&self) -> Option<String> {
@@ -3118,6 +3142,37 @@ mod tests {
     }
 
     #[test]
+    fn the_poll_notices_a_cursor_that_changed_without_any_damage() {
+        let cursor = Arc::new(Mutex::new(frame_with('a').cursor));
+        let (wake_tx, wake_rx) = async_channel::unbounded();
+        drop(wake_tx);
+        let session = FakeSession {
+            frame: frame_with('a'),
+            effects: Arc::default(),
+            close_error: None,
+            foreground: Arc::new(Mutex::new("zsh".into())),
+            sent: Arc::default(),
+            cursor: Some(Arc::clone(&cursor)),
+        };
+        let start = SessionStart {
+            session: Box::new(session),
+            wake_rx,
+        };
+        let (mut registry, _) =
+            SessionRegistry::start(fake_factory(vec![Ok(start)]), test_geometry()).unwrap();
+        assert!(!registry.active_cursor_changed(), "nothing has happened");
+
+        cursor.lock().unwrap().visible = Known::Known(false);
+        assert!(registry.active_cursor_changed());
+
+        // A draw samples the frame, after which there is nothing left to show.
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.frame = state.session.frame();
+        assert!(!registry.active_cursor_changed());
+    }
+
+    #[test]
     fn task_filter_matches_names_and_descriptions() {
         let tasks = vec![
             CuenvTask {
@@ -3172,6 +3227,7 @@ mod tests {
             close_error: close_error.map(str::to_owned),
             foreground: Arc::new(Mutex::new("zsh".into())),
             sent: Arc::default(),
+            cursor: None,
         };
         (
             SessionStart {
@@ -3194,6 +3250,7 @@ mod tests {
             close_error: None,
             foreground: Arc::clone(&foreground),
             sent: Arc::default(),
+            cursor: None,
         };
         (
             SessionStart {
@@ -4065,6 +4122,7 @@ mod tests {
             close_error: None,
             foreground: Arc::new(Mutex::new(process.to_owned())),
             sent: Arc::clone(&sent),
+            cursor: None,
         };
         let pane = PaneState::new(
             SessionGeneration(1),

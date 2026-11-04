@@ -3,8 +3,8 @@ use super::foreground::ForegroundProcess;
 #[cfg(unix)]
 use super::foreground::leader_arguments;
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
-use super::model::{SamplingToken, TerminalFrame};
-use super::rio_adapter::snapshot;
+use super::model::{CursorState, SamplingToken, TerminalFrame};
+use super::rio_adapter::{cursor_state, snapshot};
 use super::rio_input::{encode_key, encode_paste};
 use super::sizing::{CellSize, TerminalSize, terminal_size};
 #[cfg(unix)]
@@ -52,6 +52,8 @@ pub trait TerminalSession: Send {
     fn paste(&mut self, text: &str) -> Result<(), String>;
     fn scroll(&mut self, action: TerminalScroll) -> Result<(), String>;
     fn frame(&mut self) -> TerminalFrame;
+    /// The cursor as it is now, without taking the damage a frame collects.
+    fn cursor(&self) -> CursorState;
     /// OSC 7 directory, with a foreground-process fallback while the PTY is open.
     fn working_directory(&self) -> Option<String>;
     /// The foreground process while the PTY is open, shells included. `None` or a
@@ -480,6 +482,10 @@ impl TerminalSession for RioTerminalSession {
         terminal.reset_damage();
         terminal.damage_event_in_flight = false;
         frame
+    }
+
+    fn cursor(&self) -> CursorState {
+        cursor_state(&self.terminal.lock())
     }
 
     fn working_directory(&self) -> Option<String> {

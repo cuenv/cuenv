@@ -123,7 +123,8 @@ The focused label follows GPUI's current focus handle, including blur. The curso
 blinks only if the application asks, with `cursor.blink` to override that: it fades
 rather than toggles, stays solid for a moment after output or a key press, and
 settles solid after about half a minute of nothing happening, so an idle window
-stops drawing. Unfocused, or with another window active, it is a hollow outline.
+stops drawing. Rio raises no event for a program that only shows or hides its
+cursor, so the half-second poll notices that instead. Unfocused, or with another window active, it is a hollow outline.
 Rio
 colour semantics (default, indexed, RGB, bold, dim, inverse, and hidden) stay
 in `TerminalFrame` until the renderer resolves them through the theme.
