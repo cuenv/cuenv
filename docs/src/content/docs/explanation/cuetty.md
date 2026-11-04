@@ -316,7 +316,8 @@ choose a theme by name on such a system.
 A unit test holds every theme to the same contrast: body and metadata text at least
 4.5:1 on each surface it is painted on, ANSI colours 4.5:1 on the page apart from the
 one faint neutral pair (black on a dark theme, white on a light one), and the accent
-and the cursor at least 3:1.
+and the cursor at least 3:1. Floating panels cast half the shadow on a light theme,
+since black at the same strength reads as a smudge on a pale page.
 
 ### Accent colours
 
@@ -333,6 +334,10 @@ accent. Everything else uses `accent`, then the theme's accent. A global `accent
 and a directory's `rail` are different fields, so they never conflict during
 unification. To keep the marker on your `accent` everywhere, leave `rail` unset in
 the directories you control.
+
+A project picks its `rail` without knowing which theme it will land on, so these marks
+are held to 3:1 against the sidebar: a colour that already shows stays exactly as given,
+and one that would vanish, such as a pale blue on `paper`, moves just far enough to read.
 
 ### Global configuration
 

@@ -309,7 +309,9 @@ project accent. It colours the small marker on the active tab, which slides to w
 active, in place of the window's accent, and never fills the sidebar. `accent`, also
 a quoted `#RRGGBB`, is that window accent, for instance to match a compositor's
 window border: the marker uses `rail`, then `accent`, then the theme's accent, and
-the notice marker and palette caret use `accent`, then the theme's. Terminal panes are
+the notice marker and palette caret use `accent`, then the theme's. Both are held to
+3:1 against the sidebar, so a colour chosen for one theme still shows on another: one
+that already shows is left exactly as given. Terminal panes are
 never framed; the legacy `border` field is rejected. `titlebar: false` hides
 the Cuetty title strip while that tab is active so the terminal extends to the
 top of the window; it defaults to `true`. Off macOS the strip draws only under

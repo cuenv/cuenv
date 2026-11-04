@@ -5,6 +5,8 @@
 //! in a single place.
 
 use crate::integrations::cuenv::TitlebarVisibility;
+use crate::terminal::color::{blend, is_light, with_minimum_contrast};
+use crate::terminal::config::MinimumContrast;
 use crate::terminal::model::Rgb;
 use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
 use gpui::{
@@ -197,16 +199,20 @@ pub(super) enum Elevation {
     Modal,
 }
 
+/// How much of a dark theme's shadow a light theme casts. Black at the same alpha is far
+/// more contrast against a pale page, and would read as a smudge around the panel.
+const LIGHT_THEME_SHADOW_STRENGTH: f32 = 0.5;
+
 impl Elevation {
-    fn shadows(self) -> Vec<BoxShadow> {
-        let contact = |alpha| BoxShadow {
-            color: hsla(0.0, 0.0, 0.0, alpha),
+    fn shadows(self, strength: f32) -> Vec<BoxShadow> {
+        let contact = |alpha: f32| BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, alpha * strength),
             offset: point(px(0.0), px(2.0)),
             blur_radius: px(6.0),
             spread_radius: px(-2.0),
         };
-        let cast = |alpha, offset, blur| BoxShadow {
-            color: hsla(0.0, 0.0, 0.0, alpha),
+        let cast = |alpha: f32, offset, blur| BoxShadow {
+            color: hsla(0.0, 0.0, 0.0, alpha * strength),
             offset: point(px(0.0), px(offset)),
             blur_radius: px(blur),
             spread_radius: px(-4.0),
@@ -235,7 +241,7 @@ pub(super) fn elevated<E: Styled>(element: E, level: Elevation, colors: &ChromeC
         .border(border::HAIRLINE)
         .border_color(colors.panel_outline)
         .bg(colors.panel)
-        .shadow(level.shadows())
+        .shadow(level.shadows(colors.shadow_strength))
 }
 
 /// The palette height that holds `rows` results along with its field, hint,
@@ -404,10 +410,27 @@ pub(super) struct ChromeColors {
     /// The one thing that is not calm: a tab whose shell failed. It comes from the
     /// terminal's own palette, so it is the red the user already reads as an error.
     pub(super) danger: Rgba,
+    /// How strongly floating surfaces cast their shadows on this theme's page.
+    shadow_strength: f32,
+    /// What marks are seen against: the sidebar, and the active row they sit on most of
+    /// all. See [`Self::mark`].
+    mark_grounds: [Rgb; 2],
 }
 
 impl ChromeColors {
     pub(super) fn from_theme(theme: &TerminalTheme) -> Self {
+        let state = state_color(theme, theme.raised_surface);
+        let mark_grounds = if theme.background_opacity >= 1.0 {
+            [theme.title_surface, theme.raised_surface]
+        } else {
+            // There is no sidebar fill here, and what shows through is unknowable, so the
+            // page stands in for whatever is behind the window's one material.
+            [
+                theme.surface,
+                blend(theme.surface, theme.raised_surface, state.a),
+            ]
+        };
+        let mark = |color| mark_on(mark_grounds, color);
         Self {
             material: material_color(theme, theme.surface),
             sidebar: if theme.background_opacity >= 1.0 {
@@ -416,7 +439,7 @@ impl ChromeColors {
                 gpui::transparent_black().to_rgb()
             },
             panel: opaque(theme.raised_surface),
-            state: state_color(theme, theme.raised_surface),
+            state,
             state_on_row: state_color(theme, theme.hover_surface),
             panel_selected: opaque(theme.selection),
             panel_hover: opaque(theme.hover_surface),
@@ -428,16 +451,38 @@ impl ChromeColors {
             panel_outline: opaque(theme.divider),
             scrollbar: faded(opaque(theme.muted_text), SCROLLBAR_RESTING_STRENGTH),
             scrollbar_active: opaque(theme.muted_text),
-            accent: opaque(theme.accent),
-            danger: opaque(theme.ansi[1]),
+            accent: mark(theme.accent),
+            danger: mark(theme.ansi[1]),
+            shadow_strength: if is_light(theme.surface) {
+                LIGHT_THEME_SHADOW_STRENGTH
+            } else {
+                1.0
+            },
+            mark_grounds,
         }
     }
+
+    /// A colour set from outside the theme, as a small mark that has to be seen on it. A
+    /// project's `rail` and a user's `accent` are chosen without knowing which theme they
+    /// will land on, so the colour moves just far enough to show.
+    pub(super) fn mark(&self, color: Rgb) -> Rgba {
+        mark_on(self.mark_grounds, color)
+    }
+}
+
+/// `color` moved far enough to show on each ground. Grounds of one theme lie on the same
+/// side of a mark, so moving for one never undoes the other.
+fn mark_on(grounds: [Rgb; 2], color: Rgb) -> Rgba {
+    opaque(grounds.into_iter().fold(color, |color, ground| {
+        with_minimum_contrast(color, ground, MinimumContrast::NON_TEXT)
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::config::TerminalConfig;
+    use crate::terminal::color::contrast_ratio;
+    use crate::terminal::config::{TerminalConfig, ThemeName};
 
     #[test]
     fn a_hidden_strip_keeps_the_terminal_clear_of_controls_drawn_over_it() {
@@ -539,7 +584,7 @@ mod tests {
     fn a_higher_surface_casts_a_longer_softer_shadow() {
         let reach = |level: Elevation| {
             level
-                .shadows()
+                .shadows(1.0)
                 .iter()
                 .map(|shadow| (shadow.offset.y, shadow.blur_radius))
                 .fold((gpui::px(0.0), gpui::px(0.0)), |far, next| {
@@ -553,6 +598,77 @@ mod tests {
         );
         assert!(raised.0 < floating.0 && floating.0 < modal.0);
         assert!(raised.1 < floating.1 && floating.1 < modal.1);
+    }
+
+    fn ink_of(color: Rgba) -> Rgb {
+        let channel = |value: f32| (value * 255.0).round() as u8;
+        Rgb(channel(color.r), channel(color.g), channel(color.b))
+    }
+
+    fn theme_named(name: ThemeName) -> TerminalTheme {
+        TerminalTheme::from_config(&TerminalConfig::default().with_theme(name.colors()))
+    }
+
+    #[test]
+    fn a_light_theme_casts_a_softer_shadow_than_a_dark_one() {
+        let strength = |name| ChromeColors::from_theme(&theme_named(name)).shadow_strength;
+        assert_eq!(strength(ThemeName::Graphite), 1.0);
+        assert!(strength(ThemeName::Paper) < 1.0);
+        let alpha = |strength| Elevation::Modal.shadows(strength)[0].color.a;
+        assert!(alpha(strength(ThemeName::Paper)) < alpha(1.0));
+    }
+
+    #[test]
+    fn a_mark_from_outside_the_theme_shows_on_every_theme() {
+        // Pale and deep on purpose: each disappears on one family of themes. The mid grey
+        // clears the sidebar but not the lighter active row it is painted on.
+        let outsiders = [
+            Rgb(0x89, 0xb4, 0xfa),
+            Rgb(0x10, 0x20, 0x40),
+            Rgb(0x66, 0x66, 0x66),
+        ];
+        for outsider in outsiders {
+            for name in ThemeName::ALL {
+                let theme = theme_named(name);
+                let colors = ChromeColors::from_theme(&theme);
+                let ink = ink_of(colors.mark(outsider));
+                for (fill, ground) in [
+                    ("sidebar", theme.title_surface),
+                    ("active row", ink_of(colors.state)),
+                ] {
+                    let contrast = contrast_ratio(ink, ground);
+                    assert!(
+                        contrast >= 3.0,
+                        "{outsider:?} on {} {fill}: {contrast}",
+                        name.id()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_mark_shows_on_the_active_row_of_a_translucent_window() {
+        for name in ThemeName::ALL {
+            let theme = TerminalTheme::from_config(&TerminalConfig {
+                terminal_transparency_percent: 65,
+                ..TerminalConfig::default().with_theme(name.colors())
+            });
+            let colors = ChromeColors::from_theme(&theme);
+            let ink = ink_of(colors.mark(Rgb(0x66, 0x66, 0x66)));
+            let row = blend(theme.surface, theme.raised_surface, colors.state.a);
+            for ground in [theme.surface, row] {
+                let contrast = contrast_ratio(ink, ground);
+                assert!(contrast >= 3.0, "on {}: {contrast}", name.id());
+            }
+        }
+    }
+
+    #[test]
+    fn a_mark_that_already_shows_keeps_the_colour_it_was_given() {
+        let colors = ChromeColors::from_theme(&theme_named(ThemeName::CatppuccinMocha));
+        let rail = Rgb(0x89, 0xb4, 0xfa);
+        assert_eq!(colors.mark(rail), opaque(rail));
     }
 
     #[test]

@@ -44,6 +44,11 @@ pub(super) fn contrast_ratio(first: Rgb, second: Rgb) -> f32 {
     (first.max(second) + 0.05) / (first.min(second) + 0.05)
 }
 
+/// Whether dark ink reads better on `color` than light ink does.
+pub(super) fn is_light(color: Rgb) -> bool {
+    contrast_ratio(color, BLACK) > contrast_ratio(color, WHITE)
+}
+
 /// How finely [`with_minimum_contrast`] searches for the smallest change, enough to
 /// land within a colour step.
 const CONTRAST_SEARCH_STEPS: u32 = 8;

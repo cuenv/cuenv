@@ -46,6 +46,8 @@ pub struct MinimumContrast(f32);
 
 impl MinimumContrast {
     pub const OFF: Self = Self(1.0);
+    /// What a mark needs to be seen when it carries no text: WCAG's non-text contrast.
+    pub const NON_TEXT: Self = Self(3.0);
 
     /// `None` for what is not a contrast ratio.
     pub fn new(ratio: f32) -> Option<Self> {

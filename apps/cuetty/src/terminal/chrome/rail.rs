@@ -1,7 +1,7 @@
 use super::icons::Icon;
 use super::tokens::{
-    ChromeColors, Elevation, border, elevated, faded, opaque, radius, size, space, tab_marker_top,
-    text, ui_font_family,
+    ChromeColors, Elevation, border, elevated, faded, radius, size, space, tab_marker_top, text,
+    ui_font_family,
 };
 use super::tooltip::chrome_tooltip;
 use super::{hover_fade, hover_probe};
@@ -48,10 +48,11 @@ impl Render for DraggedTab {
 
 /// The active tab's marker: the project's `rail` from a matching `package cuetty`,
 /// or the window's accent. The colour only ever fills this small mark, so a project
-/// can never choose a fill the rail's text has to survive.
+/// can never choose a fill the rail's text has to survive, and it moves only as far as
+/// showing on the user's theme takes.
 fn active_tab_marker_color(project_accent: Option<RailColor>, colors: &ChromeColors) -> Rgba {
     project_accent.map_or(colors.accent, |RailColor(red, green, blue)| {
-        opaque(Rgb(red, green, blue))
+        colors.mark(Rgb(red, green, blue))
     })
 }
 
