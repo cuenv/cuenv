@@ -1,3 +1,4 @@
+use super::chrome::render_shell_message;
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
 use super::host::{
@@ -1730,14 +1731,7 @@ impl Render for TerminalView {
                 .unwrap_or_else(|| "Cuetty has no live terminal session".into());
             return self.render_shell_layout(
                 sidebar,
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .child(message)
-                    .into_any_element(),
+                render_shell_message(message, &theme),
                 &theme,
             );
         };
@@ -1756,14 +1750,7 @@ impl Render for TerminalView {
         if let Some(error) = &pane_error {
             return self.render_shell_layout(
                 sidebar,
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .child(format!("Cuetty terminal error: {error}"))
-                    .into_any_element(),
+                render_shell_message(format!("Cuetty terminal error: {error}"), &theme),
                 &theme,
             );
         }

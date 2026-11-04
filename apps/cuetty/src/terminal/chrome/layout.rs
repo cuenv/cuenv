@@ -2,7 +2,29 @@ use super::tokens::{ChromeColors, border, material_color, size, space, text};
 use crate::integrations::cuenv::TitlebarVisibility;
 use crate::terminal::engine::TerminalView;
 use crate::terminal::presentation::TerminalTheme;
-use gpui::{InteractiveElement, IntoElement, ParentElement, Styled, WindowControlArea, div, px};
+use gpui::{
+    InteractiveElement, IntoElement, ParentElement, SharedString, Styled, WindowControlArea, div,
+    px,
+};
+
+/// A centred status line that stands in for the terminal when a pane has no
+/// live session or failed.
+pub(in crate::terminal) fn render_shell_message(
+    message: impl Into<SharedString>,
+    theme: &TerminalTheme,
+) -> gpui::AnyElement {
+    let colors = ChromeColors::from_theme(theme);
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .p(space::XL)
+        .text_size(text::BODY)
+        .text_color(colors.text_secondary)
+        .child(message.into())
+        .into_any_element()
+}
 
 impl TerminalView {
     pub(in crate::terminal) fn render_shell_layout(

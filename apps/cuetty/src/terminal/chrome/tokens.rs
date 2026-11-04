@@ -37,6 +37,7 @@ pub(super) mod text {
     pub(in crate::terminal::chrome) const LABEL: Pixels = px(12.0);
     pub(in crate::terminal::chrome) const BODY: Pixels = px(13.0);
     pub(in crate::terminal::chrome) const TITLE: Pixels = px(14.0);
+    pub(in crate::terminal::chrome) const REGULAR: FontWeight = FontWeight::NORMAL;
     pub(in crate::terminal::chrome) const STRONG: FontWeight = FontWeight::SEMIBOLD;
 }
 

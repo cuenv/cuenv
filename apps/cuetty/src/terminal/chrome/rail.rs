@@ -5,8 +5,8 @@ use crate::terminal::model::Rgb;
 use crate::terminal::presentation::TerminalTheme;
 use crate::workspace::TabId;
 use gpui::{
-    Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
+    Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+    div, prelude::FluentBuilder,
 };
 use gpui_component::tooltip::Tooltip;
 
@@ -99,7 +99,7 @@ impl TerminalView {
                     .font_weight(if selected {
                         text::STRONG
                     } else {
-                        FontWeight::NORMAL
+                        text::REGULAR
                     })
                     .text_color(if selected {
                         colors.mark_text
