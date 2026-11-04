@@ -852,18 +852,30 @@ fn colors(cell: &TerminalCell, theme: &TerminalTheme, layer: CellLayer) -> (Rgb,
         }
         CellLayer::Cell => {}
     }
-    let mut foreground = theme.resolve(cell.foreground);
-    let mut background = theme.resolve(cell.background);
+    let (foreground, background) = resolved_colors(cell, theme);
+    (styled_foreground(cell, foreground, background), background)
+}
+
+/// A cell's own colours, before anything fades its text.
+fn resolved_colors(cell: &TerminalCell, theme: &TerminalTheme) -> (Rgb, Rgb) {
+    let foreground = theme.resolve(cell.foreground);
+    let background = theme.resolve(cell.background);
     if cell.style.inverse {
-        std::mem::swap(&mut foreground, &mut background);
+        (background, foreground)
+    } else {
+        (foreground, background)
     }
-    if cell.style.dim {
-        foreground = dimmed(foreground, background);
-    }
+}
+
+/// A cell's text colour once dim and concealed have faded it into what it is drawn on.
+fn styled_foreground(cell: &TerminalCell, foreground: Rgb, drawn_on: Rgb) -> Rgb {
     if cell.style.hidden {
-        foreground = background;
+        drawn_on
+    } else if cell.style.dim {
+        dimmed(foreground, drawn_on)
+    } else {
+        foreground
     }
-    (foreground, background)
 }
 
 /// Whether a cell lies inside a selection.
@@ -875,8 +887,9 @@ fn is_selected(overlays: &[CellOverlaySpan], position: CellPosition) -> bool {
     })
 }
 
-/// A glyph's colour after the minimum contrast setting, measured against `selection`
-/// when one is painted beneath the cell. A layer above the cell has its own colour pair.
+/// A glyph's colour against what is actually behind it, which is `selection` when one
+/// is painted beneath the cell: dim text fades towards that, and the minimum contrast
+/// setting measures against it. A layer above the cell has its own colour pair.
 ///
 /// Colours an application spelled out in 24-bit are left alone, as are graphics: image
 /// previews and Powerline segments are built from them, and only line up when a cell's
@@ -887,24 +900,24 @@ fn readable_foreground(
     layer: CellLayer,
     selection: Option<Rgb>,
 ) -> Rgb {
-    let (foreground, background) = colors(cell, theme, layer);
+    if layer != CellLayer::Cell {
+        return colors(cell, theme, layer).0;
+    }
+    let (foreground, background) = resolved_colors(cell, theme);
+    let drawn_on = selection.unwrap_or(background);
+    let foreground = styled_foreground(cell, foreground, drawn_on);
     let explicit = if cell.style.inverse {
         cell.background
     } else {
         cell.foreground
     };
-    if layer != CellLayer::Cell
-        || theme.minimum_contrast.is_off()
+    if theme.minimum_contrast.is_off()
         || matches!(explicit, super::model::Color::Rgb(_))
         || draws_a_graphic(cell)
     {
         return foreground;
     }
-    with_minimum_contrast(
-        foreground,
-        selection.unwrap_or(background),
-        theme.minimum_contrast,
-    )
+    with_minimum_contrast(foreground, drawn_on, theme.minimum_contrast)
 }
 
 fn shell_notice(error: ShellError) -> String {
@@ -3610,6 +3623,21 @@ mod tests {
         assert_eq!(
             colors(&cell, &TerminalTheme::default(), CellLayer::Cell).0,
             Rgb(150, 150, 150)
+        );
+    }
+
+    #[test]
+    fn selected_dim_text_fades_towards_the_selection_behind_it() {
+        let theme = TerminalTheme::default();
+        let mut cell = TerminalCell::narrow('x');
+        cell.style.dim = true;
+        let selected = readable_foreground(&cell, &theme, CellLayer::Cell, Some(theme.selection));
+        assert_eq!(selected, dimmed(theme.text, theme.selection));
+        let unselected = readable_foreground(&cell, &theme, CellLayer::Cell, None);
+        assert_eq!(unselected, dimmed(theme.text, theme.surface));
+        assert!(
+            contrast_ratio(selected, theme.selection) > contrast_ratio(unselected, theme.selection),
+            "selecting dim text must not make it harder to read"
         );
     }
 

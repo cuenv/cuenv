@@ -190,7 +190,7 @@ contextual alternates see the surrounding text. Every glyph is then placed from 
 column its source text belongs to, never from the font's advances, so `calt`,
 combining marks, and fallback fonts cannot shift a column, and all rows share one
 baseline taken from the configured font. Dim text blends halfway towards the
-background it is drawn on, so it reads as quieter on a light theme as well as a dark
+background it is drawn on, a selection included, so it reads as quieter on a light theme as well as a dark
 one, and concealed text paints no glyph at all. Renderer cell
 width is measured from the selected font, while line height follows the configured
 font size and line-height multiplier; both are rounded once to whole device pixels
