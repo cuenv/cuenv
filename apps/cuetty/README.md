@@ -180,8 +180,12 @@ composition. Workspace persistence has a bounded versioned codec and atomic
 file store, but live restore and Rio session reconnect are not wired into the
 product shell. Schema 2 records each tab's optional user-set name; schema 1
 snapshots still decode, with no name.
-The renderer uses one custom GPUI element, merges compatible background spans,
-and shapes adjacent compatible cells as fixed-width text batches. Renderer cell
+The renderer uses one custom GPUI element and merges compatible background spans.
+Adjacent cells sharing a font are shaped together, even across colours, so a font's
+contextual alternates see the surrounding text. Every glyph is then placed from the
+column its source text belongs to, never from the font's advances, so `calt`,
+combining marks, and fallback fonts cannot shift a column, and all rows share one
+baseline taken from the configured font. Renderer cell
 width is measured from the selected font, while line height follows the configured
 font size and line-height multiplier; both are rounded once to whole device pixels
 at the window's scale factor, and painting, hit testing, and Rio resizing all use
@@ -294,6 +298,7 @@ The appearance fields are optional and apply to the active tab:
 | `font.family` | Nonempty font family name | `MonaspiceNe Nerd Font` |
 | `font.size` | 1–128 pixels | 16 |
 | `font.lineHeight` | 0.5–3 multiplier | 1.2 |
+| `font.calt` | Boolean: the font's contextual alternates, such as Monaspace's texture healing. Ligatures stay off either way | `true` |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | 0–128 integer pixels per edge | 14 each |
 | `transparency` | 0–100 integer percent | 0 |
 

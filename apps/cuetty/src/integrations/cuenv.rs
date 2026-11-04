@@ -319,6 +319,8 @@ struct FontDto {
     size: Option<f32>,
     #[serde(default)]
     line_height: Option<f32>,
+    #[serde(default)]
+    calt: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -661,6 +663,9 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         if let Some(line_height) = font.line_height {
             terminal.font.line_height_multiplier = line_height;
         }
+        if let Some(calt) = font.calt {
+            terminal.font.contextual_alternates = calt;
+        }
     }
     if let Some(padding) = dto.padding {
         let edges = &mut terminal.terminal_padding;
@@ -973,6 +978,24 @@ mod tests {
         assert_eq!(terminal.terminal_padding.bottom, 14);
         assert_eq!(terminal.terminal_padding.left, 2);
         assert_eq!(terminal.terminal_transparency_percent, 40);
+    }
+
+    #[test]
+    fn contextual_alternates_default_on_and_can_be_turned_off() {
+        let terminal = |value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal,
+            other => panic!("expected a valid presentation, got {other:?}"),
+        };
+        assert!(terminal(serde_json::json!({})).font.contextual_alternates);
+        assert!(
+            !terminal(serde_json::json!({"font": {"calt": false}}))
+                .font
+                .contextual_alternates
+        );
+        assert!(matches!(
+            parse_value(serde_json::json!({"font": {"calt": "yes"}})),
+            Evaluation::Invalid(_)
+        ));
     }
 
     #[test]

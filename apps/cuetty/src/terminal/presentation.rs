@@ -1,10 +1,12 @@
-use super::config::{Rgb as ConfigRgb, TerminalConfig};
+use super::config::{FontConfig, Rgb as ConfigRgb, TerminalConfig};
 use super::model::{Color, Rgb};
 use super::sizing::CellSize;
 use gpui::{
-    Font, FontFallbacks, Pixels, Point, Size, TextSystem, WindowBackgroundAppearance, font, point,
-    px,
+    Font, FontFallbacks, FontFeatures, Pixels, Point, Size, TextSystem, WindowBackgroundAppearance,
+    font, point, px,
 };
+
+use std::sync::Arc;
 
 #[cfg(test)]
 const TERMINAL_FONT_FAMILY: &str = "MonaspiceNe Nerd Font";
@@ -31,7 +33,19 @@ fn terminal_font() -> Font {
 fn font_from_config(config: &TerminalConfig) -> Font {
     let mut font = font(config.font.family.clone());
     font.fallbacks = Some(FontFallbacks::from_fonts(config.font.fallbacks.clone()));
+    font.features = font_features(&config.font);
     font
+}
+
+/// Ligatures stay off because a terminal shows each character in its own cell. `calt`
+/// is a font's substitutions that keep to the grid, such as Monaspace's texture
+/// healing, and is optional because some fonts use it for ligatures too.
+fn font_features(config: &FontConfig) -> FontFeatures {
+    FontFeatures(Arc::new(vec![
+        ("calt".into(), u32::from(config.contextual_alternates)),
+        ("liga".into(), 0),
+        ("clig".into(), 0),
+    ]))
 }
 
 /// Presentation values are intentionally independent from Rio and replaceable
@@ -352,6 +366,30 @@ mod tests {
     fn the_grid_origin_snaps_onto_a_device_pixel() {
         let snapped = ScaleFactor::new(2.0).snap(point(px(14.3), px(14.2)));
         assert_eq!(snapped, point(px(14.5), px(14.0)));
+    }
+
+    #[test]
+    fn contextual_alternates_follow_the_config_and_ligatures_stay_off() {
+        let features = |contextual_alternates| {
+            let mut config = TerminalConfig::default();
+            config.font.contextual_alternates = contextual_alternates;
+            font_from_config(&config).features
+        };
+        let tag = |features: &FontFeatures, name: &str| {
+            features
+                .tag_value_list()
+                .iter()
+                .find(|(tag, _)| tag == name)
+                .map(|(_, value)| *value)
+        };
+        let on = features(true);
+        assert_eq!(tag(&on, "calt"), Some(1));
+        let off = features(false);
+        assert_eq!(tag(&off, "calt"), Some(0));
+        for features in [on, off] {
+            assert_eq!(tag(&features, "liga"), Some(0));
+            assert_eq!(tag(&features, "clig"), Some(0));
+        }
     }
 
     #[test]

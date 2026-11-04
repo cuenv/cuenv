@@ -27,12 +27,12 @@ use crate::integrations::cuenv::{
 use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Decorations, Edges,
-    Element, FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement,
-    IntoElement, KeyBinding, Menu, MenuItem, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels, Render, ScrollDelta,
-    ScrollHandle, ScrollWheelEvent, SharedString, Size, StrikethroughStyle, Styled, SystemMenuType,
-    TextRun, Timer, UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions, actions, canvas, div, point, px, quad, size,
+    Element, FocusHandle, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
+    KeyBinding, Menu, MenuItem, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, PathBuilder, Pixels, Render, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Size, StrikethroughStyle, Styled, SystemMenuType, TextRun,
+    Timer, UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions, actions, canvas, div, point, px, quad, size,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -139,12 +139,7 @@ impl TerminalGrid {
     fn font_for(&self, cell: &TerminalCell) -> Font {
         Font {
             family: self.metrics.font.family.clone(),
-            // Terminal columns must not be changed by contextual or standard ligatures.
-            features: FontFeatures(std::sync::Arc::new(vec![
-                ("calt".into(), 0),
-                ("liga".into(), 0),
-                ("clig".into(), 0),
-            ])),
+            features: self.metrics.font.features.clone(),
             fallbacks: self.metrics.font.fallbacks.clone(),
             weight: if cell.style.bold {
                 FontWeight::BOLD
@@ -156,6 +151,203 @@ impl TerminalGrid {
             } else {
                 FontStyle::Normal
             },
+        }
+    }
+
+    /// The colour a cell's glyph is painted in.
+    fn foreground_at(&self, cell: &TerminalCell, row: &RowPaint<'_>, column: usize) -> Rgb {
+        let position = CellPosition {
+            row: row.row,
+            column,
+        };
+        colors(cell, &self.theme, self.layer_at(row.overlays, position)).0
+    }
+
+    /// Paints a row's glyphs. Adjacent cells are shaped together wherever they share a
+    /// font, even across colours, so a font's contextual alternates read the text
+    /// around them and do not change as the cursor or syntax colouring moves past.
+    fn paint_row_text(&self, row: &RowPaint<'_>, window: &mut Window) {
+        let cells = row.cells;
+        let mut start = 0;
+        while start < cells.len() {
+            let cell = &cells[start];
+            // Spacers carry background and occupancy only.  In particular,
+            // they are never shaped as a space glyph.
+            if cell.text.is_none() {
+                start += 1;
+                continue;
+            }
+            if let Some(character) = drawn_character(cell) {
+                self.paint_drawn_glyph(
+                    row.origin,
+                    DrawnGlyph {
+                        character,
+                        row: row.row,
+                        column: start,
+                    },
+                    self.foreground_at(cell, row, start),
+                    window,
+                );
+                start += 1;
+                continue;
+            }
+            let end = (start + 1..cells.len())
+                .find(|&column| {
+                    let next = &cells[column];
+                    next.text.is_none()
+                        || drawn_character(next).is_some()
+                        || next.style.bold != cell.style.bold
+                        || next.style.italic != cell.style.italic
+                })
+                .unwrap_or(cells.len());
+            self.paint_text_run(row, start..end, window);
+            start = end;
+        }
+    }
+
+    /// Paints one shaped run with every glyph placed from its cell's column.
+    ///
+    /// This does not paint a `ShapedLine` with a forced width because that cannot hold
+    /// the grid: GPUI only corrects a glyph more than a pixel off, so spacing wanders
+    /// wherever the advance and the cell differ, and it counts glyphs rather than
+    /// characters, so a combining mark or a ligature in `calt` would shift every later
+    /// column in the run. Mapping each glyph back to its source text cannot.
+    fn paint_text_run(
+        &self,
+        row: &RowPaint<'_>,
+        columns: std::ops::Range<usize>,
+        window: &mut Window,
+    ) {
+        let cells = &row.cells[columns.clone()];
+        let mut text = String::new();
+        let cluster_starts: Vec<usize> = cells
+            .iter()
+            .map(|cell| {
+                let start = text.len();
+                text.push_str(cell.text.as_deref().unwrap_or_default());
+                start
+            })
+            .collect();
+        let foregrounds: Vec<Hsla> = cells
+            .iter()
+            .zip(columns.clone())
+            .map(|(cell, column)| gpui::rgb(gpui_rgb(self.foreground_at(cell, row, column))).into())
+            .collect();
+        let Some(first) = cells.first() else {
+            return;
+        };
+        let run = TextRun {
+            len: text.len(),
+            font: self.font_for(first),
+            // Colours are per glyph below; this only satisfies the shaper.
+            color: Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = window.text_system().shape_line(
+            SharedString::from(text),
+            self.metrics.font_size,
+            &[run],
+            None,
+        );
+        let grid_cell = self.metrics.render_cell();
+        let cell_x =
+            |cluster: usize| row.origin.x + grid_cell.width * (columns.start + cluster) as f32;
+        let baseline = row.origin.y + grid_cell.height * row.row as f32 + self.baseline(window);
+        let font_size = self.metrics.font_size;
+        let line = Bounds {
+            origin: point(cell_x(0), row.origin.y + grid_cell.height * row.row as f32),
+            size: size(grid_cell.width * cells.len() as f32, grid_cell.height),
+        };
+        window.paint_layer(line, |window| {
+            let mut placer = GlyphPlacer::new(&cluster_starts);
+            for run in &shaped.runs {
+                for glyph in &run.glyphs {
+                    let placed = placer.place(glyph.index, f32::from(glyph.position.x));
+                    let origin = point(cell_x(placed.cluster) + px(placed.offset), baseline);
+                    // A glyph that cannot be rasterized leaves its cell empty.
+                    let _ = if glyph.is_emoji {
+                        window.paint_emoji(origin, run.font_id, glyph.id, font_size)
+                    } else {
+                        let color = foregrounds.get(placed.cluster).copied().unwrap_or_default();
+                        window.paint_glyph(origin, run.font_id, glyph.id, font_size, color)
+                    };
+                }
+            }
+        });
+    }
+
+    /// The distance from the top of a cell to the text's baseline, from the configured
+    /// font alone. A fallback glyph therefore sits on the same line as the text around
+    /// it, and every row's baseline lands on a device pixel.
+    fn baseline(&self, window: &Window) -> Pixels {
+        let text_system = window.text_system();
+        let font = text_system.resolve_font(&self.metrics.font);
+        let offset = baseline_in_cell(
+            self.metrics.render_cell().height,
+            text_system.ascent(font, self.metrics.font_size),
+            text_system.descent(font, self.metrics.font_size),
+        );
+        self.metrics.scale.snap(point(px(0.0), offset)).y
+    }
+
+    /// Underlines and strikethroughs follow the cells they decorate, so they are drawn
+    /// once a row's runs are placed and do not depend on how it was shaped.
+    fn paint_row_decorations(&self, row: &RowPaint<'_>, window: &mut Window) {
+        let cells = row.cells;
+        if cells
+            .iter()
+            .all(|cell| cell.style.underline.is_none() && !cell.style.strikeout)
+        {
+            return;
+        }
+        let grid_cell = self.metrics.render_cell();
+        let text_system = window.text_system();
+        let font = text_system.resolve_font(&self.metrics.font);
+        let ascent = text_system.ascent(font, self.metrics.font_size);
+        let descent = text_system.descent(font, self.metrics.font_size).abs();
+        let baseline = self.baseline(window);
+        let top = row.origin.y + grid_cell.height * row.row as f32;
+        let x = |column: usize| row.origin.x + grid_cell.width * column as f32;
+        let underlines = merged_spans(cells.iter().enumerate().map(|(column, cell)| {
+            let foreground = self.foreground_at(cell, row, column);
+            cell.style.underline.map(|style| {
+                let color = cell
+                    .underline_color
+                    .map_or(foreground, |color| self.theme.resolve(color));
+                (style, color)
+            })
+        }));
+        for (columns, (style, color)) in underlines {
+            window.paint_underline(
+                point(x(columns.start), top + baseline + descent * 0.618),
+                grid_cell.width * columns.len() as f32,
+                &GpuiUnderlineStyle {
+                    thickness: px(if matches!(style, UnderlineStyle::Double) {
+                        2.0
+                    } else {
+                        1.0
+                    }),
+                    color: Some(gpui::rgb(gpui_rgb(color)).into()),
+                    wavy: matches!(style, UnderlineStyle::Curly),
+                },
+            );
+        }
+        let strikethroughs = merged_spans(cells.iter().enumerate().map(|(column, cell)| {
+            cell.style
+                .strikeout
+                .then(|| self.foreground_at(cell, row, column))
+        }));
+        for (columns, color) in strikethroughs {
+            window.paint_strikethrough(
+                point(x(columns.start), top + (ascent * 0.5 + baseline) * 0.5),
+                grid_cell.width * columns.len() as f32,
+                &StrikethroughStyle {
+                    thickness: px(1.0),
+                    color: Some(gpui::rgb(gpui_rgb(color)).into()),
+                },
+            );
         }
     }
 
@@ -381,9 +573,8 @@ impl Element for TerminalGrid {
         _: &mut (),
         _: &mut (),
         window: &mut Window,
-        cx: &mut App,
+        _: &mut App,
     ) {
-        let grid_cell = self.metrics.render_cell();
         let overlays = self.overlays.spans(&self.frame);
         // Cells are whole device pixels, so a whole-pixel origin puts every edge on one.
         let bounds = Bounds {
@@ -430,99 +621,95 @@ impl Element for TerminalGrid {
             // A block cursor is deliberately below text; line cursors are
             // painted after glyphs so they remain visible.
             self.paint_cursor(bounds.origin, row, true, window);
-            let mut start = 0;
-            while start < cells.len() {
-                let cell = &cells[start];
-                // Spacers carry background and occupancy only.  In particular,
-                // they are never shaped as a space glyph.
-                if cell.text.is_none() {
-                    start += 1;
-                    continue;
-                }
-                let layer = self.layer_at(&overlays, CellPosition { row, column: start });
-                let (foreground, _) = colors(cell, &self.theme, layer);
-                if let Some(character) = drawn_character(cell) {
-                    self.paint_drawn_glyph(
-                        bounds.origin,
-                        DrawnGlyph {
-                            character,
-                            row,
-                            column: start,
-                        },
-                        foreground,
-                        window,
-                    );
-                    start += 1;
-                    continue;
-                }
-                let decoration_color = cell
-                    .underline_color
-                    .map(|color| self.theme.resolve(color))
-                    .unwrap_or(foreground);
-                let mut end = start + 1;
-                while end < cells.len() {
-                    let next = &cells[end];
-                    if next.text.is_none() || drawn_character(next).is_some() {
-                        break;
-                    }
-                    let next_layer = self.layer_at(&overlays, CellPosition { row, column: end });
-                    let (next_fg, _) = colors(next, &self.theme, next_layer);
-                    if next_fg != foreground
-                        || next.style.bold != cell.style.bold
-                        || next.style.italic != cell.style.italic
-                        || next.style.underline != cell.style.underline
-                        || next.underline_color != cell.underline_color
-                        || next.style.strikeout != cell.style.strikeout
-                    {
-                        break;
-                    }
-                    end += 1;
-                }
-                let text: SharedString = cells[start..end]
-                    .iter()
-                    .filter_map(|cell| cell.text.as_deref())
-                    .collect::<String>()
-                    .into();
-                let underline = cell.style.underline.map(|style| GpuiUnderlineStyle {
-                    thickness: px(if matches!(style, UnderlineStyle::Double) {
-                        2.0
-                    } else {
-                        1.0
-                    }),
-                    color: Some(gpui::rgb(gpui_rgb(decoration_color)).into()),
-                    wavy: matches!(style, UnderlineStyle::Curly),
-                });
-                let run = TextRun {
-                    len: text.len(),
-                    font: self.font_for(cell),
-                    color: gpui::rgb(gpui_rgb(foreground)).into(),
-                    background_color: None,
-                    underline,
-                    strikethrough: cell.style.strikeout.then_some(StrikethroughStyle {
-                        thickness: px(1.0),
-                        color: Some(gpui::rgb(gpui_rgb(foreground)).into()),
-                    }),
-                };
-                let line = window.text_system().shape_line(
-                    text,
-                    self.metrics.font_size,
-                    &[run],
-                    Some(grid_cell.width),
-                );
-                let _ = line.paint(
-                    point(
-                        bounds.origin.x + grid_cell.width * start as f32,
-                        bounds.origin.y + grid_cell.height * row as f32,
-                    ),
-                    grid_cell.height,
-                    window,
-                    cx,
-                );
-                start = end;
-            }
+            let row_paint = RowPaint {
+                origin: bounds.origin,
+                row,
+                cells,
+                overlays: &overlays,
+            };
+            self.paint_row_text(&row_paint, window);
+            self.paint_row_decorations(&row_paint, window);
             self.paint_cursor(bounds.origin, row, false, window);
         }
     }
+}
+
+/// One row of the grid while it is being painted.
+struct RowPaint<'a> {
+    origin: gpui::Point<Pixels>,
+    row: usize,
+    cells: &'a [TerminalCell],
+    overlays: &'a [CellOverlaySpan],
+}
+
+/// Centres a font's line in a cell. Platforms report the descent as negative, which is
+/// also why this does not use GPUI's `baseline_offset`: that adds it to the ascent
+/// instead of subtracting, and so sits text below the centre of the line.
+fn baseline_in_cell(height: Pixels, ascent: Pixels, descent: Pixels) -> Pixels {
+    (height - ascent - descent.abs()) / 2.0 + ascent
+}
+
+/// Where a shaped glyph belongs: the cell its source text came from, and how far past
+/// that cell's left edge it was shaped.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlacedGlyph {
+    cluster: usize,
+    offset: f32,
+}
+
+/// Maps a shaped run's glyphs back onto cells from the text each came from. A cell's
+/// first glyph starts exactly on it, and any further glyphs in that cell, such as
+/// combining marks, keep their distance from the first. A font's own advances never
+/// move a cell, and a glyph that replaced several cells leaves the next one alone.
+struct GlyphPlacer<'a> {
+    cluster_starts: &'a [usize],
+    current: Option<(usize, f32)>,
+}
+
+impl<'a> GlyphPlacer<'a> {
+    fn new(cluster_starts: &'a [usize]) -> Self {
+        Self {
+            cluster_starts,
+            current: None,
+        }
+    }
+
+    fn place(&mut self, text_index: usize, shaped_x: f32) -> PlacedGlyph {
+        let cluster = self
+            .cluster_starts
+            .partition_point(|start| *start <= text_index)
+            .saturating_sub(1);
+        let first_x = match self.current {
+            Some((current, first_x)) if current == cluster => first_x,
+            _ => {
+                self.current = Some((cluster, shaped_x));
+                shaped_x
+            }
+        };
+        PlacedGlyph {
+            cluster,
+            offset: shaped_x - first_x,
+        }
+    }
+}
+
+/// Runs of equal values, with gaps where there is no value at all.
+fn merged_spans<T: PartialEq>(
+    values: impl IntoIterator<Item = Option<T>>,
+) -> Vec<(std::ops::Range<usize>, T)> {
+    let mut spans: Vec<(std::ops::Range<usize>, T)> = Vec::new();
+    for (column, value) in values.into_iter().enumerate() {
+        let Some(value) = value else {
+            continue;
+        };
+        match spans.last_mut() {
+            Some((columns, last)) if columns.end == column && *last == value => {
+                columns.end = column + 1;
+            }
+            _ => spans.push((column..column + 1, value)),
+        }
+    }
+    spans
 }
 
 /// A character drawn as a shape, and where.
@@ -534,12 +721,9 @@ struct DrawnGlyph {
 }
 
 /// The character a cell draws as a shape rather than through the font. Only a lone
-/// narrow character qualifies: combining marks need shaping, and a decoration is
-/// positioned by the text it decorates.
+/// narrow character qualifies, since combining marks need shaping.
 fn drawn_character(cell: &TerminalCell) -> Option<char> {
-    (cell.occupancy == CellOccupancy::Narrow
-        && cell.style.underline.is_none()
-        && !cell.style.strikeout)
+    (cell.occupancy == CellOccupancy::Narrow)
         .then_some(cell.text.as_deref())
         .flatten()
         .and_then(single_character)
@@ -2612,6 +2796,82 @@ mod tests {
         let mut frame = TerminalView::empty_frame();
         frame.rows[0].cells[0] = TerminalCell::narrow(character);
         frame
+    }
+
+    #[test]
+    fn a_font_line_is_centred_in_its_cell_whichever_way_descent_is_signed() {
+        for descent in [px(4.0), px(-4.0)] {
+            assert_eq!(baseline_in_cell(px(19.0), px(15.0), descent), px(15.0));
+            assert_eq!(baseline_in_cell(px(25.0), px(15.0), descent), px(18.0));
+        }
+    }
+
+    #[test]
+    fn a_glyph_starts_on_its_cell_however_far_the_font_has_advanced() {
+        let starts = [0, 1, 2];
+        let mut placer = GlyphPlacer::new(&starts);
+        // The font's 9.6px advance on a smaller cell would otherwise drift.
+        for (column, x) in [0.0, 9.6, 19.2].into_iter().enumerate() {
+            assert_eq!(
+                placer.place(column, x),
+                PlacedGlyph {
+                    cluster: column,
+                    offset: 0.0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_combining_mark_stays_in_its_cell_without_moving_the_next() {
+        // "e" + U+0301 in one cell, then "x".
+        let starts = [0, 3];
+        let mut placer = GlyphPlacer::new(&starts);
+        assert_eq!(
+            placer.place(0, 0.0),
+            PlacedGlyph {
+                cluster: 0,
+                offset: 0.0
+            }
+        );
+        assert_eq!(
+            placer.place(1, 0.5),
+            PlacedGlyph {
+                cluster: 0,
+                offset: 0.5
+            }
+        );
+        assert_eq!(
+            placer.place(3, 9.6),
+            PlacedGlyph {
+                cluster: 1,
+                offset: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_glyph_that_replaced_cells_leaves_the_next_cell_in_place() {
+        // A font's `calt` turned "->" into one glyph, then "x" follows it.
+        let starts = [0, 1, 2];
+        let mut placer = GlyphPlacer::new(&starts);
+        assert_eq!(placer.place(0, 0.0).cluster, 0);
+        assert_eq!(
+            placer.place(2, 9.6),
+            PlacedGlyph {
+                cluster: 2,
+                offset: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn decorations_merge_only_while_their_style_runs_on() {
+        assert_eq!(
+            merged_spans([Some('a'), Some('a'), None, Some('a'), Some('b'), Some('b')]),
+            [(0..2, 'a'), (3..4, 'a'), (4..6, 'b')]
+        );
+        assert_eq!(merged_spans::<char>([None, None]), []);
     }
 
     #[test]

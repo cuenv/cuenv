@@ -30,6 +30,9 @@ pub struct FontConfig {
     pub fallbacks: Vec<String>,
     pub size_px: f32,
     pub line_height_multiplier: f32,
+    /// Whether the font's contextual alternates (`calt`) apply, which is what Monaspace's
+    /// texture healing is built on. Ligatures (`liga`, `clig`) are always off.
+    pub contextual_alternates: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +193,7 @@ impl Default for TerminalConfig {
                 .collect(),
                 size_px: 16.0,
                 line_height_multiplier: 1.2,
+                contextual_alternates: true,
             },
             terminal_transparency_percent: 0,
             terminal_padding: TerminalPadding::default(),

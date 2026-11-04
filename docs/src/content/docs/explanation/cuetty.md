@@ -56,6 +56,9 @@ The current usable slice includes:
   explicit wide-cell and soft-wrap occupancy.
 - Box drawing, block elements, shades, and Powerline separators drawn as shapes on
   the cell's device pixels, so rules and blocks meet with no seam at any line height.
+- Text shaped with the font's contextual alternates and placed cell by cell: every
+  glyph starts on the column its source text belongs to, so substitutions, combining
+  marks, and fallback fonts cannot shift a column.
 - Catppuccin Mocha is the built-in terminal colour scheme shared by Rio's
   semantic resolver and the GPUI chrome.
 - Ghostty is the visual reference for restrained native chrome: traffic lights,
@@ -174,6 +177,7 @@ transparency: 10
 | `font.family` | Nonempty font family name | `MonaspiceNe Nerd Font` |
 | `font.size` | Font size in pixels, 1–128 | 16 |
 | `font.lineHeight` | Line-height multiplier, 0.5–3 | 1.2 |
+| `font.calt` | Boolean: the font's contextual alternates, such as Monaspace's texture healing. Standard and contextual ligatures (`liga`, `clig`) stay off either way, and turning this off helps with a font whose `calt` draws ligatures | `true` |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 14 each |
 | `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and sidebar share this opacity | 0 |
 | `accent` | Quoted `#RRGGBB`; the window's accent, for instance to match a compositor's window border. See [Accent colours](#accent-colours) | Catppuccin Mocha blue |
