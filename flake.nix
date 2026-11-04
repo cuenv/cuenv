@@ -792,11 +792,5 @@
             };
           };
         };
-      })
-    // {
-      homeManagerModules = rec {
-        cuetty = import ./apps/cuetty/home-manager.nix { inherit self; };
-        default = cuetty;
-      };
-    };
+      });
 }

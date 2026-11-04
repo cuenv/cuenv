@@ -205,6 +205,20 @@ mod tests {
     }
 
     #[test]
+    fn configured_font_family_reaches_the_renderer() {
+        let mut config = TerminalConfig::default();
+        config.font.family = "Monaspace Neon".into();
+        let font = font_from_config(&config);
+        assert_eq!(font.family.as_ref(), "Monaspace Neon");
+        assert_eq!(
+            font.fallbacks
+                .expect("terminal font needs fallbacks")
+                .fallback_list(),
+            TERMINAL_FALLBACKS
+        );
+    }
+
+    #[test]
     fn line_height_contract_is_16px_times_1_point_2_then_shared_snap() {
         let raw_height =
             terminal_line_height(px(TERMINAL_FONT_SIZE), TERMINAL_LINE_HEIGHT_MULTIPLIER);

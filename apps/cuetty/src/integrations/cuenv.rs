@@ -170,6 +170,8 @@ struct CuettyDto {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct FontDto {
     #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
     size: Option<f32>,
     #[serde(default)]
     line_height: Option<f32>,
@@ -493,6 +495,9 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
     // have unified, so any individual setting can be overridden locally.
     let mut terminal = TerminalConfig::default();
     if let Some(font) = dto.font {
+        if let Some(family) = font.family {
+            terminal.font.family = family;
+        }
         if let Some(size) = font.size {
             terminal.font.size_px = size;
         }
@@ -777,13 +782,14 @@ mod tests {
     #[test]
     fn terminal_presentation_supports_partial_configuration_and_defaults() {
         let Evaluation::Valid(presentation) = parse_value(serde_json::json!({
-            "font": {"size": 21, "lineHeight": 1.5},
+            "font": {"family": "Monaspace Neon", "size": 21, "lineHeight": 1.5},
             "padding": {"left": 2, "top": 12},
             "transparency": 40
         })) else {
             panic!("expected valid terminal presentation");
         };
         let terminal = presentation.terminal;
+        assert_eq!(terminal.font.family, "Monaspace Neon");
         assert_eq!(terminal.font.size_px, 21.0);
         assert_eq!(terminal.font.line_height_multiplier, 1.5);
         assert_eq!(terminal.terminal_padding.top, 12);
@@ -800,7 +806,9 @@ mod tests {
             serde_json::json!({"font": {"size": 129}}),
             serde_json::json!({"font": {"lineHeight": 0.49}}),
             serde_json::json!({"font": {"lineHeight": 3.01}}),
-            serde_json::json!({"font": {"family": "unknown"}}),
+            serde_json::json!({"font": {"family": ""}}),
+            serde_json::json!({"font": {"family": "   "}}),
+            serde_json::json!({"font": {"unknown": "no"}}),
             serde_json::json!({"padding": {"top": -1}}),
             serde_json::json!({"padding": {"right": 129}}),
             serde_json::json!({"padding": {"left": 1.5}}),
@@ -1174,9 +1182,9 @@ mod tests {
     fn terminal_settings_unify_before_defaults_are_applied() {
         let (root, source) = layered_source(
             "terminal-layered",
-            Some("font: size: 22\npadding: left: 3"),
+            Some("font: {family: \"Monaspace Neon\", size: 22}\npadding: left: 3"),
             Some(
-                "font: {size: *16 | number, lineHeight: *1.4 | number}\n\
+                "font: {family: *\"Global Font\" | string, size: *16 | number, lineHeight: *1.4 | number}\n\
                  padding: {top: *10 | int, right: *11 | int, bottom: *12 | int, left: *13 | int}\n\
                  transparency: *30 | int",
             ),
@@ -1185,6 +1193,7 @@ mod tests {
             panic!("expected unified terminal presentation");
         };
         let terminal = presentation.terminal;
+        assert_eq!(terminal.font.family, "Monaspace Neon");
         assert_eq!(terminal.font.size_px, 22.0);
         assert_eq!(terminal.font.line_height_multiplier, 1.4);
         assert_eq!(terminal.terminal_padding.top, 10);

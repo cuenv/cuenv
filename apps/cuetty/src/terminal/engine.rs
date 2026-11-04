@@ -11,7 +11,9 @@ use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::presentation::{TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::sizing::CellSize;
-use super::workspace_shell::{ShellAction, ShellError, WorkspaceShell, WorkspaceShortcut};
+use super::workspace_shell::{
+    ShellAction, ShellError, TabDirection, WorkspaceShell, WorkspaceShortcut,
+};
 use crate::integrations::cuenv::{
     ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation, KeyChord,
     NativeCuenvProvider, RailColor, TaskEvaluation, TitlebarVisibility,
@@ -1563,9 +1565,27 @@ impl TerminalView {
         true
     }
 
-    fn key(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn tab_shortcut(key: &str, modifiers: gpui::Modifiers) -> Option<TabDirection> {
+        if !modifiers.control || modifiers.alt || modifiers.shift || modifiers.platform {
+            return None;
+        }
+        // The function modifier may be needed to type Page Up/Down on macOS.
+        match key.to_ascii_lowercase().as_str() {
+            "pageup" => Some(TabDirection::Previous),
+            "pagedown" => Some(TabDirection::Next),
+            _ => None,
+        }
+    }
+
+    fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
+        if let Some(direction) = Self::tab_shortcut(key, modifiers) {
+            if let Some(tab) = self.registry.workspace.tab_in_direction(direction) {
+                self.select_terminal_tab(tab, window, cx);
+            }
+            return;
+        }
         let palette_chord = self.active_state().is_some_and(|state| {
             chord_matches(
                 &state.cuenv.presentation.keybindings.palette,
@@ -1584,7 +1604,7 @@ impl TerminalView {
         }
         if let Some(shortcut) = Self::workspace_shortcut(key, modifiers) {
             match shortcut {
-                WorkspaceShortcut::NewTab => self.new_tab(_window, cx),
+                WorkspaceShortcut::NewTab => self.new_tab(window, cx),
                 WorkspaceShortcut::CloseTab => {
                     if let Some(pane) = self.active_pane() {
                         self.close_pane(pane, cx);
@@ -2692,6 +2712,53 @@ mod tests {
     }
 
     #[test]
+    fn control_page_keys_select_tab_direction_without_stealing_other_chords() {
+        let control = gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            TerminalView::tab_shortcut("pageup", control),
+            Some(TabDirection::Previous)
+        );
+        assert_eq!(
+            TerminalView::tab_shortcut("PageDown", control),
+            Some(TabDirection::Next)
+        );
+        assert_eq!(
+            TerminalView::tab_shortcut("pageup", gpui::Modifiers::default()),
+            None
+        );
+        for modifiers in [
+            gpui::Modifiers {
+                shift: true,
+                ..control
+            },
+            gpui::Modifiers {
+                alt: true,
+                ..control
+            },
+            gpui::Modifiers {
+                platform: true,
+                ..control
+            },
+        ] {
+            assert_eq!(TerminalView::tab_shortcut("pageup", modifiers), None);
+        }
+        assert_eq!(
+            TerminalView::tab_shortcut(
+                "pageup",
+                gpui::Modifiers {
+                    function: true,
+                    ..control
+                }
+            ),
+            Some(TabDirection::Previous)
+        );
+        assert_eq!(TerminalView::tab_shortcut("c", control), None);
+    }
+
+    #[test]
     fn palette_chord_matches_exact_modifiers() {
         let chord = KeyChord {
             key: "k".into(),
@@ -2924,12 +2991,29 @@ mod tests {
             .font
             .size_px = 24.0;
         assert_eq!(registry.active_terminal_config().font.size_px, 16.0);
+        let previous_tab = registry
+            .workspace
+            .tab_in_direction(TabDirection::Previous)
+            .unwrap();
+        assert_eq!(previous_tab, first_tab);
         registry
             .workspace
-            .apply(ShellAction::ActivateTab(first_tab))
+            .apply(ShellAction::ActivateTab(previous_tab))
             .unwrap();
+        assert_eq!(registry.active_pane(), Some(first_pane));
         assert_eq!(registry.active_terminal_config().font.size_px, 24.0);
         assert_eq!(registry.active_terminal_config().terminal_padding.left, 8);
+
+        let next_tab = registry
+            .workspace
+            .tab_in_direction(TabDirection::Next)
+            .unwrap();
+        registry
+            .workspace
+            .apply(ShellAction::ActivateTab(next_tab))
+            .unwrap();
+        assert_eq!(registry.active_pane(), Some(second_pane));
+        assert_eq!(registry.active_terminal_config().terminal_padding.left, 2);
     }
 
     #[test]

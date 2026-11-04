@@ -18,6 +18,13 @@ pub enum WorkspaceShortcut {
     FocusNext,
     FocusPrevious,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TabDirection {
+    Previous,
+    Next,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShellAction {
     Shortcut(WorkspaceShortcut),
@@ -83,6 +90,16 @@ impl WorkspaceShell {
     }
     pub fn active_tab(&self) -> Option<TabId> {
         self.workspace.active_tab().map(|tab| tab.id)
+    }
+    pub fn tab_in_direction(&self, direction: TabDirection) -> Option<TabId> {
+        let tabs = self.workspace.tabs();
+        let active = self.active_tab()?;
+        let index = tabs.iter().position(|tab| tab.id == active)?;
+        let target = match direction {
+            TabDirection::Previous => index.checked_sub(1).unwrap_or(tabs.len() - 1),
+            TabDirection::Next => (index + 1) % tabs.len(),
+        };
+        Some(tabs[target].id)
     }
     pub fn create_tab(&mut self, title: &str) -> Result<TabTarget, ShellError> {
         let tab = self.workspace.create_tab(title, RIO_CONTENT.to_owned())?;
@@ -153,6 +170,40 @@ impl WorkspaceShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adjacent_tabs_follow_display_order_and_wrap() {
+        let mut shell = WorkspaceShell::empty();
+        assert_eq!(shell.tab_in_direction(TabDirection::Next), None);
+
+        let first = shell.create_tab("first").unwrap();
+        assert_eq!(shell.tab_in_direction(TabDirection::Next), Some(first.tab));
+        assert_eq!(
+            shell.tab_in_direction(TabDirection::Previous),
+            Some(first.tab)
+        );
+        let second = shell.create_tab("second").unwrap();
+        let third = shell.create_tab("third").unwrap();
+
+        assert_eq!(shell.tab_in_direction(TabDirection::Next), Some(first.tab));
+        assert_eq!(
+            shell.tab_in_direction(TabDirection::Previous),
+            Some(second.tab)
+        );
+        shell.apply(ShellAction::ActivateTab(first.tab)).unwrap();
+        assert_eq!(shell.tab_in_direction(TabDirection::Next), Some(second.tab));
+        assert_eq!(
+            shell.tab_in_direction(TabDirection::Previous),
+            Some(third.tab)
+        );
+        shell.apply(ShellAction::ActivateTab(second.tab)).unwrap();
+        assert_eq!(shell.tab_in_direction(TabDirection::Next), Some(third.tab));
+        assert_eq!(
+            shell.tab_in_direction(TabDirection::Previous),
+            Some(first.tab)
+        );
+    }
+
     #[test]
     fn close_preflight_is_exact_and_last_policy_is_explicit() {
         let mut shell = WorkspaceShell::new().unwrap();

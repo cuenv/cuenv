@@ -92,7 +92,7 @@ without competing with terminal content. By default, the Rio surface sits in an
 8px inset below the title strip beside the rail. The inset uses the same surface
 colour, so it reads as breathing room inside one continuous terminal canvas
 rather than a contrasting frame. Clicking the terminal viewport requests focus.
-Text uses the configured `MonaspiceNe Nerd Font` family with explicit `Noto
+Text defaults to the `MonaspiceNe Nerd Font` family with explicit `Noto
 Color Emoji`, `Monaspace Neon`, and macOS symbol/monospace fallbacks so prompt
 and directory glyphs do not depend on GPUI's default fallback selection.
 Terminal text defaults to 16px with a 1.2 line-height multiplier; that
@@ -109,7 +109,7 @@ Underlines are host approximations: single and double use distinct
 thicknesses, curly is wavy, and dotted/dashed currently collapse to a solid
 underline.
 
-Font size, line height, terminal padding, and terminal transparency are configured
+Font family, font size, line height, terminal padding, and terminal transparency are configured
 through global and per-directory CUE files. Padding is independently configurable
 on the top, right, bottom, and left and is applied outside the measured terminal
 viewport so Rio receives the actual remaining grid size. Transparency spans 0%
@@ -131,7 +131,8 @@ Rio session behind each tab. Cmd-T creates a new session; Cmd-W closes only the
 active tab/session and closes the window when it is the final tab. Shortcuts
 shown as Cmd-* use Command on macOS and Ctrl-Shift on Linux (Ctrl-Shift-Alt for
 the Cmd-Shift-* forms), so plain Ctrl chords such as Ctrl-C, Ctrl-D, and Ctrl-W
-always reach the shell. The task palette is the exception: it defaults to
+always reach the shell. Ctrl-Page Up and Ctrl-Page Down select the previous or
+next tab, wrapping at either end. The task palette defaults to
 Cmd-K on macOS and plain Ctrl-K elsewhere, and only takes the chord when the
 active directory has a task catalogue, so Ctrl-K stays the shell's kill-line in
 ordinary directories. Cmd-D and
@@ -182,6 +183,7 @@ banner: "Welcome to Cuetty"
 rail: "#ff0000"
 titlebar: false
 font: {
+    family:     "Monaspace Neon"
     size:       18
     lineHeight: 1.3
 }
@@ -210,6 +212,7 @@ The appearance fields are optional and apply to the active tab:
 
 | Field | Range | Default |
 | --- | --- | --- |
+| `font.family` | Nonempty font family name | `MonaspiceNe Nerd Font` |
 | `font.size` | 1–128 pixels | 16 |
 | `font.lineHeight` | 0.5–3 multiplier | 1.2 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | 0–128 integer pixels per edge | 8 each |
@@ -230,32 +233,19 @@ applies only the global package and checks for its directory on each poll.
 
 `keybindings: palette: "ctrl-shift-p"` rebinds the task palette. Chords are
 `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`) followed by a
-key and match that exact modifier set.
+key and match that exact modifier set. Ctrl-Page Up and Ctrl-Page Down are
+reserved for tab switching and take precedence over a conflicting palette chord.
 
-Home Manager users can manage the global package through the flake's
-`homeManagerModules.cuetty`:
+Home Manager users can link their own CUE file as the global package:
 
 ```nix
 {
-  imports = [ cuenv.homeManagerModules.cuetty ];
-  programs.cuetty = {
-    enable = true;
-    settings = {
-      rail = "#89b4fa";
-      titlebar = false;
-      keybindings.palette = "ctrl-k";
-      font = { size = 16.0; lineHeight = 1.2; };
-      padding = { top = 8; right = 8; bottom = 8; left = 8; };
-      transparency = 0;
-    };
-  };
+  xdg.configFile."cuetty/config.cue".source = ./cuetty.cue;
 }
 ```
 
-The module writes `$XDG_CONFIG_HOME/cuetty/config.cue`, rendering every
-`settings` value as a CUE default so directory packages can still override
-it; `extraConfig` appends raw CUE. `package` defaults to the flake's Cuetty
-build and may be set to `null` to manage configuration only.
+The file should declare `package cuetty` and use defaults for any values that
+per-directory packages should override.
 
 When the same directory contains an evaluable `package cuenv`, Cuetty also
 discovers its `tasks` map. The task button in the fixed right rail opens a

@@ -81,11 +81,12 @@ The current usable slice includes:
   split shortcuts are rejected with a visible notice until pane/session
   allocation is implemented, and the UI never presents a fake terminal pane.
   Application shortcuts written as Cmd-* use Command on macOS and Ctrl-Shift
-  on Linux, so plain Ctrl chords such as Ctrl-C always reach the shell. The
-  task palette is the one configurable exception (see below).
+  on Linux, so plain Ctrl chords such as Ctrl-C always reach the shell.
+  Ctrl-Page Up and Ctrl-Page Down switch to the previous and next tab,
+  wrapping at either end. The task palette is configurable (see below).
 - A fixed 56px right-side vertical tab rail. It shows tab ordinals with stable
   path-name tooltips and deliberately has no resize or expand mode.
-- Global and per-directory CUE configuration for font size, line height,
+- Global and per-directory CUE configuration for font family, font size, line height,
   padding, and transparency. There is no in-app Settings page. The native
   Cuetty menu exposes Quit Cuetty and Cmd-Q uses the same application-level
   action.
@@ -120,6 +121,7 @@ Terminal appearance can be configured in the same package:
 package cuetty
 
 font: {
+    family:     "Monaspace Neon"
     size:       18
     lineHeight: 1.3
 }
@@ -134,6 +136,7 @@ transparency: 10
 
 | Field | Meaning and allowed values | Default |
 | --- | --- | --- |
+| `font.family` | Nonempty font family name | `MonaspiceNe Nerd Font` |
 | `font.size` | Font size in pixels, 1–128 | 16 |
 | `font.lineHeight` | Line-height multiplier, 0.5–3 | 1.2 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 8 each |
@@ -166,6 +169,7 @@ package cuetty
 rail:     *"#89b4fa" | string
 titlebar: *false | bool
 font: {
+    family:     *"Monaspace Neon" | string
     size:       *16 | number
     lineHeight: *1.2 | number
 }
@@ -190,34 +194,18 @@ Cuetty applies only the global package and checks for its directory on each poll
 
 #### Home Manager
 
-The root flake exports `homeManagerModules.cuetty` (also `default`), which
-installs Cuetty and writes the global package to
-`$XDG_CONFIG_HOME/cuetty/config.cue`:
+Home Manager can link a CUE file you maintain as the global package:
 
 ```nix
 {
-  imports = [ cuenv.homeManagerModules.cuetty ];
-  programs.cuetty = {
-    enable = true;
-    settings = {
-      rail = "#89b4fa";
-      titlebar = false;
-      keybindings.palette = "ctrl-shift-p";
-      font = { size = 16.0; lineHeight = 1.2; };
-      padding = { top = 8; right = 8; bottom = 8; left = 8; };
-      transparency = 0;
-    };
-    extraConfig = ''
-      banner: *"home" | string
-    '';
-  };
+  xdg.configFile."cuetty/config.cue".source = ./cuetty.cue;
 }
 ```
 
-Every `settings` scalar is rendered as a CUE default (`*value | type`), so the
-generated package never conflicts with a directory that sets its own value.
-`extraConfig` is appended verbatim and is responsible for its own defaults.
-Set `package = null` to manage only the configuration.
+The file should declare `package cuetty`. Use CUE defaults as shown above when
+individual fields should be overridable per directory. If you used the former
+`homeManagerModules.cuetty` module, remove its import and move your
+`programs.cuetty.settings` values into this CUE file.
 
 Directory and module-metadata changes are watched natively. Evaluation and
 validation occur off the GPUI thread. Invalid matching CUE keeps the last
@@ -233,6 +221,9 @@ the task graph, cache, hooks, or secret resolution.
 
 ### Keybindings
 
+Ctrl-Page Up selects the previous tab and Ctrl-Page Down selects the next;
+both wrap around the tab list.
+
 The task palette opens with Cmd-K on macOS and plain Ctrl-K elsewhere. Rebind
 it from any `package cuetty`, global or per-directory:
 
@@ -244,6 +235,8 @@ keybindings: palette: *"ctrl-shift-p" | string
 
 A chord is `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`)
 followed by a key, matched case-insensitively against that exact modifier set.
+Ctrl-Page Up and Ctrl-Page Down are reserved for tab switching and take
+precedence over a conflicting palette chord.
 The palette only claims its chord when the active directory has a task
 catalogue; elsewhere the key reaches the shell, so the Ctrl-K default does not
 cost kill-line in ordinary directories. An unparseable chord or any other
