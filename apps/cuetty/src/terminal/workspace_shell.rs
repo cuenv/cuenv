@@ -158,6 +158,9 @@ impl WorkspaceShell {
     pub fn rename_tab(&mut self, tab: TabId, name: Option<String>) -> Result<(), ShellError> {
         self.workspace.rename_tab(tab, name).map_err(Into::into)
     }
+    pub fn move_tab(&mut self, tab: TabId, index: usize) -> Result<(), ShellError> {
+        self.workspace.move_tab(tab, index).map_err(Into::into)
+    }
     pub fn preflight_close_active_tab(&self) -> Result<TabTarget, ShellError> {
         self.target_for(self.active_tab().ok_or(WorkspaceError::NoTabs)?)
     }
@@ -313,6 +316,20 @@ mod tests {
                 assert_eq!(shell.tab_at_number(number), Some(tab.id));
             }
         }
+    }
+
+    #[test]
+    fn number_keys_and_adjacent_tabs_follow_a_moved_tab() {
+        let mut shell = WorkspaceShell::empty();
+        let first = shell.create_tab("first").unwrap().tab;
+        let second = shell.create_tab("second").unwrap().tab;
+        let third = shell.create_tab("third").unwrap().tab;
+        shell.move_tab(third, 0).unwrap();
+        let number = |key| TabNumber::from_key(key).unwrap();
+        assert_eq!(shell.tab_at_number(number("1")), Some(third));
+        assert_eq!(shell.tab_at_number(number("9")), Some(second));
+        assert_eq!(shell.active_tab(), Some(third));
+        assert_eq!(shell.tab_in_direction(TabDirection::Next), Some(first));
     }
 
     #[test]

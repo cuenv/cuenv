@@ -2413,6 +2413,14 @@ impl TerminalView {
         true
     }
 
+    /// Moves a dragged tab to where it was dropped in the tab list.
+    pub(super) fn move_tab(&mut self, tab: TabId, index: usize, cx: &mut Context<Self>) {
+        if let Err(error) = self.registry.workspace.move_tab(tab, index) {
+            self.registry.notice = Some(shell_notice(error));
+        }
+        cx.notify();
+    }
+
     /// Hands the keyboard back to the terminal after a click in the chrome.
     pub(super) fn focus_terminal(&self, window: &mut Window) {
         self.focus.focus(window);

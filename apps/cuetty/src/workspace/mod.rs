@@ -326,6 +326,18 @@ impl<C: Clone> Workspace<C> {
         tab.custom_name = name;
         Ok(())
     }
+    /// Moves a tab to `index` in the tab order, or to the end if that is further. Which
+    /// tab is active and what each tab holds stay as they were.
+    pub fn move_tab(&mut self, tab_id: TabId, index: usize) -> Result<(), Error> {
+        let from = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == tab_id)
+            .ok_or(Error::UnknownTab)?;
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(index.min(self.tabs.len()), tab);
+        Ok(())
+    }
     /// Focuses an existing pane in the active tab.  A pane in another tab is
     /// intentionally not selected implicitly: callers must choose the tab
     /// first so tab changes remain explicit at the UI boundary.
@@ -701,6 +713,62 @@ fn remove_pane<C>(node: &mut Node<C>, id: PaneId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tab_order(workspace: &Workspace<String>) -> Vec<u64> {
+        workspace.tabs().iter().map(|tab| tab.id.get()).collect()
+    }
+
+    fn three_tabs() -> Workspace<String> {
+        let mut workspace = Workspace::new();
+        for title in ["one", "two", "three"] {
+            workspace.create_tab(title, title.to_owned()).unwrap();
+        }
+        workspace
+    }
+
+    #[test]
+    fn a_moved_tab_lands_at_the_index_it_was_dropped_on_in_either_direction() {
+        let mut down = three_tabs();
+        down.move_tab(TabId::new(1), 2).unwrap();
+        assert_eq!(tab_order(&down), [2, 3, 1]);
+        let mut up = three_tabs();
+        up.move_tab(TabId::new(3), 0).unwrap();
+        assert_eq!(tab_order(&up), [3, 1, 2]);
+        let mut between = three_tabs();
+        between.move_tab(TabId::new(1), 1).unwrap();
+        assert_eq!(tab_order(&between), [2, 1, 3]);
+    }
+
+    #[test]
+    fn moving_a_tab_onto_itself_or_past_the_end_stays_in_bounds() {
+        let mut same = three_tabs();
+        same.move_tab(TabId::new(2), 1).unwrap();
+        assert_eq!(tab_order(&same), [1, 2, 3]);
+        let mut past = three_tabs();
+        past.move_tab(TabId::new(1), 99).unwrap();
+        assert_eq!(tab_order(&past), [2, 3, 1]);
+    }
+
+    #[test]
+    fn moving_a_tab_changes_neither_the_active_tab_nor_the_workspaces_validity() {
+        let mut workspace = three_tabs();
+        let active = workspace.active_tab().map(|tab| tab.id);
+        workspace.move_tab(TabId::new(3), 0).unwrap();
+        assert_eq!(workspace.active_tab().map(|tab| tab.id), active);
+        workspace.move_tab(TabId::new(1), 2).unwrap();
+        assert_eq!(workspace.active_tab().map(|tab| tab.id), active);
+        assert!(workspace.validate());
+    }
+
+    #[test]
+    fn moving_an_unknown_tab_is_an_error_that_changes_nothing() {
+        let mut workspace = three_tabs();
+        assert_eq!(
+            workspace.move_tab(TabId::new(99), 0),
+            Err(Error::UnknownTab)
+        );
+        assert_eq!(tab_order(&workspace), [1, 2, 3]);
+    }
 
     #[test]
     fn renaming_sets_and_clears_only_that_tabs_name() {

@@ -121,6 +121,8 @@ The current usable slice includes:
   expanding the sidebar if it is collapsed. Enter or clicking elsewhere keeps the name and
   Escape abandons the edit. The name then outranks every name Cuetty derives until it is
   emptied, which hands the tab back to its derived name.
+- Dragging a tab onto another moves it to that tab's place in the list, which the number
+  keys and tab switching then follow.
 - A muted second line on each expanded tab, such as `cuenv · main`: its directory,
   unless the tab is already named after it, and the git branch that directory is on, or
   a detached commit's short form. Cuetty reads the repository's `HEAD` file every couple

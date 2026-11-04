@@ -1,5 +1,7 @@
 use super::icons::Icon;
-use super::tokens::{ChromeColors, border, opaque, radius, size, space, text};
+use super::tokens::{
+    ChromeColors, border, elevation, opaque, radius, size, space, text, ui_font_family,
+};
 use super::tooltip::chrome_tooltip;
 use crate::integrations::cuenv::{RailColor, SidebarMode};
 use crate::terminal::engine::{
@@ -13,12 +15,41 @@ use crate::terminal::tab_status::TabIndicator;
 use crate::terminal::workspace_shell::TabNumber;
 use crate::workspace::{PaneId, TabId};
 use gpui::{
-    ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Rgba,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
+    AppContext, ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled,
+    Window, div, prelude::FluentBuilder,
 };
 
 /// Names a tab's row to the parts of it that only show while it is hovered.
 const TAB_ROW_GROUP: &str = "cuetty-tab-row";
+
+/// A tab being dragged to another place in the list, and what follows the pointer.
+#[derive(Clone)]
+struct DraggedTab {
+    id: TabId,
+    label: SharedString,
+    colors: ChromeColors,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(size::SIDEBAR_EXPANDED_WIDTH)
+            .h(size::TAB_ROW_HEIGHT)
+            .px(space::LG)
+            .flex()
+            .items_center()
+            .rounded(radius::CONTROL)
+            .bg(self.colors.panel)
+            .border(border::HAIRLINE)
+            .border_color(self.colors.panel_outline)
+            .shadow(elevation::overlay())
+            .font_family(ui_font_family())
+            .text_size(text::BODY)
+            .text_color(self.colors.text)
+            .child(div().truncate().child(self.label.clone()))
+    }
+}
 
 /// The active tab's marker: the project's `rail` from a matching `package cuetty`,
 /// or the window's accent. The colour only ever fills this small mark, so a project
@@ -102,6 +133,7 @@ impl TerminalView {
                 render_tab_row(
                     TabRow {
                         id: tab.id,
+                        index,
                         pane: tab.focused,
                         label,
                         subtitle,
@@ -361,6 +393,8 @@ fn render_close_button(button: CloseButton, cx: &mut Context<TerminalView>) -> S
 /// What a row in the tab list shows.
 struct TabRow {
     id: TabId,
+    /// Where the tab is in the list, which is where another dropped on it goes.
+    index: usize,
     pane: PaneId,
     label: String,
     /// The muted second line, left out when empty.
@@ -382,6 +416,7 @@ struct TabRow {
 fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> {
     let TabRow {
         id,
+        index,
         pane,
         label,
         subtitle,
@@ -397,6 +432,12 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         mono,
     } = row;
     let hover = colors.state;
+    let drop_outline = colors.accent;
+    let dragged = DraggedTab {
+        id,
+        label: label.clone().into(),
+        colors,
+    };
     let text_color = if selected {
         colors.text
     } else {
@@ -441,6 +482,19 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                 cx.notify();
             }))
         })
+        // A dragged tab takes the place of the row it is dropped on, so the outline
+        // marks that row. It is there all along to keep the row's size from changing.
+        .border(border::HAIRLINE)
+        .border_color(gpui::transparent_black())
+        .on_drag(dragged, |dragged, _offset, _window, cx| {
+            cx.new(|_| dragged.clone())
+        })
+        .drag_over::<DraggedTab>(move |this, _dragged, _window, _cx| {
+            this.border_color(drop_outline)
+        })
+        .on_drop(cx.listener(move |view, dragged: &DraggedTab, _window, cx| {
+            view.move_tab(dragged.id, index, cx);
+        }))
         .tooltip(chrome_tooltip(tooltip, colors))
         .text_size(text::BODY)
         .text_color(text_color)
