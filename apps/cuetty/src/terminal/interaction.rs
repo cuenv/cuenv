@@ -159,6 +159,7 @@ impl InteractionState {
             return None;
         }
         let search = self.search.as_mut()?;
+        let previous = self.current_match;
         let matched = match key {
             SearchKey::Escape => None,
             SearchKey::Character(character) => {
@@ -183,13 +184,21 @@ impl InteractionState {
                 }
             }
         };
+        // What was only marking the last match goes with it, when there is none to move to.
+        if matched.is_none() && self.selection == previous.map(match_selection) {
+            self.selection = None;
+        }
         self.current_match = matched;
         matched
     }
 
     pub fn select_match(&mut self, matched: SearchMatch) {
-        self.selection = Some(Selection::new(matched.start, matched.end));
+        self.selection = Some(match_selection(matched));
     }
+}
+
+fn match_selection(matched: SearchMatch) -> Selection {
+    Selection::new(matched.start, matched.end)
 }
 
 #[cfg(test)]
@@ -340,6 +349,21 @@ mod tests {
         state.begin_selection(hit, LogicalPosition { line: 1, column: 1 });
         state.extend_selection(hit, LogicalPosition { line: 0, column: 0 });
         assert_eq!(state.copy(&sampled).as_deref(), Some("abcd"));
+    }
+
+    #[test]
+    fn a_query_with_no_matches_lets_go_of_the_last_one() {
+        let sampled = frame(vec![("one ", false)]);
+        let mut state = InteractionState::default();
+        state.enter_search(&sampled);
+        let matched = state.search_key(SearchKey::Character('o'), &sampled);
+        state.select_match(matched.unwrap());
+        assert!(state.selection().is_some());
+
+        assert_eq!(state.search_key(SearchKey::Character('z'), &sampled), None);
+
+        assert_eq!(state.selection(), None);
+        assert_eq!(state.current_match(), None);
     }
 
     #[test]
