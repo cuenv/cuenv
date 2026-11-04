@@ -5,7 +5,7 @@
 //! session directly.
 
 use crate::terminal::config::{
-    CursorBlink, MinimumContrast, MotionPreference, Rgb, TerminalConfig, ThemeName,
+    CursorBlink, MinimumContrast, MotionPreference, Rgb, TerminalConfig, ThemeChoice,
 };
 use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -712,12 +712,8 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         }
     }
     match dto.theme.as_deref().map(parse_theme).transpose() {
-        Ok(theme) => terminal.theme = theme.unwrap_or_default().colors(),
+        Ok(theme) => terminal.choose_theme(theme.unwrap_or_default(), accent),
         Err(error) => return Evaluation::Invalid(error),
-    }
-    // After the theme: an accent is a preference that holds across themes.
-    if let Some(accent) = accent {
-        terminal.theme.accent = accent;
     }
     if let Some(transparency) = dto.transparency {
         terminal.terminal_transparency_percent = transparency;
@@ -757,9 +753,9 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
     })
 }
 
-fn parse_theme(value: &str) -> Result<ThemeName, String> {
-    ThemeName::from_id(value).ok_or_else(|| {
-        let known = ThemeName::ALL.map(|theme| format!("\"{}\"", theme.id()));
+fn parse_theme(value: &str) -> Result<ThemeChoice, String> {
+    ThemeChoice::from_id(value).ok_or_else(|| {
+        let known: Vec<String> = ThemeChoice::ids().map(|id| format!("\"{id}\"")).collect();
         format!("theme must be one of {}, got \"{value}\"", known.join(", "))
     })
 }
@@ -1026,6 +1022,7 @@ pub fn evaluate_within(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::config::{SystemAppearance, ThemeName};
 
     #[test]
     fn validates_v1_presentation() {
@@ -1308,6 +1305,23 @@ mod tests {
         let theme = &presentation.terminal.theme;
         assert_eq!(theme.accent, Rgb(0x11, 0x22, 0x33));
         assert_eq!(theme.surface, ThemeName::Paper.colors().surface);
+    }
+
+    #[test]
+    fn auto_follows_the_system_with_an_accent_on_top() {
+        let Evaluation::Valid(presentation) =
+            parse_value(serde_json::json!({"theme": "auto", "accent": "#112233"}))
+        else {
+            panic!("expected a valid presentation");
+        };
+        let config = presentation
+            .terminal
+            .for_appearance(SystemAppearance::Light);
+        assert_eq!(
+            config.theme.surface,
+            ThemeName::CatppuccinLatte.colors().surface
+        );
+        assert_eq!(config.theme.accent, Rgb(0x11, 0x22, 0x33));
     }
 
     #[test]

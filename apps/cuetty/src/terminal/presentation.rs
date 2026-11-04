@@ -1,9 +1,11 @@
-use super::config::{FontConfig, MinimumContrast, Rgb as ConfigRgb, TerminalConfig};
+use super::config::{
+    FontConfig, MinimumContrast, Rgb as ConfigRgb, SystemAppearance, TerminalConfig,
+};
 use super::model::{Color, Rgb};
 use super::sizing::CellSize;
 use gpui::{
     Font, FontFallbacks, FontFeatures, FontWeight, Pixels, Point, Size, TextSystem,
-    WindowBackgroundAppearance, font, point, px,
+    WindowAppearance, WindowBackgroundAppearance, font, point, px,
 };
 
 use std::sync::Arc;
@@ -46,6 +48,15 @@ fn font_features(config: &FontConfig) -> FontFeatures {
         ("liga".into(), 0),
         ("clig".into(), 0),
     ]))
+}
+
+impl From<WindowAppearance> for SystemAppearance {
+    fn from(appearance: WindowAppearance) -> Self {
+        match appearance {
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Self::Light,
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::Dark,
+        }
+    }
 }
 
 /// Presentation values are intentionally independent from Rio and replaceable
@@ -585,6 +596,18 @@ mod tests {
         assert_eq!(theme.divider, Rgb(5, 5, 5));
         assert_eq!(theme.raised_surface, Rgb(6, 6, 6));
         assert_eq!(theme.hover_surface, Rgb(7, 7, 7));
+    }
+
+    #[test]
+    fn a_vibrant_window_is_as_light_or_dark_as_a_plain_one() {
+        for (window, appearance) in [
+            (WindowAppearance::Light, SystemAppearance::Light),
+            (WindowAppearance::VibrantLight, SystemAppearance::Light),
+            (WindowAppearance::Dark, SystemAppearance::Dark),
+            (WindowAppearance::VibrantDark, SystemAppearance::Dark),
+        ] {
+            assert_eq!(SystemAppearance::from(window), appearance);
+        }
     }
 
     #[test]

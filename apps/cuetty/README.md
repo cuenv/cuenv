@@ -236,7 +236,10 @@ behave like text under a selection or a block cursor. Complete IME, ZWJ shaping,
 presentation correctness is deliberately not claimed.
 
 `theme` in CUE picks one of four complete palettes in `src/terminal/config.rs`:
-`catppuccin-mocha` (the default), `catppuccin-latte`, `graphite`, and `paper`. A test
+`catppuccin-mocha` (the default), `catppuccin-latte`, `graphite`, and `paper`. `auto`
+uses Latte or Mocha to match the window's appearance and switches live as the desktop
+does; on Linux that comes from the XDG desktop portal, and no stated preference counts
+as light. A test
 holds all of them to one contrast contract, so a new token or theme cannot quietly
 ship text that does not read. On the default, Base fills the window, Mantle sets
 the sidebar off from it when the window is opaque, Surface 0 draws faint dividers, Surface 1 tints

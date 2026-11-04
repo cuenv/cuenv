@@ -271,7 +271,7 @@ transparency: 10
 | `motion` | `"reduced"` makes the chrome's transitions land at once and turns the cursor's trail off; `"full"` always animates; `"system"` follows GNOME's `enable-animations` or macOS's Reduce Motion, read once as a window opens, and animates where neither can be read | `"system"` |
 | `minimumContrast` | Contrast ratio from 1 to 21 that text is kept to against what it is drawn on, including a selection; 1 is off. Colours an application spelled out in 24-bit; graphics characters, meaning box and block elements, Powerline and Powerline Extra separators, Braille, and the legacy computing symbols; and the cursor and search match, which have their own colours, are left alone so image previews and Powerline segments still line up | 1 |
 | `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and sidebar share this opacity | 0 |
-| `theme` | `"catppuccin-mocha"`, `"catppuccin-latte"`, `"graphite"`, or `"paper"`: the whole palette for the terminal and the chrome. See [Themes](#themes) | `"catppuccin-mocha"` |
+| `theme` | `"auto"`, `"catppuccin-mocha"`, `"catppuccin-latte"`, `"graphite"`, or `"paper"`: the whole palette for the terminal and the chrome. See [Themes](#themes) | `"catppuccin-mocha"` |
 | `accent` | Quoted `#RRGGBB`; the window's accent, for instance to match a compositor's window border. See [Accent colours](#accent-colours) | The theme's accent |
 | `sidebar` | `"expanded"` or `"collapsed"`: how a window's sidebar starts. A window opens with the global package's look and sidebar when that evaluates within half a second, so its first frame is already the right size, then its first directory's evaluation settles the setting. Only that first configuration is read, so changing directory or editing the value later does not move it, and the toggle and its shortcut outrank it for the life of the window | `"expanded"` |
 
@@ -304,6 +304,14 @@ assemble and no colour to get wrong.
 | `catppuccin-latte` | Catppuccin's light flavour. Metadata tones, the cursor, and the ANSI green, yellow, magenta, and cyan are deepened from the published palette to hold the contrast below |
 | `graphite` | Neutral dark greys with a quiet steel accent |
 | `paper` | Warm light: ink on uncoated paper with a rust accent |
+
+`theme: "auto"` uses Latte while the desktop is light and Mocha while it is dark, and
+switches a running window as soon as the desktop does, with no reload and without
+touching the grid; an `accent` holds across the switch. macOS reports its appearance
+directly. On Linux it comes from the XDG desktop portal's colour-scheme setting, which
+arrives just after a window opens, so a dark desktop can show one light frame first. A
+desktop with no portal, or one that states no preference, counts as light there, so
+choose a theme by name on such a system.
 
 A unit test holds every theme to the same contrast: body and metadata text at least
 4.5:1 on each surface it is painted on, ANSI colours 4.5:1 on the page apart from the

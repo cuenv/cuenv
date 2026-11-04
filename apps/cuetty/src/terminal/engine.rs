@@ -4,7 +4,7 @@ use super::chrome::{
     traffic_light_position,
 };
 use super::color::{blend, dimmed, with_minimum_contrast};
-use super::config::TerminalConfig;
+use super::config::{SystemAppearance, TerminalConfig};
 use super::cursor::{
     CursorAnimator, CursorFocus, CursorFrame, CursorObservation, TrailSpan, blink_wanted,
 };
@@ -1703,6 +1703,8 @@ pub(super) struct TerminalView {
     pub(super) registry: SessionRegistry,
     cuenv: Arc<dyn CuenvProvider>,
     config: TerminalConfig,
+    /// What this window's desktop says about light and dark, for a theme of `auto`.
+    system_appearance: SystemAppearance,
     pub(super) metrics: TerminalMetrics,
     theme: TerminalTheme,
     focus: FocusHandle,
@@ -2110,6 +2112,12 @@ impl TerminalView {
             cx.notify();
         })
         .detach();
+        // The active pane's `auto` is resolved against this on the next draw.
+        cx.observe_window_appearance(window, |view, window, cx| {
+            view.system_appearance = window.appearance().into();
+            cx.notify();
+        })
+        .detach();
         let config = TerminalConfig::default();
         let scale = ScaleFactor::new(window.scale_factor());
         let metrics = TerminalMetrics::from_config(cx.text_system(), &config, scale);
@@ -2162,6 +2170,7 @@ impl TerminalView {
             registry,
             cuenv,
             config,
+            system_appearance: window.appearance().into(),
             metrics,
             theme,
             focus: cx.focus_handle(),
@@ -2439,7 +2448,10 @@ impl TerminalView {
     }
 
     fn sync_active_config(&mut self, cx: &mut Context<Self>) {
-        let config = self.registry.active_terminal_config();
+        let config = self
+            .registry
+            .active_terminal_config()
+            .for_appearance(self.system_appearance);
         if self.config != config {
             self.metrics =
                 TerminalMetrics::from_config(cx.text_system(), &config, self.metrics.scale);

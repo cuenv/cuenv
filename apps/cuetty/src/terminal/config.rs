@@ -150,6 +150,53 @@ impl ThemeName {
     }
 }
 
+/// Whether the desktop a window sits on is light or dark.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SystemAppearance {
+    Light,
+    #[default]
+    Dark,
+}
+
+/// What the `theme` setting asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeChoice {
+    Named(ThemeName),
+    /// `"auto"`: one flavour of Catppuccin for each appearance, switching as the
+    /// desktop does.
+    FollowSystem,
+}
+
+impl Default for ThemeChoice {
+    fn default() -> Self {
+        Self::Named(ThemeName::default())
+    }
+}
+
+impl ThemeChoice {
+    const FOLLOW_SYSTEM_ID: &str = "auto";
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        if id == Self::FOLLOW_SYSTEM_ID {
+            return Some(Self::FollowSystem);
+        }
+        ThemeName::from_id(id).map(Self::Named)
+    }
+
+    /// Everything the setting accepts, for saying so when it is given something else.
+    pub fn ids() -> impl Iterator<Item = &'static str> {
+        std::iter::once(Self::FOLLOW_SYSTEM_ID).chain(ThemeName::ALL.map(ThemeName::id))
+    }
+
+    const fn name_for(self, appearance: SystemAppearance) -> ThemeName {
+        match (self, appearance) {
+            (Self::Named(name), _) => name,
+            (Self::FollowSystem, SystemAppearance::Light) => ThemeName::CatppuccinLatte,
+            (Self::FollowSystem, SystemAppearance::Dark) => ThemeName::CatppuccinMocha,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeColors {
     pub surface: Rgb,
@@ -220,6 +267,11 @@ pub struct TerminalConfig {
     /// A short fading trail behind a cursor that jumps. Off unless asked for.
     pub cursor_trail: bool,
     pub motion: MotionPreference,
+    /// What the theme setting asked for, which `theme` is resolved from.
+    pub theme_choice: ThemeChoice,
+    /// The `accent` setting, kept to reapply when `auto` changes the palette under it.
+    pub accent_override: Option<Rgb>,
+    /// The palette in force: see [`TerminalConfig::for_appearance`].
     pub theme: ThemeColors,
     pub interaction: InteractionConfig,
     pub keybindings: KeybindingConfig,
@@ -304,6 +356,8 @@ impl Default for TerminalConfig {
             cursor_blink: CursorBlink::default(),
             cursor_trail: false,
             motion: MotionPreference::default(),
+            theme_choice: ThemeChoice::default(),
+            accent_override: None,
             theme: ThemeColors::default(),
             interaction: InteractionConfig {
                 scrollback_limit: 10_000,
@@ -567,6 +621,31 @@ impl TerminalConfig {
             }
         }
         Ok(())
+    }
+
+    /// Applies the `theme` and `accent` settings. A theme that follows the system starts
+    /// out dark until [`Self::for_appearance`] is told otherwise.
+    pub fn choose_theme(&mut self, choice: ThemeChoice, accent: Option<Rgb>) {
+        self.theme_choice = choice;
+        self.accent_override = accent;
+        self.resolve_theme(SystemAppearance::default());
+    }
+
+    /// This configuration as a window of the given appearance paints it. Only `auto`
+    /// depends on that; any other theme is left exactly as it stands.
+    #[must_use]
+    pub fn for_appearance(mut self, appearance: SystemAppearance) -> Self {
+        if self.theme_choice == ThemeChoice::FollowSystem {
+            self.resolve_theme(appearance);
+        }
+        self
+    }
+
+    fn resolve_theme(&mut self, appearance: SystemAppearance) {
+        self.theme = self.theme_choice.name_for(appearance).colors();
+        if let Some(accent) = self.accent_override {
+            self.theme.accent = accent;
+        }
     }
 
     pub fn with_theme(mut self, theme: ThemeColors) -> Self {
@@ -844,6 +923,59 @@ mod tests {
         }
         assert_eq!(ThemeName::from_id("Catppuccin Mocha"), None);
         assert_eq!(ThemeColors::default(), ThemeName::default().colors());
+    }
+
+    #[test]
+    fn auto_switches_palette_with_the_appearance_on_either_side_of_light() {
+        let mut config = TerminalConfig::default();
+        config.choose_theme(ThemeChoice::FollowSystem, None);
+        let on = |appearance| config.clone().for_appearance(appearance).theme;
+        let (light, dark) = (on(SystemAppearance::Light), on(SystemAppearance::Dark));
+        assert!(is_light(&light));
+        assert!(!is_light(&dark));
+    }
+
+    #[test]
+    fn auto_keeps_a_configured_accent_through_a_switch() {
+        let accent = Rgb(1, 2, 3);
+        let mut config = TerminalConfig::default();
+        config.choose_theme(ThemeChoice::FollowSystem, Some(accent));
+        let config = config
+            .for_appearance(SystemAppearance::Light)
+            .for_appearance(SystemAppearance::Dark);
+        assert_eq!(config.theme.accent, accent);
+        assert_eq!(
+            config.theme.surface,
+            ThemeName::CatppuccinMocha.colors().surface
+        );
+    }
+
+    #[test]
+    fn a_named_theme_ignores_the_appearance() {
+        let mut config = TerminalConfig::default();
+        config.choose_theme(ThemeChoice::Named(ThemeName::Paper), None);
+        for appearance in [SystemAppearance::Light, SystemAppearance::Dark] {
+            assert_eq!(
+                config.clone().for_appearance(appearance).theme,
+                ThemeName::Paper.colors()
+            );
+        }
+    }
+
+    #[test]
+    fn the_setting_accepts_auto_and_every_theme() {
+        assert_eq!(
+            ThemeChoice::from_id("auto"),
+            Some(ThemeChoice::FollowSystem)
+        );
+        for name in ThemeName::ALL {
+            assert_eq!(
+                ThemeChoice::from_id(name.id()),
+                Some(ThemeChoice::Named(name))
+            );
+        }
+        assert_eq!(ThemeChoice::from_id("Auto"), None);
+        assert!(ThemeChoice::ids().all(|id| ThemeChoice::from_id(id).is_some()));
     }
 
     #[test]
