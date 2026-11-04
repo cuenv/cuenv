@@ -334,6 +334,8 @@ struct FontDto {
 struct CursorDto {
     #[serde(default)]
     blink: Option<String>,
+    #[serde(default)]
+    trail: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -717,6 +719,7 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
             Ok(blink) => terminal.cursor_blink = blink.unwrap_or_default(),
             Err(error) => return Evaluation::Invalid(error),
         }
+        terminal.cursor_trail = cursor.trail.unwrap_or_default();
     }
     if let Err(error) = terminal.validate() {
         return Evaluation::Invalid(format!("invalid Cuetty terminal configuration: {error}"));
@@ -1075,6 +1078,21 @@ mod tests {
                 "{invalid} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn the_cursor_trail_is_off_unless_asked_for() {
+        let trail = |value: serde_json::Value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal.cursor_trail,
+            other => panic!("expected a valid presentation, got {other:?}"),
+        };
+        assert!(!trail(serde_json::json!({})));
+        assert!(!trail(serde_json::json!({"cursor": {"blink": "on"}})));
+        assert!(trail(serde_json::json!({"cursor": {"trail": true}})));
+        assert!(matches!(
+            parse_value(serde_json::json!({"cursor": {"trail": "yes"}})),
+            Evaluation::Invalid(_)
+        ));
     }
 
     #[test]

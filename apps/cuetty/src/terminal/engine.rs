@@ -1,7 +1,9 @@
 use super::chrome::{ChromeAssets, render_shell_message, resolve_ui_font, traffic_light_position};
 use super::color::{blend, dimmed, with_minimum_contrast};
 use super::config::TerminalConfig;
-use super::cursor::{CursorAnimator, CursorFocus, CursorObservation, blink_wanted};
+use super::cursor::{
+    CursorAnimator, CursorFocus, CursorFrame, CursorObservation, TrailSpan, blink_wanted,
+};
 use super::events::ControlEvent;
 use super::glyphs::{GlyphShape, drawn_glyph, is_drawn};
 use super::host::{
@@ -46,7 +48,7 @@ struct RenderRequest<'a> {
     metrics: &'a TerminalMetrics,
     theme: &'a TerminalTheme,
     focus: CursorFocus,
-    cursor_opacity: f32,
+    cursor: CursorFrame,
     overlays: TerminalOverlays,
 }
 
@@ -74,6 +76,7 @@ struct TerminalGrid {
     theme: TerminalTheme,
     focus: CursorFocus,
     cursor_opacity: f32,
+    cursor_trail: Option<TrailSpan>,
     overlays: TerminalOverlays,
 }
 
@@ -84,7 +87,8 @@ impl TerminalGrid {
             metrics: request.metrics.clone(),
             theme: request.theme.clone(),
             focus: request.focus,
-            cursor_opacity: request.cursor_opacity,
+            cursor_opacity: request.cursor.opacity,
+            cursor_trail: request.cursor.trail,
             overlays: request.overlays,
         }
     }
@@ -426,6 +430,32 @@ impl TerminalGrid {
         }
     }
 
+    /// Painted over the row's text but faint enough to read through, like the cursor's
+    /// wake rather than a second cursor.
+    fn paint_cursor_trail(&self, origin: gpui::Point<Pixels>, window: &mut Window) {
+        let Some(trail) = self.cursor_trail else {
+            return;
+        };
+        let cell = self.metrics.render_cell();
+        window.paint_quad(quad(
+            Bounds {
+                origin: point(
+                    origin.x + cell.width * trail.start,
+                    origin.y + cell.height * f32::from(trail.row),
+                ),
+                size: size(cell.width * (trail.end - trail.start), cell.height),
+            },
+            px(0.0),
+            gpui::Rgba {
+                a: trail.opacity,
+                ..gpui::rgb(gpui_rgb(self.theme.cursor))
+            },
+            Edges::default(),
+            Hsla::transparent_black(),
+            BorderStyle::default(),
+        ));
+    }
+
     fn paint_cursor(
         &self,
         origin: gpui::Point<Pixels>,
@@ -616,6 +646,7 @@ impl Element for TerminalGrid {
             self.paint_row_decorations(&row_paint, window);
             self.paint_cursor(bounds.origin, row, false, window);
         }
+        self.paint_cursor_trail(bounds.origin, window);
     }
 }
 
@@ -2319,12 +2350,12 @@ impl TerminalView {
 
     /// Works out the cursor's look for this draw, and asks for the next draw if it is
     /// animating. A cursor at rest asks for none, so an idle window stops drawing.
-    fn cursor_opacity(&mut self, seen: CursorObservation, cx: &mut Context<Self>) -> f32 {
+    fn cursor_frame(&mut self, seen: CursorObservation, cx: &mut Context<Self>) -> CursorFrame {
         let frame = self.cursor_animator.frame(seen);
         if let Some(delay) = frame.next_frame {
             self.request_cursor_frame(seen.now + delay, delay, cx);
         }
-        frame.opacity
+        frame
     }
 
     /// One timer is enough: only one sooner than any already waiting replaces it.
@@ -2655,10 +2686,16 @@ impl Render for TerminalView {
             selection: interaction.selection(),
             current_search_match: interaction.current_match(),
         };
-        let cursor_opacity = self.cursor_opacity(
+        let cursor = self.cursor_frame(
             CursorObservation {
+                pane: active_pane,
+                position: frame
+                    .cursor
+                    .position
+                    .filter(|_| frame.cursor.visible != Known::Known(false)),
                 focus,
                 blink: blink_wanted(self.config.cursor_blink, frame.cursor.blinking),
+                trail: self.config.cursor_trail,
                 now: std::time::Instant::now(),
             },
             cx,
@@ -2668,7 +2705,7 @@ impl Render for TerminalView {
             metrics: &metrics,
             theme: &theme,
             focus,
-            cursor_opacity,
+            cursor,
             overlays,
         }));
         let mut terminal_surface = div().relative().overflow_hidden().child(

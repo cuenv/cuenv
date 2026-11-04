@@ -161,6 +161,8 @@ pub struct TerminalConfig {
     pub minimum_contrast: MinimumContrast,
     pub cursor: CursorPreference,
     pub cursor_blink: CursorBlink,
+    /// A short fading trail behind a cursor that jumps. Off unless asked for.
+    pub cursor_trail: bool,
     pub theme: ThemeColors,
     pub interaction: InteractionConfig,
     pub keybindings: KeybindingConfig,
@@ -243,6 +245,7 @@ impl Default for TerminalConfig {
             minimum_contrast: MinimumContrast::OFF,
             cursor: CursorPreference::Block,
             cursor_blink: CursorBlink::default(),
+            cursor_trail: false,
             theme: ThemeColors::default(),
             interaction: InteractionConfig {
                 scrollback_limit: 10_000,

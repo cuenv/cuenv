@@ -308,6 +308,7 @@ The appearance fields are optional and apply to the active tab:
 | `font.boldWeight` | 100–900 integer; a family without that exact weight uses its nearest | 600 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | 0–128 integer pixels per edge | 14 each |
 | `cursor.blink` | `"terminal"` to blink as the running application asks, `"on"`, or `"off"` | `"terminal"` |
+| `cursor.trail` | Boolean: a short fading trail behind a cursor that jumps. Typing leaves none | `false` |
 | `minimumContrast` | 1–21 contrast ratio text is kept to against its background. 1 is off | 1 |
 | `transparency` | 0–100 integer percent | 0 |
 

@@ -184,6 +184,7 @@ transparency: 10
 | `font.boldWeight` | Integer CSS weight for bold text, 100–900. A family without that exact weight uses its nearest | 600 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 14 each |
 | `cursor.blink` | `"terminal"` blinks as the running application asks, which leaves the cursor steady at most prompts; `"on"` and `"off"` override it. A blink fades rather than toggles, holds solid for a moment after output or a key press, and settles solid after about half a minute of nothing happening | `"terminal"` |
+| `cursor.trail` | Boolean: a short fading trail behind a cursor that jumps, along a row or from one row to another. Moving a single cell, as typing does, leaves none | `false` |
 | `minimumContrast` | Contrast ratio from 1 to 21 that text is kept to against what it is drawn on, including a selection; 1 is off. Colours an application spelled out in 24-bit, drawn box and Powerline shapes, and the cursor and search match, which have their own colours, are left alone so image previews and Powerline segments still line up | 1 |
 | `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and sidebar share this opacity | 0 |
 | `accent` | Quoted `#RRGGBB`; the window's accent, for instance to match a compositor's window border. See [Accent colours](#accent-colours) | Catppuccin Mocha blue |
