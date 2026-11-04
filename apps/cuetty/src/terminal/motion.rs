@@ -208,7 +208,12 @@ impl<K> Default for Fades<K> {
 }
 
 impl<K: Eq + Hash> Fades<K> {
-    fn set(&mut self, key: K, target: FadeTarget, duration: Duration, now: Instant) {
+    fn set(&mut self, key: K, change: FadeChange) {
+        let FadeChange {
+            target,
+            duration,
+            now,
+        } = change;
         let to = match target {
             FadeTarget::On => 1.0,
             FadeTarget::Off => 0.0,
@@ -239,6 +244,14 @@ impl<K: Eq + Hash> Fades<K> {
 enum FadeTarget {
     On,
     Off,
+}
+
+/// A fade setting off.
+#[derive(Clone, Copy, Debug)]
+struct FadeChange {
+    target: FadeTarget,
+    duration: Duration,
+    now: Instant,
 }
 
 /// A button in the sidebar's footer.
@@ -313,7 +326,14 @@ impl ChromeMotion {
             } else {
                 FadeTarget::Off
             };
-            self.active.set(*tab, target, duration, now);
+            self.active.set(
+                *tab,
+                FadeChange {
+                    target,
+                    duration,
+                    now,
+                },
+            );
         }
         self.active.retain(now, |tab| tabs.contains(tab));
     }
@@ -326,17 +346,25 @@ impl ChromeMotion {
 
     /// The pointer has arrived over `target`.
     pub(super) fn hover_on(&mut self, target: HoverTarget, pace: MotionPace, now: Instant) {
-        self.hover
-            .set(target, FadeTarget::On, pace.duration(HOVER_TRANSITION), now);
+        self.hover.set(
+            target,
+            FadeChange {
+                target: FadeTarget::On,
+                duration: pace.duration(HOVER_TRANSITION),
+                now,
+            },
+        );
     }
 
     /// The pointer has left `target`.
     pub(super) fn hover_off(&mut self, target: HoverTarget, pace: MotionPace, now: Instant) {
         self.hover.set(
             target,
-            FadeTarget::Off,
-            pace.duration(HOVER_TRANSITION),
-            now,
+            FadeChange {
+                target: FadeTarget::Off,
+                duration: pace.duration(HOVER_TRANSITION),
+                now,
+            },
         );
     }
 
