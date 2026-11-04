@@ -2021,9 +2021,10 @@ impl TerminalView {
         };
         if let Some(session) = session {
             view.spawn_wake(session, cx);
-            view.spawn_cwd_poll(cx);
-            view.refresh_cuenv_integration(cx);
         }
+        // Also with no session yet: a shell started later from the empty window needs it.
+        view.spawn_cwd_poll(cx);
+        view.refresh_cuenv_integration(cx);
         view
     }
     fn refresh_cuenv_integration(&mut self, cx: &mut Context<Self>) {
