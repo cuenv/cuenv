@@ -294,10 +294,12 @@ resource reading an output through a field or let outside the configuration then
 which the pinned evaluator and CUE 0.17.1 report as a structural cycle (0.18 does not). Error
 paths are unchanged.
 
-The pinned evaluator evaluates `o: "zzz"; let M = o & "x"; y: M == "x"` to `true`, so a
-conflict inside a let can vanish and final validation does not see it
-(cue-lang/cue#4548). A structural use of this is refused, but a computed one such as
-`"\(M)"` evaluates to `"x"` instead of failing.
+CUE evaluates `o: "zzz"; let M = o & "x"; y: M == "x"` to `true`, so a conflict inside a let
+vanishes and validation does not see it (cue-lang/cue#4548). `(#F & {x: o}).out` loses a conflict
+on `x` the same way (cue-lang/cue#3977). Reading a let or a field of an inline value returned as
+soon as one scalar conjunct was known, and nothing finalizes such a value, as it has no path from
+the root. A computed `"\(M)"` would have sent the provider `"x"`. The fork now completes those
+values before reading them, so a real value conflicting inside one is refused like any other.
 
 `crates/cuenv/tests/infrastructure_lifecycle.rs` drives the real schema, command line,
 bridge and fake provider over ordering, stored edges, unknown values, computed values,
@@ -311,7 +313,10 @@ files between those reads and reproduces a snapshot pairing old bytes of one fil
 new bytes of another, a revision that never existed. Freezing now requires two
 consecutive loads with identical bytes, and refuses after four attempts. Package
 filtering is recomputed per load, so a file joining the package is seen too. This doubles
-loading work. An owning project and a separate infrastructure package are loaded by
+loading work. A snapshot also holds the bytes `@embed` attributes read, which the fork's
+`build.Instance.EmbedFS` serves when evaluating it, so no evaluation reads the disk. Which files
+those are is only known by running the attributes, so freezing a project that uses them evaluates
+it once. An owning project and a separate infrastructure package are loaded by
 separate operations, so a project edited between them is not covered. Editing a file
 during the confirmation prompt was exercised against the built binary with a terminal
 and applied the confirmed value.
