@@ -1,6 +1,6 @@
 //! Immutable CUE configuration and native output-reference provenance.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -21,9 +21,10 @@ use cuenv_infrastructure::references::{
 };
 use cuenv_infrastructure::type_system::{parse_json_preserving_numbers, scan_json_numbers};
 use cuenv_infrastructure::{InfrastructureError, ResourceAddress};
+use cuenv_manifest::manifest::InfrastructureOutputType;
 use serde_json::Value as Json;
 
-use super::output_selectors::{OutputSelectors, diagnostic_path};
+use super::output_selectors::{OutputSelectors, diagnostic_path, output_type};
 use crate::cli::CliError;
 
 pub(super) struct SnapshotRequest<'request> {
@@ -42,6 +43,8 @@ pub(super) struct NativeConfigurationEvaluator {
     timeout: Duration,
     /// Every selected output, referenced or not.
     declared_outputs: Vec<OutputIdentity>,
+    /// The bare type each of them is declared with, if it has one.
+    declared_output_types: BTreeMap<OutputIdentity, InfrastructureOutputType>,
     /// Selected configuration compared with and without real outputs.
     verification_roots: Vec<ValuePath>,
     /// Output namespaces and unselected configuration, which real outputs may change.
@@ -193,6 +196,7 @@ pub(super) fn freeze_configuration(
         }
     }
     let mut declared_outputs = Vec::new();
+    let mut declared_output_types = BTreeMap::new();
     for namespace in output_namespaces(&value, &root) {
         let source = address(
             &value,
@@ -203,10 +207,22 @@ pub(super) fn freeze_configuration(
             ),
         )?;
         if let Some(outputs) = json_at(&value, &namespace).and_then(Json::as_object) {
-            declared_outputs.extend(outputs.keys().map(|attribute| OutputIdentity {
-                source: source.clone(),
-                attribute: attribute.clone(),
-            }));
+            for attribute in outputs.keys() {
+                let identity = OutputIdentity {
+                    source: source.clone(),
+                    attribute: attribute.clone(),
+                };
+                let path = append_field(&namespace, attribute);
+                if let Some(declared) = inspected
+                    .declarations
+                    .iter()
+                    .find(|declaration| declaration.path == path)
+                    .and_then(|declaration| output_type(&declaration.primitive_type))
+                {
+                    declared_output_types.insert(identity.clone(), declared);
+                }
+                declared_outputs.push(identity);
+            }
         }
     }
     let mut verification_mutable = output_namespaces(&value, &root);
@@ -276,6 +292,7 @@ pub(super) fn freeze_configuration(
         numeric_references,
         timeout,
         declared_outputs,
+        declared_output_types,
         verification_roots,
         verification_mutable,
         verification_references,
@@ -595,6 +612,10 @@ impl ConfigurationEvaluator for NativeConfigurationEvaluator {
 
     fn declared_outputs(&self) -> &[OutputIdentity] {
         &self.declared_outputs
+    }
+
+    fn declared_output_type(&self, identity: &OutputIdentity) -> Option<InfrastructureOutputType> {
+        self.declared_output_types.get(identity).copied()
     }
 
     fn verify(&self, input: &ConfigurationVerification<'_>) -> cuenv_infrastructure::Result<()> {

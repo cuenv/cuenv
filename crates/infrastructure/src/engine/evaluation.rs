@@ -112,17 +112,23 @@ where
     if cancellation.is_stop_requested() {
         return Err(InfrastructureError::InterruptedWhilePlanning);
     }
-    // Start the budget before admission; a full pool fails immediately rather
-    // than holding the lock while waiting for a stuck evaluator.
+    // The budget covers waiting for a worker: a run holding the state lock must not
+    // wait for longer than that on evaluators that are stuck.
     let deadline = tokio::time::Instant::now()
         .checked_add(timeout)
         .ok_or_else(|| failure("has an unsupported timeout"))?;
-    let permit = Arc::clone(slots)
-        .try_acquire_owned()
-        .map_err(|_| failure("cannot start because the evaluation worker limit is reached"))?;
-    if cancellation.is_stop_requested() {
-        return Err(InfrastructureError::InterruptedWhilePlanning);
-    }
+    let permit = tokio::select! {
+        biased;
+        () = cancellation.stopped() => {
+            return Err(InfrastructureError::InterruptedWhilePlanning);
+        }
+        () = tokio::time::sleep_until(deadline) => {
+            return Err(failure("timed out waiting for a worker"));
+        }
+        permit = Arc::clone(slots).acquire_owned() => {
+            permit.map_err(|_| failure("could not start its worker"))?
+        }
+    };
     let (sender, receiver) = oneshot::channel();
     let worker = std::thread::Builder::new()
         .name("cuenv-configuration-evaluation".to_string())
@@ -189,6 +195,18 @@ mod tests {
     impl ConfigurationEvaluator for BlockingEvaluator {
         fn references(&self) -> &[NativeReference] {
             &[]
+        }
+        fn declared_outputs(&self) -> &[OutputIdentity] {
+            &[]
+        }
+        fn declared_output_type(
+            &self,
+            _identity: &OutputIdentity,
+        ) -> Option<cuenv_manifest::manifest::InfrastructureOutputType> {
+            None
+        }
+        fn verify(&self, _input: &ConfigurationVerification<'_>) -> Result<()> {
+            Ok(())
         }
         fn timeout(&self) -> Duration {
             self.timeout
@@ -311,19 +329,48 @@ mod tests {
                 ..
             })
         ));
-        let other = Arc::new(BlockingEvaluator::new(Duration::from_secs(5)));
+        let other = Arc::new(BlockingEvaluator::new(Duration::from_millis(100)));
         let result =
             specialize_with_slots(request(Arc::clone(&other)), &cancellation, &slots).await;
         assert!(matches!(
             result,
             Err(InfrastructureError::ConfigurationEvaluation {
-                reason: "cannot start because the evaluation worker limit is reached",
+                reason: "timed out waiting for a worker",
                 ..
             })
         ));
         assert!(!other.entered.load(Ordering::SeqCst));
         evaluator.release()?;
         wait_until(|| slots.available_permits() == 1).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_full_pool_waits_for_a_worker_to_finish() -> Result<()> {
+        let first = Arc::new(BlockingEvaluator::new(Duration::from_secs(30)));
+        let cancellation = Cancellation::default();
+        let slots = Arc::new(Semaphore::new(1));
+        let run = |evaluator: &Arc<BlockingEvaluator>| {
+            let evaluator = Arc::clone(evaluator);
+            let cancellation = cancellation.clone();
+            let slots = Arc::clone(&slots);
+            tokio::spawn(async move {
+                specialize_with_slots(request(evaluator), &cancellation, &slots).await
+            })
+        };
+        let running = run(&first);
+        wait_until(|| first.entered.load(Ordering::SeqCst)).await?;
+        let second = Arc::new(BlockingEvaluator::new(Duration::from_secs(30)));
+        let waiting = run(&second);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!second.entered.load(Ordering::SeqCst));
+        first.release()?;
+        wait_until(|| second.entered.load(Ordering::SeqCst)).await?;
+        second.release()?;
+        for task in [running, waiting] {
+            task.await
+                .map_err(|_| InfrastructureError::configuration("test task stopped"))??;
+        }
         Ok(())
     }
 

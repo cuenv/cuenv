@@ -1396,6 +1396,13 @@ impl cuenv_infrastructure::references::ConfigurationEvaluator for RefusingVerifi
         &self.declared
     }
 
+    fn declared_output_type(
+        &self,
+        _identity: &cuenv_infrastructure::references::OutputIdentity,
+    ) -> Option<cuenv_manifest::manifest::InfrastructureOutputType> {
+        None
+    }
+
     fn verify(
         &self,
         input: &cuenv_infrastructure::references::ConfigurationVerification<'_>,
@@ -2469,6 +2476,21 @@ async fn fake_interrupt_during_final_cue_evaluation_releases_lock_and_discards_l
     impl ConfigurationEvaluator for BlockingFinal {
         fn references(&self) -> &[NativeReference] {
             std::slice::from_ref(&self.reference)
+        }
+        fn declared_outputs(&self) -> &[cuenv_infrastructure::references::OutputIdentity] {
+            &[]
+        }
+        fn declared_output_type(
+            &self,
+            _identity: &cuenv_infrastructure::references::OutputIdentity,
+        ) -> Option<cuenv_manifest::manifest::InfrastructureOutputType> {
+            None
+        }
+        fn verify(
+            &self,
+            _input: &cuenv_infrastructure::references::ConfigurationVerification<'_>,
+        ) -> cuenv_infrastructure::Result<()> {
+            Ok(())
         }
         fn specialize(
             &self,

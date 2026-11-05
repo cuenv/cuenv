@@ -3430,6 +3430,21 @@ mod native_configuration {
             &self.references
         }
 
+        fn declared_outputs(&self) -> &[crate::references::OutputIdentity] {
+            &[]
+        }
+
+        fn declared_output_type(
+            &self,
+            _identity: &crate::references::OutputIdentity,
+        ) -> Option<cuenv_manifest::manifest::InfrastructureOutputType> {
+            None
+        }
+
+        fn verify(&self, _input: &crate::references::ConfigurationVerification<'_>) -> Result<()> {
+            Ok(())
+        }
+
         fn specialize(
             &self,
             input: &ConfigurationSpecialization<'_>,

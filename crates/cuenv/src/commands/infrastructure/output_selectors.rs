@@ -203,7 +203,7 @@ fn is_declaration_namespace(label: &str) -> bool {
     matches!(label, "resources" | "data")
 }
 
-fn output_type(primitive: &str) -> Option<InfrastructureOutputType> {
+pub(super) fn output_type(primitive: &str) -> Option<InfrastructureOutputType> {
     match primitive {
         "string" => Some(InfrastructureOutputType::String),
         "number" => Some(InfrastructureOutputType::Number),

@@ -950,6 +950,9 @@ impl InfrastructureEngine {
             let references = graph.references.get(source).ok_or_else(|| {
                 InfrastructureError::configuration("reference graph is incomplete")
             })?;
+            if let Some(binding) = &self.configuration_evaluation {
+                validate_output_declarations(source, binding.evaluator.as_ref(), block)?;
+            }
             self.validate_output_references(source.address(), references, block)?;
             self.prepare_configuration(
                 ConfigurationInput {
@@ -1703,25 +1706,10 @@ impl InfrastructureEngine {
             // A deferred read produced new outputs: check them before this change.
             if execution.data_sources.values.len() != verified_reads {
                 verified_reads = execution.data_sources.values.len();
-                let pending = pending_addresses(&remaining);
-                let verified = self
-                    .verify_outputs(&OutputVerification {
-                        rows: &execution.rows,
-                        data_sources: &execution.data_sources.values,
-                        pending: &pending,
-                    })
-                    .await;
-                if self.cancellation().is_stop_requested() {
-                    return Err(execution.progress.interrupted());
-                }
-                if let Err(error) = verified {
-                    execution.run.halted(
-                        ChangeFailure {
-                            address: change.address.clone(),
-                            error,
-                        },
-                        execution.on_event,
-                    );
+                if !self
+                    .verify_or_halt(execution, &remaining, &change.address)
+                    .await?
+                {
                     continue;
                 }
             }
@@ -1779,26 +1767,8 @@ impl InfrastructureEngine {
                     });
                     // New outputs exist: check them before anything else changes.
                     if self.declares_outputs(&change.address) {
-                        let pending = pending_addresses(&remaining);
-                        let verified = self
-                            .verify_outputs(&OutputVerification {
-                                rows: &execution.rows,
-                                data_sources: &execution.data_sources.values,
-                                pending: &pending,
-                            })
-                            .await;
-                        if self.cancellation().is_stop_requested() {
-                            return Err(execution.progress.interrupted());
-                        }
-                        if let Err(error) = verified {
-                            execution.run.halted(
-                                ChangeFailure {
-                                    address: change.address.clone(),
-                                    error,
-                                },
-                                execution.on_event,
-                            );
-                        }
+                        self.verify_or_halt(execution, &remaining, &change.address)
+                            .await?;
                     }
                 }
                 continue;
@@ -1852,26 +1822,8 @@ impl InfrastructureEngine {
         if let Some(last) = schedule.operations.last()
             && !execution.run.has_failures()
         {
-            let pending = pending_addresses(&remaining);
-            let verified = self
-                .verify_outputs(&OutputVerification {
-                    rows: &execution.rows,
-                    data_sources: &execution.data_sources.values,
-                    pending: &pending,
-                })
-                .await;
-            if self.cancellation().is_stop_requested() {
-                return Err(execution.progress.interrupted());
-            }
-            if let Err(error) = verified {
-                execution.run.halted(
-                    ChangeFailure {
-                        address: last.operation.change.address.clone(),
-                        error,
-                    },
-                    execution.on_event,
-                );
-            }
+            self.verify_or_halt(execution, &remaining, &last.operation.change.address)
+                .await?;
         }
         for read in execution
             .data_source_plans
@@ -1902,6 +1854,38 @@ impl InfrastructureEngine {
                         SourceAddress::DataSource(_) => false,
                     })
             })
+    }
+
+    /// Check the outputs known so far, and if they fail skip everything not yet started,
+    /// recording the failure against the change at `address`. Returns whether they passed.
+    async fn verify_or_halt(
+        &self,
+        execution: &mut Execution<'_, '_, '_>,
+        remaining: &BTreeMap<ResourceAddress, usize>,
+        address: &ResourceAddress,
+    ) -> Result<bool> {
+        let pending = pending_addresses(remaining);
+        let verified = self
+            .verify_outputs(&OutputVerification {
+                rows: &execution.rows,
+                data_sources: &execution.data_sources.values,
+                pending: &pending,
+            })
+            .await;
+        if self.cancellation().is_stop_requested() {
+            return Err(execution.progress.interrupted());
+        }
+        let Err(error) = verified else {
+            return Ok(true);
+        };
+        execution.run.halted(
+            ChangeFailure {
+                address: address.clone(),
+                error,
+            },
+            execution.on_event,
+        );
+        Ok(false)
     }
 
     /// Check every output known so far against the whole CUE instance. Reference
@@ -4251,19 +4235,14 @@ impl OutputReferenceCheck<'_> {
                     "source must be a top-level scalar attribute",
                 )
             })?;
-        if let Some(declared) = declared_type {
-            let declared_type = match declared {
-                InfrastructureOutputType::String => Type::String,
-                InfrastructureOutputType::Number => Type::Number,
-                InfrastructureOutputType::Boolean => Type::Boolean,
-            };
-            if declared_type != source_attribute.value_type {
-                return Err(reference_error(
-                    destination,
-                    reference,
-                    "native CUE output declaration type does not match the provider schema",
-                ));
-            }
+        if let Some(declared) = declared_type
+            && declared_value_type(*declared) != source_attribute.value_type
+        {
+            return Err(reference_error(
+                destination,
+                reference,
+                "native CUE output declaration type does not match the provider schema",
+            ));
         }
         if !reference.native.computed
             && &source_attribute.value_type != destination_attribute.value_type()
@@ -4278,6 +4257,56 @@ impl OutputReferenceCheck<'_> {
             sensitive: source_attribute.sensitive,
         })
     }
+}
+
+fn declared_value_type(declared: InfrastructureOutputType) -> Type {
+    match declared {
+        InfrastructureOutputType::String => Type::String,
+        InfrastructureOutputType::Number => Type::Number,
+        InfrastructureOutputType::Boolean => Type::Boolean,
+    }
+}
+
+/// Check every output a declaration names against its provider's schema, whether or not
+/// anything reads it: its real value could not be checked until the object exists.
+fn validate_output_declarations(
+    source: &SourceAddress,
+    evaluator: &dyn ConfigurationEvaluator,
+    block: &Block,
+) -> Result<()> {
+    for identity in evaluator
+        .declared_outputs()
+        .iter()
+        .filter(|identity| &identity.source == source)
+    {
+        let Some(declared) = evaluator.declared_output_type(identity) else {
+            continue;
+        };
+        let attribute = &identity.attribute;
+        let schema = block
+            .attributes
+            .get(attribute)
+            .filter(|schema| {
+                schema.nested.is_none()
+                    && !schema.write_only
+                    && (is_scalar(&schema.value_type) || schema.value_type == Type::Dynamic)
+            })
+            .ok_or_else(|| {
+                InfrastructureError::configuration(format!(
+                    "{source}: output {attribute} must be a top-level scalar attribute of the \
+                     provider schema"
+                ))
+            })?;
+        // A dynamic attribute can hold a scalar: only its real value can say.
+        if schema.value_type != Type::Dynamic && declared_value_type(declared) != schema.value_type
+        {
+            return Err(InfrastructureError::configuration(format!(
+                "{source}: output {attribute}: native CUE output declaration type does not \
+                 match the provider schema"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Attributes a plan masks: the block's own sensitive attributes and the

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use cuenv_manifest::manifest::InfrastructureOutputType;
 use serde_json::{Map, Value as Json};
 
 use super::SourceAddress;
@@ -89,9 +90,10 @@ pub trait ConfigurationEvaluator: Send + Sync {
     }
 
     /// Every output this instance declares, whether or not a reference uses it.
-    fn declared_outputs(&self) -> &[OutputIdentity] {
-        &[]
-    }
+    fn declared_outputs(&self) -> &[OutputIdentity];
+
+    /// The bare type an output is declared with, if it has one.
+    fn declared_output_type(&self, identity: &OutputIdentity) -> Option<InfrastructureOutputType>;
 
     /// Check that real outputs change nothing outside the native references.
     ///
@@ -102,9 +104,7 @@ pub trait ConfigurationEvaluator: Send + Sync {
     ///
     /// Returns a value-free error when the values conflict with CUE constraints or
     /// change a configuration value no native reference accounts for.
-    fn verify(&self, _input: &ConfigurationVerification<'_>) -> Result<()> {
-        Ok(())
-    }
+    fn verify(&self, input: &ConfigurationVerification<'_>) -> Result<()>;
 
     /// Specialize and validate one complete consumer configuration.
     ///

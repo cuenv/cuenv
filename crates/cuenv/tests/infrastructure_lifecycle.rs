@@ -2184,6 +2184,29 @@ async fn a_computed_value_that_is_not_a_scalar_is_refused() -> TestResult {
     Ok(())
 }
 
+/// A declared output is checked against the provider's schema while planning, whether or
+/// not anything reads it: otherwise its value could only be refused once it exists.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn an_output_declared_with_the_wrong_type_is_refused_while_planning() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "unread-output-wrong-type",
+        &outputs_stack(
+            r#"producer: {type: "fake_plain", outputs: id: number, configuration: name: "producer"}"#,
+        ),
+    )?;
+    stack.fails(
+        &["plan"],
+        "native CUE output declaration type does not match the provider schema",
+    )?;
+    stack.fails(
+        &["apply", "--yes"],
+        "native CUE output declaration type does not match the provider schema",
+    )?;
+    assert_eq!(stack.mutations(), 0);
+    Ok(())
+}
+
 /// A definition with a conditional field reading something outside of it used to
 /// crash the evaluator as soon as it was instantiated.
 #[tokio::test(flavor = "multi_thread")]
