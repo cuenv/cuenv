@@ -1,33 +1,56 @@
-use super::config::TerminalConfig;
+use super::chrome::{
+    ChromeAssets, ScrollbarRequest, SessionProblem, ShellPanels, UNFOCUSED_TERMINAL_FADE,
+    exit_notice_height, render_exit_notice, resolve_ui_font, sidebar_width, track_of,
+    traffic_light_position,
+};
+use super::color::{blend, dimmed, with_minimum_contrast};
+use super::config::{SystemAppearance, TerminalConfig, ThemeColors};
+use super::cursor::{
+    CursorAnimator, CursorFocus, CursorFrame, CursorObservation, TrailSpan, blink_wanted,
+};
 use super::events::ControlEvent;
+use super::git_branch::BranchProbe;
+use super::glyphs::{GlyphShape, drawn_glyph, is_drawn, is_graphic};
 use super::host::{
-    RioTerminalFactory, TerminalScroll, TerminalSession, TerminalSessionFactory, TerminalWheel,
+    RioTerminalFactory, SessionRequest, SessionStart, TerminalScroll, TerminalSession,
+    TerminalSessionFactory, TerminalWheel,
 };
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::interaction::{CellHitTest, InteractionState, SearchKey};
-use super::model::{CursorShape, Known, Rgb, TerminalCell, TerminalFrame, UnderlineStyle};
+use super::model::{
+    CellOccupancy, CursorShape, Known, Rgb, TerminalCell, TerminalFrame, UnderlineStyle,
+};
 #[cfg(test)]
 use super::model::{CursorState, SamplingToken, TerminalDimensions, TerminalRow};
+use super::motion::{
+    ChromeMotion, HoverTarget, MotionPace, SidebarButton, SidebarFrame, TabPlaces,
+};
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
-use super::presentation::{TerminalMetrics, TerminalTheme, gpui_rgb};
+use super::palette::{self, Command as PaletteCommand, Item as PaletteItem, Mode as PaletteMode};
+use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
+use super::scrollbar::ScrollExtent;
 use super::sizing::CellSize;
-use super::workspace_shell::{ShellAction, ShellError, WorkspaceShell, WorkspaceShortcut};
+use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
+use super::tab_rename::{RenameKey, TabRename, rename_key};
+use super::tab_status::{SessionExit, StatusEvent, TabPresence, TabStatus, WindowPresence};
+use super::workspace_shell::{
+    ShellAction, ShellError, TabDirection, TabNumber, WorkspaceShell, WorkspaceShortcut,
+};
 use crate::integrations::cuenv::{
-    ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation, KeyChord,
-    NativeCuenvProvider, RailColor, TaskEvaluation, TitlebarVisibility,
+    ChordModifiers, ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher,
+    Evaluation, EvaluationStage, KeyChord, Keybindings, NativeCuenvProvider, SidebarMode,
+    StagedEvaluation, WindowSidebar, evaluate_within,
 };
-use crate::workspace::{LayoutRect, MinSizePolicy, TabId};
+use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
-    App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Edges, Element,
-    FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyBinding, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, Size,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
-    UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowOptions, actions, canvas, div, point, prelude::FluentBuilder, px,
-    quad, size,
+    App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Decorations, Edges,
+    Element, FocusHandle, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
+    KeyBinding, Menu, MenuItem, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, PathBuilder, Pixels, Render, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Size, StrikethroughStyle, Styled, SystemMenuType, TextRun,
+    Timer, UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions, actions, canvas, div, point, px, quad, size,
 };
-use gpui_component::tooltip::Tooltip;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -37,7 +60,9 @@ struct RenderRequest<'a> {
     frame: &'a TerminalFrame,
     metrics: &'a TerminalMetrics,
     theme: &'a TerminalTheme,
-    focused: bool,
+    focus: CursorFocus,
+    window: WindowPresence,
+    cursor: CursorFrame,
     overlays: TerminalOverlays,
 }
 
@@ -48,35 +73,8 @@ trait TerminalRenderer: Send + Sync {
 struct GridRenderer;
 impl TerminalRenderer for GridRenderer {
     fn render(&self, request: RenderRequest<'_>) -> gpui::AnyElement {
-        TerminalGrid::new(
-            request.frame,
-            request.metrics,
-            request.theme,
-            request.focused,
-            request.overlays,
-        )
-        .into_any_element()
+        TerminalGrid::new(request).into_any_element()
     }
-}
-
-fn shell_notice_text(notice: Option<&str>) -> Option<String> {
-    notice.map(|notice| format!("• {notice}"))
-}
-
-const CHROME_GLASS_OPACITY: f32 = 0.72;
-
-fn color_with_opacity(color: Rgb, opacity: f32) -> Rgba {
-    let mut color = gpui::rgb(gpui_rgb(color));
-    color.a = opacity.clamp(0.0, 1.0);
-    color
-}
-
-fn terminal_background_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
-    color_with_opacity(color, theme.background_opacity)
-}
-
-fn chrome_glass_color(color: Rgb) -> Rgba {
-    color_with_opacity(color, CHROME_GLASS_OPACITY)
 }
 
 fn uses_terminal_surface_background(cell: &TerminalCell) -> bool {
@@ -90,51 +88,48 @@ struct TerminalGrid {
     frame: TerminalFrame,
     metrics: TerminalMetrics,
     theme: TerminalTheme,
-    focused: bool,
+    focus: CursorFocus,
+    window: WindowPresence,
+    cursor_opacity: f32,
+    cursor_trail: Option<TrailSpan>,
     overlays: TerminalOverlays,
 }
 
 impl TerminalGrid {
-    fn new(
-        frame: &TerminalFrame,
-        metrics: &TerminalMetrics,
-        theme: &TerminalTheme,
-        focused: bool,
-        overlays: TerminalOverlays,
-    ) -> Self {
+    fn new(request: RenderRequest<'_>) -> Self {
         Self {
-            frame: frame.clone(),
-            metrics: metrics.clone(),
-            theme: theme.clone(),
-            focused,
-            overlays,
+            frame: request.frame.clone(),
+            metrics: request.metrics.clone(),
+            theme: request.theme.clone(),
+            focus: request.focus,
+            window: request.window,
+            cursor_opacity: request.cursor.opacity,
+            cursor_trail: request.cursor.trail,
+            overlays: request.overlays,
         }
+    }
+
+    /// What a colour is painted as, faded here rather than with an element's opacity:
+    /// GPUI applies that to each primitive on its own, so a drawn glyph's overlapping
+    /// strokes would blend twice and bead every box-drawing rule.
+    fn ink(&self, color: Rgb) -> gpui::Rgba {
+        gpui::rgb(gpui_rgb(window_ink(color, self.theme.surface, self.window)))
     }
 
     fn overlay_color(&self, kind: OverlayKind) -> Rgb {
         match kind {
             OverlayKind::Selection => self.theme.selection,
+            OverlayKind::SearchMatch => self.theme.search_match,
             OverlayKind::CurrentSearchMatch => self.theme.current_search_match,
         }
     }
 
-    fn paint_row_overlays(
-        &self,
-        origin: gpui::Point<Pixels>,
-        row: usize,
-        overlays: &[CellOverlaySpan],
-        window: &mut Window,
-    ) {
-        for span in overlays.iter().filter(|span| span.row == row) {
+    fn paint_row_overlays(&self, row: &RowPaint<'_>, window: &mut Window) {
+        for span in row.overlays.iter().filter(|span| span.row == row.row) {
             window.paint_quad(quad(
-                self.cell_bounds(
-                    origin,
-                    span.row,
-                    span.start_column,
-                    span.end_column - span.start_column,
-                ),
+                self.cell_bounds(row.origin, span.row, span.start_column..span.end_column),
                 px(0.0),
-                gpui::rgb(gpui_rgb(self.overlay_color(span.kind))),
+                self.ink(self.overlay_color(span.kind)),
                 Edges::default(),
                 Hsla::transparent_black(),
                 BorderStyle::default(),
@@ -142,26 +137,227 @@ impl TerminalGrid {
         }
     }
 
-    fn font_for(&self, cell: &TerminalCell) -> Font {
-        Font {
-            family: self.metrics.font.family.clone(),
-            // Terminal columns must not be changed by contextual or standard ligatures.
-            features: FontFeatures(std::sync::Arc::new(vec![
-                ("calt".into(), 0),
-                ("liga".into(), 0),
-                ("clig".into(), 0),
-            ])),
-            fallbacks: self.metrics.font.fallbacks.clone(),
-            weight: if cell.style.bold {
-                FontWeight::BOLD
-            } else {
-                FontWeight::NORMAL
-            },
-            style: if cell.style.italic {
-                FontStyle::Italic
-            } else {
-                FontStyle::Normal
-            },
+    fn layer_at(&self, overlays: &[CellOverlaySpan], position: CellPosition) -> CellLayer {
+        cell_layer(
+            cursor_style_at(&self.frame, self.focus, position),
+            overlays,
+            position,
+        )
+    }
+
+    /// The colour a cell's glyph is painted in.
+    fn foreground_at(&self, cell: &TerminalCell, row: &RowPaint<'_>, column: usize) -> Rgb {
+        let position = CellPosition {
+            row: row.row,
+            column,
+        };
+        let tint = quiet_tint_at(row.overlays, position, &self.theme);
+        let layer = self.layer_at(row.overlays, position);
+        if layer != CellLayer::BlockCursor {
+            return readable_foreground(PaintedCell { cell, layer, tint }, &self.theme);
+        }
+        // A block cursor fading out hands its glyph back to what is underneath it.
+        let beneath = cell_layer(None, row.overlays, position);
+        blend(
+            readable_foreground(
+                PaintedCell {
+                    cell,
+                    layer: beneath,
+                    tint,
+                },
+                &self.theme,
+            ),
+            self.theme.cursor_text,
+            self.cursor_opacity,
+        )
+    }
+
+    /// Paints a row's glyphs. Adjacent cells are shaped together wherever they share a
+    /// font, even across colours, so a font's contextual alternates read the text
+    /// around them and do not change as the cursor or syntax colouring moves past.
+    fn paint_row_text(&self, row: &RowPaint<'_>, window: &mut Window) {
+        let cells = row.cells;
+        let mut start = 0;
+        while start < cells.len() {
+            let cell = &cells[start];
+            // Spacers carry background and occupancy only.  In particular,
+            // they are never shaped as a space glyph. Concealed text has no glyph
+            // either: painting it in its background would show through a translucent
+            // terminal as an opaque shape.
+            if cell.text.is_none() || cell.style.hidden {
+                start += 1;
+                continue;
+            }
+            if let Some(character) = drawn_character(cell) {
+                self.paint_drawn_glyph(
+                    row.origin,
+                    DrawnGlyph {
+                        character,
+                        row: row.row,
+                        column: start,
+                        color: self.foreground_at(cell, row, start),
+                    },
+                    window,
+                );
+                start += 1;
+                continue;
+            }
+            let end = (start + 1..cells.len())
+                .find(|&column| {
+                    let next = &cells[column];
+                    next.text.is_none()
+                        || next.style.hidden
+                        || drawn_character(next).is_some()
+                        || next.style.bold != cell.style.bold
+                        || next.style.italic != cell.style.italic
+                })
+                .unwrap_or(cells.len());
+            self.paint_text_run(row, start..end, window);
+            start = end;
+        }
+    }
+
+    /// Paints one shaped run with every glyph placed from its cell's column.
+    ///
+    /// This does not paint a `ShapedLine` with a forced width because that cannot hold
+    /// the grid: GPUI only corrects a glyph more than a pixel off, so spacing wanders
+    /// wherever the advance and the cell differ, and it counts glyphs rather than
+    /// characters, so a combining mark or a ligature in `calt` would shift every later
+    /// column in the run. Mapping each glyph back to its source text cannot.
+    fn paint_text_run(
+        &self,
+        row: &RowPaint<'_>,
+        columns: std::ops::Range<usize>,
+        window: &mut Window,
+    ) {
+        let cells = &row.cells[columns.clone()];
+        let mut text = String::new();
+        let cluster_starts: Vec<usize> = cells
+            .iter()
+            .map(|cell| {
+                let start = text.len();
+                text.push_str(cell.text.as_deref().unwrap_or_default());
+                start
+            })
+            .collect();
+        let foregrounds: Vec<Hsla> = cells
+            .iter()
+            .zip(columns.clone())
+            .map(|(cell, column)| self.ink(self.foreground_at(cell, row, column)).into())
+            .collect();
+        let Some(first) = cells.first() else {
+            return;
+        };
+        let run = TextRun {
+            len: text.len(),
+            font: cell_font(first, &self.metrics),
+            // Colours are per glyph below; this only satisfies the shaper.
+            color: Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = window.text_system().shape_line(
+            SharedString::from(text),
+            self.metrics.font_size,
+            &[run],
+            None,
+        );
+        let grid = DeviceGrid::new(row.origin, &self.metrics);
+        let baseline = grid.glyph_baseline(row.row, self.baseline(window));
+        let font_size = self.metrics.font_size;
+        let line = self.cell_bounds(row.origin, row.row, columns.clone());
+        window.paint_layer(line, |window| {
+            let mut placer = GlyphPlacer::new(&cluster_starts);
+            for run in &shaped.runs {
+                for glyph in &run.glyphs {
+                    let placed = placer.place(glyph.index, f32::from(glyph.position.x));
+                    let x = grid.glyph_x(columns.start + placed.cluster, px(placed.offset));
+                    let origin = point(x, baseline);
+                    // A glyph that cannot be rasterized leaves its cell empty.
+                    let _ = if glyph.is_emoji {
+                        window.paint_emoji(origin, run.font_id, glyph.id, font_size)
+                    } else {
+                        let color = foregrounds.get(placed.cluster).copied().unwrap_or_default();
+                        window.paint_glyph(origin, run.font_id, glyph.id, font_size, color)
+                    };
+                }
+            }
+        });
+    }
+
+    /// The distance in device pixels from the top of a cell to the text's baseline, from
+    /// the configured font alone. A fallback glyph therefore sits on the same line as the
+    /// text around it, and every row's baseline lands on a device pixel.
+    fn baseline(&self, window: &Window) -> i32 {
+        let text_system = window.text_system();
+        let font = text_system.resolve_font(&self.metrics.font);
+        let offset = baseline_in_cell(
+            self.metrics.render_cell().height,
+            text_system.ascent(font, self.metrics.font_size),
+            text_system.descent(font, self.metrics.font_size),
+        );
+        self.metrics.scale.nearest_device_pixel(offset)
+    }
+
+    /// Underlines and strikethroughs follow the cells they decorate, so they are drawn
+    /// once a row's runs are placed and do not depend on how it was shaped.
+    fn paint_row_decorations(&self, row: &RowPaint<'_>, window: &mut Window) {
+        let cells = row.cells;
+        if cells.iter().all(|cell| {
+            cell.style.hidden || (cell.style.underline.is_none() && !cell.style.strikeout)
+        }) {
+            return;
+        }
+        let grid_cell = self.metrics.render_cell();
+        let text_system = window.text_system();
+        let font = text_system.resolve_font(&self.metrics.font);
+        let ascent = text_system.ascent(font, self.metrics.font_size);
+        let descent = text_system.descent(font, self.metrics.font_size).abs();
+        let baseline = self
+            .metrics
+            .scale
+            .logical_position(self.baseline(window) as f32);
+        let top = row.origin.y + grid_cell.height * row.row as f32;
+        let x = |column: usize| row.origin.x + grid_cell.width * column as f32;
+        let underlines = merged_spans(cells.iter().enumerate().map(|(column, cell)| {
+            let foreground = self.foreground_at(cell, row, column);
+            let style = cell.style.underline.filter(|_| !cell.style.hidden);
+            style.map(|style| {
+                let color = cell
+                    .underline_color
+                    .map_or(foreground, |color| self.theme.resolve(color));
+                (style, color)
+            })
+        }));
+        for (columns, (style, color)) in underlines {
+            window.paint_underline(
+                point(x(columns.start), top + baseline + descent * 0.618),
+                grid_cell.width * columns.len() as f32,
+                &GpuiUnderlineStyle {
+                    thickness: px(if matches!(style, UnderlineStyle::Double) {
+                        2.0
+                    } else {
+                        1.0
+                    }),
+                    color: Some(self.ink(color).into()),
+                    wavy: matches!(style, UnderlineStyle::Curly),
+                },
+            );
+        }
+        let strikethroughs = merged_spans(cells.iter().enumerate().map(|(column, cell)| {
+            (cell.style.strikeout && !cell.style.hidden)
+                .then(|| self.foreground_at(cell, row, column))
+        }));
+        for (columns, color) in strikethroughs {
+            window.paint_strikethrough(
+                point(x(columns.start), top + (ascent * 0.5 + baseline) * 0.5),
+                grid_cell.width * columns.len() as f32,
+                &StrikethroughStyle {
+                    thickness: px(1.0),
+                    color: Some(self.ink(color).into()),
+                },
+            );
         }
     }
 
@@ -169,86 +365,167 @@ impl TerminalGrid {
         &self,
         origin: gpui::Point<Pixels>,
         row: usize,
-        start: usize,
-        len: usize,
+        columns: std::ops::Range<usize>,
     ) -> Bounds<Pixels> {
         let grid_cell = self.metrics.render_cell();
         Bounds {
             origin: point(
-                origin.x + grid_cell.width * start as f32,
+                origin.x + grid_cell.width * columns.start as f32,
                 origin.y + grid_cell.height * row as f32,
             ),
             size: Size {
-                width: grid_cell.width * len as f32,
+                width: grid_cell.width * columns.len() as f32,
                 height: grid_cell.height,
             },
         }
     }
 
-    fn paint_cursor(
+    /// Paints a shape-drawn character in its cell, in device pixels, so it meets its
+    /// neighbours exactly. Its colour is worked out like any glyph's, so selections,
+    /// search matches, and a block cursor treat it the same as text.
+    fn paint_drawn_glyph(
         &self,
         origin: gpui::Point<Pixels>,
-        row: usize,
-        block_layer: bool,
+        glyph: DrawnGlyph,
         window: &mut Window,
     ) {
-        let Some(style) = cursor_style_at(
-            &self.frame,
-            self.focused,
-            row,
-            self.frame
-                .cursor
-                .position
-                .map_or(usize::MAX, |(_, col)| col as usize),
-        ) else {
+        let Some(shapes) = drawn_glyph(glyph.character, self.metrics.device_cell()) else {
             return;
         };
-        let Some((_, col)) = self.frame.cursor.position else {
-            return;
-        };
-        if col as usize >= self.frame.dimensions.columns as usize {
-            return;
-        }
-        if matches!(style, HostCursorStyle::Block) != block_layer {
-            return;
-        }
-        let bounds = self.cell_bounds(origin, row, col as usize, 1);
-        match style {
-            HostCursorStyle::Block => window.paint_quad(quad(
+        let cell = self.cell_bounds(origin, glyph.row, glyph.column..glyph.column + 1);
+        let scale = self.metrics.scale;
+        let solid = self.ink(glyph.color);
+        let fill = |bounds, color: gpui::Rgba| {
+            quad(
                 bounds,
                 px(0.0),
-                gpui::rgb(gpui_rgb(self.theme.cursor)),
+                color,
                 Edges::default(),
                 Hsla::transparent_black(),
                 BorderStyle::default(),
-            )),
-            HostCursorStyle::Underline => window.paint_quad(quad(
-                Bounds {
-                    origin: point(bounds.origin.x, bounds.bottom() - px(2.0)),
-                    size: Size {
-                        width: bounds.size.width,
-                        height: px(2.0),
+            )
+        };
+        for shape in shapes {
+            match shape {
+                GlyphShape::Rect(rect) => window.paint_quad(fill(
+                    Bounds {
+                        origin: point(
+                            cell.origin.x + scale.logical(rect.x),
+                            cell.origin.y + scale.logical(rect.y),
+                        ),
+                        size: size(scale.logical(rect.width), scale.logical(rect.height)),
                     },
-                },
-                px(0.0),
-                gpui::rgb(gpui_rgb(self.theme.cursor)),
-                Edges::default(),
-                Hsla::transparent_black(),
-                BorderStyle::default(),
-            )),
-            HostCursorStyle::Bar => window.paint_quad(quad(
-                Bounds {
-                    origin: bounds.origin,
-                    size: Size {
-                        width: px(2.0),
-                        height: bounds.size.height,
+                    solid,
+                )),
+                GlyphShape::Shade(shade) => window.paint_quad(fill(
+                    cell,
+                    gpui::Rgba {
+                        a: shade.opacity(),
+                        ..solid
                     },
-                },
+                )),
+                GlyphShape::Polygon(outline) => {
+                    let mut corners = outline.into_iter().map(|(x, y)| {
+                        point(
+                            cell.origin.x + scale.logical_position(x),
+                            cell.origin.y + scale.logical_position(y),
+                        )
+                    });
+                    let Some(first) = corners.next() else {
+                        continue;
+                    };
+                    let mut path = PathBuilder::fill();
+                    path.move_to(first);
+                    corners.for_each(|corner| path.line_to(corner));
+                    path.close();
+                    // A degenerate outline has nothing to fill.
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, solid);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Painted over the row's text but faint enough to read through, like the cursor's
+    /// wake rather than a second cursor.
+    fn paint_cursor_trail(&self, origin: gpui::Point<Pixels>, window: &mut Window) {
+        let Some(trail) = self.cursor_trail else {
+            return;
+        };
+        let cell = self.metrics.render_cell();
+        window.paint_quad(quad(
+            Bounds {
+                origin: point(
+                    origin.x + cell.width * trail.start,
+                    origin.y + cell.height * f32::from(trail.row),
+                ),
+                size: size(cell.width * (trail.end - trail.start), cell.height),
+            },
+            px(0.0),
+            gpui::Rgba {
+                a: trail.opacity,
+                ..self.ink(self.theme.cursor)
+            },
+            Edges::default(),
+            Hsla::transparent_black(),
+            BorderStyle::default(),
+        ));
+    }
+
+    fn paint_cursor(&self, row: &RowPaint<'_>, layer: CursorLayer, window: &mut Window) {
+        let Some((_, column)) = self.frame.cursor.position else {
+            return;
+        };
+        let column = usize::from(column);
+        let position = CellPosition {
+            row: row.row,
+            column,
+        };
+        let Some(style) = cursor_style_at(&self.frame, self.focus, position) else {
+            return;
+        };
+        if column >= usize::from(self.frame.dimensions.columns)
+            || style.layer() != layer
+            || self.cursor_opacity <= 0.0
+        {
+            return;
+        }
+        let bounds = self.cell_bounds(row.origin, row.row, cursor_columns(row.cells, column));
+        let scale = self.metrics.scale;
+        let color = gpui::Rgba {
+            a: self.cursor_opacity,
+            ..self.ink(self.theme.cursor)
+        };
+        let line = scale.logical(scale.whole_device_pixels(px(2.0)));
+        let fill = |bounds| {
+            quad(
+                bounds,
                 px(0.0),
-                gpui::rgb(gpui_rgb(self.theme.cursor)),
+                color,
                 Edges::default(),
                 Hsla::transparent_black(),
                 BorderStyle::default(),
+            )
+        };
+        match style {
+            HostCursorStyle::Block => window.paint_quad(fill(bounds)),
+            HostCursorStyle::Underline => window.paint_quad(fill(Bounds {
+                origin: point(bounds.origin.x, bounds.bottom() - line),
+                size: size(bounds.size.width, line),
+            })),
+            HostCursorStyle::Bar => window.paint_quad(fill(Bounds {
+                origin: bounds.origin,
+                size: size(line, bounds.size.height),
+            })),
+            // A device pixel of outline stays crisp and lets the glyph keep its colours.
+            HostCursorStyle::Hollow => window.paint_quad(quad(
+                bounds,
+                px(0.0),
+                Hsla::transparent_black(),
+                Edges::all(scale.logical(1)),
+                color,
+                BorderStyle::Solid,
             )),
         }
     }
@@ -319,23 +596,33 @@ impl Element for TerminalGrid {
         _: &mut (),
         _: &mut (),
         window: &mut Window,
-        cx: &mut App,
+        _: &mut App,
     ) {
-        let grid_cell = self.metrics.render_cell();
         let overlays = self.overlays.spans(&self.frame);
+        // Cells are whole device pixels, so a whole-pixel origin puts every edge on one.
+        let bounds = Bounds {
+            origin: self.metrics.scale.snap(bounds.origin),
+            ..bounds
+        };
         for row in 0..self.frame.dimensions.rows as usize {
             let cells = frame_row(&self.frame, row);
             if cells.is_empty() {
                 break;
             }
+            let row_paint = RowPaint {
+                origin: bounds.origin,
+                row,
+                cells,
+                overlays: &overlays,
+            };
             // Merge adjacent cells with the same resolved background into one quad.
             let mut start = 0;
             while start < cells.len() {
-                let (_, background) = colors(&cells[start], &self.theme, false);
+                let (_, background) = colors(&cells[start], &self.theme, CellLayer::Cell);
                 let uses_default_background = uses_terminal_surface_background(&cells[start]);
                 let mut end = start + 1;
                 while end < cells.len()
-                    && colors(&cells[end], &self.theme, false).1 == background
+                    && colors(&cells[end], &self.theme, CellLayer::Cell).1 == background
                     && uses_default_background == uses_terminal_surface_background(&cells[end])
                 {
                     end += 1;
@@ -346,9 +633,9 @@ impl Element for TerminalGrid {
                 // Explicit TUI backgrounds stay opaque for contrast.
                 if !uses_default_background {
                     window.paint_quad(quad(
-                        self.cell_bounds(bounds.origin, row, start, end - start),
+                        self.cell_bounds(bounds.origin, row, start..end),
                         px(0.0),
-                        gpui::rgb(gpui_rgb(background)),
+                        self.ink(background),
                         Edges::default(),
                         Hsla::transparent_black(),
                         BorderStyle::default(),
@@ -359,154 +646,348 @@ impl Element for TerminalGrid {
             // Overlays are painted after semantic cell backgrounds but before
             // glyphs and cursor layers. This preserves terminal colours and
             // keeps both block and line cursors visible.
-            self.paint_row_overlays(bounds.origin, row, &overlays, window);
+            self.paint_row_overlays(&row_paint, window);
             // A block cursor is deliberately below text; line cursors are
             // painted after glyphs so they remain visible.
-            self.paint_cursor(bounds.origin, row, true, window);
-            let mut start = 0;
-            while start < cells.len() {
-                let cell = &cells[start];
-                // Spacers carry background and occupancy only.  In particular,
-                // they are never shaped as a space glyph.
-                if cell.text.is_none() {
-                    start += 1;
-                    continue;
-                }
-                let cursor_block = cursor_style_at(&self.frame, self.focused, row, start)
-                    .is_some_and(|style| matches!(style, HostCursorStyle::Block));
-                let (foreground, _) = colors(cell, &self.theme, cursor_block);
-                let decoration_color = cell
-                    .underline_color
-                    .map(|color| self.theme.resolve(color, true))
-                    .unwrap_or(foreground);
-                let mut end = start + 1;
-                while end < cells.len() {
-                    let next = &cells[end];
-                    if next.text.is_none() {
-                        break;
-                    }
-                    let next_cursor_block = cursor_style_at(&self.frame, self.focused, row, end)
-                        .is_some_and(|style| matches!(style, HostCursorStyle::Block));
-                    let (next_fg, _) = colors(next, &self.theme, next_cursor_block);
-                    if next_fg != foreground
-                        || next.style.bold != cell.style.bold
-                        || next.style.italic != cell.style.italic
-                        || next.style.underline != cell.style.underline
-                        || next.underline_color != cell.underline_color
-                        || next.style.strikeout != cell.style.strikeout
-                    {
-                        break;
-                    }
-                    end += 1;
-                }
-                let text: SharedString = cells[start..end]
-                    .iter()
-                    .filter_map(|cell| cell.text.as_deref())
-                    .collect::<String>()
-                    .into();
-                let underline = cell.style.underline.map(|style| GpuiUnderlineStyle {
-                    thickness: px(if matches!(style, UnderlineStyle::Double) {
-                        2.0
-                    } else {
-                        1.0
-                    }),
-                    color: Some(gpui::rgb(gpui_rgb(decoration_color)).into()),
-                    wavy: matches!(style, UnderlineStyle::Curly),
-                });
-                let run = TextRun {
-                    len: text.len(),
-                    font: self.font_for(cell),
-                    color: gpui::rgb(gpui_rgb(foreground)).into(),
-                    background_color: None,
-                    underline,
-                    strikethrough: cell.style.strikeout.then_some(StrikethroughStyle {
-                        thickness: px(1.0),
-                        color: Some(gpui::rgb(gpui_rgb(foreground)).into()),
-                    }),
-                };
-                let line = window.text_system().shape_line(
-                    text,
-                    self.metrics.font_size,
-                    &[run],
-                    Some(grid_cell.width),
-                );
-                let _ = line.paint(
-                    point(
-                        bounds.origin.x + grid_cell.width * start as f32,
-                        bounds.origin.y + grid_cell.height * row as f32,
-                    ),
-                    grid_cell.height,
-                    window,
-                    cx,
-                );
-                start = end;
-            }
-            self.paint_cursor(bounds.origin, row, false, window);
+            self.paint_cursor(&row_paint, CursorLayer::BelowText, window);
+            self.paint_row_text(&row_paint, window);
+            self.paint_row_decorations(&row_paint, window);
+            self.paint_cursor(&row_paint, CursorLayer::AboveText, window);
+        }
+        self.paint_cursor_trail(bounds.origin, window);
+    }
+}
+
+/// One row of the grid while it is being painted.
+struct RowPaint<'a> {
+    origin: gpui::Point<Pixels>,
+    row: usize,
+    cells: &'a [TerminalCell],
+    overlays: &'a [CellOverlaySpan],
+}
+
+/// The font a cell's text is shaped in.
+fn cell_font(cell: &TerminalCell, metrics: &TerminalMetrics) -> Font {
+    Font {
+        family: metrics.font.family.clone(),
+        features: metrics.font.features.clone(),
+        fallbacks: metrics.font.fallbacks.clone(),
+        weight: if cell.style.bold {
+            metrics.bold_weight
+        } else {
+            FontWeight::NORMAL
+        },
+        style: if cell.style.italic {
+            FontStyle::Italic
+        } else {
+            FontStyle::Normal
+        },
+    }
+}
+
+/// Centres a font's line in a cell. Platforms report the descent as negative, which is
+/// also why this does not use GPUI's `baseline_offset`: that adds it to the ascent
+/// instead of subtracting, and so sits text below the centre of the line.
+fn baseline_in_cell(height: Pixels, ascent: Pixels, descent: Pixels) -> Pixels {
+    (height - ascent - descent.abs()) / 2.0 + ascent
+}
+
+/// Where a shaped glyph belongs: the cell its source text came from, and how far past
+/// that cell's left edge it was shaped.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlacedGlyph {
+    cluster: usize,
+    offset: f32,
+}
+
+/// Maps a shaped run's glyphs back onto cells from the text each came from. A cell's
+/// first glyph starts exactly on it, and any further glyphs in that cell, such as
+/// combining marks, keep their distance from the first. A font's own advances never
+/// move a cell, and a glyph that replaced several cells leaves the next one alone.
+struct GlyphPlacer<'a> {
+    cluster_starts: &'a [usize],
+    current: Option<(usize, f32)>,
+}
+
+impl<'a> GlyphPlacer<'a> {
+    fn new(cluster_starts: &'a [usize]) -> Self {
+        Self {
+            cluster_starts,
+            current: None,
         }
     }
+
+    fn place(&mut self, text_index: usize, shaped_x: f32) -> PlacedGlyph {
+        let cluster = self
+            .cluster_starts
+            .partition_point(|start| *start <= text_index)
+            .saturating_sub(1);
+        let first_x = match self.current {
+            Some((current, first_x)) if current == cluster => first_x,
+            _ => {
+                self.current = Some((cluster, shaped_x));
+                shaped_x
+            }
+        };
+        PlacedGlyph {
+            cluster,
+            offset: shaped_x - first_x,
+        }
+    }
+}
+
+/// Runs of equal values, with gaps where there is no value at all.
+fn merged_spans<T: PartialEq>(
+    values: impl IntoIterator<Item = Option<T>>,
+) -> Vec<(std::ops::Range<usize>, T)> {
+    let mut spans: Vec<(std::ops::Range<usize>, T)> = Vec::new();
+    for (column, value) in values.into_iter().enumerate() {
+        let Some(value) = value else {
+            continue;
+        };
+        match spans.last_mut() {
+            Some((columns, last)) if columns.end == column && *last == value => {
+                columns.end = column + 1;
+            }
+            _ => spans.push((column..column + 1, value)),
+        }
+    }
+    spans
+}
+
+/// A character drawn as a shape, and where.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DrawnGlyph {
+    character: char,
+    row: usize,
+    column: usize,
+    color: Rgb,
+}
+
+/// The character a cell draws as a shape rather than through the font. Only a lone
+/// narrow character qualifies, since combining marks need shaping.
+fn drawn_character(cell: &TerminalCell) -> Option<char> {
+    (cell.occupancy == CellOccupancy::Narrow)
+        .then_some(cell.text.as_deref())
+        .flatten()
+        .and_then(single_character)
+        .filter(|character| is_drawn(*character))
+}
+
+/// Whether a cell holds a piece of a picture rather than text.
+fn draws_a_graphic(cell: &TerminalCell) -> bool {
+    cell.text
+        .as_deref()
+        .and_then(single_character)
+        .is_some_and(is_graphic)
 }
 
 fn frame_row(frame: &TerminalFrame, row: usize) -> &[TerminalCell] {
     frame.rows.get(row).map_or(&[], |row| row.cells.as_slice())
 }
 
-/// The pinned Rio API exposes cursor position but not shape or visibility.
-/// While focused, P0 renders an unknown cursor as a visible block;
-/// `Known(false)` suppresses it and known shapes are rendered exactly.
+/// While focused, an unknown shape renders as a visible block; `Known(false)`
+/// suppresses the cursor and known shapes are rendered exactly. Unfocused, any cursor
+/// is an outline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostCursorStyle {
     Block,
     Underline,
     Bar,
+    /// An outline, whatever its shape: the cursor of a terminal keys are not going to.
+    Hollow,
+}
+
+/// Which side of a row's text a cursor is painted on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorLayer {
+    BelowText,
+    AboveText,
+}
+
+impl HostCursorStyle {
+    /// A block sits beneath its glyph, which takes the cursor's text colour. Anything
+    /// thinner would be covered by the glyph, so it goes on top.
+    fn layer(self) -> CursorLayer {
+        match self {
+            Self::Block => CursorLayer::BelowText,
+            Self::Underline | Self::Bar | Self::Hollow => CursorLayer::AboveText,
+        }
+    }
+}
+
+/// The columns a cursor at `column` covers: both halves of a wide character, whichever
+/// half it landed on, because the whole glyph is painted in the cursor's colours.
+fn cursor_columns(cells: &[TerminalCell], column: usize) -> std::ops::Range<usize> {
+    let occupancy = |column: usize| cells.get(column).map(|cell| cell.occupancy);
+    match occupancy(column) {
+        Some(CellOccupancy::Wide) if occupancy(column + 1).is_some() => column..column + 2,
+        Some(CellOccupancy::TrailingSpacer)
+            if column > 0 && occupancy(column - 1) == Some(CellOccupancy::Wide) =>
+        {
+            column - 1..column + 1
+        }
+        _ => column..column + 1,
+    }
 }
 
 fn cursor_style_at(
     frame: &TerminalFrame,
-    focused: bool,
+    focus: CursorFocus,
+    position: CellPosition,
+) -> Option<HostCursorStyle> {
+    let covers = |(row, column): (u16, u16)| {
+        let cells = frame
+            .rows
+            .get(usize::from(row))
+            .map_or(&[][..], |row| row.cells.as_slice());
+        usize::from(row) == position.row
+            && cursor_columns(cells, usize::from(column)).contains(&position.column)
+    };
+    let shown = !matches!(frame.cursor.visible, Known::Known(false))
+        && frame.cursor.position.is_some_and(covers);
+    shown.then_some(match (focus, frame.cursor.shape) {
+        (CursorFocus::Unfocused, _) => HostCursorStyle::Hollow,
+        (_, Known::Known(CursorShape::Underline)) => HostCursorStyle::Underline,
+        (_, Known::Known(CursorShape::Bar)) => HostCursorStyle::Bar,
+        (_, Known::Known(CursorShape::Block) | Known::Unknown) => HostCursorStyle::Block,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CellPosition {
     row: usize,
     column: usize,
-) -> Option<HostCursorStyle> {
-    focused
-        .then_some(())
-        .filter(|_| !matches!(frame.cursor.visible, Known::Known(false)))
-        .filter(|_| frame.cursor.position == Some((row as u16, column as u16)))
-        .map(|_| match frame.cursor.shape {
-            Known::Known(CursorShape::Underline) => HostCursorStyle::Underline,
-            Known::Known(CursorShape::Bar) => HostCursorStyle::Bar,
-            Known::Known(CursorShape::Block) | Known::Unknown => HostCursorStyle::Block,
+}
+
+/// What decides a cell's colours: its own attributes, or an opaque layer painted
+/// beneath its glyph that those attributes were not chosen to read against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CellLayer {
+    Cell,
+    BlockCursor,
+    CurrentSearchMatch,
+}
+
+/// A block cursor stays on top of a search match, matching the paint order. A
+/// selection or another search match is not a layer here: its quiet tint is chosen to
+/// sit beneath any cell foreground, so glyphs keep their own colours on it.
+fn cell_layer(
+    cursor: Option<HostCursorStyle>,
+    overlays: &[CellOverlaySpan],
+    position: CellPosition,
+) -> CellLayer {
+    let in_current_match = || {
+        overlays.iter().any(|span| {
+            span.kind == OverlayKind::CurrentSearchMatch
+                && span.row == position.row
+                && (span.start_column..span.end_column).contains(&position.column)
+        })
+    };
+    if cursor == Some(HostCursorStyle::Block) {
+        CellLayer::BlockCursor
+    } else if in_current_match() {
+        CellLayer::CurrentSearchMatch
+    } else {
+        CellLayer::Cell
+    }
+}
+
+fn colors(cell: &TerminalCell, theme: &TerminalTheme, layer: CellLayer) -> (Rgb, Rgb) {
+    match layer {
+        CellLayer::BlockCursor => return (theme.cursor_text, theme.cursor),
+        CellLayer::CurrentSearchMatch => {
+            return (theme.current_search_match_text, theme.current_search_match);
+        }
+        CellLayer::Cell => {}
+    }
+    let (foreground, background) = resolved_colors(cell, theme);
+    (styled_foreground(cell, foreground, background), background)
+}
+
+/// A cell's own colours, before anything fades its text.
+fn resolved_colors(cell: &TerminalCell, theme: &TerminalTheme) -> (Rgb, Rgb) {
+    let foreground = theme.resolve(cell.foreground);
+    let background = theme.resolve(cell.background);
+    if cell.style.inverse {
+        (background, foreground)
+    } else {
+        (foreground, background)
+    }
+}
+
+/// A cell's text colour once dim and concealed have faded it into what it is drawn on.
+fn styled_foreground(cell: &TerminalCell, foreground: Rgb, drawn_on: Rgb) -> Rgb {
+    if cell.style.hidden {
+        drawn_on
+    } else if cell.style.dim {
+        dimmed(foreground, drawn_on)
+    } else {
+        foreground
+    }
+}
+
+/// The quiet tint beneath a cell, if any: the last painted of a selection and a search
+/// match, each chosen to sit under any foreground, so glyphs keep their colours on it.
+fn quiet_tint_at(
+    overlays: &[CellOverlaySpan],
+    position: CellPosition,
+    theme: &TerminalTheme,
+) -> Option<Rgb> {
+    overlays
+        .iter()
+        .rev()
+        .filter(|span| {
+            span.row == position.row
+                && (span.start_column..span.end_column).contains(&position.column)
+        })
+        .find_map(|span| match span.kind {
+            OverlayKind::Selection => Some(theme.selection),
+            OverlayKind::SearchMatch => Some(theme.search_match),
+            OverlayKind::CurrentSearchMatch => None,
         })
 }
 
-fn colors(cell: &TerminalCell, theme: &TerminalTheme, cursor: bool) -> (Rgb, Rgb) {
-    if cursor {
-        return (theme.cursor_text, theme.cursor);
-    }
-    let mut foreground = theme.resolve(cell.foreground, true);
-    let mut background = theme.resolve(cell.background, false);
-    if cell.style.inverse {
-        std::mem::swap(&mut foreground, &mut background);
-    }
-    if cell.style.dim {
-        foreground = Rgb(foreground.0 / 2, foreground.1 / 2, foreground.2 / 2);
-    }
-    if cell.style.hidden {
-        foreground = background;
-    }
-    (foreground, background)
+/// A cell, and what its glyph is being painted over.
+#[derive(Debug, Clone, Copy)]
+struct PaintedCell<'a> {
+    cell: &'a TerminalCell,
+    layer: CellLayer,
+    tint: Option<Rgb>,
 }
 
-/// Focus only counts as terminal focus while the active workspace pane owns
-/// the live Rio session. Multi-session actions are rejected before a second
-/// pane can be rendered.
-fn terminal_has_focus(window_has_focus: bool, active_pane_is_live: bool) -> bool {
-    window_has_focus && active_pane_is_live
+/// A glyph's colour against what is actually behind it, which is `tint` when one is
+/// painted beneath the cell: dim text fades towards that, and the minimum contrast
+/// setting measures against it. A layer above the cell has its own colour pair.
+///
+/// Colours an application spelled out in 24-bit are left alone, as are graphics: image
+/// previews and Powerline segments are built from them, and only line up when a cell's
+/// foreground matches its neighbour's background exactly.
+fn readable_foreground(painted: PaintedCell<'_>, theme: &TerminalTheme) -> Rgb {
+    let PaintedCell { cell, layer, tint } = painted;
+    if layer != CellLayer::Cell {
+        return colors(cell, theme, layer).0;
+    }
+    let (foreground, background) = resolved_colors(cell, theme);
+    let drawn_on = tint.unwrap_or(background);
+    let foreground = styled_foreground(cell, foreground, drawn_on);
+    let explicit = if cell.style.inverse {
+        cell.background
+    } else {
+        cell.foreground
+    };
+    if theme.minimum_contrast.is_off()
+        || matches!(explicit, super::model::Color::Rgb(_))
+        || draws_a_graphic(cell)
+    {
+        return foreground;
+    }
+    with_minimum_contrast(foreground, drawn_on, theme.minimum_contrast)
 }
 
 fn shell_notice(error: ShellError) -> String {
     format!("workspace action unavailable: {error}")
 }
-
-type ViewportBounds = (f32, f32, f32, f32);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SessionGeneration(u64);
@@ -518,20 +999,341 @@ struct CuenvUpdateTarget {
     config_generation: u64,
 }
 
-struct PaneState {
+pub(super) struct PaneState {
     generation: SessionGeneration,
     session: Box<dyn TerminalSession>,
+    /// The palette the session was last told about, so it is told only of a change.
+    told_palette: Option<ThemeColors>,
     frame: TerminalFrame,
     interaction: InteractionState,
     scroll_remainder: f32,
-    title: String,
-    measured_bounds: Arc<Mutex<(u32, u32)>>,
-    viewport_bounds: Arc<Mutex<ViewportBounds>>,
+    /// What the terminal is doing, which is what its tab is named after.
+    activity: PaneActivity,
+    /// What the tab's indicator reports.
+    pub(super) status: TabStatus,
+    /// The branch the pane's directory is on, for the tab's second line.
+    pub(super) branch: BranchProbe,
+    /// The terminal surface as laid out, in logical pixels. The grid is worked out from
+    /// this at each draw's own scale, so no draw pairs one scale's surface with
+    /// another's cell, however long ago the surface was measured.
+    measured_bounds: Arc<Mutex<Size<Pixels>>>,
+    /// Where the surface starts in window coordinates, for hit testing.
+    viewport_origin: Arc<Mutex<(f32, f32)>>,
     error: Option<String>,
-    cuenv: CuenvPaneState,
+    pub(super) cuenv: CuenvPaneState,
     cuenv_source: Option<ConfigSource>,
     cuenv_watcher: Option<Box<dyn CuenvWatcher>>,
     cuenv_watch_retry_at: Option<std::time::Instant>,
+}
+
+impl PaneState {
+    fn new(
+        generation: SessionGeneration,
+        mut session: Box<dyn TerminalSession>,
+        surface: Size<Pixels>,
+    ) -> Self {
+        let frame = session.frame();
+        Self {
+            generation,
+            session,
+            told_palette: None,
+            frame,
+            interaction: InteractionState::default(),
+            scroll_remainder: 0.0,
+            activity: PaneActivity::default(),
+            status: TabStatus::default(),
+            branch: BranchProbe::default(),
+            measured_bounds: Arc::new(Mutex::new(surface)),
+            viewport_origin: Arc::new(Mutex::new((0.0, 0.0))),
+            error: None,
+            cuenv: CuenvPaneState::default(),
+            cuenv_source: None,
+            cuenv_watcher: None,
+            cuenv_watch_retry_at: None,
+        }
+    }
+
+    /// Records what the terminal is running now.
+    fn sample_foreground(&mut self, now: std::time::Instant) {
+        let process = self.session.foreground_process();
+        let task_was_running = self.activity.task_name().is_some();
+        self.activity.sample(process.as_ref(), now);
+        if task_was_running && self.activity.task_name().is_none() {
+            self.status.apply(StatusEvent::TaskEnded);
+        }
+    }
+
+    /// Paste the task's command into this pane's shell. A task that needs
+    /// arguments is only staged at the prompt, so it is not running yet. The
+    /// periodic sample may be out of date, and it decides where the paste went.
+    ///
+    /// A shell in bracketed paste mode takes a pasted newline as text, so running
+    /// the command takes an Enter of its own. That is for an interactive shell only:
+    /// in a program or a shell running a script it could submit whatever was being
+    /// held or answer a question, so there the command is left for the user to act on.
+    fn launch_task(&mut self, command: &str, task: &CuenvTask) -> Result<TaskLaunch, String> {
+        let now = std::time::Instant::now();
+        self.sample_foreground(now);
+        self.session.paste(command)?;
+        let launch = if task.requires_parameters {
+            TaskLaunch::AwaitingArguments
+        } else if self.activity.at_prompt() {
+            TaskLaunch::Started
+        } else {
+            TaskLaunch::AwaitingEnter
+        };
+        if launch == TaskLaunch::Started {
+            self.session.input(TerminalKeyEvent {
+                key: KeyInput::Enter,
+                modifiers: InputModifiers::default(),
+                repeat: false,
+            })?;
+            self.track_task(task.name.clone(), now);
+        }
+        self.activity.set_staged_hint(launch.hint(&task.name));
+        self.activity
+            .set_staged_task((launch == TaskLaunch::AwaitingArguments).then(|| task.name.clone()));
+        Ok(launch)
+    }
+
+    /// Reports a task that has just been run in this pane's shell.
+    fn track_task(&mut self, name: String, now: std::time::Instant) {
+        self.activity.launch_task(name, now);
+        if self.activity.task_name().is_some() {
+            self.status.apply(StatusEvent::TaskStarted);
+        }
+    }
+
+    /// Ends what was staged on the line a key acted on, returning the task that key runs.
+    /// That has to be read before the key is sent, while the foreground is still the
+    /// shell, and a foreground that has changed hands since has lost the staged task.
+    fn finish_staged_line(&mut self, event: &TerminalKeyEvent) -> Option<String> {
+        let submits = matches!(event.key, KeyInput::Enter);
+        if submits && self.activity.has_staged_task() {
+            self.sample_foreground(std::time::Instant::now());
+        }
+        self.activity.set_staged_hint(None);
+        self.activity.take_staged_task().filter(|_| submits)
+    }
+
+    /// The surface a new tab opened from this one will get: what this one measured,
+    /// with back the room for a failed shell's exit notice, which only this tab has.
+    fn surface_for_sibling(&self) -> Size<Pixels> {
+        let measured = *self
+            .measured_bounds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        size(
+            measured.width,
+            measured.height + exit_notice_height(self.status.failure()),
+        )
+    }
+
+    /// Sends a key the user pressed to the terminal.
+    fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
+        let submitted_task = acts_on_the_line(&event)
+            .then(|| self.finish_staged_line(&event))
+            .flatten();
+        self.status.apply(StatusEvent::Input);
+        let sent = self.session.input(event)?;
+        if let Some(task) = submitted_task {
+            self.track_task(task, std::time::Instant::now());
+        }
+        Ok(sent)
+    }
+
+    /// The search of this pane's screen, while one is open.
+    pub(super) fn search(&self) -> Option<&super::search::LiteralSearch> {
+        self.interaction.search()
+    }
+
+    /// Whether a press in this pane's terminal is being dragged into a selection.
+    pub(super) fn selecting(&self) -> bool {
+        self.interaction.selecting()
+    }
+
+    /// Whether this pane's shell has gone and only its final output is left.
+    fn has_exited(&self) -> bool {
+        self.status.failure().is_some()
+    }
+
+    /// The tasks this pane can run. A shell that has gone or broken has nowhere to run
+    /// them, so nothing should go on offering any.
+    pub(super) fn task_catalogue(&self) -> &[CuenvTask] {
+        if self.has_exited() || self.error.is_some() {
+            &[]
+        } else {
+            &self.cuenv.tasks
+        }
+    }
+
+    /// Fits the grid to the surface. Only a live shell can be told, but an exited one's
+    /// output still has to fit, or its last lines end up below the edge of the surface.
+    fn fit_grid(&mut self, width: u32, height: u32, cell: CellSize) {
+        if self.has_exited() {
+            self.session.reflow_output(width, height, cell);
+        } else if let Err(error) = self.session.resize(width, height, cell) {
+            self.error = Some(error);
+        }
+    }
+
+    /// What the sidebar's notice marker says for this pane. A broken configuration
+    /// matters more than a reminder about a pasted task.
+    pub(super) fn marker_notice(&self) -> Option<&str> {
+        self.cuenv
+            .notice
+            .as_deref()
+            .or(self.cuenv.task_notice.as_deref())
+            .or(self.activity.staged_hint())
+    }
+}
+
+/// A click on a tab's row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TabClick {
+    pub(super) tab: TabId,
+    /// How many clicks in quick succession this is.
+    pub(super) click_count: usize,
+}
+
+/// How far launching a task got.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskLaunch {
+    /// Pasted and submitted to a waiting shell.
+    Started,
+    /// Pasted for the user to complete, because the task has required parameters.
+    AwaitingArguments,
+    /// Pasted but not submitted, because no shell could be seen waiting.
+    AwaitingEnter,
+}
+
+impl TaskLaunch {
+    /// What the user has to do next, if anything.
+    fn hint(self, task: &str) -> Option<String> {
+        match self {
+            Self::Started => None,
+            Self::AwaitingArguments => Some(format!("Add arguments for '{task}' and press Enter")),
+            Self::AwaitingEnter => Some(format!("Pasted '{task}'; press Enter to run it")),
+        }
+    }
+}
+
+/// Whether a later frame of the same terminal shows output the earlier one did not. A
+/// view scrolled back stays on the same text as lines arrive, by moving further from the
+/// live screen, so that move is output too. Text rewritten in place below such a view
+/// cannot be told from here.
+fn shows_new_output(earlier: &TerminalFrame, later: &TerminalFrame) -> bool {
+    later.rows != earlier.rows || later.viewport_offset != earlier.viewport_offset
+}
+
+/// Whether a key finishes with the line being edited, by submitting or abandoning it.
+fn acts_on_the_line(event: &TerminalKeyEvent) -> bool {
+    match event.key {
+        KeyInput::Enter => true,
+        KeyInput::Character('c' | 'C') => event.modifiers.contains(InputModifiers::CONTROL),
+        _ => false,
+    }
+}
+
+/// Whether the user is in this window.
+fn window_presence(window: &Window) -> WindowPresence {
+    if window.is_window_active() {
+        WindowPresence::Active
+    } else {
+        WindowPresence::Inactive
+    }
+}
+
+/// The colour the grid paints `color` in, given where the user is.
+fn window_ink(color: Rgb, background: Rgb, window: WindowPresence) -> Rgb {
+    match window {
+        WindowPresence::Active => color,
+        WindowPresence::Inactive => blend(color, background, UNFOCUSED_TERMINAL_FADE),
+    }
+}
+
+/// Whether a key dismisses a tab whose shell has exited. Enter is what the tab says to
+/// press, and Ctrl-D is what a shell that exited with its last command's status was
+/// most likely just given. It takes a fresh press: a key still held from before the
+/// shell died was not meant for the tab, and would take the output it stayed to show.
+fn closes_exited_tab(event: &gpui::KeyDownEvent) -> bool {
+    let gpui::Modifiers {
+        control,
+        alt,
+        shift,
+        platform,
+        function: _,
+    } = event.keystroke.modifiers;
+    if event.is_held {
+        return false;
+    }
+    match event.keystroke.key.as_str() {
+        "d" => control && !(alt || shift || platform),
+        _ => takes_offered_action(event),
+    }
+}
+
+/// Whether a key takes the action a tab with no working terminal is offering: a fresh
+/// press of a plain Enter, since one held from before the failure was not meant for it.
+fn takes_offered_action(event: &gpui::KeyDownEvent) -> bool {
+    let gpui::Modifiers {
+        control,
+        alt,
+        shift,
+        platform,
+        function: _,
+    } = event.keystroke.modifiers;
+    !event.is_held && event.keystroke.key == "enter" && !(control || alt || shift || platform)
+}
+
+/// What holding Alt means on this platform.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AltKey {
+    /// It is Option, which composes characters that are text.
+    Composes,
+    /// It makes a chord, though the keystroke still carries the letter.
+    Chords,
+}
+
+impl AltKey {
+    const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Composes
+        } else {
+            Self::Chords
+        }
+    }
+}
+
+/// The character a keystroke types as text, if it does. A chord is not text, whatever
+/// character it would have typed.
+fn typed_character(keystroke: &gpui::Keystroke, alt_key: AltKey) -> Option<char> {
+    let gpui::Modifiers {
+        control,
+        alt,
+        platform,
+        ..
+    } = keystroke.modifiers;
+    if control || platform || (alt && alt_key == AltKey::Chords) {
+        return None;
+    }
+    keystroke
+        .key_char
+        .as_deref()
+        .and_then(|text| text.chars().next())
+        .filter(|character| !character.is_control())
+}
+
+/// What the poll can change about a pane, for telling whether it did.
+#[derive(Debug, PartialEq)]
+struct PolledPaneState {
+    pane: crate::workspace::PaneId,
+    activity: PaneActivity,
+    status: TabStatus,
+    branch: Option<String>,
+    cwd: Option<std::path::PathBuf>,
+    notice: Option<String>,
+    task_notice: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -560,13 +1362,18 @@ struct WakeOutcome {
 /// Owns the workspace/session invariant independently of GPUI. The host
 /// delegates creation, wake handling, and close ordering here so those
 /// transitions can be tested with a fake session factory.
-struct SessionRegistry {
-    sessions: HashMap<crate::workspace::PaneId, PaneState>,
+pub(super) struct SessionRegistry {
+    pub(super) sessions: HashMap<crate::workspace::PaneId, PaneState>,
     factory: Arc<dyn TerminalSessionFactory>,
     next_generation: u64,
-    workspace: WorkspaceShell,
-    notice: Option<String>,
+    pub(super) workspace: WorkspaceShell,
+    pub(super) notice: Option<String>,
     close_window_requested: bool,
+    /// The pane last on screen, for telling when the user arrives at another. `None`
+    /// while the user is in another window.
+    seen_pane: Option<crate::workspace::PaneId>,
+    /// Kept here because wakes arrive with no window to ask.
+    window_presence: WindowPresence,
 }
 
 impl SessionRegistry {
@@ -578,17 +1385,24 @@ impl SessionRegistry {
             workspace: WorkspaceShell::empty(),
             notice: None,
             close_window_requested: false,
+            seen_pane: None,
+            window_presence: WindowPresence::default(),
         }
     }
 
     fn start(
         factory: Arc<dyn TerminalSessionFactory>,
-        width: u32,
-        height: u32,
-        cell: CellSize,
+        geometry: SessionGeometry,
+        palette: &ThemeColors,
     ) -> Result<(Self, async_channel::Receiver<()>), RegistryError> {
-        let mut start = factory
-            .start(width, height, cell)
+        let start = geometry
+            .start_session(
+                factory.as_ref(),
+                SessionSeed {
+                    working_directory: None,
+                    palette,
+                },
+            )
             .map_err(RegistryError::Session)?;
         let workspace = WorkspaceShell::new()
             .map_err(ShellError::from)
@@ -599,25 +1413,10 @@ impl SessionRegistry {
                 .ok_or(RegistryError::Workspace(ShellError::Workspace(
                     crate::workspace::Error::NoTabs,
                 )))?;
-        let frame = start.session.frame();
         let mut sessions = HashMap::new();
         sessions.insert(
             pane,
-            PaneState {
-                generation: SessionGeneration(1),
-                session: start.session,
-                frame,
-                interaction: InteractionState::default(),
-                scroll_remainder: 0.0,
-                title: "Cuetty".into(),
-                measured_bounds: Arc::new(Mutex::new((width, height))),
-                viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
-                error: None,
-                cuenv: CuenvPaneState::default(),
-                cuenv_source: None,
-                cuenv_watcher: None,
-                cuenv_watch_retry_at: None,
-            },
+            PaneState::new(SessionGeneration(1), start.session, geometry.surface),
         );
         Ok((
             Self {
@@ -627,6 +1426,8 @@ impl SessionRegistry {
                 workspace,
                 notice: None,
                 close_window_requested: false,
+                seen_pane: None,
+                window_presence: WindowPresence::default(),
             },
             start.wake_rx,
         ))
@@ -634,6 +1435,19 @@ impl SessionRegistry {
 
     fn active_pane(&self) -> Option<crate::workspace::PaneId> {
         self.workspace.active_pane()
+    }
+
+    /// Tells every session the palette its pane now paints in, which is what applications
+    /// asking about colours hear. This includes tabs out of sight, whose programs go on
+    /// asking, and which keep their own theme.
+    fn sync_session_palettes(&mut self, appearance: SystemAppearance) {
+        for state in self.sessions.values_mut() {
+            let palette = state.cuenv.presentation.terminal.colors_for(appearance);
+            if state.told_palette.as_ref() != Some(&palette) {
+                state.session.set_palette(palette.clone());
+                state.told_palette = Some(palette);
+            }
+        }
     }
 
     fn active_terminal_config(&self) -> TerminalConfig {
@@ -645,9 +1459,8 @@ impl SessionRegistry {
 
     fn start_tab(
         &mut self,
-        width: u32,
-        height: u32,
-        cell: CellSize,
+        geometry: SessionGeometry,
+        appearance: SystemAppearance,
     ) -> Result<
         (
             crate::workspace::PaneId,
@@ -656,9 +1469,19 @@ impl SessionRegistry {
         ),
         RegistryError,
     > {
-        let mut start = self
-            .factory
-            .start(width, height, cell)
+        let presentation = self
+            .active_pane()
+            .and_then(|pane| self.sessions.get(&pane))
+            .map(|state| state.cuenv.presentation.carried_over())
+            .unwrap_or_default();
+        let mut start = geometry
+            .start_session(
+                self.factory.as_ref(),
+                SessionSeed {
+                    working_directory: None,
+                    palette: &presentation.terminal.colors_for(appearance),
+                },
+            )
             .map_err(RegistryError::Session)?;
         let target = match self.workspace.create_tab("Terminal") {
             Ok(target) => target,
@@ -667,32 +1490,61 @@ impl SessionRegistry {
                 return Err(RegistryError::Workspace(error));
             }
         };
-        let generation = SessionGeneration(self.next_generation);
-        self.next_generation = self
-            .next_generation
-            .checked_add(1)
-            .expect("session generation exhausted");
-        let frame = start.session.frame();
-        self.sessions.insert(
-            target.pane,
-            PaneState {
-                generation,
-                session: start.session,
-                frame,
-                interaction: InteractionState::default(),
-                scroll_remainder: 0.0,
-                title: "Cuetty".into(),
-                measured_bounds: Arc::new(Mutex::new((width, height))),
-                viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
-                error: None,
-                cuenv: CuenvPaneState::default(),
-                cuenv_source: None,
-                cuenv_watcher: None,
-                cuenv_watch_retry_at: None,
-            },
-        );
+        let generation = self.take_generation();
+        let mut state = PaneState::new(generation, start.session, geometry.surface);
+        state.cuenv.presentation = presentation;
+        self.sessions.insert(target.pane, state);
         self.notice = None;
         Ok((target.pane, generation, start.wake_rx))
+    }
+
+    fn take_generation(&mut self) -> SessionGeneration {
+        let generation = SessionGeneration(self.next_generation);
+        // Even a session a millisecond would take half a billion years to get here.
+        self.next_generation = self.next_generation.wrapping_add(1);
+        generation
+    }
+
+    /// Replaces a pane's session with a fresh shell, in the same tab and the same directory
+    /// where that still exists. All the pane knows from that directory stays, its project's
+    /// look included, until the shell is seen to be somewhere else. The new generation
+    /// leaves anything the old session still has on the way to be ignored. If no shell will
+    /// start, the pane stays as it was.
+    fn restart_pane(
+        &mut self,
+        pane: crate::workspace::PaneId,
+        geometry: SessionGeometry,
+        appearance: SystemAppearance,
+    ) -> Result<StartedSession, RegistryError> {
+        let cuenv = &self
+            .sessions
+            .get(&pane)
+            .ok_or(RegistryError::MissingSession(pane))?
+            .cuenv;
+        let directory = cuenv.cwd.clone().filter(|directory| directory.is_dir());
+        let palette = cuenv.presentation.terminal.colors_for(appearance);
+        let start = geometry
+            .start_session(
+                self.factory.as_ref(),
+                SessionSeed {
+                    working_directory: directory.as_deref(),
+                    palette: &palette,
+                },
+            )
+            .map_err(RegistryError::Session)?;
+        let generation = self.take_generation();
+        let mut fresh = PaneState::new(generation, start.session, geometry.surface);
+        if let Some(previous) = self.sessions.get_mut(&pane) {
+            fresh.cuenv = std::mem::take(&mut previous.cuenv);
+            std::mem::swap(previous, &mut fresh);
+            // What is being replaced had already failed, so its closing has nothing to add.
+            let _ = fresh.session.close();
+        }
+        Ok(StartedSession {
+            pane,
+            generation,
+            wake_rx: start.wake_rx,
+        })
     }
 
     fn apply_wake(
@@ -701,14 +1553,23 @@ impl SessionRegistry {
         generation: SessionGeneration,
         active_pane: Option<crate::workspace::PaneId>,
     ) -> WakeOutcome {
+        let presence = if active_pane == Some(pane) {
+            TabPresence::Shown
+        } else {
+            TabPresence::Hidden
+        }
+        .within(self.window_presence);
         let effects = match self.sessions.get_mut(&pane) {
             Some(state) if state.generation == generation => {
                 let effects = state.session.drain_effects();
                 // Rio publishes Close after its final PTY drain. Sample that
-                // state before the caller removes the pane. This preserves
-                // the final frame for consumers, not a visible exited tab:
-                // handle_wake still closes the pane after this returns.
-                state.frame = state.session.frame();
+                // state before the caller removes the pane, or, for a shell that
+                // failed, leaves its final output on screen.
+                let frame = state.session.frame();
+                if shows_new_output(&state.frame, &frame) {
+                    state.status.apply(StatusEvent::Output(presence));
+                }
+                state.frame = frame;
                 effects
             }
             _ => {
@@ -731,12 +1592,37 @@ impl SessionRegistry {
                     if let Some(state) = self.sessions.get_mut(&pane)
                         && state.generation == generation
                     {
-                        state.title = title;
+                        // The title belongs to whatever is running as it arrives.
+                        state.sample_foreground(std::time::Instant::now());
+                        state.activity.set_title(title);
                     }
                 }
-                ControlEvent::Bell => {}
-                ControlEvent::ChildExited(_) => {}
-                ControlEvent::Close => should_close = true,
+                ControlEvent::Bell => {
+                    if let Some(state) = self.sessions.get_mut(&pane)
+                        && state.generation == generation
+                    {
+                        state.status.apply(StatusEvent::Bell(presence));
+                    }
+                }
+                ControlEvent::ChildExited(status) => {
+                    if let SessionExit::Failed(failure) = SessionExit::from_wait_status(status)
+                        && let Some(state) = self.sessions.get_mut(&pane)
+                        && state.generation == generation
+                    {
+                        state.status.apply(StatusEvent::SessionFailed(failure));
+                        // The session closes before this wake reaches the window, so a
+                        // draw or key in that gap can have failed on it. The tab's final
+                        // output and exit notice say more, and that message would hide them.
+                        state.error = None;
+                    }
+                }
+                // A failed shell's tab stays until the user has read it and closes it.
+                ControlEvent::Close => {
+                    should_close = self
+                        .sessions
+                        .get(&pane)
+                        .is_none_or(|state| !state.has_exited());
+                }
             }
         }
         WakeOutcome {
@@ -744,6 +1630,86 @@ impl SessionRegistry {
             clipboard,
             should_close,
         }
+    }
+
+    /// Tells the tab now on screen it has been seen, once for each arrival, so what
+    /// happens while it stays on screen is still reported. Coming back to the window
+    /// is an arrival too, and nothing is on screen for someone who is elsewhere.
+    fn note_active_pane(&mut self) {
+        let shown = self
+            .active_pane()
+            .filter(|_| self.window_presence == WindowPresence::Active);
+        if shown != self.seen_pane {
+            self.seen_pane = shown;
+            if let Some(state) = shown.and_then(|pane| self.sessions.get_mut(&pane)) {
+                state.status.apply(StatusEvent::Seen);
+            }
+        }
+    }
+
+    fn sample_foreground(&mut self, now: std::time::Instant) {
+        self.sessions
+            .values_mut()
+            .for_each(|state| state.sample_foreground(now));
+    }
+
+    /// Keeps each tab's branch current. This is a file read at most every few seconds,
+    /// which is why it is sampled here and never during a draw.
+    fn sample_branches(&mut self, now: std::time::Instant) {
+        for state in self.sessions.values_mut() {
+            state.branch.sample(state.cuenv.cwd.as_deref(), now);
+        }
+    }
+
+    /// Everything a draw shows that the periodic poll can change, so an idle window
+    /// is only redrawn when something it shows did.
+    fn polled_state(&self) -> Vec<PolledPaneState> {
+        let mut panes: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|(pane, state)| PolledPaneState {
+                pane: *pane,
+                activity: state.activity.clone(),
+                status: state.status,
+                branch: state.branch.branch().map(str::to_owned),
+                cwd: state.cuenv.cwd.clone(),
+                notice: state.cuenv.notice.clone(),
+                task_notice: state.cuenv.task_notice.clone(),
+            })
+            .collect();
+        panes.sort_by_key(|state| state.pane);
+        panes
+    }
+
+    /// Whether the active pane's cursor differs from what was last sampled. Rio marks no
+    /// damage for DECTCEM or DECSCUSR, so a program that only shows or hides its cursor
+    /// wakes nothing, and this is what notices.
+    fn active_cursor_changed(&self) -> bool {
+        self.active_pane()
+            .and_then(|pane| self.sessions.get(&pane))
+            .is_some_and(|state| {
+                state.error.is_none() && state.session.cursor() != state.frame.cursor
+            })
+    }
+
+    /// What `tab` is called right now.
+    pub(super) fn tab_label(&self, tab: &Tab) -> String {
+        let state = self.sessions.get(&tab.focused);
+        resolve_tab_label(TabLabelSources {
+            custom_name: tab.custom_name.as_deref(),
+            running_task: state.and_then(|state| state.activity.task_name()),
+            foreground_program: state.and_then(|state| state.activity.program()),
+            title: state.and_then(|state| state.activity.title()),
+            directory: state.and_then(|state| state.cuenv.cwd.as_deref()),
+        })
+    }
+
+    /// What the active tab is called right now, if there is one.
+    pub(super) fn active_tab_label(&self) -> Option<String> {
+        let active = self.workspace.active_tab()?;
+        let tabs = self.workspace.workspace().tabs();
+        let tab = tabs.iter().find(|tab| tab.id == active)?;
+        Some(self.tab_label(tab))
     }
 
     fn close_pane(&mut self, pane: crate::workspace::PaneId) -> Result<(), RegistryError> {
@@ -764,67 +1730,174 @@ impl SessionRegistry {
     }
 }
 
-struct TerminalView {
-    registry: SessionRegistry,
+pub(super) struct TerminalView {
+    pub(super) registry: SessionRegistry,
     cuenv: Arc<dyn CuenvProvider>,
     config: TerminalConfig,
-    metrics: TerminalMetrics,
+    /// What this window's desktop says about light and dark, for a theme of `auto`.
+    system_appearance: SystemAppearance,
+    pub(super) metrics: TerminalMetrics,
     theme: TerminalTheme,
     focus: FocusHandle,
     renderer: Box<dyn TerminalRenderer>,
     workspace_bounds: Arc<Mutex<(f32, f32)>>,
-    task_palette_open: bool,
-    task_sidebar_open: bool,
-    task_query: String,
-    task_selection: usize,
+    window_background: WindowBackgroundAppearance,
+    pub(super) window_decorations: Decorations,
+    pub(super) palette_open: bool,
+    pub(super) palette_query: String,
+    pub(super) palette_selection: usize,
+    pub(super) palette_scroll: ScrollHandle,
+    pub(super) rail_scroll: ScrollHandle,
+    pub(super) rail_revealed_tab: Option<TabId>,
+    /// Whether the rail is showing each tab's number key. Stays off until the
+    /// modifier has been held a moment, so typing Ctrl-C never flashes it.
+    pub(super) tab_hints_visible: bool,
+    /// The tab whose name is being edited in place, which takes the keyboard.
+    pub(super) tab_rename: Option<TabRename>,
+    /// Identifies the latest modifier change, so a delayed reveal can tell it has
+    /// been overtaken.
+    tab_hint_request: u64,
+    sidebar: WindowSidebar,
+    /// What the window manager was last told this window is called.
+    window_title: String,
+    cursor_animator: CursorAnimator,
+    /// Where the scrollbar's track is in the window and how tall, as last measured.
+    scrollbar_track: Arc<Mutex<(f32, f32)>>,
+    /// Where along the thumb a drag took hold, while one is going.
+    pub(super) scrollbar_grab: Option<f32>,
+    /// When the draw an animation has asked for is due.
+    frame_due: Option<std::time::Instant>,
+    /// What the platform says about motion, read once as the window opens.
+    system_motion: MotionPace,
+    pub(super) motion: ChromeMotion,
 }
 
-const TAB_RAIL_WIDTH: f32 = 56.0;
-const TAB_RAIL_FOOTER_HEIGHT: f32 = 112.0;
-const SHELL_TITLEBAR_HEIGHT: f32 = 34.0;
-const TASK_SIDEBAR_WIDTH: f32 = 280.0;
-
-struct CuenvIntegrationUpdate {
-    presentation: Evaluation,
-    tasks: TaskEvaluation,
+/// What besides the tabs is on screen for the pointer to be over.
+#[derive(Debug, Default)]
+struct LiveHoverTargets {
+    /// Only an expanded sidebar has room for tabs' close buttons.
+    tab_close_buttons: bool,
+    notice: bool,
+    tasks: bool,
+    palette_hint: bool,
+    /// How many rows the open palette lists, as its query has them.
+    palette_rows: usize,
+    session_actions: bool,
+    search: bool,
+    scrollbar: bool,
 }
 
-#[derive(Clone, Copy)]
-enum TaskLaunch {
-    Run,
-    EditRequiredArguments,
+impl LiveHoverTargets {
+    /// Whether `target` is on screen this draw, given the tabs there are.
+    fn holds(&self, target: HoverTarget, tabs: &[TabId]) -> bool {
+        match target {
+            HoverTarget::Tab(tab) => tabs.contains(&tab),
+            HoverTarget::TabClose(tab) => self.tab_close_buttons && tabs.contains(&tab),
+            HoverTarget::Button(button) => self.button(button),
+            HoverTarget::PaletteRow(row) => row < self.palette_rows,
+            HoverTarget::SessionAction(_) => self.session_actions,
+            HoverTarget::SearchButton(_) => self.search,
+            HoverTarget::Scrollbar => self.scrollbar,
+        }
+    }
+
+    fn button(&self, button: SidebarButton) -> bool {
+        match button {
+            SidebarButton::NewTab | SidebarButton::Toggle => true,
+            SidebarButton::Notice => self.notice,
+            SidebarButton::Tasks => self.tasks,
+            SidebarButton::PaletteHint => self.palette_hint,
+        }
+    }
 }
 
-fn filtered_tasks<'a>(tasks: &'a [CuenvTask], query: &str) -> Vec<&'a CuenvTask> {
-    let query = query.trim().to_ascii_lowercase();
-    tasks
-        .iter()
-        .filter(|task| {
-            query.is_empty()
-                || task.name.to_ascii_lowercase().contains(&query)
-                || task
-                    .description
-                    .as_deref()
-                    .is_some_and(|description| description.to_ascii_lowercase().contains(&query))
+/// What the window is called with no tab to name it after.
+const APP_TITLE: &str = "Cuetty";
+
+/// The key that toggles the sidebar with the application chord.
+pub(super) const SIDEBAR_TOGGLE_KEY: &str = "b";
+
+/// The key that renames the active tab with the application chord.
+const RENAME_TAB_KEY: &str = "r";
+
+/// The logical size assumed for the terminal surface until a draw has measured it.
+const UNMEASURED_SURFACE: (f32, f32) = (720.0, 432.0);
+
+fn unmeasured_surface() -> Size<Pixels> {
+    size(px(UNMEASURED_SURFACE.0), px(UNMEASURED_SURFACE.1))
+}
+
+/// A session that has just started, and how it says it has something new to show.
+struct StartedSession {
+    pane: crate::workspace::PaneId,
+    generation: SessionGeneration,
+    wake_rx: async_channel::Receiver<()>,
+}
+
+/// What a session starts from, apart from its grid.
+#[derive(Debug, Clone, Copy)]
+struct SessionSeed<'a> {
+    working_directory: Option<&'a std::path::Path>,
+    palette: &'a ThemeColors,
+}
+
+/// The grid a session starts on.
+#[derive(Debug, Clone, Copy)]
+struct SessionGeometry {
+    surface: Size<Pixels>,
+    scale: ScaleFactor,
+    cell: CellSize,
+}
+
+impl SessionGeometry {
+    fn start_session(
+        self,
+        factory: &dyn TerminalSessionFactory,
+        seed: SessionSeed<'_>,
+    ) -> Result<SessionStart, String> {
+        let (width, height) = self.scale.whole_device_size(self.surface);
+        factory.start(SessionRequest {
+            width,
+            height,
+            cell: self.cell,
+            working_directory: seed.working_directory,
+            palette: seed.palette,
         })
-        .collect()
+    }
+}
+
+/// How long a window's first frame may wait on the global configuration. Going over
+/// only means the configuration arrives after the frame, as a directory's does.
+const FIRST_FRAME_CONFIG_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long the tab number modifier must be held before the hints appear.
+const TAB_HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(350);
+
+/// How many result rows fit before the palette scrolls.
+pub(super) const PALETTE_VISIBLE_ROWS: usize = 9;
+
+/// Runs an evaluation on a thread of its own, finishing once it has reported everything.
+async fn evaluate_off_thread(evaluation: StagedEvaluation) {
+    let (finished_tx, finished_rx) = async_channel::bounded::<()>(1);
+    std::thread::spawn(move || {
+        evaluation.run();
+        drop(finished_tx);
+    });
+    let _ = finished_rx.recv().await;
 }
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn task_command(cwd: &std::path::Path, task: &CuenvTask, launch: TaskLaunch) -> String {
-    let mut command = format!(
-        "cuenv task --path {} --package cuenv {}",
+/// The command line for a task, ready for the arguments it may need to follow.
+fn task_command(cwd: &std::path::Path, task: &CuenvTask) -> String {
+    format!(
+        "cuenv task --path {} --package cuenv {}{}",
         shell_quote(&cwd.to_string_lossy()),
-        shell_quote(&task.name)
-    );
-    match launch {
-        TaskLaunch::Run => command.push('\n'),
-        TaskLaunch::EditRequiredArguments => command.push(' '),
-    }
-    command
+        shell_quote(&task.name),
+        if task.requires_parameters { " " } else { "" }
+    )
 }
 
 fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32) -> i32 {
@@ -840,24 +1913,6 @@ fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32)
     let lines = total.trunc().clamp(i32::MIN as f32, i32::MAX as f32) as i32;
     *remainder = total - lines as f32;
     lines
-}
-
-fn sidebar_tab_label(label: &str) -> String {
-    let path = label
-        .split_whitespace()
-        .rev()
-        .find(|part| part.starts_with('/') || part.starts_with('~'))
-        .unwrap_or(label);
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return "/".into();
-    }
-    trimmed
-        .rsplit('/')
-        .next()
-        .filter(|segment| !segment.is_empty())
-        .unwrap_or(trimmed)
-        .to_string()
 }
 
 /// Modifier chord that addresses Cuetty itself instead of the shell.
@@ -889,6 +1944,62 @@ fn app_chord(modifiers: gpui::Modifiers) -> Option<AppChord> {
     })
 }
 
+/// The modifiers tabs are selected by number with: Command on macOS and Control
+/// elsewhere. Ctrl-2 to Ctrl-8 are also legacy aliases for control bytes, so a chord
+/// is only taken when it reaches a tab; see [`route_chord`].
+fn tab_number_modifiers() -> ChordModifiers {
+    let macos = cfg!(target_os = "macos");
+    ChordModifiers {
+        control: !macos,
+        platform: macos,
+        ..ChordModifiers::default()
+    }
+}
+
+/// Whether exactly the tab number modifiers are held.
+fn tab_number_modifiers_held(modifiers: gpui::Modifiers) -> bool {
+    let expected = tab_number_modifiers();
+    modifiers.control == expected.control
+        && modifiers.platform == expected.platform
+        && !modifiers.alt
+        && !modifiers.shift
+}
+
+fn tab_number_shortcut(key: &str, modifiers: gpui::Modifiers) -> Option<TabNumber> {
+    tab_number_modifiers_held(modifiers)
+        .then(|| TabNumber::from_key(key))
+        .flatten()
+}
+
+/// The modifiers of Cuetty's primary application chord, as [`app_chord`] reads it.
+fn app_chord_modifiers() -> ChordModifiers {
+    let macos = cfg!(target_os = "macos");
+    ChordModifiers {
+        control: !macos,
+        shift: !macos,
+        platform: macos,
+        ..ChordModifiers::default()
+    }
+}
+
+/// How the application chord on `key` is written on this platform.
+pub(super) fn app_chord_label(key: &str) -> String {
+    KeyChord {
+        key: key.into(),
+        modifiers: app_chord_modifiers(),
+    }
+    .label()
+}
+
+/// The chord shown for a tab's number key, such as `⌘1` or `Ctrl+1`.
+pub(super) fn tab_number_hint(number: TabNumber) -> String {
+    KeyChord {
+        key: number.digit().to_string(),
+        modifiers: tab_number_modifiers(),
+    }
+    .label()
+}
+
 /// Whether a key press is exactly the configured chord.
 fn chord_matches(chord: &KeyChord, key: &str, modifiers: gpui::Modifiers) -> bool {
     key.eq_ignore_ascii_case(&chord.key)
@@ -896,6 +2007,43 @@ fn chord_matches(chord: &KeyChord, key: &str, modifiers: gpui::Modifiers) -> boo
         && modifiers.alt == chord.modifiers.alt
         && modifiers.shift == chord.modifiers.shift
         && modifiers.platform == chord.modifiers.platform
+}
+
+fn active_palette_chord<'a>(state: Option<&'a PaneState>, fallback: &'a KeyChord) -> &'a KeyChord {
+    state.map_or(fallback, |state| {
+        &state.cuenv.presentation.keybindings.palette
+    })
+}
+
+/// Where a key press goes before the terminal gets a look at it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChordRoute {
+    OpenPalette,
+    SelectTab(TabId),
+    /// Not claimed here, which leaves it to the remaining shortcuts and the terminal.
+    Unclaimed,
+}
+
+/// What a key press could select.
+struct ChordTargets<'a> {
+    /// The active tab's configured palette chord.
+    palette: Option<&'a KeyChord>,
+    tabs: &'a WorkspaceShell,
+}
+
+/// Routes a key press. The palette's chord comes first because the user chose it. A
+/// tab number that reaches no tab is unclaimed, since off macOS most of those chords
+/// are also control bytes an application may be waiting for.
+fn route_chord(key: &str, modifiers: gpui::Modifiers, targets: &ChordTargets<'_>) -> ChordRoute {
+    if targets
+        .palette
+        .is_some_and(|palette| chord_matches(palette, key, modifiers))
+    {
+        return ChordRoute::OpenPalette;
+    }
+    tab_number_shortcut(key, modifiers)
+        .and_then(|number| targets.tabs.tab_at_number(number))
+        .map_or(ChordRoute::Unclaimed, ChordRoute::SelectTab)
 }
 
 fn terminal_key_input(key: &str, key_char: Option<&str>) -> Option<KeyInput> {
@@ -928,6 +2076,26 @@ fn single_character(text: &str) -> Option<char> {
     characters.next().is_none().then_some(character)
 }
 
+/// Records a measurement, returning whether it differs from the last one. A panic
+/// elsewhere cannot leave one half-written, so a poisoned lock is still good.
+pub(super) fn store_if_changed<T: PartialEq>(slot: &Mutex<T>, next: T) -> bool {
+    let mut current = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let changed = *current != next;
+    *current = next;
+    changed
+}
+
+/// Asks for another frame from inside prepaint, where a notify marks nothing dirty and
+/// is lost: GPUI ignores invalidation while it draws. Deferred effects run once the
+/// draw has finished.
+pub(super) fn redraw_after_this_frame(view: gpui::WeakEntity<TerminalView>, cx: &mut gpui::App) {
+    cx.defer(move |cx| {
+        let _ = view.update(cx, |_view, cx| cx.notify());
+    });
+}
+
 impl TerminalView {
     #[cfg(test)]
     fn empty_frame() -> TerminalFrame {
@@ -942,8 +2110,10 @@ impl TerminalView {
                 position: None,
                 shape: Known::Unknown,
                 visible: Known::Unknown,
+                blinking: Known::Unknown,
             },
             viewport_offset: None,
+            scrollback_rows: None,
             sampling_token: SamplingToken(0),
             stable_revision: None,
         }
@@ -963,52 +2133,130 @@ impl TerminalView {
     ) -> Self {
         cx.observe_window_bounds(window, move |_, _, cx| cx.notify())
             .detach();
+        // A modifier released while another window has focus is never reported.
+        cx.observe_window_activation(window, |view, window, cx| {
+            view.registry.window_presence = window_presence(window);
+            if !window.is_window_active() {
+                view.hide_tab_hints(cx);
+            }
+            // The cursor shows whether this window has the keyboard.
+            cx.notify();
+        })
+        .detach();
+        // The active pane's `auto` is resolved against this on the next draw.
+        cx.observe_window_appearance(window, |view, window, cx| {
+            view.system_appearance = window.appearance().into();
+            cx.notify();
+        })
+        .detach();
         let config = TerminalConfig::default();
-        let metrics = TerminalMetrics::from_config(cx.text_system(), &config);
+        let scale = ScaleFactor::new(window.scale_factor());
+        let metrics = TerminalMetrics::from_config(cx.text_system(), &config, scale);
         let theme = TerminalTheme::from_config(&config);
+        let window_background = theme.window_background();
         let factory: Arc<dyn TerminalSessionFactory> = Arc::new(RioTerminalFactory);
-        match SessionRegistry::start(factory.clone(), 720, 432, metrics.rio_cell()) {
-            Ok((registry, wake_rx)) => {
+        let system_appearance = SystemAppearance::from(window.appearance());
+        // The window's first frame sizes the grid, so what shapes it has to be known by then.
+        // A pane carries this look over until its directory has evaluated. It comes before
+        // the shell, whose startup files may ask straight away what colours it is painted in.
+        let global = ConfigSource::from_working_directory(None)
+            .ok()
+            .flatten()
+            .and_then(|source| {
+                evaluate_within(Arc::clone(&cuenv), source, FIRST_FRAME_CONFIG_WAIT)
+            });
+        let palette = global.as_ref().map_or_else(ThemeColors::default, |global| {
+            global.palette_for(system_appearance)
+        });
+        let started = SessionRegistry::start(
+            factory.clone(),
+            SessionGeometry {
+                surface: unmeasured_surface(),
+                scale,
+                cell: metrics.device_cell(),
+            },
+            &palette,
+        );
+        let (registry, sidebar, session) = match started {
+            Ok((mut registry, wake_rx)) => {
                 let pane = registry.active_pane().expect("initial workspace pane");
-                let mut view = Self {
-                    registry,
-                    cuenv,
-                    config,
-                    metrics,
-                    theme,
-                    focus: cx.focus_handle(),
-                    renderer: Box::new(GridRenderer),
-                    workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
-                    task_palette_open: false,
-                    task_sidebar_open: false,
-                    task_query: String::new(),
-                    task_selection: 0,
+                registry.window_presence = window_presence(window);
+                let sidebar = global.map_or_else(WindowSidebar::default, |global| {
+                    let sidebar = WindowSidebar::expecting(&global);
+                    if let Some(state) = registry.sessions.get_mut(&pane) {
+                        let generation = state.cuenv.begin_source();
+                        state.cuenv.apply(generation, global);
+                    }
+                    sidebar
+                });
+                let session = StartedSession {
+                    pane,
+                    generation: SessionGeneration(1),
+                    wake_rx,
                 };
-                view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
-                view.spawn_cwd_poll(cx);
-                view.refresh_cuenv_integration(cx);
-                view
+                (registry, sidebar, Some(session))
             }
             Err(error) => {
                 let mut registry = SessionRegistry::empty(factory);
-                registry.notice = Some(format!("Cuetty could not start Rio: {error}"));
-                Self {
-                    registry,
-                    cuenv,
-                    config,
-                    metrics,
-                    theme,
-                    focus: cx.focus_handle(),
-                    renderer: Box::new(GridRenderer),
-                    workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
-                    task_palette_open: false,
-                    task_sidebar_open: false,
-                    task_query: String::new(),
-                    task_selection: 0,
-                }
+                registry.notice = Some(format!("Could not start a shell: {error}"));
+                (registry, WindowSidebar::default(), None)
             }
+        };
+        let mut view = Self {
+            registry,
+            cuenv,
+            config,
+            system_appearance,
+            metrics,
+            theme,
+            focus: cx.focus_handle(),
+            renderer: Box::new(GridRenderer),
+            workspace_bounds: Arc::new(Mutex::new(UNMEASURED_SURFACE)),
+            window_background,
+            window_decorations: Decorations::default(),
+            palette_open: false,
+            palette_query: String::new(),
+            palette_selection: 0,
+            palette_scroll: ScrollHandle::new(),
+            rail_scroll: ScrollHandle::new(),
+            rail_revealed_tab: None,
+            tab_hints_visible: false,
+            tab_rename: None,
+            tab_hint_request: 0,
+            sidebar,
+            window_title: APP_TITLE.into(),
+            cursor_animator: CursorAnimator::new(std::time::Instant::now()),
+            scrollbar_track: Arc::new(Mutex::new((0.0, 1.0))),
+            scrollbar_grab: None,
+            frame_due: None,
+            system_motion: MotionPace::default(),
+            motion: ChromeMotion::default(),
+        };
+        view.read_system_motion(cx);
+        if let Some(session) = session {
+            view.spawn_wake(session, cx);
         }
+        // Also with no session yet: a shell started later from the empty window needs it.
+        view.spawn_cwd_poll(cx);
+        view.refresh_cuenv_integration(cx);
+        view
     }
+    /// Asks the platform off the UI thread, since that takes a process. The chrome moves
+    /// as normal until the answer arrives, which is before anything has had reason to.
+    fn read_system_motion(&mut self, cx: &mut Context<Self>) {
+        let answer = cx.background_spawn(async { MotionPace::from_system() });
+        cx.spawn(async move |weak, cx| {
+            let system_motion = answer.await;
+            let _ = weak.update(cx, |view, _cx| view.system_motion = system_motion);
+        })
+        .detach();
+    }
+
+    /// How far the chrome may move right now.
+    pub(super) fn motion_pace(&self) -> MotionPace {
+        MotionPace::resolve(self.config.motion, self.system_motion)
+    }
+
     fn refresh_cuenv_integration(&mut self, cx: &mut Context<Self>) {
         let panes: Vec<_> = self.registry.sessions.keys().copied().collect();
         for pane in panes {
@@ -1017,6 +2265,15 @@ impl TerminalView {
     }
 
     fn refresh_cuenv_pane(&mut self, pane: crate::workspace::PaneId, cx: &mut Context<Self>) {
+        // An exited shell has no directory to follow, and keeps its look and its name.
+        if self
+            .registry
+            .sessions
+            .get(&pane)
+            .is_some_and(PaneState::has_exited)
+        {
+            return;
+        }
         let (session_generation, cwd) = self
             .registry
             .sessions
@@ -1059,7 +2316,9 @@ impl TerminalView {
                     .sessions
                     .get_mut(&pane)
                     .expect("active pane registry invariant");
-                if state.cuenv_source.take().is_some() {
+                // A changed directory carried the old look over for an evaluation
+                // that is not coming, so this has to settle it too.
+                if state.cuenv_source.take().is_some() || cwd_changed {
                     let generation = state.cuenv.begin_source();
                     state.cuenv.apply(generation, Evaluation::Absent);
                     state.cuenv_watcher = None;
@@ -1075,7 +2334,7 @@ impl TerminalView {
                 return;
             }
         };
-        let discover_tasks = canonical_cwd.is_some();
+        let discover_project = canonical_cwd.is_some();
         let now = std::time::Instant::now();
         let Some(state) = self.registry.sessions.get_mut(&pane) else {
             return;
@@ -1138,25 +2397,15 @@ impl TerminalView {
             }
         })
         .detach();
-        let evaluator = Arc::clone(&cuenv);
+        let evaluation = StagedEvaluation {
+            provider: Arc::clone(&cuenv),
+            source,
+            discover_project,
+            stages: updates_tx,
+        };
         cx.spawn(async move |_weak, _cx| {
-            let (result_tx, result_rx) = async_channel::bounded(1);
-            let initial_source = source.clone();
-            let initial_evaluator = Arc::clone(&evaluator);
-            std::thread::spawn(move || {
-                let _ = result_tx.send_blocking(CuenvIntegrationUpdate {
-                    presentation: initial_evaluator.evaluate(&initial_source),
-                    tasks: if discover_tasks {
-                        initial_evaluator.evaluate_tasks(&initial_source)
-                    } else {
-                        TaskEvaluation::Absent
-                    },
-                });
-            });
-            let Ok(update) = result_rx.recv().await else {
-                return;
-            };
-            if updates_tx.send(update).await.is_err() {
+            evaluate_off_thread(evaluation.clone()).await;
+            if evaluation.is_abandoned() {
                 return;
             }
             while wake_rx.recv().await.is_ok() {
@@ -1167,23 +2416,8 @@ impl TerminalView {
                 while wake_rx.try_recv().is_ok() {}
                 Timer::after(std::time::Duration::from_millis(120)).await;
                 while wake_rx.try_recv().is_ok() {}
-                let (result_tx, result_rx) = async_channel::bounded(1);
-                let source = source.clone();
-                let evaluator = Arc::clone(&evaluator);
-                std::thread::spawn(move || {
-                    let _ = result_tx.send_blocking(CuenvIntegrationUpdate {
-                        presentation: evaluator.evaluate(&source),
-                        tasks: if discover_tasks {
-                            evaluator.evaluate_tasks(&source)
-                        } else {
-                            TaskEvaluation::Absent
-                        },
-                    });
-                });
-                let Ok(update) = result_rx.recv().await else {
-                    break;
-                };
-                if updates_tx.send(update).await.is_err() {
+                evaluate_off_thread(evaluation.clone()).await;
+                if evaluation.is_abandoned() {
                     break;
                 }
             }
@@ -1194,7 +2428,7 @@ impl TerminalView {
     fn apply_cuenv_update(
         &mut self,
         target: CuenvUpdateTarget,
-        update: CuenvIntegrationUpdate,
+        update: EvaluationStage,
         cx: &mut Context<Self>,
     ) {
         let is_active = self.active_pane() == Some(target.pane);
@@ -1204,40 +2438,47 @@ impl TerminalView {
         if state.generation != target.session_generation {
             return;
         }
-        if !state
-            .cuenv
-            .apply(target.config_generation, update.presentation)
-        {
-            return;
+        match update {
+            EvaluationStage::Presentation(presentation) => {
+                if is_active && state.cuenv.generation == target.config_generation {
+                    self.sidebar.observe(&presentation);
+                }
+                if !state.cuenv.apply(target.config_generation, presentation) {
+                    return;
+                }
+                self.sync_active_config(cx);
+            }
+            EvaluationStage::Project(project) => {
+                if !state.cuenv.apply_project(target.config_generation, project) {
+                    return;
+                }
+                if is_active {
+                    self.reconcile_task_ui();
+                }
+            }
         }
-        state
-            .cuenv
-            .apply_tasks(target.config_generation, update.tasks);
-        if is_active {
-            self.reconcile_task_ui();
-        }
-        self.sync_active_config(cx);
         cx.notify();
     }
 
     fn sync_active_config(&mut self, cx: &mut Context<Self>) {
-        let config = self.registry.active_terminal_config();
+        self.registry.sync_session_palettes(self.system_appearance);
+        let config = self
+            .registry
+            .active_terminal_config()
+            .for_appearance(self.system_appearance);
         if self.config != config {
-            self.metrics = TerminalMetrics::from_config(cx.text_system(), &config);
+            self.metrics =
+                TerminalMetrics::from_config(cx.text_system(), &config, self.metrics.scale);
             self.theme = TerminalTheme::from_config(&config);
             self.config = config;
         }
     }
 
     fn reconcile_task_ui(&mut self) {
-        let count = self
-            .active_state()
-            .map_or(0, |state| state.cuenv.tasks.len());
-        if count == 0 {
-            self.task_palette_open = false;
-            self.task_sidebar_open = false;
+        if self.palette_open {
+            let count = self.palette_items().len();
+            self.palette_selection = self.palette_selection.min(count.saturating_sub(1));
         }
-        self.task_selection = self.task_selection.min(count.saturating_sub(1));
     }
     fn spawn_cwd_poll(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |weak, cx| {
@@ -1245,8 +2486,17 @@ impl TerminalView {
                 Timer::after(std::time::Duration::from_millis(500)).await;
                 if weak
                     .update(cx, |view, cx| {
+                        let shown = view.registry.polled_state();
+                        view.registry.sample_foreground(std::time::Instant::now());
                         view.refresh_cuenv_integration(cx);
-                        cx.notify();
+                        view.registry.sample_branches(std::time::Instant::now());
+                        let cursor_changed = view.registry.active_cursor_changed();
+                        if cursor_changed {
+                            view.cursor_animator.touch(std::time::Instant::now());
+                        }
+                        if cursor_changed || view.registry.polled_state() != shown {
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -1259,7 +2509,7 @@ impl TerminalView {
     fn active_pane(&self) -> Option<crate::workspace::PaneId> {
         self.registry.active_pane()
     }
-    fn active_state(&self) -> Option<&PaneState> {
+    pub(super) fn active_state(&self) -> Option<&PaneState> {
         self.active_pane()
             .and_then(|pane| self.registry.sessions.get(&pane))
     }
@@ -1270,9 +2520,16 @@ impl TerminalView {
     fn active_tab(&self) -> Option<TabId> {
         self.registry.workspace.active_tab()
     }
-    fn select_terminal_tab(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn select_terminal_tab(
+        &mut self,
+        tab: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_tab_rename();
         match self.registry.workspace.apply(ShellAction::ActivateTab(tab)) {
             Ok(_) => {
+                self.registry.notice = None;
                 self.focus.focus(window);
                 self.refresh_cuenv_integration(cx);
                 self.sync_active_config(cx);
@@ -1282,13 +2539,12 @@ impl TerminalView {
         }
         cx.notify();
     }
-    fn spawn_wake(
-        &mut self,
-        cx: &mut Context<Self>,
-        pane: crate::workspace::PaneId,
-        generation: SessionGeneration,
-        wake_rx: async_channel::Receiver<()>,
-    ) {
+    fn spawn_wake(&mut self, session: StartedSession, cx: &mut Context<Self>) {
+        let StartedSession {
+            pane,
+            generation,
+            wake_rx,
+        } = session;
         cx.spawn(async move |weak, cx| {
             while wake_rx.recv().await.is_ok() {
                 if weak
@@ -1315,7 +2571,12 @@ impl TerminalView {
         if !outcome.accepted {
             return;
         }
+        if self.active_pane() == Some(pane) {
+            self.cursor_animator.touch(std::time::Instant::now());
+        }
         self.refresh_cuenv_pane(pane, cx);
+        // The shell may just have gone from under an open palette.
+        self.reconcile_task_ui();
         for text in outcome.clipboard {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
@@ -1324,39 +2585,188 @@ impl TerminalView {
         }
         cx.notify();
     }
-    fn close_pane(&mut self, pane: crate::workspace::PaneId, cx: &mut Context<Self>) {
+    /// What a click on a tab's row does: a second click starts renaming what the first
+    /// selected, and clicks on the name being edited leave the edit alone.
+    pub(super) fn tab_row_clicked(
+        &mut self,
+        click: TabClick,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let TabClick { tab, click_count } = click;
+        if self.tab_rename.as_ref().map(TabRename::tab) == Some(tab) {
+            self.focus.focus(window);
+        } else if click_count >= 2 {
+            self.begin_tab_rename(tab, window, cx);
+        } else {
+            self.select_terminal_tab(tab, window, cx);
+        }
+    }
+
+    /// Starts editing a tab's name in its row, which needs the sidebar to be expanded.
+    fn begin_tab_rename(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_tab_rename();
+        let tabs = self.registry.workspace.workspace().tabs();
+        let Some(index) = tabs.iter().position(|candidate| candidate.id == tab) else {
+            return;
+        };
+        self.tab_rename = Some(TabRename::new(tab, tabs[index].custom_name.as_deref()));
+        self.palette_open = false;
+        // Settled, so that a first evaluation still on its way cannot collapse the row
+        // out from under the edit.
+        self.sidebar.expand();
+        // Keys go to the name until the edit ends, so the name has to be in sight.
+        self.rail_scroll.scroll_to_item(index);
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    /// Settles a name being edited, as anything but Escape does.
+    pub(super) fn commit_tab_rename(&mut self) {
+        if let Some(rename) = self.tab_rename.take()
+            && let Err(error) = self
+                .registry
+                .workspace
+                .rename_tab(rename.tab(), rename.into_name())
+        {
+            self.registry.notice = Some(shell_notice(error));
+        }
+    }
+
+    /// Whether the key belonged to a name being edited, which takes every key until the
+    /// edit ends so that nothing typed there can reach the shell.
+    fn handle_rename_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let Some(rename) = self.tab_rename.as_mut() else {
+            return false;
+        };
+        let keystroke = &event.keystroke;
+        match rename_key(
+            &keystroke.key,
+            keystroke.key_char.as_deref(),
+            keystroke.modifiers,
+        ) {
+            RenameKey::Commit => self.commit_tab_rename(),
+            RenameKey::Cancel => self.tab_rename = None,
+            RenameKey::Backspace => rename.backspace(),
+            RenameKey::Text(text) => rename.insert(text),
+            RenameKey::Ignored => {}
+        }
+        cx.notify();
+        true
+    }
+
+    /// Moves a dragged tab to where it was dropped in the tab list.
+    pub(super) fn move_tab(&mut self, tab: TabId, index: usize, cx: &mut Context<Self>) {
+        if let Err(error) = self.registry.workspace.move_tab(tab, index) {
+            self.registry.notice = Some(shell_notice(error));
+        }
+        cx.notify();
+    }
+
+    /// Hands the keyboard back to the terminal after a click in the chrome.
+    pub(super) fn focus_terminal(&self, window: &mut Window) {
+        self.focus.focus(window);
+    }
+    pub(super) fn close_pane(&mut self, pane: crate::workspace::PaneId, cx: &mut Context<Self>) {
         if let Err(error) = self.registry.close_pane(pane) {
             self.registry.notice = Some(format!("workspace action unavailable: {error}"));
         } else {
+            let tabs = self.registry.workspace.workspace().tabs();
+            self.tab_rename
+                .take_if(|rename| tabs.iter().all(|tab| tab.id != rename.tab()));
             self.sync_active_config(cx);
             self.reconcile_task_ui();
         }
     }
-    fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let width = 720;
-        let height = 432;
-        match self
-            .registry
-            .start_tab(width, height, self.metrics.rio_cell())
-        {
+    pub(super) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_tab_rename();
+        // A tab shares the surface its siblings measured, so its shell starts on the
+        // right grid rather than getting a resize right after its first prompt.
+        let surface = self
+            .active_state()
+            .map_or_else(unmeasured_surface, PaneState::surface_for_sibling);
+        match self.registry.start_tab(
+            SessionGeometry {
+                surface,
+                scale: self.metrics.scale,
+                cell: self.metrics.device_cell(),
+            },
+            self.system_appearance,
+        ) {
             Ok((pane, generation, wake_rx)) => {
-                self.spawn_wake(cx, pane, generation, wake_rx);
+                self.spawn_wake(
+                    StartedSession {
+                        pane,
+                        generation,
+                        wake_rx,
+                    },
+                    cx,
+                );
                 self.refresh_cuenv_integration(cx);
                 self.sync_active_config(cx);
                 self.reconcile_task_ui();
                 if self.active_tab().is_some() {
                     self.focus.focus(window);
                 }
-                cx.notify();
             }
-            Err(RegistryError::Session(_)) => {
-                self.registry.notice = Some("unable to start a new Rio session".into())
+            Err(RegistryError::Session(error)) => {
+                self.registry.notice = Some(format!("Could not start a shell: {error}"))
             }
             Err(error) => {
                 self.registry.notice = Some(format!("workspace action unavailable: {error}"))
             }
         }
+        // Whichever way it went there is something new to show, and a failure has only this.
+        cx.notify();
     }
+    /// Starts a fresh shell in the active tab, in place of one that stopped working. If
+    /// none will start the tab stays as it is, saying why.
+    pub(super) fn restart_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.active_pane() else {
+            return;
+        };
+        let surface = self
+            .active_state()
+            .map_or_else(unmeasured_surface, PaneState::surface_for_sibling);
+        match self.registry.restart_pane(
+            pane,
+            SessionGeometry {
+                surface,
+                scale: self.metrics.scale,
+                cell: self.metrics.device_cell(),
+            },
+            self.system_appearance,
+        ) {
+            Ok(session) => {
+                self.spawn_wake(session, cx);
+                self.refresh_cuenv_pane(pane, cx);
+                self.sync_active_config(cx);
+                self.focus.focus(window);
+            }
+            Err(error) => {
+                if let Some(state) = self.active_state_mut() {
+                    state.error = Some(format!("Could not restart the shell: {error}"));
+                }
+            }
+        }
+    }
+
+    /// Closes the active tab and hands the keyboard back to whichever tab is left.
+    pub(super) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pane) = self.active_pane() {
+            self.close_pane(pane, cx);
+            self.focus.focus(window);
+        }
+    }
+
+    /// Makes `element` take the keys the terminal would, for what stands in for it.
+    pub(super) fn focused_for_keys(&self, element: gpui::Div, cx: &mut Context<Self>) -> gpui::Div {
+        element
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key))
+            .on_modifiers_changed(cx.listener(Self::modifiers_changed))
+    }
+
     fn hit_test(
         &self,
         position: gpui::Point<Pixels>,
@@ -1372,10 +2782,10 @@ impl TerminalView {
                 super::selection::LogicalPosition { line: 0, column: 0 },
             );
         };
-        let (x, y, _, _) = *state
-            .viewport_bounds
+        let (x, y) = *state
+            .viewport_origin
             .lock()
-            .expect("viewport mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let cell = self.metrics.render_cell();
         let hit_test = CellHitTest {
             cell_width: f32::from(cell.width),
@@ -1389,7 +2799,7 @@ impl TerminalView {
         )
     }
 
-    fn search_key(&mut self, key: SearchKey) {
+    pub(super) fn search_key(&mut self, key: SearchKey) {
         if let Some(state) = self.active_state_mut()
             && let Some(matched) = state.interaction.search_key(key, &state.frame)
         {
@@ -1401,15 +2811,66 @@ impl TerminalView {
         if let Some(state) = self.active_state_mut() {
             match state.session.scroll(action) {
                 Ok(()) => {
-                    state.interaction.viewport_changed();
+                    let before = state.frame.viewport_offset;
                     state.frame = state.session.frame();
+                    if state.interaction.scrolled_from(before, &state.frame) {
+                        self.motion.view_scrolled(std::time::Instant::now());
+                    }
                 }
+                // A program's mouse mode outlives it, and there is nothing left to tell.
+                Err(_) if state.has_exited() => {}
                 Err(error) => state.error = Some(error),
             }
         }
     }
 
-    fn scroll_wheel(
+    /// Where the scrollbar's track is in the window and how tall.
+    pub(super) fn scrollbar_track(&self) -> (f32, f32) {
+        *self
+            .scrollbar_track
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Where a draw records the scrollbar's track.
+    pub(super) fn scrollbar_track_handle(&self) -> Arc<Mutex<(f32, f32)>> {
+        Arc::clone(&self.scrollbar_track)
+    }
+
+    pub(super) fn begin_scrollbar_drag(&mut self, grab: f32, cx: &mut Context<Self>) {
+        self.scrollbar_grab = Some(grab);
+        cx.notify();
+    }
+
+    /// Brings the viewport to where a drag has the thumb, with the pointer this far down
+    /// the track.
+    pub(super) fn drag_scrollbar_to(&mut self, pointer: f32, cx: &mut Context<Self>) {
+        let Some(grab) = self.scrollbar_grab else {
+            return;
+        };
+        let (_, height) = self.scrollbar_track();
+        let track = track_of(height);
+        let target = self
+            .active_state()
+            .and_then(|state| ScrollExtent::of_frame(&state.frame))
+            .map(|extent| extent.offset_at(pointer - grab, track));
+        let current = self
+            .active_state()
+            .and_then(|state| state.frame.viewport_offset);
+        if let Some(target) = target.filter(|target| Some(*target) != current) {
+            self.scroll_active(TerminalScroll::ToOffset(target));
+            cx.notify();
+        }
+    }
+
+    pub(super) fn end_scrollbar_drag(&mut self, cx: &mut Context<Self>) {
+        self.scrollbar_grab = None;
+        // The thumb has been showing itself, so it starts its hold from here.
+        self.motion.view_scrolled(std::time::Instant::now());
+        cx.notify();
+    }
+
+    pub(super) fn scroll_wheel(
         &mut self,
         event: &ScrollWheelEvent,
         _window: &mut Window,
@@ -1467,22 +2928,55 @@ impl TerminalView {
         }
     }
 
-    /// Toggles the task palette, returning whether the active pane has a
-    /// task catalogue to show.
-    fn toggle_task_palette(&mut self) -> bool {
-        if self
-            .active_state()
-            .is_none_or(|state| state.cuenv.tasks.is_empty())
-        {
-            return false;
-        }
-        self.task_palette_open = !self.task_palette_open;
-        self.task_query.clear();
-        self.task_selection = 0;
-        true
+    pub(super) fn sidebar_mode(&self) -> SidebarMode {
+        self.sidebar.mode()
     }
 
-    fn launch_task(&mut self, task: CuenvTask, cx: &mut Context<Self>) {
+    /// The terminal grid follows once, from the bounds measured in the layout this change
+    /// causes, however long the panel takes to get there; see [`SidebarFrame`].
+    pub(super) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        // A collapsed tab has nowhere to show the name being edited.
+        self.commit_tab_rename();
+        self.sidebar.toggle();
+        // Rows change height between the two, which can leave the active tab off screen.
+        self.rail_revealed_tab = None;
+        cx.notify();
+    }
+
+    pub(super) fn palette_items(&self) -> Vec<PaletteItem> {
+        let state = self.active_state();
+        palette::results(
+            &self.palette_query,
+            palette::Available {
+                tasks: state.map_or(&[][..], PaneState::task_catalogue),
+                tab: self.active_tab().is_some(),
+                screen: state.is_some_and(|state| state.error.is_none()),
+            },
+        )
+    }
+
+    /// Opens the shared palette, optionally starting in the active pane's tasks.
+    pub(super) fn open_command_palette(&mut self, mode: PaletteMode) {
+        self.commit_tab_rename();
+        self.palette_open = true;
+        self.palette_query = match mode {
+            PaletteMode::Commands => String::new(),
+            PaletteMode::Tasks => "$".into(),
+        };
+        self.palette_selection = 0;
+        self.palette_scroll.scroll_to_item(0);
+    }
+
+    fn toggle_command_palette(&mut self, cx: &mut Context<Self>) {
+        if self.palette_open {
+            self.close_command_palette(cx);
+        } else {
+            self.open_command_palette(PaletteMode::Commands);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn launch_task(&mut self, task: CuenvTask, cx: &mut Context<Self>) {
         let Some(cwd) = self
             .active_state()
             .and_then(|state| state.cuenv.cwd.clone())
@@ -1492,59 +2986,90 @@ impl TerminalView {
         let Some(active_pane) = self.active_pane() else {
             return;
         };
-        let launch = if task.requires_parameters {
-            TaskLaunch::EditRequiredArguments
-        } else {
-            TaskLaunch::Run
-        };
-        let command = task_command(&cwd, &task, launch);
-        if let Some(state) = self.registry.sessions.get_mut(&active_pane) {
-            if let Err(error) = state.session.paste(&command) {
-                state.error = Some(error);
-            } else if task.requires_parameters {
-                self.registry.notice =
-                    Some(format!("Add arguments for '{}' and press Enter", task.name));
-            }
+        let command = task_command(&cwd, &task);
+        if let Some(state) = self.registry.sessions.get_mut(&active_pane)
+            && !state.has_exited()
+            && let Err(error) = state.launch_task(&command, &task)
+        {
+            state.error = Some(error);
         }
-        self.task_palette_open = false;
-        self.task_query.clear();
-        self.task_selection = 0;
+        self.close_command_palette(cx);
+    }
+
+    pub(super) fn close_command_palette(&mut self, cx: &mut Context<Self>) {
+        self.palette_open = false;
+        self.palette_query.clear();
+        self.palette_selection = 0;
         cx.notify();
     }
 
-    fn handle_task_palette_key(
+    pub(super) fn run_palette_item(
+        &mut self,
+        item: PaletteItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let command = match item {
+            PaletteItem::Task(task) => {
+                self.launch_task(task, cx);
+                return;
+            }
+            PaletteItem::Command(command) => command,
+        };
+        self.close_command_palette(cx);
+        self.focus_terminal(window);
+        match command {
+            PaletteCommand::NewTab => self.new_tab(window, cx),
+            PaletteCommand::CloseTab => self.close_active_tab(window, cx),
+            PaletteCommand::RenameTab => {
+                if let Some(tab) = self.active_tab() {
+                    self.begin_tab_rename(tab, window, cx);
+                }
+            }
+            PaletteCommand::NextTab | PaletteCommand::PreviousTab => {
+                let direction = if command == PaletteCommand::NextTab {
+                    TabDirection::Next
+                } else {
+                    TabDirection::Previous
+                };
+                if let Some(tab) = self.registry.workspace.tab_in_direction(direction) {
+                    self.select_terminal_tab(tab, window, cx);
+                }
+            }
+            PaletteCommand::ToggleSidebar => self.toggle_sidebar(cx),
+            PaletteCommand::FindOnScreen => {
+                if let Some(state) = self.active_state_mut() {
+                    state.interaction.enter_search(&state.frame);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn handle_command_palette_key(
         &mut self,
         event: &gpui::KeyDownEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.task_palette_open {
+        if !self.palette_open {
             return false;
         }
         let key = event.keystroke.key.as_str();
         match key {
-            "escape" => self.task_palette_open = false,
+            "escape" => self.palette_open = false,
             "backspace" => {
-                self.task_query.pop();
-                self.task_selection = 0;
+                self.palette_query.pop();
+                self.palette_selection = 0;
             }
-            "up" => self.task_selection = self.task_selection.saturating_sub(1),
+            "up" => self.palette_selection = self.palette_selection.saturating_sub(1),
             "down" => {
-                let count = self
-                    .active_state()
-                    .map(|state| filtered_tasks(&state.cuenv.tasks, &self.task_query).len())
-                    .unwrap_or_default()
-                    .min(9);
-                self.task_selection = (self.task_selection + 1).min(count.saturating_sub(1));
+                let count = self.palette_items().len();
+                self.palette_selection = (self.palette_selection + 1).min(count.saturating_sub(1));
             }
             "enter" => {
-                let selected = self.active_state().and_then(|state| {
-                    filtered_tasks(&state.cuenv.tasks, &self.task_query)
-                        .get(self.task_selection)
-                        .cloned()
-                        .cloned()
-                });
-                if let Some(task) = selected {
-                    self.launch_task(task, cx);
+                if let Some(item) = self.palette_items().get(self.palette_selection).cloned() {
+                    self.run_palette_item(item, window, cx);
                     return true;
                 }
             }
@@ -1553,38 +3078,203 @@ impl TerminalView {
                 && !event.keystroke.modifiers.platform =>
             {
                 if let Some(text) = event.keystroke.key_char.as_deref() {
-                    self.task_query.push_str(text);
-                    self.task_selection = 0;
+                    self.palette_query.push_str(text);
+                    self.palette_selection = 0;
                 }
             }
             _ => {}
         }
+        // A short window clips the results, so the selection has to stay visible.
+        self.palette_scroll.scroll_to_item(self.palette_selection);
         cx.notify();
         true
     }
 
-    fn key(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let modifiers = event.keystroke.modifiers;
-        let palette_chord = self.active_state().is_some_and(|state| {
-            chord_matches(
-                &state.cuenv.presentation.keybindings.palette,
-                key,
-                modifiers,
-            )
-        });
-        // Without a task catalogue the chord falls through, so a plain
-        // Ctrl-K palette binding still reaches the shell as kill-line.
-        if palette_chord && self.toggle_task_palette() {
-            cx.notify();
+    fn tab_shortcut(key: &str, modifiers: gpui::Modifiers) -> Option<TabDirection> {
+        if !modifiers.control || modifiers.alt || modifiers.shift || modifiers.platform {
+            return None;
+        }
+        // The function modifier may be needed to type Page Up/Down on macOS.
+        match key.to_ascii_lowercase().as_str() {
+            "pageup" => Some(TabDirection::Previous),
+            "pagedown" => Some(TabDirection::Next),
+            _ => None,
+        }
+    }
+
+    /// Reveals the tab number hints once their modifier has been held a moment.
+    fn modifiers_changed(
+        &mut self,
+        event: &ModifiersChangedEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !tab_number_modifiers_held(event.modifiers) {
+            self.hide_tab_hints(cx);
             return;
         }
-        if self.handle_task_palette_key(event, cx) {
+        self.tab_hint_request = self.tab_hint_request.wrapping_add(1);
+        let request = self.tab_hint_request;
+        cx.spawn(async move |weak, cx| {
+            Timer::after(TAB_HINT_DELAY).await;
+            let _ = weak.update(cx, |view, cx| {
+                if view.tab_hint_request == request {
+                    view.tab_hints_visible = true;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Works out the cursor's look for this draw, and asks for the next draw if it is
+    /// animating. A cursor at rest asks for none, so an idle window stops drawing.
+    fn cursor_frame(&mut self, seen: CursorObservation, cx: &mut Context<Self>) -> CursorFrame {
+        let frame = self.cursor_animator.frame(seen);
+        if let Some(delay) = frame.next_frame {
+            self.request_frame(seen.now + delay, delay, cx);
+        }
+        frame
+    }
+
+    /// Works out the sidebar's width for this draw, and asks for the next draw while
+    /// anything in the chrome is moving.
+    fn animate_chrome(&mut self, cx: &mut Context<Self>) -> SidebarFrame {
+        let now = std::time::Instant::now();
+        let pace = self.motion_pace();
+        let width = sidebar_width(self.sidebar_mode());
+        let sidebar = self.motion.sidebar_frame(width, pace, now);
+        let tabs: Vec<TabId> = self
+            .registry
+            .workspace
+            .workspace()
+            .tabs()
+            .iter()
+            .map(|tab| tab.id)
+            .collect();
+        self.motion.follow_tabs(
+            TabPlaces {
+                tabs: &tabs,
+                active: self.active_tab(),
+            },
+            pace,
+            now,
+        );
+        let live = self.live_hover_targets();
+        // A drag's listeners go with the scrollbar, so nothing else would ever end it.
+        if !live.scrollbar {
+            self.scrollbar_grab = None;
+        }
+        self.motion
+            .forget_hovers(now, |target| live.holds(*target, &tabs));
+        if let Some(delay) = self.motion.next_frame(now, pace) {
+            self.request_frame(now + delay, delay, cx);
+        }
+        sidebar
+    }
+
+    /// What is on screen to be hovered, besides the tabs.
+    fn live_hover_targets(&self) -> LiveHoverTargets {
+        let has_tasks = self
+            .active_state()
+            .is_some_and(|state| !state.task_catalogue().is_empty());
+        LiveHoverTargets {
+            tab_close_buttons: self.sidebar_mode() == SidebarMode::Expanded,
+            notice: self.registry.notice.is_some()
+                || self
+                    .active_state()
+                    .is_some_and(|state| state.marker_notice().is_some()),
+            tasks: has_tasks,
+            palette_hint: self.sidebar_mode() == SidebarMode::Expanded,
+            palette_rows: if self.palette_open {
+                self.palette_items().len()
+            } else {
+                0
+            },
+            session_actions: self
+                .active_state()
+                .is_none_or(|state| state.error.is_some()),
+            search: self
+                .active_state()
+                .is_some_and(|state| state.interaction.search().is_some()),
+            scrollbar: !self.palette_open
+                && self
+                    .active_state()
+                    .is_some_and(|state| ScrollExtent::of_frame(&state.frame).is_some()),
+        }
+    }
+
+    /// One timer is enough: only one sooner than any already waiting replaces it.
+    fn request_frame(
+        &mut self,
+        due: std::time::Instant,
+        delay: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) {
+        if self.frame_due.is_some_and(|waiting| waiting <= due) {
+            return;
+        }
+        self.frame_due = Some(due);
+        cx.spawn(async move |weak, cx| {
+            Timer::after(delay).await;
+            let _ = weak.update(cx, |view, cx| {
+                if view.frame_due == Some(due) {
+                    view.frame_due = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn hide_tab_hints(&mut self, cx: &mut Context<Self>) {
+        self.tab_hint_request = self.tab_hint_request.wrapping_add(1);
+        if self.tab_hints_visible {
+            self.tab_hints_visible = false;
+            cx.notify();
+        }
+    }
+
+    fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handle_rename_key(event, cx) {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        let fallback = Keybindings::default();
+        let palette = active_palette_chord(self.active_state(), &fallback.palette);
+        let route = route_chord(
+            key,
+            modifiers,
+            &ChordTargets {
+                palette: Some(palette),
+                tabs: &self.registry.workspace,
+            },
+        );
+        if route == ChordRoute::OpenPalette {
+            self.hide_tab_hints(cx);
+            self.toggle_command_palette(cx);
+            return;
+        }
+        if self.handle_command_palette_key(event, window, cx) {
+            return;
+        }
+        // The hints stay up, so another number can follow without letting go.
+        if let ChordRoute::SelectTab(tab) = route {
+            self.select_terminal_tab(tab, window, cx);
+            return;
+        }
+        // The modifier was held for some other chord, such as Ctrl-C.
+        self.hide_tab_hints(cx);
+        if let Some(direction) = Self::tab_shortcut(key, modifiers) {
+            if let Some(tab) = self.registry.workspace.tab_in_direction(direction) {
+                self.select_terminal_tab(tab, window, cx);
+            }
             return;
         }
         if let Some(shortcut) = Self::workspace_shortcut(key, modifiers) {
             match shortcut {
-                WorkspaceShortcut::NewTab => self.new_tab(_window, cx),
+                WorkspaceShortcut::NewTab => self.new_tab(window, cx),
                 WorkspaceShortcut::CloseTab => {
                     if let Some(pane) = self.active_pane() {
                         self.close_pane(pane, cx);
@@ -1595,9 +3285,34 @@ impl TerminalView {
             cx.notify();
             return;
         }
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case(SIDEBAR_TOGGLE_KEY) {
+            self.toggle_sidebar(cx);
+            return;
+        }
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case(RENAME_TAB_KEY) {
+            if let Some(tab) = self.active_tab() {
+                self.begin_tab_rename(tab, window, cx);
+            }
+            return;
+        }
         // Every pane in the workspace registry owns a live Rio session. Keep
         // input, search, copy, and paste routed through that registry entry.
         if self.active_state().is_none() {
+            if takes_offered_action(event) {
+                self.new_tab(window, cx);
+            }
+            return;
+        }
+        // In place of a terminal that stopped working there is only what it offers.
+        if self
+            .active_state()
+            .is_some_and(|state| state.error.is_some())
+        {
+            if takes_offered_action(event) {
+                self.restart_shell(window, cx);
+            }
+            // Whatever failed may have asked for no draw, and then this key is what shows it.
+            cx.notify();
             return;
         }
         if modifiers.shift {
@@ -1621,6 +3336,15 @@ impl TerminalView {
             cx.notify();
             return;
         }
+        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("c") {
+            if let Some(text) = self
+                .active_state()
+                .and_then(|state| state.interaction.copy(&state.frame))
+            {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            return;
+        }
         if self
             .active_state()
             .is_some_and(|state| state.interaction.search().is_some())
@@ -1631,12 +3355,7 @@ impl TerminalView {
                     reverse: modifiers.shift,
                 }),
                 "escape" => Some(SearchKey::Escape),
-                _ => event
-                    .keystroke
-                    .key_char
-                    .as_ref()
-                    .and_then(|text| text.chars().next())
-                    .map(SearchKey::Character),
+                _ => typed_character(&event.keystroke, AltKey::current()).map(SearchKey::Character),
             };
             if let Some(search_key) = search_key {
                 self.search_key(search_key);
@@ -1644,12 +3363,13 @@ impl TerminalView {
             }
             return;
         }
-        if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("c") {
-            if let Some(text) = self
-                .active_state()
-                .and_then(|state| state.interaction.copy(&state.frame))
+        // Nothing is left to type at, though search and copy above still read the output.
+        if self.active_state().is_some_and(PaneState::has_exited) {
+            if closes_exited_tab(event)
+                && let Some(pane) = self.active_pane()
             {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.close_pane(pane, cx);
+                cx.notify();
             }
             return;
         }
@@ -1660,6 +3380,7 @@ impl TerminalView {
                 && let Err(error) = state.session.paste(&text)
             {
                 state.error = Some(error);
+                cx.notify();
             }
             return;
         }
@@ -1680,7 +3401,7 @@ impl TerminalView {
             bits |= InputModifiers::SUPER.bits();
         }
         if let Some(state) = self.active_state_mut()
-            && let Err(error) = state.session.input(TerminalKeyEvent {
+            && let Err(error) = state.input(TerminalKeyEvent {
                 key: input,
                 modifiers: InputModifiers::from_bits(bits),
                 repeat: event.is_held,
@@ -1688,6 +3409,9 @@ impl TerminalView {
         {
             state.error = Some(error);
         }
+        // A key with no echo, such as at a password prompt, still shows the cursor.
+        self.cursor_animator.touch(std::time::Instant::now());
+        cx.notify();
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1709,6 +3433,10 @@ impl TerminalView {
                 state.interaction.extend_selection(hit_test, position);
             }
             cx.notify();
+        } else if let Some(state) = self.active_state_mut() {
+            // Moving with no button held means the press ended where no release
+            // could reach this view, such as outside the window.
+            state.interaction.end_selection();
         }
     }
 
@@ -1718,477 +3446,26 @@ impl TerminalView {
         }
         cx.notify();
     }
+}
 
-    fn render_sidebar(
-        &self,
-        active_tab: Option<TabId>,
-        theme: &TerminalTheme,
+impl TerminalView {
+    /// The padding configured above the terminal.
+    pub(super) fn top_padding(&self) -> Pixels {
+        px(f32::from(self.config.terminal_padding.top))
+    }
+
+    /// A draw of the active tab in place of a terminal that stopped working.
+    fn render_pane_failure(
+        &mut self,
+        panels: ShellPanels,
+        error: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let mut tabs = div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .p(px(8.0))
-            .overflow_hidden();
-        for (index, tab) in self
-            .registry
-            .workspace
-            .workspace()
-            .tabs()
-            .iter()
-            .enumerate()
-        {
-            let tab_id = tab.id;
-            let selected = active_tab == Some(tab_id);
-            let label = self
-                .registry
-                .sessions
-                .get(&tab.focused)
-                .map(|state| state.title.clone())
-                .unwrap_or_else(|| tab.title.clone());
-            let tooltip_label = self
-                .registry
-                .sessions
-                .get(&tab.focused)
-                .and_then(|state| state.cuenv.presentation.banner.clone())
-                .unwrap_or_else(|| sidebar_tab_label(&label));
-            let number = format!("{:02}", index + 1);
-            let mut tab_button = div()
-                .id(("cuetty-rail-tab", tab_id.get()))
-                .w_full()
-                .min_h(px(40.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(px(2.0))
-                .rounded(px(7.0))
-                .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-                .cursor_pointer()
-                .on_click(cx.listener(move |view, _event, window, cx| {
-                    view.select_terminal_tab(tab_id, window, cx);
-                }))
-                .tooltip(move |window, cx| Tooltip::new(tooltip_label.clone()).build(window, cx));
-            tab_button = tab_button.child(
-                div()
-                    .w(px(30.0))
-                    .h(px(30.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(8.0))
-                    .when(selected, |this| this.bg(gpui::rgb(gpui_rgb(theme.cursor))))
-                    .text_center()
-                    .text_size(px(12.0))
-                    .font_weight(if selected {
-                        FontWeight::SEMIBOLD
-                    } else {
-                        FontWeight::NORMAL
-                    })
-                    .text_color(gpui::rgb(gpui_rgb(if selected {
-                        theme.cursor_text
-                    } else {
-                        theme.title_text
-                    })))
-                    .child(number),
-            );
-            tabs = tabs.child(tab_button);
-        }
-        let integration_notice = active_tab
-            .and_then(|tab_id| {
-                self.registry
-                    .workspace
-                    .workspace()
-                    .tabs()
-                    .iter()
-                    .find(|tab| tab.id == tab_id)
-            })
-            .and_then(|tab| self.registry.sessions.get(&tab.focused))
-            .and_then(|state| {
-                state
-                    .cuenv
-                    .notice
-                    .as_deref()
-                    .or(state.cuenv.task_notice.as_deref())
-            });
-        let notice = shell_notice_text(self.registry.notice.as_deref().or(integration_notice));
-        let has_tasks = self
-            .active_state()
-            .is_some_and(|state| !state.cuenv.tasks.is_empty());
-        // A matching `package cuetty` tints the rail for the active tab;
-        // terminal content itself is never framed.
-        let rail_background = self
-            .active_state()
-            .and_then(|state| state.cuenv.presentation.rail)
-            .map_or(theme.title_surface, |RailColor(red, green, blue)| {
-                Rgb(red, green, blue)
-            });
-        let mut rail = div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .bg(chrome_glass_color(rail_background))
-            .border_l_1()
-            .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-            .child(tabs);
-        if let Some(notice) = notice {
-            rail = rail.child(
-                div()
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .text_size(px(10.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .child(notice),
-            );
-        }
-        let mut footer = div()
-            .h(px(TAB_RAIL_FOOTER_HEIGHT))
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .px(px(6.0))
-            .border_t_1()
-            .border_color(gpui::rgb(gpui_rgb(theme.host_background)));
-        let new_tab = div()
-            .id("cuetty-new-tab")
-            .flex_1()
-            .h(px(30.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(7.0))
-            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .text_size(px(12.0))
-            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-            .cursor_pointer()
-            .tooltip(|window, cx| Tooltip::new("New tab").build(window, cx))
-            .on_click(cx.listener(|view, _event, window, cx| {
-                view.new_tab(window, cx);
-            }))
-            .child("+");
-        let tasks = div()
-            .id("cuetty-tasks")
-            .w(px(34.0))
-            .h(px(30.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(7.0))
-            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .text_size(px(13.0))
-            .when(self.task_sidebar_open, |this| {
-                this.bg(chrome_glass_color(theme.surface))
-            })
-            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-            .cursor_pointer()
-            .tooltip(|window, cx| Tooltip::new("Cuenv tasks · ⌘K to search").build(window, cx))
-            .on_click(cx.listener(|view, _event, _window, cx| {
-                view.task_sidebar_open = !view.task_sidebar_open;
-                cx.notify();
-            }))
-            .child("▤");
-        footer = footer
-            .flex_col()
-            .child(new_tab)
-            .when(has_tasks, |this| this.child(tasks));
-        rail.child(footer).into_any_element()
-    }
-
-    fn render_task_sidebar(
-        &self,
-        theme: &TerminalTheme,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        if !self.task_sidebar_open {
-            return None;
-        }
-        let state = self.active_state()?;
-        if state.cuenv.tasks.is_empty() {
-            return None;
-        }
-        let mut list = div().flex().flex_col().gap(px(4.0));
-        for (index, task) in state.cuenv.tasks.iter().take(12).enumerate() {
-            let task_to_run = task.clone();
-            let detail = task
-                .description
-                .clone()
-                .unwrap_or_else(|| task.kind.label().to_ascii_lowercase());
-            list = list.child(
-                div()
-                    .id(("cuetty-task-sidebar-row", index))
-                    .w_full()
-                    .px(px(10.0))
-                    .py(px(7.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .rounded(px(7.0))
-                    .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |view, _event, _window, cx| {
-                        view.launch_task(task_to_run.clone(), cx);
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                            .child(task.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                            .child(detail),
-                    ),
-            );
-        }
-        let hidden = state.cuenv.tasks.len().saturating_sub(12);
-        let cwd = state
-            .cuenv
-            .cwd
-            .as_deref()
-            .and_then(std::path::Path::file_name)
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or("cuenv");
-        Some(
-            div()
-                .absolute()
-                .top(px(12.0))
-                .right(px(12.0))
-                .bottom(px(12.0))
-                .w(px(TASK_SIDEBAR_WIDTH))
-                .p(px(12.0))
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .rounded(px(12.0))
-                .border_1()
-                .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-                .bg(chrome_glass_color(theme.title_surface))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.0))
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                                        .child("Cuenv tasks"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(10.0))
-                                        .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                        .child(cwd.to_string()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                .child("⌘K"),
-                        ),
-                )
-                .child(div().flex_1().overflow_hidden().child(list))
-                .when(hidden > 0, |this| {
-                    this.child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                            .child(format!("{hidden} more · use ⌘K")),
-                    )
-                })
-                .into_any_element(),
-        )
-    }
-
-    fn render_task_palette(
-        &self,
-        theme: &TerminalTheme,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        if !self.task_palette_open {
-            return None;
-        }
-        let state = self.active_state()?;
-        let tasks = filtered_tasks(&state.cuenv.tasks, &self.task_query);
-        let mut results = div().flex().flex_col().gap(px(3.0));
-        for (index, task) in tasks.iter().take(9).enumerate() {
-            let selected = index == self.task_selection;
-            let task_to_run = (*task).clone();
-            results = results.child(
-                div()
-                    .id(("cuetty-task-palette-row", index))
-                    .w_full()
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .rounded(px(7.0))
-                    .when(selected, |this| this.bg(chrome_glass_color(theme.surface)))
-                    .hover(|this| this.bg(chrome_glass_color(theme.surface)))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |view, _event, _window, cx| {
-                        view.launch_task(task_to_run.clone(), cx);
-                    }))
-                    .child(
-                        div()
-                            .w(px(64.0))
-                            .text_size(px(9.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                            .child(if task.requires_parameters {
-                                "ARGS"
-                            } else {
-                                task.kind.label()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(12.0))
-                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                            .child(task.name.clone()),
-                    ),
-            );
-        }
-        if tasks.is_empty() {
-            results = results.child(
-                div()
-                    .px(px(10.0))
-                    .py(px(18.0))
-                    .text_size(px(12.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .child("No matching tasks"),
-            );
-        }
-        let query = if self.task_query.is_empty() {
-            "Type to filter tasks…".into()
-        } else {
-            self.task_query.clone()
-        };
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .justify_center()
-                .pt(px(54.0))
-                .child(
-                    div()
-                        .w(px(520.0))
-                        .max_h(px(430.0))
-                        .p(px(12.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.0))
-                        .rounded(px(12.0))
-                        .border_1()
-                        .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-                        .bg(chrome_glass_color(theme.title_surface))
-                        .child(
-                            div()
-                                .w_full()
-                                .h(px(38.0))
-                                .px(px(12.0))
-                                .flex()
-                                .items_center()
-                                .rounded(px(8.0))
-                                .bg(chrome_glass_color(theme.surface))
-                                .text_size(px(13.0))
-                                .text_color(gpui::rgb(gpui_rgb(if self.task_query.is_empty() {
-                                    theme.title_text
-                                } else {
-                                    theme.text
-                                })))
-                                .child(query),
-                        )
-                        .child(results)
-                        .child(
-                            div()
-                                .text_size(px(9.0))
-                                .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                                .child("↑↓ select · return run · esc close"),
-                        ),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn render_shell_layout(
-        &self,
-        sidebar: gpui::AnyElement,
-        content: gpui::AnyElement,
-        theme: &TerminalTheme,
-        _cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let workspace = div()
-            .flex_1()
-            .flex()
-            // The content panel must establish a flex formatting context.
-            // Otherwise a child's `flex_1` has no parent flex layout during
-            // the first window pass and AppKit's white backing surface leaks
-            // through until a later resize happens to trigger a relayout.
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .min_h(px(0.0))
-                    .flex()
-                    .child(content),
-            )
-            .child(div().w(px(TAB_RAIL_WIDTH)).flex_shrink_0().child(sidebar));
-        let titlebar_visibility = self
-            .active_state()
-            .map(|state| state.cuenv.presentation.titlebar)
-            .unwrap_or_default();
-        let shell = div().size_full().flex().flex_col();
-        if titlebar_visibility == TitlebarVisibility::Hidden {
-            // The terminal grid is resized from its measured bounds, so it
-            // reclaims the strip's height without extra arithmetic here.
-            return shell.child(workspace).into_any_element();
-        }
-        let titlebar = div()
-            .h(px(SHELL_TITLEBAR_HEIGHT))
-            .w_full()
-            .flex()
-            .items_center()
-            .bg(chrome_glass_color(theme.title_surface))
-            .border_b_1()
-            .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
-            .child(
-                div()
-                    .h_full()
-                    .w(px(82.0))
-                    .window_control_area(WindowControlArea::Drag),
-            )
-            .child(
-                div()
-                    .h_full()
-                    .px(px(8.0))
-                    .flex()
-                    .items_center()
-                    .text_size(px(13.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
-                    .child("Cuetty"),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .window_control_area(WindowControlArea::Drag),
-            );
-        shell.child(titlebar).child(workspace).into_any_element()
+        // The panels it would have shown over have gone, and must not go on taking keys.
+        self.reconcile_task_ui();
+        let theme = self.theme.clone();
+        let problem = self.render_session_problem(SessionProblem::Failed { error }, &theme, cx);
+        self.render_shell_layout(panels, problem, &theme)
     }
 }
 
@@ -2199,60 +3476,65 @@ impl Render for TerminalView {
         }
         // The active pane controls both painting and PTY geometry. Background
         // configuration updates must never alter the visible pane's metrics.
+        self.metrics.scale = ScaleFactor::new(window.scale_factor());
         self.sync_active_config(cx);
+        let window_background = self.theme.window_background();
+        if self.window_background != window_background {
+            window.set_background_appearance(window_background);
+            self.window_background = window_background;
+        }
+        self.window_decorations = window.window_decorations();
+        // Window switchers and compositors have only this to go by, and with the
+        // title strip hidden and the sidebar collapsed nothing else names the tab.
+        let window_title = self
+            .registry
+            .active_tab_label()
+            .unwrap_or_else(|| APP_TITLE.into());
+        if self.window_title != window_title {
+            window.set_window_title(&window_title);
+            self.window_title = window_title;
+        }
         let theme = self.theme.clone();
         let metrics = self.metrics.clone();
         let padding = self.config.terminal_padding;
+        let sidebar_frame = self.animate_chrome(cx);
         let active_tab = self.active_tab();
+        self.reveal_active_rail_tab(active_tab);
+        self.registry.note_active_pane();
         let sidebar = self.render_sidebar(active_tab, &theme, cx);
-        let Some(active_pane) = self.active_pane() else {
-            let message = self
-                .registry
-                .notice
-                .clone()
-                .unwrap_or_else(|| "Cuetty has no live terminal session".into());
-            return self.render_shell_layout(
-                sidebar,
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(terminal_background_color(&theme, theme.surface))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .child(message)
-                    .into_any_element(),
-                &theme,
-                cx,
-            );
+        let panels = ShellPanels {
+            sidebar,
+            sidebar_frame,
         };
-        let state = self
-            .registry
-            .sessions
-            .get(&active_pane)
-            .expect("active pane registry invariant");
-        let frame = state.frame.clone();
-        let interaction = state.interaction.clone();
-        let pane_error = state.error.clone();
-        let measured = Arc::clone(&state.measured_bounds);
-        let viewport_bounds = Arc::clone(&state.viewport_bounds);
-        let entity = cx.weak_entity();
-        let terminal_focused = terminal_has_focus(self.focus.is_focused(window), true);
-        if let Some(error) = &pane_error {
-            return self.render_shell_layout(
-                sidebar,
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(terminal_background_color(&theme, theme.surface))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .child(format!("Cuetty terminal error: {error}"))
-                    .into_any_element(),
+        let Some(active_pane) = self.active_pane() else {
+            let notice = self.registry.notice.clone();
+            let problem = self.render_session_problem(
+                SessionProblem::NoSession {
+                    notice: notice.as_deref(),
+                },
                 &theme,
                 cx,
             );
+            return self.render_shell_layout(panels, problem, &theme);
+        };
+        let Some(state) = self.registry.sessions.get(&active_pane) else {
+            let problem = self.render_session_problem(SessionProblem::Lost, &theme, cx);
+            return self.render_shell_layout(panels, problem, &theme);
+        };
+        let pane_error = state.error.clone();
+        let exit_failure = state.status.failure();
+        let measured = Arc::clone(&state.measured_bounds);
+        let viewport_origin = Arc::clone(&state.viewport_origin);
+        let entity = cx.weak_entity();
+        // Focus stays with the terminal while another window is active, but keys don't.
+        let window_active = window.is_window_active();
+        let focus = if self.focus.is_focused(window) && window_active {
+            CursorFocus::Focused
+        } else {
+            CursorFocus::Unfocused
+        };
+        if let Some(error) = &pane_error {
+            return self.render_pane_failure(panels, error, cx);
         }
         let workspace_bounds = Arc::clone(&self.workspace_bounds);
         let workspace_entity = cx.weak_entity();
@@ -2273,28 +3555,65 @@ impl Render for TerminalView {
                 MinSizePolicy::new(1.0, 1.0),
             )
             .unwrap_or_default();
-        if let Some(state) = self.registry.sessions.get_mut(&active_pane) {
+        let frame = self.registry.sessions.get_mut(&active_pane).map(|state| {
             // The canvas is inside the actual content panel, so this includes
-            // the title strip, terminal inset, divider, and the current rail
+            // the title strip, terminal inset, and the sidebar at its current
             // width without trying to reconstruct GPUI's layout arithmetic.
-            let bounds = *state.measured_bounds.lock().expect("bounds mutex poisoned");
-            if let Err(error) = state
-                .session
-                .resize(bounds.0, bounds.1, self.metrics.rio_cell())
-            {
-                state.error = Some(error);
-            }
+            let surface = *state
+                .measured_bounds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (width, height) = self.metrics.scale.whole_device_size(surface);
+            state.fit_grid(width, height, self.metrics.device_cell());
+            // Sampled after the resize, so the draw that resizes the grid also shows it.
             state.frame = state.session.frame();
-        }
-        let overlays = TerminalOverlays {
-            selection: interaction.selection(),
-            current_search_match: interaction.current_match(),
+            state.interaction.refresh_search(&state.frame);
+            state.frame.clone()
+        });
+        let Some(frame) = frame else {
+            let problem = self.render_session_problem(SessionProblem::Lost, &theme, cx);
+            return self.render_shell_layout(panels, problem, &theme);
         };
+        // Fitting the grid just above is the one failure that happens during a draw.
+        let fit_error = self
+            .registry
+            .sessions
+            .get(&active_pane)
+            .and_then(|state| state.error.clone());
+        if let Some(error) = &fit_error {
+            return self.render_pane_failure(panels, error, cx);
+        }
+        let overlays = self
+            .registry
+            .sessions
+            .get(&active_pane)
+            .map(|state| TerminalOverlays {
+                selection: state.interaction.selection(),
+                search_matches: state.interaction.search_matches().to_vec(),
+                current_search_match: state.interaction.current_match(),
+            })
+            .unwrap_or_default();
+        let cursor = self.cursor_frame(
+            CursorObservation {
+                pane: active_pane,
+                position: frame
+                    .cursor
+                    .position
+                    .filter(|_| frame.cursor.visible != Known::Known(false)),
+                focus,
+                blink: blink_wanted(self.config.cursor_blink, frame.cursor.blinking),
+                trail: self.config.cursor_trail && self.motion_pace() == MotionPace::Full,
+                now: std::time::Instant::now(),
+            },
+            cx,
+        );
         let mut content = Some(self.renderer.render(RenderRequest {
             frame: &frame,
             metrics: &metrics,
             theme: &theme,
-            focused: terminal_focused,
+            focus,
+            window: window_presence(window),
+            cursor,
             overlays,
         }));
         let mut terminal_surface = div().relative().overflow_hidden().child(
@@ -2304,19 +3623,8 @@ impl Render for TerminalView {
                         f32::from(bounds.size.width).max(1.0),
                         f32::from(bounds.size.height).max(1.0),
                     );
-                    let changed = {
-                        let mut current = workspace_bounds
-                            .lock()
-                            .expect("workspace bounds mutex poisoned");
-                        if *current != next {
-                            *current = next;
-                            true
-                        } else {
-                            false
-                        }
-                    };
-                    if changed {
-                        let _ = workspace_entity.update(app, |_view, cx| cx.notify());
+                    if store_if_changed(&workspace_bounds, next) {
+                        redraw_after_this_frame(workspace_entity, app);
                     }
                 },
                 |_, _, _, _| {},
@@ -2337,7 +3645,7 @@ impl Render for TerminalView {
                 .overflow_hidden();
             if pane_id == active_pane {
                 let pane_measured = Arc::clone(&measured);
-                let pane_viewport_bounds = Arc::clone(&viewport_bounds);
+                let pane_viewport_origin = Arc::clone(&viewport_origin);
                 let pane_entity = entity.clone();
                 let live_content = content
                     .take()
@@ -2352,37 +3660,24 @@ impl Render for TerminalView {
                         .size_full()
                         .track_focus(&self.focus)
                         .on_key_down(cx.listener(Self::key))
+                        .on_modifiers_changed(cx.listener(Self::modifiers_changed))
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                         .on_mouse_move(cx.listener(Self::mouse_move))
                         .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+                        // A drag can end over chrome, whose panels occlude this
+                        // element. The gesture still has to end there, or a later
+                        // drag starting on that chrome extends the old selection.
+                        .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
                         .on_scroll_wheel(cx.listener(Self::scroll_wheel))
                         .child(
                             canvas(
                                 move |bounds, _, app| {
-                                    let next = (
-                                        f32::from(bounds.size.width).max(1.0) as u32,
-                                        f32::from(bounds.size.height).max(1.0) as u32,
-                                    );
-                                    let changed = {
-                                        let mut current =
-                                            pane_measured.lock().expect("bounds mutex poisoned");
-                                        if *current != next {
-                                            *current = next;
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    };
-                                    if changed {
-                                        let _ = pane_entity.update(app, |_view, cx| cx.notify());
+                                    if store_if_changed(&pane_measured, bounds.size) {
+                                        redraw_after_this_frame(pane_entity, app);
                                     }
-                                    *pane_viewport_bounds
-                                        .lock()
-                                        .expect("viewport mutex poisoned") = (
-                                        f32::from(bounds.origin.x),
-                                        f32::from(bounds.origin.y),
-                                        f32::from(bounds.size.width),
-                                        f32::from(bounds.size.height),
+                                    store_if_changed(
+                                        &pane_viewport_origin,
+                                        (f32::from(bounds.origin.x), f32::from(bounds.origin.y)),
                                     );
                                 },
                                 |_, _, _, _| {},
@@ -2395,109 +3690,130 @@ impl Render for TerminalView {
                 terminal_surface = terminal_surface.child(viewport);
             }
         }
-        if let Some(task_sidebar) = self.render_task_sidebar(&theme, cx) {
-            terminal_surface = terminal_surface.child(task_sidebar);
+        if let Some(search_bar) = self.render_search_bar(&theme, cx) {
+            terminal_surface = terminal_surface.child(search_bar);
         }
-        if let Some(task_palette) = self.render_task_palette(&theme, cx) {
-            terminal_surface = terminal_surface.child(task_palette);
+        if let Some(command_palette) = self.render_command_palette(&theme, cx) {
+            terminal_surface = terminal_surface.child(command_palette);
         }
+        let top_padding = self.top_padding();
         let surface = div()
             .relative()
             .size_full()
             .overflow_hidden()
-            // Keep the inset in the terminal's surface colour. The host
-            // chrome still owns the title strip and rail; the terminal area
-            // should read as one continuous canvas rather than a framed box.
-            .bg(terminal_background_color(&theme, theme.surface))
             .child(
                 terminal_surface
                     .absolute()
-                    .top(px(f32::from(padding.top)))
+                    .top(self.top_inset(top_padding))
                     .right(px(f32::from(padding.right)))
-                    .bottom(px(f32::from(padding.bottom)))
+                    .bottom(self.bottom_inset(px(f32::from(padding.bottom))))
                     .left(px(f32::from(padding.left))),
-            );
-        self.render_shell_layout(sidebar, surface.into_any_element(), &theme, cx)
+            )
+            .children(self.render_scrollbar(
+                ScrollbarRequest {
+                    extent: ScrollExtent::of_frame(&frame),
+                    top: self.top_inset(top_padding),
+                    bottom: self.bottom_inset(px(f32::from(padding.bottom))),
+                    gutter: px(f32::from(padding.right)),
+                    theme: &theme,
+                },
+                cx,
+            ))
+            .children(exit_failure.map(|failure| render_exit_notice(failure, &theme)))
+            .children(self.window_controls_band(top_padding));
+        self.render_shell_layout(panels, surface.into_any_element(), &theme)
     }
 }
 
 pub fn run() {
-    Application::new().run(|cx: &mut App| {
-        gpui_component::init(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.set_menus(vec![Menu {
-            name: "Cuetty".into(),
-            items: vec![
-                MenuItem::os_submenu("Services", SystemMenuType::Services),
-                MenuItem::separator(),
-                MenuItem::action("Quit Cuetty", Quit),
-            ],
-        }]);
-        let window_size = size(px(960.), px(640.));
-        let window_min_size = size(px(640.), px(400.));
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                        None,
-                        window_size,
-                        cx,
-                    ))),
-                    window_min_size: Some(window_min_size),
-                    titlebar: Some(gpui::TitlebarOptions {
-                        title: None,
-                        appears_transparent: true,
-                        traffic_light_position: Some(point(px(12.0), px(9.0))),
-                    }),
-                    window_background: WindowBackgroundAppearance::Blurred,
-                    // Matches the installed `cuetty.desktop` so Linux
-                    // compositors associate windows with the launcher entry.
-                    app_id: Some("cuetty".to_string()),
-                    ..WindowOptions::default()
-                },
-                |window, cx| {
-                    // Cuetty owns its entire window surface. gpui-component's
-                    // generic Root paints an opaque theme background behind its
-                    // child, which prevents the terminal alpha from ever reaching
-                    // the macOS compositor.
-                    cx.new(|cx| TerminalView::new(window, cx))
-                },
-            )
-            .expect("open Cuetty window");
-        // The native window being active does not select a GPUI focus
-        // target. Focus the live terminal once its view has been mounted so
-        // its key handler receives input without an initial mouse click.
-        window
-            .update(cx, |view, window, _cx| {
-                if view.active_state().is_some() {
-                    view.focus.focus(window);
+    Application::new()
+        .with_assets(ChromeAssets)
+        .run(|cx: &mut App| {
+            gpui_component::init(cx);
+            resolve_ui_font(cx.text_system());
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+            cx.set_menus(vec![Menu {
+                name: "Cuetty".into(),
+                items: vec![
+                    MenuItem::os_submenu("Services", SystemMenuType::Services),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit Cuetty", Quit),
+                ],
+            }]);
+            let window_size = size(px(960.), px(640.));
+            let window_min_size = size(px(640.), px(400.));
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
                 }
             })
-            .expect("focus Cuetty terminal");
-        cx.activate(true);
-    });
+            .detach();
+            let window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            window_size,
+                            cx,
+                        ))),
+                        window_min_size: Some(window_min_size),
+                        titlebar: Some(gpui::TitlebarOptions {
+                            title: Some(APP_TITLE.into()),
+                            appears_transparent: true,
+                            traffic_light_position: Some(traffic_light_position()),
+                        }),
+                        window_background: TerminalTheme::default().window_background(),
+                        // Matches the installed `cuetty.desktop` so Linux
+                        // compositors associate windows with the launcher entry.
+                        app_id: Some("cuetty".to_string()),
+                        ..WindowOptions::default()
+                    },
+                    |window, cx| {
+                        // Cuetty owns its entire window surface. gpui-component's
+                        // generic Root paints an opaque theme background behind its
+                        // child, which prevents the terminal alpha from ever reaching
+                        // the macOS compositor.
+                        cx.new(|cx| TerminalView::new(window, cx))
+                    },
+                )
+                .expect("open Cuetty window");
+            // The native window being active does not select a GPUI focus
+            // target. Focus the live terminal once its view has been mounted so
+            // its key handler receives input without an initial mouse click.
+            window
+                .update(cx, |view, window, _cx| {
+                    view.focus.focus(window);
+                })
+                .expect("focus Cuetty terminal");
+            cx.activate(true);
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::integrations::cuenv::ChordModifiers;
-    use crate::terminal::host::SessionStart;
+    use crate::terminal::color::contrast_ratio;
+    use crate::terminal::config::{ThemeChoice, ThemeName};
+    use crate::terminal::foreground::ForegroundProcess;
     use crate::terminal::model::Color;
+    use crate::terminal::rio_input::{encode_key, encode_paste};
     use crate::terminal::selection::LogicalPosition;
+    use crate::terminal::tab_status::TabIndicator;
+    use rio_vt::crosswords::Mode;
     use std::collections::VecDeque;
 
     struct FakeSession {
         frame: TerminalFrame,
         effects: Arc<Mutex<Vec<ControlEvent>>>,
         close_error: Option<String>,
+        foreground: Arc<Mutex<String>>,
+        /// What a shell with bracketed paste on would read from the PTY.
+        sent: Arc<Mutex<Vec<u8>>>,
+        /// A cursor a test can move, for a change that marks no damage.
+        cursor: Option<Arc<Mutex<CursorState>>>,
+        /// Every palette the session has been told about, oldest first.
+        palette: FakePalettes,
     }
 
     impl TerminalSession for FakeSession {
@@ -2505,11 +3821,21 @@ mod tests {
             Ok(())
         }
 
-        fn input(&mut self, _: TerminalKeyEvent) -> Result<bool, String> {
+        fn reflow_output(&mut self, _: u32, height: u32, cell: CellSize) {
+            self.frame
+                .rows
+                .truncate((height / cell.height.max(1)) as usize);
+        }
+
+        fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
+            let bytes = encode_key(event, Mode::BRACKETED_PASTE, None).unwrap_or_default();
+            self.sent.lock().unwrap().extend(bytes);
             Ok(true)
         }
 
-        fn paste(&mut self, _: &str) -> Result<(), String> {
+        fn paste(&mut self, text: &str) -> Result<(), String> {
+            let bytes = encode_paste(text, Mode::BRACKETED_PASTE);
+            self.sent.lock().unwrap().extend(bytes);
             Ok(())
         }
 
@@ -2518,11 +3844,27 @@ mod tests {
         }
 
         fn frame(&mut self) -> TerminalFrame {
+            self.frame.cursor = self.cursor();
             self.frame.clone()
+        }
+
+        fn cursor(&self) -> CursorState {
+            self.cursor
+                .as_ref()
+                .map_or(self.frame.cursor, |cursor| *cursor.lock().unwrap())
         }
 
         fn working_directory(&self) -> Option<String> {
             None
+        }
+
+        fn foreground_process(&self) -> Option<ForegroundProcess> {
+            let foreground = self.foreground.lock().unwrap();
+            let mut words = foreground.split_whitespace().map(str::to_owned);
+            Some(ForegroundProcess {
+                name: words.next().unwrap_or_default(),
+                arguments: Some(words.collect()),
+            })
         }
 
         fn drain_effects(&self) -> Vec<ControlEvent> {
@@ -2532,19 +3874,53 @@ mod tests {
         fn close(&mut self) -> Result<(), String> {
             self.close_error.take().map_or(Ok(()), Err)
         }
+
+        fn set_palette(&mut self, palette: ThemeColors) {
+            self.palette.lock().unwrap().push(palette);
+        }
     }
+
+    type FakePalettes = Arc<Mutex<Vec<ThemeColors>>>;
+    type FakeForeground = Arc<Mutex<String>>;
+    type FakeEffects = Arc<Mutex<Vec<ControlEvent>>>;
 
     struct FakeFactory {
         starts: Mutex<VecDeque<Result<SessionStart, String>>>,
+        directories: Arc<StartDirectories>,
+        palettes: Arc<StartPalettes>,
     }
 
+    /// The directory each session was asked to start in, oldest first.
+    type StartDirectories = Mutex<Vec<Option<std::path::PathBuf>>>;
+    /// The palette each session was started with, oldest first.
+    type StartPalettes = Mutex<Vec<ThemeColors>>;
+
     impl TerminalSessionFactory for FakeFactory {
-        fn start(&self, _: u32, _: u32, _: CellSize) -> Result<SessionStart, String> {
+        fn start(&self, request: SessionRequest<'_>) -> Result<SessionStart, String> {
+            self.directories
+                .lock()
+                .expect("fake factory mutex poisoned")
+                .push(request.working_directory.map(std::path::Path::to_path_buf));
+            self.palettes
+                .lock()
+                .expect("fake factory mutex poisoned")
+                .push(request.palette.clone());
             self.starts
                 .lock()
                 .expect("fake factory mutex poisoned")
                 .pop_front()
                 .unwrap_or_else(|| Err("fake factory exhausted".into()))
+        }
+    }
+
+    fn key_press(key: &str, modifiers: gpui::Modifiers) -> gpui::KeyDownEvent {
+        gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke {
+                modifiers,
+                key: key.into(),
+                key_char: None,
+            },
+            is_held: false,
         }
     }
 
@@ -2554,45 +3930,255 @@ mod tests {
         frame
     }
 
+    fn keystroke_typing(key_char: &str, modifiers: gpui::Modifiers) -> gpui::Keystroke {
+        gpui::Keystroke {
+            modifiers,
+            key: "b".into(),
+            key_char: Some(key_char.into()),
+        }
+    }
+
     #[test]
-    fn task_filter_matches_names_and_descriptions() {
-        let tasks = vec![
-            CuenvTask {
-                name: "docs.build".into(),
-                description: Some("Build the website".into()),
-                kind: crate::integrations::cuenv::CuenvTaskKind::Task,
-                requires_parameters: false,
+    fn alt_types_into_a_query_only_where_it_composes_characters() {
+        let alt = gpui::Modifiers {
+            alt: true,
+            ..gpui::Modifiers::default()
+        };
+        assert_eq!(
+            typed_character(&keystroke_typing("b", alt), AltKey::Chords),
+            None
+        );
+        assert_eq!(
+            typed_character(&keystroke_typing("∫", alt), AltKey::Composes),
+            Some('∫')
+        );
+    }
+
+    #[test]
+    fn control_and_platform_chords_are_never_text_and_plain_keys_are() {
+        let plain = gpui::Modifiers::default();
+        assert_eq!(
+            typed_character(&keystroke_typing("B", plain), AltKey::Chords),
+            Some('B')
+        );
+        let chords = [
+            gpui::Modifiers {
+                control: true,
+                ..plain
             },
-            CuenvTask {
-                name: "lint".into(),
-                description: None,
-                kind: crate::integrations::cuenv::CuenvTaskKind::Task,
-                requires_parameters: false,
+            gpui::Modifiers {
+                platform: true,
+                ..plain
             },
         ];
-        assert_eq!(filtered_tasks(&tasks, "DOC").len(), 1);
-        assert_eq!(filtered_tasks(&tasks, "website")[0].name, "docs.build");
-        assert!(filtered_tasks(&tasks, "release").is_empty());
+        for chord in chords {
+            for alt_key in [AltKey::Chords, AltKey::Composes] {
+                assert_eq!(
+                    typed_character(&keystroke_typing("b", chord), alt_key),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_control_character_is_not_text() {
+        assert_eq!(
+            typed_character(
+                &keystroke_typing("\u{7f}", gpui::Modifiers::default()),
+                AltKey::Chords
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_row_a_filter_has_removed_is_no_longer_there_to_be_hovered() {
+        let live = LiveHoverTargets {
+            palette_rows: 2,
+            ..LiveHoverTargets::default()
+        };
+        assert!(live.holds(HoverTarget::PaletteRow(1), &[]));
+        assert!(!live.holds(HoverTarget::PaletteRow(2), &[]));
+
+        let closed = LiveHoverTargets::default();
+        assert!(!closed.holds(HoverTarget::PaletteRow(0), &[]));
+    }
+
+    #[test]
+    fn a_close_button_is_only_there_for_a_tab_in_an_expanded_sidebar() {
+        let tab = TabId::new(1);
+        let expanded = LiveHoverTargets {
+            tab_close_buttons: true,
+            ..LiveHoverTargets::default()
+        };
+        assert!(expanded.holds(HoverTarget::TabClose(tab), &[tab]));
+        assert!(!expanded.holds(HoverTarget::TabClose(tab), &[]));
+        assert!(!LiveHoverTargets::default().holds(HoverTarget::TabClose(tab), &[tab]));
+    }
+
+    #[test]
+    fn a_font_line_is_centred_in_its_cell_whichever_way_descent_is_signed() {
+        for descent in [px(4.0), px(-4.0)] {
+            assert_eq!(baseline_in_cell(px(19.0), px(15.0), descent), px(15.0));
+            assert_eq!(baseline_in_cell(px(25.0), px(15.0), descent), px(18.0));
+        }
+    }
+
+    #[test]
+    fn a_glyph_starts_on_its_cell_however_far_the_font_has_advanced() {
+        let starts = [0, 1, 2];
+        let mut placer = GlyphPlacer::new(&starts);
+        // The font's 9.6px advance on a smaller cell would otherwise drift.
+        for (column, x) in [0.0, 9.6, 19.2].into_iter().enumerate() {
+            assert_eq!(
+                placer.place(column, x),
+                PlacedGlyph {
+                    cluster: column,
+                    offset: 0.0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_combining_mark_stays_in_its_cell_without_moving_the_next() {
+        // "e" + U+0301 in one cell, then "x".
+        let starts = [0, 3];
+        let mut placer = GlyphPlacer::new(&starts);
+        assert_eq!(
+            placer.place(0, 0.0),
+            PlacedGlyph {
+                cluster: 0,
+                offset: 0.0
+            }
+        );
+        assert_eq!(
+            placer.place(1, 0.5),
+            PlacedGlyph {
+                cluster: 0,
+                offset: 0.5
+            }
+        );
+        assert_eq!(
+            placer.place(3, 9.6),
+            PlacedGlyph {
+                cluster: 1,
+                offset: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_glyph_that_replaced_cells_leaves_the_next_cell_in_place() {
+        // A font's `calt` turned "->" into one glyph, then "x" follows it.
+        let starts = [0, 1, 2];
+        let mut placer = GlyphPlacer::new(&starts);
+        assert_eq!(placer.place(0, 0.0).cluster, 0);
+        assert_eq!(
+            placer.place(2, 9.6),
+            PlacedGlyph {
+                cluster: 2,
+                offset: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn decorations_merge_only_while_their_style_runs_on() {
+        assert_eq!(
+            merged_spans([Some('a'), Some('a'), None, Some('a'), Some('b'), Some('b')]),
+            [(0..2, 'a'), (3..4, 'a'), (4..6, 'b')]
+        );
+        assert_eq!(merged_spans::<char>([None, None]), []);
+    }
+
+    #[test]
+    fn only_a_lone_narrow_line_or_block_character_is_drawn_as_a_shape() {
+        assert_eq!(
+            drawn_character(&TerminalCell::narrow('\u{2500}')),
+            Some('\u{2500}')
+        );
+        assert_eq!(drawn_character(&TerminalCell::narrow('a')), None);
+        assert_eq!(drawn_character(&TerminalCell::trailing_spacer()), None);
+        assert_eq!(drawn_character(&TerminalCell::wide('\u{2500}')), None);
+        let mut combined = TerminalCell::narrow('\u{2500}');
+        combined.text = Some("\u{2500}\u{0301}".into());
+        assert_eq!(drawn_character(&combined), None);
+    }
+
+    #[test]
+    fn the_poll_sees_a_change_only_when_a_pane_shows_something_new() {
+        let (start, foreground, _) = fake_start_in_foreground("zsh");
+        let (mut registry, _) = start_test_registry(fake_factory(vec![Ok(start)])).unwrap();
+        let now = std::time::Instant::now();
+        registry.sample_foreground(now);
+        let shown = registry.polled_state();
+
+        registry.sample_foreground(now + std::time::Duration::from_secs(1));
+        assert_eq!(
+            registry.polled_state(),
+            shown,
+            "an idle shell changes nothing"
+        );
+
+        *foreground.lock().unwrap() = "vim notes.txt".into();
+        registry.sample_foreground(now + std::time::Duration::from_secs(2));
+        assert_ne!(
+            registry.polled_state(),
+            shown,
+            "a new program renames the tab"
+        );
+    }
+
+    #[test]
+    fn the_poll_notices_a_cursor_that_changed_without_any_damage() {
+        let cursor = Arc::new(Mutex::new(frame_with('a').cursor));
+        let (wake_tx, wake_rx) = async_channel::unbounded();
+        drop(wake_tx);
+        let session = FakeSession {
+            frame: frame_with('a'),
+            effects: Arc::default(),
+            close_error: None,
+            foreground: Arc::new(Mutex::new("zsh".into())),
+            sent: Arc::default(),
+            cursor: Some(Arc::clone(&cursor)),
+            palette: Arc::default(),
+        };
+        let start = SessionStart {
+            session: Box::new(session),
+            wake_rx,
+        };
+        let (mut registry, _) = start_test_registry(fake_factory(vec![Ok(start)])).unwrap();
+        assert!(!registry.active_cursor_changed(), "nothing has happened");
+
+        cursor.lock().unwrap().visible = Known::Known(false);
+        assert!(registry.active_cursor_changed());
+
+        // A draw samples the frame, after which there is nothing left to show.
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.frame = state.session.frame();
+        assert!(!registry.active_cursor_changed());
     }
 
     #[test]
     fn task_command_quotes_paths_and_stages_required_arguments() {
-        let task = CuenvTask {
+        let mut task = CuenvTask {
             name: "release's build".into(),
             description: None,
             kind: crate::integrations::cuenv::CuenvTaskKind::Task,
             requires_parameters: true,
         };
+        let directory = std::path::Path::new("/tmp/project's dir");
         assert_eq!(
-            task_command(
-                std::path::Path::new("/tmp/project's dir"),
-                &task,
-                TaskLaunch::EditRequiredArguments,
-            ),
+            task_command(directory, &task),
             "cuenv task --path '/tmp/project'\\''s dir' --package cuenv 'release'\\''s build' "
         );
-        assert!(
-            task_command(std::path::Path::new("/tmp/x"), &task, TaskLaunch::Run).ends_with('\n')
+        task.requires_parameters = false;
+        assert_eq!(
+            task_command(directory, &task),
+            "cuenv task --path '/tmp/project'\\''s dir' --package cuenv 'release'\\''s build'"
         );
     }
 
@@ -2608,6 +4194,10 @@ mod tests {
             frame: frame_with(character),
             effects: Arc::clone(&effects),
             close_error: close_error.map(str::to_owned),
+            foreground: Arc::new(Mutex::new("zsh".into())),
+            sent: Arc::default(),
+            cursor: None,
+            palette: Arc::default(),
         };
         (
             SessionStart {
@@ -2618,10 +4208,63 @@ mod tests {
         )
     }
 
+    /// A session whose foreground process and control events a test can change.
+    fn fake_start_in_foreground(process: &str) -> (SessionStart, FakeForeground, FakeEffects) {
+        let (wake_tx, wake_rx) = async_channel::unbounded();
+        drop(wake_tx);
+        let foreground = Arc::new(Mutex::new(process.to_owned()));
+        let effects = Arc::new(Mutex::new(Vec::new()));
+        let session = FakeSession {
+            frame: frame_with('a'),
+            effects: Arc::clone(&effects),
+            close_error: None,
+            foreground: Arc::clone(&foreground),
+            sent: Arc::default(),
+            cursor: None,
+            palette: Arc::default(),
+        };
+        (
+            SessionStart {
+                session: Box::new(session),
+                wake_rx,
+            },
+            foreground,
+            effects,
+        )
+    }
+
     fn fake_factory(plans: Vec<Result<SessionStart, String>>) -> Arc<dyn TerminalSessionFactory> {
-        Arc::new(FakeFactory {
+        fake_factory_recording(plans).0
+    }
+
+    fn fake_factory_recording(
+        plans: Vec<Result<SessionStart, String>>,
+    ) -> (Arc<dyn TerminalSessionFactory>, Arc<StartDirectories>) {
+        let directories = Arc::new(StartDirectories::default());
+        let factory = Arc::new(FakeFactory {
             starts: Mutex::new(plans.into_iter().collect()),
-        })
+            directories: Arc::clone(&directories),
+            palettes: Arc::default(),
+        });
+        (factory, directories)
+    }
+
+    fn fake_factory_recording_palettes(
+        plans: Vec<Result<SessionStart, String>>,
+    ) -> (Arc<dyn TerminalSessionFactory>, Arc<StartPalettes>) {
+        let palettes = Arc::new(StartPalettes::default());
+        let factory = Arc::new(FakeFactory {
+            starts: Mutex::new(plans.into_iter().collect()),
+            directories: Arc::default(),
+            palettes: Arc::clone(&palettes),
+        });
+        (factory, palettes)
+    }
+
+    fn start_test_registry(
+        factory: Arc<dyn TerminalSessionFactory>,
+    ) -> Result<(SessionRegistry, async_channel::Receiver<()>), RegistryError> {
+        SessionRegistry::start(factory, test_geometry(), &ThemeColors::default())
     }
 
     fn test_cell() -> CellSize {
@@ -2631,15 +4274,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shell_notice_keeps_live_action_failures_visible() {
-        assert_eq!(
-            shell_notice_text(Some(
-                "workspace action unavailable: split panes are unavailable"
-            )),
-            Some("• workspace action unavailable: split panes are unavailable".into())
-        );
-        assert_eq!(shell_notice_text(None), None);
+    fn test_geometry() -> SessionGeometry {
+        SessionGeometry {
+            surface: size(px(80.0), px(40.0)),
+            scale: ScaleFactor::new(1.0),
+            cell: test_cell(),
+        }
     }
 
     #[test]
@@ -2669,17 +4309,6 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_labels_use_a_stable_single_line_name() {
-        assert_eq!(
-            sidebar_tab_label("~/Code/src/github.com/cuenv/cuenv"),
-            "cuenv"
-        );
-        assert_eq!(sidebar_tab_label("/"), "/");
-        assert_eq!(sidebar_tab_label("build"), "build");
-        assert_eq!(sidebar_tab_label("sleep 5 ~/Code/cuenv"), "cuenv");
-    }
-
-    #[test]
     fn shell_control_chords_are_never_app_shortcuts() {
         let control = gpui::Modifiers {
             control: true,
@@ -2689,6 +4318,222 @@ mod tests {
         for key in ["c", "d", "f", "k", "t", "v", "w"] {
             assert_eq!(TerminalView::workspace_shortcut(key, control), None);
         }
+    }
+
+    #[test]
+    fn control_page_keys_select_tab_direction_without_stealing_other_chords() {
+        let control = gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            TerminalView::tab_shortcut("pageup", control),
+            Some(TabDirection::Previous)
+        );
+        assert_eq!(
+            TerminalView::tab_shortcut("PageDown", control),
+            Some(TabDirection::Next)
+        );
+        assert_eq!(
+            TerminalView::tab_shortcut("pageup", gpui::Modifiers::default()),
+            None
+        );
+        for modifiers in [
+            gpui::Modifiers {
+                shift: true,
+                ..control
+            },
+            gpui::Modifiers {
+                alt: true,
+                ..control
+            },
+            gpui::Modifiers {
+                platform: true,
+                ..control
+            },
+        ] {
+            assert_eq!(TerminalView::tab_shortcut("pageup", modifiers), None);
+        }
+        assert_eq!(
+            TerminalView::tab_shortcut(
+                "pageup",
+                gpui::Modifiers {
+                    function: true,
+                    ..control
+                }
+            ),
+            Some(TabDirection::Previous)
+        );
+        assert_eq!(TerminalView::tab_shortcut("c", control), None);
+    }
+
+    #[test]
+    fn tabs_are_selected_by_number_on_the_platform_modifier_alone() {
+        let held = gpui::Modifiers {
+            control: !cfg!(target_os = "macos"),
+            platform: cfg!(target_os = "macos"),
+            ..Default::default()
+        };
+        let digit = |key| tab_number_shortcut(key, held).map(TabNumber::digit);
+        assert_eq!(digit("1"), Some(1));
+        assert_eq!(digit("9"), Some(9));
+        assert_eq!(digit("0"), None);
+        assert_eq!(digit("c"), None);
+        assert_eq!(tab_number_shortcut("1", gpui::Modifiers::default()), None);
+        for extra in [
+            gpui::Modifiers {
+                shift: true,
+                ..held
+            },
+            gpui::Modifiers { alt: true, ..held },
+        ] {
+            assert_eq!(tab_number_shortcut("1", extra), None);
+        }
+    }
+
+    /// The modifiers that select a tab by number on this platform.
+    fn tab_number_modifiers_for_test() -> gpui::Modifiers {
+        let expected = tab_number_modifiers();
+        gpui::Modifiers {
+            control: expected.control,
+            platform: expected.platform,
+            ..gpui::Modifiers::default()
+        }
+    }
+
+    fn shell_with_tabs(count: usize) -> WorkspaceShell {
+        let mut shell = WorkspaceShell::new().unwrap();
+        (1..count).for_each(|_| {
+            shell.create_tab("Terminal").unwrap();
+        });
+        shell
+    }
+
+    #[test]
+    fn a_number_reaching_no_tab_is_left_for_the_terminal() {
+        let tabs = shell_with_tabs(1);
+        let targets = ChordTargets {
+            palette: None,
+            tabs: &tabs,
+        };
+        let held = tab_number_modifiers_for_test();
+        assert_eq!(
+            route_chord("6", held, &targets),
+            ChordRoute::Unclaimed,
+            "Ctrl-6 has to stay RS for an application when there is no sixth tab",
+        );
+        assert_eq!(
+            route_chord("1", held, &targets),
+            ChordRoute::SelectTab(tabs.active_tab().unwrap()),
+        );
+    }
+
+    #[test]
+    fn a_configured_palette_chord_on_a_digit_takes_precedence() {
+        let tabs = shell_with_tabs(1);
+        let held = tab_number_modifiers_for_test();
+        let palette = KeyChord {
+            key: "1".into(),
+            modifiers: tab_number_modifiers(),
+        };
+        let with_catalogue = ChordTargets {
+            palette: Some(&palette),
+            tabs: &tabs,
+        };
+        assert_eq!(
+            route_chord("1", held, &with_catalogue),
+            ChordRoute::OpenPalette
+        );
+        let without_catalogue = ChordTargets {
+            palette: None,
+            tabs: &tabs,
+        };
+        assert_eq!(
+            route_chord("1", held, &without_catalogue),
+            ChordRoute::SelectTab(tabs.active_tab().unwrap()),
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn default_palette_shortcut_preserves_plain_ctrl_k_without_tasks() {
+        let tabs = shell_with_tabs(1);
+        let default = Keybindings::default();
+        let (state, _) = bracketed_pane("zsh");
+        assert!(state.task_catalogue().is_empty());
+        let targets = ChordTargets {
+            palette: Some(active_palette_chord(Some(&state), &default.palette)),
+            tabs: &tabs,
+        };
+        let control = gpui::Modifiers {
+            control: true,
+            ..gpui::Modifiers::default()
+        };
+        assert_eq!(route_chord("k", control, &targets), ChordRoute::Unclaimed);
+        assert_eq!(
+            route_chord(
+                "k",
+                gpui::Modifiers {
+                    shift: true,
+                    ..control
+                },
+                &targets
+            ),
+            ChordRoute::OpenPalette
+        );
+        assert_eq!(
+            active_palette_chord(None, &default.palette),
+            &default.palette
+        );
+    }
+
+    #[test]
+    fn the_tab_hint_names_the_chord_that_selects_the_tab() {
+        assert_eq!(
+            tab_number_hint(TabNumber::from_key("3").unwrap()),
+            if cfg!(target_os = "macos") {
+                "⌘3"
+            } else {
+                "Ctrl+3"
+            }
+        );
+    }
+
+    #[test]
+    fn the_app_chord_label_describes_a_chord_the_app_accepts() {
+        let ChordModifiers {
+            control,
+            alt,
+            shift,
+            platform,
+        } = app_chord_modifiers();
+        assert_eq!(
+            app_chord(gpui::Modifiers {
+                control,
+                alt,
+                shift,
+                platform,
+                function: false,
+            }),
+            Some(AppChord::Primary)
+        );
+        assert_eq!(
+            app_chord_label("b"),
+            if cfg!(target_os = "macos") {
+                "⌘B"
+            } else {
+                "Ctrl+Shift+B"
+            }
+        );
+    }
+
+    #[test]
+    fn a_measurement_reports_a_change_only_when_it_differs() {
+        let slot = Mutex::new((1, 2));
+        assert!(!store_if_changed(&slot, (1, 2)));
+        assert!(store_if_changed(&slot, (3, 2)));
+        assert_eq!(*slot.lock().unwrap(), (3, 2));
+        assert!(!store_if_changed(&slot, (3, 2)));
     }
 
     #[test]
@@ -2782,8 +4627,59 @@ mod tests {
         cell.background = Color::Rgb(Rgb(4, 5, 6));
         cell.style.inverse = true;
         assert_eq!(
-            colors(&cell, &TerminalTheme::default(), false),
+            colors(&cell, &TerminalTheme::default(), CellLayer::Cell),
             (Rgb(4, 5, 6), Rgb(1, 2, 3))
+        );
+    }
+
+    #[test]
+    fn current_search_match_replaces_the_cell_colours_with_its_own_pair() {
+        let theme = TerminalTheme::default();
+        let mut cell = TerminalCell::narrow('x');
+        cell.foreground = Color::Rgb(Rgb(1, 2, 3));
+        assert_eq!(
+            colors(&cell, &theme, CellLayer::CurrentSearchMatch),
+            (theme.current_search_match_text, theme.current_search_match)
+        );
+    }
+
+    #[test]
+    fn cell_layer_splits_at_the_edges_of_the_current_match_only() {
+        let span = |kind, row| CellOverlaySpan {
+            row,
+            start_column: 2,
+            end_column: 4,
+            kind,
+        };
+        let overlays = [
+            span(OverlayKind::Selection, 0),
+            span(OverlayKind::CurrentSearchMatch, 1),
+        ];
+        let at = |row, column| cell_layer(None, &overlays, CellPosition { row, column });
+        assert_eq!(at(1, 1), CellLayer::Cell);
+        assert_eq!(at(1, 2), CellLayer::CurrentSearchMatch);
+        assert_eq!(at(1, 3), CellLayer::CurrentSearchMatch);
+        assert_eq!(at(1, 4), CellLayer::Cell);
+        // A selection and another row's match leave the cell's own colours.
+        assert_eq!(at(0, 2), CellLayer::Cell);
+    }
+
+    #[test]
+    fn only_a_block_cursor_outranks_the_current_match() {
+        let overlays = [CellOverlaySpan {
+            row: 0,
+            start_column: 0,
+            end_column: 1,
+            kind: OverlayKind::CurrentSearchMatch,
+        }];
+        let position = CellPosition { row: 0, column: 0 };
+        assert_eq!(
+            cell_layer(Some(HostCursorStyle::Block), &overlays, position),
+            CellLayer::BlockCursor
+        );
+        assert_eq!(
+            cell_layer(Some(HostCursorStyle::Bar), &overlays, position),
+            CellLayer::CurrentSearchMatch
         );
     }
 
@@ -2802,6 +4698,159 @@ mod tests {
     }
 
     #[test]
+    fn dim_text_fades_towards_the_background_it_is_drawn_on() {
+        let mut cell = TerminalCell::narrow('x');
+        cell.foreground = Color::Rgb(Rgb(100, 100, 100));
+        cell.background = Color::Rgb(Rgb(200, 200, 200));
+        cell.style.dim = true;
+        assert_eq!(
+            colors(&cell, &TerminalTheme::default(), CellLayer::Cell).0,
+            Rgb(150, 150, 150)
+        );
+        // An inverse cell fades towards what is now behind it.
+        cell.style.inverse = true;
+        assert_eq!(
+            colors(&cell, &TerminalTheme::default(), CellLayer::Cell).0,
+            Rgb(150, 150, 150)
+        );
+    }
+
+    /// A cell with no layer above it, on a selection or not.
+    fn cell_painted(cell: &TerminalCell, tint: Option<Rgb>) -> PaintedCell<'_> {
+        PaintedCell {
+            cell,
+            layer: CellLayer::Cell,
+            tint,
+        }
+    }
+
+    #[test]
+    fn a_search_match_tints_a_cell_as_a_selection_does_and_keeps_its_glyphs_colours() {
+        let theme = TerminalTheme::from_config(&TerminalConfig::default());
+        let at = |column| CellPosition { row: 0, column };
+        let span = |kind, start_column, end_column| CellOverlaySpan {
+            row: 0,
+            start_column,
+            end_column,
+            kind,
+        };
+        let overlays = [
+            span(OverlayKind::Selection, 0, 2),
+            span(OverlayKind::SearchMatch, 1, 3),
+            span(OverlayKind::CurrentSearchMatch, 3, 4),
+        ];
+        assert_eq!(
+            quiet_tint_at(&overlays, at(0), &theme),
+            Some(theme.selection)
+        );
+        assert_eq!(
+            quiet_tint_at(&overlays, at(1), &theme),
+            Some(theme.search_match),
+            "painted last where they overlap"
+        );
+        assert_eq!(quiet_tint_at(&overlays, at(3), &theme), None);
+        assert_eq!(quiet_tint_at(&overlays, at(4), &theme), None);
+        let matched_layer = cell_layer(None, &overlays, at(2));
+        assert_eq!(matched_layer, CellLayer::Cell);
+    }
+
+    #[test]
+    fn selected_dim_text_fades_towards_the_selection_behind_it() {
+        let theme = TerminalTheme::default();
+        let mut cell = TerminalCell::narrow('x');
+        cell.style.dim = true;
+        let selected = readable_foreground(cell_painted(&cell, Some(theme.selection)), &theme);
+        assert_eq!(selected, dimmed(theme.text, theme.selection));
+        let unselected = readable_foreground(cell_painted(&cell, None), &theme);
+        assert_eq!(unselected, dimmed(theme.text, theme.surface));
+        assert!(
+            contrast_ratio(selected, theme.selection) > contrast_ratio(unselected, theme.selection),
+            "selecting dim text must not make it harder to read"
+        );
+    }
+
+    fn contrast_theme() -> TerminalTheme {
+        TerminalTheme::from_config(&TerminalConfig {
+            minimum_contrast: crate::terminal::config::MinimumContrast::new(4.5)
+                .expect("a valid ratio"),
+            ..TerminalConfig::default()
+        })
+    }
+
+    #[test]
+    fn minimum_contrast_lifts_palette_text_but_not_explicit_colours_or_graphics() {
+        let theme = contrast_theme();
+        let surface = theme.surface;
+        let readable = |cell: &TerminalCell, selection| {
+            readable_foreground(cell_painted(cell, selection), &theme)
+        };
+        let mut palette = TerminalCell::narrow('x');
+        // ANSI black sits close to the default surface.
+        palette.foreground = Color::Indexed(0);
+        let lifted = readable(&palette, None);
+        assert!(contrast_ratio(lifted, surface) >= 4.5);
+
+        let mut explicit = palette.clone();
+        explicit.foreground = Color::Rgb(Rgb(40, 40, 50));
+        assert_eq!(readable(&explicit, None), Rgb(40, 40, 50));
+
+        // Drawn as a shape, and through the font: both have to meet their neighbours.
+        for graphic in ["\u{E0B0}", "\u{E0B4}", "\u{2801}", "\u{1FB00}"] {
+            let mut cell = palette.clone();
+            cell.text = Some(graphic.into());
+            assert_eq!(readable(&cell, None), theme.ansi[0], "{graphic}");
+        }
+    }
+
+    #[test]
+    fn minimum_contrast_measures_against_a_selection_beneath_the_cell() {
+        let theme = contrast_theme();
+        let mut cell = TerminalCell::narrow('x');
+        cell.foreground = Color::Indexed(7);
+        let plain = readable_foreground(cell_painted(&cell, None), &theme);
+        let selected = Rgb(170, 170, 180);
+        let on_selection = readable_foreground(cell_painted(&cell, Some(selected)), &theme);
+        assert_ne!(plain, on_selection);
+        assert!(contrast_ratio(on_selection, selected) >= 4.5);
+    }
+
+    #[test]
+    fn minimum_contrast_leaves_a_layer_with_its_own_colours_alone() {
+        let theme = TerminalTheme {
+            cursor_text: Rgb(240, 225, 230),
+            ..contrast_theme()
+        };
+        assert_eq!(
+            readable_foreground(
+                PaintedCell {
+                    cell: &TerminalCell::narrow('x'),
+                    layer: CellLayer::BlockCursor,
+                    tint: None,
+                },
+                &theme,
+            ),
+            theme.cursor_text
+        );
+    }
+
+    #[test]
+    fn bold_cells_take_the_configured_weight() {
+        let mut config = TerminalConfig::default();
+        config.font.bold_weight = 800;
+        let metrics = TerminalMetrics {
+            font: gpui::font("Test"),
+            font_size: px(16.0),
+            bold_weight: FontWeight(f32::from(config.font.bold_weight)),
+            cell: size(px(9.0), px(19.0)),
+            scale: ScaleFactor::new(1.0),
+        };
+        let mut cell = TerminalCell::narrow('x');
+        assert_eq!(cell_font(&cell, &metrics).weight, FontWeight::NORMAL);
+        cell.style.bold = true;
+        assert_eq!(cell_font(&cell, &metrics).weight, FontWeight(800.0));
+    }
+
+    #[test]
     fn hidden_overrides_dimmed_foreground() {
         let mut cell = TerminalCell::narrow('x');
         cell.foreground = Color::Rgb(Rgb(100, 120, 140));
@@ -2810,7 +4859,7 @@ mod tests {
         cell.style.hidden = true;
 
         assert_eq!(
-            colors(&cell, &TerminalTheme::default(), false),
+            colors(&cell, &TerminalTheme::default(), CellLayer::Cell),
             (Rgb(4, 5, 6), Rgb(4, 5, 6))
         );
     }
@@ -2820,21 +4869,121 @@ mod tests {
         let mut frame = TerminalView::empty_frame();
         frame.cursor.position = Some((0, 0));
         assert_eq!(
-            cursor_style_at(&frame, true, 0, 0),
+            cursor_style_at(
+                &frame,
+                CursorFocus::Focused,
+                CellPosition { row: 0, column: 0 }
+            ),
             Some(HostCursorStyle::Block)
         );
-        assert_eq!(cursor_style_at(&frame, false, 0, 0), None);
-        assert_eq!(cursor_style_at(&frame, true, 0, 1), None);
+        assert_eq!(
+            cursor_style_at(
+                &frame,
+                CursorFocus::Focused,
+                CellPosition { row: 0, column: 1 }
+            ),
+            None
+        );
         frame.cursor.visible = Known::Known(false);
-        assert_eq!(cursor_style_at(&frame, true, 0, 0), None);
+        assert_eq!(
+            cursor_style_at(
+                &frame,
+                CursorFocus::Focused,
+                CellPosition { row: 0, column: 0 }
+            ),
+            None
+        );
+    }
+
+    fn wide_character_row() -> Vec<TerminalCell> {
+        vec![
+            TerminalCell::narrow('a'),
+            TerminalCell::wide('\u{4e16}'),
+            TerminalCell::trailing_spacer(),
+            TerminalCell::narrow('b'),
+            TerminalCell::leading_spacer(),
+        ]
     }
 
     #[test]
-    fn terminal_focus_requires_a_live_pane_as_well_as_window_focus() {
-        assert!(terminal_has_focus(true, true));
-        assert!(!terminal_has_focus(false, true));
-        assert!(!terminal_has_focus(true, false));
-        assert!(!terminal_has_focus(false, false));
+    fn a_cursor_covers_both_halves_of_a_wide_character() {
+        let cells = wide_character_row();
+        assert_eq!(cursor_columns(&cells, 0), 0..1);
+        assert_eq!(cursor_columns(&cells, 1), 1..3);
+        assert_eq!(cursor_columns(&cells, 2), 1..3);
+        assert_eq!(cursor_columns(&cells, 3), 3..4);
+        assert_eq!(cursor_columns(&cells, 4), 4..5);
+    }
+
+    #[test]
+    fn a_cursor_never_covers_a_column_the_row_does_not_have() {
+        assert_eq!(cursor_columns(&[TerminalCell::wide('\u{4e16}')], 0), 0..1);
+        assert_eq!(cursor_columns(&[], 3), 3..4);
+        // A spacer with no wide character before it stays on its own column.
+        assert_eq!(cursor_columns(&[TerminalCell::trailing_spacer()], 0), 0..1);
+    }
+
+    #[test]
+    fn a_wide_character_under_a_cursor_is_the_cursors_on_both_halves() {
+        let mut frame = TerminalView::empty_frame();
+        frame.rows[0].cells = wide_character_row();
+        for cursor_column in [1, 2] {
+            frame.cursor.position = Some((0, cursor_column));
+            let style_at = |column| {
+                cursor_style_at(
+                    &frame,
+                    CursorFocus::Focused,
+                    CellPosition { row: 0, column },
+                )
+            };
+            assert_eq!(style_at(0), None);
+            assert_eq!(style_at(1), Some(HostCursorStyle::Block));
+            assert_eq!(style_at(2), Some(HostCursorStyle::Block));
+            assert_eq!(style_at(3), None);
+        }
+    }
+
+    #[test]
+    fn an_unfocused_cursor_is_an_outline_unless_it_is_hidden() {
+        let mut frame = TerminalView::empty_frame();
+        frame.cursor.position = Some((0, 0));
+        for shape in [CursorShape::Block, CursorShape::Bar, CursorShape::Underline] {
+            frame.cursor.shape = Known::Known(shape);
+            assert_eq!(
+                cursor_style_at(
+                    &frame,
+                    CursorFocus::Unfocused,
+                    CellPosition { row: 0, column: 0 }
+                ),
+                Some(HostCursorStyle::Hollow)
+            );
+        }
+        assert_eq!(
+            cursor_style_at(
+                &frame,
+                CursorFocus::Unfocused,
+                CellPosition { row: 0, column: 1 }
+            ),
+            None
+        );
+        frame.cursor.visible = Known::Known(false);
+        assert_eq!(
+            cursor_style_at(
+                &frame,
+                CursorFocus::Unfocused,
+                CellPosition { row: 0, column: 0 }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_outline_leaves_the_glyph_inside_it_its_own_colours() {
+        let position = CellPosition { row: 0, column: 0 };
+        assert_eq!(
+            cell_layer(Some(HostCursorStyle::Hollow), &[], position),
+            CellLayer::Cell
+        );
     }
 
     #[test]
@@ -2870,11 +5019,13 @@ mod tests {
     fn failed_tab_creation_leaves_workspace_and_registry_unchanged() {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Err("spawn failed".into())]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let active = registry.active_pane().unwrap();
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
         assert_eq!(registry.sessions.len(), 1);
-        let error = registry.start_tab(80, 40, test_cell()).unwrap_err();
+        let error = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap_err();
         assert_eq!(error, RegistryError::Session("spawn failed".into()));
         assert_eq!(registry.active_pane(), Some(active));
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
@@ -2882,11 +5033,321 @@ mod tests {
     }
 
     #[test]
+    fn restarting_a_broken_pane_gives_it_a_fresh_session_in_the_same_tab() {
+        let (initial, old_effects) = fake_start('a', Vec::new(), None);
+        let (replacement, new_effects) = fake_start('b', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(initial), Ok(replacement)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let old_generation = registry.sessions[&pane].generation;
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.error = Some("pipe gone".into());
+        state.cuenv.presentation.banner = Some("project".into());
+        state.cuenv.presentation.rail =
+            Some(crate::integrations::cuenv::RailColor(0x89, 0xb4, 0xfa));
+        state
+            .cuenv
+            .presentation
+            .terminal
+            .terminal_transparency_percent = 40;
+
+        let restarted = registry
+            .restart_pane(pane, test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+
+        assert_eq!(registry.active_pane(), Some(pane));
+        assert_eq!(registry.workspace.workspace().tabs().len(), 1);
+        let state = &registry.sessions[&pane];
+        assert_eq!(state.error, None);
+        assert_eq!(state.generation, restarted.generation);
+        assert_ne!(state.generation, old_generation);
+        assert_eq!(
+            state
+                .cuenv
+                .presentation
+                .terminal
+                .terminal_transparency_percent,
+            40,
+            "it keeps its look"
+        );
+        assert_eq!(
+            state.cuenv.presentation.banner.as_deref(),
+            Some("project"),
+            "it stays in that project"
+        );
+        assert!(state.cuenv.presentation.rail.is_some());
+
+        old_effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::Title("stale".into()));
+        assert!(
+            !registry
+                .apply_wake(pane, old_generation, Some(pane))
+                .accepted,
+            "a wake from the old session is ignored"
+        );
+        new_effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::Title("fresh".into()));
+        assert!(
+            registry
+                .apply_wake(pane, restarted.generation, Some(pane))
+                .accepted
+        );
+        assert_eq!(registry.sessions[&pane].activity.title(), Some("fresh"));
+    }
+
+    #[test]
+    fn a_restarted_shell_starts_where_the_broken_one_was_and_keeps_that_directorys_look() {
+        let directory = std::env::temp_dir();
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let (replacement, _) = fake_start('b', Vec::new(), None);
+        let (factory, directories) = fake_factory_recording(vec![Ok(initial), Ok(replacement)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.cuenv.observe_cwd(directory.clone());
+        state.cuenv.presentation.banner = Some("project".into());
+
+        registry
+            .restart_pane(pane, test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+
+        assert_eq!(
+            directories.lock().unwrap().as_slice(),
+            [None, Some(directory.clone())]
+        );
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        assert!(
+            !state.cuenv.observe_cwd(directory),
+            "the new shell reporting that directory is no news"
+        );
+        assert_eq!(state.cuenv.presentation.banner.as_deref(), Some("project"));
+
+        state
+            .cuenv
+            .observe_cwd(std::path::PathBuf::from("/elsewhere"));
+        assert_eq!(
+            state.cuenv.presentation.banner, None,
+            "somewhere else, the project's look goes"
+        );
+    }
+
+    #[test]
+    fn a_restart_from_a_directory_that_has_gone_starts_at_the_default() {
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let (replacement, _) = fake_start('b', Vec::new(), None);
+        let (factory, directories) = fake_factory_recording(vec![Ok(initial), Ok(replacement)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        registry
+            .sessions
+            .get_mut(&pane)
+            .unwrap()
+            .cuenv
+            .observe_cwd(std::env::temp_dir().join("cuetty-no-such-directory"));
+
+        registry
+            .restart_pane(pane, test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+
+        assert_eq!(directories.lock().unwrap().as_slice(), [None, None]);
+    }
+
+    #[test]
+    fn a_restart_that_cannot_start_a_shell_leaves_the_pane_as_it_was() {
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(initial), Err("no pty".into())]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        registry.sessions.get_mut(&pane).unwrap().error = Some("pipe gone".into());
+
+        let error = registry
+            .restart_pane(pane, test_geometry(), SystemAppearance::Dark)
+            .err();
+
+        assert_eq!(error, Some(RegistryError::Session("no pty".into())));
+        let state = &registry.sessions[&pane];
+        assert_eq!(state.generation, generation);
+        assert_eq!(state.error.as_deref(), Some("pipe gone"));
+    }
+
+    #[test]
+    fn a_window_that_opened_with_no_shell_can_still_start_one() {
+        let (start, _) = fake_start('a', Vec::new(), None);
+        let mut registry = SessionRegistry::empty(fake_factory(vec![Ok(start)]));
+        registry.notice = Some("Could not start a shell: no pty".into());
+        assert_eq!(registry.active_pane(), None);
+
+        let (pane, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+
+        assert_eq!(registry.active_pane(), Some(pane));
+        assert_eq!(registry.notice, None);
+    }
+
+    #[test]
+    fn a_broken_pane_offers_no_tasks() {
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.cuenv.tasks = vec![runnable_task("build")];
+        assert!(!state.task_catalogue().is_empty());
+        state.error = Some("pipe gone".into());
+        assert!(state.task_catalogue().is_empty());
+    }
+
+    #[test]
+    fn only_a_fresh_plain_enter_takes_the_action_on_offer() {
+        let plain = gpui::Modifiers::default();
+        assert!(takes_offered_action(&key_press("enter", plain)));
+        assert!(!takes_offered_action(&key_press("x", plain)));
+        assert!(!takes_offered_action(&key_press(
+            "enter",
+            gpui::Modifiers {
+                shift: true,
+                ..plain
+            }
+        )));
+        assert!(!takes_offered_action(&gpui::KeyDownEvent {
+            is_held: true,
+            ..key_press("enter", plain)
+        }));
+    }
+
+    fn palette_recording_start() -> (SessionStart, FakePalettes) {
+        let (wake_tx, wake_rx) = async_channel::unbounded();
+        drop(wake_tx);
+        let palette = FakePalettes::default();
+        let session = FakeSession {
+            frame: frame_with('a'),
+            effects: Arc::default(),
+            close_error: None,
+            foreground: Arc::new(Mutex::new("zsh".into())),
+            sent: Arc::default(),
+            cursor: None,
+            palette: Arc::clone(&palette),
+        };
+        let start = SessionStart {
+            session: Box::new(session),
+            wake_rx,
+        };
+        (start, palette)
+    }
+
+    #[test]
+    fn a_shell_starts_already_knowing_the_palette_its_pane_paints_in() {
+        let starts = (0..3)
+            .map(|_| Ok(palette_recording_start().0))
+            .collect::<Vec<_>>();
+        let (factory, palettes) = fake_factory_recording_palettes(starts);
+        let (mut registry, _) =
+            SessionRegistry::start(factory, test_geometry(), &ThemeName::Paper.colors()).unwrap();
+        let first = registry.active_pane().unwrap();
+        registry
+            .sessions
+            .get_mut(&first)
+            .unwrap()
+            .cuenv
+            .presentation
+            .terminal
+            .choose_theme(ThemeChoice::Named(ThemeName::Paper), None);
+
+        // A new tab carries its look over from the active one, and starts in it.
+        let (second, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+        registry
+            .sessions
+            .get_mut(&second)
+            .unwrap()
+            .cuenv
+            .presentation
+            .terminal
+            .choose_theme(ThemeChoice::FollowSystem, None);
+        registry
+            .restart_pane(second, test_geometry(), SystemAppearance::Light)
+            .unwrap();
+
+        assert_eq!(
+            *palettes.lock().unwrap(),
+            [
+                ThemeName::Paper.colors(),
+                ThemeName::Paper.colors(),
+                ThemeName::CatppuccinLatte.colors(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pane_answers_for_its_theme_while_its_tasks_are_still_being_discovered() {
+        let (start, told) = palette_recording_start();
+        let (mut registry, _) = start_test_registry(fake_factory(vec![Ok(start)])).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.cuenv.begin_source();
+        let mut presentation = crate::integrations::cuenv::CuettyPresentation::default();
+        presentation
+            .terminal
+            .choose_theme(ThemeChoice::Named(ThemeName::Paper), None);
+
+        assert!(
+            state
+                .cuenv
+                .apply(generation, Evaluation::Valid(presentation))
+        );
+        registry.sync_session_palettes(SystemAppearance::Dark);
+
+        assert_eq!(*told.lock().unwrap(), [ThemeName::Paper.colors()]);
+        assert!(registry.sessions[&pane].cuenv.tasks.is_empty());
+    }
+
+    #[test]
+    fn every_session_is_told_its_own_palette_and_only_when_it_changes() {
+        let (first_start, first_told) = palette_recording_start();
+        let (second_start, second_told) = palette_recording_start();
+        let factory = fake_factory(vec![Ok(first_start), Ok(second_start)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let first = registry.active_pane().unwrap();
+        let (second, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+        let mut configure = |pane, choice| {
+            let state = registry.sessions.get_mut(&pane).unwrap();
+            state.cuenv.presentation.terminal.choose_theme(choice, None);
+        };
+        configure(first, ThemeChoice::FollowSystem);
+        configure(second, ThemeChoice::Named(ThemeName::Paper));
+
+        registry.sync_session_palettes(SystemAppearance::Dark);
+        registry.sync_session_palettes(SystemAppearance::Dark);
+        assert_eq!(
+            *first_told.lock().unwrap(),
+            [ThemeName::CatppuccinMocha.colors()]
+        );
+        assert_eq!(*second_told.lock().unwrap(), [ThemeName::Paper.colors()]);
+
+        registry.sync_session_palettes(SystemAppearance::Light);
+        assert_eq!(
+            first_told.lock().unwrap().last(),
+            Some(&ThemeName::CatppuccinLatte.colors()),
+            "a tab out of sight still answers for the theme it paints"
+        );
+        assert_eq!(second_told.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn terminal_configuration_follows_the_active_tab() {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let first_pane = registry.active_pane().unwrap();
         let first_tab = registry.workspace.active_tab().unwrap();
         registry
@@ -2900,7 +5361,9 @@ mod tests {
             .size_px = 20.0;
         assert_eq!(registry.active_terminal_config().font.size_px, 20.0);
 
-        let (second_pane, _, _) = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (second_pane, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
         registry
             .sessions
             .get_mut(&second_pane)
@@ -2910,7 +5373,8 @@ mod tests {
             .terminal
             .terminal_padding
             .left = 2;
-        assert_eq!(registry.active_terminal_config().font.size_px, 16.0);
+        // A new tab starts with the look of the tab it opened from, not the defaults.
+        assert_eq!(registry.active_terminal_config().font.size_px, 20.0);
         assert_eq!(registry.active_terminal_config().terminal_padding.left, 2);
 
         // Updating an inactive pane must not change the active configuration.
@@ -2923,13 +5387,30 @@ mod tests {
             .terminal
             .font
             .size_px = 24.0;
-        assert_eq!(registry.active_terminal_config().font.size_px, 16.0);
+        assert_eq!(registry.active_terminal_config().font.size_px, 20.0);
+        let previous_tab = registry
+            .workspace
+            .tab_in_direction(TabDirection::Previous)
+            .unwrap();
+        assert_eq!(previous_tab, first_tab);
         registry
             .workspace
-            .apply(ShellAction::ActivateTab(first_tab))
+            .apply(ShellAction::ActivateTab(previous_tab))
             .unwrap();
+        assert_eq!(registry.active_pane(), Some(first_pane));
         assert_eq!(registry.active_terminal_config().font.size_px, 24.0);
-        assert_eq!(registry.active_terminal_config().terminal_padding.left, 8);
+        assert_eq!(registry.active_terminal_config().terminal_padding.left, 14);
+
+        let next_tab = registry
+            .workspace
+            .tab_in_direction(TabDirection::Next)
+            .unwrap();
+        registry
+            .workspace
+            .apply(ShellAction::ActivateTab(next_tab))
+            .unwrap();
+        assert_eq!(registry.active_pane(), Some(second_pane));
+        assert_eq!(registry.active_terminal_config().terminal_padding.left, 2);
     }
 
     #[test]
@@ -2937,9 +5418,11 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let first_pane = registry.active_pane().unwrap();
-        let (second_pane, _, _) = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (second_pane, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
         assert_eq!(registry.workspace.workspace().tabs().len(), 2);
         assert_eq!(registry.sessions.len(), 2);
 
@@ -2959,8 +5442,10 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), Some("already exited"));
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
-        let _ = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let _ = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
         let second_pane = registry.active_pane().unwrap();
         registry.close_pane(second_pane).unwrap();
         assert_eq!(registry.workspace.workspace().tabs().len(), 1);
@@ -2985,15 +5470,20 @@ mod tests {
             None,
         );
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let first_pane = registry.active_pane().unwrap();
-        let (second_pane, generation, _) = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (second_pane, generation, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
 
         let background = registry.apply_wake(second_pane, generation, Some(first_pane));
         assert!(background.accepted);
         assert!(background.clipboard.is_empty());
-        assert_eq!(registry.sessions[&second_pane].title, "background title");
-        assert_eq!(registry.sessions[&first_pane].title, "Cuetty");
+        assert_eq!(
+            registry.sessions[&second_pane].activity.title(),
+            Some("background title")
+        );
+        assert_eq!(registry.sessions[&first_pane].activity.title(), None);
 
         effects
             .lock()
@@ -3009,10 +5499,660 @@ mod tests {
     }
 
     #[test]
+    fn a_program_clearing_its_title_leaves_the_tab_untitled() {
+        let (initial, effects) = fake_start('a', vec![ControlEvent::Title("vim".into())], None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(registry.sessions[&pane].activity.title(), Some("vim"));
+
+        effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::Title(String::new()));
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(registry.sessions[&pane].activity.title(), None);
+    }
+
+    #[test]
+    fn a_tab_is_named_after_its_task_while_it_runs_and_its_program_otherwise() {
+        let (initial, foreground, _) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let tab = registry.workspace.workspace().tabs()[0].clone();
+        assert_eq!(registry.tab_label(&tab), "Terminal");
+
+        let task = CuenvTask {
+            name: "docs.build".into(),
+            description: None,
+            kind: crate::integrations::cuenv::CuenvTaskKind::Task,
+            requires_parameters: false,
+        };
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        state.launch_task("cuenv task docs.build", &task).unwrap();
+        assert_eq!(registry.tab_label(&tab), "docs.build");
+
+        let mut named = tab.clone();
+        named.custom_name = Some("site".into());
+        assert_eq!(registry.tab_label(&named), "site");
+
+        // The fake's shell never gave up the foreground, so the task ended
+        // between samples, and a sampled shell is not a program to name.
+        registry.sample_foreground(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        assert_eq!(registry.sessions[&pane].activity.task_name(), None);
+        assert_eq!(registry.sessions[&pane].activity.program(), None);
+        assert_eq!(registry.tab_label(&tab), "Terminal");
+
+        *foreground.lock().unwrap() = "cuenv".into();
+        registry.sample_foreground(std::time::Instant::now());
+        assert_eq!(registry.tab_label(&tab), "cuenv");
+    }
+
+    #[test]
+    fn the_active_tab_label_follows_the_active_tab_and_goes_with_it() {
+        let (initial, foreground, _) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        assert_eq!(registry.active_tab_label().as_deref(), Some("Terminal"));
+
+        *foreground.lock().unwrap() = "claude".into();
+        registry.sample_foreground(std::time::Instant::now());
+        assert_eq!(registry.active_tab_label().as_deref(), Some("claude"));
+
+        let empty = SessionRegistry::empty(fake_factory(Vec::new()));
+        assert_eq!(empty.active_tab_label(), None);
+    }
+
+    #[test]
+    fn a_title_lasts_exactly_as_long_as_the_program_that_set_it() {
+        let (initial, foreground, effects) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        let tab = registry.workspace.workspace().tabs()[0].clone();
+
+        // The program starts and sets its title between two periodic samples.
+        *foreground.lock().unwrap() = "deploy".into();
+        effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::Title("deploy logs".into()));
+        registry.apply_wake(pane, generation, Some(pane));
+        registry.sample_foreground(std::time::Instant::now());
+        assert_eq!(registry.tab_label(&tab), "deploy logs");
+
+        *foreground.lock().unwrap() = "zsh".into();
+        registry.sample_foreground(std::time::Instant::now());
+        assert_eq!(registry.tab_label(&tab), "Terminal");
+    }
+
+    /// A pane whose shell has bracketed paste on, and what it has been sent.
+    fn bracketed_pane(process: &str) -> (PaneState, Arc<Mutex<Vec<u8>>>) {
+        let sent = Arc::<Mutex<Vec<u8>>>::default();
+        let session = FakeSession {
+            frame: frame_with('a'),
+            effects: Arc::default(),
+            close_error: None,
+            foreground: Arc::new(Mutex::new(process.to_owned())),
+            sent: Arc::clone(&sent),
+            cursor: None,
+            palette: Arc::default(),
+        };
+        let pane = PaneState::new(
+            SessionGeneration(1),
+            Box::new(session),
+            test_geometry().surface,
+        );
+        (pane, sent)
+    }
+
+    fn runnable_task(name: &str) -> CuenvTask {
+        CuenvTask {
+            name: name.into(),
+            description: None,
+            kind: crate::integrations::cuenv::CuenvTaskKind::Task,
+            requires_parameters: false,
+        }
+    }
+
+    #[test]
+    fn running_a_task_presses_enter_outside_the_bracketed_paste() {
+        let (mut pane, sent) = bracketed_pane("zsh");
+        let task = runnable_task("docs.build");
+        let command = task_command(std::path::Path::new("/tmp/x"), &task);
+        assert_eq!(pane.launch_task(&command, &task), Ok(TaskLaunch::Started));
+        let expected = format!("\x1b[200~{command}\x1b[201~\r");
+        assert_eq!(*sent.lock().unwrap(), expected.into_bytes());
+        assert_eq!(pane.activity.task_name(), Some("docs.build"));
+        assert_eq!(pane.marker_notice(), None);
+    }
+
+    #[test]
+    fn a_task_needing_arguments_is_left_at_the_prompt_unsent() {
+        let (mut pane, sent) = bracketed_pane("zsh");
+        let mut task = runnable_task("release");
+        task.requires_parameters = true;
+        let command = task_command(std::path::Path::new("/tmp/x"), &task);
+        assert_eq!(
+            pane.launch_task(&command, &task),
+            Ok(TaskLaunch::AwaitingArguments)
+        );
+        let expected = format!("\x1b[200~{command}\x1b[201~");
+        assert_eq!(*sent.lock().unwrap(), expected.into_bytes());
+        assert_eq!(
+            pane.marker_notice(),
+            Some("Add arguments for 'release' and press Enter")
+        );
+    }
+
+    fn pressed(key: KeyInput, modifiers: InputModifiers) -> TerminalKeyEvent {
+        TerminalKeyEvent {
+            key,
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn a_staged_tasks_hint_lasts_until_the_line_is_submitted_or_abandoned() {
+        let plain = InputModifiers::default();
+        for finishing in [
+            pressed(KeyInput::Enter, plain),
+            pressed(KeyInput::Character('c'), InputModifiers::CONTROL),
+        ] {
+            let (mut pane, _) = bracketed_pane("zsh");
+            let mut task = runnable_task("release");
+            task.requires_parameters = true;
+            pane.launch_task("cuenv task release ", &task).unwrap();
+            // Typing the arguments is what the hint asked for.
+            for key in [KeyInput::Character('c'), KeyInput::Character('1')] {
+                pane.input(pressed(key, plain)).unwrap();
+            }
+            assert!(pane.marker_notice().is_some());
+            pane.input(finishing).unwrap();
+            assert_eq!(pane.marker_notice(), None);
+        }
+    }
+
+    #[test]
+    fn a_configuration_notice_outranks_a_staged_tasks_hint() {
+        let (mut pane, _) = bracketed_pane("claude");
+        pane.launch_task("cuenv task docs.build", &runnable_task("docs.build"))
+            .unwrap();
+        pane.cuenv.task_notice = Some("tasks did not evaluate".into());
+        assert_eq!(pane.marker_notice(), Some("tasks did not evaluate"));
+        pane.cuenv.notice = Some("cuetty.cue is invalid".into());
+        assert_eq!(pane.marker_notice(), Some("cuetty.cue is invalid"));
+        pane.cuenv.notice = None;
+        pane.cuenv.task_notice = None;
+        assert_eq!(
+            pane.marker_notice(),
+            Some("Pasted 'docs.build'; press Enter to run it")
+        );
+    }
+
+    #[test]
+    fn enter_is_never_pressed_for_a_program_or_a_foreground_that_cannot_be_named() {
+        // Enter would submit whatever the program holds, such as an agent's prompt.
+        // In a shell running a script, it would answer whatever the script is asking.
+        for process in ["claude", "", "bash deploy.sh", "sh -c make"] {
+            let (mut pane, sent) = bracketed_pane(process);
+            let task = runnable_task("docs.build");
+            assert_eq!(
+                pane.launch_task("cuenv task docs.build", &task),
+                Ok(TaskLaunch::AwaitingEnter)
+            );
+            let expected = "\x1b[200~cuenv task docs.build\x1b[201~";
+            assert_eq!(*sent.lock().unwrap(), expected.as_bytes());
+            assert_eq!(pane.activity.task_name(), None);
+            assert_eq!(
+                pane.marker_notice(),
+                Some("Pasted 'docs.build'; press Enter to run it")
+            );
+        }
+    }
+
+    #[test]
+    fn a_task_needing_arguments_or_a_busy_pane_is_not_marked_running() {
+        let (initial, foreground, _) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let mut task = CuenvTask {
+            name: "release".into(),
+            description: None,
+            kind: crate::integrations::cuenv::CuenvTaskKind::Task,
+            requires_parameters: true,
+        };
+        state.launch_task("cuenv task release ", &task).unwrap();
+        assert_eq!(state.activity.task_name(), None);
+
+        // Vim started after the last periodic sample, which still says the shell.
+        task.requires_parameters = false;
+        *foreground.lock().unwrap() = "vim".into();
+        state.launch_task("cuenv task release", &task).unwrap();
+        assert_eq!(state.activity.task_name(), None);
+    }
+
+    /// A registry with two tabs, the second of them on screen and the first scripted
+    /// to report `effects` on its next wake.
+    fn background_tab_with(
+        effects: Vec<ControlEvent>,
+    ) -> (SessionRegistry, crate::workspace::PaneId, SessionGeneration) {
+        let (first, _) = fake_start('z', effects, None);
+        let (second, _) = fake_start('b', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(first), Ok(second)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.generation;
+        // What the tab last showed, which its next wake's 'z' differs from.
+        state.frame = frame_with('a');
+        registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+        registry.note_active_pane();
+        (registry, pane, generation)
+    }
+
+    #[test]
+    fn a_background_tab_reports_new_output_and_a_bell_until_it_is_arrived_at() {
+        let (mut registry, pane, generation) = background_tab_with(Vec::new());
+        let active = registry.active_pane();
+        registry.apply_wake(pane, generation, active);
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Unread)
+        );
+
+        let (mut registry, pane, generation) = background_tab_with(vec![ControlEvent::Bell]);
+        let active = registry.active_pane();
+        registry.apply_wake(pane, generation, active);
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Bell)
+        );
+
+        let tab = registry
+            .workspace
+            .workspace()
+            .tabs()
+            .iter()
+            .find(|tab| tab.focused == pane)
+            .map(|tab| tab.id)
+            .unwrap();
+        registry
+            .workspace
+            .apply(ShellAction::ActivateTab(tab))
+            .unwrap();
+        registry.note_active_pane();
+        assert_eq!(registry.sessions[&pane].status.indicator(), None);
+    }
+
+    #[test]
+    fn the_tab_on_screen_collects_neither_output_nor_a_bell() {
+        let (initial, _) = fake_start('z', vec![ControlEvent::Bell], None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.generation;
+        state.frame = frame_with('a');
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(registry.sessions[&pane].status.indicator(), None);
+    }
+
+    #[test]
+    fn the_tab_on_screen_reports_what_happens_while_its_window_is_in_the_background() {
+        let (initial, _) = fake_start('z', vec![ControlEvent::Bell], None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.generation;
+        state.frame = frame_with('a');
+        registry.note_active_pane();
+
+        registry.window_presence = WindowPresence::Inactive;
+        registry.note_active_pane();
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Bell)
+        );
+        // Redraws while the user is still elsewhere are not them coming back.
+        registry.note_active_pane();
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Bell)
+        );
+
+        registry.window_presence = WindowPresence::Active;
+        registry.note_active_pane();
+        assert_eq!(registry.sessions[&pane].status.indicator(), None);
+    }
+
+    #[test]
+    fn a_wake_that_changes_no_text_is_not_new_output() {
+        let (mut registry, pane, generation) = background_tab_with(Vec::new());
+        let unchanged = registry.sessions.get_mut(&pane).unwrap().session.frame();
+        registry.sessions.get_mut(&pane).unwrap().frame = unchanged;
+        let active = registry.active_pane();
+        registry.apply_wake(pane, generation, active);
+        assert_eq!(registry.sessions[&pane].status.indicator(), None);
+    }
+
+    #[test]
+    fn output_arriving_under_a_scrolled_back_view_is_new_output() {
+        let earlier = TerminalFrame {
+            viewport_offset: Some(40),
+            ..frame_with('a')
+        };
+        let later = TerminalFrame {
+            viewport_offset: Some(41),
+            ..frame_with('a')
+        };
+        assert!(shows_new_output(&earlier, &later));
+        assert!(!shows_new_output(&earlier, &earlier));
+    }
+
+    #[test]
+    fn a_launched_task_reports_running_then_finished_until_the_user_moves_on() {
+        let (mut state, _) = bracketed_pane("nu");
+        let now = std::time::Instant::now();
+        state.sample_foreground(now);
+        state
+            .launch_task("cuenv task build\n", &runnable_task("build"))
+            .unwrap();
+        assert_eq!(state.status.indicator(), Some(TabIndicator::Running));
+
+        // The task's program has come and gone, which the foreground only shows
+        // after the grace period for a task that has yet to appear.
+        state.sample_foreground(now + std::time::Duration::from_secs(60));
+        assert_eq!(state.status.indicator(), Some(TabIndicator::Finished));
+
+        state
+            .input(pressed(KeyInput::Character('x'), InputModifiers::default()))
+            .unwrap();
+        assert_eq!(state.status.indicator(), None);
+    }
+
+    fn pane_with_a_task_awaiting_arguments() -> (PaneState, FakeForeground) {
+        let session = FakeSession {
+            frame: TerminalView::empty_frame(),
+            sent: Arc::default(),
+            foreground: Arc::new(Mutex::new("nu".to_owned())),
+            effects: Arc::default(),
+            close_error: None,
+            cursor: None,
+            palette: Arc::default(),
+        };
+        let foreground = Arc::clone(&session.foreground);
+        let mut state = PaneState::new(
+            SessionGeneration(1),
+            Box::new(session),
+            test_geometry().surface,
+        );
+        state.sample_foreground(std::time::Instant::now());
+        let mut task = runnable_task("build");
+        task.requires_parameters = true;
+        state.launch_task("cuenv task build ", &task).unwrap();
+        (state, foreground)
+    }
+
+    #[test]
+    fn a_task_given_its_arguments_reports_running_from_the_enter_that_runs_it() {
+        let (mut state, _) = pane_with_a_task_awaiting_arguments();
+        let plain = InputModifiers::default();
+        state
+            .input(pressed(KeyInput::Character('x'), plain))
+            .unwrap();
+        assert_eq!(state.status.indicator(), None);
+        state.input(pressed(KeyInput::Enter, plain)).unwrap();
+        assert_eq!(state.status.indicator(), Some(TabIndicator::Running));
+        assert_eq!(state.activity.task_name(), Some("build"));
+    }
+
+    #[test]
+    fn a_staged_task_abandoned_or_overtaken_never_reports_running() {
+        let plain = InputModifiers::default();
+        let (mut abandoned, _) = pane_with_a_task_awaiting_arguments();
+        abandoned
+            .input(pressed(KeyInput::Character('c'), InputModifiers::CONTROL))
+            .unwrap();
+        abandoned.input(pressed(KeyInput::Enter, plain)).unwrap();
+        assert_eq!(abandoned.status.indicator(), None);
+
+        // Something else took the foreground, so this Enter is that program's.
+        let (mut overtaken, foreground) = pane_with_a_task_awaiting_arguments();
+        *foreground.lock().unwrap() = "vim".to_owned();
+        overtaken.input(pressed(KeyInput::Enter, plain)).unwrap();
+        assert_eq!(overtaken.status.indicator(), None);
+    }
+
+    #[test]
+    fn a_task_left_waiting_for_arguments_reports_nothing() {
+        let (mut state, _) = bracketed_pane("nu");
+        state.sample_foreground(std::time::Instant::now());
+        let mut task = runnable_task("build");
+        task.requires_parameters = true;
+        state.launch_task("cuenv task build", &task).unwrap();
+        assert_eq!(state.status.indicator(), None);
+    }
+
+    fn wake_with(effects: Vec<ControlEvent>) -> (SessionRegistry, crate::workspace::PaneId, bool) {
+        let (initial, _) = fake_start('z', effects, None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        let outcome = registry.apply_wake(pane, generation, Some(pane));
+        (registry, pane, outcome.should_close)
+    }
+
+    #[test]
+    fn a_shell_that_exits_cleanly_or_unknowably_takes_its_tab_with_it() {
+        for status in [Some(0), None] {
+            let (registry, pane, should_close) =
+                wake_with(vec![ControlEvent::ChildExited(status), ControlEvent::Close]);
+            assert!(should_close, "status {status:?}");
+            assert_eq!(registry.sessions[&pane].status.indicator(), None);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_that_fails_leaves_its_tab_and_its_output_until_it_is_closed() {
+        let (mut registry, pane, should_close) = wake_with(vec![
+            ControlEvent::ChildExited(Some(1 << 8)),
+            ControlEvent::Close,
+        ]);
+        assert!(!should_close);
+        assert_eq!(
+            registry.sessions[&pane].status.indicator(),
+            Some(TabIndicator::Failed)
+        );
+        assert_eq!(
+            registry.sessions[&pane].frame.rows[0].cells[0]
+                .text
+                .as_deref(),
+            Some("z")
+        );
+        registry.close_pane(pane).unwrap();
+        assert!(registry.sessions.is_empty());
+        assert!(registry.close_window_requested);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_close_arriving_on_a_later_wake_still_leaves_a_failed_shells_tab() {
+        let (initial, _, effects) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let generation = registry.sessions[&pane].generation;
+        effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::ChildExited(Some(9)));
+        registry.apply_wake(pane, generation, Some(pane));
+        effects.lock().unwrap().push(ControlEvent::Close);
+        assert!(
+            !registry
+                .apply_wake(pane, generation, Some(pane))
+                .should_close
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_shell_shows_its_output_even_if_something_hit_the_closed_session_first() {
+        let (initial, _, effects) = fake_start_in_foreground("zsh");
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.generation;
+        state.error = Some("terminal session is closed or its child has exited".into());
+        effects
+            .lock()
+            .unwrap()
+            .push(ControlEvent::ChildExited(Some(1 << 8)));
+        registry.apply_wake(pane, generation, Some(pane));
+        assert_eq!(registry.sessions[&pane].error, None);
+    }
+
+    #[test]
+    fn only_a_failed_shell_has_its_grid_refit_without_being_told() {
+        let (mut state, _) = bracketed_pane("zsh");
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let rows = state.session.frame().rows.len();
+        state.fit_grid(800, 0, cell);
+        assert_eq!(state.session.frame().rows.len(), rows);
+        state.status.apply(StatusEvent::SessionFailed(
+            crate::terminal::tab_status::ExitFailure::Code(1),
+        ));
+        state.fit_grid(800, 0, cell);
+        assert_eq!(state.session.frame().rows.len(), 0);
+        assert_eq!(state.error, None);
+    }
+
+    #[test]
+    fn a_failed_shell_still_offers_the_command_palette() {
+        let tabs = shell_with_tabs(1);
+        let held = tab_number_modifiers_for_test();
+        let (mut state, _) = bracketed_pane("zsh");
+        state.cuenv.tasks = vec![runnable_task("build")];
+        state.cuenv.presentation.keybindings.palette = KeyChord {
+            key: "1".into(),
+            modifiers: tab_number_modifiers(),
+        };
+        let route = |state: &PaneState| {
+            route_chord(
+                "1",
+                held,
+                &ChordTargets {
+                    palette: Some(active_palette_chord(
+                        Some(state),
+                        &Keybindings::default().palette,
+                    )),
+                    tabs: &tabs,
+                },
+            )
+        };
+        assert_eq!(route(&state), ChordRoute::OpenPalette);
+        state.status.apply(StatusEvent::SessionFailed(
+            crate::terminal::tab_status::ExitFailure::Code(1),
+        ));
+        assert_eq!(route(&state), ChordRoute::OpenPalette);
+    }
+
+    #[test]
+    fn a_failed_shell_offers_no_tasks() {
+        let (mut state, _) = bracketed_pane("zsh");
+        state.cuenv.tasks = vec![runnable_task("build")];
+        assert_eq!(state.task_catalogue().len(), 1);
+        state.status.apply(StatusEvent::SessionFailed(
+            crate::terminal::tab_status::ExitFailure::Code(1),
+        ));
+        assert!(state.task_catalogue().is_empty());
+    }
+
+    #[test]
+    fn enter_or_ctrl_d_alone_dismiss_an_exited_tab() {
+        let plain = gpui::Modifiers::default();
+        let control = gpui::Modifiers {
+            control: true,
+            ..plain
+        };
+        assert!(closes_exited_tab(&key_press("enter", plain)));
+        assert!(closes_exited_tab(&key_press("d", control)));
+        assert!(!closes_exited_tab(&key_press("d", plain)));
+        assert!(!closes_exited_tab(&key_press("enter", control)));
+        assert!(!closes_exited_tab(&key_press("x", plain)));
+        let shifted = gpui::Modifiers {
+            shift: true,
+            ..control
+        };
+        assert!(!closes_exited_tab(&key_press("d", shifted)));
+    }
+
+    #[test]
+    fn an_inactive_window_fades_colours_towards_the_background_on_either_theme() {
+        let (text, dark, light) = (Rgb(205, 214, 244), Rgb(30, 30, 46), Rgb(239, 241, 245));
+        assert_eq!(window_ink(text, dark, WindowPresence::Active), text);
+        for background in [dark, light] {
+            let faded = window_ink(text, background, WindowPresence::Inactive);
+            assert!(contrast_ratio(faded, background) < contrast_ratio(text, background));
+        }
+        assert_eq!(window_ink(dark, dark, WindowPresence::Inactive), dark);
+    }
+
+    #[test]
+    fn a_key_still_held_from_before_the_shell_died_leaves_its_tab_open() {
+        let control = gpui::Modifiers {
+            control: true,
+            ..gpui::Modifiers::default()
+        };
+        for press in [
+            key_press("enter", gpui::Modifiers::default()),
+            key_press("d", control),
+        ] {
+            let repeat = gpui::KeyDownEvent {
+                is_held: true,
+                ..press
+            };
+            assert!(!closes_exited_tab(&repeat));
+        }
+    }
+
+    #[test]
+    fn a_new_tab_is_measured_without_the_exit_notice_its_sibling_gives_up_room_to() {
+        let (mut state, _) = bracketed_pane("zsh");
+        let measured = size(px(800.0), px(600.0));
+        *state.measured_bounds.lock().unwrap() = measured;
+        assert_eq!(state.surface_for_sibling(), measured);
+        state.status.apply(StatusEvent::SessionFailed(
+            crate::terminal::tab_status::ExitFailure::Code(1),
+        ));
+        let surface = state.surface_for_sibling();
+        assert_eq!(surface.width, measured.width);
+        assert!(surface.height > measured.height);
+    }
+
+    #[test]
     fn close_wake_samples_the_final_frame_before_requesting_pane_removal() {
         let (initial, _) = fake_start('z', vec![ControlEvent::Close], None);
         let factory = fake_factory(vec![Ok(initial)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let pane = registry.active_pane().unwrap();
         let state = registry.sessions.get_mut(&pane).unwrap();
         let generation = state.generation;
@@ -3027,8 +6167,7 @@ mod tests {
                 .as_deref(),
             Some("z")
         );
-        // The UI may now remove the pane; this is an ordering guarantee,
-        // not a promise to retain exited output on screen.
+        // The UI may now remove the pane; this is an ordering guarantee.
     }
 
     #[test]
@@ -3036,9 +6175,11 @@ mod tests {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial), Ok(second)]);
-        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let (mut registry, _) = start_test_registry(factory).unwrap();
         let first_pane = registry.active_pane().unwrap();
-        let (second_pane, _, _) = registry.start_tab(80, 40, test_cell()).unwrap();
+        let (second_pane, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,

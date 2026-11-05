@@ -65,9 +65,6 @@ FFI edge-case tests keep no-crash scenarios as explicit ignored results instead
 of empty match arms or local lint suppressions.
 Module-evaluation fixture tests return `Result` from setup/evaluation helpers
 instead of carrying file-level expect allowances.
-Retry integration tests use atomics for attempt counters and fallible helpers
-for captured backoff timings, keeping exponential-backoff coverage explicit
-without file-level unwrap/expect allowances.
 CUE evaluation benchmarks keep fixture setup explicit as `Result` values and
 pass those results through Criterion helpers instead of using benchmark-wide
 unwrap/expect allowances.
@@ -112,47 +109,6 @@ For simpler single-directory evaluation:
 - `evaluate_cue_package_typed::<T>(path, package)` → `Result<T>` - Deserializes to type
 - `get_bridge_version()` → `Result<String>` - Bridge diagnostics
 
-### Limits
-
-The `Limits` struct configures validation boundaries:
-
-```rust
-use cuengine::Limits;
-
-let limits = Limits {
-    max_path_length: 4096,
-    max_package_name_length: 256,
-    max_output_size: 100 * 1024 * 1024, // 100MB
-};
-```
-
-| Field                     | Default | Description                       |
-| ------------------------- | ------- | --------------------------------- |
-| `max_path_length`         | 4096    | Maximum path length in characters |
-| `max_package_name_length` | 256     | Maximum package name length       |
-| `max_output_size`         | 100MB   | Maximum output size in bytes      |
-
-### RetryConfig
-
-```rust
-use cuengine::RetryConfig;
-use std::time::Duration;
-
-let retry = RetryConfig {
-    max_attempts: 4,
-    initial_delay: Duration::from_millis(50),
-    max_delay: Duration::from_secs(5),
-    exponential_base: 2.0,
-};
-```
-
-| Field              | Description                                       |
-| ------------------ | ------------------------------------------------- |
-| `max_attempts`     | Maximum retry attempts before surfacing the error |
-| `initial_delay`    | Delay before the first retry                      |
-| `max_delay`        | Ceiling applied to the exponential backoff        |
-| `exponential_base` | Multiplier for each successive delay              |
-
 ### CueEngineError
 
 The crate provides structured error types:
@@ -165,8 +121,6 @@ match err {
     CueEngineError::Configuration { message } => { /* invalid settings */ }
     CueEngineError::Ffi { function, message } => { /* FFI operation failed */ }
     CueEngineError::CueParse { path, message } => { /* CUE syntax/eval error */ }
-    CueEngineError::Validation { message } => { /* input/output validation */ }
-    CueEngineError::Cache { message } => { /* cache operation error */ }
 }
 ```
 
@@ -177,8 +131,6 @@ match err {
 | `CueEngineError::configuration(msg)`   | Invalid paths, settings, capacity, etc. |
 | `CueEngineError::ffi(fn_name, msg)`    | FFI operation failed                    |
 | `CueEngineError::cue_parse(path, msg)` | CUE parsing or evaluation failed        |
-| `CueEngineError::validation(msg)`      | Input/output validation errors          |
-| `CueEngineError::cache(msg)`           | Cache operation errors                  |
 
 ## Performance Characteristics
 

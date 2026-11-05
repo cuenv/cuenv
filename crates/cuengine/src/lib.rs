@@ -4,20 +4,15 @@
 //! It handles all FFI operations, memory management, and error handling for
 //! calling Go functions from Rust.
 
-pub mod cache;
 pub mod error;
 pub mod frozen;
 mod frozen_worker;
-pub mod retry;
-pub mod validation;
 
 #[cfg(test)]
 mod bridge_trace_tests;
 
 // Re-export main types
 pub use error::{CueEngineError, FrozenWorkerFailure, Result};
-pub use retry::RetryConfig;
-pub use validation::Limits;
 
 // Local type alias for internal use
 use error::CueEngineError as Error;

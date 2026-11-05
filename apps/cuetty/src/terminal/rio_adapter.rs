@@ -36,6 +36,20 @@ pub(crate) fn snapshot<U: EventListener>(
         .take(dimensions.rows as usize)
         .map(|row| row_from_state(terminal, row, dimensions.columns as usize))
         .collect();
+
+    TerminalFrame {
+        dimensions,
+        rows,
+        cursor: cursor_state(terminal),
+        viewport_offset: Some(terminal.display_offset()),
+        scrollback_rows: Some(terminal.history_size()),
+        sampling_token,
+        stable_revision: None,
+    }
+}
+
+/// The cursor as a draw would show it. Reading it leaves the terminal's damage alone.
+pub(crate) fn cursor_state<U: EventListener>(terminal: &Crosswords<U>) -> CursorState {
     let cursor = terminal.cursor();
     let shape = match cursor.content {
         RioCursorShape::Block => Known::Known(CursorShape::Block),
@@ -45,20 +59,13 @@ pub(crate) fn snapshot<U: EventListener>(
         // invent the shape that would apply when it becomes visible again.
         RioCursorShape::Hidden => Known::Unknown,
     };
-
-    TerminalFrame {
-        dimensions,
-        rows,
-        cursor: CursorState {
-            position: u16::try_from(cursor.pos.row.0)
-                .ok()
-                .zip(u16::try_from(cursor.pos.col.0).ok()),
-            shape,
-            visible: Known::Known(cursor.content != RioCursorShape::Hidden),
-        },
-        viewport_offset: Some(terminal.display_offset()),
-        sampling_token,
-        stable_revision: None,
+    CursorState {
+        position: u16::try_from(cursor.pos.row.0)
+            .ok()
+            .zip(u16::try_from(cursor.pos.col.0).ok()),
+        shape,
+        visible: Known::Known(cursor.content != RioCursorShape::Hidden),
+        blinking: Known::Known(terminal.blinking_cursor),
     }
 }
 
@@ -274,6 +281,22 @@ mod tests {
     }
 
     #[test]
+    fn hiding_the_cursor_marks_no_damage_so_only_its_state_shows_the_change() {
+        let mut terminal = terminal();
+        let mut parser = Processor::default();
+        parser.advance(&mut terminal, b"text");
+        terminal.reset_damage();
+        terminal.damage_event_in_flight = false;
+        let shown = cursor_state(&terminal);
+
+        parser.advance(&mut terminal, b"\x1b[?25l");
+
+        assert!(terminal.peek_damage_event().is_none());
+        assert_ne!(cursor_state(&terminal), shown);
+        assert_eq!(cursor_state(&terminal).visible, Known::Known(false));
+    }
+
+    #[test]
     fn public_parser_snapshot_observes_cursor_shape_and_visibility() {
         let mut terminal = terminal();
         let mut parser = Processor::default();
@@ -285,6 +308,22 @@ mod tests {
         let hidden = snapshot(&terminal, SamplingToken(2));
         assert_eq!(hidden.cursor.visible, Known::Known(false));
         assert_eq!(hidden.cursor.shape, Known::Unknown);
+    }
+
+    #[test]
+    fn public_parser_snapshot_observes_whether_the_application_wants_a_blink() {
+        let mut terminal = terminal();
+        let mut parser = Processor::default();
+        let blinking = |terminal: &Crosswords<VoidListener>| {
+            snapshot(terminal, SamplingToken(1)).cursor.blinking
+        };
+        assert_eq!(blinking(&terminal), Known::Known(false));
+        parser.advance(&mut terminal, b"\x1b[5 q");
+        assert_eq!(blinking(&terminal), Known::Known(true));
+        parser.advance(&mut terminal, b"\x1b[6 q");
+        assert_eq!(blinking(&terminal), Known::Known(false));
+        parser.advance(&mut terminal, b"\x1b[?12h");
+        assert_eq!(blinking(&terminal), Known::Known(true));
     }
 
     #[test]
@@ -410,8 +449,10 @@ mod tests {
                 position: Some((1, 2)),
                 shape: Known::Unknown,
                 visible: Known::Unknown,
+                blinking: Known::Unknown,
             },
             viewport_offset: Some(0),
+            scrollback_rows: None,
             sampling_token: SamplingToken(1),
             stable_revision: None,
         };

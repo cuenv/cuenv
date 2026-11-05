@@ -42,6 +42,8 @@ pub struct LiteralSearch {
     options: SearchOptions,
     matches: Vec<SearchMatch>,
     current: Option<usize>,
+    /// The text of each line as last searched, to tell how far output has moved it since.
+    lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +59,7 @@ impl LiteralSearch {
             options,
             matches: Vec::new(),
             current: None,
+            lines: Vec::new(),
         }
     }
     pub fn query(&self) -> &str {
@@ -68,6 +71,38 @@ impl LiteralSearch {
     pub fn matches(&self) -> &[SearchMatch] {
         &self.matches
     }
+    /// The match navigation is on, if it has reached one.
+    pub fn current_match(&self) -> Option<SearchMatch> {
+        self.current
+            .and_then(|index| self.matches.get(index).copied())
+    }
+    /// Where the current match comes among all of them, counting from zero.
+    pub fn current_index(&self) -> Option<usize> {
+        self.current
+    }
+    /// Searches the source again as it has changed, keeping navigation on the match it
+    /// was on as output scrolls it up the screen, or else on the nearest after it, since
+    /// what it was on may have gone.
+    pub fn refresh<S: TextSource>(&mut self, source: &S) -> Result<(), SearchError> {
+        let held = self.current_match();
+        let searched = std::mem::take(&mut self.lines);
+        self.rebuild(source)?;
+        let scrolled = lines_scrolled(&searched, &self.lines);
+        self.current = held.and_then(|held| {
+            let wanted = held
+                .start
+                .line
+                .checked_sub(scrolled)
+                .map_or(LogicalPosition { line: 0, column: 0 }, |line| {
+                    LogicalPosition { line, ..held.start }
+                });
+            self.matches
+                .iter()
+                .position(|candidate| candidate.start >= wanted)
+                .or_else(|| self.matches.len().checked_sub(1))
+        });
+        Ok(())
+    }
     pub fn set_query(&mut self, query: impl Into<String>) {
         self.query = query.into();
         self.current = None;
@@ -78,9 +113,13 @@ impl LiteralSearch {
         }
         self.matches.clear();
         self.current = None;
+        self.lines.clear();
         if self.query.is_empty() {
             return Ok(());
         }
+        self.lines = (0..source.line_count())
+            .map(|line| line_text(source, line))
+            .collect();
         let needle = self.folded_query();
         let mut first_line = 0;
         while first_line < source.line_count() {
@@ -165,11 +204,10 @@ impl LiteralSearch {
             character.to_lowercase().collect::<Vec<_>>().into_iter()
         }
     }
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Option<SearchMatch> {
+    pub fn next_match(&mut self) -> Option<SearchMatch> {
         self.move_by(1)
     }
-    pub fn previous(&mut self) -> Option<SearchMatch> {
+    pub fn previous_match(&mut self) -> Option<SearchMatch> {
         self.move_by(-1)
     }
     fn move_by(&mut self, delta: i32) -> Option<SearchMatch> {
@@ -206,6 +244,34 @@ impl LiteralSearch {
         self.current = Some(candidate);
         Some(self.matches[candidate])
     }
+}
+
+/// A line's text, without the blank cells after it.
+fn line_text<S: TextSource>(source: &S, line: usize) -> String {
+    let text: String = source
+        .line_cells(line)
+        .iter()
+        .flat_map(|cell| cell.text.iter())
+        .flat_map(|text| text.chars())
+        .collect();
+    text.trim_end().to_owned()
+}
+
+/// How many lines output has moved the text up between two samples of a screen: whichever
+/// distance leaves the most lines of text in agreement, and the shortest of those. Every
+/// screen has blank lines, so they say nothing. The line being written at the bottom
+/// may have changed as it scrolled, so this asks for the most agreement and not for all.
+fn lines_scrolled(before: &[String], after: &[String]) -> usize {
+    (0..before.len())
+        .max_by_key(|&distance| {
+            let agreeing = before[distance..]
+                .iter()
+                .zip(after)
+                .filter(|(was, is)| was == is && !was.is_empty())
+                .count();
+            (agreeing, std::cmp::Reverse(distance))
+        })
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -256,9 +322,122 @@ mod tests {
         );
         q.rebuild(&s).unwrap();
         assert_eq!(q.matches().len(), 3);
-        assert_eq!(q.next().unwrap().start.column, 0);
-        assert_eq!(q.previous().unwrap().start.line, 1);
+        assert_eq!(q.next_match().unwrap().start.column, 0);
+        assert_eq!(q.previous_match().unwrap().start.line, 1);
     }
+    #[test]
+    fn a_refresh_stays_on_the_match_or_moves_to_the_nearest_after_it() {
+        let mut search = LiteralSearch::new("one", SearchOptions::default());
+        search.rebuild(&lines(&["one", "one", "one"])).unwrap();
+        search.next_match();
+        search.next_match();
+        assert_eq!(search.current_index(), Some(1));
+
+        search.refresh(&lines(&["one", "one", "one"])).unwrap();
+        assert_eq!(search.current_index(), Some(1), "unchanged text keeps it");
+
+        search.refresh(&lines(&["one", "two", "one"])).unwrap();
+        assert_eq!(
+            search.current_match().map(|matched| matched.start.line),
+            Some(2),
+            "the next one takes over from one that went"
+        );
+
+        search.refresh(&lines(&["one", "two", "two"])).unwrap();
+        assert_eq!(
+            search.current_match().map(|matched| matched.start.line),
+            Some(0),
+            "with nothing after it, the last one left takes over"
+        );
+
+        search.refresh(&lines(&["two"])).unwrap();
+        assert_eq!(search.current_match(), None);
+    }
+
+    fn lines(text: &[&str]) -> S {
+        S(text
+            .iter()
+            .map(|line| line.chars().map(TerminalCell::narrow).collect())
+            .collect())
+    }
+
+    #[test]
+    fn a_refresh_keeps_to_the_match_as_output_scrolls_it_up_the_screen() {
+        let mut search = LiteralSearch::new("one", SearchOptions::default());
+        search
+            .rebuild(&lines(&["top", "one", "mid", "one"]))
+            .unwrap();
+        search.next_match();
+        assert_eq!(search.current_index(), Some(0));
+
+        search
+            .refresh(&lines(&["one", "mid", "one", "new"]))
+            .unwrap();
+        assert_eq!(
+            search.current_match().map(|matched| matched.start.line),
+            Some(0),
+            "it moved up with its text, and not onto the other match"
+        );
+        assert_eq!(search.current_index(), Some(0));
+    }
+
+    #[test]
+    fn a_refresh_keeps_to_the_match_when_its_screen_has_a_line_still_being_written() {
+        let mut search = LiteralSearch::new("one", SearchOptions::default());
+        search
+            .rebuild(&lines(&["top", "one", "mid", "one", "$ par"]))
+            .unwrap();
+        search.next_match();
+        search.next_match();
+        assert_eq!(search.current_index(), Some(1));
+
+        search
+            .refresh(&lines(&["one", "mid", "one", "$ partial", "new"]))
+            .unwrap();
+        assert_eq!(
+            search.current_match().map(|matched| matched.start.line),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn a_match_scrolled_off_the_screen_hands_over_to_the_first_one_left() {
+        let mut search = LiteralSearch::new("one", SearchOptions::default());
+        search
+            .rebuild(&lines(&["one", "mid", "low", "one"]))
+            .unwrap();
+        search.next_match();
+
+        search
+            .refresh(&lines(&["mid", "low", "one", "new"]))
+            .unwrap();
+        assert_eq!(
+            search.current_match().map(|matched| matched.start.line),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn blank_lines_are_no_evidence_that_text_has_moved() {
+        let blank = String::new();
+        let was = [blank.clone(), blank.clone(), "text".to_owned()];
+        assert_eq!(lines_scrolled(&was, &was), 0);
+        assert_eq!(
+            lines_scrolled(&[blank.clone(), blank.clone()], &[blank.clone(), blank]),
+            0
+        );
+        assert_eq!(lines_scrolled(&[], &[]), 0);
+    }
+
+    #[test]
+    fn a_refresh_does_not_start_navigation_that_had_not_begun() {
+        let source = source();
+        let mut search = LiteralSearch::new("one", SearchOptions::default());
+        search.refresh(&source).unwrap();
+        assert_eq!(search.matches().len(), 2);
+        assert_eq!(search.current_match(), None);
+    }
+
     #[test]
     fn no_wrap_stops_at_edges() {
         let s = source();
@@ -271,10 +450,10 @@ mod tests {
             },
         );
         q.rebuild(&s).unwrap();
-        q.next();
-        q.next();
-        q.next();
-        assert!(q.next().is_none());
+        q.next_match();
+        q.next_match();
+        q.next_match();
+        assert!(q.next_match().is_none());
     }
     #[test]
     fn regex_is_explicitly_unsupported() {

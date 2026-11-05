@@ -9,7 +9,6 @@ use cuenv::cli::{
     self, CliError, EXIT_INTERRUPTED, EXIT_OK, OutputFormat, exit_code_for, parse, render_error,
 };
 use cuenv::commands::{self, Command, CommandExecutor};
-use cuenv::coordinator;
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
 use cuenv_events::renderers::{CliRenderer, JsonRenderer};
 use std::sync::Arc;
@@ -87,12 +86,12 @@ fn main() {
         std::process::exit(code);
     }
 
-    if args.len() > 1 && (args[1] == "__hook-supervisor" || args[1] == "__coordinator") {
-        // For supervisor, detach from controlling terminal if on Unix
-        // This is done here instead of via pre_exec in the parent to avoid
-        // fork-safety issues when the parent is multi-threaded (Go runtime)
+    if args.len() > 1 && args[1] == "__hook-supervisor" {
+        // Detach from the controlling terminal. This is done here instead of
+        // via pre_exec in the parent to avoid fork-safety issues when the
+        // parent is multi-threaded (Go runtime).
         #[cfg(unix)]
-        if args[1] == "__hook-supervisor" {
+        {
             // SAFETY: setsid() creates a new session and process group.
             // This is safe to call at startup. We ignore errors (e.g. if already leader).
             #[expect(
@@ -104,7 +103,7 @@ fn main() {
             }
         }
 
-        // These internal commands always need tokio
+        // The supervisor always needs tokio
         let exit_code = run_with_tokio(InterruptPolicy::Process);
         std::process::exit(exit_code);
     }
@@ -210,7 +209,6 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             | cli::Commands::Exec { .. }
             | cli::Commands::Ci { .. }
             | cli::Commands::Build { .. }
-            | cli::Commands::Web { .. }
             | cli::Commands::Allow { .. }
             | cli::Commands::Deny { .. }
             | cli::Commands::Sync { .. }
@@ -354,7 +352,6 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
         | Command::InfrastructureProvider { .. }
         | Command::Ci { .. }
         | Command::ShellInit { .. }
-        | Command::Web { .. }
         | Command::Completions { .. }
         | Command::ChangesetAdd { .. }
         | Command::ChangesetStatus { .. }
@@ -465,11 +462,6 @@ async fn real_main() -> Result<(), CliError> {
         return run_hook_supervisor(args).await;
     }
 
-    // Check if we're being called as the coordinator server
-    if args.len() > 1 && args[1] == "__coordinator" {
-        return run_coordinator().await;
-    }
-
     // Parse CLI arguments and initialize event system
     let init_result = match initialize_cli_and_tracing().await {
         Ok(result) => result,
@@ -544,8 +536,7 @@ struct InitResult {
 /// The executor provides centralized module evaluation - commands that need
 /// CUE access can call `executor.get_module()` to get the cached evaluation.
 fn create_executor(package: &str) -> Arc<CommandExecutor> {
-    let (event_sender, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
-    Arc::new(CommandExecutor::new(event_sender, package.to_string()))
+    Arc::new(CommandExecutor::new(package.to_string()))
 }
 
 /// Initialize CLI parsing and tracing configuration
@@ -656,17 +647,6 @@ async fn render_json_events_to_standard_error(
             break;
         }
     }
-}
-
-/// Run as the coordinator server (internal - spawned by discovery)
-async fn run_coordinator() -> Result<(), CliError> {
-    use coordinator::server::EventCoordinator;
-
-    let coordinator = EventCoordinator::new();
-    coordinator
-        .run()
-        .await
-        .map_err(|e| CliError::other(format!("Coordinator failed: {e}")))
 }
 
 #[cfg(test)]

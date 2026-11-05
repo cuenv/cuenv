@@ -393,7 +393,7 @@ mod tests {
         let platform_key = current_platform_key();
         let mut lockfile = Lockfile::new();
         lockfile.tools.insert(
-            "dagger".to_string(),
+            "mytool".to_string(),
             LockedTool {
                 version: "0.18.0".to_string(),
                 platforms: BTreeMap::from([(
@@ -403,8 +403,8 @@ mod tests {
                         digest: "sha256:abc".to_string(),
                         source: serde_json::json!({
                             "type": "oci",
-                            "image": "registry.dagger.io/dagger/cli:0.18.0",
-                            "path": "/usr/local/bin/dagger",
+                            "image": "ghcr.io/example/mytool:0.18.0",
+                            "path": "/usr/local/bin/mytool",
                         }),
                         size: None,
                         dependencies: vec![],
@@ -419,7 +419,7 @@ mod tests {
         // OCI provider layout: <cache>/oci/<sanitized_digest>/<binary>
         let digest_dir = cache_dir.join("oci").join("sha256_0123abcd");
         fs::create_dir_all(&digest_dir).unwrap();
-        fs::write(digest_dir.join("dagger"), b"#!/bin/sh\n").unwrap();
+        fs::write(digest_dir.join("mytool"), b"#!/bin/sh\n").unwrap();
         // A digest directory without the binary must not be picked up.
         let empty_digest_dir = cache_dir.join("oci").join("sha256_ffff");
         fs::create_dir_all(&empty_digest_dir).unwrap();
@@ -429,7 +429,7 @@ mod tests {
         let index = ToolPathIndex::collect(&options).unwrap();
 
         assert_eq!(index.all_bin_dirs, vec![digest_dir.clone()]);
-        assert_eq!(index.tool_bin_dirs.get("dagger"), Some(&vec![digest_dir]));
+        assert_eq!(index.tool_bin_dirs.get("mytool"), Some(&vec![digest_dir]));
     }
 
     #[test]

@@ -207,31 +207,6 @@ let version = cuengine::get_bridge_version()?;
 println!("bridge reports {version}");
 ```
 
-### RetryConfig
-
-Configuration for retry behavior on transient failures.
-
-```rust
-use cuengine::RetryConfig;
-use std::time::Duration;
-
-let config = RetryConfig {
-    max_attempts: 4,
-    initial_delay: Duration::from_millis(100),
-    max_delay: Duration::from_secs(5),
-    exponential_base: 2.0,
-};
-```
-
-**Fields:**
-
-| Field              | Type       | Default | Description                                 |
-| ------------------ | ---------- | ------- | ------------------------------------------- |
-| `max_attempts`     | `u32`      | `3`     | Maximum retry attempts                      |
-| `initial_delay`    | `Duration` | 100 ms  | Delay before the first retry                |
-| `max_delay`        | `Duration` | 10 s    | Upper bound for the backoff delay           |
-| `exponential_base` | `f32`      | `2.0`   | Multiplier applied to each successive delay |
-
 ## cuenv-core
 
 Core library with types for tasks, environments, hooks, and secrets.

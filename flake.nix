@@ -555,15 +555,10 @@
           #     RUSTSEC-2023-0071
           # wasmtime 41.x (pinned by extism 1.21; patches only in 36.x/42.0.2+/43.0.1+):
           #     RUSTSEC-2026-0085 0086 0087 0088 0089 0091 0092 0093 0094 0095 0096 0114
-          # reqwest 0.11 chain (pinned by dagger-sdk 0.20 / graphql_client 0.13;
-          # pulls rustls 0.21 -> rustls-webpki 0.101, rustls-pemfile 1.x):
-          #     RUSTSEC-2025-0134 (rustls-pemfile unmaintained)
-          #     RUSTSEC-2026-0098 0099 0104 (rustls-webpki 0.101)
           buildPhaseCargoCommand = ''
             cargo audit --db ${rustsec-advisory-db} --no-fetch --deny warnings \
               --ignore yanked \
               --ignore RUSTSEC-2023-0071 \
-              --ignore RUSTSEC-2025-0134 \
               --ignore RUSTSEC-2026-0085 \
               --ignore RUSTSEC-2026-0086 \
               --ignore RUSTSEC-2026-0087 \
@@ -575,9 +570,6 @@
               --ignore RUSTSEC-2026-0094 \
               --ignore RUSTSEC-2026-0095 \
               --ignore RUSTSEC-2026-0096 \
-              --ignore RUSTSEC-2026-0098 \
-              --ignore RUSTSEC-2026-0099 \
-              --ignore RUSTSEC-2026-0104 \
               --ignore RUSTSEC-2026-0114
           '';
           nativeBuildInputs = [ pkgs.cargo-audit ];
@@ -762,11 +754,5 @@
             };
           };
         };
-      })
-    // {
-      homeManagerModules = rec {
-        cuetty = import ./apps/cuetty/home-manager.nix { inherit self; };
-        default = cuetty;
-      };
-    };
+      });
 }

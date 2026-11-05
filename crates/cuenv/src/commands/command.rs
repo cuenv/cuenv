@@ -96,12 +96,6 @@ pub enum Command {
         environment: Option<String>,
         /// Output format (e.g., "text", "json").
         format: String,
-        /// Path to materialize task outputs to.
-        materialize_outputs: Option<String>,
-        /// Whether to show the cache path for tasks.
-        show_cache_path: bool,
-        /// Execution backend override (e.g., "dagger").
-        backend: Option<String>,
         /// Whether to use the TUI for task execution.
         tui: bool,
         /// Whether to run in interactive mode.
@@ -179,13 +173,6 @@ pub enum Command {
     Ci {
         /// CI command arguments.
         args: ci::CiArgs,
-    },
-    /// Reserved for the future web-based user interface.
-    Web {
-        /// Port number for the future web server.
-        port: u16,
-        /// Host address for the future web server.
-        host: String,
     },
     /// Add a new changeset entry.
     ChangesetAdd {

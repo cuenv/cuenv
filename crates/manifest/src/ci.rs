@@ -455,7 +455,7 @@ pub struct ActivationCondition {
     pub workspace_member: Vec<String>,
 
     /// Runtime type detection (active if project uses any of these runtime types)
-    /// Values: "nix", "devenv", "container", "dagger", "oci", "tools"
+    /// Values: "nix", "devenv", "container", "oci", "tools"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_type: Vec<String>,
 

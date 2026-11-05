@@ -10,8 +10,8 @@ use std::collections::HashMap;
 
 /// Secret definition with resolver
 ///
-/// This is the CUE-compatible secret type used for Dagger secrets and environment
-/// variable resolution. Supports multiple resolver types:
+/// This is the CUE-compatible secret type used for environment variable
+/// resolution. Supports multiple resolver types:
 /// - `exec`: Execute a command to get the secret
 /// - `onepassword`: Resolve from 1Password using `ref` field
 /// - `infisical`: Resolve from Infisical using explicit project/environment/secret fields

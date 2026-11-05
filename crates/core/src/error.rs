@@ -160,6 +160,16 @@ pub enum Error {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Secret(#[from] SecretResolutionError),
+
+    /// A command cuenv ran on the user's behalf exited unsuccessfully, and
+    /// cuenv's exit status is that command's. The command already reported
+    /// its own failure.
+    #[error("command exited with code {code}")]
+    #[diagnostic(code(cuenv::child_exit))]
+    ChildExit {
+        /// The exit status to propagate.
+        code: i32,
+    },
 }
 
 impl Error {

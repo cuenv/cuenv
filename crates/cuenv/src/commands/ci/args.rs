@@ -26,12 +26,6 @@ pub struct CiArgs {
     #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<PathBuf>,
 
-    /// Reserved for local matrix filtering (currently unsupported).
-    ///
-    /// Provider-native matrix workflows are generated with `cuenv sync ci`.
-    #[arg(long, value_name = "KEY=VALUE", value_delimiter = ',')]
-    pub filter_matrix: Vec<String>,
-
     /// Maximum parallel task DAG jobs (0 = host parallelism).
     #[arg(long, short = 'j', default_value = "0", value_name = "N")]
     pub jobs: usize,
@@ -151,7 +145,6 @@ mod tests {
             all: false,
             export: None,
             output: None,
-            filter_matrix: vec![],
             jobs: 0,
             from: None,
             dry_run: false,
@@ -169,7 +162,6 @@ mod tests {
             all: false,
             export: None,
             output: None,
-            filter_matrix: vec![],
             jobs: 0,
             from: None,
             dry_run: false,
@@ -187,7 +179,6 @@ mod tests {
             all: false,
             export: None,
             output: None,
-            filter_matrix: vec![],
             jobs: 0,
             from: None,
             dry_run: false,
@@ -206,7 +197,6 @@ mod tests {
             all: false,
             export: None,
             output: None,
-            filter_matrix: vec![],
             jobs: 8,
             from: None,
             dry_run: false,

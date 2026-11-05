@@ -5,6 +5,19 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 
+/// The shell-convention exit code of a finished process: its status, or
+/// 128 plus the signal that killed it.
+fn exit_code_of(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128_i32.saturating_add(signal);
+        }
+    }
+    status.code().unwrap_or(1)
+}
+
 /// Execute an arbitrary command with the cuenv environment
 ///
 /// If `secrets` is provided, output will be captured and redacted before printing.
@@ -43,7 +56,7 @@ pub async fn execute_command_with_redaction(
         let status = cmd.status().await.map_err(|e| {
             Error::configuration(format!("Failed to execute command '{}': {}", command, e))
         })?;
-        return Ok(status.code().unwrap_or(1));
+        return Ok(exit_code_of(status));
     }
 
     cmd.stdout(Stdio::piped());
@@ -103,7 +116,7 @@ pub async fn execute_command_with_redaction(
     let _ = stdout_task.await;
     let _ = stderr_task.await;
 
-    Ok(status.code().unwrap_or(1))
+    Ok(exit_code_of(status))
 }
 
 /// Build a hermetic `cuenv exec` environment with a writable, persistent home.

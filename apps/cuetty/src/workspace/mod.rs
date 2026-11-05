@@ -201,6 +201,9 @@ pub(crate) fn validate_tab<C>(tab: &Tab<C>) -> bool {
 pub struct Tab<C = String> {
     pub id: TabId,
     pub title: String,
+    /// A name the user chose for this tab. It outranks every name Cuetty derives
+    /// from the tab's activity and is absent until the user sets one.
+    pub custom_name: Option<String>,
     pub root: Node<C>,
     pub focused: PaneId,
 }
@@ -312,6 +315,29 @@ impl<C: Clone> Workspace<C> {
             Err(Error::UnknownTab)
         }
     }
+    /// Gives a tab a name of the user's own, or with `None` hands it back to the name
+    /// derived from its activity.
+    pub fn rename_tab(&mut self, tab_id: TabId, name: Option<String>) -> Result<(), Error> {
+        let tab = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == tab_id)
+            .ok_or(Error::UnknownTab)?;
+        tab.custom_name = name;
+        Ok(())
+    }
+    /// Moves a tab to `index` in the tab order, or to the end if that is further. Which
+    /// tab is active and what each tab holds stay as they were.
+    pub fn move_tab(&mut self, tab_id: TabId, index: usize) -> Result<(), Error> {
+        let from = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == tab_id)
+            .ok_or(Error::UnknownTab)?;
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(index.min(self.tabs.len()), tab);
+        Ok(())
+    }
     /// Focuses an existing pane in the active tab.  A pane in another tab is
     /// intentionally not selected implicitly: callers must choose the tab
     /// first so tab changes remain explicit at the UI boundary.
@@ -330,6 +356,7 @@ impl<C: Clone> Workspace<C> {
         let tab = Tab {
             id: TabId(tab_id),
             title: title.into(),
+            custom_name: None,
             root: Node::Pane(Pane {
                 id: PaneId(pane_id),
                 content,
@@ -686,6 +713,79 @@ fn remove_pane<C>(node: &mut Node<C>, id: PaneId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tab_order(workspace: &Workspace<String>) -> Vec<u64> {
+        workspace.tabs().iter().map(|tab| tab.id.get()).collect()
+    }
+
+    fn three_tabs() -> Workspace<String> {
+        let mut workspace = Workspace::new();
+        for title in ["one", "two", "three"] {
+            workspace.create_tab(title, title.to_owned()).unwrap();
+        }
+        workspace
+    }
+
+    #[test]
+    fn a_moved_tab_lands_at_the_index_it_was_dropped_on_in_either_direction() {
+        let mut down = three_tabs();
+        down.move_tab(TabId::new(1), 2).unwrap();
+        assert_eq!(tab_order(&down), [2, 3, 1]);
+        let mut up = three_tabs();
+        up.move_tab(TabId::new(3), 0).unwrap();
+        assert_eq!(tab_order(&up), [3, 1, 2]);
+        let mut between = three_tabs();
+        between.move_tab(TabId::new(1), 1).unwrap();
+        assert_eq!(tab_order(&between), [2, 1, 3]);
+    }
+
+    #[test]
+    fn moving_a_tab_onto_itself_or_past_the_end_stays_in_bounds() {
+        let mut same = three_tabs();
+        same.move_tab(TabId::new(2), 1).unwrap();
+        assert_eq!(tab_order(&same), [1, 2, 3]);
+        let mut past = three_tabs();
+        past.move_tab(TabId::new(1), 99).unwrap();
+        assert_eq!(tab_order(&past), [2, 3, 1]);
+    }
+
+    #[test]
+    fn moving_a_tab_changes_neither_the_active_tab_nor_the_workspaces_validity() {
+        let mut workspace = three_tabs();
+        let active = workspace.active_tab().map(|tab| tab.id);
+        workspace.move_tab(TabId::new(3), 0).unwrap();
+        assert_eq!(workspace.active_tab().map(|tab| tab.id), active);
+        workspace.move_tab(TabId::new(1), 2).unwrap();
+        assert_eq!(workspace.active_tab().map(|tab| tab.id), active);
+        assert!(workspace.validate());
+    }
+
+    #[test]
+    fn moving_an_unknown_tab_is_an_error_that_changes_nothing() {
+        let mut workspace = three_tabs();
+        assert_eq!(
+            workspace.move_tab(TabId::new(99), 0),
+            Err(Error::UnknownTab)
+        );
+        assert_eq!(tab_order(&workspace), [1, 2, 3]);
+    }
+
+    #[test]
+    fn renaming_sets_and_clears_only_that_tabs_name() {
+        let mut workspace = Workspace::<String>::new();
+        let first = workspace.create_tab("first", "a".into()).unwrap();
+        let second = workspace.create_tab("second", "b".into()).unwrap();
+        workspace.rename_tab(first, Some("deploys".into())).unwrap();
+        assert_eq!(workspace.tabs()[0].custom_name.as_deref(), Some("deploys"));
+        assert_eq!(workspace.tabs()[1].custom_name, None);
+        assert_eq!(workspace.active_tab().map(|tab| tab.id), Some(second));
+        workspace.rename_tab(first, None).unwrap();
+        assert_eq!(workspace.tabs()[0].custom_name, None);
+        assert_eq!(
+            workspace.rename_tab(TabId::new(99), None),
+            Err(Error::UnknownTab)
+        );
+    }
     #[test]
     fn create_and_split() {
         let mut w = Workspace::new();
@@ -816,6 +916,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(99),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Pane(Pane {
                     id: PaneId::new(100),
                     content: "saved",
@@ -835,6 +936,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(99),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Split {
                     id: SplitId::new(101),
                     axis: Axis::Horizontal,
@@ -875,6 +977,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(1),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Pane(Pane {
                     id: PaneId::new(u64::MAX),
                     content: "saved",
@@ -894,6 +997,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(u64::MAX),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Pane(Pane {
                     id: PaneId::new(1),
                     content: "saved",
@@ -914,6 +1018,7 @@ mod tests {
             tab: Tab {
                 id: TabId::new(1),
                 title: "restored".into(),
+                custom_name: None,
                 root: Node::Split {
                     id: SplitId::new(u64::MAX),
                     axis: Axis::Horizontal,
@@ -947,6 +1052,7 @@ mod tests {
         let valid_tab = |id| Tab {
             id,
             title: "x".into(),
+            custom_name: None,
             root: Node::Split {
                 id: split,
                 axis: Axis::Horizontal,
@@ -983,6 +1089,7 @@ mod tests {
             Tab {
                 id: TabId::new(2),
                 title: "y".into(),
+                custom_name: None,
                 root: Node::Split {
                     id: split,
                     axis: Axis::Horizontal,

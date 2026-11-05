@@ -66,7 +66,6 @@ cuenv/
 │   │   └── tests/
 │   ├── cuenv-core/         # Core types and utilities
 │   ├── cuenv/              # CLI application
-│   ├── cuenv-dagger/       # Dagger backend integration
 │   ├── cuenv-workspaces/   # Workspace management
 │   ├── cuenv-events/       # Event system
 │   ├── cuenv-ci/           # CI pipeline support

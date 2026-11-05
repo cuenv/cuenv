@@ -1,9 +1,9 @@
 ---
 title: Choosing a runtime
-description: Declare where each task runs — host, Nix shell, devenv, OCI binaries, or Dagger — with one CUE field, and know each variant's honest support status.
+description: Declare where each task runs — host, Nix shell, devenv, or OCI binaries — with one CUE field, and know each variant's honest support status.
 ---
 
-A task always runs *somewhere*. By default that somewhere is your host shell, with whatever happens to be on `PATH`. cuenv lets you make that choice explicit and reproducible: declare a **runtime** once at the project level, and every task inherits the same hermetic environment — a Nix devShell, a devenv shell, a set of binaries extracted from OCI images, or a Dagger container — without anyone needing to remember `nix develop` first.
+A task always runs *somewhere*. By default that somewhere is your host shell, with whatever happens to be on `PATH`. cuenv lets you make that choice explicit and reproducible: declare a **runtime** once at the project level, and every task inherits the same hermetic environment — a Nix devShell, a devenv shell, or a set of binaries extracted from OCI images — without anyone needing to remember `nix develop` first.
 
 One typed field replaces "works on my machine":
 
@@ -14,7 +14,7 @@ runtime: schema.#NixRuntime
 Now `cuenv task build`, `cuenv exec -- cargo test`, and CI all see the same toolchain. And when one task needs something different — a heavier container, a pinned binary — you override it on that single task.
 
 :::caution[Status varies by variant]
-The `#Runtime` union has six members, and they are **not** at the same maturity. Nix, devenv, and tools runtimes are solid. OCI and Dagger are partial. The container runtime is schema-only and does nothing today. Read the [status table](#status-by-variant) below before you build on a variant, and cross-check the authoritative [schema status](/reference/schema/status/) page.
+The `#Runtime` union has five members, and they are **not** at the same maturity. Nix, devenv, and tools runtimes are solid. OCI is partial. The container runtime is schema-only and does nothing today. Read the [status table](#status-by-variant) below before you build on a variant, and cross-check the authoritative [schema status](/reference/schema/status/) page.
 :::
 
 ## The runtime union
@@ -22,7 +22,7 @@ The `#Runtime` union has six members, and they are **not** at the same maturity.
 `#Runtime` is a CUE union — exactly one of these shapes (from `schema/runtime.cue`):
 
 ```cue
-#Runtime: #NixRuntime | #DevenvRuntime | #ContainerRuntime | #DaggerRuntime | #OCIRuntime | #ToolsRuntime
+#Runtime: #NixRuntime | #DevenvRuntime | #ContainerRuntime | #OCIRuntime | #ToolsRuntime
 ```
 
 You select a variant by assigning it directly. The `type` field discriminates which one you mean:
@@ -33,7 +33,6 @@ You select a variant by assigning it directly. The `type` field discriminates wh
 | `#DevenvRuntime`   | `"devenv"`    | A [devenv](https://devenv.sh) shell environment               |
 | `#ToolsRuntime`    | (tools)       | Hermetic, version-pinned binaries from GitHub/OCI/Nix/Rustup  |
 | `#OCIRuntime`      | `"oci"`       | Specific binaries extracted from whole OCI images onto `PATH` |
-| `#DaggerRuntime`   | `"dagger"`    | Containerized execution with chaining, cache volumes, secrets |
 | `#ContainerRuntime`| `"container"` | (schema-only — see below)                                     |
 
 ## Project default vs per-task override
@@ -80,10 +79,9 @@ cuenv is honest about what works. The matrix in [`docs/design/specs/schema-cover
 | `#DevenvRuntime`    | **Stable**      | Yes, if your project already uses devenv. See [below](#devenv-runtime).                  |
 | `#ToolsRuntime`     | **Stable**      | Yes. Best for pinning individual CLI tools. See [Tools](/how-to/tools/).                  |
 | `#OCIRuntime`       | **Partial**     | Yes, with caveats — `sync lock` + the `#OCIActivate` hook. See [below](#oci-runtime).    |
-| `#DaggerRuntime`    | **Partial**     | Usable; task-level `dagger:` is deprecated — prefer the runtime form. See [below](#dagger-runtime). |
 | `#ContainerRuntime` | **schema-only** | No. Returns no container environment today. Do not rely on it. See [below](#container-runtime). |
 
-How each variant supplies an environment differs under the hood. Nix and devenv runtimes are resolved by `cuenv` itself (it runs `nix print-dev-env` / `devenv print-dev-env` and sources the result, per `crates/core/src/runtime.rs`). OCI binaries are extracted by the `#OCIActivate` hook. Dagger runs tasks inside the Dagger engine.
+How each variant supplies an environment differs under the hood. Nix and devenv runtimes are resolved by `cuenv` itself (it runs `nix print-dev-env` / `devenv print-dev-env` and sources the result, per `crates/core/src/runtime.rs`). OCI binaries are extracted by the `#OCIActivate` hook.
 
 ## OCI runtime
 
@@ -185,24 +183,6 @@ runtime: schema.#DevenvRuntime & {path: "./infra"}
 `#DevenvRuntime` is the *runtime* form. There is a separate standalone `#Devenv` hook for projects that prefer to wire devenv as an explicit hook. See [Nix integration](/how-to/nix/) for the hook-driven approach, including the `#NixFlake` hook that is the analogue for plain Nix flakes.
 :::
 
-## Dagger runtime
-
-`#DaggerRuntime` (Partial) runs tasks inside the Dagger engine, with container chaining, cache volumes, and securely mounted secrets. Use it when a plain devShell is not enough — for example, building inside a pinned base image and continuing from a previous task's container state.
-
-```cue
-build: schema.#Task & {
-    command: "sh"
-    args: ["-c", "apk add --no-cache curl jq && echo ready"]
-    runtime: schema.#DaggerRuntime & {image: "alpine:latest"}
-}
-```
-
-`#DaggerRuntime` supports `image` (base image), `from` (continue from another task's container), `secrets`, and `cache` volumes.
-
-:::caution[Task-level `dagger:` is deprecated]
-Older configurations attach a `dagger:` block directly to a `#Task` (as in `examples/dagger-task/env.cue`). That task-level form still works but is **deprecated** — prefer the `runtime: schema.#DaggerRuntime` form going forward. For the full picture of how the Dagger backend executes, see the [Dagger backend explanation](/explanation/dagger-backend/).
-:::
-
 ## Container runtime
 
 `#ContainerRuntime` is **schema-only**. The shape exists in `schema/runtime.cue` for a future "just run this task in this image" use case, but runtime environment acquisition returns no container environment today.
@@ -212,7 +192,7 @@ Older configurations attach a `dagger:` block directly to a `#Task` (as in `exam
 runtime: schema.#ContainerRuntime & {image: "node:20"}
 ```
 
-Do not recommend or depend on `#ContainerRuntime`. If you need containerized execution today, use [`#DaggerRuntime`](#dagger-runtime) instead.
+Do not recommend or depend on `#ContainerRuntime`. cuenv does not run tasks in containers today.
 
 ## Where to go next
 
@@ -221,7 +201,6 @@ Do not recommend or depend on `#ContainerRuntime`. If you need containerized exe
 - [Nix integration](/how-to/nix/) — the Stable `#NixRuntime` and the `#NixFlake` / `#Devenv` hooks in depth.
 - [Tools](/how-to/tools/) — the Stable `#ToolsRuntime` for pinning individual CLI tools, including the `#Oci` single-tool source.
 - [Lockfiles](/how-to/lockfiles/) — how `cuenv sync lock` and `cuenv.lock` underpin OCI and tools runtimes.
-- [Dagger backend](/explanation/dagger-backend/) — how containerized task execution works.
 - [Schema status](/reference/schema/status/) — the authoritative, per-definition support matrix.
 
 </div>

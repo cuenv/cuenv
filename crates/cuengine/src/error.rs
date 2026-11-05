@@ -67,20 +67,6 @@ pub enum CueEngineError {
         /// Error message from the CUE parser
         message: String,
     },
-
-    /// Validation error (input/output validation)
-    #[error("Validation failed: {message}")]
-    Validation {
-        /// Error message describing the validation failure
-        message: String,
-    },
-
-    /// Cache operation error
-    #[error("Cache error: {message}")]
-    Cache {
-        /// Error message describing the cache problem
-        message: String,
-    },
 }
 
 impl CueEngineError {
@@ -106,22 +92,6 @@ impl CueEngineError {
     pub fn cue_parse(path: &Path, message: impl Into<String>) -> Self {
         Self::CueParse {
             path: path.into(),
-            message: message.into(),
-        }
-    }
-
-    /// Create a validation error
-    #[must_use]
-    pub fn validation(message: impl Into<String>) -> Self {
-        Self::Validation {
-            message: message.into(),
-        }
-    }
-
-    /// Create a cache error
-    #[must_use]
-    pub fn cache(message: impl Into<String>) -> Self {
-        Self::Cache {
             message: message.into(),
         }
     }
@@ -156,20 +126,6 @@ mod tests {
         assert!(err.to_string().contains("CUE evaluation failed"));
         assert!(err.to_string().contains("/some/path"));
         assert!(err.to_string().contains("syntax error"));
-    }
-
-    #[test]
-    fn test_validation_error() {
-        let err = CueEngineError::validation("path too long");
-        assert!(err.to_string().contains("Validation failed"));
-        assert!(err.to_string().contains("path too long"));
-    }
-
-    #[test]
-    fn test_cache_error() {
-        let err = CueEngineError::cache("capacity must be non-zero");
-        assert!(err.to_string().contains("Cache error"));
-        assert!(err.to_string().contains("capacity must be non-zero"));
     }
 
     #[test]

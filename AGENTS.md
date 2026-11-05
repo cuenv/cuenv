@@ -101,14 +101,12 @@ If a change does not match one of the required full-flake triggers, keep the che
 | **cuenv-hooks**                   | Hook execution, state management, and approval system        |
 | **cuenv-cache**                   | Content-addressed task caching infrastructure                |
 | **cuenv-task-graph**              | Task graph DAG algorithms and dependency resolution          |
-| **cuenv-task-discovery**          | Workspace scanning and TaskRef resolution                    |
 | **cuenv-task-exec**               | Task execution engine: scheduling, processes, caching        |
 | **cuenv**                         | CLI binary with TUI (clap + ratatui)                         |
 | **cuenv-events**                  | Event system for UI frontends (CLI/JSON renderers)           |
 | **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.) |
 | **cuenv-ci**                      | CI pipeline integration                                      |
 | **cuenv-release**                 | Version management and publishing                            |
-| **cuenv-dagger**                  | Optional containerized task execution backend                |
 | **cuenv-codegen**                 | CUE-based code generation                                    |
 | **cuenv-infrastructure**          | Terraform provider plugins over gRPC, Turso resource state   |
 | **cuenv-ignore**                  | .gitignore/.dockerignore generation                          |

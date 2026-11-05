@@ -9,10 +9,9 @@ mod task_handler;
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::cue::discovery::find_cue_module_root;
-use cuenv_events::{emit_stderr, emit_stdout};
+use cuenv_events::emit_stdout;
 
 use crate::cli::{ShellType, StatusFormat};
-use crate::events::Event;
 
 use super::{CommandExecutor, ci, env, exec, export, hooks, sync};
 
@@ -46,34 +45,11 @@ pub trait CommandRunner {
 #[async_trait]
 impl CommandRunner for CommandExecutor {
     async fn run_command<C: CommandHandler>(&self, cmd: C) -> Result<()> {
-        let name = cmd.command_name();
-
-        self.send_event(Event::CommandStart {
-            command: name.to_string(),
-        });
-
-        match cmd.execute(self).await {
-            Ok(output) => {
-                if cmd.should_print_output() && !output.is_empty() {
-                    emit_stdout!(&output);
-                }
-                self.send_event(Event::CommandComplete {
-                    command: name.to_string(),
-                    success: true,
-                    output,
-                });
-                Ok(())
-            }
-            Err(e) => {
-                emit_stderr!(format!("Error: {e}"));
-                self.send_event(Event::CommandComplete {
-                    command: name.to_string(),
-                    success: false,
-                    output: format!("Error: {e}"),
-                });
-                Err(e)
-            }
+        let output = cmd.execute(self).await?;
+        if cmd.should_print_output() && !output.is_empty() {
+            emit_stdout!(&output);
         }
+        Ok(())
     }
 }
 
@@ -368,9 +344,7 @@ impl CommandHandler for ExecHandler {
         if exit_code == 0 {
             Ok(format!("Command exited with code {exit_code}"))
         } else {
-            Err(cuenv_core::Error::configuration(format!(
-                "Command failed with exit code {exit_code}"
-            )))
+            Err(cuenv_core::Error::ChildExit { code: exit_code })
         }
     }
 }
@@ -594,30 +568,6 @@ impl CommandHandler for SyncHandler {
             .filter(|output| !output.is_empty())
             .collect::<Vec<_>>()
             .join("\n\n"))
-    }
-}
-
-/// Handler for `shell init` command (synchronous).
-pub struct ShellInitHandler {
-    /// Shell type to generate initialization script for.
-    pub shell: ShellType,
-}
-
-impl ShellInitHandler {
-    /// Execute shell init synchronously (doesn't use async trait)
-    pub fn execute_sync(&self, executor: &CommandExecutor) {
-        let name = "shell init";
-        executor.send_event(Event::CommandStart {
-            command: name.to_string(),
-        });
-
-        let output = hooks::execute_shell_init(self.shell);
-
-        executor.send_event(Event::CommandComplete {
-            command: name.to_string(),
-            success: true,
-            output,
-        });
     }
 }
 

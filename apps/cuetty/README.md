@@ -84,21 +84,72 @@ write; shell control chords such as Ctrl-C and Ctrl-U; a new tab opening in
 ## Visual contract
 
 The shell follows Ghostty's restrained presentation: native traffic lights,
-one dark title strip, a compact right-side vertical tab rail, and a full-bleed
-Catppuccin Mocha terminal surface. The rail is fixed at a narrow 56px and shows
-only tab ordinals; stable path names remain available as tooltips. Restrained
-active-tab treatment and compact footer controls keep the rail readable
-without competing with terminal content. By default, the Rio surface sits in an
-8px inset below the title strip beside the rail. The inset uses the same surface
-colour, so it reads as breathing room inside one continuous terminal canvas
-rather than a contrasting frame. Clicking the terminal viewport requests focus.
-Text uses the configured `MonaspiceNe Nerd Font` family with explicit `Noto
+one title strip that shares the terminal's surface, names the active tab, which
+also titles the window for window switchers and compositors, and signs itself with a
+small muted `cuetty` wordmark at its far end, a
+right-side tab sidebar floating inset from the window's edges so it sits comfortably
+with rounded window corners, and a full-bleed terminal surface in the chosen theme. The sidebar is 200px wide and lists tabs by name. Its toggle, or
+Cmd-B (Ctrl-Shift-B on Linux), slides it down to 56px, resizing the grid once rather than on every frame, with an initial for each tab, taken
+from its user-set name, project banner, or directory so it stays put as programs come
+and go, and the full name as a tooltip; `sidebar: "collapsed"` in CUE starts it that
+way. A window opens with the global package's look and sidebar when that evaluates
+within half a second, so its first frame is already the right size. Only the first
+configuration a window evaluates settles the sidebar, so neither `cd` nor a later
+edit moves it, and the toggle outranks that setting for the life of the
+window. Names resolve in
+`src/terminal/tab_label.rs`: a user-set name, then a running Cuenv task, then the
+foreground program or a title it set, then the directory, then `Terminal`. A title
+lasts only as long as the program it was set under, one that names a directory stands
+in only while the working directory is unknown, a foreground that cannot be named
+keeps what was last known (a pipeline whose first command has exited, as in
+`git log | less`, cannot be), a shell running a script is named after the script, and
+Nix's `.name-wrapped`
+binaries are shown as `name`. A tab
+list taller than the window scrolls, and follows the active tab. The terminal fades back slightly while its window does not have the keyboard; inactive
+panes have nothing to dim until split panes exist. The foot of the expanded sidebar names the command palette's chord.
+Dragging a tab onto another moves it to that tab's place in the list. Hovering an expanded tab reveals a button that closes
+it; a collapsed tab is too narrow for one to stay clear of where a click selects it, so it is closed with the close chord. Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place: Enter
+or clicking elsewhere keeps it, Escape abandons it, and an empty name hands the tab back to
+its derived one. Each expanded tab has a muted
+second line such as `cuenv · main`, with its directory, unless the tab is already named after
+it, and the branch that directory is on. `src/terminal/git_branch.rs` reads that from the
+repository's `HEAD` file every couple of seconds without spawning a process; with neither
+known the line is absent. `src/terminal/tab_status.rs`
+works out each tab's indicator: a bell for a bell rung while the tab was not on screen,
+which it never is while the window is in the background, a
+ring while a task launched from Cuetty runs, counted from the Enter that runs it if it
+needed arguments, a flag once it hands the foreground back, which says it ended and
+not how,
+and a dot for text that changed while the tab was not on screen. Each has its own shape
+and its meaning in the tab's tooltip. Arriving at a tab, or back at the window with it on
+screen, clears what was waiting there,
+and typing moves on from a finished task. A shell that exits with a failing status or
+dies on a signal keeps its tab, with a warning triangle and its final output still
+readable above a strip saying how it ended, until Enter, Ctrl-D, or the close chord
+dismisses it, and it offers no tasks in the meantime; one that exits cleanly
+closes its tab at once. A task launched from Cuetty cannot report failure, because it
+runs in the shell and Rio discards the status shells report through OSC 133. Restrained
+active-tab treatment and compact footer controls keep the sidebar readable
+without competing with terminal content. By default, the Rio surface sits in a
+14px inset below the title strip beside the sidebar. The inset, and any space left
+over past the grid's last whole column and row, use the same surface colour from
+one background layer, so they read as breathing room inside one continuous
+terminal canvas rather than a contrasting frame or strip. Clicking the terminal viewport requests focus.
+Text defaults to the `MonaspiceNe Nerd Font` family with explicit `Noto
 Color Emoji`, `Monaspace Neon`, and macOS symbol/monospace fallbacks so prompt
 and directory glyphs do not depend on GPUI's default fallback selection.
 Terminal text defaults to 16px with a 1.2 line-height multiplier; that
-raw 19.2px line height is snapped once to the shared 20px device-pixel cell
-used by both GPUI painting and Rio resizing.
-The focused label and cursor follow GPUI's current focus handle, including blur.
+raw 19.2px line height is snapped once, with the font's advance, to whole device
+pixels: 19px at 1x and 38 device pixels at 2x, so columns and rows land on device
+pixels at any scale. GPUI painting and Rio resizing share that one cell, and the
+sizes the PTY reports are in device pixels.
+The focused label follows GPUI's current focus handle, including blur. The cursor
+blinks only if the application asks, with `cursor.blink` to override that: it fades
+rather than toggles, stays solid for a moment after output, a key press, or a
+switch of tab, and settles solid after about half a minute of nothing happening, so an idle window
+stops drawing. Rio raises no event for a program that only shows or hides its
+cursor, so the half-second poll notices that instead. Unfocused, or with another window active, it is a hollow outline. On a wide
+character it covers both columns, whichever half it landed on.
 Rio
 colour semantics (default, indexed, RGB, bold, dim, inverse, and hidden) stay
 in `TerminalFrame` until the renderer resolves them through the theme.
@@ -109,17 +160,24 @@ Underlines are host approximations: single and double use distinct
 thicknesses, curly is wavy, and dotted/dashed currently collapse to a solid
 underline.
 
-Font size, line height, terminal padding, and terminal transparency are configured
+Font family, font size, line height, terminal padding, and terminal transparency are configured
 through global and per-directory CUE files. Padding is independently configurable
 on the top, right, bottom, and left and is applied outside the measured terminal
 viewport so Rio receives the actual remaining grid size. Transparency spans 0%
-(opaque) through 100% (fully transparent) and changes only the terminal canvas.
-The title strip and right-side tab rail retain a fixed dark translucent layer
-over native macOS blur, while terminal text, the cursor, tab pills, selection,
-and controls remain opaque. The native Cuetty menu contains Quit Cuetty and
+(opaque) through 100% (fully transparent). The terminal canvas, title strip, and
+right-side sidebar share that one opacity from a single layer, so the window reads
+as one material:
+at 0% nothing shows through and the compositor treats the window as opaque, and
+above 0% everything sits over native blur together, including the sidebar's outline
+and its hover and active-tab fills, which stop fading at 50% opacity so a very
+transparent window still shows the panel and gives feedback. The sidebar has no fill
+of its own above 0%, because a second layer would be more opaque than the rest. Terminal text,
+the cursor, selection, chrome text, and the active tab's marker remain opaque, as
+do the floating task panels and their outlines, whose own text would otherwise
+compete with the terminal text they cover. The native Cuetty menu contains Quit Cuetty and
 Cmd-Q uses the same application action. Before calling the POC visually usable,
 check that native window
-controls and the rail remain visible, the prompt fills the terminal surface
+controls and the sidebar remain visible, the prompt fills the terminal surface
 without a second frame, the cursor changes with focus, ANSI colour and Unicode
 remain correct, and resizing changes the shell's `stty size` without stealing
 tab clicks.
@@ -131,39 +189,97 @@ Rio session behind each tab. Cmd-T creates a new session; Cmd-W closes only the
 active tab/session and closes the window when it is the final tab. Shortcuts
 shown as Cmd-* use Command on macOS and Ctrl-Shift on Linux (Ctrl-Shift-Alt for
 the Cmd-Shift-* forms), so plain Ctrl chords such as Ctrl-C, Ctrl-D, and Ctrl-W
-always reach the shell. The task palette is the exception: it defaults to
-Cmd-K on macOS and plain Ctrl-K elsewhere, and only takes the chord when the
-active directory has a task catalogue, so Ctrl-K stays the shell's kill-line in
-ordinary directories. Cmd-D and
+reach the shell. Ctrl-Page Up and Ctrl-Page Down select the previous or
+next tab, wrapping at either end. Cmd-1 to Cmd-8 on macOS and Ctrl-1 to Ctrl-8
+elsewhere select a tab by position, and 9 selects the last. Those Ctrl chords are the
+one plain set Cuetty takes from applications, including the legacy aliases Ctrl-2 to
+Ctrl-8 for NUL, ESC, FS, GS, RS, US, and DEL, but only when that tab exists; with no
+such tab the key reaches the terminal, and a palette chord on a digit wins. Holding
+the modifier for a moment shows the numbers as faint hints. The command palette defaults to
+Cmd-K on macOS and Ctrl-Shift-K elsewhere, leaving plain Ctrl-K to the shell.
+It is available in every directory. Cmd-D and
 Cmd-Shift-D report that split panes are unavailable; they never create a fake
 terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse
-selection and the current literal visible-frame search hit are painted directly
-over the terminal grid; Cmd-C copy and paste are live too. Rio-owned scrollback
-is live, but selection and search are cleared when the viewport moves because
-their coordinates are still visible-frame-only. It does not yet have live workspace restore,
+selection and every literal visible-frame search hit, opened with Cmd-F (Ctrl-Shift-F on
+Linux) into a search bar at the terminal's top right, are painted directly
+over the terminal grid, with the current hit picked out from the rest; Cmd-C copy and paste
+are live too. Rio-owned scrollback is live, with a thin overlay scrollbar that shows while
+the view moves or the pointer comes to the padding at the terminal's edge, fades away, and can be dragged, but
+a selection is cleared when the viewport moves
+because its coordinates are still visible-frame-only; an open search stays open and searches
+what has come into view. It does not yet have live workspace restore,
 plugin runtime, Kitty graphics, ligatures, or complete IME/non-Latin
 composition. Workspace persistence has a bounded versioned codec and atomic
 file store, but live restore and Rio session reconnect are not wired into the
-product shell.
-The renderer uses one custom GPUI element, merges compatible background spans,
-and shapes adjacent compatible cells as fixed-width text batches. Renderer cell
+product shell. Schema 2 records each tab's optional user-set name; schema 1
+snapshots still decode, with no name.
+The renderer uses one custom GPUI element and merges compatible background spans.
+Adjacent cells sharing a font are shaped together, even across colours, so a font's
+contextual alternates see the surrounding text. Every glyph is then placed from the
+column its source text belongs to, never from the font's advances, so `calt`,
+combining marks, and fallback fonts cannot shift a column, and all rows share one
+baseline taken from the configured font. Dim text blends halfway towards the
+background it is drawn on, a selection included, so it reads as quieter on a light theme as well as a dark
+one, and concealed text paints no glyph at all. Renderer cell
 width is measured from the selected font, while line height follows the configured
-font size and line-height multiplier; both are snapped once to shared device-pixel
-cell dimensions used by painting and Rio resizing. The current Rio public
+font size and line-height multiplier; both are rounded once to whole device pixels
+at the window's scale factor, and painting, hit testing, and Rio resizing all use
+that cell. The surface is measured in logical pixels and turned into device pixels
+at each draw's own scale, so the grid the PTY is told about is exactly the one
+painted, and moving a window between displays keeps the grid it had. The current Rio public
 snapshot adapter preserves backend-declared cluster text, wide-cell occupancy,
-and wrapped placeholders. Complete IME, ZWJ shaping, hyperlink, and emoji
+and wrapped placeholders. Box drawing (U+2500–257F, including rounded corners and diagonals), block elements
+(U+2580–259F, including shades), and the Powerline separators (U+E0B0–E0B3) are
+drawn as shapes on the cell's device pixels rather than through the font, so rules
+and blocks meet with no seam at any line height. They keep the cell's foreground and
+behave like text under a selection or a block cursor. Complete IME, ZWJ shaping, hyperlink, and emoji
 presentation correctness is deliberately not claimed.
 
-The built-in colour scheme is Catppuccin Mocha: Crust frames the host, Mantle
-frames the rail, Base fills the terminal, and the complete ANSI palette follows
-Catppuccin's Mocha mapping.
+`theme` in CUE picks one of four complete palettes in `src/terminal/config.rs`:
+`catppuccin-mocha` (the default), `catppuccin-latte`, `graphite`, and `paper`. `auto`
+uses Latte or Mocha to match the window's appearance and switches live as the desktop
+does; on Linux that comes from the XDG desktop portal, and no stated preference counts
+as light. Applications asking about colours (OSC 4, 10, 11, and 12) are told the palette
+their tab paints in, and a shell starts already knowing it, so Neovim and `bat` pick a
+light scheme on a light theme. A test
+holds all of them to one contrast contract, so a new token or theme cannot quietly
+ship text that does not read. On the default, Base fills the window, Mantle sets
+the sidebar off from it when the window is opaque, Surface 0 draws faint dividers, a tint just short
+of Surface 1 marks selections so ANSI colours still read on them, Yellow marks the current search match with Crust text on it and a dark Yellow tints the others, Blue is
+the accent, and the
+complete ANSI palette follows Catppuccin's Mocha mapping. Every one of these,
+plus muted text and the raised and hover surfaces used by floating panels, lives in
+`ThemeColors`; none is hard-coded by a renderer.
+
+All chrome spacing, radii, type sizes, border widths, elevation, and colours come
+from one token set in `src/terminal/chrome/tokens.rs`; chrome views, tooltips
+included, do not write their own literals.
+
+Chrome text uses the platform's sans-serif UI font on a small type scale, and only
+paths and shortcuts use the terminal's monospaced family. GPUI's UI font name is only
+meaningful on macOS and Windows: on Linux it means IBM Plex Sans and otherwise a
+fallback stack led by a monospaced font, so Cuetty picks the first installed family
+from a short list of desktop UI fonts, starting with Inter.
+
+Chrome controls draw from one icon set: a few [Lucide](https://lucide.dev) glyphs
+in `assets/icons`, compiled into the binary and served through GPUI's asset source,
+at a slightly lighter stroke than upstream to sit beside the text. Lucide's ISC
+licence is alongside them. Add a glyph there rather than using a text character.
+
+The app's own icon is `assets/app/cuetty.svg`, an original mark: a lowercase c, for cue,
+waiting at a block cursor, for tty. The Nix package installs it as the `cuetty` icon in
+the hicolor theme and the desktop entry names it. The macOS development bundle has no
+icon yet: that takes an `.icns` built on a Mac.
 
 The terminal render resizes Rio from the pane canvas measured inside GPUI's
 actual content panel. The measurement therefore already excludes the title
-strip, terminal inset, divider, and fixed rail width instead of trying to
-reconstruct those dimensions from the outer window. This keeps window and rail
+strip, terminal inset, and the sidebar's current width instead of trying to
+reconstruct those dimensions from the outer window. This keeps window and sidebar
 changes on the same grid, preserves one-cell clamping and resize deduplication,
-and prevents a stale wider frame from clipping long output. Startup,
+and prevents a stale wider frame from clipping long output. A measurement taken while
+GPUI draws asks for a new frame once that draw has finished, because invalidation
+during a draw is ignored, so the grid follows within a few frames even at an idle
+prompt. Startup,
 input, resize, paste, and close failures remain visible in the view rather than
 being dropped.
 
@@ -180,8 +296,10 @@ package cuetty
 
 banner: "Welcome to Cuetty"
 rail: "#ff0000"
+theme: "graphite"
 titlebar: false
 font: {
+    family:     "Monaspace Neon"
     size:       18
     lineHeight: 1.3
 }
@@ -195,24 +313,53 @@ transparency: 10
 ```
 
 `banner` is a bounded single line and `rail` must be a quoted `#RRGGBB`
-colour that tints the tab rail while that tab is active. Terminal panes are
+project accent. It colours the small marker on the active tab, which slides to whichever tab becomes active, while that tab is
+active, in place of the window's accent, and never fills the sidebar. `accent`, also
+a quoted `#RRGGBB`, is that window accent, for instance to match a compositor's
+window border: the marker uses `rail`, then `accent`, then the theme's accent, and
+the notice marker and palette caret use `accent`, then the theme's. Both are held to
+3:1 against the sidebar, so a colour chosen for one theme still shows on another: one
+that already shows is left exactly as given. Terminal panes are
 never framed; the legacy `border` field is rejected. `titlebar: false` hides
 the Cuetty title strip while that tab is active so the terminal extends to the
-top of the window; it defaults to `true`. With the strip hidden there is no
-drag region, and on macOS the traffic lights float over the terminal's top-left
-corner. Rio reports shell CWD changes through its public working-directory API;
-Cuetty re-evaluates and rebinds its native directory watcher after `cd`.
+top of the window; it defaults to `true`. Off macOS the strip draws only under
+client-side decorations: Cuetty asks for server-side ones, and a window that gets them
+leaves its title and moving it to the windowing system, whether or not that shows a
+title bar, so `titlebar` has no effect there and the sidebar names the tab. With the strip hidden the small gap above the
+sidebar moves the window. GPUI cannot hide the traffic lights once a window exists, so on
+macOS the terminal starts below them instead, in a band the strip's height that also moves
+the window; a larger `padding.top` still applies. Rio reports shell CWD changes through its public working-directory API;
+Cuetty re-evaluates and rebinds its native directory watcher after `cd`. Until that
+evaluation lands, a tab keeps its look but drops the previous `banner` and `rail`, and
+a new tab starts from the look of the tab it opened from, so neither a `cd` nor a new
+tab flashes the defaults or resizes the grid.
 Malformed matching configuration retains the last valid presentation for that
-directory, if one exists, and shows an integration notice. Unknown fields are
-rejected.
+directory, if one exists, and shows an integration notice: a small accent marker
+beside the sidebar's controls, with the message in its tooltip. The tooltip stops
+at twelve lines; `cue eval .:cuetty` in that directory prints a whole evaluation
+error. Workspace action failures appear the same way until the next tab switch or
+successful action. So does a task pasted without running, on its own pane, until Enter
+or Ctrl-C finishes the line or the foreground changes; a configuration error there
+takes priority. Unknown fields are rejected.
+
+A tab whose session breaks shows what went wrong with Restart shell and Close tab in place of
+its terminal, and a window with no terminal because no shell would start says why and offers
+New tab. Enter takes the first of these.
 
 The appearance fields are optional and apply to the active tab:
 
 | Field | Range | Default |
 | --- | --- | --- |
+| `font.family` | Nonempty font family name | `MonaspiceNe Nerd Font` |
 | `font.size` | 1–128 pixels | 16 |
 | `font.lineHeight` | 0.5–3 multiplier | 1.2 |
-| `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | 0–128 integer pixels per edge | 8 each |
+| `font.calt` | Boolean: the font's contextual alternates, such as Monaspace's texture healing. Ligatures stay off either way | `true` |
+| `font.boldWeight` | 100–900 integer; a family without that exact weight uses its nearest | 600 |
+| `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | 0–128 integer pixels per edge | 14 each |
+| `cursor.blink` | `"terminal"` to blink as the running application asks, `"on"`, or `"off"` | `"terminal"` |
+| `cursor.trail` | Boolean: a short fading trail behind a cursor that jumps. Typing leaves none | `false` |
+| `motion` | `"system"` to follow the platform's reduced-motion setting where one can be read, `"full"`, or `"reduced"` | `"system"` |
+| `minimumContrast` | 1–21 contrast ratio text is kept to against its background. 1 is off | 1 |
 | `transparency` | 0–100 integer percent | 0 |
 
 There is no in-app Settings page; edit the CUE files to change these values.
@@ -221,51 +368,60 @@ A global `package cuetty` in `$XDG_CONFIG_HOME/cuetty` (or `~/.config/cuetty`),
 in any `.cue` file, is CUE-unified beneath each directory's package, or applies
 alone where a directory has none. Write overridable global values as CUE
 defaults, for example `rail: *"#89b4fa" | string` and
-`padding: top: *8 | int`; a concrete conflict is an invalid configuration.
+`padding: top: *14 | int`; a concrete conflict is an invalid configuration.
 Each padding edge may be overridden independently. CUE evaluation never runs on
 the GPUI thread. The global directory is watched when it exists; if it is
 created later while the working directory is known, it is picked up on the
 next directory change. When the working directory is unavailable, Cuetty
 applies only the global package and checks for its directory on each poll.
 
-`keybindings: palette: "ctrl-shift-p"` rebinds the task palette. Chords are
+`keybindings: palette: "ctrl-shift-p"` rebinds the command palette. Chords are
 `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`) followed by a
-key and match that exact modifier set.
+key and match that exact modifier set. A palette chord takes precedence over the tab
+number and Ctrl-Page chords it conflicts with, as the binding the user chose.
+The sidebar hint shows the active tab's chord in the platform's own spelling.
 
-Home Manager users can manage the global package through the flake's
-`homeManagerModules.cuetty`:
+Home Manager users can link their own CUE file as the global package:
 
 ```nix
 {
-  imports = [ cuenv.homeManagerModules.cuetty ];
-  programs.cuetty = {
-    enable = true;
-    settings = {
-      rail = "#89b4fa";
-      titlebar = false;
-      keybindings.palette = "ctrl-k";
-      font = { size = 16.0; lineHeight = 1.2; };
-      padding = { top = 8; right = 8; bottom = 8; left = 8; };
-      transparency = 0;
-    };
-  };
+  xdg.configFile."cuetty/config.cue".source = ./cuetty.cue;
 }
 ```
 
-The module writes `$XDG_CONFIG_HOME/cuetty/config.cue`, rendering every
-`settings` value as a CUE default so directory packages can still override
-it; `extraConfig` appends raw CUE. `package` defaults to the flake's Cuetty
-build and may be set to `null` to manage configuration only.
+The file should declare `package cuetty` and use defaults for any values that
+per-directory packages should override.
 
 When the same directory contains an evaluable `package cuenv`, Cuetty also
-discovers its `tasks` map. The task button in the fixed right rail opens a
-floating, non-resizing task sidebar; Cmd-K (Ctrl-K off macOS, configurable
-through `keybindings.palette`) opens a searchable command palette. Selecting a task invokes the existing CLI in the same terminal pane
-whose working directory supplied the catalogue. The
+discovers its `tasks` map. The command palette opens with Cuetty actions such as
+new tab, rename tab, and find on screen. Type `$` to search the active tab's
+Cuenv tasks, or use the task button in the sidebar to open that mode directly.
+Deleting `$` returns to commands. Selecting a task invokes the existing CLI in the same terminal pane
+whose working directory supplied the catalogue, pasting the command and pressing Enter
+separately, because a shell in bracketed paste mode takes a pasted newline as text. Enter
+is pressed only while the foreground is an interactive shell, judged from the process's
+name and start-up arguments, so a program or a shell running a script (`bash deploy.sh`)
+cannot be made to submit something the user was still writing or to answer a script's
+question. A shell's builtin, such as `read`, or a subshell looks the same as its prompt
+from outside, so a command launched during one does get an Enter. The
 `cuenv task --path … --package cuenv …` CLI path preserves its graph, cache,
 hook, secret-redaction, cancellation, and exit behaviour. Tasks with required
 parameters are staged at the prompt for editing instead of running
-incompletely. Directories without a task catalogue remain ordinary terminals.
+incompletely. The palette takes pointer input rather than passing it to the
+terminal beneath, and clicking outside closes it. Its results scroll under a
+fixed field and hint, following the keyboard selection, so every match remains
+reachable even when there are more than nine.
+
+The same evaluation fills a panel in the expanded sidebar, between the tabs and the
+palette hint: the project's `name`, its `runtime` type and runnable task count, the variables
+in `env`, and each named set of overrides in `env.environment`. It says what the active tab's
+exact directory declares, not what its shell has loaded, and it resolves nothing. A secret
+shows as `•••• onepassword`, and parsing keeps only that resolver's name, so its reference
+and an `exec` secret's command never reach the UI. A passthrough shows as `from $NAME`.
+A value written out in CUE is shown as written, so a literal token is on screen like any
+other value. A tooltip holds the whole value. The panel stops at 240px and scrolls, and gives way to the tab
+list in a short window. The collapsed sidebar has no room for it. A project with nothing
+to report, or a directory without one, shows no panel, and changing directory clears it.
 
 On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
 compiler that GPUI needs. Runtime is only verified when

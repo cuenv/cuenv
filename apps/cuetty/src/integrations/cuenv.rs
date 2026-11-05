@@ -4,27 +4,48 @@
 //! validated representation, so configuration cannot reach a renderer or a
 //! session directly.
 
-use crate::terminal::config::TerminalConfig;
+use crate::terminal::config::{
+    CursorBlink, MinimumContrast, MotionPreference, Rgb, SystemAppearance, TerminalConfig,
+    ThemeChoice, ThemeColors,
+};
 use cuengine::{ModuleEvalOptions, UnifySource};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub const PACKAGE: &str = "cuetty";
 pub const PROJECT_PACKAGE: &str = "cuenv";
 /// Directory below the XDG config home that holds the global `cuetty` package.
 const GLOBAL_CONFIG_DIR: &str = "cuetty";
 const MAX_BANNER_BYTES: usize = 120;
+/// Stands in for a secret wherever a variable is shown.
+pub const SECRET_MASK: &str = "••••";
+const MAX_ENV_SUMMARY_CHARS: usize = 120;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CuettyPresentation {
     pub banner: Option<String>,
     pub rail: Option<RailColor>,
     pub titlebar: TitlebarVisibility,
+    pub sidebar: SidebarMode,
     pub keybindings: Keybindings,
     pub terminal: Box<TerminalConfig>,
+}
+
+impl CuettyPresentation {
+    /// What a pane shows while its own evaluation is on the way: the same look,
+    /// so a `cd` or a new tab does not flash the defaults and resize the grid, but
+    /// nothing that identifies another project.
+    pub fn carried_over(&self) -> Self {
+        Self {
+            banner: None,
+            rail: None,
+            ..self.clone()
+        }
+    }
 }
 
 /// Application chords configured through `keybindings` in package `cuetty`.
@@ -37,12 +58,12 @@ impl Default for Keybindings {
     fn default() -> Self {
         let macos = cfg!(target_os = "macos");
         Self {
-            // Cmd-K on macOS and Ctrl-K elsewhere, matching common
-            // command-palette conventions.
+            // Keep plain Ctrl-K available to terminal applications off macOS.
             palette: KeyChord {
                 key: "k".into(),
                 modifiers: ChordModifiers {
                     control: !macos,
+                    shift: !macos,
                     platform: macos,
                     ..ChordModifiers::default()
                 },
@@ -96,6 +117,58 @@ impl KeyChord {
             modifiers,
         })
     }
+
+    /// The chord as this platform writes it in UI hints.
+    pub fn label(&self) -> String {
+        if cfg!(target_os = "macos") {
+            self.glyph_label()
+        } else {
+            self.word_label()
+        }
+    }
+
+    /// Modifiers in the order macOS menus show them, for example `⇧⌘P`.
+    fn glyph_label(&self) -> String {
+        let ChordModifiers {
+            control,
+            alt,
+            shift,
+            platform,
+        } = self.modifiers;
+        [(control, "⌃"), (alt, "⌥"), (shift, "⇧"), (platform, "⌘")]
+            .into_iter()
+            .filter_map(|(held, glyph)| held.then_some(glyph))
+            .chain([self.key_label().as_str()])
+            .collect()
+    }
+
+    /// Conventional Linux spelling, for example `Ctrl+Shift+P`.
+    fn word_label(&self) -> String {
+        let ChordModifiers {
+            control,
+            alt,
+            shift,
+            platform,
+        } = self.modifiers;
+        [
+            (control, "Ctrl"),
+            (alt, "Alt"),
+            (shift, "Shift"),
+            (platform, "Super"),
+        ]
+        .into_iter()
+        .filter_map(|(held, word)| held.then_some(word))
+        .chain([self.key_label().as_str()])
+        .collect::<Vec<_>>()
+        .join("+")
+    }
+
+    fn key_label(&self) -> String {
+        let mut characters = self.key.chars();
+        characters.next().map_or_else(String::new, |first| {
+            first.to_uppercase().chain(characters).collect()
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,6 +185,84 @@ pub enum TitlebarVisibility {
 impl From<bool> for TitlebarVisibility {
     fn from(shown: bool) -> Self {
         if shown { Self::Shown } else { Self::Hidden }
+    }
+}
+
+/// How much room the tab sidebar takes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SidebarMode {
+    /// Tabs are listed by name.
+    #[default]
+    Expanded,
+    /// A narrow strip of initials, with names in tooltips.
+    Collapsed,
+}
+
+/// The sidebar of one window. `sidebar` says how it starts, so only the first
+/// configuration the window evaluates is read, and the toggle replaces even that.
+/// Following the configuration any longer would resize the grid on every `cd`.
+///
+/// That evaluation lands after the first frame, so until then the window goes by
+/// what the global package says, which it nearly always agrees with.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WindowSidebar {
+    settled: Option<SidebarMode>,
+    expected: SidebarMode,
+}
+
+impl WindowSidebar {
+    pub fn mode(self) -> SidebarMode {
+        self.settled.unwrap_or(self.expected)
+    }
+
+    /// A sidebar opening on what `global` says, until something settles it.
+    pub fn expecting(global: &Evaluation) -> Self {
+        Self {
+            settled: None,
+            expected: match global {
+                Evaluation::Valid(presentation) => presentation.sidebar,
+                Evaluation::Absent | Evaluation::Invalid(_) => SidebarMode::default(),
+            },
+        }
+    }
+
+    /// Settles the sidebar from an evaluation, unless something already has. An
+    /// invalid configuration says nothing, so the next valid one still counts.
+    pub fn observe(&mut self, evaluation: &Evaluation) {
+        let configured = match evaluation {
+            Evaluation::Valid(presentation) => presentation.sidebar,
+            Evaluation::Absent => SidebarMode::default(),
+            Evaluation::Invalid(_) => return,
+        };
+        self.settled.get_or_insert(configured);
+    }
+
+    pub fn toggle(&mut self) {
+        self.settled = Some(self.mode().toggled());
+    }
+
+    /// Settles the sidebar open, for something that has to show there.
+    pub fn expand(&mut self) {
+        self.settled = Some(SidebarMode::Expanded);
+    }
+}
+
+impl SidebarMode {
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Expanded => Self::Collapsed,
+            Self::Collapsed => Self::Expanded,
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "expanded" => Ok(Self::Expanded),
+            "collapsed" => Ok(Self::Collapsed),
+            _ => Err(format!(
+                "sidebar must be \"expanded\" or \"collapsed\", got \"{value}\""
+            )),
+        }
     }
 }
 
@@ -140,10 +291,110 @@ pub struct CuenvTask {
     pub requires_parameters: bool,
 }
 
+/// What a variable is declared to be, as much of it as may be put on screen. A secret
+/// keeps only the name of its resolver: its reference is dropped while parsing and nothing
+/// here ever resolves it, so no secret can reach the sidebar.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TaskEvaluation {
+pub enum EnvVariableValue {
+    /// A value written out in the CUE, which is as public as that file.
+    Literal(String),
+    Secret {
+        resolver: String,
+    },
+    /// Parts joined at runtime, some of them secrets, which show as [`SECRET_MASK`].
+    Composed(String),
+    /// Forwarded from the variable of this name on the host.
+    Passthrough(String),
+    /// A shape this version does not know, which is not assumed to be safe to show.
+    Undisclosed,
+}
+
+impl EnvVariableValue {
+    /// The value on one line, whatever it holds.
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Literal(value) | Self::Composed(value) => single_line(value),
+            Self::Secret { resolver } => format!("{SECRET_MASK} {}", single_line(resolver)),
+            Self::Passthrough(name) => format!("from ${}", single_line(name)),
+            Self::Undisclosed => "not shown".into(),
+        }
+    }
+
+    /// What the value means, for a tooltip.
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Literal(value) => value.clone(),
+            Self::Secret { resolver } => {
+                format!("Secret from {resolver}, resolved when a command runs")
+            }
+            Self::Composed(value) => {
+                format!("{value}\n{SECRET_MASK} is a secret, resolved when a command runs")
+            }
+            Self::Passthrough(name) => format!("Read from the host's {name} when a task runs"),
+            Self::Undisclosed => "Not a kind of value Cuetty knows how to show".into(),
+        }
+    }
+}
+
+/// One line, short enough to hand to the text system on every frame. A value is not ours
+/// and can hold a whole certificate.
+fn single_line(value: &str) -> String {
+    value
+        .chars()
+        .take(MAX_ENV_SUMMARY_CHARS)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnvVariable {
+    pub name: String,
+    pub value: EnvVariableValue,
+}
+
+/// A named set of overrides from `env.environment`, applied by `--env`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamedEnvironment {
+    pub name: String,
+    pub variables: Vec<EnvVariable>,
+}
+
+/// What the sidebar says about the project in a directory. This is what the project
+/// declares, not what the shell has loaded.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProjectOverview {
+    pub name: Option<String>,
+    pub runtime: Option<String>,
+    pub variables: Vec<EnvVariable>,
+    pub environments: Vec<NamedEnvironment>,
+}
+
+impl ProjectOverview {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.runtime.is_none()
+            && self.variables.is_empty()
+            && self.environments.is_empty()
+    }
+}
+
+/// What one evaluation of a directory's `package cuenv` is used for.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CuenvProject {
+    pub overview: ProjectOverview,
+    pub tasks: Vec<CuenvTask>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectEvaluation {
     Absent,
-    Valid(Vec<CuenvTask>),
+    Valid(CuenvProject),
     Invalid(String),
 }
 
@@ -155,7 +406,13 @@ struct CuettyDto {
     #[serde(default)]
     rail: Option<String>,
     #[serde(default)]
+    accent: Option<String>,
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
     titlebar: Option<bool>,
+    #[serde(default)]
+    sidebar: Option<String>,
     #[serde(default)]
     keybindings: Option<KeybindingsDto>,
     #[serde(default)]
@@ -164,15 +421,36 @@ struct CuettyDto {
     padding: Option<PaddingDto>,
     #[serde(default)]
     transparency: Option<u8>,
+    #[serde(default, rename = "minimumContrast")]
+    minimum_contrast: Option<f32>,
+    #[serde(default)]
+    cursor: Option<CursorDto>,
+    #[serde(default)]
+    motion: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct FontDto {
     #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
     size: Option<f32>,
     #[serde(default)]
     line_height: Option<f32>,
+    #[serde(default)]
+    calt: Option<bool>,
+    #[serde(default)]
+    bold_weight: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CursorDto {
+    #[serde(default)]
+    blink: Option<String>,
+    #[serde(default)]
+    trail: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,6 +480,17 @@ pub enum Evaluation {
     Invalid(String),
 }
 
+impl Evaluation {
+    /// The palette a pane given this evaluation paints in. Without a valid look to go by,
+    /// that is the default theme's, as it is for [`CuenvPaneState::apply`].
+    pub fn palette_for(&self, appearance: SystemAppearance) -> ThemeColors {
+        match self {
+            Self::Valid(presentation) => presentation.terminal.colors_for(appearance),
+            Self::Absent | Self::Invalid(_) => ThemeColors::default(),
+        }
+    }
+}
+
 /// Per-pane presentation state kept independent from the GPUI view. The
 /// generation is advanced whenever the shell enters a new directory or a new
 /// source binding, so late worker results cannot cross a CWD boundary.
@@ -211,6 +500,7 @@ pub struct CuenvPaneState {
     pub generation: u64,
     pub presentation: CuettyPresentation,
     pub tasks: Vec<CuenvTask>,
+    pub overview: ProjectOverview,
     pub notice: Option<String>,
     pub task_notice: Option<String>,
 }
@@ -230,8 +520,9 @@ impl CuenvPaneState {
         }
         self.cwd = cwd;
         self.generation = self.generation.wrapping_add(1);
-        self.presentation = CuettyPresentation::default();
+        self.presentation = self.presentation.carried_over();
         self.tasks.clear();
+        self.overview = ProjectOverview::default();
         self.notice = None;
         self.task_notice = None;
         true
@@ -260,20 +551,22 @@ impl CuenvPaneState {
         true
     }
 
-    pub fn apply_tasks(&mut self, generation: u64, update: TaskEvaluation) -> bool {
+    pub fn apply_project(&mut self, generation: u64, update: ProjectEvaluation) -> bool {
         if self.generation != generation {
             return false;
         }
         match update {
-            TaskEvaluation::Valid(tasks) => {
-                self.tasks = tasks;
+            ProjectEvaluation::Valid(project) => {
+                self.tasks = project.tasks;
+                self.overview = project.overview;
                 self.task_notice = None;
             }
-            TaskEvaluation::Absent => {
+            ProjectEvaluation::Absent => {
                 self.tasks.clear();
+                self.overview = ProjectOverview::default();
                 self.task_notice = None;
             }
-            TaskEvaluation::Invalid(error) => self.task_notice = Some(error),
+            ProjectEvaluation::Invalid(error) => self.task_notice = Some(error),
         }
         true
     }
@@ -374,7 +667,7 @@ impl ConfigSource {
         }
     }
 
-    pub fn evaluate_tasks(&self) -> TaskEvaluation {
+    pub fn evaluate_project(&self) -> ProjectEvaluation {
         let module_root = self.module_root.as_deref().unwrap_or(&self.target_dir);
         let options = ModuleEvalOptions {
             recursive: false,
@@ -385,7 +678,9 @@ impl ConfigSource {
         let module = match cuengine::evaluate_module(module_root, PROJECT_PACKAGE, Some(&options)) {
             Ok(module) => module,
             Err(error) => {
-                return TaskEvaluation::Invalid(format!("Cuetty task evaluation failed: {error}"));
+                return ProjectEvaluation::Invalid(format!(
+                    "Cuetty task evaluation failed: {error}"
+                ));
             }
         };
         let Some(value) = module
@@ -393,9 +688,9 @@ impl ConfigSource {
             .get(".")
             .or_else(|| module.instances.values().next())
         else {
-            return TaskEvaluation::Absent;
+            return ProjectEvaluation::Absent;
         };
-        parse_tasks(value)
+        parse_project(value)
     }
 }
 
@@ -476,11 +771,24 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         value => value,
     };
     let rail = match dto.rail {
-        Some(value) => match parse_color(&value) {
+        Some(value) => match parse_color("rail", &value) {
             Ok(color) => Some(color),
             Err(error) => return Evaluation::Invalid(error),
         },
         None => None,
+    };
+    let accent = match dto
+        .accent
+        .as_deref()
+        .map(|value| parse_color("accent", value))
+    {
+        Some(Ok(RailColor(red, green, blue))) => Some(Rgb(red, green, blue)),
+        Some(Err(error)) => return Evaluation::Invalid(error),
+        None => None,
+    };
+    let sidebar = match dto.sidebar.as_deref().map(SidebarMode::parse).transpose() {
+        Ok(sidebar) => sidebar.unwrap_or_default(),
+        Err(error) => return Evaluation::Invalid(error),
     };
     let keybindings = match dto.keybindings.and_then(|keys| keys.palette) {
         Some(value) => match KeyChord::parse(&value) {
@@ -493,11 +801,20 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
     // have unified, so any individual setting can be overridden locally.
     let mut terminal = TerminalConfig::default();
     if let Some(font) = dto.font {
+        if let Some(family) = font.family {
+            terminal.font.family = family;
+        }
         if let Some(size) = font.size {
             terminal.font.size_px = size;
         }
         if let Some(line_height) = font.line_height {
             terminal.font.line_height_multiplier = line_height;
+        }
+        if let Some(calt) = font.calt {
+            terminal.font.contextual_alternates = calt;
+        }
+        if let Some(bold_weight) = font.bold_weight {
+            terminal.font.bold_weight = bold_weight;
         }
     }
     if let Some(padding) = dto.padding {
@@ -515,8 +832,31 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
             edges.left = left;
         }
     }
+    match dto.theme.as_deref().map(parse_theme).transpose() {
+        Ok(theme) => terminal.choose_theme(theme.unwrap_or_default(), accent),
+        Err(error) => return Evaluation::Invalid(error),
+    }
     if let Some(transparency) = dto.transparency {
         terminal.terminal_transparency_percent = transparency;
+    }
+    if let Some(ratio) = dto.minimum_contrast {
+        let Some(minimum_contrast) = MinimumContrast::new(ratio) else {
+            return Evaluation::Invalid(format!(
+                "minimumContrast must be between 1 and 21, got {ratio}"
+            ));
+        };
+        terminal.minimum_contrast = minimum_contrast;
+    }
+    if let Some(cursor) = dto.cursor {
+        match cursor.blink.as_deref().map(parse_cursor_blink).transpose() {
+            Ok(blink) => terminal.cursor_blink = blink.unwrap_or_default(),
+            Err(error) => return Evaluation::Invalid(error),
+        }
+        terminal.cursor_trail = cursor.trail.unwrap_or_default();
+    }
+    match dto.motion.as_deref().map(parse_motion).transpose() {
+        Ok(motion) => terminal.motion = motion.unwrap_or_default(),
+        Err(error) => return Evaluation::Invalid(error),
     }
     if let Err(error) = terminal.validate() {
         return Evaluation::Invalid(format!("invalid Cuetty terminal configuration: {error}"));
@@ -528,38 +868,157 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
             .titlebar
             .map(TitlebarVisibility::from)
             .unwrap_or_default(),
+        sidebar,
         keybindings,
         terminal: Box::new(terminal),
     })
 }
 
-fn parse_color(value: &str) -> Result<RailColor, String> {
+fn parse_theme(value: &str) -> Result<ThemeChoice, String> {
+    ThemeChoice::from_id(value).ok_or_else(|| {
+        let known: Vec<String> = ThemeChoice::ids().map(|id| format!("\"{id}\"")).collect();
+        format!("theme must be one of {}, got \"{value}\"", known.join(", "))
+    })
+}
+
+fn parse_cursor_blink(value: &str) -> Result<CursorBlink, String> {
+    match value {
+        "terminal" => Ok(CursorBlink::Terminal),
+        "on" => Ok(CursorBlink::On),
+        "off" => Ok(CursorBlink::Off),
+        _ => Err(format!(
+            "cursor.blink must be \"terminal\", \"on\", or \"off\", got \"{value}\""
+        )),
+    }
+}
+
+fn parse_motion(value: &str) -> Result<MotionPreference, String> {
+    match value {
+        "system" => Ok(MotionPreference::System),
+        "full" => Ok(MotionPreference::Full),
+        "reduced" => Ok(MotionPreference::Reduced),
+        _ => Err(format!(
+            "motion must be \"system\", \"full\", or \"reduced\", got \"{value}\""
+        )),
+    }
+}
+
+fn parse_color(field: &str, value: &str) -> Result<RailColor, String> {
+    let invalid = || format!("{field} must use quoted #RRGGBB syntax");
     let bytes = value.as_bytes();
     if bytes.len() != 7 || bytes[0] != b'#' || !bytes[1..].iter().all(u8::is_ascii_hexdigit) {
-        return Err("rail must use quoted #RRGGBB syntax".into());
+        return Err(invalid());
     }
-    let channel = |from| {
-        u8::from_str_radix(&value[from..from + 2], 16)
-            .map_err(|_| "rail must use quoted #RRGGBB syntax".to_string())
-    };
+    let channel = |from| u8::from_str_radix(&value[from..from + 2], 16).map_err(|_| invalid());
     Ok(RailColor(channel(1)?, channel(3)?, channel(5)?))
 }
 
-fn parse_tasks(value: &serde_json::Value) -> TaskEvaluation {
+fn parse_project(value: &serde_json::Value) -> ProjectEvaluation {
+    match parse_tasks(value) {
+        Ok(tasks) => ProjectEvaluation::Valid(CuenvProject {
+            overview: parse_overview(value),
+            tasks,
+        }),
+        Err(error) => ProjectEvaluation::Invalid(error),
+    }
+}
+
+fn parse_tasks(value: &serde_json::Value) -> Result<Vec<CuenvTask>, String> {
     let Some(tasks) = value.get("tasks") else {
-        return TaskEvaluation::Valid(Vec::new());
+        return Ok(Vec::new());
     };
-    let Some(tasks) = tasks.as_object() else {
-        return TaskEvaluation::Invalid("Cuenv tasks must evaluate to an object".into());
-    };
+    let tasks = tasks
+        .as_object()
+        .ok_or("Cuenv tasks must evaluate to an object")?;
     let mut catalog = Vec::new();
     for (name, node) in tasks {
-        if let Err(error) = collect_task(name, node, &mut catalog) {
-            return TaskEvaluation::Invalid(error);
-        }
+        collect_task(name, node, &mut catalog)?;
     }
     catalog.sort_by(|left, right| left.name.cmp(&right.name));
-    TaskEvaluation::Valid(catalog)
+    Ok(catalog)
+}
+
+/// Reads what the sidebar shows. It only informs, so a part in an unexpected shape is
+/// left out rather than failing the tasks evaluated alongside it.
+fn parse_overview(value: &serde_json::Value) -> ProjectOverview {
+    let env = value.get("env").and_then(serde_json::Value::as_object);
+    let mut environments: Vec<NamedEnvironment> = env
+        .and_then(|env| env.get("environment"))
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, overrides)| {
+            overrides.as_object().map(|overrides| NamedEnvironment {
+                name: name.clone(),
+                variables: parse_variables(overrides),
+            })
+        })
+        .collect();
+    environments.sort_by(|left, right| left.name.cmp(&right.name));
+    ProjectOverview {
+        name: value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        runtime: value
+            .pointer("/runtime/type")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        variables: env.map(parse_variables).unwrap_or_default(),
+        environments,
+    }
+}
+
+/// The variables of an `env` block or of one environment's overrides, in name order.
+fn parse_variables(block: &serde_json::Map<String, serde_json::Value>) -> Vec<EnvVariable> {
+    let mut variables: Vec<EnvVariable> = block
+        .iter()
+        .filter(|(name, _)| name.as_str() != "environment")
+        .map(|(name, value)| EnvVariable {
+            name: name.clone(),
+            value: parse_variable_value(name, value),
+        })
+        .collect();
+    variables.sort_by(|left, right| left.name.cmp(&right.name));
+    variables
+}
+
+fn parse_variable_value(name: &str, value: &serde_json::Value) -> EnvVariableValue {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => EnvVariableValue::Literal(text.clone()),
+        Value::Number(number) => EnvVariableValue::Literal(number.to_string()),
+        Value::Bool(flag) => EnvVariableValue::Literal(flag.to_string()),
+        Value::Array(parts) => parse_interpolated(parts),
+        Value::Object(fields) => {
+            if let Some(resolver) = fields.get("resolver").and_then(Value::as_str) {
+                EnvVariableValue::Secret {
+                    resolver: resolver.into(),
+                }
+            } else if fields.contains_key("cuenvPassthrough") {
+                let host = fields.get("name").and_then(Value::as_str).unwrap_or(name);
+                EnvVariableValue::Passthrough(host.into())
+            } else if let Some(inner) = fields.get("value") {
+                parse_variable_value(name, inner)
+            } else {
+                EnvVariableValue::Undisclosed
+            }
+        }
+        Value::Null => EnvVariableValue::Undisclosed,
+    }
+}
+
+/// Only text parts are ever copied out: anything else counts as a secret.
+fn parse_interpolated(parts: &[serde_json::Value]) -> EnvVariableValue {
+    let joined = parts
+        .iter()
+        .map(|part| part.as_str().unwrap_or(SECRET_MASK))
+        .collect::<String>();
+    if parts.iter().all(serde_json::Value::is_string) {
+        EnvVariableValue::Literal(joined)
+    } else {
+        EnvVariableValue::Composed(joined)
+    }
 }
 
 fn collect_task(
@@ -668,9 +1127,9 @@ pub trait CuenvWatcher: Send {
 /// watcher or invoking the CUE bridge.
 pub trait CuenvProvider: Send + Sync {
     fn evaluate(&self, source: &ConfigSource) -> Evaluation;
-    fn evaluate_tasks(&self, source: &ConfigSource) -> TaskEvaluation {
+    fn evaluate_project(&self, source: &ConfigSource) -> ProjectEvaluation {
         let _ = source;
-        TaskEvaluation::Absent
+        ProjectEvaluation::Absent
     }
     fn watch(
         &self,
@@ -742,8 +1201,8 @@ impl CuenvProvider for NativeCuenvProvider {
         source.evaluate()
     }
 
-    fn evaluate_tasks(&self, source: &ConfigSource) -> TaskEvaluation {
-        source.evaluate_tasks()
+    fn evaluate_project(&self, source: &ConfigSource) -> ProjectEvaluation {
+        source.evaluate_project()
     }
 
     fn watch(
@@ -756,9 +1215,70 @@ impl CuenvProvider for NativeCuenvProvider {
     }
 }
 
+/// One part of what a source says, reported as soon as it is known.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EvaluationStage {
+    Presentation(Evaluation),
+    Project(ProjectEvaluation),
+}
+
+/// One evaluation of a source, which blocks and so belongs off the UI thread.
+#[derive(Clone)]
+pub struct StagedEvaluation {
+    pub provider: Arc<dyn CuenvProvider>,
+    pub source: ConfigSource,
+    /// Whether the source has a directory to look for a project in.
+    pub discover_project: bool,
+    pub stages: async_channel::Sender<EvaluationStage>,
+}
+
+impl StagedEvaluation {
+    /// Reports the look first. Evaluating the project can take far longer, and everything the look
+    /// decides, including what a program asking about colours is told, should not wait on
+    /// it. Nobody listening any more ends this early.
+    pub fn run(&self) {
+        let presentation = self.provider.evaluate(&self.source);
+        if self
+            .stages
+            .send_blocking(EvaluationStage::Presentation(presentation))
+            .is_err()
+        {
+            return;
+        }
+        let project = if self.discover_project {
+            self.provider.evaluate_project(&self.source)
+        } else {
+            ProjectEvaluation::Absent
+        };
+        // The look has been delivered, so a listener leaving now loses nothing.
+        let _ = self.stages.send_blocking(EvaluationStage::Project(project));
+    }
+
+    pub fn is_abandoned(&self) -> bool {
+        self.stages.is_closed()
+    }
+}
+
+/// Evaluates `source` if that takes no longer than `wait`. For configuration that
+/// should be in place before something is shown, but must never hold it up for long:
+/// a slow evaluation is left to finish on its own, and its result dropped.
+pub fn evaluate_within(
+    provider: Arc<dyn CuenvProvider>,
+    source: ConfigSource,
+    wait: Duration,
+) -> Option<Evaluation> {
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // The receiver has gone if this took longer than it would wait.
+        let _ = result_tx.send(provider.evaluate(&source));
+    });
+    result_rx.recv_timeout(wait).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::config::{SystemAppearance, ThemeName};
 
     #[test]
     fn validates_v1_presentation() {
@@ -768,6 +1288,7 @@ mod tests {
                 banner: Some("Welcome to Cuetty".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
+                sidebar: SidebarMode::Expanded,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -777,20 +1298,131 @@ mod tests {
     #[test]
     fn terminal_presentation_supports_partial_configuration_and_defaults() {
         let Evaluation::Valid(presentation) = parse_value(serde_json::json!({
-            "font": {"size": 21, "lineHeight": 1.5},
+            "font": {"family": "Monaspace Neon", "size": 21, "lineHeight": 1.5},
             "padding": {"left": 2, "top": 12},
             "transparency": 40
         })) else {
             panic!("expected valid terminal presentation");
         };
         let terminal = presentation.terminal;
+        assert_eq!(terminal.font.family, "Monaspace Neon");
         assert_eq!(terminal.font.size_px, 21.0);
         assert_eq!(terminal.font.line_height_multiplier, 1.5);
         assert_eq!(terminal.terminal_padding.top, 12);
-        assert_eq!(terminal.terminal_padding.right, 8);
-        assert_eq!(terminal.terminal_padding.bottom, 8);
+        assert_eq!(terminal.terminal_padding.right, 14);
+        assert_eq!(terminal.terminal_padding.bottom, 14);
         assert_eq!(terminal.terminal_padding.left, 2);
         assert_eq!(terminal.terminal_transparency_percent, 40);
+    }
+
+    #[test]
+    fn text_rendering_settings_reach_the_terminal_and_are_validated() {
+        let Evaluation::Valid(presentation) = parse_value(serde_json::json!({
+            "font": {"boldWeight": 700},
+            "minimumContrast": 4.5,
+        })) else {
+            panic!("expected a valid presentation");
+        };
+        assert_eq!(presentation.terminal.font.bold_weight, 700);
+        assert_eq!(presentation.terminal.minimum_contrast.ratio(), 4.5);
+        for invalid in [
+            serde_json::json!({"minimumContrast": 0.5}),
+            serde_json::json!({"minimumContrast": 22}),
+            serde_json::json!({"minimumContrast": "high"}),
+            serde_json::json!({"font": {"boldWeight": 50}}),
+            serde_json::json!({"font": {"boldWeight": 950}}),
+            serde_json::json!({"font": {"boldWeight": 600.5}}),
+        ] {
+            assert!(
+                matches!(parse_value(invalid.clone()), Evaluation::Invalid(_)),
+                "{invalid} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cursor_blink_setting_is_parsed_and_validated() {
+        let blink = |value: serde_json::Value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal.cursor_blink,
+            other => panic!("expected a valid presentation, got {other:?}"),
+        };
+        assert_eq!(blink(serde_json::json!({})), CursorBlink::Terminal);
+        assert_eq!(
+            blink(serde_json::json!({"cursor": {}})),
+            CursorBlink::Terminal
+        );
+        assert_eq!(
+            blink(serde_json::json!({"cursor": {"blink": "on"}})),
+            CursorBlink::On
+        );
+        assert_eq!(
+            blink(serde_json::json!({"cursor": {"blink": "off"}})),
+            CursorBlink::Off
+        );
+        for invalid in [
+            serde_json::json!({"cursor": {"blink": "sometimes"}}),
+            serde_json::json!({"cursor": {"blink": true}}),
+            serde_json::json!({"cursor": {"colour": "red"}}),
+        ] {
+            assert!(
+                matches!(parse_value(invalid.clone()), Evaluation::Invalid(_)),
+                "{invalid} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cursor_trail_is_off_unless_asked_for() {
+        let trail = |value: serde_json::Value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal.cursor_trail,
+            other => panic!("expected a valid presentation, got {other:?}"),
+        };
+        assert!(!trail(serde_json::json!({})));
+        assert!(!trail(serde_json::json!({"cursor": {"blink": "on"}})));
+        assert!(trail(serde_json::json!({"cursor": {"trail": true}})));
+        assert!(matches!(
+            parse_value(serde_json::json!({"cursor": {"trail": "yes"}})),
+            Evaluation::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn motion_follows_the_platform_unless_a_valid_setting_says_otherwise() {
+        let motion = |value: serde_json::Value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal.motion,
+            other => panic!("expected a valid presentation, got {other:?}"),
+        };
+        assert_eq!(motion(serde_json::json!({})), MotionPreference::System);
+        assert_eq!(
+            motion(serde_json::json!({"motion": "reduced"})),
+            MotionPreference::Reduced
+        );
+        assert_eq!(
+            motion(serde_json::json!({"motion": "full"})),
+            MotionPreference::Full
+        );
+        assert!(matches!(
+            parse_value(serde_json::json!({"motion": "slow"})),
+            Evaluation::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn contextual_alternates_default_on_and_can_be_turned_off() {
+        let terminal = |value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal,
+            other => panic!("expected a valid presentation, got {other:?}"),
+        };
+        assert!(terminal(serde_json::json!({})).font.contextual_alternates);
+        assert!(
+            !terminal(serde_json::json!({"font": {"calt": false}}))
+                .font
+                .contextual_alternates
+        );
+        assert!(matches!(
+            parse_value(serde_json::json!({"font": {"calt": "yes"}})),
+            Evaluation::Invalid(_)
+        ));
     }
 
     #[test]
@@ -800,7 +1432,9 @@ mod tests {
             serde_json::json!({"font": {"size": 129}}),
             serde_json::json!({"font": {"lineHeight": 0.49}}),
             serde_json::json!({"font": {"lineHeight": 3.01}}),
-            serde_json::json!({"font": {"family": "unknown"}}),
+            serde_json::json!({"font": {"family": ""}}),
+            serde_json::json!({"font": {"family": "   "}}),
+            serde_json::json!({"font": {"unknown": "no"}}),
             serde_json::json!({"padding": {"top": -1}}),
             serde_json::json!({"padding": {"right": 129}}),
             serde_json::json!({"padding": {"left": 1.5}}),
@@ -864,6 +1498,439 @@ mod tests {
     }
 
     #[test]
+    fn the_accent_sets_the_theme_and_leaves_the_project_rail_alone() {
+        let Evaluation::Valid(presentation) =
+            parse_value(serde_json::json!({"accent": "#a6e3a1", "rail": "#ff0000"}))
+        else {
+            panic!("expected a valid presentation");
+        };
+        assert_eq!(presentation.terminal.theme.accent, Rgb(166, 227, 161));
+        assert_eq!(presentation.rail, Some(RailColor(255, 0, 0)));
+
+        let Evaluation::Valid(presentation) = parse_value(serde_json::json!({"rail": "#ff0000"}))
+        else {
+            panic!("expected a valid presentation");
+        };
+        assert_eq!(
+            presentation.terminal.theme.accent,
+            TerminalConfig::default().theme.accent
+        );
+    }
+
+    #[test]
+    fn colour_errors_name_the_field_at_fault() {
+        for (value, field) in [
+            (serde_json::json!({"accent": "green"}), "accent"),
+            (serde_json::json!({"accent": "#aéabc"}), "accent"),
+            (serde_json::json!({"rail": "red"}), "rail"),
+        ] {
+            let Evaluation::Invalid(error) = parse_value(value) else {
+                panic!("expected an invalid presentation");
+            };
+            assert!(error.starts_with(field), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_theme_is_chosen_by_name_and_mocha_is_the_default() {
+        let theme = |value: serde_json::Value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.terminal.theme,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            theme(serde_json::json!({})),
+            ThemeName::CatppuccinMocha.colors()
+        );
+        for name in ThemeName::ALL {
+            assert_eq!(
+                theme(serde_json::json!({"theme": name.id()})),
+                name.colors(),
+                "{}",
+                name.id()
+            );
+        }
+    }
+
+    #[test]
+    fn an_accent_applies_on_top_of_the_chosen_theme() {
+        let Evaluation::Valid(presentation) =
+            parse_value(serde_json::json!({"theme": "paper", "accent": "#112233"}))
+        else {
+            panic!("expected a valid presentation");
+        };
+        let theme = &presentation.terminal.theme;
+        assert_eq!(theme.accent, Rgb(0x11, 0x22, 0x33));
+        assert_eq!(theme.surface, ThemeName::Paper.colors().surface);
+    }
+
+    #[test]
+    fn auto_follows_the_system_with_an_accent_on_top() {
+        let Evaluation::Valid(presentation) =
+            parse_value(serde_json::json!({"theme": "auto", "accent": "#112233"}))
+        else {
+            panic!("expected a valid presentation");
+        };
+        let config = presentation
+            .terminal
+            .for_appearance(SystemAppearance::Light);
+        assert_eq!(
+            config.theme.surface,
+            ThemeName::CatppuccinLatte.colors().surface
+        );
+        assert_eq!(config.theme.accent, Rgb(0x11, 0x22, 0x33));
+    }
+
+    #[test]
+    fn an_unknown_theme_is_rejected_and_says_what_is_on_offer() {
+        for invalid in [
+            serde_json::json!({"theme": "solarized"}),
+            serde_json::json!({"theme": ""}),
+        ] {
+            let Evaluation::Invalid(error) = parse_value(invalid) else {
+                panic!("expected a rejection");
+            };
+            assert!(error.contains("catppuccin-latte"), "{error}");
+        }
+        assert!(matches!(
+            parse_value(serde_json::json!({"theme": 1})),
+            Evaluation::Invalid(_)
+        ));
+    }
+
+    #[test]
+    fn a_directory_overrides_a_global_theme_and_keeps_its_accent() {
+        let (root, source) = layered_source(
+            "theme-layers",
+            Some("theme: \"paper\""),
+            Some("theme: *\"graphite\" | string\naccent: \"#a6e3a1\""),
+        );
+        let Evaluation::Valid(presentation) = source.evaluate() else {
+            panic!("expected a unified presentation");
+        };
+        assert_eq!(
+            presentation.terminal.theme.surface,
+            ThemeName::Paper.colors().surface
+        );
+        assert_eq!(presentation.terminal.theme.accent, Rgb(166, 227, 161));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_global_accent_coexists_with_a_directory_rail() {
+        let (root, source) = layered_source(
+            "accent-layered",
+            Some("rail: \"#ff0000\""),
+            Some("accent: \"#a6e3a1\""),
+        );
+        let Evaluation::Valid(presentation) = source.evaluate() else {
+            panic!("expected a unified presentation");
+        };
+        assert_eq!(presentation.terminal.theme.accent, Rgb(166, 227, 161));
+        assert_eq!(presentation.rail, Some(RailColor(255, 0, 0)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sidebar_defaults_to_expanded_and_can_start_collapsed() {
+        let sidebar = |value| match parse_value(value) {
+            Evaluation::Valid(presentation) => presentation.sidebar,
+            other => panic!("unexpected evaluation: {other:?}"),
+        };
+        assert_eq!(sidebar(serde_json::json!({})), SidebarMode::Expanded);
+        assert_eq!(
+            sidebar(serde_json::json!({"sidebar": "expanded"})),
+            SidebarMode::Expanded
+        );
+        assert_eq!(
+            sidebar(serde_json::json!({"sidebar": "collapsed"})),
+            SidebarMode::Collapsed
+        );
+        for invalid in [
+            serde_json::json!({"sidebar": "Collapsed"}),
+            serde_json::json!({"sidebar": "hidden"}),
+            serde_json::json!({"sidebar": false}),
+        ] {
+            assert!(
+                matches!(parse_value(invalid.clone()), Evaluation::Invalid(_)),
+                "{invalid}"
+            );
+        }
+    }
+
+    fn evaluation_with_sidebar(sidebar: SidebarMode) -> Evaluation {
+        Evaluation::Valid(CuettyPresentation {
+            sidebar,
+            ..CuettyPresentation::default()
+        })
+    }
+
+    #[test]
+    fn only_the_first_evaluation_a_window_sees_sets_its_sidebar() {
+        let mut sidebar = WindowSidebar::default();
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        sidebar.observe(&Evaluation::Invalid("broken".into()));
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+
+        // Neither another directory's setting nor having none moves it.
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Expanded));
+        sidebar.observe(&Evaluation::Absent);
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+    }
+
+    #[test]
+    fn a_window_opens_on_the_global_sidebar_until_an_evaluation_settles_it() {
+        let mut sidebar =
+            WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        // Saying nothing leaves it where it opened, not on the default.
+        sidebar.observe(&Evaluation::Invalid("broken".into()));
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        // The directory it opened in has the last word.
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Expanded));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    #[test]
+    fn a_broken_global_package_opens_on_the_default_sidebar() {
+        let sidebar = WindowSidebar::expecting(&Evaluation::Invalid("broken".into()));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        assert_eq!(
+            WindowSidebar::expecting(&Evaluation::Absent).mode(),
+            SidebarMode::Expanded
+        );
+    }
+
+    #[test]
+    fn the_toggle_works_from_where_the_window_opened() {
+        let mut sidebar =
+            WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        sidebar.toggle();
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    /// Evaluates once `release` says to, and to nothing in particular.
+    struct GatedProvider {
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl CuenvProvider for GatedProvider {
+        fn evaluate(&self, _source: &ConfigSource) -> Evaluation {
+            let _ = self.release.lock().unwrap().recv();
+            Evaluation::Absent
+        }
+
+        fn watch(
+            &self,
+            _source: &ConfigSource,
+            _notify: async_channel::Sender<()>,
+        ) -> Result<Box<dyn CuenvWatcher>, String> {
+            Err("not watched".into())
+        }
+    }
+
+    fn gated_provider() -> (Arc<dyn CuenvProvider>, std::sync::mpsc::Sender<()>) {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let provider = GatedProvider {
+            release: Mutex::new(release_rx),
+        };
+        (Arc::new(provider), release_tx)
+    }
+
+    /// Knows its look at once, and its tasks only when `release` says to.
+    struct SlowTaskProvider {
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl CuenvProvider for SlowTaskProvider {
+        fn evaluate(&self, _source: &ConfigSource) -> Evaluation {
+            Evaluation::Absent
+        }
+
+        fn evaluate_project(&self, _source: &ConfigSource) -> ProjectEvaluation {
+            let _ = self
+                .release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(30));
+            ProjectEvaluation::Valid(CuenvProject::default())
+        }
+
+        fn watch(
+            &self,
+            _source: &ConfigSource,
+            _notify: async_channel::Sender<()>,
+        ) -> Result<Box<dyn CuenvWatcher>, String> {
+            Err("not watched".into())
+        }
+    }
+
+    #[test]
+    fn the_look_of_a_source_is_reported_while_its_tasks_are_still_being_discovered() {
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let (stages, reported) = async_channel::unbounded();
+        let evaluation = StagedEvaluation {
+            provider: Arc::new(SlowTaskProvider {
+                release: Mutex::new(release_rx),
+            }),
+            source: any_source(),
+            discover_project: true,
+            stages,
+        };
+        let worker = std::thread::spawn(move || evaluation.run());
+
+        assert_eq!(
+            reported.recv_blocking(),
+            Ok(EvaluationStage::Presentation(Evaluation::Absent))
+        );
+        assert!(reported.is_empty(), "the tasks have not been released");
+        release.send(()).unwrap();
+        assert_eq!(
+            reported.recv_blocking(),
+            Ok(EvaluationStage::Project(ProjectEvaluation::Valid(
+                CuenvProject::default()
+            )))
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn a_source_with_no_directory_reports_no_tasks_without_looking() {
+        let (stages, reported) = async_channel::unbounded();
+        // Would hold this test up for as long as it waits to be released, if it were asked.
+        let (_release, release_rx) = std::sync::mpsc::channel();
+        StagedEvaluation {
+            provider: Arc::new(SlowTaskProvider {
+                release: Mutex::new(release_rx),
+            }),
+            source: any_source(),
+            discover_project: false,
+            stages,
+        }
+        .run();
+        assert_eq!(
+            reported.try_recv(),
+            Ok(EvaluationStage::Presentation(Evaluation::Absent))
+        );
+        assert_eq!(
+            reported.try_recv(),
+            Ok(EvaluationStage::Project(ProjectEvaluation::Absent))
+        );
+    }
+
+    #[test]
+    fn an_evaluation_decides_the_palette_its_pane_paints_in() {
+        let with_theme = |choice| {
+            let mut presentation = CuettyPresentation::default();
+            presentation.terminal.choose_theme(choice, None);
+            Evaluation::Valid(presentation)
+        };
+        assert_eq!(
+            with_theme(ThemeChoice::Named(ThemeName::Paper)).palette_for(SystemAppearance::Dark),
+            ThemeName::Paper.colors()
+        );
+        assert_eq!(
+            with_theme(ThemeChoice::FollowSystem).palette_for(SystemAppearance::Light),
+            ThemeName::CatppuccinLatte.colors()
+        );
+        for without_a_look in [Evaluation::Absent, Evaluation::Invalid("broken".into())] {
+            assert_eq!(
+                without_a_look.palette_for(SystemAppearance::Light),
+                ThemeColors::default()
+            );
+        }
+    }
+
+    fn any_source() -> ConfigSource {
+        ConfigSource {
+            module_root: None,
+            target_dir: PathBuf::from("/nowhere"),
+            global_dir: None,
+        }
+    }
+
+    #[test]
+    fn an_evaluation_in_time_is_returned() {
+        let (provider, release) = gated_provider();
+        release.send(()).unwrap();
+        let evaluation = evaluate_within(provider, any_source(), Duration::from_secs(30));
+        assert_eq!(evaluation, Some(Evaluation::Absent));
+    }
+
+    #[test]
+    fn an_evaluation_that_takes_too_long_is_given_up_on() {
+        // Never released, so it is still going when the wait runs out.
+        let (provider, _release) = gated_provider();
+        let evaluation = evaluate_within(provider, any_source(), Duration::from_millis(1));
+        assert_eq!(evaluation, None);
+    }
+
+    #[test]
+    fn a_directory_without_configuration_settles_the_sidebar_on_its_default() {
+        let mut sidebar = WindowSidebar::default();
+        sidebar.observe(&Evaluation::Absent);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    #[test]
+    fn a_sidebar_opened_for_an_edit_stays_open_whatever_is_still_being_evaluated() {
+        // Already showing expanded, but only because nothing has settled it yet.
+        let mut sidebar = WindowSidebar::default();
+        sidebar.expand();
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+
+        let mut sidebar =
+            WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        sidebar.expand();
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    #[test]
+    fn the_toggle_outranks_an_evaluation_still_on_its_way() {
+        let mut sidebar = WindowSidebar::default();
+        sidebar.toggle();
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Expanded));
+        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        sidebar.toggle();
+        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+    }
+
+    #[test]
+    fn a_new_directory_keeps_the_look_but_not_the_project_until_it_evaluates() {
+        let mut state = CuenvPaneState::default();
+        state.observe_cwd(PathBuf::from("/a"));
+        let generation = state.begin_source();
+        let Evaluation::Valid(mut presentation) = parse_value(serde_json::json!({
+            "banner": "A",
+            "rail": "#ff0000",
+            "accent": "#00ff00",
+            "titlebar": false,
+            "padding": {"left": 4},
+        })) else {
+            panic!("the configuration is valid");
+        };
+        presentation.sidebar = SidebarMode::Collapsed;
+        assert!(state.apply(generation, Evaluation::Valid(presentation.clone())));
+
+        assert!(state.observe_cwd(PathBuf::from("/b")));
+        assert_eq!(state.presentation.banner, None);
+        assert_eq!(state.presentation.rail, None);
+        assert_eq!(state.presentation.titlebar, presentation.titlebar);
+        assert_eq!(state.presentation.sidebar, SidebarMode::Collapsed);
+        assert_eq!(state.presentation.terminal, presentation.terminal);
+
+        // The new directory's own evaluation still decides in the end.
+        let generation = state.begin_source();
+        assert!(state.apply(generation, Evaluation::Absent));
+        assert_eq!(state.presentation, CuettyPresentation::default());
+    }
+
+    #[test]
     fn pane_state_clears_on_cwd_changes_and_rejects_stale_results() {
         let mut state = CuenvPaneState::default();
         assert!(state.observe_cwd(PathBuf::from("/a")));
@@ -874,6 +1941,7 @@ mod tests {
                 banner: Some("A".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
+                sidebar: SidebarMode::Expanded,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -886,6 +1954,7 @@ mod tests {
                 banner: Some("late A".into()),
                 rail: None,
                 titlebar: TitlebarVisibility::Shown,
+                sidebar: SidebarMode::Expanded,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -903,7 +1972,7 @@ mod tests {
         ));
 
         assert!(state.forget_cwd());
-        assert_eq!(state.presentation.terminal.terminal_padding.left, 8);
+        assert_eq!(state.presentation.terminal.terminal_padding.left, 4);
         assert!(!state.apply(
             old_generation,
             parse_value(serde_json::json!({"padding": {"left": 9}}))
@@ -938,6 +2007,7 @@ mod tests {
             banner: Some("A".into()),
             rail: None,
             titlebar: TitlebarVisibility::Shown,
+            sidebar: SidebarMode::Expanded,
             keybindings: Keybindings::default(),
             terminal: Box::default(),
         };
@@ -956,6 +2026,7 @@ mod tests {
             banner: Some("A".into()),
             rail: Some(RailColor(255, 0, 0)),
             titlebar: TitlebarVisibility::Shown,
+            sidebar: SidebarMode::Expanded,
             keybindings: Keybindings::default(),
             terminal: Box::default(),
         };
@@ -987,7 +2058,7 @@ mod tests {
                 "release": ["build", "checks.lint"]
             }
         }));
-        let TaskEvaluation::Valid(tasks) = evaluation else {
+        let Ok(tasks) = evaluation else {
             panic!("expected a valid task catalog");
         };
         assert_eq!(
@@ -1014,11 +2085,34 @@ mod tests {
             kind: CuenvTaskKind::Task,
             requires_parameters: false,
         }];
-        assert!(state.apply_tasks(generation, TaskEvaluation::Valid(tasks)));
+        let overview = ProjectOverview {
+            name: Some("a".into()),
+            ..ProjectOverview::default()
+        };
+        assert!(state.apply_project(
+            generation,
+            ProjectEvaluation::Valid(CuenvProject { overview, tasks })
+        ));
         assert_eq!(state.tasks.len(), 1);
+        assert!(!state.overview.is_empty());
         state.observe_cwd(PathBuf::from("/b"));
         assert!(state.tasks.is_empty());
-        assert!(!state.apply_tasks(generation, TaskEvaluation::Valid(Vec::new())));
+        assert!(state.overview.is_empty());
+        assert!(!state.apply_project(
+            generation,
+            ProjectEvaluation::Valid(CuenvProject::default())
+        ));
+    }
+
+    #[test]
+    fn chord_labels_follow_each_platform_convention() {
+        let chord = KeyChord::parse("ctrl-shift-p").unwrap();
+        assert_eq!(chord.word_label(), "Ctrl+Shift+P");
+        assert_eq!(chord.glyph_label(), "⌃⇧P");
+        let chord = KeyChord::parse("cmd-alt-pageup").unwrap();
+        assert_eq!(chord.word_label(), "Alt+Super+Pageup");
+        assert_eq!(chord.glyph_label(), "⌥⌘Pageup");
+        assert_eq!(KeyChord::parse("k").unwrap().word_label(), "K");
     }
 
     #[test]
@@ -1030,6 +2124,7 @@ mod tests {
         let default = palette(serde_json::json!({}));
         assert_eq!(default.key, "k");
         assert_eq!(default.modifiers.control, !cfg!(target_os = "macos"));
+        assert_eq!(default.modifiers.shift, !cfg!(target_os = "macos"));
         assert_eq!(default.modifiers.platform, cfg!(target_os = "macos"));
         assert_eq!(
             palette(serde_json::json!({"keybindings": {"palette": "Ctrl-Shift-P"}})),
@@ -1163,6 +2258,7 @@ mod tests {
                 banner: Some("global".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Hidden,
+                sidebar: SidebarMode::Expanded,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -1174,9 +2270,9 @@ mod tests {
     fn terminal_settings_unify_before_defaults_are_applied() {
         let (root, source) = layered_source(
             "terminal-layered",
-            Some("font: size: 22\npadding: left: 3"),
+            Some("font: {family: \"Monaspace Neon\", size: 22}\npadding: left: 3"),
             Some(
-                "font: {size: *16 | number, lineHeight: *1.4 | number}\n\
+                "font: {family: *\"Global Font\" | string, size: *16 | number, lineHeight: *1.4 | number}\n\
                  padding: {top: *10 | int, right: *11 | int, bottom: *12 | int, left: *13 | int}\n\
                  transparency: *30 | int",
             ),
@@ -1185,6 +2281,7 @@ mod tests {
             panic!("expected unified terminal presentation");
         };
         let terminal = presentation.terminal;
+        assert_eq!(terminal.font.family, "Monaspace Neon");
         assert_eq!(terminal.font.size_px, 22.0);
         assert_eq!(terminal.font.line_height_multiplier, 1.4);
         assert_eq!(terminal.terminal_padding.top, 10);
@@ -1304,7 +2401,10 @@ mod tests {
         let source = ConfigSource::in_dir(&root).unwrap();
         let evaluation = source.evaluate();
         assert!(matches!(evaluation, Evaluation::Absent));
-        assert!(matches!(source.evaluate_tasks(), TaskEvaluation::Absent));
+        assert!(matches!(
+            source.evaluate_project(),
+            ProjectEvaluation::Absent
+        ));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1442,6 +2542,122 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_keeps_only_the_name_of_its_resolver() {
+        let overview = parse_overview(&serde_json::json!({
+            "env": {
+                "TOKEN": {"resolver": "onepassword", "ref": "op://vault/item/field"},
+                "RUN": {"resolver": "exec", "command": "secret-tool", "args": ["hunter2"]},
+                "GUARDED": {
+                    "value": {"resolver": "vault", "path": "kv/app"},
+                    "policies": [],
+                },
+                "URL": ["postgres://app:", {"resolver": "aws", "name": "db-password"}, "@db"],
+            },
+        }));
+        let shown = format!("{overview:?}");
+        for hidden in ["op://", "hunter2", "secret-tool", "kv/app", "db-password"] {
+            assert!(!shown.contains(hidden), "{hidden} reached {shown}");
+        }
+        let value = |name: &str| {
+            overview
+                .variables
+                .iter()
+                .find(|variable| variable.name == name)
+                .map(|variable| variable.value.clone())
+                .unwrap()
+        };
+        assert_eq!(value("TOKEN").summary(), "•••• onepassword");
+        assert_eq!(value("GUARDED").summary(), "•••• vault");
+        assert_eq!(value("URL").summary(), "postgres://app:••••@db");
+        assert!(value("URL").detail().contains("is a secret"));
+    }
+
+    #[test]
+    fn plain_variables_show_their_values_and_an_unknown_shape_shows_nothing() {
+        let block = serde_json::json!({
+            "NAME": "app",
+            "PORT": 8080,
+            "DEBUG": true,
+            "JOINED": ["a", "b"],
+            "GUARDED": {"value": "open", "policies": []},
+            "REF": {"cuenvPassthrough": true, "name": "GITHUB_REF_NAME"},
+            "HOST": {"cuenvPassthrough": true},
+            "ODD": {"password": "hunter2"},
+            "environment": {"production": {"NAME": "prod"}},
+        });
+        let variables = parse_variables(block.as_object().unwrap());
+        let summaries: Vec<(&str, String)> = variables
+            .iter()
+            .map(|variable| (variable.name.as_str(), variable.value.summary()))
+            .collect();
+        assert_eq!(
+            summaries,
+            [
+                ("DEBUG", "true".to_string()),
+                ("GUARDED", "open".to_string()),
+                ("HOST", "from $HOST".to_string()),
+                ("JOINED", "ab".to_string()),
+                ("NAME", "app".to_string()),
+                ("ODD", "not shown".to_string()),
+                ("PORT", "8080".to_string()),
+                ("REF", "from $GITHUB_REF_NAME".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn named_environments_hold_their_own_overrides_in_name_order() {
+        let overview = parse_overview(&serde_json::json!({
+            "env": {
+                "NAME": "app",
+                "environment": {
+                    "staging": {"NAME": "stage"},
+                    "production": {"NAME": "prod"},
+                },
+            },
+        }));
+        assert_eq!(overview.variables.len(), 1);
+        let names: Vec<&str> = overview
+            .environments
+            .iter()
+            .map(|environment| environment.name.as_str())
+            .collect();
+        assert_eq!(names, ["production", "staging"]);
+        assert_eq!(
+            overview.environments[0].variables[0].value,
+            EnvVariableValue::Literal("prod".into())
+        );
+    }
+
+    #[test]
+    fn a_long_or_multiline_value_summarises_on_one_short_line() {
+        let value = EnvVariableValue::Literal(format!("a\nb\t{}", "c".repeat(500)));
+        let summary = value.summary();
+        assert!(summary.starts_with("a b c"));
+        assert_eq!(summary.chars().count(), MAX_ENV_SUMMARY_CHARS);
+    }
+
+    #[test]
+    fn a_project_with_nothing_declared_has_nothing_to_show() {
+        assert!(parse_overview(&serde_json::json!({})).is_empty());
+        assert!(parse_overview(&serde_json::json!({"env": "broken"})).is_empty());
+    }
+
+    #[test]
+    fn broken_tasks_keep_what_the_project_last_said_about_itself() {
+        let mut state = CuenvPaneState::default();
+        state.observe_cwd(PathBuf::from("/a"));
+        let generation = state.begin_source();
+        let good = parse_project(&serde_json::json!({"name": "a"}));
+        assert!(state.apply_project(generation, good));
+        let broken = parse_project(&serde_json::json!({"name": "b", "tasks": "nope"}));
+        assert!(matches!(broken, ProjectEvaluation::Invalid(_)));
+        assert!(state.apply_project(generation, broken));
+        assert_eq!(state.overview.name.as_deref(), Some("a"));
+        assert!(state.task_notice.is_some());
+    }
+
+    #[test]
     fn discovers_the_repository_cuenv_task_catalog() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = manifest_dir
@@ -1449,9 +2665,30 @@ mod tests {
             .and_then(Path::parent)
             .expect("cuetty lives below the repository root");
         let source = ConfigSource::in_dir(root).expect("repository CUE source");
-        let TaskEvaluation::Valid(tasks) = source.evaluate_tasks() else {
+        let ProjectEvaluation::Valid(CuenvProject { tasks, overview }) = source.evaluate_project()
+        else {
             panic!("repository package cuenv should evaluate into a task catalog");
         };
+        assert_eq!(overview.name.as_deref(), Some("cuenv"));
+        assert_eq!(overview.runtime.as_deref(), Some("nix"));
+        assert!(
+            overview
+                .variables
+                .iter()
+                .any(|variable| variable.name == "CLOUDFLARE_ACCOUNT_ID")
+        );
+        let production = overview
+            .environments
+            .iter()
+            .find(|environment| environment.name == "production")
+            .expect("the repository declares a production environment");
+        assert!(production.variables.iter().any(|variable| {
+            variable.value
+                == EnvVariableValue::Secret {
+                    resolver: "onepassword".into(),
+                }
+        }));
+        assert!(!format!("{overview:?}").contains("op://"));
         assert!(tasks.iter().any(|task| task.name == "checks.clippy"));
         assert!(tasks.iter().any(|task| task.name == "docs.build"));
     }

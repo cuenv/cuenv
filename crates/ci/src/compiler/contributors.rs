@@ -166,7 +166,6 @@ impl Compiler {
             cuenv_core::manifest::Runtime::Nix(_) => "nix",
             cuenv_core::manifest::Runtime::Devenv(_) => "devenv",
             cuenv_core::manifest::Runtime::Container(_) => "container",
-            cuenv_core::manifest::Runtime::Dagger(_) => "dagger",
             cuenv_core::manifest::Runtime::Oci(_) => "oci",
             cuenv_core::manifest::Runtime::Tools(_) => "tools",
         }

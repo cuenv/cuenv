@@ -16,11 +16,6 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commands: Option<CommandsConfig>,
 
-    /// Task backend configuration. Legacy: selects the Dagger backend and its
-    /// default image; see `docs/src/content/docs/explanation/dagger-backend.mdx`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub backend: Option<BackendConfig>,
-
     /// CI-specific configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CIConfig>,
@@ -180,28 +175,4 @@ impl TaskListFormat {
             Self::Emoji => "emoji",
         }
     }
-}
-
-fn default_backend_type() -> String {
-    "host".to_string()
-}
-
-/// Backend configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct BackendConfig {
-    /// Which backend to use for tasks
-    #[serde(default = "default_backend_type", rename = "type")]
-    pub backend_type: String,
-
-    /// Backend-specific options
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<BackendOptions>,
-}
-
-/// Backend-specific options supported by cuenv
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct BackendOptions {
-    /// Default container image for the Dagger backend
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
 }

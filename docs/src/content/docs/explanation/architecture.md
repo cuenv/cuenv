@@ -95,7 +95,7 @@ should name intentionally unread fields with an underscore rather than carrying
 local `dead_code` allowances.
 Task schema support types follow the same pattern: `crates/manifest/src/tasks/`
 keeps the executable task and task-tree model, while params, retry config,
-legacy task-level Dagger config, cache policy, capture metadata, shell
+cache policy, capture metadata, shell
 configuration, input references, and dependency references live in sibling
 modules there; `crates/core/src/tasks/mod.rs` re-exports the DTOs. The task
 executor (in `crates/task-exec`) keeps
@@ -301,15 +301,6 @@ created and treats an already-installed provider as acceptable instead of
 requiring a crate-wide `expect_used` allowance. Event tracing setup consumes
 `TracingConfig` into owned local fields so startup does not need a
 pass-by-value lint suppression.
-The internal event coordinator keeps the client registry to the active message
-sender only; registration metadata is logged at connect time rather than stored
-as unread per-client state.
-Coordinator messages use length-prefixed JSON with explicit frame-size checks
-before converting between header and allocation sizes, so oversized frames fail
-without relying on module-wide cast truncation allowances.
-Stale coordinator cleanup keeps the Unix `libc::kill` call inside a small
-helper after process-name verification, avoiding a module-wide unsafe-code
-allowance and keeping the required lint expectation tied to that helper.
 `crates/cuenv/src/performance.rs` exposes the opt-in performance registry,
 guards, and macros directly. Its summary average uses a checked/saturating
 operation-count divisor, so it does not need cast-truncation or module-level
@@ -607,23 +598,6 @@ Or on error:
 ## Caching Architecture
 
 cuenv implements multiple caching layers:
-
-### CUE Evaluation Cache
-
-LRU cache for CUE evaluation results:
-
-```rust
-pub struct EvaluationCache {
-    cache: LruCache<CacheKey, CachedResult>,
-    max_size: usize,
-}
-```
-
-**Cache key components:**
-
-- Directory path
-- Package name
-- File content hashes
 
 ### Task Cache
 

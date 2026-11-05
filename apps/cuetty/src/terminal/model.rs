@@ -163,6 +163,8 @@ pub struct CursorState {
     pub position: Option<(u16, u16)>,
     pub shape: Known<CursorShape>,
     pub visible: Known<bool>,
+    /// Whether the application asked for a blinking cursor.
+    pub blinking: Known<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +173,8 @@ pub struct TerminalFrame {
     pub rows: Vec<TerminalRow>,
     pub cursor: CursorState,
     pub viewport_offset: Option<usize>,
+    /// Rows of history above the screen, where the backend can say.
+    pub scrollback_rows: Option<usize>,
     pub sampling_token: SamplingToken,
     pub stable_revision: Option<StableRevision>,
 }
@@ -464,8 +468,10 @@ mod tests {
                 position: Some((0, 0)),
                 shape: Known::Unknown,
                 visible: Known::Unknown,
+                blinking: Known::Unknown,
             },
             viewport_offset: Some(0),
+            scrollback_rows: None,
             sampling_token: SamplingToken(1),
             stable_revision: None,
         }

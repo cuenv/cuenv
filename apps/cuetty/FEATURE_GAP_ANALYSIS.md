@@ -20,8 +20,8 @@ Cuetty currently has:
   focused live shell behavior.
 - Negotiated Kitty and `modifyOtherKeys` input for the keypress, modifier,
   named-key, and repeat information exposed by the current GPUI host event.
-- A fixed vertical tab rail, global and per-directory CUE configuration for
-  font metrics, padding, and transparency, and a native Quit/Cmd-Q action.
+- A collapsible right-hand tab sidebar, global and per-directory CUE configuration
+  for theme, font metrics, padding, and transparency, and a native Quit/Cmd-Q action.
 - Static validation plus a signed macOS bundle check, local process launch, and
   a direct interactive shell/history smoke pass. The real daily-workload corpus
   still needs human acceptance.
@@ -49,8 +49,8 @@ behind replaceable traits.
 | Clipboard and paste | Cmd-V, OSC 52, mouse selection and Cmd-C copy | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
 | Scrollback and selection | Rio-owned history navigation live; selection remains visible-viewport-only | Present | Present | P1 |
 | Search | Literal visible-frame search live; regex/full history staged | Present | Inline/regex search | P1 |
-| Fonts, themes, configuration | CUE-configurable font size, line height, padding, and transparency; fixed font family and theme | Configurable themes, keybindings, fonts | Font family, themes, zoom, shell choice, and additional keybindings | P1 |
-| Tabs, splits, focus navigation | Independent local Rio tabs; fixed 56px rail; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
+| Fonts, themes, configuration | CUE-configurable font family, size, and line height, padding, transparency, keybinding for the palette, and four curated themes with `auto` following the desktop; custom palettes are not offered | Configurable themes, keybindings, fonts | Font family, themes, zoom, shell choice, and additional keybindings | P1 |
+| Tabs, splits, focus navigation | Independent local Rio tabs; 200px sidebar collapsible to 56px; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
 | Workspace persistence | Versioned codec and atomic file store; no live restore | Reusable layouts | Workspace/session restore | P2 |
 | Session persistence | Child shell only | Optional tmux control mode | dtach/tmux/screen backends | P3 |
 | Remote/API/plugin surface | Missing | FFI/native SDK and plugin/runtime crates | Remote HTTP/WebSocket and hooks | P3 |
@@ -84,10 +84,11 @@ Linux, and a live resize plus Unicode probe has visual evidence.
    duplicating terminal state.
 2. Wire copy, paste, selection export, and literal search into the live surface
    (regex remains a later capability).
-3. Move font, theme, line height, cursor, and keybindings into a serializable
-   configuration trait with sane platform defaults.
-4. Add the Termy/Okena box-drawing, block, sextant, and braille geometry path
-   where font glyphs cannot provide stable full-cell coverage.
+3. Move the remaining cursor and keybinding preferences into configuration; font,
+   theme, and line height already live in CUE.
+4. Extend the drawn glyph path, which already covers box-drawing, block, and
+   Powerline characters, to sextant and braille where font glyphs cannot provide
+   stable full-cell coverage.
 
 **Exit gate:** a user can select/copy/search a long colored Unicode transcript,
 change font/line-height, restart, and retain the intended settings.
@@ -99,17 +100,20 @@ change font/line-height, restart, and retain the intended settings.
    boundaries only after the layout tree is tested without GPUI.
 3. Persist layouts and terminal metadata through a versioned store; do not put
    persistence in `TerminalSession`.
-4. Extend the initial Command-K Cuenv task palette into a general action
-   catalogue only after non-task actions have stable trait-backed identifiers.
+4. Extend the command palette's typed action catalogue as more workspace
+   actions become available, keeping unavailable split actions out of the list.
 
 **Current state:** every live tab owns an independent local Rio session. Session
 creation is transactional and callbacks are generation-scoped; close first
 removes the exact session then commits the preflighted tab removal. Split actions
 remain rejected with a visible notice. Pane resizing, reopen, detachable
 windows, live restore, and multi-session split allocation remain staged.
-Exact-CWD `package cuenv` tasks are now searchable from Command-K and a floating
-sidebar; selection delegates execution to the canonical CLI in the same pane
-whose working directory supplied the catalogue.
+The command palette lists Cuetty actions and searches exact-CWD `package cuenv`
+tasks in `$` mode. The task button opens the same palette; selecting a task
+delegates execution to the canonical CLI in the pane that supplied it. The expanded
+sidebar shows the same directory's declared project name, runtime, variables, and named
+environments, with secrets as their resolver's name; choosing an environment there, or showing
+what the shell has actually loaded, remains staged.
 
 **Exit gate:** split/tab/layout operations are deterministic in unit tests and
 restore correctly after a clean restart.

@@ -231,9 +231,6 @@ package schema
 
 	// Named regex captures extracted from task stdout/stderr after execution
 	captures?: [string]: #TaskCapture
-
-	// DEPRECATED: Use runtime: dagger: { ... } instead
-	dagger?: #DaggerConfig
 }
 
 // =============================================================================
@@ -352,27 +349,4 @@ package schema
 	cuenvCaptureRef: true
 	cuenvTask!:      string
 	cuenvCapture!:   string
-}
-
-// =============================================================================
-// Dagger Configuration (Containerized Execution)
-// =============================================================================
-
-#DaggerConfig: {
-	image?: string
-	from?:  string
-	secrets?: [...#DaggerSecret]
-	cache?: [...#DaggerCacheMount]
-}
-
-#DaggerSecret: {
-	name:     string
-	path?:    string
-	envVar?:  string
-	resolver: #Secret
-}
-
-#DaggerCacheMount: {
-	path: string
-	name: string
 }

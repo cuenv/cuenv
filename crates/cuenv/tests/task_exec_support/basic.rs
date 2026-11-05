@@ -715,3 +715,26 @@ env: {}";
     assert!(!success, "Command should fail when executed command fails");
     Ok(())
 }
+
+#[test]
+fn exec_exits_with_the_child_status_and_prints_no_error() -> TestResult {
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
+    write_env(&temp_dir, "package test\n\nenv: {}")?;
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cuenv"))
+        .args([
+            "exec",
+            "-p",
+            path_arg(temp_dir.path())?,
+            "--package",
+            "test",
+        ])
+        .args(["--", "sh", "-c", "exit 42"])
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(42));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("exit code"), "unexpected stderr: {stderr}");
+    Ok(())
+}

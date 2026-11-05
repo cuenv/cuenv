@@ -354,7 +354,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     platform_properties.insert("arch".to_string(), std::env::consts::ARCH.to_string());
     platform_properties.insert(
         "cuenv.sandbox".to_string(),
-        match task.sandbox().tier {
+        match task.sandbox() {
             Sandbox::Dir => "dir",
             Sandbox::None => "none",
         }

@@ -21,6 +21,12 @@ fn module(root: &Path) -> TestResult {
     Ok(())
 }
 
+/// An error report with the diagnostic renderer's line wrapping undone.
+fn unwrapped(report: &[u8]) -> Result<String, Box<dyn Error>> {
+    let report = std::str::from_utf8(report)?.replace('\u{2502}', " ");
+    Ok(report.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 fn invoke(root: &Path, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     Ok(Command::new(env!("CARGO_BIN_EXE_cuenv"))
         .current_dir(root)
@@ -69,7 +75,7 @@ fn init_requires_an_archive_pin_for_the_current_platform() -> TestResult {
 
     let output = invoke(root, &["infra", "init"])?;
     assert!(!output.status.success());
-    let error = String::from_utf8(output.stderr)?;
+    let error = unwrapped(&output.stderr)?;
     assert!(error.contains("is not published for"), "{error}");
     assert_eq!(fs::read_to_string(root.join("cuenv.lock"))?, lock);
     assert!(!root.join("cue.mod/gen").exists());
@@ -78,7 +84,7 @@ fn init_requires_an_archive_pin_for_the_current_platform() -> TestResult {
     // missing import would otherwise mask this actionable pin error.
     let sync = invoke(root, &["sync"])?;
     assert!(!sync.status.success());
-    let error = String::from_utf8(sync.stderr)?;
+    let error = unwrapped(&sync.stderr)?;
     assert!(error.contains("is not published for"), "{error}");
     assert!(!error.contains("cannot find package"), "{error}");
     Ok(())

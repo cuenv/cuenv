@@ -24,6 +24,8 @@ This ADR builds on [rfc-0002-output-formatting-and-error-envelope-strategy](/dec
    - `Config`: Represents CLI usage errors, configuration issues, and validation failures; MUST exit with code `2`.
    - `Eval`: Represents evaluation or FFI failures; MUST exit with code `3`.
    - `Other`: Represents unexpected errors; MUST also exit with code `3`.
+   - `Infrastructure`: Exits with `1` when cancelled, `4` for concurrent activity on a state lock, `130` when interrupted, and `5` otherwise.
+   - `ChildExit`: `cuenv exec` exits with its child's status, or 128 plus the signal that killed it, and prints nothing, because the child reported its own failure. Once the child has been spawned the exit status belongs to it, so a child's code can coincide with a code above.
 
 2. **Diagnostic Presentation**
    - Human-readable output MUST use `miette` to render `CliError` values with optional help text.

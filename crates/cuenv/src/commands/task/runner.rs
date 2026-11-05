@@ -6,20 +6,10 @@ use std::fmt::Write;
 use cuenv_core::Result;
 use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
-use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph};
+use cuenv_task_exec::{TaskExecutor, TaskGraph};
 
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
-
-#[cfg(feature = "dagger-backend")]
-pub(super) fn build_task_executor(config: ExecutorConfig) -> TaskExecutor {
-    TaskExecutor::with_dagger_factory(config, Some(cuenv_dagger::create_dagger_backend))
-}
-
-#[cfg(not(feature = "dagger-backend"))]
-pub(super) fn build_task_executor(config: ExecutorConfig) -> TaskExecutor {
-    TaskExecutor::new(config)
-}
 
 /// Execute task with rich TUI interface
 ///

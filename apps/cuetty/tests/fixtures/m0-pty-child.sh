@@ -10,6 +10,15 @@ case "${1:-}" in
         printf 'M0-READY\r\nM0-FINAL-OUTPUT\r\n'
         exit 23
         ;;
+    full-exit)
+        line=1
+        while test "$line" -le 40; do
+            printf 'M0-HISTORY-%02d\r\n' "$line"
+            line=$((line + 1))
+        done
+        printf 'M0-FINAL-OUTPUT'
+        exit 23
+        ;;
     resize)
         stty -echo
         printf 'M0-READY\r\n'
@@ -66,7 +75,7 @@ case "${1:-}" in
         printf 'M0-UNEXPECTED-INPUT:%s\r\n' "$command"
         ;;
     *)
-        printf 'usage: m0-pty-child.sh exit|resize|shell-level|raw COUNT|bracketed COUNT|kitty COUNT|modify-other-keys COUNT|mouse-sgr COUNT|codex-sgr COUNT|alt-scroll COUNT|alt-scroll-app COUNT|alt-scroll-kitty COUNT|hold|history\n' >&2
+        printf 'usage: m0-pty-child.sh exit|full-exit|resize|shell-level|raw COUNT|bracketed COUNT|kitty COUNT|modify-other-keys COUNT|mouse-sgr COUNT|codex-sgr COUNT|alt-scroll COUNT|alt-scroll-app COUNT|alt-scroll-kitty COUNT|hold|history\n' >&2
         exit 64
         ;;
 esac

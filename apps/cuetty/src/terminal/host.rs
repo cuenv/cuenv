@@ -1,10 +1,18 @@
+use super::config::{Rgb, ThemeColors};
 use super::events::{ControlEvent, EventBridge};
+use super::foreground::ForegroundProcess;
+#[cfg(unix)]
+use super::foreground::leader_arguments;
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
-use super::model::{SamplingToken, TerminalFrame};
-use super::rio_adapter::snapshot;
+use super::model::{CursorState, SamplingToken, TerminalFrame};
+use super::presentation::extended_palette;
+use super::rio_adapter::{cursor_state, snapshot};
 use super::rio_input::{encode_key, encode_paste};
 use super::sizing::{CellSize, TerminalSize, terminal_size};
+#[cfg(unix)]
+use super::tab_label::is_shell;
 use rio_vt::ansi::CursorShape;
+use rio_vt::config::colors::{ColorRgb, NamedColor};
 use rio_vt::corcovado::channel::Sender;
 use rio_vt::crosswords::grid::Scroll;
 use rio_vt::crosswords::{Crosswords, CrosswordsSize, Mode};
@@ -13,7 +21,8 @@ use rio_vt::event::{EventListener, Msg, RioEvent, WindowId, WindowSize};
 use rio_vt::performer::{Machine, State};
 use rio_vt::teletypewriter::{self, Pty};
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 pub struct SessionStart {
@@ -21,8 +30,21 @@ pub struct SessionStart {
     pub wake_rx: async_channel::Receiver<()>,
 }
 
+/// The session a factory is asked for.
+#[derive(Clone, Copy, Debug)]
+pub struct SessionRequest<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub cell: CellSize,
+    /// Where its shell starts. `None` leaves that to the default.
+    pub working_directory: Option<&'a Path>,
+    /// The palette its pane paints in. A shell's startup files can ask about colours before
+    /// anything else has had a chance to say, so it has to be known before the shell runs.
+    pub palette: &'a ThemeColors,
+}
+
 pub trait TerminalSessionFactory: Send + Sync {
-    fn start(&self, width: u32, height: u32, cell: CellSize) -> Result<SessionStart, String>;
+    fn start(&self, request: SessionRequest<'_>) -> Result<SessionStart, String>;
 }
 
 fn default_working_directory() -> Option<String> {
@@ -31,10 +53,19 @@ fn default_working_directory() -> Option<String> {
         .filter(|directory| !directory.is_empty())
 }
 
+/// Where a shell asked to start in `requested` starts. A path the PTY cannot be handed
+/// as text goes to the default like an absent one.
+fn working_directory_for(requested: Option<&Path>) -> Option<String> {
+    requested
+        .and_then(Path::to_str)
+        .map(str::to_owned)
+        .or_else(default_working_directory)
+}
+
 pub struct RioTerminalFactory;
 impl TerminalSessionFactory for RioTerminalFactory {
-    fn start(&self, width: u32, height: u32, cell: CellSize) -> Result<SessionStart, String> {
-        RioTerminalSession::new(width, height, cell).map(|(session, wake_rx)| SessionStart {
+    fn start(&self, request: SessionRequest<'_>) -> Result<SessionStart, String> {
+        RioTerminalSession::new(request).map(|(session, wake_rx)| SessionStart {
             session: Box::new(session),
             wake_rx,
         })
@@ -43,13 +74,25 @@ impl TerminalSessionFactory for RioTerminalFactory {
 
 pub trait TerminalSession: Send {
     fn resize(&mut self, width: u32, height: u32, cell: CellSize) -> Result<(), String>;
+    /// Fits the grid to a size without telling the child, for when there is no child left
+    /// to tell. Rows that no longer fit move into scrollback, starting from the top, and
+    /// blank rows below the cursor go first.
+    fn reflow_output(&mut self, width: u32, height: u32, cell: CellSize);
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String>;
     fn paste(&mut self, text: &str) -> Result<(), String>;
     fn scroll(&mut self, action: TerminalScroll) -> Result<(), String>;
     fn frame(&mut self) -> TerminalFrame;
+    /// The cursor as it is now, without taking the damage a frame collects.
+    fn cursor(&self) -> CursorState;
     /// OSC 7 directory, with a foreground-process fallback while the PTY is open.
     fn working_directory(&self) -> Option<String>;
+    /// The foreground process while the PTY is open, shells included. `None` or a
+    /// blank name means it could not be told, not that a shell is waiting.
+    fn foreground_process(&self) -> Option<ForegroundProcess>;
     fn drain_effects(&self) -> Vec<ControlEvent>;
+    /// The palette this pane is painted in, which applications asking about colours
+    /// are told.
+    fn set_palette(&mut self, palette: ThemeColors);
     fn close(&mut self) -> Result<(), String>;
 }
 
@@ -71,6 +114,18 @@ pub enum TerminalScroll {
     PageDown,
     Top,
     Bottom,
+    /// Puts the viewport this many rows above the live screen, for a dragged scrollbar.
+    /// That is the user moving the view, which no application has a say in.
+    ToOffset(usize),
+}
+
+/// The move that takes a viewport from one offset to another. Rio takes it as an `i32`
+/// and clamps the outcome to its history, so an impossible distance only needs to stay
+/// large.
+fn scroll_delta_to(current: usize, target: usize) -> i32 {
+    let distance =
+        |from: usize, to: usize| i32::try_from(to.saturating_sub(from)).unwrap_or(i32::MAX);
+    distance(current, target) - distance(target, current)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -170,6 +225,7 @@ pub(crate) struct SessionOptions {
     pub shell: Option<String>,
     pub args: Vec<String>,
     pub working_directory: Option<String>,
+    pub palette: ThemeColors,
 }
 
 impl Default for SessionOptions {
@@ -178,6 +234,7 @@ impl Default for SessionOptions {
             shell: None,
             args: Vec::new(),
             working_directory: default_working_directory(),
+            palette: ThemeColors::default(),
         }
     }
 }
@@ -187,6 +244,26 @@ struct Listener {
     bridge: Arc<EventBridge>,
     writer: Arc<Mutex<Option<Sender<Msg>>>>,
     size: Arc<Mutex<WindowSize>>,
+    palette: Arc<Mutex<ThemeColors>>,
+}
+
+/// What an application asking after a colour is told: what the pane actually paints. The
+/// colours an application sets for itself are not painted, so they are not reported.
+/// Rio's other named colours have no equivalent here and get no answer, which is how a
+/// terminal that does not know says so.
+fn queried_color(palette: &ThemeColors, index: usize) -> Option<ColorRgb> {
+    let Rgb(r, g, b) = match index {
+        0..16 => palette.ansi[index],
+        16..=255 => {
+            let color = extended_palette(u8::try_from(index).ok()?);
+            Rgb(color.0, color.1, color.2)
+        }
+        _ if index == NamedColor::Foreground as usize => palette.text,
+        _ if index == NamedColor::Background as usize => palette.surface,
+        _ if index == NamedColor::Cursor as usize => palette.cursor,
+        _ => return None,
+    };
+    Some(ColorRgb { r, g, b })
 }
 
 impl Listener {
@@ -214,10 +291,14 @@ impl Listener {
                 let size = *self.size.lock().expect("PTY size poisoned");
                 self.reply(format(size));
             }
-            // Color queries are not qualified until the host can supply the
-            // exact configured renderer palette. Do not invent a default RGB
-            // answer or re-lock Crosswords from its own parser callback.
-            RioEvent::ColorRequest(..) => self.bridge.wake(),
+            // This lock is the palette's own, and whoever updates the palette holds it
+            // for nothing else, so taking it under the terminal lock cannot deadlock.
+            RioEvent::ColorRequest(_, index, format) => {
+                let palette = self.palette.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(color) = queried_color(&palette, index) {
+                    self.reply(format(color));
+                }
+            }
             RioEvent::ChildExited(_, status) => {
                 self.writer.lock().expect("PTY writer poisoned").take();
                 self.bridge.control(ControlEvent::ChildExited(status));
@@ -279,14 +360,14 @@ pub struct RioTerminalSession {
 }
 
 impl RioTerminalSession {
-    pub fn new(
-        width: u32,
-        height: u32,
-        cell: CellSize,
-    ) -> Result<(Self, async_channel::Receiver<()>), String> {
+    pub fn new(request: SessionRequest<'_>) -> Result<(Self, async_channel::Receiver<()>), String> {
         Self::with_options(
-            terminal_size(width, height, cell),
-            SessionOptions::default(),
+            terminal_size(request.width, request.height, request.cell),
+            SessionOptions {
+                working_directory: working_directory_for(request.working_directory),
+                palette: request.palette.clone(),
+                ..SessionOptions::default()
+            },
         )
     }
 
@@ -303,6 +384,7 @@ impl RioTerminalSession {
             bridge,
             writer: Arc::new(Mutex::new(None)),
             size: Arc::new(Mutex::new(size)),
+            palette: Arc::new(Mutex::new(options.palette)),
         };
         let terminal = Arc::new(FairMutex::new(Crosswords::new(
             grid_size(size),
@@ -406,19 +488,49 @@ impl RioTerminalSession {
         terminal.selection = None;
         Ok(())
     }
+
+    /// Resizes the grid, returning whether that changed anything. The size lock is not
+    /// held across the grid's, which the PTY thread answers size requests under.
+    fn resize_grid(&self, size: WindowSize) -> bool {
+        let unchanged = *self
+            .listener
+            .size
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            == size;
+        if !unchanged {
+            self.terminal.lock().resize(grid_size(size));
+            *self
+                .listener
+                .size
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = size;
+        }
+        !unchanged
+    }
 }
 
 impl TerminalSession for RioTerminalSession {
+    fn set_palette(&mut self, palette: ThemeColors) {
+        *self
+            .listener
+            .palette
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = palette;
+    }
+
     fn resize(&mut self, width: u32, height: u32, cell: CellSize) -> Result<(), String> {
         self.ensure_open()?;
         let size = window_size(terminal_size(width, height, cell));
-        if *self.listener.size.lock().expect("PTY size poisoned") != size {
-            self.terminal.lock().resize(grid_size(size));
-            *self.listener.size.lock().expect("PTY size poisoned") = size;
+        if self.resize_grid(size) {
             self.send(Msg::Resize(size))?;
             self.listener.bridge.wake();
         }
         Ok(())
+    }
+
+    fn reflow_output(&mut self, width: u32, height: u32, cell: CellSize) {
+        self.resize_grid(window_size(terminal_size(width, height, cell)));
     }
 
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
@@ -442,8 +554,9 @@ impl TerminalSession for RioTerminalSession {
         self.write(bytes)
     }
 
+    /// Scrollback outlives the shell, so reading a failed shell's output stays possible.
+    /// Only a wheel event a program claimed has to reach the PTY, which `write` checks.
     fn scroll(&mut self, action: TerminalScroll) -> Result<(), String> {
-        self.ensure_open()?;
         let action = match action {
             TerminalScroll::Wheel(wheel) => {
                 // Do not retain Rio's grid lock while sending input: `write`
@@ -459,6 +572,10 @@ impl TerminalSession for RioTerminalSession {
             TerminalScroll::PageDown => Scroll::PageDown,
             TerminalScroll::Top => Scroll::Top,
             TerminalScroll::Bottom => Scroll::Bottom,
+            TerminalScroll::ToOffset(target) => {
+                let current = self.terminal.lock().display_offset();
+                Scroll::Delta(scroll_delta_to(current, target))
+            }
         };
         self.terminal.lock().scroll_display(action);
         self.listener.bridge.wake();
@@ -472,6 +589,10 @@ impl TerminalSession for RioTerminalSession {
         terminal.reset_damage();
         terminal.damage_event_in_flight = false;
         frame
+    }
+
+    fn cursor(&self) -> CursorState {
+        cursor_state(&self.terminal.lock())
     }
 
     fn working_directory(&self) -> Option<String> {
@@ -493,6 +614,22 @@ impl TerminalSession for RioTerminalSession {
             return teletypewriter::foreground_process_path(self.main_fd, self.shell_pid)
                 .ok()
                 .map(|path| path.to_string_lossy().into_owned());
+        }
+        None
+    }
+
+    fn foreground_process(&self) -> Option<ForegroundProcess> {
+        #[cfg(unix)]
+        if self
+            .io_thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            let name = teletypewriter::foreground_process_name(self.main_fd, self.shell_pid);
+            let arguments = is_shell(name.trim())
+                .then(|| leader_arguments(self.main_fd, self.shell_pid))
+                .flatten();
+            return Some(ForegroundProcess { name, arguments });
         }
         None
     }
@@ -537,6 +674,19 @@ impl Drop for RioTerminalSession {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_requested_directory_is_where_the_shell_starts() {
+        assert_eq!(
+            working_directory_for(Some(Path::new("/srv/project"))).as_deref(),
+            Some("/srv/project")
+        );
+    }
+
+    #[test]
+    fn with_no_directory_requested_the_shell_starts_at_the_default() {
+        assert_eq!(working_directory_for(None), default_working_directory());
+    }
+
     // Rio's process-wide Unix child notifications must not overlap between
     // these host integration probes. Recover poison so one failed regression
     // does not turn every later probe into an unrelated mutex failure.
@@ -548,6 +698,15 @@ mod tests {
         REAL_PTY_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn a_dragged_scrollbar_moves_the_viewport_by_the_difference() {
+        assert_eq!(scroll_delta_to(10, 25), 15);
+        assert_eq!(scroll_delta_to(25, 10), -15);
+        assert_eq!(scroll_delta_to(7, 7), 0);
+        assert_eq!(scroll_delta_to(0, usize::MAX), i32::MAX);
+        assert_eq!(scroll_delta_to(usize::MAX, 0), -i32::MAX);
     }
 
     #[test]
@@ -564,6 +723,7 @@ mod tests {
             bridge: bridge.clone(),
             writer: Arc::new(Mutex::new(None)),
             size: Arc::new(Mutex::new(WindowSize::default())),
+            palette: Arc::new(Mutex::new(ThemeColors::default())),
         };
         listener.dispatch(RioEvent::Title(0, "shell".into()));
         listener.dispatch(RioEvent::Bell(0));
@@ -578,6 +738,54 @@ mod tests {
                 ControlEvent::Close,
             ]
         );
+    }
+
+    #[test]
+    fn an_application_is_told_the_colours_the_pane_paints() {
+        let palette = ThemeColors::paper();
+        let told = |index| queried_color(&palette, index).map(|ColorRgb { r, g, b }| Rgb(r, g, b));
+        assert_eq!(told(NamedColor::Foreground as usize), Some(palette.text));
+        assert_eq!(told(NamedColor::Background as usize), Some(palette.surface));
+        assert_eq!(told(NamedColor::Cursor as usize), Some(palette.cursor));
+        assert_eq!(told(1), Some(palette.ansi[1]));
+        assert_eq!(told(15), Some(palette.ansi[15]));
+        // Black and white in the fixed cube, and the ramp, whatever the theme.
+        assert_eq!(told(16), Some(Rgb(0, 0, 0)));
+        assert_eq!(told(231), Some(Rgb(255, 255, 255)));
+        assert_eq!(told(232), Some(Rgb(8, 8, 8)));
+    }
+
+    #[test]
+    fn a_colour_with_no_equivalent_here_gets_no_answer() {
+        let palette = ThemeColors::default();
+        assert_eq!(
+            queried_color(&palette, NamedColor::Cursor as usize + 1),
+            None
+        );
+        assert_eq!(queried_color(&palette, usize::MAX), None);
+    }
+
+    #[test]
+    fn a_colour_query_is_answered_on_the_pty_with_the_latest_palette() {
+        let (bridge, _) = EventBridge::new();
+        let (sender, receiver) = rio_vt::corcovado::channel::channel();
+        let listener = Listener {
+            bridge,
+            writer: Arc::new(Mutex::new(Some(sender))),
+            size: Arc::new(Mutex::new(WindowSize::default())),
+            palette: Arc::new(Mutex::new(ThemeColors::default())),
+        };
+        *listener.palette.lock().unwrap() = ThemeColors::paper();
+        listener.dispatch(RioEvent::ColorRequest(
+            0,
+            NamedColor::Background as usize,
+            Arc::new(|color| format!("{:02x}{:02x}{:02x}", color.r, color.g, color.b)),
+        ));
+        let Ok(Msg::Input(reply)) = receiver.try_recv() else {
+            panic!("expected a reply on the PTY");
+        };
+        let Rgb(r, g, b) = ThemeColors::paper().surface;
+        assert_eq!(reply.as_ref(), format!("{r:02x}{g:02x}{b:02x}").as_bytes());
     }
 
     #[test]
@@ -711,6 +919,7 @@ mod tests {
                     .map(String::from)
                     .collect(),
                 working_directory: None,
+                palette: ThemeColors::default(),
             },
         )
         .expect("deterministic child should spawn");
@@ -807,6 +1016,8 @@ mod tests {
                 )
                 .is_err()
         );
+        // A failed shell's tab stays open, and its output has to stay readable.
+        assert!(session.scroll(TerminalScroll::Top).is_ok());
         session.close().expect("close should succeed");
         session.close().expect("close should be idempotent");
         assert!(session.paste("x").is_err());
@@ -824,6 +1035,96 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    fn wait_for_close(session: &RioTerminalSession) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !session.drain_effects().contains(&ControlEvent::Close) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child exit was not delivered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn a_shell_asking_about_colours_as_it_starts_is_told_the_palette_it_was_started_with() {
+        let _serial = serial_pty_test();
+        let palette = ThemeColors::paper();
+        // Asks before doing anything else, then prints what it heard with the escapes out
+        // of it, so the answer can be read off the screen.
+        let script = r#"stty -echo -icanon min 0 time 20
+printf '\033]11;?\033\\'
+answer=$(dd bs=64 count=1 2>/dev/null)
+printf 'ANSWER %s\n' "$answer" | tr -d '\033\007'
+sleep 5
+"#;
+        let (mut session, _) = RioTerminalSession::with_options(
+            TerminalSize {
+                cols: 100,
+                rows: 20,
+                pixels_width: 800,
+                pixels_height: 320,
+            },
+            SessionOptions {
+                shell: Some("/bin/sh".into()),
+                args: vec!["-c".into(), script.into()],
+                working_directory: None,
+                palette: palette.clone(),
+            },
+        )
+        .expect("deterministic child should spawn");
+        let Rgb(r, g, b) = palette.surface;
+        wait_for_text(
+            &mut session,
+            &format!("rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}"),
+        );
+        session.close().expect("the child should close");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn exited_output_refits_with_its_last_lines_on_screen_and_the_rest_in_scrollback() {
+        let _serial = serial_pty_test();
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let mut session = fixture(&["full-exit"]);
+        wait_for_text(&mut session, "M0-FINAL-OUTPUT");
+        wait_for_close(&session);
+        session.reflow_output(800, 160, cell);
+        let frame = session.frame();
+        assert_eq!(frame.rows.len(), 10);
+        assert!(frame_text(&frame).contains("M0-FINAL-OUTPUT"));
+        session
+            .scroll(TerminalScroll::Top)
+            .expect("scrollback outlives the shell");
+        assert!(frame_text(&session.frame()).contains("M0-HISTORY-01"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn exited_output_that_fits_keeps_its_place_when_the_grid_shrinks() {
+        let _serial = serial_pty_test();
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let mut session = fixture(&["exit"]);
+        wait_for_text(&mut session, "M0-FINAL-OUTPUT");
+        wait_for_close(&session);
+        session.reflow_output(800, 80, cell);
+        let text = frame_text(&session.frame());
+        assert!(text.contains("M0-READY"), "{text:?}");
+        assert!(text.contains("M0-FINAL-OUTPUT"), "{text:?}");
+        assert_eq!(session.frame().viewport_offset, Some(0));
+    }
+
     #[test]
     #[cfg(unix)]
     #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
@@ -839,6 +1140,21 @@ mod tests {
             wait_for_text(&mut session, expected);
             session.close().expect("close should succeed");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_tells_a_shell_running_a_script_from_a_prompt() {
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["raw", "3"]);
+        wait_for_text(&mut session, "M0-READY");
+        let process = session.foreground_process();
+        let mut activity = crate::terminal::tab_label::PaneActivity::default();
+        activity.sample(process.as_ref(), std::time::Instant::now());
+        assert!(!activity.at_prompt(), "{process:?}");
+        assert_eq!(activity.program(), Some("m0-pty-child.sh"), "{process:?}");
+        session.close().expect("close should succeed");
     }
 
     #[test]
@@ -992,6 +1308,12 @@ mod tests {
         let top = session.frame();
         assert!(frame_text(&top).contains("M0-HISTORY-01"));
         assert!(top.viewport_offset.is_some_and(|offset| offset > 0));
+        assert_eq!(top.viewport_offset, top.scrollback_rows);
+
+        session
+            .scroll(TerminalScroll::ToOffset(2))
+            .expect("a dragged scrollbar should place the viewport");
+        assert_eq!(session.frame().viewport_offset, Some(2));
 
         session
             .scroll(TerminalScroll::Bottom)

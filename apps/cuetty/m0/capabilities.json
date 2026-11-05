@@ -332,16 +332,20 @@
       "execution_ids": [],
       "gap_owner": "cuetty_host",
       "id": "color_queries",
-      "notes": "ColorRequest is not resolved against the host theme. Add explicit default/indexed/RGB reply policy and byte fixtures.",
+      "notes": "ColorRequest is answered from the palette the pane paints in: default foreground, background and cursor, the sixteen theme colours and the fixed indexed colours. Colours an application sets are not painted or reported. Byte fixtures across OSC 4, 10, 11 and 12 and real-application execution remain needed.",
       "outcome": "unobservable",
       "required_for_m0": true,
       "source_evidence": [
         {
           "path": "apps/cuetty/src/terminal/host.rs",
-          "symbol": "fn dispatch"
+          "symbol": "RioEvent::ColorRequest"
+        },
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "fn queried_color"
         }
       ],
-      "status": "unsupported"
+      "status": "implemented_unvalidated"
     },
     {
       "execution_ids": [],

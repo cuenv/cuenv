@@ -52,7 +52,7 @@ authoritative source.
 | Tasks: parallel groups, ordered sequences, `dependsOn` | Stable | Dependencies are CUE references, checked at evaluation |
 | Task parameters & output references | Stable | Pass CLI args; wire one task's stdout into another |
 | Content-addressed task caching | Stable | Opt-in via `cache.mode` with `inputs`/`outputs` |
-| `timeout`, `retry`, `continueOnError`, group `maxConcurrency` | Stable | Enforced by the task executor; the dagger backend rejects `timeout` explicitly; global concurrency remains backend-defined |
+| `timeout`, `retry`, `continueOnError`, group `maxConcurrency` | Stable | Enforced by the task executor; there is no global concurrency limit |
 | Shell integration & directory hooks | Stable | Auto-load on `cd`, with an approval gate (`cuenv allow`) |
 | CI: GitHub Actions generation (`cuenv sync ci`) | Stable | |
 | CI: run pipelines locally (`cuenv ci`) | Stable | |
@@ -66,7 +66,7 @@ authoritative source.
 | Lockfile resolution (`cuenv sync lock`) | Stable | Pins OCI image digests into `cuenv.lock` |
 | VCS dependencies (`cuenv sync vcs`) | Stable | Sparse single-subdirectory checkout |
 | Runtimes: Nix, devenv | Stable | Provision tools for tasks and `exec` |
-| Runtimes: OCI binaries, Dagger | Partial | |
+| Runtime: OCI binaries | Partial | |
 | Runtime: container | Preview | |
 | Container image build (`cuenv build`) | Partial | Docker/buildx and Nix delivery work; other backend behavior remains incomplete |
 | Long-running services (`cuenv up`/`ps`/`down`/`logs`/`restart`) | Partial | Task and image dependencies resolve through the task DAG; readiness, ports, and watch modes supported |
@@ -223,7 +223,7 @@ verbosity. Full details live in the [CLI reference](https://cuenv.dev/reference/
 | Shell integration & hooks     | Solid                                                            |
 | CI generation                 | GitHub works; Buildkite partial; GitLab schema-only              |
 | Tools, codegen, rules, release| In progress — see the schema status page                         |
-| Services, container/Dagger    | Partial — see the schema status page                             |
+| Services, container runtime   | Partial — see the schema status page                             |
 
 ## How it compares
 
@@ -281,8 +281,7 @@ cuenv/
 │   ├── codeowners/ # CODEOWNERS generation
 │   ├── github/     # GitHub provider
 │   ├── gitlab/     # GitLab provider
-│   ├── bitbucket/  # Bitbucket provider
-│   └── dagger/     # Dagger task execution backend
+│   └── bitbucket/  # Bitbucket provider
 ├── schema/         # CUE schema definitions
 ├── examples/       # Runnable CUE configurations
 └── docs/           # Documentation site (cuenv.dev)

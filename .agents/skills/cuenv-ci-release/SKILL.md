@@ -50,7 +50,7 @@ Status guardrails:
 - Use `cuenv sync ci` to generate workflows. Generated checkout steps pin `actions/checkout@v7`.
 - GitLab is schema-recognized but schema-only for sync; `cuenv sync ci --provider gitlab` fails with a configuration error until a GitLab emitter exists.
 - Use `cuenv ci --export buildkite` for export-style CI output; GitLab export is not implemented.
-- `--jobs` is applied to local CI task DAG parallelism. `--filter-matrix` is rejected by the local runner until runtime matrix execution exists; provider-native matrix workflows still come from `cuenv sync ci`.
+- `--jobs` is applied to local CI task DAG parallelism. The local runner does not filter matrices; provider-native matrix workflows come from `cuenv sync ci`.
 - Release schema is partial because CLI release commands do not fully load config from `env.cue`.
 
 Adversarial prompts:
