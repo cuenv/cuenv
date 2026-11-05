@@ -249,6 +249,8 @@ cuenv exec [OPTIONS] -- <COMMAND> [ARGS]...
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 
+Once the command has started, `cuenv exec` exits with its status, or 128 plus the signal that killed it, and prints no error of its own.
+
 :::tip
 Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production exec -- npm start`.
 :::
@@ -991,6 +993,8 @@ recorded in `cue.mod/module.cue`.
 - `codegen`: Sync files from CUE codegen configurations. Adds `--diff` to show changed files.
 - `ci`: Sync CI workflow files from CUE configuration. Adds `--provider <github|buildkite>` to filter.
 - `vcs`: Sync cuenv-managed Git dependencies. Supports `-u/--update [NAMES...]` to refresh locked refs.
+- `rules`: Sync ignore files, `.editorconfig` and `CODEOWNERS` from `.rules.cue` files. Supports `--dry-run`, `--check` and `-A/--all`.
+- `git-hooks`: Sync the pre-push hook from project configuration. Supports `--dry-run`, `--check` and `-A/--all`.
 - `infrastructure`: Regenerate the CUE types of every infrastructure provider `cuenv.lock` pins (see `cuenv infrastructure provider add`), and their `.gitignore` section; like managed codegen files they are not committed, so run it after a clone. Reads only `cuenv.lock`, not your CUE, installs each pinned release (requiring the pinned archive), and refuses one whose schema no longer has the pinned digest. Supports `--dry-run` and `--check`.
 
 **Example:**

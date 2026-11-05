@@ -9,7 +9,7 @@ mod task_handler;
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::cue::discovery::find_cue_module_root;
-use cuenv_events::{emit_stderr, emit_stdout};
+use cuenv_events::emit_stdout;
 
 use crate::cli::{ShellType, StatusFormat};
 use crate::events::Event;
@@ -65,7 +65,6 @@ impl CommandRunner for CommandExecutor {
                 Ok(())
             }
             Err(e) => {
-                emit_stderr!(format!("Error: {e}"));
                 self.send_event(Event::CommandComplete {
                     command: name.to_string(),
                     success: false,
@@ -368,9 +367,7 @@ impl CommandHandler for ExecHandler {
         if exit_code == 0 {
             Ok(format!("Command exited with code {exit_code}"))
         } else {
-            Err(cuenv_core::Error::configuration(format!(
-                "Command failed with exit code {exit_code}"
-            )))
+            Err(cuenv_core::Error::ChildExit { code: exit_code })
         }
     }
 }

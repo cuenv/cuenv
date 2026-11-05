@@ -603,7 +603,9 @@ impl Commands {
                     SyncCommands::Lock { package, .. }
                     | SyncCommands::Codegen { package, .. }
                     | SyncCommands::Ci { package, .. }
-                    | SyncCommands::Vcs { package, .. },
+                    | SyncCommands::Vcs { package, .. }
+                    | SyncCommands::Rules { package, .. }
+                    | SyncCommands::GitHooks { package, .. },
                 ) if package != "cuenv" => package,
                 Some(_) | None => package,
             },

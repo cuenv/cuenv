@@ -166,6 +166,73 @@ pub enum SyncCommands {
         )]
         update: Option<Vec<String>>,
     },
+    /// Sync ignore files, editor config and CODEOWNERS from .rules.cue files.
+    #[command(about = "Sync ignore files, editor config and CODEOWNERS from .rules.cue files")]
+    Rules {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Show what would change without writing files.
+        #[arg(long, help = "Show what would change without writing files")]
+        dry_run: bool,
+        /// Check if rules outputs are in sync without making changes.
+        #[arg(
+            long,
+            help = "Check if rules outputs are in sync without making changes"
+        )]
+        check: bool,
+        /// Sync rules outputs for all projects in the workspace.
+        #[arg(
+            long = "all",
+            short = 'A',
+            help = "Sync rules outputs for all projects in the workspace"
+        )]
+        all: bool,
+    },
+    /// Sync the pre-push git hook from project configuration.
+    #[command(about = "Sync the pre-push git hook from project configuration")]
+    GitHooks {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Show what would change without writing files.
+        #[arg(long, help = "Show what would change without writing files")]
+        dry_run: bool,
+        /// Check if git hooks are in sync without making changes.
+        #[arg(long, help = "Check if git hooks are in sync without making changes")]
+        check: bool,
+        /// Sync git hooks for all projects in the workspace.
+        #[arg(
+            long = "all",
+            short = 'A',
+            help = "Sync git hooks for all projects in the workspace"
+        )]
+        all: bool,
+    },
     /// Regenerate infrastructure provider CUE types from cuenv.lock.
     #[command(about = "Regenerate infrastructure provider CUE types from cuenv.lock")]
     Infrastructure {

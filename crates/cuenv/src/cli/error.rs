@@ -92,6 +92,14 @@ pub enum CliError {
         #[help]
         help: Option<String>,
     },
+    /// `cuenv exec` child failure; exits with the child's status and prints
+    /// nothing, because the child already reported its own failure.
+    #[error("Command exited with code {code}")]
+    #[diagnostic(code(cuenv::cli::child_exit))]
+    ChildExit {
+        /// The child's exit status.
+        code: i32,
+    },
     /// Infrastructure failure (exit code 1 when cancelled, 4 for concurrent
     /// activity, 130 when interrupted, otherwise 5)
     #[error("Infrastructure error: {message}")]
@@ -278,6 +286,7 @@ impl CliError {
             | Self::Eval { message, .. }
             | Self::Infrastructure { message, .. }
             | Self::Other { message, .. } => message,
+            Self::ChildExit { .. } => "",
         }
     }
 
@@ -289,6 +298,7 @@ impl CliError {
             | Self::Eval { help, .. }
             | Self::Infrastructure { help, .. }
             | Self::Other { help, .. } => help.as_deref(),
+            Self::ChildExit { .. } => None,
         }
     }
 
@@ -316,6 +326,7 @@ impl CliError {
     #[must_use]
     pub fn with_secrets_redacted(self) -> Self {
         match self {
+            Self::ChildExit { code } => Self::ChildExit { code },
             Self::Config { message, help } => Self::Config {
                 message: redacted(message),
                 help: help.map(redacted),
@@ -351,6 +362,7 @@ impl CliError {
     pub fn with_help(self, help_text: impl Into<String>) -> Self {
         let help = Some(redacted(help_text));
         match self {
+            child @ Self::ChildExit { .. } => child,
             Self::Config { message, .. } => Self::Config { message, help },
             Self::Eval { message, .. } => Self::Eval { message, help },
             Self::Other { message, .. } => Self::Other { message, help },
@@ -388,6 +400,7 @@ impl From<cuenv_core::Error> for CliError {
             cuenv_core::Error::Configuration(cuenv_core::ConfigError { message, .. }) => {
                 Self::config(message)
             }
+            cuenv_core::Error::ChildExit { code } => Self::ChildExit { code },
             cuenv_core::Error::Eval(eval_err) => Self::eval(eval_err.to_string()),
             cuenv_core::Error::Task(task_err) => match task_err {
                 cuenv_core::TaskError::Execution { message, .. } => {
@@ -470,6 +483,7 @@ impl From<cuenv_core::Error> for CliError {
 #[must_use]
 pub const fn exit_code_for(err: &CliError) -> i32 {
     match err {
+        CliError::ChildExit { code } => *code,
         CliError::Config { .. } => EXIT_CLI,
         CliError::Eval { .. } | CliError::Other { .. } => EXIT_EVAL,
         CliError::Infrastructure {
@@ -498,6 +512,7 @@ pub const fn error_code_for(err: &CliError) -> &'static str {
         CliError::Config { .. } => "config",
         CliError::Eval { .. } => "eval",
         CliError::Other { .. } => "other",
+        CliError::ChildExit { .. } => "child_exit",
         CliError::Infrastructure { kind, .. } => match kind {
             InfrastructureFailureKind::Locked => "infrastructure_locked",
             InfrastructureFailureKind::Cancelled => "infrastructure_cancelled",
@@ -567,6 +582,9 @@ pub fn error_report_text(err: &CliError) -> String {
 
 /// Render error appropriately based on output format
 pub fn render_error(err: &CliError, format: OutputFormat) {
+    if matches!(err, CliError::ChildExit { .. }) {
+        return;
+    }
     if format.is_json() {
         let error_envelope = error_envelope(err);
 
