@@ -9,7 +9,6 @@ use cuenv::cli::{
     self, CliError, EXIT_INTERRUPTED, EXIT_OK, OutputFormat, exit_code_for, parse, render_error,
 };
 use cuenv::commands::{self, Command, CommandExecutor};
-use cuenv::coordinator;
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
 use cuenv_events::renderers::{CliRenderer, JsonRenderer};
 use std::sync::Arc;
@@ -87,12 +86,12 @@ fn main() {
         std::process::exit(code);
     }
 
-    if args.len() > 1 && (args[1] == "__hook-supervisor" || args[1] == "__coordinator") {
-        // For supervisor, detach from controlling terminal if on Unix
-        // This is done here instead of via pre_exec in the parent to avoid
-        // fork-safety issues when the parent is multi-threaded (Go runtime)
+    if args.len() > 1 && args[1] == "__hook-supervisor" {
+        // Detach from the controlling terminal. This is done here instead of
+        // via pre_exec in the parent to avoid fork-safety issues when the
+        // parent is multi-threaded (Go runtime).
         #[cfg(unix)]
-        if args[1] == "__hook-supervisor" {
+        {
             // SAFETY: setsid() creates a new session and process group.
             // This is safe to call at startup. We ignore errors (e.g. if already leader).
             #[expect(
@@ -104,7 +103,7 @@ fn main() {
             }
         }
 
-        // These internal commands always need tokio
+        // The supervisor always needs tokio
         let exit_code = run_with_tokio(InterruptPolicy::Process);
         std::process::exit(exit_code);
     }
@@ -463,11 +462,6 @@ async fn real_main() -> Result<(), CliError> {
         return run_hook_supervisor(args).await;
     }
 
-    // Check if we're being called as the coordinator server
-    if args.len() > 1 && args[1] == "__coordinator" {
-        return run_coordinator().await;
-    }
-
     // Parse CLI arguments and initialize event system
     let init_result = match initialize_cli_and_tracing().await {
         Ok(result) => result,
@@ -654,17 +648,6 @@ async fn render_json_events_to_standard_error(
             break;
         }
     }
-}
-
-/// Run as the coordinator server (internal - spawned by discovery)
-async fn run_coordinator() -> Result<(), CliError> {
-    use coordinator::server::EventCoordinator;
-
-    let coordinator = EventCoordinator::new();
-    coordinator
-        .run()
-        .await
-        .map_err(|e| CliError::other(format!("Coordinator failed: {e}")))
 }
 
 #[cfg(test)]

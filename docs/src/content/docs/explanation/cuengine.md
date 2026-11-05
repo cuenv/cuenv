@@ -112,47 +112,6 @@ For simpler single-directory evaluation:
 - `evaluate_cue_package_typed::<T>(path, package)` → `Result<T>` - Deserializes to type
 - `get_bridge_version()` → `Result<String>` - Bridge diagnostics
 
-### Limits
-
-The `Limits` struct configures validation boundaries:
-
-```rust
-use cuengine::Limits;
-
-let limits = Limits {
-    max_path_length: 4096,
-    max_package_name_length: 256,
-    max_output_size: 100 * 1024 * 1024, // 100MB
-};
-```
-
-| Field                     | Default | Description                       |
-| ------------------------- | ------- | --------------------------------- |
-| `max_path_length`         | 4096    | Maximum path length in characters |
-| `max_package_name_length` | 256     | Maximum package name length       |
-| `max_output_size`         | 100MB   | Maximum output size in bytes      |
-
-### RetryConfig
-
-```rust
-use cuengine::RetryConfig;
-use std::time::Duration;
-
-let retry = RetryConfig {
-    max_attempts: 4,
-    initial_delay: Duration::from_millis(50),
-    max_delay: Duration::from_secs(5),
-    exponential_base: 2.0,
-};
-```
-
-| Field              | Description                                       |
-| ------------------ | ------------------------------------------------- |
-| `max_attempts`     | Maximum retry attempts before surfacing the error |
-| `initial_delay`    | Delay before the first retry                      |
-| `max_delay`        | Ceiling applied to the exponential backoff        |
-| `exponential_base` | Multiplier for each successive delay              |
-
 ### CueEngineError
 
 The crate provides structured error types:

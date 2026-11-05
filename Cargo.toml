@@ -10,7 +10,6 @@ members = [
     "crates/cas-remote",
     "crates/vcs",
     "crates/task-graph",
-    "crates/task-discovery",
     "crates/task-exec",
     "crates/services",
     "crates/infrastructure",
@@ -67,7 +66,6 @@ cuenv-cas = { path = "crates/cas", version = "0.66.0" }
 cuenv-cas-remote = { path = "crates/cas-remote", version = "0.66.0" }
 cuenv-vcs = { path = "crates/vcs", version = "0.66.0" }
 cuenv-task-graph = { path = "crates/task-graph", version = "0.66.0" }
-cuenv-task-discovery = { path = "crates/task-discovery", version = "0.66.0" }
 cuenv-task-exec = { path = "crates/task-exec", version = "0.66.0" }
 cuenv-services = { path = "crates/services", version = "0.66.0" }
 cuenv-infrastructure = { path = "crates/infrastructure", version = "0.66.0" }

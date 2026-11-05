@@ -14,15 +14,6 @@
 //! - **Expanded mode**: Generates multi-job workflows with each task as a separate job,
 //!   with dependencies managed by the CI orchestrator.
 //!
-//! ## Emitter Registry
-//!
-//! The [`EmitterRegistry`] provides a central registry for all available emitters,
-//! enabling dynamic lookup and discovery of available formats.
-
-mod registry;
-
-pub use registry::{EmitterInfo, EmitterRegistry, EmitterRegistryBuilder};
-
 use crate::ir::IntermediateRepresentation;
 use cuenv_core::ci::PipelineMode;
 
