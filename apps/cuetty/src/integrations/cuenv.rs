@@ -21,6 +21,9 @@ pub const PROJECT_PACKAGE: &str = "cuenv";
 /// Directory below the XDG config home that holds the global `cuetty` package.
 const GLOBAL_CONFIG_DIR: &str = "cuetty";
 const MAX_BANNER_BYTES: usize = 120;
+/// Stands in for a secret wherever a variable is shown.
+pub const SECRET_MASK: &str = "••••";
+const MAX_ENV_SUMMARY_CHARS: usize = 120;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CuettyPresentation {
@@ -288,10 +291,110 @@ pub struct CuenvTask {
     pub requires_parameters: bool,
 }
 
+/// What a variable is declared to be, as much of it as may be put on screen. A secret
+/// keeps only the name of its resolver: its reference is dropped while parsing and nothing
+/// here ever resolves it, so no secret can reach the sidebar.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TaskEvaluation {
+pub enum EnvVariableValue {
+    /// A value written out in the CUE, which is as public as that file.
+    Literal(String),
+    Secret {
+        resolver: String,
+    },
+    /// Parts joined at runtime, some of them secrets, which show as [`SECRET_MASK`].
+    Composed(String),
+    /// Forwarded from the variable of this name on the host.
+    Passthrough(String),
+    /// A shape this version does not know, which is not assumed to be safe to show.
+    Undisclosed,
+}
+
+impl EnvVariableValue {
+    /// The value on one line, whatever it holds.
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Literal(value) | Self::Composed(value) => single_line(value),
+            Self::Secret { resolver } => format!("{SECRET_MASK} {}", single_line(resolver)),
+            Self::Passthrough(name) => format!("from ${}", single_line(name)),
+            Self::Undisclosed => "not shown".into(),
+        }
+    }
+
+    /// What the value means, for a tooltip.
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Literal(value) => value.clone(),
+            Self::Secret { resolver } => {
+                format!("Secret from {resolver}, resolved when a command runs")
+            }
+            Self::Composed(value) => {
+                format!("{value}\n{SECRET_MASK} is a secret, resolved when a command runs")
+            }
+            Self::Passthrough(name) => format!("Read from the host's {name} when a task runs"),
+            Self::Undisclosed => "Not a kind of value Cuetty knows how to show".into(),
+        }
+    }
+}
+
+/// One line, short enough to hand to the text system on every frame. A value is not ours
+/// and can hold a whole certificate.
+fn single_line(value: &str) -> String {
+    value
+        .chars()
+        .take(MAX_ENV_SUMMARY_CHARS)
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnvVariable {
+    pub name: String,
+    pub value: EnvVariableValue,
+}
+
+/// A named set of overrides from `env.environment`, applied by `--env`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamedEnvironment {
+    pub name: String,
+    pub variables: Vec<EnvVariable>,
+}
+
+/// What the sidebar says about the project in a directory. This is what the project
+/// declares, not what the shell has loaded.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProjectOverview {
+    pub name: Option<String>,
+    pub runtime: Option<String>,
+    pub variables: Vec<EnvVariable>,
+    pub environments: Vec<NamedEnvironment>,
+}
+
+impl ProjectOverview {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.runtime.is_none()
+            && self.variables.is_empty()
+            && self.environments.is_empty()
+    }
+}
+
+/// What one evaluation of a directory's `package cuenv` is used for.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CuenvProject {
+    pub overview: ProjectOverview,
+    pub tasks: Vec<CuenvTask>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectEvaluation {
     Absent,
-    Valid(Vec<CuenvTask>),
+    Valid(CuenvProject),
     Invalid(String),
 }
 
@@ -397,6 +500,7 @@ pub struct CuenvPaneState {
     pub generation: u64,
     pub presentation: CuettyPresentation,
     pub tasks: Vec<CuenvTask>,
+    pub overview: ProjectOverview,
     pub notice: Option<String>,
     pub task_notice: Option<String>,
 }
@@ -418,6 +522,7 @@ impl CuenvPaneState {
         self.generation = self.generation.wrapping_add(1);
         self.presentation = self.presentation.carried_over();
         self.tasks.clear();
+        self.overview = ProjectOverview::default();
         self.notice = None;
         self.task_notice = None;
         true
@@ -446,20 +551,22 @@ impl CuenvPaneState {
         true
     }
 
-    pub fn apply_tasks(&mut self, generation: u64, update: TaskEvaluation) -> bool {
+    pub fn apply_project(&mut self, generation: u64, update: ProjectEvaluation) -> bool {
         if self.generation != generation {
             return false;
         }
         match update {
-            TaskEvaluation::Valid(tasks) => {
-                self.tasks = tasks;
+            ProjectEvaluation::Valid(project) => {
+                self.tasks = project.tasks;
+                self.overview = project.overview;
                 self.task_notice = None;
             }
-            TaskEvaluation::Absent => {
+            ProjectEvaluation::Absent => {
                 self.tasks.clear();
+                self.overview = ProjectOverview::default();
                 self.task_notice = None;
             }
-            TaskEvaluation::Invalid(error) => self.task_notice = Some(error),
+            ProjectEvaluation::Invalid(error) => self.task_notice = Some(error),
         }
         true
     }
@@ -560,7 +667,7 @@ impl ConfigSource {
         }
     }
 
-    pub fn evaluate_tasks(&self) -> TaskEvaluation {
+    pub fn evaluate_project(&self) -> ProjectEvaluation {
         let module_root = self.module_root.as_deref().unwrap_or(&self.target_dir);
         let options = ModuleEvalOptions {
             recursive: false,
@@ -571,7 +678,9 @@ impl ConfigSource {
         let module = match cuengine::evaluate_module(module_root, PROJECT_PACKAGE, Some(&options)) {
             Ok(module) => module,
             Err(error) => {
-                return TaskEvaluation::Invalid(format!("Cuetty task evaluation failed: {error}"));
+                return ProjectEvaluation::Invalid(format!(
+                    "Cuetty task evaluation failed: {error}"
+                ));
             }
         };
         let Some(value) = module
@@ -579,9 +688,9 @@ impl ConfigSource {
             .get(".")
             .or_else(|| module.instances.values().next())
         else {
-            return TaskEvaluation::Absent;
+            return ProjectEvaluation::Absent;
         };
-        parse_tasks(value)
+        parse_project(value)
     }
 }
 
@@ -804,21 +913,112 @@ fn parse_color(field: &str, value: &str) -> Result<RailColor, String> {
     Ok(RailColor(channel(1)?, channel(3)?, channel(5)?))
 }
 
-fn parse_tasks(value: &serde_json::Value) -> TaskEvaluation {
+fn parse_project(value: &serde_json::Value) -> ProjectEvaluation {
+    match parse_tasks(value) {
+        Ok(tasks) => ProjectEvaluation::Valid(CuenvProject {
+            overview: parse_overview(value),
+            tasks,
+        }),
+        Err(error) => ProjectEvaluation::Invalid(error),
+    }
+}
+
+fn parse_tasks(value: &serde_json::Value) -> Result<Vec<CuenvTask>, String> {
     let Some(tasks) = value.get("tasks") else {
-        return TaskEvaluation::Valid(Vec::new());
+        return Ok(Vec::new());
     };
-    let Some(tasks) = tasks.as_object() else {
-        return TaskEvaluation::Invalid("Cuenv tasks must evaluate to an object".into());
-    };
+    let tasks = tasks
+        .as_object()
+        .ok_or("Cuenv tasks must evaluate to an object")?;
     let mut catalog = Vec::new();
     for (name, node) in tasks {
-        if let Err(error) = collect_task(name, node, &mut catalog) {
-            return TaskEvaluation::Invalid(error);
-        }
+        collect_task(name, node, &mut catalog)?;
     }
     catalog.sort_by(|left, right| left.name.cmp(&right.name));
-    TaskEvaluation::Valid(catalog)
+    Ok(catalog)
+}
+
+/// Reads what the sidebar shows. It only informs, so a part in an unexpected shape is
+/// left out rather than failing the tasks evaluated alongside it.
+fn parse_overview(value: &serde_json::Value) -> ProjectOverview {
+    let env = value.get("env").and_then(serde_json::Value::as_object);
+    let mut environments: Vec<NamedEnvironment> = env
+        .and_then(|env| env.get("environment"))
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, overrides)| {
+            overrides.as_object().map(|overrides| NamedEnvironment {
+                name: name.clone(),
+                variables: parse_variables(overrides),
+            })
+        })
+        .collect();
+    environments.sort_by(|left, right| left.name.cmp(&right.name));
+    ProjectOverview {
+        name: value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        runtime: value
+            .pointer("/runtime/type")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        variables: env.map(parse_variables).unwrap_or_default(),
+        environments,
+    }
+}
+
+/// The variables of an `env` block or of one environment's overrides, in name order.
+fn parse_variables(block: &serde_json::Map<String, serde_json::Value>) -> Vec<EnvVariable> {
+    let mut variables: Vec<EnvVariable> = block
+        .iter()
+        .filter(|(name, _)| name.as_str() != "environment")
+        .map(|(name, value)| EnvVariable {
+            name: name.clone(),
+            value: parse_variable_value(name, value),
+        })
+        .collect();
+    variables.sort_by(|left, right| left.name.cmp(&right.name));
+    variables
+}
+
+fn parse_variable_value(name: &str, value: &serde_json::Value) -> EnvVariableValue {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => EnvVariableValue::Literal(text.clone()),
+        Value::Number(number) => EnvVariableValue::Literal(number.to_string()),
+        Value::Bool(flag) => EnvVariableValue::Literal(flag.to_string()),
+        Value::Array(parts) => parse_interpolated(parts),
+        Value::Object(fields) => {
+            if let Some(resolver) = fields.get("resolver").and_then(Value::as_str) {
+                EnvVariableValue::Secret {
+                    resolver: resolver.into(),
+                }
+            } else if fields.contains_key("cuenvPassthrough") {
+                let host = fields.get("name").and_then(Value::as_str).unwrap_or(name);
+                EnvVariableValue::Passthrough(host.into())
+            } else if let Some(inner) = fields.get("value") {
+                parse_variable_value(name, inner)
+            } else {
+                EnvVariableValue::Undisclosed
+            }
+        }
+        Value::Null => EnvVariableValue::Undisclosed,
+    }
+}
+
+/// Only text parts are ever copied out: anything else counts as a secret.
+fn parse_interpolated(parts: &[serde_json::Value]) -> EnvVariableValue {
+    let joined = parts
+        .iter()
+        .map(|part| part.as_str().unwrap_or(SECRET_MASK))
+        .collect::<String>();
+    if parts.iter().all(serde_json::Value::is_string) {
+        EnvVariableValue::Literal(joined)
+    } else {
+        EnvVariableValue::Composed(joined)
+    }
 }
 
 fn collect_task(
@@ -927,9 +1127,9 @@ pub trait CuenvWatcher: Send {
 /// watcher or invoking the CUE bridge.
 pub trait CuenvProvider: Send + Sync {
     fn evaluate(&self, source: &ConfigSource) -> Evaluation;
-    fn evaluate_tasks(&self, source: &ConfigSource) -> TaskEvaluation {
+    fn evaluate_project(&self, source: &ConfigSource) -> ProjectEvaluation {
         let _ = source;
-        TaskEvaluation::Absent
+        ProjectEvaluation::Absent
     }
     fn watch(
         &self,
@@ -1001,8 +1201,8 @@ impl CuenvProvider for NativeCuenvProvider {
         source.evaluate()
     }
 
-    fn evaluate_tasks(&self, source: &ConfigSource) -> TaskEvaluation {
-        source.evaluate_tasks()
+    fn evaluate_project(&self, source: &ConfigSource) -> ProjectEvaluation {
+        source.evaluate_project()
     }
 
     fn watch(
@@ -1019,7 +1219,7 @@ impl CuenvProvider for NativeCuenvProvider {
 #[derive(Clone, Debug, PartialEq)]
 pub enum EvaluationStage {
     Presentation(Evaluation),
-    Tasks(TaskEvaluation),
+    Project(ProjectEvaluation),
 }
 
 /// One evaluation of a source, which blocks and so belongs off the UI thread.
@@ -1027,13 +1227,13 @@ pub enum EvaluationStage {
 pub struct StagedEvaluation {
     pub provider: Arc<dyn CuenvProvider>,
     pub source: ConfigSource,
-    /// Whether the source has a directory to look for tasks in.
-    pub discover_tasks: bool,
+    /// Whether the source has a directory to look for a project in.
+    pub discover_project: bool,
     pub stages: async_channel::Sender<EvaluationStage>,
 }
 
 impl StagedEvaluation {
-    /// Reports the look first. Task discovery can take far longer, and everything the look
+    /// Reports the look first. Evaluating the project can take far longer, and everything the look
     /// decides, including what a program asking about colours is told, should not wait on
     /// it. Nobody listening any more ends this early.
     pub fn run(&self) {
@@ -1045,13 +1245,13 @@ impl StagedEvaluation {
         {
             return;
         }
-        let tasks = if self.discover_tasks {
-            self.provider.evaluate_tasks(&self.source)
+        let project = if self.discover_project {
+            self.provider.evaluate_project(&self.source)
         } else {
-            TaskEvaluation::Absent
+            ProjectEvaluation::Absent
         };
         // The look has been delivered, so a listener leaving now loses nothing.
-        let _ = self.stages.send_blocking(EvaluationStage::Tasks(tasks));
+        let _ = self.stages.send_blocking(EvaluationStage::Project(project));
     }
 
     pub fn is_abandoned(&self) -> bool {
@@ -1549,13 +1749,13 @@ mod tests {
             Evaluation::Absent
         }
 
-        fn evaluate_tasks(&self, _source: &ConfigSource) -> TaskEvaluation {
+        fn evaluate_project(&self, _source: &ConfigSource) -> ProjectEvaluation {
             let _ = self
                 .release
                 .lock()
                 .unwrap()
                 .recv_timeout(Duration::from_secs(30));
-            TaskEvaluation::Valid(Vec::new())
+            ProjectEvaluation::Valid(CuenvProject::default())
         }
 
         fn watch(
@@ -1576,7 +1776,7 @@ mod tests {
                 release: Mutex::new(release_rx),
             }),
             source: any_source(),
-            discover_tasks: true,
+            discover_project: true,
             stages,
         };
         let worker = std::thread::spawn(move || evaluation.run());
@@ -1589,7 +1789,9 @@ mod tests {
         release.send(()).unwrap();
         assert_eq!(
             reported.recv_blocking(),
-            Ok(EvaluationStage::Tasks(TaskEvaluation::Valid(Vec::new())))
+            Ok(EvaluationStage::Project(ProjectEvaluation::Valid(
+                CuenvProject::default()
+            )))
         );
         worker.join().unwrap();
     }
@@ -1604,7 +1806,7 @@ mod tests {
                 release: Mutex::new(release_rx),
             }),
             source: any_source(),
-            discover_tasks: false,
+            discover_project: false,
             stages,
         }
         .run();
@@ -1614,7 +1816,7 @@ mod tests {
         );
         assert_eq!(
             reported.try_recv(),
-            Ok(EvaluationStage::Tasks(TaskEvaluation::Absent))
+            Ok(EvaluationStage::Project(ProjectEvaluation::Absent))
         );
     }
 
@@ -1856,7 +2058,7 @@ mod tests {
                 "release": ["build", "checks.lint"]
             }
         }));
-        let TaskEvaluation::Valid(tasks) = evaluation else {
+        let Ok(tasks) = evaluation else {
             panic!("expected a valid task catalog");
         };
         assert_eq!(
@@ -1883,11 +2085,23 @@ mod tests {
             kind: CuenvTaskKind::Task,
             requires_parameters: false,
         }];
-        assert!(state.apply_tasks(generation, TaskEvaluation::Valid(tasks)));
+        let overview = ProjectOverview {
+            name: Some("a".into()),
+            ..ProjectOverview::default()
+        };
+        assert!(state.apply_project(
+            generation,
+            ProjectEvaluation::Valid(CuenvProject { overview, tasks })
+        ));
         assert_eq!(state.tasks.len(), 1);
+        assert!(!state.overview.is_empty());
         state.observe_cwd(PathBuf::from("/b"));
         assert!(state.tasks.is_empty());
-        assert!(!state.apply_tasks(generation, TaskEvaluation::Valid(Vec::new())));
+        assert!(state.overview.is_empty());
+        assert!(!state.apply_project(
+            generation,
+            ProjectEvaluation::Valid(CuenvProject::default())
+        ));
     }
 
     #[test]
@@ -2187,7 +2401,10 @@ mod tests {
         let source = ConfigSource::in_dir(&root).unwrap();
         let evaluation = source.evaluate();
         assert!(matches!(evaluation, Evaluation::Absent));
-        assert!(matches!(source.evaluate_tasks(), TaskEvaluation::Absent));
+        assert!(matches!(
+            source.evaluate_project(),
+            ProjectEvaluation::Absent
+        ));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2325,6 +2542,122 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_keeps_only_the_name_of_its_resolver() {
+        let overview = parse_overview(&serde_json::json!({
+            "env": {
+                "TOKEN": {"resolver": "onepassword", "ref": "op://vault/item/field"},
+                "RUN": {"resolver": "exec", "command": "secret-tool", "args": ["hunter2"]},
+                "GUARDED": {
+                    "value": {"resolver": "vault", "path": "kv/app"},
+                    "policies": [],
+                },
+                "URL": ["postgres://app:", {"resolver": "aws", "name": "db-password"}, "@db"],
+            },
+        }));
+        let shown = format!("{overview:?}");
+        for hidden in ["op://", "hunter2", "secret-tool", "kv/app", "db-password"] {
+            assert!(!shown.contains(hidden), "{hidden} reached {shown}");
+        }
+        let value = |name: &str| {
+            overview
+                .variables
+                .iter()
+                .find(|variable| variable.name == name)
+                .map(|variable| variable.value.clone())
+                .unwrap()
+        };
+        assert_eq!(value("TOKEN").summary(), "•••• onepassword");
+        assert_eq!(value("GUARDED").summary(), "•••• vault");
+        assert_eq!(value("URL").summary(), "postgres://app:••••@db");
+        assert!(value("URL").detail().contains("is a secret"));
+    }
+
+    #[test]
+    fn plain_variables_show_their_values_and_an_unknown_shape_shows_nothing() {
+        let block = serde_json::json!({
+            "NAME": "app",
+            "PORT": 8080,
+            "DEBUG": true,
+            "JOINED": ["a", "b"],
+            "GUARDED": {"value": "open", "policies": []},
+            "REF": {"cuenvPassthrough": true, "name": "GITHUB_REF_NAME"},
+            "HOST": {"cuenvPassthrough": true},
+            "ODD": {"password": "hunter2"},
+            "environment": {"production": {"NAME": "prod"}},
+        });
+        let variables = parse_variables(block.as_object().unwrap());
+        let summaries: Vec<(&str, String)> = variables
+            .iter()
+            .map(|variable| (variable.name.as_str(), variable.value.summary()))
+            .collect();
+        assert_eq!(
+            summaries,
+            [
+                ("DEBUG", "true".to_string()),
+                ("GUARDED", "open".to_string()),
+                ("HOST", "from $HOST".to_string()),
+                ("JOINED", "ab".to_string()),
+                ("NAME", "app".to_string()),
+                ("ODD", "not shown".to_string()),
+                ("PORT", "8080".to_string()),
+                ("REF", "from $GITHUB_REF_NAME".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn named_environments_hold_their_own_overrides_in_name_order() {
+        let overview = parse_overview(&serde_json::json!({
+            "env": {
+                "NAME": "app",
+                "environment": {
+                    "staging": {"NAME": "stage"},
+                    "production": {"NAME": "prod"},
+                },
+            },
+        }));
+        assert_eq!(overview.variables.len(), 1);
+        let names: Vec<&str> = overview
+            .environments
+            .iter()
+            .map(|environment| environment.name.as_str())
+            .collect();
+        assert_eq!(names, ["production", "staging"]);
+        assert_eq!(
+            overview.environments[0].variables[0].value,
+            EnvVariableValue::Literal("prod".into())
+        );
+    }
+
+    #[test]
+    fn a_long_or_multiline_value_summarises_on_one_short_line() {
+        let value = EnvVariableValue::Literal(format!("a\nb\t{}", "c".repeat(500)));
+        let summary = value.summary();
+        assert!(summary.starts_with("a b c"));
+        assert_eq!(summary.chars().count(), MAX_ENV_SUMMARY_CHARS);
+    }
+
+    #[test]
+    fn a_project_with_nothing_declared_has_nothing_to_show() {
+        assert!(parse_overview(&serde_json::json!({})).is_empty());
+        assert!(parse_overview(&serde_json::json!({"env": "broken"})).is_empty());
+    }
+
+    #[test]
+    fn broken_tasks_keep_what_the_project_last_said_about_itself() {
+        let mut state = CuenvPaneState::default();
+        state.observe_cwd(PathBuf::from("/a"));
+        let generation = state.begin_source();
+        let good = parse_project(&serde_json::json!({"name": "a"}));
+        assert!(state.apply_project(generation, good));
+        let broken = parse_project(&serde_json::json!({"name": "b", "tasks": "nope"}));
+        assert!(matches!(broken, ProjectEvaluation::Invalid(_)));
+        assert!(state.apply_project(generation, broken));
+        assert_eq!(state.overview.name.as_deref(), Some("a"));
+        assert!(state.task_notice.is_some());
+    }
+
+    #[test]
     fn discovers_the_repository_cuenv_task_catalog() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = manifest_dir
@@ -2332,9 +2665,30 @@ mod tests {
             .and_then(Path::parent)
             .expect("cuetty lives below the repository root");
         let source = ConfigSource::in_dir(root).expect("repository CUE source");
-        let TaskEvaluation::Valid(tasks) = source.evaluate_tasks() else {
+        let ProjectEvaluation::Valid(CuenvProject { tasks, overview }) = source.evaluate_project()
+        else {
             panic!("repository package cuenv should evaluate into a task catalog");
         };
+        assert_eq!(overview.name.as_deref(), Some("cuenv"));
+        assert_eq!(overview.runtime.as_deref(), Some("nix"));
+        assert!(
+            overview
+                .variables
+                .iter()
+                .any(|variable| variable.name == "CLOUDFLARE_ACCOUNT_ID")
+        );
+        let production = overview
+            .environments
+            .iter()
+            .find(|environment| environment.name == "production")
+            .expect("the repository declares a production environment");
+        assert!(production.variables.iter().any(|variable| {
+            variable.value
+                == EnvVariableValue::Secret {
+                    resolver: "onepassword".into(),
+                }
+        }));
+        assert!(!format!("{overview:?}").contains("op://"));
         assert!(tasks.iter().any(|task| task.name == "checks.clippy"));
         assert!(tasks.iter().any(|task| task.name == "docs.build"));
     }

@@ -412,6 +412,17 @@ terminal beneath, and clicking outside closes it. Its results scroll under a
 fixed field and hint, following the keyboard selection, so every match remains
 reachable even when there are more than nine.
 
+The same evaluation fills a panel in the expanded sidebar, between the tabs and the
+palette hint: the project's `name`, its `runtime` type and runnable task count, the variables
+in `env`, and each named set of overrides in `env.environment`. It says what the active tab's
+exact directory declares, not what its shell has loaded, and it resolves nothing. A secret
+shows as `•••• onepassword`, and parsing keeps only that resolver's name, so its reference
+and an `exec` secret's command never reach the UI. A passthrough shows as `from $NAME`.
+A value written out in CUE is shown as written, so a literal token is on screen like any
+other value. A tooltip holds the whole value. The panel stops at 240px and scrolls, and gives way to the tab
+list in a short window. The collapsed sidebar has no room for it. A project with nothing
+to report, or a directory without one, shows no panel, and changing directory clears it.
+
 On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
 compiler that GPUI needs. Runtime is only verified when
 `cargo run --release --locked` successfully opens Cuetty.

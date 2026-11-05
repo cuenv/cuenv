@@ -110,7 +110,10 @@ remain rejected with a visible notice. Pane resizing, reopen, detachable
 windows, live restore, and multi-session split allocation remain staged.
 The command palette lists Cuetty actions and searches exact-CWD `package cuenv`
 tasks in `$` mode. The task button opens the same palette; selecting a task
-delegates execution to the canonical CLI in the pane that supplied it.
+delegates execution to the canonical CLI in the pane that supplied it. The expanded
+sidebar shows the same directory's declared project name, runtime, variables, and named
+environments, with secrets as their resolver's name; choosing an environment there, or showing
+what the shell has actually loaded, remains staged.
 
 **Exit gate:** split/tab/layout operations are deterministic in unit tests and
 restore correctly after a clean restart.

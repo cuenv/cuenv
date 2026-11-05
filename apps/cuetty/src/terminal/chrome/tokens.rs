@@ -145,6 +145,11 @@ pub(super) mod size {
     /// indicator beneath a collapsed tab's mark. It has this height with or without
     /// them and in both sidebar modes, so neither arriving nor collapsing shifts the list.
     pub(in crate::terminal::chrome) const TAB_ROW_TWO_LINE_HEIGHT: Pixels = px(44.0);
+    /// The most the project panel takes from the tab list, past which it scrolls.
+    pub(in crate::terminal::chrome) const PROJECT_PANEL_MAX_HEIGHT: Pixels = px(240.0);
+    /// What the tab list keeps for itself when the window is too short for both: two
+    /// rows, so the project panel gives way first.
+    pub(in crate::terminal::chrome) const TAB_LIST_MIN_HEIGHT: Pixels = px(112.0);
     /// The line a collapsed tab's mark sits on, in the middle of its row.
     pub(in crate::terminal::chrome) const TAB_MARK_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = px(3.0);

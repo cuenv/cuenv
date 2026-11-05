@@ -2334,7 +2334,7 @@ impl TerminalView {
                 return;
             }
         };
-        let discover_tasks = canonical_cwd.is_some();
+        let discover_project = canonical_cwd.is_some();
         let now = std::time::Instant::now();
         let Some(state) = self.registry.sessions.get_mut(&pane) else {
             return;
@@ -2400,7 +2400,7 @@ impl TerminalView {
         let evaluation = StagedEvaluation {
             provider: Arc::clone(&cuenv),
             source,
-            discover_tasks,
+            discover_project,
             stages: updates_tx,
         };
         cx.spawn(async move |_weak, _cx| {
@@ -2448,8 +2448,8 @@ impl TerminalView {
                 }
                 self.sync_active_config(cx);
             }
-            EvaluationStage::Tasks(tasks) => {
-                if !state.cuenv.apply_tasks(target.config_generation, tasks) {
+            EvaluationStage::Project(project) => {
+                if !state.cuenv.apply_project(target.config_generation, project) {
                     return;
                 }
                 if is_active {

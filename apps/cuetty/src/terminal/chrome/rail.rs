@@ -169,7 +169,7 @@ impl TerminalView {
             .flex_col()
             .gap(space::XXS)
             .p(space::MD)
-            .min_h_0()
+            .min_h(size::TAB_LIST_MIN_HEIGHT)
             .children(tabs)
             // One marker for the whole list, which travels between rows. It follows them as
             // the list scrolls, being a child of what scrolls, and comes after them so a
@@ -284,6 +284,10 @@ impl TerminalView {
                         .child(palette_chord.clone()),
                 )
         });
+        // A narrow strip has no room for a name and a value, let alone a list of them.
+        let project_panel = (mode == SidebarMode::Expanded)
+            .then(|| self.render_project_panel(&colors))
+            .flatten();
         let footer = div()
             .w_full()
             .flex_shrink_0()
@@ -316,6 +320,7 @@ impl TerminalView {
             .border(border::HAIRLINE)
             .border_color(colors.divider)
             .child(tabs)
+            .children(project_panel)
             .children(palette_hint)
             .child(footer)
             .into_any_element()

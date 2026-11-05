@@ -171,6 +171,13 @@ The current usable slice includes:
   a detached commit's short form. Cuetty reads the repository's `HEAD` file every couple
   of seconds and spawns no process, following `.git` files for worktrees and submodules.
   With neither known the line is simply absent.
+- A project panel in the expanded sidebar, for an active tab whose exact directory holds a
+  `package cuenv`: the project's name, its runtime type and runnable task count, the variables
+  in `env`, and each named set of overrides in `env.environment`. It says what the CUE declares,
+  not what the shell has loaded. Nothing is resolved: a secret appears as `•••• onepassword`, and
+  its reference is dropped while parsing, while a value written out in CUE is shown as written.
+  A passthrough appears as `from $NAME`, and a tooltip holds a whole value. The panel scrolls
+  past 240px, gives way to the tab list in a short window, and has no place in the collapsed sidebar.
 - A small indicator on each tab, beside its name or below its collapsed mark, with its
   meaning in the tab's tooltip: a bell for a bell rung in a tab not on screen, which
   includes every tab while the window is in the background, a ring

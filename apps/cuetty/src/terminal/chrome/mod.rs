@@ -8,6 +8,7 @@ mod command_palette;
 mod field;
 mod icons;
 mod layout;
+mod project_panel;
 mod rail;
 mod scrollbar;
 mod search_bar;
