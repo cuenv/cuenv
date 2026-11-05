@@ -20,7 +20,6 @@ impl Commands {
             | Self::Deny { .. }
             | Self::Export { .. }
             | Self::Ci(_)
-            | Self::Web { .. }
             | Self::Completions { .. }) => command.into_general_command(environment),
             command @ Self::Task { .. } => command.into_task_command(environment),
             command @ (Self::Env { .. }
@@ -105,7 +104,6 @@ impl Commands {
                 package,
             },
             Self::Ci(args) => Command::Ci { args },
-            Self::Web { port, host } => Command::Web { port, host },
             Self::Completions { shell } => Command::Completions { shell },
             _ => unreachable!("general command conversion called for another command family"),
         }
@@ -119,9 +117,6 @@ impl Commands {
                 package,
                 labels,
                 output_format,
-                materialize_outputs,
-                show_cache_path,
-                backend,
                 tui,
                 interactive,
                 help,
@@ -136,9 +131,6 @@ impl Commands {
                 labels,
                 environment,
                 format: output_format.map_or(String::new(), |f| f.to_string()),
-                materialize_outputs,
-                show_cache_path,
-                backend,
                 tui,
                 interactive,
                 help,
@@ -529,6 +521,44 @@ fn resolve_sync_command(input: SyncCommandInput) -> SyncResolution {
             show_diff: false,
             ci_provider: None,
             update_tools: update.map(filter_update_tools),
+        }),
+        Some(SyncCommands::Rules {
+            path,
+            package,
+            dry_run,
+            check,
+            all,
+        }) => sync_provider_resolution(SyncProviderInput {
+            provider_name: "rules",
+            path: effective_path(&base_path, path),
+            package: effective_package(&base_package, package),
+            flags: flags.combined(SyncFlags {
+                dry_run,
+                check,
+                all,
+            }),
+            show_diff: false,
+            ci_provider: None,
+            update_tools: None,
+        }),
+        Some(SyncCommands::GitHooks {
+            path,
+            package,
+            dry_run,
+            check,
+            all,
+        }) => sync_provider_resolution(SyncProviderInput {
+            provider_name: "git-hooks",
+            path: effective_path(&base_path, path),
+            package: effective_package(&base_package, package),
+            flags: flags.combined(SyncFlags {
+                dry_run,
+                check,
+                all,
+            }),
+            show_diff: false,
+            ci_provider: None,
+            update_tools: None,
         }),
         Some(SyncCommands::Infrastructure {
             path,

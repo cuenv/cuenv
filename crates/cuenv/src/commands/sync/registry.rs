@@ -125,8 +125,7 @@ mod tests {
     }
 
     fn executor() -> CommandExecutor {
-        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        CommandExecutor::new(sender, "cuenv".to_string())
+        CommandExecutor::new("cuenv".to_string())
     }
 
     #[tokio::test]

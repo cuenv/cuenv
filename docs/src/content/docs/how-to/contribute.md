@@ -236,7 +236,6 @@ cuenv/
 │   ├── cuengine/          # CUE evaluation engine
 │   ├── cuenv-core/        # Core library
 │   ├── cuenv/             # CLI application
-│   ├── cuenv-dagger/      # Dagger backend
 │   ├── cuenv-events/      # Event system
 │   ├── cuenv-ci/          # CI support
 │   └── cuenv-release/     # Release management

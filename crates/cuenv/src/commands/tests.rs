@@ -1,154 +1,29 @@
 //! Tests for the commands module
 
 use super::*;
-use crate::events::{Event, EventReceiver};
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
-
-fn create_test_executor() -> (CommandExecutor, EventReceiver) {
-    let (sender, receiver) = mpsc::unbounded_channel();
-    let executor = CommandExecutor::new(sender, "cuenv".to_string());
-    (executor, receiver)
-}
 
 #[tokio::test]
 async fn test_command_executor_new() {
-    let (sender, _receiver) = mpsc::unbounded_channel();
-    let executor = CommandExecutor::new(sender, "cuenv".to_string());
+    let executor = CommandExecutor::new("cuenv".to_string());
     assert!(matches!(executor, CommandExecutor { .. }));
     assert_eq!(executor.package(), "cuenv");
 }
 
 #[tokio::test]
-async fn test_execute_version_command() {
-    let (executor, mut receiver) = create_test_executor();
-
-    let handle = tokio::spawn(async move {
-        executor
-            .execute(Command::Version {
-                format: "simple".to_string(),
-            })
-            .await
-    });
-
-    // Collect events
-    let mut events = Vec::new();
-    while let Ok(Some(event)) = timeout(Duration::from_millis(1500), receiver.recv()).await {
-        let is_complete = matches!(&event, Event::CommandComplete { .. });
-        events.push(event);
-
-        // Break when we receive CommandComplete
-        if is_complete {
-            break;
-        }
-    }
-
-    let result = handle.await.unwrap();
-    assert!(result.is_ok());
-
-    // Verify we got start, progress, and complete events
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, Event::CommandStart { command } if command == "version"))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, Event::CommandProgress { .. }))
-    );
-    assert!(events.iter().any(|e| matches!(e, Event::CommandComplete { command, success: true, .. } if command == "version")));
-}
-
-#[tokio::test]
-async fn test_execute_version_progress_events() {
-    let (executor, mut receiver) = create_test_executor();
-
-    let handle = tokio::spawn(async move {
-        executor
-            .execute(Command::Version {
-                format: "simple".to_string(),
-            })
-            .await
-    });
-
-    // Collect progress events
-    let mut progress_events = Vec::new();
-    while let Ok(Some(event)) = timeout(Duration::from_millis(1500), receiver.recv()).await {
-        if let Event::CommandProgress {
-            progress, message, ..
-        } = event
-        {
-            progress_events.push((progress, message));
-        } else if matches!(event, Event::CommandComplete { .. }) {
-            break;
-        }
-    }
-
-    let result = handle.await.unwrap();
-    assert!(result.is_ok());
-
-    assert_eq!(
-        progress_events,
-        vec![
-            (0.0, "Initializing...".to_string()),
-            (0.2, "Loading version info...".to_string()),
-            (0.4, "Checking build metadata...".to_string()),
-            (0.6, "Gathering system info...".to_string()),
-            (0.8, "Formatting output...".to_string()),
-            (1.0, "Complete".to_string()),
-        ]
-    );
-}
-
-#[tokio::test]
-async fn test_execute_env_print_emits_failure_on_invalid_path() {
-    let (executor, mut receiver) = create_test_executor();
+async fn test_execute_env_print_fails_on_invalid_path() {
+    let executor = CommandExecutor::new("cuenv".to_string());
 
     // Use a path that should not resolve to a valid cuenv project.
-    let path = "/definitely-not-a-cuenv-project".to_string();
-    let package = "test-package".to_string();
-    let format = "json".to_string();
+    let result = executor
+        .execute(Command::EnvPrint {
+            path: "/definitely-not-a-cuenv-project".to_string(),
+            package: "test-package".to_string(),
+            format: "json".to_string(),
+            environment: None,
+        })
+        .await;
 
-    let handle = tokio::spawn(async move {
-        executor
-            .execute(Command::EnvPrint {
-                path,
-                package,
-                format,
-                environment: None,
-            })
-            .await
-    });
-
-    // Collect events
-    let mut events = Vec::new();
-    while let Ok(Some(event)) = timeout(Duration::from_millis(1500), receiver.recv()).await {
-        let is_complete = matches!(&event, Event::CommandComplete { .. });
-        events.push(event);
-        if is_complete {
-            break;
-        }
-    }
-
-    let result = handle.await.unwrap();
     assert!(result.is_err());
-
-    // Verify start event was sent
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, Event::CommandStart { command } if command == "env print"))
-    );
-    assert!(events.iter().any(|e| matches!(
-        e,
-        Event::CommandComplete {
-            command,
-            success: false,
-            ..
-        } if command == "env print"
-    )));
 }
 
 #[tokio::test]
@@ -180,73 +55,6 @@ async fn test_command_enum_variants() {
     } else {
         panic!("Expected EnvPrint variant");
     }
-}
-
-#[tokio::test]
-async fn test_send_event() {
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let executor = CommandExecutor::new(sender, "cuenv".to_string());
-
-    // Send a test event
-    executor.send_event(Event::CommandStart {
-        command: "test".to_string(),
-    });
-
-    // Verify event was received
-    let event = receiver.recv().await.unwrap();
-    assert!(matches!(event, Event::CommandStart { command } if command == "test"));
-}
-
-#[tokio::test]
-async fn test_send_event_with_closed_channel() {
-    let (sender, receiver) = mpsc::unbounded_channel();
-    let executor = CommandExecutor::new(sender, "cuenv".to_string());
-
-    // Close the receiver
-    drop(receiver);
-
-    // Send event should not panic, just log error
-    executor.send_event(Event::CommandStart {
-        command: "test".to_string(),
-    });
-
-    // Test passes if no panic occurs
-}
-
-#[tokio::test]
-async fn test_execute_version_command_flow() {
-    let (executor, mut receiver) = create_test_executor();
-
-    let handle = tokio::spawn(async move { executor.execute_version().await });
-
-    // Verify the complete flow
-    let mut has_start = false;
-    let mut has_progress = false;
-    let mut has_complete = false;
-
-    while let Ok(Some(event)) = timeout(Duration::from_millis(1500), receiver.recv()).await {
-        match event {
-            Event::CommandStart { command } if command == "version" => has_start = true,
-            Event::CommandProgress { command, .. } if command == "version" => {
-                has_progress = true;
-            }
-            Event::CommandComplete {
-                command,
-                success: true,
-                ..
-            } if command == "version" => {
-                has_complete = true;
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    let result = handle.await.unwrap();
-    assert!(result.is_ok());
-    assert!(has_start);
-    assert!(has_progress);
-    assert!(has_complete);
 }
 
 #[tokio::test]

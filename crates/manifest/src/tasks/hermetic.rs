@@ -41,56 +41,6 @@ impl Sandbox {
     }
 }
 
-/// A resolved isolation tier, and whether the user named it.
-///
-/// The distinction is the whole reason this is not a bare [`Sandbox`]. A task
-/// that *asks* for [`Sandbox::Dir`] and cannot have it must fail: handing back
-/// a result that looks sandboxed and is not would be worse than refusing. A
-/// task that merely *inherited* the default and cannot have it runs
-/// unsandboxed, because it never asked for a guarantee. Bazel draws the same
-/// line: an action outside the sandboxed strategy is not an error, but a
-/// `--strategy` you named and cannot have is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SandboxPolicy {
-    /// The isolation tier itself.
-    pub tier: Sandbox,
-    /// Whether the tier came from the task, rather than from the default.
-    pub explicit: bool,
-}
-
-impl SandboxPolicy {
-    /// A tier the task named.
-    #[must_use]
-    pub fn requested(tier: Sandbox) -> Self {
-        Self {
-            tier,
-            explicit: true,
-        }
-    }
-
-    /// A tier inherited from the default.
-    #[must_use]
-    pub fn defaulted(tier: Sandbox) -> Self {
-        Self {
-            tier,
-            explicit: false,
-        }
-    }
-
-    /// Whether this policy runs the task in a per-action exec root.
-    #[must_use]
-    pub fn uses_exec_root(self) -> bool {
-        self.tier.uses_exec_root()
-    }
-
-    /// Whether failing to deliver this policy is an error rather than a
-    /// silent downgrade.
-    #[must_use]
-    pub fn demands_exec_root(self) -> bool {
-        self.explicit && self.uses_exec_root()
-    }
-}
-
 /// Options form of a task's `hermetic` field.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -105,9 +55,7 @@ pub struct HermeticOptions {
     #[serde(default)]
     pub passthrough: Vec<String>,
 
-    /// Filesystem isolation tier. Absent means the default, [`Sandbox::Dir`],
-    /// applied as a default rather than as a demand — see
-    /// [`SandboxPolicy::explicit`].
+    /// Filesystem isolation tier. Absent means the default, [`Sandbox::Dir`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<Sandbox>,
 }
@@ -189,14 +137,11 @@ impl Hermetic {
     /// its inputs nor its environment. Everything else defaults to
     /// [`Sandbox::Dir`].
     #[must_use]
-    pub fn sandbox(&self) -> SandboxPolicy {
+    pub fn sandbox(&self) -> Sandbox {
         match self {
-            Self::Enabled(false) => SandboxPolicy::defaulted(Sandbox::None),
-            Self::Enabled(true) => SandboxPolicy::defaulted(Sandbox::Dir),
-            Self::Options(options) => match options.sandbox {
-                Some(tier) => SandboxPolicy::requested(tier),
-                None => SandboxPolicy::defaulted(Sandbox::Dir),
-            },
+            Self::Enabled(false) => Sandbox::None,
+            Self::Enabled(true) => Sandbox::Dir,
+            Self::Options(options) => options.sandbox.unwrap_or(Sandbox::Dir),
         }
     }
 }
@@ -244,27 +189,15 @@ mod tests {
         // Bazel sandboxes local actions by default. A declaration that is
         // only enforced when asked is not a declaration.
         let bare: Hermetic = serde_json::from_str("true").unwrap();
-        assert_eq!(bare.sandbox().tier, Sandbox::Dir);
+        assert_eq!(bare.sandbox(), Sandbox::Dir);
         let options: Hermetic = serde_json::from_str(r#"{"passthrough":["CI"]}"#).unwrap();
-        assert_eq!(options.sandbox().tier, Sandbox::Dir);
-    }
-
-    #[test]
-    fn the_default_tier_is_not_a_demand() {
-        // A task that inherited the default and cannot be sandboxed runs
-        // anyway; only a task that named the tier gets to fail.
-        let bare: Hermetic = serde_json::from_str("true").unwrap();
-        assert!(bare.sandbox().uses_exec_root());
-        assert!(!bare.sandbox().demands_exec_root());
-
-        let named: Hermetic = serde_json::from_str(r#"{"sandbox":"dir"}"#).unwrap();
-        assert!(named.sandbox().demands_exec_root());
+        assert_eq!(options.sandbox(), Sandbox::Dir);
     }
 
     #[test]
     fn isolation_can_be_opted_out_of_explicitly() {
         let parsed: Hermetic = serde_json::from_str(r#"{"sandbox":"none"}"#).unwrap();
-        assert_eq!(parsed.sandbox().tier, Sandbox::None);
+        assert_eq!(parsed.sandbox(), Sandbox::None);
         assert!(!parsed.sandbox().uses_exec_root());
     }
 
@@ -273,7 +206,7 @@ mod tests {
         // Nothing coherent to isolate: its key records neither its inputs nor
         // its environment.
         let off: Hermetic = serde_json::from_str("false").unwrap();
-        assert_eq!(off.sandbox().tier, Sandbox::None);
+        assert_eq!(off.sandbox(), Sandbox::None);
         assert!(!off.sandbox().uses_exec_root());
     }
 

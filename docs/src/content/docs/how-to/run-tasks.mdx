@@ -232,33 +232,7 @@ On a TTY, `-i/--interactive` opens a picker so you can choose a task by browsing
 cuenv task -i
 ```
 
-### Backend selection
-
-By default tasks run on the host. `--backend` forces a specific backend:
-
-```bash
-cuenv task build --backend dagger
-```
-
-:::note[Dagger backend is Partial]
-The `dagger` backend is optional and gated behind the `dagger-backend` build
-feature; host execution is the default and fully supported. Dagger currently
-mounts the full project instead of cuenv's resolved input root, so task-result
-caching is disabled for Dagger even when a task declares a cache policy. See
-[the Dagger backend explainer](/explanation/dagger-backend/) and [Schema
-status](/reference/schema/status/) for current coverage.
-:::
-
 ### Cache helpers
-
-:::caution[Not implemented]
-`--show-cache-path` and `--materialize-outputs` are accepted on the command
-line but currently do nothing: the flags are parsed and passed to the executor,
-which ignores them. They are listed in
-[ADR-0008](/decisions/adrs/adr-0008-hermetic-task-execution-cache/) as intended
-behaviour and are tracked as part of the `cuenv cache` command surface in
-phase 2 of the hermetic/CAS roadmap. Do not rely on them yet.
-:::
 
 On a cache hit, cuenv restores the task's declared `outputs` into its working
 directory automatically — there is no flag to enable it. Output replacement is
@@ -685,8 +659,7 @@ unwritable, the host executor creates a private Cuenv-managed home and records
 that selected path in the action key. Cuenv never passes through the caller's
 home. Declared environment values can override the defaults. For
 host-executed tasks, use `hermetic: false` when a task needs the
-caller's actual home and ambient environment. Dagger tasks use their
-configured container image and do not inherit the caller's home.
+caller's actual home and ambient environment.
 
 Set `hermetic: false` for tasks that intentionally operate on the live
 checkout, such as local development servers, dependency installers, or
@@ -773,13 +746,6 @@ as an empty input set, `cache: mode: "never"`, task-local runtime environment,
 or `CUENV_CACHE=off` still retain the resolved input snapshot and run in a
 directory sandbox. If an input declaration cannot be resolved safely, the
 task errors rather than silently running against the live checkout.
-
-The Dagger backend provides container isolation instead of a host exec root,
-but currently mounts the full project. Its task-result cache is disabled until
-it consumes cuenv's resolved input root and exports declared outputs through
-the same projection path. Explicitly requesting `hermetic: sandbox: "dir"`
-with Dagger is rejected because cuenv cannot honestly provide that named host
-strategy.
 
 Retries rebuild a fresh verified execution root for every attempt. Files left
 by a failed attempt therefore cannot make a later retry succeed and then be

@@ -7,22 +7,8 @@ package schema
 	// Command-specific configuration
 	commands?: #CommandsConfig
 
-	// Legacy task backend selection. Prefer `runtime: #DaggerRuntime` once it
-	// drives execution; today this field is what selects the Dagger backend.
-	backend?: #BackendConfig
-
 	// CI-specific configuration
 	ci?: #CIConfig
-}
-
-// Task backend selection (legacy).
-#BackendConfig: {
-	// Backend that runs tasks. `cuenv task --backend` overrides it.
-	type: "host" | "dagger" | *"host"
-	options?: {
-		// Default container image for Dagger tasks that set none.
-		image?: string
-	}
 }
 
 // Command-specific configuration

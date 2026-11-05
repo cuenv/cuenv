@@ -753,6 +753,10 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 			buildErrors = append(buildErrors, instanceFailure(relPath, allErrors(v), goModuleRoot))
 			continue
 		}
+		if err := validateImportedSelectors(ctx, inst); err != nil {
+			buildErrors = append(buildErrors, instanceFailure(relPath, err, goModuleRoot))
+			continue
+		}
 		v, err = unifyInto(ctx, v, unifyInstances)
 		if err != nil {
 			buildErrors = append(buildErrors, instanceFailure(relPath, err, goModuleRoot))

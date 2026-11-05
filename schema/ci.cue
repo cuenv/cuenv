@@ -197,7 +197,7 @@ package schema
 	workspaceMember?: [...string]
 
 	// Runtime type detection (active if project uses any of these runtime types)
-	// Values: "nix", "devenv", "container", "dagger", "oci", "tools"
+	// Values: "nix", "devenv", "container", "oci", "tools"
 	runtimeType?: [...string]
 
 	// Cuenv source mode detection (for cuenv installation strategy)

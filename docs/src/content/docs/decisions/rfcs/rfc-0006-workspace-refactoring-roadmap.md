@@ -63,7 +63,7 @@ New crate `crates/manifest` containing serde DTOs only (deps: `serde`, `thiserro
 
 ### Phase 5 — Function-level quality
 
-Decompose the worst oversized functions (`services` supervisor/controller, `dagger` execute, sync lock/vcs paths, hooks executor); convert genuine boolean flag parameters to two-variant enums; adopt the existing options-struct pattern for ≥5-parameter signatures.
+Decompose the worst oversized functions (`services` supervisor/controller, sync lock/vcs paths, hooks executor); convert genuine boolean flag parameters to two-variant enums; adopt the existing options-struct pattern for ≥5-parameter signatures.
 
 ### Phase 6 — Clippy ratchet
 
@@ -71,7 +71,7 @@ Crate-root `#![warn(...)]` attributes for the four debt lints land per crate as 
 
 ### Phase 7 — Test infrastructure
 
-Shared `crates/test-support` dev-dependency crate with an explicit admission charter; standardize on sibling `_tests.rs` placement; split >800-line test files; coverage push for `services`, secret backends, `dagger`, `codeowners`, `vcs`; wire criterion benches as a non-gating check.
+Shared `crates/test-support` dev-dependency crate with an explicit admission charter; standardize on sibling `_tests.rs` placement; split >800-line test files; coverage push for `services`, secret backends, `codeowners`, `vcs`; wire criterion benches as a non-gating check.
 
 ### Phase 8 — Documentation closure
 

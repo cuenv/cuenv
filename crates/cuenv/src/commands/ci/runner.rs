@@ -20,8 +20,6 @@ use cuenv_core::Result;
 ///
 /// Returns error if pipeline execution fails.
 pub async fn execute_runner(args: &CiArgs) -> Result<()> {
-    reject_unsupported_matrix_filter(args)?;
-
     let provider = detect_ci_provider(args.from.clone());
     let effective_path = resolve_path_filter(&args.path)?;
 
@@ -39,17 +37,6 @@ pub async fn execute_runner(args: &CiArgs) -> Result<()> {
         max_parallel: args.effective_jobs(),
     })
     .await
-}
-
-fn reject_unsupported_matrix_filter(args: &CiArgs) -> Result<()> {
-    if args.filter_matrix.is_empty() {
-        return Ok(());
-    }
-
-    Err(cuenv_core::Error::configuration(
-        "`cuenv ci --filter-matrix` is not supported by the local CI runner yet; \
-         use `cuenv sync ci` for provider-native matrix workflows",
-    ))
 }
 
 /// Resolve the path filter to be relative to the module root.
@@ -121,43 +108,4 @@ fn resolve_path_filter(path: &str) -> Result<Option<String>> {
 
     // Return the path relative to module root
     Ok(Some(relative.to_string_lossy().to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ci_args() -> CiArgs {
-        CiArgs {
-            pipeline: None,
-            all: false,
-            export: None,
-            output: None,
-            filter_matrix: Vec::new(),
-            jobs: 0,
-            from: None,
-            dry_run: false,
-            environment: None,
-            path: ".".to_string(),
-            package: "cuenv".to_string(),
-        }
-    }
-
-    #[test]
-    fn rejects_filter_matrix_for_local_runner() {
-        let mut args = ci_args();
-        args.filter_matrix = vec!["os=linux".to_string()];
-
-        let error = reject_unsupported_matrix_filter(&args)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("--filter-matrix"));
-        assert!(error.contains("not supported"));
-    }
-
-    #[test]
-    fn accepts_runner_without_filter_matrix() {
-        let args = ci_args();
-        reject_unsupported_matrix_filter(&args).unwrap();
-    }
 }

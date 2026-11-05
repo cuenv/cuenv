@@ -24,9 +24,6 @@ impl<'a> TaskHandler<'a> {
             labels,
             environment,
             format,
-            materialize_outputs,
-            show_cache_path,
-            backend,
             tui,
             interactive,
             help,
@@ -64,15 +61,6 @@ impl<'a> TaskHandler<'a> {
             request = request.with_environment(env);
         }
         request = request.with_format(format);
-        if let Some(path) = materialize_outputs {
-            request = request.with_materialize_outputs(path);
-        }
-        if show_cache_path {
-            request = request.with_show_cache_path();
-        }
-        if let Some(backend) = backend {
-            request = request.with_backend(backend);
-        }
         if tui {
             request = request.with_tui();
         }

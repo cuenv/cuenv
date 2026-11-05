@@ -24,7 +24,6 @@ const AUTHORED_TASK_SOURCE_FIELDS: &[&str] = &[
     "continueOnError",
     "captures",
     "runtime",
-    "dagger",
 ];
 
 pub(super) struct TaskSourceMaps<'a> {

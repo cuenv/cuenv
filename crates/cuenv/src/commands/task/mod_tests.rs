@@ -2,15 +2,13 @@ use super::runner::format_task_results;
 use super::*;
 use crate::commands::CommandExecutor;
 use cuenv_core::tasks::{Task, TaskNode};
-use tokio::sync::mpsc;
 
 use std::fs;
 use tempfile::TempDir;
 
 /// Create a test executor for unit tests.
 fn create_test_executor() -> CommandExecutor {
-    let (sender, _receiver) = mpsc::unbounded_channel();
-    CommandExecutor::new(sender, "cuenv".to_string())
+    CommandExecutor::new("cuenv".to_string())
 }
 
 #[tokio::test]

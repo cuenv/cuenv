@@ -275,12 +275,6 @@ pub(super) fn resolve_runtime_cache_identity(
                 .insert("runtime.kind".to_string(), "container".to_string());
             identity
         }
-        Runtime::Dagger(_) => {
-            identity
-                .properties
-                .insert("runtime.kind".to_string(), "dagger".to_string());
-            identity
-        }
         Runtime::Oci(_) => {
             identity
                 .properties

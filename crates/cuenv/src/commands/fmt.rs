@@ -428,8 +428,7 @@ mod tests {
     }
 
     fn test_executor() -> CommandExecutor {
-        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        CommandExecutor::new(sender, "cuenv".to_string())
+        CommandExecutor::new("cuenv".to_string())
     }
 
     fn check_request(path: &str) -> FmtRequest<'_> {

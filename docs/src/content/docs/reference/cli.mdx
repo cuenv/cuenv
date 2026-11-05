@@ -204,14 +204,7 @@ cuenv task [NAME] [OPTIONS] [-- TASK_ARGS...]
 - `-S, --skip-dependencies`: Skip executing task dependencies (for CI orchestrators that handle deps externally).
 - `--continue-on-error`: Don't abort on first failure; dependents of the failing task are emitted as `task.skipped` and unrelated siblings keep running.
 - `-n, --dry-run`: Export the task dependency graph as JSON without executing tasks.
-- `--materialize-outputs <DIR>`: Materialize cached outputs to this directory on cache hit (off by default).
-- `--show-cache-path`: Print the cache path for this task key.
-- `--backend <BACKEND>`: Force a specific execution backend (`host` or `dagger`).
 - `--help`: Print task-specific help (when a task name is provided).
-
-:::note[Backend status]
-The `dagger` backend is optional and gated behind the `dagger-backend` build feature. Host execution is the default and fully supported. See [Schema status](/reference/schema/status/) for current backend coverage.
-:::
 
 **Label-based execution:**
 
@@ -253,6 +246,8 @@ cuenv exec [OPTIONS] -- <COMMAND> [ARGS]...
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+
+Once the command has started, `cuenv exec` exits with its status, or 128 plus the signal that killed it, and prints no error of its own.
 
 :::tip
 Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production exec -- npm start`.
@@ -346,7 +341,7 @@ is configured; local multi-platform builds require a registry. Nix images (with
 and pushed with `docker`.
 
 :::note[Image backends are partial]
-`#ContainerImage` is partially implemented: `cuenv build` lists and builds images with the local Docker CLI, and registry builds are pushed with Docker buildx. Dagger execution and downstream image output-reference resolution remain incomplete. See [Schema status](/reference/schema/status/).
+`#ContainerImage` is partially implemented: `cuenv build` lists and builds images with the local Docker CLI, and registry builds are pushed with Docker buildx. Downstream image output-reference resolution remains incomplete. See [Schema status](/reference/schema/status/).
 :::
 
 **Examples:**
@@ -945,7 +940,6 @@ cuenv ci [OPTIONS]
 - `--all`: Run every named task in the selected project/pipeline scope, regardless of changed inputs. Keeps the real provider event, environment, hooks, dependencies and CI executor. Rejects empty/missing scope, unresolved task references, inline/matrix pipeline entries, and combination with `--export`.
 - `--dry-run`: Show what would be executed without running it.
 - `-e, --environment <NAME>`: Environment for secrets resolution.
-- `--filter-matrix <KEY=VALUE>`: Reserved for local runner matrix filtering. Currently rejected; use `cuenv sync ci` for provider-native matrix workflows.
 
 :::caution[GitLab export is schema-only]
 `--export gitlab` (and `cuenv sync ci --provider gitlab`) is schema-recognized only. There is no GitLab emitter yet, so sync rejects it with a configuration error. GitHub Actions is the strongest path; Buildkite export/sync is partial. See [Schema status](/reference/schema/status/).
@@ -996,6 +990,8 @@ recorded in `cue.mod/module.cue`.
 - `codegen`: Sync files from CUE codegen configurations. Adds `--diff` to show changed files.
 - `ci`: Sync CI workflow files from CUE configuration. Adds `--provider <github|buildkite>` to filter.
 - `vcs`: Sync cuenv-managed Git dependencies. Supports `-u/--update [NAMES...]` to refresh locked refs.
+- `rules`: Sync ignore files, `.editorconfig` and `CODEOWNERS` from `.rules.cue` files. Supports `--dry-run`, `--check` and `-A/--all`.
+- `git-hooks`: Sync the pre-push hook from project configuration. Supports `--dry-run`, `--check` and `-A/--all`.
 - `infrastructure`: Regenerate the CUE types of every infrastructure provider `cuenv.lock` pins (see `cuenv infrastructure provider add`), and their `.gitignore` section; like managed codegen files they are not committed, so run it after a clone. Reads only `cuenv.lock`, not your CUE, installs each pinned release (requiring the pinned archive), and refuses one whose schema no longer has the pinned digest. Supports `--dry-run` and `--check`.
 
 **Example:**
@@ -1363,19 +1359,6 @@ cuenv release binaries --build-only --target x86_64-unknown-linux-gnu,aarch64-ap
 :::note[Release backends are partial]
 Config-driven release backends are not complete. Use `--dry-run` to verify behavior, and see [Schema status](/reference/schema/status/) for current support.
 :::
-
-### `cuenv web`
-
-Reserved for a future web server for streaming cuenv events. The command currently exits with a configuration error instead of starting a placeholder server.
-
-```bash
-cuenv web [OPTIONS]
-```
-
-**Options:**
-
-- `-p, --port <PORT>`: Port the future server would listen on. Default: `3000`
-- `--host <HOST>`: Host the future server would bind to. Default: `127.0.0.1`
 
 ### `cuenv completions`
 

@@ -682,7 +682,12 @@ fn sync_ci_rejects_schema_only_gitlab_provider() -> TestResult {
         output.stdout, output.stderr
     );
 
-    let combined = format!("{}{}", output.stdout, output.stderr);
+    // The diagnostic renderer wraps long messages.
+    let combined = format!("{}{}", output.stdout, output.stderr)
+        .replace('\u{2502}', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
         combined.contains("CI sync is not implemented for provider(s): gitlab"),
         "sync ci should explain unsupported GitLab sync: {combined}"

@@ -2,10 +2,9 @@
 //!
 //! - Environment variable propagation
 //! - Parallel and sequential execution
-//! - Host execution; isolation/caching is delegated to other backends
+//! - Host process execution, with directory isolation and result caching
 
 use super::TaskCommandExt;
-use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
 use super::cache::{BuildActionInput, RecordInput, TaskCacheConfig};
 pub use super::command::{execute_command, execute_command_with_redaction};
 use super::process::TaskAttempt;
@@ -22,7 +21,6 @@ use async_recursion::async_recursion;
 use cuenv_core::OutputCapture;
 use cuenv_core::environment::Environment;
 use cuenv_core::{Error, Result};
-use cuenv_manifest::config::BackendConfig;
 #[cfg(test)]
 use cuenv_workspaces::PackageManager;
 use std::collections::BTreeMap;
@@ -85,16 +83,6 @@ pub struct ExecutorConfig {
     pub project_root: PathBuf,
     /// Path to cue.mod root for resolving relative source paths
     pub cue_module_root: Option<PathBuf>,
-    /// Optional: materialize cached outputs on cache hit
-    pub materialize_outputs: Option<PathBuf>,
-    /// Optional: cache directory override
-    pub cache_dir: Option<PathBuf>,
-    /// Optional: print cache path on hits/misses
-    pub show_cache_path: bool,
-    /// Backend configuration
-    pub backend_config: Option<BackendConfig>,
-    /// CLI backend selection override
-    pub cli_backend: Option<String>,
     /// Optional task-result caching infrastructure (CAS + action cache + VCS hasher).
     /// When `None`, the executor behaves exactly as it did before content-addressed
     /// caching was wired in: tasks always run, nothing is persisted, nothing is read.
@@ -115,11 +103,6 @@ impl Default for ExecutorConfig {
             working_dir: None,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cue_module_root: None,
-            materialize_outputs: None,
-            cache_dir: None,
-            show_cache_path: false,
-            backend_config: None,
-            cli_backend: None,
             cache: None,
             sandbox_hasher_root: None,
             sandbox_project_roots: BTreeMap::new(),
@@ -130,7 +113,6 @@ impl Default for ExecutorConfig {
 /// Task executor
 pub struct TaskExecutor {
     config: ExecutorConfig,
-    backend: Arc<dyn TaskBackend>,
     /// Scratch store for directory isolation when no result cache is
     /// configured. Created on first use, shared by every clone of this
     /// executor, and removed when the last one is dropped.
@@ -144,9 +126,20 @@ struct SandboxStore {
     config: TaskCacheConfig,
 }
 impl TaskExecutor {
-    /// Create a new executor with host backend only
-    pub fn new(config: ExecutorConfig) -> Self {
-        Self::with_dagger_factory(config, None)
+    /// Create a new executor.
+    pub fn new(mut config: ExecutorConfig) -> Self {
+        if let Some(cache) = &config.cache {
+            config
+                .sandbox_hasher_root
+                .get_or_insert_with(|| cache.vcs_hasher_root.clone());
+            if config.sandbox_project_roots.is_empty() {
+                config.sandbox_project_roots = cache.project_roots.clone();
+            }
+        }
+        Self {
+            config,
+            sandbox_store: Arc::new(OnceLock::new()),
+        }
     }
 
     fn sandbox_only_cache(&self) -> Result<TaskCacheConfig> {
@@ -197,39 +190,6 @@ impl TaskExecutor {
             .ok_or_else(|| Error::configuration("sandbox store was not initialized"))
     }
 
-    /// Create a new executor with optional dagger backend support.
-    ///
-    /// Pass `Some(cuenv_dagger::create_dagger_backend)` to enable dagger backend.
-    pub fn with_dagger_factory(
-        mut config: ExecutorConfig,
-        dagger_factory: Option<BackendFactory>,
-    ) -> Self {
-        if let Some(cache) = &config.cache {
-            config
-                .sandbox_hasher_root
-                .get_or_insert_with(|| cache.vcs_hasher_root.clone());
-            if config.sandbox_project_roots.is_empty() {
-                config.sandbox_project_roots = cache.project_roots.clone();
-            }
-        }
-        let backend = create_backend_with_factory(
-            config.backend_config.as_ref(),
-            config.project_root.clone(),
-            config.cli_backend.as_deref(),
-            dagger_factory,
-        );
-        if let Some(cache) = &mut config.cache {
-            cache
-                .runtime_identity_properties
-                .insert("cuenv.backend".to_string(), backend.name().to_string());
-        }
-        Self {
-            config,
-            backend,
-            sandbox_store: Arc::new(OnceLock::new()),
-        }
-    }
-
     /// Execute a single task, consulting the action cache when configured.
     ///
     /// Flow:
@@ -239,7 +199,7 @@ impl TaskExecutor {
     ///    workdir and return without spawning anything.
     /// 2. On a miss, a task under `sandbox: "dir"` gets a per-action exec
     ///    root holding exactly its declared inputs and runs there.
-    /// 3. Otherwise dispatch to the configured backend (host or dagger).
+    /// 3. Otherwise run the task directly on the host.
     /// 4. On a successful miss, project declared outputs back into the
     ///    workspace and persist outputs + result to the cache.
     #[instrument(name = "execute_task", skip(self, task), fields(task_name = %name))]
@@ -250,39 +210,14 @@ impl TaskExecutor {
             ));
         }
 
-        self.validate_backend_sandbox(name, task)?;
         let task_environment = self.task_environment(task)?;
-
-        // Dagger currently mounts the full project rather than the resolved
-        // input root, so its results are not described by the action key.
-        // Backend identity prevents host/Dagger collisions but cannot make an
-        // undeclared read cache-safe; keep Dagger uncached until its mount
-        // contract is input-root based.
-        let backend_cache = if self.backend.name() == "dagger" {
-            if self.config.cache.is_some() {
-                cuenv_events::emit_task_cache_skipped!(
-                    name,
-                    cuenv_events::CacheSkipReason::Disabled {
-                        reason: Some(
-                            "dagger mounts the full project; result caching is disabled"
-                                .to_string()
-                        )
-                    }
-                );
-            }
-            None
-        } else {
-            self.config.cache.clone()
-        };
 
         // Input resolution and directory isolation remain available when
         // result caching is disabled. A sandbox-only config supplies the
         // hasher and execution-root location without permitting cache I/O.
-        let cache = match backend_cache {
+        let cache = match self.config.cache.clone() {
             Some(cache) => Some(cache),
-            None if task.sandbox().uses_exec_root() && self.backend.name() != "dagger" => {
-                Some(self.sandbox_only_cache()?)
-            }
+            None if task.sandbox().uses_exec_root() => Some(self.sandbox_only_cache()?),
             None => None,
         };
         let mut cache_handle: Option<CacheHandle> = if let Some(cache) = cache {
@@ -510,24 +445,9 @@ impl TaskExecutor {
         Ok(result)
     }
 
-    fn validate_backend_sandbox(&self, name: &str, task: &Task) -> Result<()> {
-        let policy = task.sandbox();
-        if self.backend.name() == "dagger" && policy.demands_exec_root() {
-            return Err(Error::configuration(format!(
-                "task '{name}' requests hermetic.sandbox: \"dir\" on the dagger backend, \
-                 which provides its own isolation. Remove the sandbox setting or run on \
-                 the host backend."
-            )));
-        }
-        Ok(())
-    }
-
     fn task_environment(&self, task: &Task) -> Result<Environment> {
         let mut environment = self.config.environment.clone();
-        if !task.is_hermetic()
-            || self.backend.name() == "dagger"
-            || environment.get("HOME").is_some()
-            || task.env.contains_key("HOME")
+        if !task.is_hermetic() || environment.get("HOME").is_some() || task.env.contains_key("HOME")
         {
             return Ok(environment);
         }
@@ -539,9 +459,7 @@ impl TaskExecutor {
 
     /// Materialize the exec root a sandboxed task runs in.
     ///
-    /// Returns `None` for a task that opted out of isolation. A task that
-    /// *asked* for isolation and cannot have it gets an error rather than a
-    /// quiet fallback; one that merely inherited the default steps aside.
+    /// Returns `None` for a task that opted out of isolation.
     fn prepare_exec_root(
         &self,
         input: PrepareExecRootInput<'_>,
@@ -553,14 +471,9 @@ impl TaskExecutor {
             root_key,
             inputs,
         } = input;
-        let policy = task.sandbox();
-        if !policy.uses_exec_root() {
+        if !task.sandbox().uses_exec_root() {
             return Ok(None);
         }
-        if self.backend.name() == "dagger" {
-            return Ok(None);
-        }
-
         let exec_root = super::exec_root::prepare(&cache.cache_root, root_key, inputs)?;
         tracing::info!(
             task = %name,
@@ -603,18 +516,6 @@ impl TaskExecutor {
         mut cache_handle: Option<&mut CacheHandle>,
         environment: &Environment,
     ) -> Result<TaskResult> {
-        // Timeout on the dagger backend would drop the future without tearing
-        // down the remote container, leaking the running task. Reject it
-        // explicitly rather than silently leak (host-backend timeout is killed
-        // via the process group in `process::terminate_child`).
-        if self.backend.name() == "dagger" && task.timeout.is_some() {
-            return Err(Error::configuration(format!(
-                "task `timeout` is not yet supported on the dagger backend: the container \
-                 would keep running past the deadline. Remove `timeout` from task '{name}' \
-                 or run it on the host backend."
-            )));
-        }
-
         let retry_attempts = task.retry.as_ref().map_or(0, |retry| retry.attempts);
         let max_attempts = retry_attempts.saturating_add(1);
         let retry_delay = task
@@ -633,7 +534,7 @@ impl TaskExecutor {
             // retrying would re-incur the full timeout each attempt, so a
             // timed-out attempt ends the task immediately.
             let result = match self
-                .execute_task_once(name, task, workdir, environment)
+                .execute_task_non_hermetic(name, task, workdir, environment)
                 .await?
             {
                 TaskAttempt::TimedOut(result) => return Ok(result),
@@ -651,30 +552,6 @@ impl TaskExecutor {
             if let Some(handle) = cache_handle.as_deref_mut() {
                 self.reset_exec_root(name, task, handle)?;
             }
-        }
-    }
-
-    async fn execute_task_once(
-        &self,
-        name: &str,
-        task: &Task,
-        workdir: Option<&Path>,
-        environment: &Environment,
-    ) -> Result<TaskAttempt> {
-        if self.backend.name() == "dagger" {
-            // Dagger has no host timeout (rejected in `execute_task_with_retries`),
-            // so every dagger attempt runs to completion.
-            let ctx = super::backend::TaskExecutionContext {
-                name,
-                task,
-                environment,
-                project_root: &self.config.project_root,
-                capture_output: self.config.capture_output,
-            };
-            Ok(TaskAttempt::Completed(self.backend.execute(&ctx).await?))
-        } else {
-            self.execute_task_non_hermetic(name, task, workdir, environment)
-                .await
         }
     }
 
@@ -1233,11 +1110,9 @@ impl TaskExecutor {
     }
 
     fn clone_with_config(&self) -> Self {
-        // Share the backend across clones to preserve container cache for
-        // Dagger chaining, and the sandbox store so one run creates one.
+        // Share the sandbox store so one run creates one.
         Self {
             config: self.config.clone(),
-            backend: self.backend.clone(),
             sandbox_store: self.sandbox_store.clone(),
         }
     }

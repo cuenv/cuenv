@@ -470,11 +470,9 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-    use tokio::sync::mpsc;
 
     fn create_test_executor(package: &str) -> CommandExecutor {
-        let (sender, _receiver) = mpsc::unbounded_channel();
-        CommandExecutor::new(sender, package.to_string())
+        CommandExecutor::new(package.to_string())
     }
 
     #[tokio::test]
