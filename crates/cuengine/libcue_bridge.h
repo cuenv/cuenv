@@ -130,6 +130,7 @@ extern char* cue_eval_module(char* moduleRootPath, char* packageName, char* opti
 extern char* cue_eval_file(char* filePath);
 extern char* cue_freeze_instance(char* options);
 extern char* cue_evaluate_frozen(char* snapshot, char* options);
+extern char* cue_verify_frozen(char* snapshot, char* options);
 extern char* cue_prepare_frozen(char* snapshot, char* options);
 extern char* cue_specialize_prepared(char* snapshot, char* capability, char* options);
 extern char* cue_validate_frozen(char* snapshot, char* options);

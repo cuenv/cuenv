@@ -13,8 +13,11 @@
 
 mod prepared;
 
-pub use prepared::{PreparationOptions, PreparedInstance, PreparedSpecializationOptions};
+pub use prepared::{
+    PreparationOptions, PreparedInstance, PreparedSpecializationOptions, VerificationOptions,
+};
 
+use crate::error::FrozenWorkerFailure;
 use crate::{BridgeEnvelope, CueEngineError, Result, bridge_owned_c_string, extract_ffi_string};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -57,16 +60,9 @@ pub struct FrozenEvaluationOptions {
     pub export_paths: Vec<ValuePath>,
     /// Subtrees in which to inspect native reference provenance.
     pub reference_paths: Vec<ValuePath>,
-    /// Runtime declarations checked for untracked global predicates. `None`
-    /// detects bare primitive sources; `Some([])` permits bootstrap inspection.
-    /// Explicit paths also cover refined declarations and their descendants.
+    /// Values only known at runtime, including what is below them. Bare primitive
+    /// declarations nothing else refines count as well.
     pub source_paths: Option<Vec<ValuePath>>,
-    /// Ignore dependencies internal to the same subtree. Cross-boundary uses
-    /// remain checked, including root predicates using an ignored source.
-    pub ignored_paths: Vec<ValuePath>,
-    /// Roots belonging to one ignored configuration. Dependencies across roots
-    /// in the same group are internal; dependencies across groups remain checked.
-    pub ignored_groups: Vec<Vec<ValuePath>>,
 }
 
 /// Strict validation of selected frozen subtrees before consuming inspection data.
@@ -81,11 +77,6 @@ pub struct FrozenValidationOptions {
     pub deferred: Vec<DeferredValue>,
     /// Runtime source declarations, with the same meaning as inspection options.
     pub source_paths: Option<Vec<ValuePath>>,
-    /// Subtrees whose internal dependencies may be ignored during global checks.
-    pub ignored_paths: Vec<ValuePath>,
-    /// Roots belonging to one ignored configuration. Dependencies across roots
-    /// in the same group are internal; dependencies across groups remain checked.
-    pub ignored_groups: Vec<Vec<ValuePath>>,
 }
 
 /// A native reference discovered before runtime values are supplied.
@@ -98,8 +89,12 @@ pub struct FrozenReference {
     pub target: ValuePath,
     /// Bare source declaration (`string`, `number`, `bool`), or empty otherwise.
     pub primitive_type: String,
-    /// Whether this is a direct selector with reference-free CUE constraints.
+    /// Whether the value can be supplied once its sources are known: nothing about
+    /// the structure around it depends on a source.
     pub supported: bool,
+    /// Whether CUE computes the value from its sources rather than carrying one.
+    #[serde(default)]
+    pub computed: bool,
 }
 
 /// Inspection result. Raw JSON preserves exact numeric values.
@@ -109,6 +104,18 @@ pub struct FrozenEvaluation {
     pub value: Box<RawValue>,
     /// Reference provenance from the same frozen instance.
     pub references: Vec<FrozenReference>,
+    /// What each requested source declares itself to be, referenced or not.
+    pub declarations: Vec<FrozenDeclaration>,
+}
+
+/// What a source declares itself to be.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenDeclaration {
+    /// The source.
+    pub path: ValuePath,
+    /// Its bare primitive type, empty when it is anything else.
+    pub primitive_type: String,
 }
 
 impl fmt::Debug for FrozenEvaluation {
@@ -201,16 +208,8 @@ pub struct SpecializationOptions {
     pub projection: ValuePath,
     /// Exact native references whose source may remain unknown for this call.
     pub deferred: Vec<DeferredValue>,
-    /// Additional reference regions approved by initial inspection/validation.
-    /// Empty uses only the consumer projection when checking global predicates.
-    pub reference_paths: Vec<ValuePath>,
     /// Runtime declarations, including refined declarations and descendants.
     pub source_paths: Option<Vec<ValuePath>>,
-    /// Subtrees whose internal dependencies may be ignored during global checks.
-    pub ignored_paths: Vec<ValuePath>,
-    /// Roots belonging to one ignored configuration. Dependencies across roots
-    /// in the same group are internal; dependencies across groups remain checked.
-    pub ignored_groups: Vec<Vec<ValuePath>>,
 }
 
 /// Strictly validated consumer data and unresolved native source provenance.
@@ -352,8 +351,9 @@ impl FrozenInstance {
     ///
     /// # Errors
     /// Returns a value-free error for invalid fills, unsupported references,
-    /// missing required values, or failed CUE constraints. Exhausted shared
-    /// capacity returns a typed worker error without starting evaluation.
+    /// missing required values, or failed CUE constraints. Shared capacity that
+    /// stays exhausted until the evaluation timeout returns a typed worker error
+    /// without starting evaluation.
     pub fn specialize(&self, options: &SpecializationOptions) -> Result<SpecializationResult> {
         let _permit = crate::frozen_worker::admit()?;
         let snapshot = encode_snapshot(&self.snapshot)?;
@@ -392,13 +392,26 @@ fn call_result(pointer: *mut c_char, function: &'static str) -> Result<Box<RawVa
     if envelope.version != crate::BRIDGE_PROTOCOL_VERSION {
         return Err(safe_error(function, "Unsupported CUE bridge protocol"));
     }
-    if envelope.error.is_some() {
-        return Err(safe_error(function, "CUE operation failed validation"));
+    if let Some(error) = envelope.error {
+        return Err(bridge_failure(function, &error.code));
     }
     envelope
         .ok
         .map(ToOwned::to_owned)
         .ok_or_else(|| safe_error(function, "CUE bridge returned an empty response"))
+}
+
+/// Only a build or load failure is about the configuration. The bridge's message
+/// stays behind, as it can contain values.
+fn bridge_failure(function: &'static str, code: &str) -> CueEngineError {
+    let reason = match code {
+        crate::ERROR_CODE_LOAD_INSTANCE | crate::ERROR_CODE_BUILD_VALUE => {
+            return safe_error(function, "CUE operation failed validation");
+        }
+        crate::ERROR_CODE_ANALYSIS => FrozenWorkerFailure::Analysis,
+        _ => FrozenWorkerFailure::Bridge,
+    };
+    CueEngineError::FrozenWorker { reason }
 }
 
 fn decode_result<T: for<'de> Deserialize<'de>>(
@@ -441,4 +454,40 @@ unsafe fn cue_validate_frozen(_: *const c_char, _: *const c_char) -> *mut c_char
 #[cfg(docsrs)]
 unsafe fn cue_specialize_frozen(_: *const c_char, _: *const c_char) -> *mut c_char {
     panic!("FFI not available in documentation builds")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_build_and_load_failures_are_about_the_configuration() {
+        for code in [
+            crate::ERROR_CODE_BUILD_VALUE,
+            crate::ERROR_CODE_LOAD_INSTANCE,
+        ] {
+            assert!(matches!(
+                bridge_failure("test", code),
+                CueEngineError::Ffi { .. }
+            ));
+        }
+        assert!(matches!(
+            bridge_failure("test", crate::ERROR_CODE_ANALYSIS),
+            CueEngineError::FrozenWorker {
+                reason: FrozenWorkerFailure::Analysis
+            }
+        ));
+        for code in [
+            crate::ERROR_CODE_PANIC_RECOVER,
+            crate::ERROR_CODE_INVALID_INPUT,
+            "UNKNOWN",
+        ] {
+            assert!(matches!(
+                bridge_failure("test", code),
+                CueEngineError::FrozenWorker {
+                    reason: FrozenWorkerFailure::Bridge
+                }
+            ));
+        }
+    }
 }

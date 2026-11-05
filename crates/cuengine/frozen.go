@@ -6,6 +6,7 @@ package main
 import "C"
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -42,6 +43,8 @@ type frozenNode struct {
 
 type frozenGraph struct {
 	Nodes []frozenNode `json:"nodes"`
+	// Embedded holds what @embed attributes read, by absolute path.
+	Embedded map[string][]byte `json:"embedded,omitempty"`
 }
 
 type freezeOptions struct {
@@ -80,25 +83,69 @@ func freezeInstanceResponse(optionsJSON string) (result string) {
 	if err != nil {
 		return frozenFailure(ErrorCodeInvalidInput, "Invalid CUE instance directory")
 	}
-	overlay, matched, err := packageFilterOverlay(dir, options.Package, false)
-	if err != nil || !matched {
-		return frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
-	}
 	registry, err := modconfig.NewRegistry(&modconfig.Config{Transport: http.DefaultTransport, ClientType: "cuengine"})
 	if err != nil {
 		return frozenFailure(ErrorCodeRegistryInit, "CUE snapshot registry could not be initialized")
 	}
+	graph, failure := freezeConsistentGraph(load.Config{Dir: dir, ModuleRoot: root, Package: options.Package, Registry: registry})
+	if failure != "" {
+		return failure
+	}
+	encoded, err := json.Marshal(graph)
+	if err != nil {
+		return frozenFailure(ErrorCodeJSONMarshal, "CUE snapshot could not be encoded")
+	}
+	return createSuccessResponse(string(encoded))
+}
+
+// Files are read one at a time, so an edit during loading can pair old bytes of one
+// file with new bytes of another: a revision that never existed. Accept a graph only
+// once two consecutive loads captured identical bytes.
+const frozenLoadAttempts = 4
+
+func freezeConsistentGraph(config load.Config) (*frozenGraph, string) {
+	var previous []byte
+	for attempt := 0; attempt < frozenLoadAttempts; attempt++ {
+		graph, failure := freezeLoadedGraph(config)
+		if failure != "" {
+			return nil, failure
+		}
+		encoded, err := json.Marshal(graph)
+		if err != nil {
+			return nil, frozenFailure(ErrorCodeJSONMarshal, "CUE snapshot could not be encoded")
+		}
+		if previous != nil && bytes.Equal(previous, encoded) {
+			return graph, ""
+		}
+		previous = encoded
+	}
+	return nil, frozenFailure(ErrorCodeLoadInstance, "CUE snapshot sources kept changing while being loaded")
+}
+
+func freezeLoadedGraph(config load.Config) (*frozenGraph, string) {
+	// Package filtering also reads the directory, so each load decides afresh.
+	overlay, matched, err := packageFilterOverlay(config.Dir, config.Package, false)
+	if err != nil || !matched {
+		return nil, frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
+	}
+	config.Overlay = overlay
 	// Capture precisely the bytes parsed by the loader, not a subsequent disk
 	// read or a formatted AST. This preserves positions and prevents a source
 	// change between loading and snapshotting from changing the selected input.
 	sources := make(map[*ast.File]string)
 	var sourceMutex sync.Mutex
-	parse := func(name string, source interface{}, config parser.Config) (*ast.File, error) {
+	parse := config.ParseFile
+	if parse == nil {
+		parse = func(name string, source interface{}, parseConfig parser.Config) (*ast.File, error) {
+			return parser.ParseFile(name, source, parseConfig)
+		}
+	}
+	config.ParseFile = func(name string, source interface{}, parseConfig parser.Config) (*ast.File, error) {
 		data, err := frozenSourceBytes(name, source)
 		if err != nil {
 			return nil, err
 		}
-		file, err := parser.ParseFile(name, data, config)
+		file, err := parse(name, data, parseConfig)
 		if err == nil {
 			sourceMutex.Lock()
 			sources[file] = string(data)
@@ -106,19 +153,15 @@ func freezeInstanceResponse(optionsJSON string) (result string) {
 		}
 		return file, err
 	}
-	instances := load.Instances([]string{"."}, &load.Config{Dir: dir, ModuleRoot: root, Package: options.Package, Overlay: overlay, Registry: registry, ParseFile: parse})
+	instances := load.Instances([]string{"."}, &config)
 	if len(instances) != 1 || instances[0].Err != nil || instances[0].Incomplete {
-		return frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
+		return nil, frozenFailure(ErrorCodeLoadInstance, "CUE snapshot package could not be loaded")
 	}
 	graph, err := freezeBuildGraph(instances[0], sources)
 	if err != nil {
-		return frozenFailure(ErrorCodeBuildValue, "CUE snapshot could not be captured")
+		return nil, frozenFailure(ErrorCodeBuildValue, "CUE snapshot could not be captured")
 	}
-	encoded, err := json.Marshal(graph)
-	if err != nil {
-		return frozenFailure(ErrorCodeJSONMarshal, "CUE snapshot could not be encoded")
-	}
-	return createSuccessResponse(string(encoded))
+	return graph, ""
 }
 
 func frozenSourceBytes(name string, source interface{}) ([]byte, error) {
@@ -173,25 +216,66 @@ func freezeBuildGraph(root *build.Instance, sources map[*ast.File]string) (*froz
 		graph.Nodes[index] = node
 		return index, nil
 	}
-	_, err := visit(root)
+	if _, err := visit(root); err != nil {
+		return graph, err
+	}
+	instances := make([]*build.Instance, 0, len(seen))
+	for instance := range seen {
+		instances = append(instances, instance)
+	}
+	files := make(map[string]bool)
+	for _, node := range graph.Nodes {
+		for _, file := range node.Files {
+			files[file.Source] = true
+		}
+	}
+	var err error
+	graph.Embedded, err = captureEmbedded(root, instances, files)
 	return graph, err
 }
 
+// build evaluates the snapshot.
 func (graph frozenGraph) build() (cue.Value, error) {
+	return graph.evaluate(cuecontext.New())
+}
+
+func (graph frozenGraph) evaluate(runtime *cue.Context) (cue.Value, error) {
+	instance, err := graph.instance()
+	if err != nil {
+		return cue.Value{}, err
+	}
+	value := runtime.BuildInstance(instance)
+	if value.Err() != nil {
+		return cue.Value{}, value.Err()
+	}
+	return value, nil
+}
+
+// references analyses what the fields at roots of value, its evaluation, depend on.
+func (graph frozenGraph) references(value cue.Value, sources *[]valuePath, roots ...cue.Path) (*referenceGraph, error) {
+	instance, err := graph.instance()
+	if err != nil {
+		return nil, err
+	}
+	return newReferenceGraph(instance, value, sources, roots)
+}
+
+func (graph frozenGraph) instance() (*build.Instance, error) {
 	if len(graph.Nodes) == 0 {
-		return cue.Value{}, errors.New("empty frozen graph")
+		return nil, errors.New("empty frozen graph")
 	}
 	context := build.NewContext()
 	instances := make([]*build.Instance, len(graph.Nodes))
 	for index, node := range graph.Nodes {
 		instance := context.NewInstance(node.Dir, nil)
+		instance.EmbedFS = graph.embedFS
 		instance.Root, instance.Module, instance.ImportPath, instance.PkgName, instance.User = node.Root, node.Module, node.ImportPath, node.PkgName, node.User
 		if json.Unmarshal(node.ModuleFile, &instance.ModuleFile) != nil {
-			return cue.Value{}, errors.New("invalid frozen module")
+			return nil, errors.New("invalid frozen module")
 		}
 		for _, file := range node.Files {
 			if instance.AddFile(file.Name, file.Source) != nil {
-				return cue.Value{}, errors.New("invalid frozen syntax")
+				return nil, errors.New("invalid frozen syntax")
 			}
 		}
 		instances[index] = instance
@@ -199,21 +283,17 @@ func (graph frozenGraph) build() (cue.Value, error) {
 	for index, node := range graph.Nodes {
 		for _, child := range node.Imports {
 			if child < 0 || child >= len(instances) {
-				return cue.Value{}, errors.New("invalid frozen dependency")
+				return nil, errors.New("invalid frozen dependency")
 			}
 			instances[index].Imports = append(instances[index].Imports, instances[child])
 		}
 	}
 	for _, instance := range instances {
 		if instance.Complete() != nil {
-			return cue.Value{}, errors.New("invalid frozen instance")
+			return nil, errors.New("invalid frozen instance")
 		}
 	}
-	value := cuecontext.New().BuildInstance(instances[0])
-	if value.Err() != nil {
-		return cue.Value{}, value.Err()
-	}
-	return value, nil
+	return instances[0], nil
 }
 
 type valueSelector struct {
@@ -256,11 +336,9 @@ func typedPath(path cue.Path) valuePath {
 }
 
 type frozenEvaluationOptions struct {
-	ExportPaths    []valuePath   `json:"exportPaths"`
-	ReferencePaths []valuePath   `json:"referencePaths"`
-	SourcePaths    *[]valuePath  `json:"sourcePaths"`
-	IgnoredPaths   []valuePath   `json:"ignoredPaths"`
-	IgnoredGroups  [][]valuePath `json:"ignoredGroups"`
+	ExportPaths    []valuePath  `json:"exportPaths"`
+	ReferencePaths []valuePath  `json:"referencePaths"`
+	SourcePaths    *[]valuePath `json:"sourcePaths"`
 }
 
 type frozenReference struct {
@@ -268,11 +346,20 @@ type frozenReference struct {
 	Target        valuePath `json:"target"`
 	PrimitiveType string    `json:"primitiveType"`
 	Supported     bool      `json:"supported"`
+	// Computed means CUE computes the value from its sources rather than carrying one.
+	Computed bool `json:"computed"`
+}
+
+// A frozenDeclaration is what a source declares itself to be, referenced or not.
+type frozenDeclaration struct {
+	Path          valuePath `json:"path"`
+	PrimitiveType string    `json:"primitiveType"`
 }
 
 type frozenEvaluation struct {
-	Value      interface{}       `json:"value"`
-	References []frozenReference `json:"references"`
+	Value        interface{}         `json:"value"`
+	References   []frozenReference   `json:"references"`
+	Declarations []frozenDeclaration `json:"declarations"`
 }
 
 //export cue_evaluate_frozen
@@ -296,21 +383,28 @@ func evaluateFrozenResponse(snapshot, optionsJSON string) (result string) {
 		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance could not be evaluated")
 	}
 	references := make([]frozenReference, 0)
-	for _, path := range options.ReferencePaths {
-		parsed, err := path.cuePath()
-		if err != nil {
-			return frozenFailure(ErrorCodeInvalidInput, "Invalid frozen CUE reference path")
+	if len(options.ReferencePaths) > 0 {
+		roots := make([]cue.Path, 0, len(options.ReferencePaths))
+		for _, path := range options.ReferencePaths {
+			parsed, err := path.cuePath()
+			if err != nil {
+				return frozenFailure(ErrorCodeInvalidInput, "Invalid frozen CUE reference path")
+			}
+			roots = append(roots, parsed)
 		}
-		found, err := frozenReferences(value, parsed)
+		analysis, err := graph.references(value, options.SourcePaths, roots...)
 		if err != nil {
-			return frozenFailure(ErrorCodeBuildValue, "Frozen CUE references could not be inspected")
+			return frozenFailure(analysisFailureCode(err), "Frozen CUE references could not be inspected")
 		}
-		references = append(references, found...)
+		for _, root := range roots {
+			found, err := analysis.frozenReferences(root)
+			if err != nil {
+				return frozenFailure(analysisFailureCode(err), "Frozen CUE references could not be inspected")
+			}
+			references = append(references, found...)
+		}
 	}
-	if validateUntrackedDependencies(dependencyInspection{instance: value, references: references, scope: frozenDependencyScope{SourcePaths: options.SourcePaths, IgnoredPaths: options.IgnoredPaths, IgnoredGroups: options.IgnoredGroups}}) != nil {
-		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance contains an untracked runtime dependency")
-	}
-	// Inspection is intentionally lenient and must not authorize provider input.
+	// Inspection is intentionally lenient and must not authorize consumer input.
 	// specializeFrozenResponse performs strict validation before projection.
 	projected := make(map[string]interface{})
 	ordered := append([]valuePath{}, options.ExportPaths...)
@@ -329,7 +423,17 @@ func evaluateFrozenResponse(snapshot, optionsJSON string) (result string) {
 			setNested(projected, regularLabels(parsed), inspected)
 		}
 	}
-	encoded, err := json.Marshal(frozenEvaluation{Value: projected, References: references})
+	declarations := make([]frozenDeclaration, 0)
+	if options.SourcePaths != nil {
+		for _, path := range *options.SourcePaths {
+			parsed, err := path.cuePath()
+			if err != nil {
+				return frozenFailure(ErrorCodeInvalidInput, "Invalid frozen CUE source path")
+			}
+			declarations = append(declarations, frozenDeclaration{Path: path, PrimitiveType: primitiveDeclaration(value.LookupPath(parsed))})
+		}
+	}
+	encoded, err := json.Marshal(frozenEvaluation{Value: projected, References: references, Declarations: declarations})
 	if err != nil {
 		return frozenFailure(ErrorCodeJSONMarshal, "Frozen CUE evaluation could not be encoded")
 	}

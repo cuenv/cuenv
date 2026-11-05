@@ -18,6 +18,7 @@ rules.#DirectoryRules & {
             "*.vsix",
             "bdd_test_runs",
             "crates/cuengine/vendor",
+            "crates/cuengine/libcue-bridge",
             "dist",
             "node_modules",
             "result",

@@ -46,6 +46,7 @@ const (
 	ErrorCodeInvalidInput  = "INVALID_INPUT"
 	ErrorCodeLoadInstance  = "LOAD_INSTANCE"
 	ErrorCodeBuildValue    = "BUILD_VALUE"
+	ErrorCodeAnalysis      = "ANALYSIS_FAILED"
 	ErrorCodeOrderedJSON   = "ORDERED_JSON"
 	ErrorCodePanicRecover  = "PANIC_RECOVER"
 	ErrorCodeJSONMarshal   = "JSON_MARSHAL_ERROR"
@@ -267,10 +268,9 @@ type ModuleInstance struct {
 
 // ModuleResult contains all evaluated instances in a module
 type ModuleResult struct {
-	Instances        map[string]json.RawMessage   `json:"instances"`
-	Projects         []string                     `json:"projects"` // paths that conform to schema.#Project
-	DirectReferences map[string][]DirectReference `json:"directReferences,omitempty"`
-	Meta             map[string]ValueMeta         `json:"meta,omitempty"` // "path/field" -> source location
+	Instances map[string]json.RawMessage `json:"instances"`
+	Projects  []string                   `json:"projects"`       // paths that conform to schema.#Project
+	Meta      map[string]ValueMeta       `json:"meta,omitempty"` // "path/field" -> source location
 	// Present maps each exported instance key to the presencePaths that
 	// exist in it (only when presencePaths is set).
 	Present map[string][]string `json:"present,omitempty"`
@@ -292,12 +292,11 @@ type UnifySource struct {
 }
 
 type ModuleEvalOptions struct {
-	ReferenceEvaluation *ReferenceEvaluation `json:"referenceEvaluation"`
-	WithMeta            bool                 `json:"withMeta"`       // Extract source positions into separate Meta map
-	WithReferences      bool                 `json:"withReferences"` // Extract reference paths (requires WithMeta)
-	Recursive           bool                 `json:"recursive"`      // true: cue eval ./..., false: cue eval .
-	PackageName         *string              `json:"packageName"`    // Filter to specific package, nil = all packages
-	TargetDir           *string              `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
+	WithMeta       bool    `json:"withMeta"`       // Extract source positions into separate Meta map
+	WithReferences bool    `json:"withReferences"` // Extract reference paths (requires WithMeta)
+	Recursive      bool    `json:"recursive"`      // true: cue eval ./..., false: cue eval .
+	PackageName    *string `json:"packageName"`    // Filter to specific package, nil = all packages
+	TargetDir      *string `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
 	// ConcretePaths lists CUE paths (cue.ParsePath syntax, nested selectors
 	// allowed) that must exist and be fully concrete in every evaluated
 	// instance. A malformed path is an input error; a missing or
@@ -661,7 +660,6 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	moduleRoot := goModuleRoot
 	withMeta := options.WithMeta
 	withReferences := options.WithReferences
-	directReferences := make(map[string][]DirectReference)
 
 	exportInstance := func(built builtInstance) {
 		var jsonBytes []byte
@@ -674,19 +672,6 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		if exportErr != nil {
 			buildErrors = append(buildErrors, instanceFailure(built.relPath, exportErr, goModuleRoot))
 			return // Skip failed instances
-		}
-		if options.ReferenceEvaluation != nil {
-			paths, err := parseProjectionPaths("referenceEvaluation.paths", options.ReferenceEvaluation.Paths)
-			if err != nil {
-				buildErrors = append(buildErrors, instanceFailure(built.relPath, err, goModuleRoot))
-				return
-			}
-			refs, err := collectDirectReferences(built.value, paths)
-			if err != nil {
-				buildErrors = append(buildErrors, instanceFailure(built.relPath, err, goModuleRoot))
-				return
-			}
-			directReferences[built.relPath] = refs
 		}
 		instances[built.relPath] = json.RawMessage(jsonBytes)
 		if len(presencePaths) > 0 {
@@ -764,13 +749,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		}
 
 		// Caller-named fields must be concrete; see validateConcretePaths.
-		validate := func() error {
-			if options.ReferenceEvaluation != nil {
-				return validateConcreteExcept(concreteValidation{instance: v, paths: concretePaths, moduleRoot: goModuleRoot}, options.ReferenceEvaluation)
-			}
-			return validateConcretePaths(v, concretePaths, goModuleRoot)
-		}
-		if err := validate(); err != nil {
+		if err := validateConcretePaths(v, concretePaths, goModuleRoot); err != nil {
 			buildErrors = append(buildErrors, instanceFailure(relPath, err, goModuleRoot))
 			continue
 		}
@@ -828,7 +807,6 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	// Marshal the result
 	moduleResult := ModuleResult{
 		Instances:          instances,
-		DirectReferences:   directReferences,
 		Projects:           projects,
 		SkippedDirectories: skippedDirectories,
 	}

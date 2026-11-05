@@ -92,6 +92,7 @@ impl NativeConfiguration {
                     .as_str()
                     .ok_or_else(|| InfrastructureError::configuration("invalid test output"))?
                     .into(),
+                computed: false,
             });
             *value = Value::Null;
         } else {
@@ -122,6 +123,21 @@ impl NativeConfiguration {
 impl ConfigurationEvaluator for NativeConfiguration {
     fn references(&self) -> &[NativeReference] {
         &self.references
+    }
+    fn declared_outputs(&self) -> &[OutputIdentity] {
+        &[]
+    }
+    fn declared_output_type(
+        &self,
+        _identity: &OutputIdentity,
+    ) -> Option<cuenv_manifest::manifest::InfrastructureOutputType> {
+        None
+    }
+    fn verify(
+        &self,
+        _input: &cuenv_infrastructure::references::ConfigurationVerification<'_>,
+    ) -> cuenv_infrastructure::Result<()> {
+        Ok(())
     }
     fn specialize(
         &self,

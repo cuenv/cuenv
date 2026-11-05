@@ -10,7 +10,9 @@ use cuenv_manifest::manifest::{Infrastructure, ManagedResourceDeclaration};
 
 use crate::error::{ChangeFailure, InfrastructureError, Result};
 use crate::protocol;
-use crate::references::{ConfigurationReferences, ResourceOutputReference, SourceAddress};
+use crate::references::{
+    ConfigurationReferences, OutputIdentity, ResourceOutputReference, SourceAddress,
+};
 use crate::schema::Schema;
 use crate::state::{ManagedResource, ResourceAddress};
 use crate::type_system::{self, Type, Value};
@@ -470,7 +472,13 @@ impl InfrastructureEngine {
                     &mut warnings,
                 )
                 .await?;
-            outputs.insert(reference.destination.clone(), value);
+            outputs.insert(
+                OutputIdentity {
+                    source: reference.source.clone(),
+                    attribute: reference.attribute.clone(),
+                },
+                value,
+            );
         }
         let provider = self.loaded(&read.provider)?;
         let schema = data_source_schema(provider, &read.address.resource_type)?;
@@ -488,9 +496,15 @@ impl InfrastructureEngine {
                     phase: ConfigurationPhase::Apply,
                 },
                 |reference| {
-                    outputs.get(&reference.destination).cloned().ok_or_else(|| {
-                        reference_error(&read.address, reference, "was not resolved")
-                    })
+                    outputs
+                        .get(&OutputIdentity {
+                            source: reference.source.clone(),
+                            attribute: reference.attribute.clone(),
+                        })
+                        .cloned()
+                        .ok_or_else(|| {
+                            reference_error(&read.address, reference, "was not resolved")
+                        })
                 },
             )
             .await?;

@@ -191,6 +191,7 @@ fn managed_dependencies_deduplicate_explicit_and_reference_edges() {
         destination: vec![ConfigurationSelector::Field("parent".into())],
         source: SourceAddress::Resource(ResourceAddress::new("fake_obj", "third")),
         attribute: "id".into(),
+        computed: false,
     };
     let declared = BTreeMap::from([
         ("consumer".into(), consumer),
@@ -2169,6 +2170,7 @@ fn nested_sensitive_annotations_hide_map_keys_for_resources_and_data() {
         destination,
         source: SourceAddress::Resource(ResourceAddress::new("example_source", "producer")),
         attribute: "value".into(),
+        computed: false,
     })
     .collect();
     let configuration = json!({"config": {
@@ -3312,6 +3314,7 @@ fn nested_output_type_mismatch_reports_the_destination_path() {
             .collect(),
         source: SourceAddress::Resource(ResourceAddress::new("fake_source", "example")),
         attribute: "value".into(),
+        computed: false,
     };
     let references = ConfigurationReferences::extract_with_schema(
         configuration.as_object().unwrap(),
@@ -3359,6 +3362,7 @@ fn reference_type_errors_hide_unregistered_map_keys() -> Result<()> {
         ],
         source: SourceAddress::Resource(ResourceAddress::new("fake_source", "example")),
         attribute: "value".into(),
+        computed: false,
     };
     let configuration = json!({"config": {&key: null}});
     let references = ConfigurationReferences::extract_with_schema(
@@ -3400,6 +3404,7 @@ fn token_reference() -> ResourceOutputReference {
             destination: vec![ConfigurationSelector::Field("value".into())],
             source: SourceAddress::Resource(ResourceAddress::new("example_token", "deploy")),
             attribute: "value".into(),
+            computed: false,
         },
         source: SourceAddress::Resource(ResourceAddress::new("example_token", "deploy")),
         attribute: "value".into(),
@@ -3425,6 +3430,21 @@ mod native_configuration {
             &self.references
         }
 
+        fn declared_outputs(&self) -> &[crate::references::OutputIdentity] {
+            &[]
+        }
+
+        fn declared_output_type(
+            &self,
+            _identity: &crate::references::OutputIdentity,
+        ) -> Option<cuenv_manifest::manifest::InfrastructureOutputType> {
+            None
+        }
+
+        fn verify(&self, _input: &crate::references::ConfigurationVerification<'_>) -> Result<()> {
+            Ok(())
+        }
+
         fn specialize(
             &self,
             input: &ConfigurationSpecialization<'_>,
@@ -3448,6 +3468,7 @@ mod native_configuration {
             destination: vec![ConfigurationSelector::Field("argument".into())],
             source: SourceAddress::Resource(ResourceAddress::new("fake_obj", "source")),
             attribute: "id".into(),
+            computed: false,
         }
     }
 
@@ -3715,6 +3736,7 @@ fn consuming_data_source(name: &str, source: &str) -> ResourceChange {
         destination: vec![ConfigurationSelector::Field("id".into())],
         source: data_source_address(source),
         attribute: "id".into(),
+        computed: false,
     });
     consumer
 }
@@ -3742,18 +3764,21 @@ fn mixed_graph_keeps_namespaces_and_persists_managed_ancestry() -> Result<()> {
             destination: vec![ConfigurationSelector::Field("id".into())],
             source: SourceAddress::Resource(ResourceAddress::new("example_lookup", "same")),
             attribute: "id".into(),
+            computed: false,
         },
         NativeReference {
             consumer: data_source_address("second"),
             destination: vec![ConfigurationSelector::Field("id".into())],
             source: data_source_address("same"),
             attribute: "id".into(),
+            computed: false,
         },
         NativeReference {
             consumer: SourceAddress::Resource(ResourceAddress::new("example_object", "consumer")),
             destination: vec![ConfigurationSelector::Field("id".into())],
             source: data_source_address("second"),
             attribute: "id".into(),
+            computed: false,
         },
     ];
     let graph = graph_with_native_references(&infrastructure, &references)?;
@@ -3810,6 +3835,7 @@ fn concrete_data_arguments_defer_for_pending_managed_ancestors() -> Result<()> {
         destination: vec![ConfigurationSelector::Field("id".into())],
         source: data_source_address("lookup"),
         attribute: "id".into(),
+        computed: false,
     };
     let graph = graph_with_native_references(&infrastructure, &[reference])?;
     let dependencies = graph.managed_dependencies(&SourceAddress::Resource(ResourceAddress::new(
@@ -4087,6 +4113,7 @@ fn persisted_data_ancestry_orders_destroy_after_the_data_declaration_is_gone() -
         destination: vec![ConfigurationSelector::Field("id".into())],
         source: data_source_address("lookup"),
         attribute: "id".into(),
+        computed: false,
     };
     let graph = graph_with_native_references(&infrastructure, &[reference])?;
     let dependencies = graph.managed_dependencies(&SourceAddress::Resource(ResourceAddress::new(

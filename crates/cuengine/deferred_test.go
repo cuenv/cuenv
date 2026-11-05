@@ -2,12 +2,76 @@ package main
 
 import (
 	"cuelang.org/go/cue"
-	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
 	"reflect"
 	"testing"
 )
+
+// DirectReference is a reference with its path as labels, for asserting on.
+type DirectReference struct {
+	Path, PrimitiveType string
+	Labels, Target      []string
+	Supported           bool
+}
+
+// analyzedInstance is an evaluated instance and the source its provenance comes from.
+type analyzedInstance struct {
+	cue.Value
+	source *build.Instance
+}
+
+func compileAnalyzed(source string) analyzedInstance {
+	instance := build.NewContext().NewInstance("", nil)
+	if err := instance.AddFile("test.cue", source); err != nil {
+		return analyzedInstance{Value: cuecontext.New().CompileString(source), source: instance}
+	}
+	return analyzedInstance{Value: cuecontext.New().BuildInstance(instance), source: instance}
+}
+
+func collectDirectReferences(instance analyzedInstance, paths []projectionPath) ([]DirectReference, error) {
+	roots := make([]cue.Path, 0, len(paths))
+	for _, path := range paths {
+		roots = append(roots, path.path)
+	}
+	graph, err := newReferenceGraph(instance.source, instance.Value, nil, roots)
+	if err != nil {
+		return nil, err
+	}
+	references := make([]DirectReference, 0)
+	for _, path := range paths {
+		found, err := graph.frozenReferences(path.path)
+		if err != nil {
+			return nil, err
+		}
+		for _, reference := range found {
+			consumer, _ := reference.Path.cuePath()
+			target, _ := reference.Target.cuePath()
+			references = append(references, DirectReference{
+				Path:          consumer.String(),
+				Labels:        regularLabels(consumer),
+				Target:        regularLabels(target),
+				PrimitiveType: reference.PrimitiveType,
+				Supported:     reference.Supported,
+			})
+		}
+	}
+	return references, nil
+}
+
+func directReference(value cue.Value, instance analyzedInstance) ([]string, error) {
+	graph, err := newReferenceGraph(instance.source, instance.Value, nil, []cue.Path{value.Path()})
+	if err != nil {
+		return nil, err
+	}
+	references, err := graph.frozenReferences(value.Path())
+	if err != nil || len(references) != 1 || !references[0].Supported || references[0].Computed {
+		return nil, err
+	}
+	target, err := references[0].Target.cuePath()
+	return regularLabels(target), err
+}
 
 func TestDirectReference(t *testing.T) {
 	source := `package app
@@ -29,7 +93,7 @@ constrained_union: (number | =~"^prefix") & infrastructure.resources.producer.ou
  producer: outputs: number: number
  }
  `
-	instance := cuecontext.New().CompileString(source)
+	instance := compileAnalyzed(source)
 	if instance.Err() != nil {
 		t.Fatal(instance.Err())
 	}
@@ -40,7 +104,7 @@ constrained_union: (number | =~"^prefix") & infrastructure.resources.producer.ou
 			if err != nil {
 				t.Fatal(err)
 			}
-			if name == "interpolation" || name == "arithmetic" || name == "constrained" || name == "constrained_union" {
+			if name == "interpolation" || name == "arithmetic" {
 				if actual != nil {
 					t.Fatalf("unsupported expression extracted: %v", actual)
 				}
@@ -51,36 +115,6 @@ constrained_union: (number | =~"^prefix") & infrastructure.resources.producer.ou
 				t.Fatalf("expected %v, got %v", expected, actual)
 			}
 		})
-	}
-}
-
-func TestDeferredConcreteValidation(t *testing.T) {
-	expected := []string{"resources", "producer", "outputs", "id"}
-	options := &ReferenceEvaluation{AbstractPaths: []string{"resources.producer.outputs"}, Deferred: map[string][]string{"resources.consumer.configuration.id": expected}}
-	paths, err := parseConcretePaths([]string{"resources"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name, extra string
-		fail        bool
-	}{
-		{"reference", "", false},
-		{"ordinary incomplete", ", other: string", true},
-		{"required field", ", missing!: string", true},
-		{"open list", ", values: [...string]", true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			instance := cuecontext.New().CompileString(`resources: { producer: outputs: id: string, consumer: configuration: {id: resources.producer.outputs.id` + test.extra + `}}`)
-			err := validateConcreteExcept(concreteValidation{instance: instance, paths: paths}, options)
-			if (err != nil) != test.fail {
-				t.Fatalf("failure=%t: %v", test.fail, err)
-			}
-		})
-	}
-	instance := cuecontext.New().CompileString(`resources: { producer: outputs: id: string, consumer: configuration: {id: string}}`)
-	if err := validateConcreteExcept(concreteValidation{instance: instance, paths: paths}, options); err == nil {
-		t.Fatal("stale exemption accepted")
 	}
 }
 
@@ -95,7 +129,7 @@ func TestAbstractOutputDeclarations(t *testing.T) {
 		{"[...string]", false}, {"string | number", false},
 	} {
 		t.Run(test.expression, func(t *testing.T) {
-			value := cuecontext.New().CompileString("outputs: id: " + test.expression).LookupPath(cue.ParsePath("outputs"))
+			value := compileAnalyzed("outputs: id: " + test.expression).LookupPath(cue.ParsePath("outputs"))
 			err := validateAbstractNamespace(value, cue.ParsePath("outputs"))
 			if (err == nil) != test.valid {
 				t.Fatalf("valid=%t: %v", test.valid, err)
@@ -104,8 +138,8 @@ func TestAbstractOutputDeclarations(t *testing.T) {
 	}
 }
 
-func TestUnsupportedExpressionsRemainDetectable(t *testing.T) {
-	instance := cuecontext.New().CompileString(`package app
+func TestConstrainedReferencesAreDirect(t *testing.T) {
+	instance := compileAnalyzed(`package app
  resources: {
  producer: outputs: id: string
  consumer: configuration: {
@@ -128,8 +162,8 @@ func TestUnsupportedExpressionsRemainDetectable(t *testing.T) {
 	seen := map[string]bool{}
 	for _, reference := range references {
 		seen[reference.Path] = true
-		if reference.Supported {
-			t.Fatalf("unsupported expression accepted: %+v", reference)
+		if !reference.Supported {
+			t.Fatalf("a constrained reference was refused: %+v", reference)
 		}
 	}
 	for _, field := range []string{"narrowed", "union"} {
@@ -139,47 +173,8 @@ func TestUnsupportedExpressionsRemainDetectable(t *testing.T) {
 	}
 }
 
-func TestReferenceEvaluationBridgeBoundary(t *testing.T) {
-	moduleRoot := writePackage(t, `resources: {
-  producer: outputs: id: string
-  consumer: configuration: "_argument": resources.producer.outputs.id
- }
- ordinary: resources.producer.outputs.id
- `)
-	selected := exactPackage(moduleRoot)
-	selected.concretePaths = []string{"resources"}
-	selected.referenceEvaluation = &ReferenceEvaluation{
-		Paths:         []string{"resources"},
-		AbstractPaths: []string{"resources.producer.outputs"},
-		Deferred:      map[string][]string{`resources.consumer.configuration."_argument"`: {"resources", "producer", "outputs", "id"}},
-	}
-	// Use the engine's canonical destination path for the second evaluation.
-	scanning := selected
-	scanning.concretePaths = nil
-	result := scanning.result(t)
-	var canonical string
-	for _, reference := range result.DirectReferences["."] {
-		if len(reference.Labels) == 4 && reference.Labels[3] == "_argument" {
-			canonical = reference.Path
-			if !reference.Supported || reference.PrimitiveType != "string" {
-				t.Fatalf("bad metadata: %+v", reference)
-			}
-		}
-	}
-	if canonical == "" {
-		t.Fatalf("missing destination labels: %+v", result.DirectReferences)
-	}
-	selected.referenceEvaluation.Deferred = map[string][]string{canonical: {"resources", "producer", "outputs", "id"}}
-	selected.result(t)
-	strict := selected
-	strict.referenceEvaluation = nil
-	strict.failure(t)
-	selected.concretePaths = append(selected.concretePaths, "ordinary")
-	selected.failure(t)
-}
-
 func TestPrimitiveDeclarationWithPatternConstraint(t *testing.T) {
-	instance := cuecontext.New().CompileString(`#Root: close({outputs: {[string]: string|number|bool}})
+	instance := compileAnalyzed(`#Root: close({outputs: {[string]: string|number|bool}})
 value: #Root & {outputs: id: string}`)
 	if instance.Err() != nil {
 		t.Fatal(instance.Err())
@@ -199,7 +194,7 @@ func TestDefaultedOutputReferenceRemainsDetectable(t *testing.T) {
 		`*"fallback" | fieldAlias`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New().CompileString(`package app
+			instance := compileAnalyzed(`package app
  let alias = infrastructure.resources.primary.outputs.id
  fieldAlias: alias
  infrastructure: resources: {
@@ -230,7 +225,7 @@ func TestDefaultedOutputReferenceRemainsDetectable(t *testing.T) {
 }
 
 func TestOrdinaryDefaultsRemainOrdinaryValues(t *testing.T) {
-	instance := cuecontext.New().CompileString(`configuration: {name: *"fallback" | string, count: *1 | int}`)
+	instance := compileAnalyzed(`configuration: {name: *"fallback" | string, count: *1 | int}`)
 	paths, err := parseProjectionPaths("paths", []string{"configuration"})
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +250,7 @@ func TestDefaultedOutputReferenceThroughShadowedBuiltin(t *testing.T) {
 		{"defaulted let", `let string = *42 | infrastructure.resources.primary.outputs.id`, "number", `string`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			instance := cuecontext.New().CompileString(`package app
+			instance := compileAnalyzed(`package app
  ` + test.alias + `
  infrastructure: resources: {
  primary: outputs: id: ` + test.primitive + `
@@ -289,7 +284,7 @@ func TestOrdinaryDefaultedStructsDoNotTreatLabelsAsReferences(t *testing.T) {
 		`*{} | string`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New().CompileString("configuration: name: " + expression)
+			instance := compileAnalyzed("configuration: name: " + expression)
 			paths, err := parseProjectionPaths("paths", []string{"configuration"})
 			if err != nil {
 				t.Fatal(err)
@@ -311,7 +306,7 @@ func TestDefaultedContainerCannotHideOutputReferences(t *testing.T) {
 		`*[] | [infrastructure.resources.primary.outputs.id]`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New().CompileString(`infrastructure: resources: {
+			instance := compileAnalyzed(`infrastructure: resources: {
  primary: outputs: id: string
  consumer: configuration: name: ` + expression + `
 }`)
@@ -323,8 +318,13 @@ func TestDefaultedContainerCannotHideOutputReferences(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(references) != 1 || references[0].Supported {
-				t.Fatalf("defaulted container hid output reference: %+v", references)
+			if len(references) == 0 {
+				t.Fatalf("defaulted container hid output reference")
+			}
+			for _, reference := range references {
+				if reference.Supported {
+					t.Fatalf("defaulted container accepted: %+v", references)
+				}
 			}
 		})
 	}
@@ -337,7 +337,7 @@ func TestDefaultedUnsupportedExpressionsFailClosed(t *testing.T) {
 		`*[] | [for resource in [infrastructure.resources.primary] {resource.outputs.id}]`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New().CompileString(`infrastructure: resources: {
+			instance := compileAnalyzed(`infrastructure: resources: {
  primary: outputs: id: string
  consumer: configuration: name: ` + expression + `
 }`)
@@ -372,7 +372,7 @@ func TestOrdinaryDefaultedComprehensionsRemainValid(t *testing.T) {
 		`*[] | [for value in [string] {value}]`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New().CompileString("configuration: name: " + expression)
+			instance := compileAnalyzed("configuration: name: " + expression)
 			paths, err := parseProjectionPaths("paths", []string{"configuration"})
 			if err != nil {
 				t.Fatal(err)
@@ -395,7 +395,7 @@ func TestDefaultedIndicesAndDynamicLabelsCannotHideOutputs(t *testing.T) {
 		`*{} | {"\(infrastructure.resources.primary.outputs.id)": "literal"}`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New().CompileString(`infrastructure: resources: {
+			instance := compileAnalyzed(`infrastructure: resources: {
  primary: outputs: {id: string, index: number}
  consumer: configuration: name: ` + expression + `
 }`)
@@ -442,18 +442,17 @@ infrastructure: resources: {
 }`),
 			})
 			loaded := load.Instances([]string{"."}, &load.Config{Dir: moduleRoot, Package: testPackageName})
-			instance := cuecontext.New().BuildInstance(loaded[0])
-			syntax := instance.LookupPath(cue.ParsePath("infrastructure.resources")).Syntax(cue.Raw())
-			_, ok := syntax.(*ast.File)
-			if !ok {
-				t.Fatalf("regression fixture does not exercise a file syntax node: %T", syntax)
+			instance := analyzedInstance{Value: cuecontext.New().BuildInstance(loaded[0]), source: loaded[0]}
+			paths, err := parseProjectionPaths("paths", []string{"infrastructure.resources"})
+			if err != nil {
+				t.Fatal(err)
 			}
-
-			evaluation := exactPackage(moduleRoot)
-			evaluation.referenceEvaluation = &ReferenceEvaluation{Paths: []string{"infrastructure.resources"}}
-			result := evaluation.result(t)
+			references, err := collectDirectReferences(instance, paths)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var outputs []DirectReference
-			for _, reference := range result.DirectReferences["."] {
+			for _, reference := range references {
 				if reflect.DeepEqual(reference.Target, []string{"infrastructure", "resources", "primary", "outputs", "id"}) {
 					outputs = append(outputs, reference)
 				}

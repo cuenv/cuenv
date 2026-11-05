@@ -146,7 +146,7 @@
           pname = "libcue-bridge";
           inherit version;
           src = ./crates/cuengine;
-          vendorHash = "sha256-r+RlVL3o3BaDjD3nLHRbRc7r139EiqEy04cdYuUd3Io=";
+          vendorHash = "sha256-2127EeuvrvXzjJQNgN3yVd7il9PCISlS+8+N1sUlYPQ=";
           nativeBuildInputs = [ pkgs.zig zigCCWrapper zigCXXWrapper zigARWrapper ]
             ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
 
@@ -413,7 +413,6 @@
           ] ++ pkgs.lib.optionals (system == "x86_64-linux") [ "--test cloudflare_offline" ]);
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
             pkgs.curl
-            pkgs.sqld
             pkgsUnstable.rustfs
             fake-terraform-provider
             pkgs.terraform-providers.hashicorp_random
@@ -443,6 +442,8 @@
             provider_binary() {
               find "$1" -type f -name "terraform-provider-$2*" | sort | head -n 1
             }
+            # Each test starts its own libSQL server from this.
+            export CUENV_INFRASTRUCTURE_TEST_SQLD="${pkgs.sqld}/bin/sqld"
             export CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER="${fake-terraform-provider}/bin/terraform-provider-fake"
             export CUENV_INFRASTRUCTURE_TEST_NUMERIC_INTEROP="${numeric-interop}/bin/numeric-interop"
             ${pkgs.lib.optionalString (system == "x86_64-linux") ''
@@ -483,37 +484,6 @@
             # Registered as a failure hook and called again in postCheck rather than
             # trapped on EXIT: a trap would replace stdenv's own exit handler.
             failureHooks+=(stop_servers)
-
-            # Each libSQL database that a suite requires to be otherwise unused gets
-            # its own server; the shared one serves everything else.
-            start_sqld() {
-              local port
-              port="$(free_port)"
-              mkdir -p "$TMPDIR/sqld-$1"
-              sqld --http-listen-addr "127.0.0.1:$port" --db-path "$TMPDIR/sqld-$1/data.sqld" \
-                > "$TMPDIR/sqld-$1.log" 2>&1 &
-              server_pids="$server_pids $!"
-              for _ in $(seq 1 100); do
-                if curl --silent --fail "http://127.0.0.1:$port/health" > /dev/null; then
-                  started_sqld_url="http://127.0.0.1:$port"
-                  return 0
-                fi
-                sleep 0.2
-              done
-              echo "sqld ($1) did not become healthy" >&2
-              cat "$TMPDIR/sqld-$1.log" >&2
-              return 1
-            }
-            # start_sqld runs in this shell (not a command substitution) so that the
-            # server's pid is recorded for stop_servers.
-            start_sqld shared
-            export CUENV_INFRASTRUCTURE_TEST_TURSO_URL="$started_sqld_url"
-            start_sqld fresh
-            export CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL="$started_sqld_url"
-            start_sqld migration
-            export CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL="$started_sqld_url"
-            start_sqld layout
-            export CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL="$started_sqld_url"
 
             # A real S3-compatible server for the object-storage conformance suite:
             # conditional writes, ETags, listings and SigV4 against something other

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use cuenv_manifest::manifest::InfrastructureOutputType;
 use serde_json::{Map, Value as Json};
 
 use super::SourceAddress;
@@ -38,6 +39,9 @@ pub struct NativeReference {
     pub source: SourceAddress,
     /// Top-level primitive output attribute.
     pub attribute: String,
+    /// CUE computes the destination from its sources instead of carrying this one,
+    /// so it may read several, and the two need not have the same type.
+    pub computed: bool,
 }
 
 /// Inputs for a fresh consumer evaluation from the original snapshot.
@@ -61,6 +65,13 @@ pub struct SpecializedConfiguration {
     pub unresolved: Vec<NativeReference>,
 }
 
+/// Real output values to check against the whole instance.
+/// Values deliberately do not implement Debug to prevent accidental disclosure.
+pub struct ConfigurationVerification<'input> {
+    /// Concrete primitive outputs known at this point. Unknown values never appear.
+    pub sources: &'input BTreeMap<OutputIdentity, Value>,
+}
+
 /// Immutable, in-memory evaluation of the original CUE instance.
 ///
 /// Implementations must start every specialization from the same frozen source
@@ -77,6 +88,23 @@ pub trait ConfigurationEvaluator: Send + Sync {
     fn timeout(&self) -> Duration {
         Duration::from_secs(60)
     }
+
+    /// Every output this instance declares, whether or not a reference uses it.
+    fn declared_outputs(&self) -> &[OutputIdentity];
+
+    /// The bare type an output is declared with, if it has one.
+    fn declared_output_type(&self, identity: &OutputIdentity) -> Option<InfrastructureOutputType>;
+
+    /// Check that real outputs change nothing outside the native references.
+    ///
+    /// Reference analysis cannot prove an expression it does not model is
+    /// independent of every value. This checks the values that actually exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns a value-free error when the values conflict with CUE constraints or
+    /// change a configuration value no native reference accounts for.
+    fn verify(&self, input: &ConfigurationVerification<'_>) -> Result<()>;
 
     /// Specialize and validate one complete consumer configuration.
     ///

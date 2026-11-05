@@ -8,11 +8,12 @@
 //! CUENV_INFRASTRUCTURE_TEST_LOCAL_PROVIDER=/path/terraform-provider-local_v2.9.1_x5 \
 //! CUENV_INFRASTRUCTURE_TEST_TFE_PROVIDER=/path/terraform-provider-tfe_v0.81.0_x5 \
 //! CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER=/path/terraform-provider-fake \
-//! CUENV_INFRASTRUCTURE_TEST_TURSO_URL=http://127.0.0.1:8080 \
+//! CUENV_INFRASTRUCTURE_TEST_SQLD=/path/sqld \
 //! cargo test -p cuenv-infrastructure --test provider_end_to_end -- --ignored --nocapture
 //! ```
 //!
-//! Without `CUENV_INFRASTRUCTURE_TEST_TURSO_URL` the in-memory store is used.
+//! Each test starts its own server. `CUENV_INFRASTRUCTURE_TEST_TURSO_URL` uses a
+//! database instead, and with neither the in-memory store is used.
 //!
 //! The fake provider lives in `tests/fake_provider`; build it with
 //! `go build -o terraform-provider-fake .` in that directory. It reproduces
@@ -42,6 +43,10 @@ use serde_json::json;
 #[path = "support/native_configuration.rs"]
 mod native_configuration;
 use native_configuration::{NativeConfiguration, native_data_source, native_resource};
+
+#[path = "support/sqld.rs"]
+mod sqld;
+use sqld::Database;
 
 type TestResult<Success = ()> = Result<Success, Box<dyn std::error::Error>>;
 
@@ -77,22 +82,24 @@ fn infrastructure(desired: &Desired<'_>) -> TestResult<Infrastructure> {
     }))?)
 }
 
-async fn store() -> TestResult<Arc<dyn StateStore>> {
-    let store: Arc<dyn StateStore> = match std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL") {
-        Ok(url) => Arc::new(TursoStateStore::try_new(TursoConfiguration {
-            url,
+/// The store a test uses, and the database behind it, which has to outlive it.
+async fn store() -> TestResult<(Arc<dyn StateStore>, Option<Database>)> {
+    let database = Database::configured()?;
+    let store: Arc<dyn StateStore> = match &database {
+        Some(database) => Arc::new(TursoStateStore::try_new(TursoConfiguration {
+            url: database.url().to_owned(),
             authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
         })?),
-        Err(_) => Arc::new(MemoryStateStore::new()),
+        None => Arc::new(MemoryStateStore::new()),
     };
     store.migrate().await?;
-    Ok(store)
+    Ok((store, database))
 }
 
-/// Removes a tenant's rows (resources, lock and owner) from the shared Turso
-/// database when dropped, so a test that fails halfway, or never destroys
-/// what it created, leaves nothing behind. Does nothing with the in-memory
-/// store.
+/// Removes a tenant's rows (resources, lock and owner) from the database
+/// `CUENV_INFRASTRUCTURE_TEST_TURSO_URL` names when dropped, so a test that fails
+/// halfway, or never destroys what it created, leaves nothing behind there. A
+/// database of the test's own goes when the test does.
 struct TenantCleanup {
     tenant: TenantKey,
 }
@@ -129,7 +136,10 @@ impl TenantCleanup {
         })
         .collect();
         requests.push(json!({"type": "close"}));
-        let mut request = reqwest::Client::new()
+        // A database that has stopped answering must not hold up the test's result.
+        let mut request = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?
             .post(format!("{}/v2/pipeline", url.trim_end_matches('/')))
             .header("content-type", "application/json")
             .body(serde_json::to_vec(&json!({"requests": requests}))?);
@@ -236,7 +246,7 @@ async fn managed_resource_lifecycle() -> TestResult {
         file_content,
         pet_length,
     };
-    let store = store().await?;
+    let (store, _database) = store().await?;
     let run = uuid::Uuid::new_v4().to_string();
     let tenant = TenantKey::try_new(format!("example.com/end-to-end-{run}@v0"), "web")?;
     let neighbour = TenantKey::try_new(format!("example.com/end-to-end-{run}"), "api")?;
@@ -552,7 +562,7 @@ async fn local_data_source_protocol_five_reads_feed_managed_resources() -> TestR
     assert!(schema.data_sources.contains_key("local_file"));
     client.shutdown().await;
 
-    let store = store().await?;
+    let (store, _database) = store().await?;
     let tenant = TenantKey::try_new(
         format!("example.com/local-data-{}", uuid::Uuid::new_v4()),
         "web",
@@ -623,10 +633,11 @@ async fn installs_provider_from_registry() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
+#[ignore = "requires sqld (CUENV_INFRASTRUCTURE_TEST_SQLD)"]
 async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestResult {
+    let database = Database::start()?;
     let state = TursoStateStore::try_new(TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })?;
     state.migrate().await?;
@@ -744,11 +755,11 @@ async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestRe
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
+#[ignore = "requires sqld (CUENV_INFRASTRUCTURE_TEST_SQLD)"]
 async fn turso_store_round_trips_records() -> TestResult {
-    let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?;
+    let database = Database::start()?;
     let store = TursoStateStore::try_new(TursoConfiguration {
-        url,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })?;
     store.migrate().await?;
@@ -1185,6 +1196,7 @@ struct Fake {
     /// The provider executable the engines launch.
     binary: String,
     _cleanup: TenantCleanup,
+    _database: Option<Database>,
 }
 
 /// The outcome of one plan and apply.
@@ -1198,12 +1210,14 @@ impl Fake {
     async fn new() -> TestResult<Self> {
         let run = uuid::Uuid::new_v4().to_string();
         let tenant = TenantKey::try_new(format!("example.com/fake-{run}"), "web")?;
+        let (store, database) = store().await?;
         Ok(Self {
             directory: tempfile::tempdir()?,
-            store: store().await?,
+            store,
             _cleanup: TenantCleanup::new(&tenant),
             tenant,
             binary: environment_path("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?,
+            _database: database,
         })
     }
 
@@ -1363,6 +1377,322 @@ impl Fake {
             .find(|row| row.address.name == name)
             .ok_or_else(|| format!("{name} is not recorded"))?)
     }
+}
+
+/// Refuses verification once a chosen output is known, as CUE does for a real
+/// output that changes configuration no native reference accounts for.
+struct RefusingVerification {
+    declared: Vec<cuenv_infrastructure::references::OutputIdentity>,
+    refused: Option<cuenv_infrastructure::references::OutputIdentity>,
+    seen: std::sync::Mutex<Vec<Vec<cuenv_infrastructure::references::OutputIdentity>>>,
+}
+
+impl cuenv_infrastructure::references::ConfigurationEvaluator for RefusingVerification {
+    fn references(&self) -> &[cuenv_infrastructure::references::NativeReference] {
+        &[]
+    }
+
+    fn declared_outputs(&self) -> &[cuenv_infrastructure::references::OutputIdentity] {
+        &self.declared
+    }
+
+    fn declared_output_type(
+        &self,
+        _identity: &cuenv_infrastructure::references::OutputIdentity,
+    ) -> Option<cuenv_manifest::manifest::InfrastructureOutputType> {
+        None
+    }
+
+    fn verify(
+        &self,
+        input: &cuenv_infrastructure::references::ConfigurationVerification<'_>,
+    ) -> cuenv_infrastructure::Result<()> {
+        self.seen
+            .lock()
+            .map_err(|_| InfrastructureError::configuration("test verification poisoned"))?
+            .push(input.sources.keys().cloned().collect());
+        match &self.refused {
+            Some(refused) if input.sources.contains_key(refused) => Err(
+                InfrastructureError::configuration("real outputs changed the configuration"),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    fn specialize(
+        &self,
+        _input: &cuenv_infrastructure::references::ConfigurationSpecialization<'_>,
+    ) -> cuenv_infrastructure::Result<cuenv_infrastructure::references::SpecializedConfiguration>
+    {
+        Err(InfrastructureError::configuration(
+            "this evaluator has no references to specialize",
+        ))
+    }
+}
+
+fn declared_output(
+    resource_type: &str,
+    name: &str,
+    attribute: &str,
+) -> cuenv_infrastructure::references::OutputIdentity {
+    cuenv_infrastructure::references::OutputIdentity {
+        source: cuenv_infrastructure::references::SourceAddress::Resource(
+            cuenv_infrastructure::ResourceAddress::new(resource_type, name),
+        ),
+        attribute: attribute.to_string(),
+    }
+}
+
+fn plain_output(name: &str) -> cuenv_infrastructure::references::OutputIdentity {
+    declared_output("fake_plain", name, "id")
+}
+
+impl Fake {
+    /// Plan and apply with a verifying evaluator bound to the engine.
+    async fn converge_verifying(
+        &self,
+        resources: &serde_json::Value,
+        evaluator: Arc<RefusingVerification>,
+    ) -> TestResult<Result<Converged, InfrastructureError>> {
+        self.converge_configuration_verifying(&json!({"resources": resources}), evaluator)
+            .await
+    }
+
+    async fn converge_configuration_verifying(
+        &self,
+        configuration: &serde_json::Value,
+        evaluator: Arc<RefusingVerification>,
+    ) -> TestResult<Result<Converged, InfrastructureError>> {
+        let mut engine = self.engine_configuration(configuration, &Cancellation::default())?;
+        engine.set_configuration_evaluator(evaluator);
+        let lock = self.store.lock(&self.tenant, "fake").await?;
+        let converged = match engine.plan(PlanMode::Apply).await {
+            Ok(plan) => {
+                let mut events = Vec::new();
+                let applied = engine
+                    .apply(&plan, ApplyContext { lock: &lock }, &mut |event| {
+                        events.push(event);
+                    })
+                    .await;
+                Ok(Converged {
+                    plan,
+                    applied,
+                    events,
+                })
+            }
+            Err(error) => Err(error),
+        };
+        self.store.unlock(&self.tenant, &lock).await?;
+        engine.shutdown().await;
+        Ok(converged)
+    }
+}
+
+/// A real output that changes undeclared configuration stops the run before
+/// anything later changes, and what already happened stays recorded.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_stops_before_later_changes() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({
+        "alpha": {"type": "fake_plain", "configuration": {"name": "alpha"}},
+        "beta": {"type": "fake_plain", "configuration": {"name": "beta"}},
+    });
+    let evaluator = Arc::new(RefusingVerification {
+        declared: vec![plain_output("alpha"), plain_output("beta")],
+        refused: Some(plain_output("alpha")),
+        seen: std::sync::Mutex::default(),
+    });
+    let converged = fake
+        .converge_verifying(&resources, Arc::clone(&evaluator))
+        .await?
+        .map_err(|error| format!("nothing is known while planning: {error}"))?;
+    let error = converged
+        .applied
+        .expect_err("verification must stop the run");
+    assert!(
+        error.to_string().contains("real outputs changed"),
+        "{error}"
+    );
+    assert!(fake.record("alpha").await.is_ok(), "alpha happened");
+    assert!(fake.record("beta").await.is_err(), "beta must not start");
+    assert!(!fake.journal().contains("name=beta"), "{}", fake.journal());
+    Ok(())
+}
+
+/// Outputs already in state are checked while planning, before any change.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_refuses_known_outputs_while_planning() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({"alpha": {"type": "fake_plain", "configuration": {"name": "alpha"}}});
+    fake.converge(&resources, PlanMode::Apply).await?.applied?;
+    fake.clear_journal()?;
+    let refusing = Arc::new(RefusingVerification {
+        declared: vec![plain_output("alpha")],
+        refused: Some(plain_output("alpha")),
+        seen: std::sync::Mutex::default(),
+    });
+    let Err(error) = fake.converge_verifying(&resources, refusing).await? else {
+        return Err("a known output must be refused while planning".into());
+    };
+    assert!(
+        error.to_string().contains("real outputs changed"),
+        "{error}"
+    );
+    assert!(
+        !fake.journal().contains("ApplyResourceChange"),
+        "{}",
+        fake.journal()
+    );
+    Ok(())
+}
+
+/// A recorded output about to be replaced says nothing about what will be applied.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_ignores_outputs_about_to_change() -> TestResult {
+    let fake = Fake::new().await?;
+    let initial = json!({"alpha": {"type": "fake_plain", "configuration": {"name": "first"}}});
+    fake.converge(&initial, PlanMode::Apply).await?.applied?;
+    let changed = json!({"alpha": {"type": "fake_plain", "configuration": {"name": "second"}}});
+    let evaluator = Arc::new(RefusingVerification {
+        declared: vec![plain_output("alpha")],
+        refused: None,
+        seen: std::sync::Mutex::default(),
+    });
+    let converged = fake
+        .converge_verifying(&changed, Arc::clone(&evaluator))
+        .await?
+        .map_err(|error| error.to_string())?;
+    converged.applied?;
+    let seen = evaluator
+        .seen
+        .lock()
+        .map_err(|_| "test verification poisoned")?;
+    // Once after the change and once as apply finishes: planning saw nothing to check.
+    assert_eq!(
+        seen.as_slice(),
+        [vec![plain_output("alpha")], vec![plain_output("alpha")]]
+    );
+    Ok(())
+}
+
+/// Nothing starts after a refusal: a deferred read is a provider call too.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_stops_deferred_reads() -> TestResult {
+    let fake = Fake::new().await?;
+    let configuration = json!({
+        "resources": {
+            "alpha": {"type": "fake_plain", "configuration": {"name": "alpha"}},
+            "later": {"type": "fake_plain", "dependsOn": ["alpha"], "configuration": {"name": "later"}},
+        },
+        "data": {"lookup": {
+            "type": "fake_lookup",
+            "dependsOn": ["alpha"],
+            "configuration": {"name": "after-refusal"},
+        }},
+    });
+    let evaluator = Arc::new(RefusingVerification {
+        declared: vec![plain_output("alpha")],
+        refused: Some(plain_output("alpha")),
+        seen: std::sync::Mutex::default(),
+    });
+    let converged = fake
+        .converge_configuration_verifying(&configuration, evaluator)
+        .await?
+        .map_err(|error| format!("nothing is known while planning: {error}"))?;
+    let error = converged
+        .applied
+        .expect_err("verification must stop the run");
+    assert!(
+        matches!(error, InfrastructureError::ApplyIncomplete(_)),
+        "{error}"
+    );
+    let journal = fake.journal();
+    assert!(journal.contains("Create name=alpha"), "{journal}");
+    assert!(!journal.contains("Create name=later"), "{journal}");
+    assert!(!journal.contains("after-refusal"), "{journal}");
+    Ok(())
+}
+
+/// A declared scalar whose real value is a list can't reach CUE, so it is refused
+/// rather than ignored, as soon as it exists and again while planning.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_refuses_a_non_scalar_output() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({
+        "alpha": {"type": "fake_dyn", "configuration": {"name": "alpha"}},
+        "later": {"type": "fake_plain", "dependsOn": ["alpha"], "configuration": {"name": "later"}},
+    });
+    let evaluator = || {
+        Arc::new(RefusingVerification {
+            declared: vec![declared_output("fake_dyn", "alpha", "data")],
+            refused: None,
+            seen: std::sync::Mutex::default(),
+        })
+    };
+    let converged = fake
+        .converge_verifying(&resources, evaluator())
+        .await?
+        .map_err(|error| format!("nothing is known while planning: {error}"))?;
+    let error = converged
+        .applied
+        .expect_err("a list is not a declared scalar");
+    let InfrastructureError::ApplyIncomplete(incomplete) = &error else {
+        return Err(format!("expected an incomplete apply, got {error}").into());
+    };
+    assert!(
+        incomplete.failures[0]
+            .error
+            .to_string()
+            .contains("fake_dyn.alpha.data is declared as a scalar"),
+        "{error}"
+    );
+    assert!(fake.record("later").await.is_err(), "later must not start");
+
+    let Err(error) = fake.converge_verifying(&resources, evaluator()).await? else {
+        return Err("a recorded list must be refused while planning".into());
+    };
+    assert!(
+        error.to_string().contains("declared as a scalar"),
+        "{error}"
+    );
+    Ok(())
+}
+
+/// Replacing one resource and deleting another uses only outputs that have settled.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_real_output_verification_follows_replacement_and_deletion() -> TestResult {
+    let fake = Fake::new().await?;
+    let initial = json!({
+        "kept": {"type": "fake_repl", "configuration": {"name": "first"}},
+        "gone": {"type": "fake_plain", "configuration": {"name": "gone"}},
+    });
+    fake.converge(&initial, PlanMode::Apply).await?.applied?;
+    let kept = declared_output("fake_repl", "kept", "id");
+    let evaluator = Arc::new(RefusingVerification {
+        declared: vec![kept.clone()],
+        refused: None,
+        seen: std::sync::Mutex::default(),
+    });
+    let changed = json!({"kept": {"type": "fake_repl", "configuration": {"name": "second"}}});
+    let converged = fake
+        .converge_verifying(&changed, Arc::clone(&evaluator))
+        .await?
+        .map_err(|error| error.to_string())?;
+    converged.applied?;
+    assert!(fake.record("gone").await.is_err(), "gone must be deleted");
+    assert_eq!(fake.record("kept").await?.state["name"], "second");
+    let seen = evaluator
+        .seen
+        .lock()
+        .map_err(|_| "test verification poisoned")?;
+    assert_eq!(seen.last(), Some(&vec![kept]), "{seen:?}");
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2147,6 +2477,21 @@ async fn fake_interrupt_during_final_cue_evaluation_releases_lock_and_discards_l
         fn references(&self) -> &[NativeReference] {
             std::slice::from_ref(&self.reference)
         }
+        fn declared_outputs(&self) -> &[cuenv_infrastructure::references::OutputIdentity] {
+            &[]
+        }
+        fn declared_output_type(
+            &self,
+            _identity: &cuenv_infrastructure::references::OutputIdentity,
+        ) -> Option<cuenv_manifest::manifest::InfrastructureOutputType> {
+            None
+        }
+        fn verify(
+            &self,
+            _input: &cuenv_infrastructure::references::ConfigurationVerification<'_>,
+        ) -> cuenv_infrastructure::Result<()> {
+            Ok(())
+        }
         fn specialize(
             &self,
             input: &ConfigurationSpecialization<'_>,
@@ -2198,6 +2543,7 @@ async fn fake_interrupt_during_final_cue_evaluation_releases_lock_and_discards_l
                 "producer",
             )),
             attribute: "token".into(),
+            computed: false,
         },
         entered: AtomicBool::new(false),
         finished: AtomicBool::new(false),
@@ -3938,7 +4284,7 @@ async fn local_converge(
 /// follows the rename) must keep the file both resources manage.
 async fn local_file_rename_with_a_dependent(reader_after: &str) -> TestResult {
     let directory = tempfile::tempdir()?;
-    let store = store().await?;
+    let (store, _database) = store().await?;
     let run = uuid::Uuid::new_v4().to_string();
     let tenant = TenantKey::try_new(format!("example.com/local-rename-dependent-{run}"), "web")?;
     let _cleanup = TenantCleanup::new(&tenant);
@@ -4012,7 +4358,7 @@ async fn local_file_rename_with_a_replaced_dependent_keeps_the_file() -> TestRes
 #[ignore = "requires the local provider (CUENV_INFRASTRUCTURE_TEST_LOCAL_PROVIDER)"]
 async fn local_file_rename_keeps_the_file_both_resources_manage() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let store = store().await?;
+    let (store, _database) = store().await?;
     let run = uuid::Uuid::new_v4().to_string();
     let tenant = TenantKey::try_new(format!("example.com/local-rename-{run}"), "web")?;
     let _cleanup = TenantCleanup::new(&tenant);

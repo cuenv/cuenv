@@ -17,14 +17,10 @@ pub struct PreparationOptions {
     /// Roots whose discovered references authorize global dependency analysis.
     /// Every projection and its references must already be covered by these roots.
     pub reference_paths: Vec<ValuePath>,
-    /// Runtime declarations. `None` discovers bare primitives; `Some([])` cannot
-    /// authorize any runtime source for a prepared consumer. Explicit paths
-    /// cover descendants; fills remain limited to exact proven source leaves.
+    /// Values only known at runtime. `Some([])` cannot authorize any source for a
+    /// prepared consumer. Explicit paths cover what is below them; fills remain
+    /// limited to exact proven source leaves.
     pub source_paths: Option<Vec<ValuePath>>,
-    /// Independent subtrees whose internal dependencies are ignored.
-    pub ignored_paths: Vec<ValuePath>,
-    /// Groups of roots belonging to one ignored configuration.
-    pub ignored_groups: Vec<Vec<ValuePath>>,
     /// Exact consumer paths allowed by the resulting capability. Descendants do
     /// not inherit permission, and runtime calls cannot expand this list.
     pub projections: Vec<ValuePath>,
@@ -39,6 +35,22 @@ pub struct PreparedSpecializationOptions {
     pub projection: ValuePath,
     /// Exact unknown leaves and targets proven for this projection.
     pub deferred: Vec<DeferredValue>,
+}
+
+/// Real runtime values and what they may legitimately change.
+///
+/// Analysis classifies expressions ahead of time. This asks CUE what the values
+/// that actually exist do to the instance, so it needs no model of the syntax.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct VerificationOptions {
+    /// Known source values to apply together.
+    pub fills: Vec<ScalarFill>,
+    /// Subtrees compared with and without the fills.
+    pub roots: Vec<ValuePath>,
+    /// Subtrees the fills are allowed to change.
+    pub mutable: Vec<ValuePath>,
+    /// Leaves that must equal their target once it is filled, which they may change.
+    pub references: Vec<DeferredValue>,
 }
 
 /// Private immutable provenance bound to one frozen graph and fixed scope.
@@ -99,7 +111,8 @@ impl PreparedInstance {
     ///
     /// # Errors
     /// Returns a value-free error for an unauthorized projection/source/deferred
-    /// pair, failed constraints, incomplete data, or exhausted worker capacity.
+    /// pair, failed constraints, incomplete data, or worker capacity that stays
+    /// exhausted until the evaluation timeout.
     pub fn specialize(
         &self,
         options: &PreparedSpecializationOptions,
@@ -116,6 +129,26 @@ impl PreparedInstance {
         };
         decode_result(pointer, "cue_specialize_prepared")
     }
+
+    /// Check that real values change nothing outside the declared references.
+    ///
+    /// This shares frozen worker capacity, like [`Self::specialize`]. It
+    /// authorizes nothing and returns no values.
+    ///
+    /// # Errors
+    /// Returns a value-free error when the values conflict with CUE constraints or
+    /// change a value outside `mutable`, or when worker capacity stays exhausted
+    /// until the evaluation timeout.
+    pub fn verify(&self, options: &VerificationOptions) -> Result<()> {
+        let _permit = crate::frozen_worker::admit()?;
+        let snapshot = encode_snapshot(&self.instance.snapshot)?;
+        let options = encode_options(options)?;
+        // SAFETY: both inputs remain alive throughout the synchronous call, and
+        // decode_result takes ownership of and frees its result allocation.
+        #[expect(unsafe_code, reason = "Required for frozen CUE verification FFI")]
+        let pointer = unsafe { cue_verify_frozen(snapshot.as_ptr(), options.as_ptr()) };
+        decode_result::<bool>(pointer, "cue_verify_frozen").map(|_| ())
+    }
 }
 
 #[cfg(not(docsrs))]
@@ -128,6 +161,7 @@ unsafe extern "C" {
         capability: *const c_char,
         options: *const c_char,
     ) -> *mut c_char;
+    fn cue_verify_frozen(snapshot: *const c_char, options: *const c_char) -> *mut c_char;
 }
 
 #[cfg(docsrs)]
@@ -141,5 +175,10 @@ unsafe fn cue_specialize_prepared(
     _: *const c_char,
     _: *const c_char,
 ) -> *mut c_char {
+    panic!("FFI not available in documentation builds")
+}
+
+#[cfg(docsrs)]
+unsafe fn cue_verify_frozen(_: *const c_char, _: *const c_char) -> *mut c_char {
     panic!("FFI not available in documentation builds")
 }

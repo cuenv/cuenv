@@ -1,7 +1,9 @@
 package main
 
 import (
+	"cuelang.org/go/cue/load"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +13,8 @@ import (
 	"testing"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/parser"
 )
 
 func frozenJSON(t testing.TB, value interface{}) string {
@@ -425,7 +429,7 @@ config: value: _alias`, false},
 if false {_alias: "primary"} else {_alias: "fallback"}
 config: value: _alias`, true},
 		{"output controlled hidden branches", `config: {if (source.enabled & true) {_hidden: true} else {_hidden: false}, value: "literal"}`, false},
-		{"output controlled hidden primary without fallback", `config: {if (source.enabled & true) {_hidden: true}, value: "literal"}`, false},
+		{"output controlled hidden primary without fallback", `config: {if (source.enabled & true) {_hidden: true}, value: "literal"}`, true},
 		{"constant hidden branches", `config: {if true {_hidden: true} else {_hidden: false}, value: "literal"}`, true},
 		{"constant hidden primary without fallback", `config: {if true {_hidden: true}, value: "literal"}`, true},
 	} {
@@ -561,13 +565,6 @@ config: schema.#Configuration & {
 `,
 	})
 	response := evaluateFrozenResponse(snapshot, frozenJSON(t, frozenEvaluationOptions{ReferencePaths: []valuePath{frozenPath("config")}}))
-	if strings.Contains(response, `"error"`) {
-		var graph frozenGraph
-		_ = json.Unmarshal([]byte(snapshot), &graph)
-		value, _ := graph.build()
-		references, _ := frozenReferences(value, cue.ParsePath("config"))
-		t.Logf("imported fixture inspection cause: %v", validateUntrackedDependencies(dependencyInspection{instance: value, references: references}))
-	}
 	frozenPayload(t, response)
 	entry := deferredValue{Path: frozenPath("config.resources.consumer.configuration.id"), Target: frozenPath("config.resources.producer.outputs.id")}
 	frozenPayload(t, validateFrozenResponse(snapshot, frozenJSON(t, frozenValidationOptions{ConcretePaths: []valuePath{frozenPath("config")}, AbstractPaths: []valuePath{frozenPath("config.resources.producer.outputs")}, Deferred: []deferredValue{entry}})))
@@ -597,5 +594,173 @@ config: id: _alias
 	options.Fills[0].Value = json.RawMessage(`"bad"`)
 	if response := specializeFrozenResponse(snapshot, frozenJSON(t, options)); !strings.Contains(response, `"error"`) {
 		t.Fatalf("post-fill hidden semantic error was ignored: %s", response)
+	}
+}
+
+// Editing two files while they load must not freeze a revision that never existed.
+func TestFrozenSnapshotRefusesMixedRevisions(t *testing.T) {
+	version := func(name string) map[string]string {
+		return map[string]string{
+			"a.cue": "package app\nfirst: \"" + name + "\"\n",
+			"b.cue": "package app\nsecond: \"" + name + "\"\n",
+		}
+	}
+	dir := writeCueModule(t, version("old"))
+	write := func(files map[string]string) {
+		t.Helper()
+		for name, contents := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	config := load.Config{Dir: dir, ModuleRoot: dir, Package: "app"}
+	// The loader reads each file twice, imports first. Edit within the full pass.
+	reads := 0
+	editOnce := func(name string) {
+		if strings.HasSuffix(name, "a.cue") {
+			reads++
+			if reads == 2 {
+				write(version("new"))
+			}
+		}
+	}
+	parseThen := func(edit func(string)) func(string, interface{}, parser.Config) (*ast.File, error) {
+		return func(name string, source interface{}, parseConfig parser.Config) (*ast.File, error) {
+			file, err := parser.ParseFile(name, source, parseConfig)
+			edit(name)
+			return file, err
+		}
+	}
+	config.ParseFile = parseThen(editOnce)
+	mixed, failure := freezeLoadedGraph(config)
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	sources := strings.Join([]string{mixed.Nodes[0].Files[0].Source, mixed.Nodes[0].Files[1].Source}, "")
+	if !strings.Contains(sources, "old") || !strings.Contains(sources, "new") {
+		t.Fatalf("a single load should reproduce the mixed revision: %s", sources)
+	}
+
+	write(version("old"))
+	reads = 0
+	graph, failure := freezeConsistentGraph(config)
+	if failure != "" {
+		t.Fatal(failure)
+	}
+	sources = strings.Join([]string{graph.Nodes[0].Files[0].Source, graph.Nodes[0].Files[1].Source}, "")
+	if strings.Contains(sources, "old") || !strings.Contains(sources, "new") {
+		t.Fatalf("consistent load kept a mixed revision: %s", sources)
+	}
+
+	counter := 0
+	config.ParseFile = parseThen(func(name string) {
+		if strings.HasSuffix(name, "a.cue") {
+			counter++
+			write(version(fmt.Sprintf("edit-%d", counter)))
+		}
+	})
+	if _, failure := freezeConsistentGraph(config); !strings.Contains(failure, "kept changing") {
+		t.Fatalf("expected a refusal for continuous edits: %s", failure)
+	}
+}
+
+// A value computed from sources stays unknown until all of them are known, and CUE
+// computes it from the real values, with its constraints.
+func TestFrozenComputedReferences(t *testing.T) {
+	_, snapshot := freezeTestModule(t, map[string]string{"env.cue": `package app
+import "strings"
+source: {a: string, b: string, n: number}
+config: {
+ interpolated: "x-\(source.a)-\(source.b)"
+ upper: strings.ToUpper(source.a)
+ constrained: "x-\(source.a)" & =~"^x-ok"
+ sum: source.n + 1
+ plain: source.a
+}
+`})
+	path := func(field string) valuePath { return frozenPath("config." + field) }
+	source := func(field string) valuePath { return frozenPath("source." + field) }
+	references := []deferredValue{
+		{Path: path("interpolated"), Target: source("a")},
+		{Path: path("interpolated"), Target: source("b")},
+		{Path: path("upper"), Target: source("a")},
+		{Path: path("constrained"), Target: source("a")},
+		{Path: path("sum"), Target: source("n")},
+		{Path: path("plain"), Target: source("a")},
+	}
+	var evaluation frozenEvaluation
+	inspection := frozenPayload(t, evaluateFrozenResponse(snapshot, frozenJSON(t, frozenEvaluationOptions{ReferencePaths: []valuePath{frozenPath("config")}})))
+	if err := json.Unmarshal(inspection, &evaluation); err != nil {
+		t.Fatal(err)
+	}
+	if len(evaluation.References) != len(references) {
+		t.Fatalf("references: %s", inspection)
+	}
+	for _, reference := range evaluation.References {
+		consumer, _ := reference.Path.cuePath()
+		if !reference.Supported || reference.Computed == (consumer.String() == "config.plain") {
+			t.Fatalf("%s: %s", consumer, inspection)
+		}
+	}
+	frozenPayload(t, validateFrozenResponse(snapshot, frozenJSON(t, frozenValidationOptions{ConcretePaths: []valuePath{frozenPath("config")}, AbstractPaths: []valuePath{frozenPath("source")}, Deferred: references})))
+
+	fill := func(field, value string) scalarFill {
+		return scalarFill{Path: source(field), Value: json.RawMessage(value)}
+	}
+	specialize := func(fills []scalarFill, deferred []deferredValue) string {
+		return specializeFrozenResponse(snapshot, frozenJSON(t, specializationOptions{Projection: frozenPath("config"), Fills: fills, Deferred: deferred}))
+	}
+	// Nothing known: every computed value is a placeholder.
+	var result specializationResult
+	if err := json.Unmarshal(frozenPayload(t, specialize(nil, references)), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Unresolved) != len(references) {
+		t.Fatalf("unresolved: %+v", result)
+	}
+	// One of two sources known: still unknown, with the other named.
+	known := append([]deferredValue{}, references[1], references[4])
+	response := specialize([]scalarFill{fill("a", `"ok"`)}, known)
+	if err := json.Unmarshal(frozenPayload(t, response), &result); err != nil {
+		t.Fatal(err)
+	}
+	projected, _ := result.Value.(map[string]any)
+	if projected["interpolated"] != nil || projected["upper"] != "OK" || projected["constrained"] != "x-ok" || projected["sum"] != nil || projected["plain"] != "ok" {
+		t.Fatalf("partly known: %s", response)
+	}
+	// All known: CUE computes every value.
+	response = specialize([]scalarFill{fill("a", `"ok"`), fill("b", `"b"`), fill("n", "41")}, nil)
+	if err := json.Unmarshal(frozenPayload(t, response), &result); err != nil {
+		t.Fatal(err)
+	}
+	projected, _ = result.Value.(map[string]any)
+	if projected["interpolated"] != "x-ok-b" || projected["sum"] != float64(42) {
+		t.Fatalf("known: %s", response)
+	}
+	// A value the constraint on the computed value refuses.
+	if response := specialize([]scalarFill{fill("a", `"nope"`), fill("b", `"b"`), fill("n", "41")}, nil); !strings.Contains(response, `"error"`) {
+		t.Fatalf("accepted a violated constraint: %s", response)
+	}
+	// A wrong or missing source is refused.
+	if response := specialize(nil, []deferredValue{{Path: path("sum"), Target: source("a")}}); !strings.Contains(response, `"error"`) {
+		t.Fatalf("accepted the wrong source: %s", response)
+	}
+	if response := specialize(nil, references[1:]); !strings.Contains(response, `"error"`) {
+		t.Fatalf("accepted a source left out: %s", response)
+	}
+}
+
+// This shape used to crash the evaluator: the sharing check read a field pushed down from
+// a comprehension in an environment missing the levels of the comprehension's results.
+func TestFrozenConditionalFieldInAnInstantiatedDefinition(t *testing.T) {
+	_, snapshot := freezeTestModule(t, map[string]string{"env.cue": "package app\nx: 1\n#D: {if true {a: x}}\nconfig: #D\n"})
+	response := specializeFrozenResponse(snapshot, frozenJSON(t, specializationOptions{Projection: frozenPath("config")}))
+	var result specializationResult
+	if err := json.Unmarshal(frozenPayload(t, response), &result); err != nil {
+		t.Fatal(err)
+	}
+	if projected, _ := result.Value.(map[string]any); projected["a"] != float64(1) {
+		t.Fatalf("specialized %s", response)
 	}
 }

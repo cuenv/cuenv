@@ -169,7 +169,6 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             ));
         }
         let project = evaluate_path(PathEvaluation {
-            reference_evaluation: None,
             target_path: &project_path,
             package: request.package,
             concrete_paths: vec!["name".to_string()],
@@ -223,14 +222,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     if request.needs == Needs::StateOnly {
         export_paths.push("infrastructure.migrateStateTo".to_string());
     }
-    let scanning = OutputSelectors {
-        instance_path: ".",
-        references: &std::collections::HashMap::new(),
-        environment: request.environment,
-    }
-    .scanning();
     let mut module = evaluate_path(PathEvaluation {
-        reference_evaluation: (request.needs == Needs::Configuration).then_some(scanning),
         target_path: &target_path,
         package,
         concrete_paths: concrete_paths.clone(),
@@ -576,7 +568,6 @@ fn select_infrastructure(
 /// value is unknown.
 fn export_if_evaluable(target_path: &Path, package: &str, path: &str) -> Option<serde_json::Value> {
     let module = evaluate_path(PathEvaluation {
-        reference_evaluation: None,
         target_path,
         package,
         concrete_paths: Vec::new(),
@@ -749,7 +740,6 @@ fn explain_concrete_failure(failure: ConcreteFailure<'_>) -> CliError {
         error,
     } = failure;
     let lenient = evaluate_path(PathEvaluation {
-        reference_evaluation: None,
         target_path,
         package,
         concrete_paths: Vec::new(),
@@ -1996,8 +1986,6 @@ environments: dev: {
             r#"data: {primary: {type: "fake_lookup", outputs: id: string & =~"^prefix"}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: id: *"default" | string}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: *"fallback" | infrastructure.data.primary.outputs.id}}"#,
-            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: "prefix-\(infrastructure.data.primary.outputs.id)"}}"#,
-            r#"data: {primary: {type: "fake_lookup", outputs: id: number}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id + 1}}"#,
             r#"data: {primary: {type: "fake_lookup", outputs: ids: [...string]}, record: {type: "fake_lookup", configuration: names: infrastructure.data.primary.outputs.ids}}"#,
             r#"data: primary: {type: "fake_lookup", outputs: id: string}
 providers: fake: configuration: name: infrastructure.data.primary.outputs.id"#,
@@ -2097,7 +2085,7 @@ workflows: apply: environment: infrastructure.resources.primary.outputs.id & "pr
     }
 
     #[test]
-    fn output_dependent_global_checks_are_rejected_before_scheduling() -> TestResult {
+    fn output_checks_are_rejected_only_when_the_configuration_reads_them() -> TestResult {
         for consumer in [
             "",
             r#"record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id}"#,
@@ -2115,17 +2103,32 @@ workflows: apply: environment: infrastructure.resources.primary.outputs.id & "pr
                 r#"guard: (infrastructure.resources.primary.outputs.id & "ok") == "ok""#,
             ] {
                 std::fs::write(&file, format!("{original}\n{global}\n"))?;
-                assert!(
-                    evaluate_native_fixture(directory.path(), None).is_err(),
-                    "an independent global output check must be rejected even when a consumer uses the same source"
-                );
+                evaluate_native_fixture(directory.path(), None)?;
             }
         }
+        let directory = native_fixture(
+            r#"resources: {
+ primary: {type: "fake_plain", outputs: id: string}
+ record: {type: "fake_plain", configuration: {name: "n", if _guard {extra: "e"}}}
+}"#,
+        )?;
+        let file = directory.path().join("env.cue");
+        let original = std::fs::read_to_string(&file)?;
+        std::fs::write(
+            &file,
+            format!(
+                "{original}\n_guard: (infrastructure.resources.primary.outputs.id & \"ok\") == \"ok\"\n"
+            ),
+        )?;
+        assert!(
+            evaluate_native_fixture(directory.path(), None).is_err(),
+            "an output deciding which fields a configuration has must be rejected"
+        );
         Ok(())
     }
 
     #[test]
-    fn global_checks_respect_selected_environment_boundaries() -> TestResult {
+    fn output_checks_respect_selected_environment_boundaries() -> TestResult {
         let directory = native_fixture(
             r#"environments: {
  dev: {providers: fake: {source: "example/fake", path: "/not-started"}, resources: record: {type: "fake_plain", configuration: name: "literal"}}
@@ -2139,10 +2142,20 @@ workflows: apply: environment: infrastructure.resources.primary.outputs.id & "pr
         evaluate_native_fixture(directory.path(), Some("dev"))?;
         let file = directory.path().join("env.cue");
         let original = std::fs::read_to_string(&file)?;
+        // A check on another environment does not reach this one.
         std::fs::write(
             &file,
             format!(
                 "{original}\n_guard: (infrastructure.environments.unused.resources.primary.outputs.id & \"ok\") == \"ok\"\n"
+            ),
+        )?;
+        evaluate_native_fixture(directory.path(), Some("dev"))?;
+        // Reading another environment's output from this one does.
+        std::fs::write(
+            &file,
+            original.replace(
+                r#"configuration: name: "literal""#,
+                "configuration: name: infrastructure.environments.unused.resources.primary.outputs.id",
             ),
         )?;
         assert!(evaluate_native_fixture(directory.path(), Some("dev")).is_err());
@@ -2231,8 +2244,6 @@ resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "
 resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | alias}}"#,
             r#"_alias: infrastructure.resources.primary.outputs.id
 resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: *"fallback" | _alias}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: "prefix-\(infrastructure.resources.primary.outputs.id)"}}"#,
-            r#"resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id + 1}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, missing!: string}}}"#,
             r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: {name: infrastructure.resources.primary.outputs.id, unknown: string}}}"#,
             r#"providers: fake: configuration: name: infrastructure.resources.primary.outputs.id
@@ -2241,6 +2252,23 @@ resources: primary: {type: "fake_plain", outputs: id: string}"#,
             let directory = native_fixture(body)?;
             assert!(
                 evaluate_native_fixture(directory.path(), None).is_err(),
+                "{body}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_values_computed_from_outputs_are_accepted() -> TestResult {
+        for body in [
+            r#"resources: {primary: {type: "fake_plain", outputs: id: string}, record: {type: "fake_plain", configuration: name: "prefix-\(infrastructure.resources.primary.outputs.id)"}}"#,
+            r#"resources: {primary: {type: "fake_plain", outputs: id: number}, record: {type: "fake_plain", configuration: name: infrastructure.resources.primary.outputs.id + 1}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: string}, record: {type: "fake_lookup", configuration: name: "prefix-\(infrastructure.data.primary.outputs.id)"}}"#,
+            r#"data: {primary: {type: "fake_lookup", outputs: id: number}, record: {type: "fake_lookup", configuration: name: infrastructure.data.primary.outputs.id + 1}}"#,
+        ] {
+            let directory = native_fixture(body)?;
+            assert!(
+                evaluate_native_fixture(directory.path(), None).is_ok(),
                 "{body}"
             );
         }

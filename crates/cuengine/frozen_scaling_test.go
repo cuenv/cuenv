@@ -133,9 +133,7 @@ infrastructure: {
 			sourcePaths = append(sourcePaths, frozenPath(output+"."+attribute))
 		}
 	}
-	ignored := []valuePath{frozenPath("infrastructure.environments.prod")}
-	ignoredGroups := [][]valuePath{{frozenPath("infrastructure.providers"), frozenPath("infrastructure.resources"), frozenPath("infrastructure.data"), frozenPath("infrastructure.providerEnvironment")}}
-	inspection := frozenEvaluationOptions{ExportPaths: []valuePath{frozenPath("name"), frozenPath("env"), frozenPath("cache"), frozenPath("infrastructure")}, ReferencePaths: roots, SourcePaths: &sourcePaths, IgnoredPaths: ignored, IgnoredGroups: ignoredGroups}
+	inspection := frozenEvaluationOptions{ExportPaths: []valuePath{frozenPath("name"), frozenPath("env"), frozenPath("cache"), frozenPath("infrastructure")}, ReferencePaths: roots, SourcePaths: &sourcePaths}
 	inspected := frozenPayload(t, evaluateFrozenResponse(snapshot, frozenJSON(t, inspection)))
 	var result frozenEvaluation
 	if err := json.Unmarshal(inspected, &result); err != nil {
@@ -150,18 +148,18 @@ infrastructure: {
 	if count != consumers*3 {
 		t.Fatalf("expected %d reference leaves, got %d", consumers*3, count)
 	}
-	validation := frozenValidationOptions{ConcretePaths: []valuePath{frozenPath("infrastructure.state"), frozenPath(selected)}, AbstractPaths: abstractPaths, Deferred: allDeferred, SourcePaths: &sourcePaths, IgnoredPaths: ignored, IgnoredGroups: ignoredGroups}
+	validation := frozenValidationOptions{ConcretePaths: []valuePath{frozenPath("infrastructure.state"), frozenPath(selected)}, AbstractPaths: abstractPaths, Deferred: allDeferred, SourcePaths: &sourcePaths}
 	frozenPayload(t, validateFrozenResponse(snapshot, frozenJSON(t, validation)))
 	fixture := scalingCase{snapshot: snapshot, nodes: len(graph.Nodes), sourceBytes: sourceBytes, referenceLeaves: count, referenceRoots: len(roots), sourcePaths: len(sourcePaths)}
 	if os.Getenv("CUENV_FROZEN_SCALING_VARIANT") == "prepared" {
-		options := preparationOptions{ReferencePaths: roots, SourcePaths: &sourcePaths, IgnoredPaths: ignored, IgnoredGroups: ignoredGroups, Projections: projections}
+		options := preparationOptions{ReferencePaths: roots, SourcePaths: &sourcePaths, Projections: projections}
 		capability := frozenPayload(t, prepareFrozenResponse(snapshot, frozenJSON(t, options)))
 		if err := json.Unmarshal(capability, &fixture.capability); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for index, projection := range projections {
-		options := specializationOptions{Projection: projection, Deferred: deferred[index], ReferencePaths: roots, SourcePaths: &sourcePaths, IgnoredPaths: ignored, IgnoredGroups: ignoredGroups}
+		options := specializationOptions{Projection: projection, Deferred: deferred[index], SourcePaths: &sourcePaths}
 		if fixture.capability == "" {
 			fixture.unknown = append(fixture.unknown, frozenJSON(t, options))
 		} else {

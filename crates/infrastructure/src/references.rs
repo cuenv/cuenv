@@ -18,8 +18,8 @@ mod path;
 
 pub use destination::ReferenceDestination;
 pub use evaluation::{
-    ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization, NativeReference,
-    OutputIdentity, SpecializedConfiguration,
+    ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization,
+    ConfigurationVerification, NativeReference, OutputIdentity, SpecializedConfiguration,
 };
 pub use path::DestinationPath;
 
@@ -235,6 +235,7 @@ mod tests {
             destination: vec![ConfigurationSelector::Field(destination.to_string())],
             source: source.clone(),
             attribute: "id".into(),
+            computed: false,
         };
         ResourceOutputReference {
             destination_attribute: destination.into(),

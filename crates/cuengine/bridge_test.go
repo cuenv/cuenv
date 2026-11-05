@@ -67,8 +67,7 @@ type testEnvelope struct {
 
 // evaluation describes one call to evaluateModuleResponse.
 type evaluation struct {
-	referenceEvaluation *ReferenceEvaluation
-	moduleRoot          string
+	moduleRoot string
 	// targetDirectory is relative to moduleRoot; empty means the root.
 	targetDirectory    string
 	packageName        *string
@@ -89,15 +88,14 @@ func packageNamed(name string) *string {
 func (e evaluation) optionsJSON(t *testing.T) string {
 	t.Helper()
 	options := map[string]interface{}{
-		"referenceEvaluation": e.referenceEvaluation,
-		"recursive":           e.recursive,
-		"withMeta":            e.withMeta,
-		"concretePaths":       e.concretePaths,
-		"instanceFailures":    e.instanceFailures,
-		"packageScope":        e.packageScope,
-		"exportPaths":         e.exportPaths,
-		"presencePaths":       e.presencePaths,
-		"skippedDirectories":  e.skippedDirectories,
+		"recursive":          e.recursive,
+		"withMeta":           e.withMeta,
+		"concretePaths":      e.concretePaths,
+		"instanceFailures":   e.instanceFailures,
+		"packageScope":       e.packageScope,
+		"exportPaths":        e.exportPaths,
+		"presencePaths":      e.presencePaths,
+		"skippedDirectories": e.skippedDirectories,
 	}
 	if e.packageName != nil {
 		options["packageName"] = *e.packageName

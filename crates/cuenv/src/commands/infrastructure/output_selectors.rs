@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use cuengine::ReferenceEvaluation;
 use cuenv_core::module::DirectReference;
 use cuenv_manifest::manifest::InfrastructureOutputType;
 use serde_json::Value;
@@ -28,20 +27,6 @@ impl OutputSelectors<'_> {
         root
     }
 
-    pub(super) fn scanning(&self) -> ReferenceEvaluation {
-        ReferenceEvaluation {
-            paths: ["resources", "data"]
-                .into_iter()
-                .map(|namespace| {
-                    let mut path = self.root();
-                    path.push(namespace.to_string());
-                    quoted_path(&path)
-                })
-                .collect(),
-            ..ReferenceEvaluation::default()
-        }
-    }
-
     pub(super) fn selected_references(&self) -> Result<Vec<&DirectReference>, CliError> {
         let root = self.root();
         let mut selected = Vec::new();
@@ -56,6 +41,12 @@ impl OutputSelectors<'_> {
             }
             let target = &reference.target;
             let destination = &reference.labels;
+            if !reference.supported {
+                return Err(CliError::config(format!(
+                    "{}: an output cannot decide the structure of a configuration, through a condition, a label, an index or a default",
+                    diagnostic_path(&reference.labels)
+                )));
+            }
             if target.len() != root.len() + 4
                 || target[..root.len()] != root
                 || !is_declaration_namespace(&target[root.len()])
@@ -73,9 +64,9 @@ impl OutputSelectors<'_> {
                     diagnostic_path(&reference.labels)
                 )));
             }
-            if !reference.supported || output_type(&reference.primitive_type).is_none() {
+            if output_type(&reference.primitive_type).is_none() {
                 return Err(CliError::config(format!(
-                    "{}: output selectors support direct references and primitive type conjunctions; output declarations must be bare string, number or bool types without defaults or refinements",
+                    "{}: output declarations must be bare string, number or bool types without defaults or refinements",
                     diagnostic_path(&reference.labels)
                 )));
             }
@@ -212,7 +203,7 @@ fn is_declaration_namespace(label: &str) -> bool {
     matches!(label, "resources" | "data")
 }
 
-fn output_type(primitive: &str) -> Option<InfrastructureOutputType> {
+pub(super) fn output_type(primitive: &str) -> Option<InfrastructureOutputType> {
     match primitive {
         "string" => Some(InfrastructureOutputType::String),
         "number" => Some(InfrastructureOutputType::Number),
@@ -234,16 +225,6 @@ fn pointer(labels: &[String]) -> String {
         }
     }
     pointer
-}
-
-// Quoting every label produces a valid CUE input path. Canonical bridge paths
-// always come from reference metadata, and are never reconstructed here.
-fn quoted_path(labels: &[String]) -> String {
-    labels
-        .iter()
-        .map(|label| Value::String(label.clone()).to_string())
-        .collect::<Vec<_>>()
-        .join(".")
 }
 
 #[cfg(test)]

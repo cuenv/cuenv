@@ -76,9 +76,17 @@ fn slots() -> &'static Arc<Slots> {
     SLOTS.get_or_init(|| Slots::new(MAX_OUTSTANDING))
 }
 
-/// Synchronous specialization uses the same capacity without another deadline.
+/// Synchronous specialization shares the capacity and waits for it as a worker
+/// does. Its callers bound the operation itself.
 pub fn admit() -> Result<Permit> {
-    slots().acquire()
+    admit_with_slots(slots(), crate::evaluation_timeout()?)
+}
+
+fn admit_with_slots(slots: &Arc<Slots>, timeout: Duration) -> Result<Permit> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| failure(FrozenWorkerFailure::InvalidDeadline))?;
+    slots.acquire_until(deadline)
 }
 
 pub fn run<T, F>(operation: F) -> Result<T>
@@ -201,6 +209,24 @@ mod tests {
         ));
         drop(permit);
         assert!(run_with_slots(&slots, Duration::from_secs(5), || Ok(())).is_ok());
+    }
+
+    #[test]
+    fn synchronous_admission_waits_for_capacity_until_its_deadline() {
+        let slots = Slots::new(1);
+        let permit = slots.acquire().expect("occupy slot");
+        assert!(matches!(
+            admit_with_slots(&slots, Duration::from_millis(10)),
+            Err(CueEngineError::FrozenWorker {
+                reason: FrozenWorkerFailure::TimedOut
+            })
+        ));
+        let waiting_slots = Arc::clone(&slots);
+        let caller = std::thread::spawn(move || {
+            admit_with_slots(&waiting_slots, Duration::from_secs(30)).map(drop)
+        });
+        drop(permit);
+        assert!(caller.join().expect("caller completed").is_ok());
     }
 
     #[test]

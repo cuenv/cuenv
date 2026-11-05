@@ -198,49 +198,55 @@ import "strings"
 	let declaredResources = {if resources != _|_ for name, _ in resources {(name): true}}
 	let declaredProviders = {if providers != _|_ for name, _ in providers {(name): true}}
 
-	// Exactly one of `version` and `path` per provider. Presence is decided
-	// from the field names a provider has, not from their values: a value
-	// that is still open (`version: string`, filled in by another file or an
-	// overlay) is present, and an invalid value reports its own error instead
-	// of a second "set version or path". The check waits for `source`, which
-	// has its own error when it is missing.
-	if providers != _|_ for name, provider in providers {
-		let fields = [for field, _ in provider {field}]
-		let hasSource = len([for field in fields if field == "source" {field}]) > 0
-		let hasVersion = len([for field in fields if field == "version" {field}]) > 0
-		let hasPath = len([for field in fields if field == "path" {field}]) > 0
-		if hasSource if !hasVersion if !hasPath {
-			_unresolved: "providers.\(name)": error("set `version` (an exact registry release) or `path` (a local provider binary)")
+	// Inside a struct of their own: while they are pending on the configuration, reading
+	// a field of it would force them, and they read every resource. A resource reading
+	// an output through a field outside the configuration would then read itself,
+	// which CUE reports as a structural cycle.
+	_unresolved: {
+		// Exactly one of `version` and `path` per provider. Presence is decided
+		// from the field names a provider has, not from their values: a value
+		// that is still open (`version: string`, filled in by another file or an
+		// overlay) is present, and an invalid value reports its own error instead
+		// of a second "set version or path". The check waits for `source`, which
+		// has its own error when it is missing.
+		if providers != _|_ for name, provider in providers {
+			let fields = [for field, _ in provider {field}]
+			let hasSource = len([for field in fields if field == "source" {field}]) > 0
+			let hasVersion = len([for field in fields if field == "version" {field}]) > 0
+			let hasPath = len([for field in fields if field == "path" {field}]) > 0
+			if hasSource if !hasVersion if !hasPath {
+				"providers.\(name)": error("set `version` (an exact registry release) or `path` (a local provider binary)")
+			}
+			if hasVersion if hasPath {
+				"providers.\(name)": error("set exactly one of `version` and `path`, not both")
+			}
 		}
-		if hasVersion if hasPath {
-			_unresolved: "providers.\(name)": error("set exactly one of `version` and `path`, not both")
-		}
-	}
 
-	// References between declarations.
-	if resources != _|_ for name, resource in resources {
-		if resource.dependsOn != _|_ for index, dependency in resource.dependsOn if (dependency =~ "") if declaredResources[dependency] == _|_ {
-			_unresolved: "resources.\(name).dependsOn[\(index)]": error("no resource named \"\(dependency)\" in `resources` of this configuration")
-		}
-		if providers != _|_ {
-			if resource.provider != _|_ if (resource.provider =~ "") if declaredProviders[resource.provider] == _|_ {
-				_unresolved: "resources.\(name).provider": error("no provider named \"\(resource.provider)\" in `providers` of this configuration")
+		// References between declarations.
+		if resources != _|_ for name, resource in resources {
+			if resource.dependsOn != _|_ for index, dependency in resource.dependsOn if (dependency =~ "") if declaredResources[dependency] == _|_ {
+				"resources.\(name).dependsOn[\(index)]": error("no resource named \"\(dependency)\" in `resources` of this configuration")
 			}
-			if resource.provider == _|_ if resource.type != _|_ if declaredProviders[strings.SplitN(resource.type, "_", 2)[0]] == _|_ {
-				_unresolved: "resources.\(name).type": error("no provider named \"\(strings.SplitN(resource.type, "_", 2)[0])\" (the prefix of type \"\(resource.type)\") in `providers` of this configuration; declare it or set `provider`")
+			if providers != _|_ {
+				if resource.provider != _|_ if (resource.provider =~ "") if declaredProviders[resource.provider] == _|_ {
+					"resources.\(name).provider": error("no provider named \"\(resource.provider)\" in `providers` of this configuration")
+				}
+				if resource.provider == _|_ if resource.type != _|_ if declaredProviders[strings.SplitN(resource.type, "_", 2)[0]] == _|_ {
+					"resources.\(name).type": error("no provider named \"\(strings.SplitN(resource.type, "_", 2)[0])\" (the prefix of type \"\(resource.type)\") in `providers` of this configuration; declare it or set `provider`")
+				}
 			}
 		}
-	}
-	if data != _|_ for name, source in data {
-		if source.dependsOn != _|_ for index, dependency in source.dependsOn if (dependency =~ "") if declaredResources[dependency] == _|_ {
-			_unresolved: "data.\(name).dependsOn[\(index)]": error("no resource named \"\(dependency)\" in `resources` of this configuration")
-		}
-		if providers != _|_ {
-			if source.provider != _|_ if (source.provider =~ "") if declaredProviders[source.provider] == _|_ {
-				_unresolved: "data.\(name).provider": error("no provider named \"\(source.provider)\" in `providers` of this configuration")
+		if data != _|_ for name, source in data {
+			if source.dependsOn != _|_ for index, dependency in source.dependsOn if (dependency =~ "") if declaredResources[dependency] == _|_ {
+				"data.\(name).dependsOn[\(index)]": error("no resource named \"\(dependency)\" in `resources` of this configuration")
 			}
-			if source.provider == _|_ if source.type != _|_ if declaredProviders[strings.SplitN(source.type, "_", 2)[0]] == _|_ {
-				_unresolved: "data.\(name).type": error("no provider named \"\(strings.SplitN(source.type, "_", 2)[0])\" (the prefix of type \"\(source.type)\") in `providers` of this configuration; declare it or set `provider`")
+			if providers != _|_ {
+				if source.provider != _|_ if (source.provider =~ "") if declaredProviders[source.provider] == _|_ {
+					"data.\(name).provider": error("no provider named \"\(source.provider)\" in `providers` of this configuration")
+				}
+				if source.provider == _|_ if source.type != _|_ if declaredProviders[strings.SplitN(source.type, "_", 2)[0]] == _|_ {
+					"data.\(name).type": error("no provider named \"\(strings.SplitN(source.type, "_", 2)[0])\" (the prefix of type \"\(source.type)\") in `providers` of this configuration; declare it or set `provider`")
+				}
 			}
 		}
 	}

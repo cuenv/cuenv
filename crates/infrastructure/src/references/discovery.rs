@@ -28,10 +28,14 @@ impl ConfigurationReferences {
                     destination.problem("native reference placeholder is missing or changed")
                 );
             }
-            if references
-                .iter()
-                .any(|existing: &ResourceOutputReference| existing.destination == destination)
-            {
+            // Only a computed value reads more than one source, each of them once.
+            if references.iter().any(|existing: &ResourceOutputReference| {
+                existing.destination == destination
+                    && (!reference.computed
+                        || !existing.native.computed
+                        || (existing.source == reference.source
+                            && existing.attribute == reference.attribute))
+            }) {
                 return Err(
                     destination.problem("multiple native references have the same destination")
                 );
@@ -82,6 +86,7 @@ mod tests {
             destination,
             source: SourceAddress::DataSource(ResourceAddress::new("fake_lookup", "source")),
             attribute: "id".into(),
+            computed: false,
         }
     }
 
@@ -189,6 +194,24 @@ mod tests {
             json!({"argument": {"a.b": ["neighbor", "resolved"]}})
         );
         Ok(())
+    }
+
+    #[test]
+    fn only_a_computed_value_reads_several_sources_and_each_of_them_once() {
+        let block = block(Type::String);
+        let projected = Map::from_iter([("argument".into(), Json::Null)]);
+        let reference = |attribute: &str, computed| NativeReference {
+            attribute: attribute.into(),
+            computed,
+            ..native(vec![ConfigurationSelector::Field("argument".into())])
+        };
+        let extract = |references: &[NativeReference]| {
+            ConfigurationReferences::extract_with_schema(&projected, &block, references).is_ok()
+        };
+        assert!(extract(&[reference("a", true), reference("b", true)]));
+        assert!(!extract(&[reference("a", true), reference("a", true)]));
+        assert!(!extract(&[reference("a", false), reference("b", false)]));
+        assert!(!extract(&[reference("a", true), reference("b", false)]));
     }
 
     #[test]

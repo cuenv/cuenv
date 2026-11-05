@@ -25,8 +25,6 @@ inactive: {
 	options := preparationOptions{
 		ReferencePaths: []valuePath{frozenPath("environments.dev.config")},
 		SourcePaths:    &sources,
-		IgnoredPaths:   []valuePath{frozenPath("environments.prod")},
-		IgnoredGroups:  [][]valuePath{{frozenPath("inactive.resources"), frozenPath("inactive.data")}},
 		Projections:    []valuePath{frozenPath("environments.dev.config")},
 	}
 	capability, err := prepareFrozen(snapshot, frozenJSON(t, options))
@@ -41,8 +39,6 @@ inactive: {
 		"reference roots":       func(proof *preparedProvenance) { proof.Scope.ReferencePaths = nil },
 		"source nil":            func(proof *preparedProvenance) { proof.Scope.SourcePaths = nil },
 		"source empty":          func(proof *preparedProvenance) { empty := []valuePath{}; proof.Scope.SourcePaths = &empty },
-		"ignored roots":         func(proof *preparedProvenance) { proof.Scope.IgnoredPaths = nil },
-		"ignored groups":        func(proof *preparedProvenance) { proof.Scope.IgnoredGroups = nil },
 		"requested projections": func(proof *preparedProvenance) { proof.Scope.Projections = nil },
 		"authorized projection": func(proof *preparedProvenance) { proof.Projections[0].Path = frozenPath("environments.prod.config") },
 		"reference destination": func(proof *preparedProvenance) {
