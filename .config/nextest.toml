@@ -35,19 +35,9 @@ failure-output = "immediate-final"
 filter = 'test(/^integration_/)'
 slow-timeout = "120s"
 
-# These tests share one sqld. Under heavy write contention sqld 0.24 can keep the
-# write slot of a connection that failed to start its transaction and has since
-# closed, and every later writer then waits forever. Fewer writers avoid it in
-# practice, and the timeout turns it into a failure rather than a stuck check.
-[[profile.default.overrides]]
-filter = 'binary(provider_end_to_end) | binary(infrastructure_lifecycle)'
-test-group = "shared-sqld"
-slow-timeout = { period = "60s", terminate-after = 5 }
-
 [test-groups]
 bdd = { max-threads = 1 }
 integration = { max-threads = 2 }
-shared-sqld = { max-threads = 8 }
 
 [profile.default.junit]
 path = "target/nextest/junit.xml"

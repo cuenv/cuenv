@@ -8,11 +8,12 @@
 //! CUENV_INFRASTRUCTURE_TEST_LOCAL_PROVIDER=/path/terraform-provider-local_v2.9.1_x5 \
 //! CUENV_INFRASTRUCTURE_TEST_TFE_PROVIDER=/path/terraform-provider-tfe_v0.81.0_x5 \
 //! CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER=/path/terraform-provider-fake \
-//! CUENV_INFRASTRUCTURE_TEST_TURSO_URL=http://127.0.0.1:8080 \
+//! CUENV_INFRASTRUCTURE_TEST_SQLD=/path/sqld \
 //! cargo test -p cuenv-infrastructure --test provider_end_to_end -- --ignored --nocapture
 //! ```
 //!
-//! Without `CUENV_INFRASTRUCTURE_TEST_TURSO_URL` the in-memory store is used.
+//! Each test starts its own server. `CUENV_INFRASTRUCTURE_TEST_TURSO_URL` uses a
+//! database instead, and with neither the in-memory store is used.
 //!
 //! The fake provider lives in `tests/fake_provider`; build it with
 //! `go build -o terraform-provider-fake .` in that directory. It reproduces
@@ -42,6 +43,10 @@ use serde_json::json;
 #[path = "support/native_configuration.rs"]
 mod native_configuration;
 use native_configuration::{NativeConfiguration, native_data_source, native_resource};
+
+#[path = "support/sqld.rs"]
+mod sqld;
+use sqld::Database;
 
 type TestResult<Success = ()> = Result<Success, Box<dyn std::error::Error>>;
 
@@ -77,22 +82,24 @@ fn infrastructure(desired: &Desired<'_>) -> TestResult<Infrastructure> {
     }))?)
 }
 
-async fn store() -> TestResult<Arc<dyn StateStore>> {
-    let store: Arc<dyn StateStore> = match std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL") {
-        Ok(url) => Arc::new(TursoStateStore::try_new(TursoConfiguration {
-            url,
+/// The store a test uses, and the database behind it, which has to outlive it.
+async fn store() -> TestResult<(Arc<dyn StateStore>, Option<Database>)> {
+    let database = Database::configured()?;
+    let store: Arc<dyn StateStore> = match &database {
+        Some(database) => Arc::new(TursoStateStore::try_new(TursoConfiguration {
+            url: database.url().to_owned(),
             authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
         })?),
-        Err(_) => Arc::new(MemoryStateStore::new()),
+        None => Arc::new(MemoryStateStore::new()),
     };
     store.migrate().await?;
-    Ok(store)
+    Ok((store, database))
 }
 
-/// Removes a tenant's rows (resources, lock and owner) from the shared Turso
-/// database when dropped, so a test that fails halfway, or never destroys
-/// what it created, leaves nothing behind. Does nothing with the in-memory
-/// store.
+/// Removes a tenant's rows (resources, lock and owner) from the database
+/// `CUENV_INFRASTRUCTURE_TEST_TURSO_URL` names when dropped, so a test that fails
+/// halfway, or never destroys what it created, leaves nothing behind there. A
+/// database of the test's own goes when the test does.
 struct TenantCleanup {
     tenant: TenantKey,
 }
@@ -129,7 +136,10 @@ impl TenantCleanup {
         })
         .collect();
         requests.push(json!({"type": "close"}));
-        let mut request = reqwest::Client::new()
+        // A database that has stopped answering must not hold up the test's result.
+        let mut request = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?
             .post(format!("{}/v2/pipeline", url.trim_end_matches('/')))
             .header("content-type", "application/json")
             .body(serde_json::to_vec(&json!({"requests": requests}))?);
@@ -236,7 +246,7 @@ async fn managed_resource_lifecycle() -> TestResult {
         file_content,
         pet_length,
     };
-    let store = store().await?;
+    let (store, _database) = store().await?;
     let run = uuid::Uuid::new_v4().to_string();
     let tenant = TenantKey::try_new(format!("example.com/end-to-end-{run}@v0"), "web")?;
     let neighbour = TenantKey::try_new(format!("example.com/end-to-end-{run}"), "api")?;
@@ -552,7 +562,7 @@ async fn local_data_source_protocol_five_reads_feed_managed_resources() -> TestR
     assert!(schema.data_sources.contains_key("local_file"));
     client.shutdown().await;
 
-    let store = store().await?;
+    let (store, _database) = store().await?;
     let tenant = TenantKey::try_new(
         format!("example.com/local-data-{}", uuid::Uuid::new_v4()),
         "web",
@@ -623,10 +633,11 @@ async fn installs_provider_from_registry() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
+#[ignore = "requires sqld (CUENV_INFRASTRUCTURE_TEST_SQLD)"]
 async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestResult {
+    let database = Database::start()?;
     let state = TursoStateStore::try_new(TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })?;
     state.migrate().await?;
@@ -744,11 +755,11 @@ async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestRe
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
+#[ignore = "requires sqld (CUENV_INFRASTRUCTURE_TEST_SQLD)"]
 async fn turso_store_round_trips_records() -> TestResult {
-    let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?;
+    let database = Database::start()?;
     let store = TursoStateStore::try_new(TursoConfiguration {
-        url,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })?;
     store.migrate().await?;
@@ -1185,6 +1196,7 @@ struct Fake {
     /// The provider executable the engines launch.
     binary: String,
     _cleanup: TenantCleanup,
+    _database: Option<Database>,
 }
 
 /// The outcome of one plan and apply.
@@ -1198,12 +1210,14 @@ impl Fake {
     async fn new() -> TestResult<Self> {
         let run = uuid::Uuid::new_v4().to_string();
         let tenant = TenantKey::try_new(format!("example.com/fake-{run}"), "web")?;
+        let (store, database) = store().await?;
         Ok(Self {
             directory: tempfile::tempdir()?,
-            store: store().await?,
+            store,
             _cleanup: TenantCleanup::new(&tenant),
             tenant,
             binary: environment_path("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?,
+            _database: database,
         })
     }
 
@@ -4248,7 +4262,7 @@ async fn local_converge(
 /// follows the rename) must keep the file both resources manage.
 async fn local_file_rename_with_a_dependent(reader_after: &str) -> TestResult {
     let directory = tempfile::tempdir()?;
-    let store = store().await?;
+    let (store, _database) = store().await?;
     let run = uuid::Uuid::new_v4().to_string();
     let tenant = TenantKey::try_new(format!("example.com/local-rename-dependent-{run}"), "web")?;
     let _cleanup = TenantCleanup::new(&tenant);
@@ -4322,7 +4336,7 @@ async fn local_file_rename_with_a_replaced_dependent_keeps_the_file() -> TestRes
 #[ignore = "requires the local provider (CUENV_INFRASTRUCTURE_TEST_LOCAL_PROVIDER)"]
 async fn local_file_rename_keeps_the_file_both_resources_manage() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let store = store().await?;
+    let (store, _database) = store().await?;
     let run = uuid::Uuid::new_v4().to_string();
     let tenant = TenantKey::try_new(format!("example.com/local-rename-{run}"), "web")?;
     let _cleanup = TenantCleanup::new(&tenant);

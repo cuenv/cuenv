@@ -5,9 +5,9 @@
 //! native libSQL dependency. What is stored, and how writes are fenced, is
 //! [`super::sql`]'s; this module only carries statements to the database.
 //!
-//! Transient failures (connection errors, timeouts, HTTP 429 and 5xx,
-//! `SQLITE_BUSY`) are retried with exponential backoff; every statement issued
-//! is safe to repeat.
+//! Transient failures (connection errors, timeouts, HTTP 429 and 5xx) are
+//! retried with exponential backoff, and `SQLITE_BUSY` for as long as
+//! [`super::sql::RetryPolicy`] allows; every statement issued is safe to repeat.
 //!
 //! Transport: redirects are never followed, response bodies are read only up
 //! to a fixed size, and a plaintext loopback URL (a local `sqld`) is always
@@ -347,7 +347,7 @@ fn transaction_result(result: &BatchResult, commit_index: usize) -> Attempted<Tr
         .enumerate()
         .find_map(|(index, error)| error.as_ref().map(|error| (index, error)));
     if let Some((index, error)) = first_error {
-        if error.code.as_deref() == Some("SQLITE_BUSY") {
+        if is_busy(error.code.as_deref()) {
             return Err(statement_failure(error, Disclosure::Full));
         }
         return Ok(TransactionResult::Failed {
@@ -371,20 +371,23 @@ fn transaction_result(result: &BatchResult, commit_index: usize) -> Attempted<Tr
     }
 }
 
+/// Whether a statement error's code is `SQLITE_BUSY` or one of its extended
+/// codes, such as `SQLITE_BUSY_SNAPSHOT`.
+fn is_busy(code: Option<&str>) -> bool {
+    code.is_some_and(|code| code == "SQLITE_BUSY" || code.starts_with("SQLITE_BUSY_"))
+}
+
 /// Describe a statement error: its code always, its message only when the
 /// statement carried no state (a message may echo the arguments).
 fn statement_failure(error: &HranaError, disclosure: Disclosure) -> Failure {
-    let busy = error
-        .code
-        .as_deref()
-        .is_some_and(|code| code == "SQLITE_BUSY");
+    let busy = is_busy(error.code.as_deref());
     let code = error
         .code
         .as_deref()
         .map_or_else(|| "no code".to_string(), strip_control_characters);
     Failure::new(
         if busy {
-            FailureKind::Transient
+            FailureKind::Busy
         } else {
             FailureKind::Statement
         },

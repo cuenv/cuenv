@@ -5,6 +5,10 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 
+#[path = "../../../tests/support/sqld.rs"]
+mod sqld;
+use sqld::Database;
+
 use super::*;
 use crate::state::fake_server::{FakeServer, fake_server, fake_server_with_headers};
 use crate::state::http::{
@@ -249,11 +253,11 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
 /// transaction, while any lock row exists. Needs an empty database nothing
 /// else uses; the test drops cuenv's tables at the end so it can run again.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL)"]
+#[ignore = "requires sqld (CUENV_INFRASTRUCTURE_TEST_SQLD)"]
 async fn a_migration_refuses_while_any_lock_is_held() {
-    let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL").unwrap();
+    let database = Database::isolated().unwrap();
     let mut store = TursoStateStore::try_new(TursoConfiguration {
-        url,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })
     .unwrap();
@@ -552,7 +556,18 @@ fn classifies_statement_errors() {
         message: "database is locked".into(),
         code: Some("SQLITE_BUSY".into()),
     };
-    assert!(statement_failure(&busy, Disclosure::Full).is_transient());
+    assert_eq!(
+        statement_failure(&busy, Disclosure::Full).kind,
+        FailureKind::Busy
+    );
+    let snapshot = HranaError {
+        message: "database is locked".into(),
+        code: Some("SQLITE_BUSY_SNAPSHOT".into()),
+    };
+    assert_eq!(
+        statement_failure(&snapshot, Disclosure::Full).kind,
+        FailureKind::Busy
+    );
     let syntax = HranaError {
         message: "near \"SELEC\": syntax error".into(),
         code: Some("SQLITE_ERROR".into()),
@@ -1039,9 +1054,10 @@ fn row_to_resource_reads_tainted_and_identity() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
+#[ignore = "requires sqld (CUENV_INFRASTRUCTURE_TEST_SQLD)"]
 async fn concurrent_migrations_converge() {
-    let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL").unwrap();
+    let database = Database::start().unwrap();
+    let url = database.url().to_owned();
     let store = Arc::new(
         TursoStateStore::try_new(TursoConfiguration {
             url,
@@ -1068,11 +1084,11 @@ async fn concurrent_migrations_converge() {
 /// refused everywhere. The database must be one nothing else uses; the
 /// test drops cuenv's tables at the end so it can run again.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires an otherwise unused libSQL database (CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL)"]
+#[ignore = "requires sqld (CUENV_INFRASTRUCTURE_TEST_SQLD)"]
 async fn fresh_database_reads_and_newer_schema_against_a_server() {
-    let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL").unwrap();
+    let database = Database::isolated().unwrap();
     let store = TursoStateStore::try_new(TursoConfiguration {
-        url,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })
     .unwrap();
@@ -1191,6 +1207,7 @@ fn fast_store(url: &str, timeout: Duration) -> TursoStateStore {
     store.inner.retry_policy = RetryPolicy {
         retries: 3,
         initial_delay: Duration::from_millis(1),
+        busy_budget: Duration::from_millis(50),
     };
     store
 }
@@ -1310,6 +1327,120 @@ async fn timeouts_are_retried_and_reported_as_timeouts() {
     assert!(message.contains("timed out"), "{message}");
     assert!(message.contains("gave up after 4 attempts"), "{message}");
     assert_eq!(accepted.load(Ordering::SeqCst), 4);
+}
+
+fn busy_response() -> String {
+    json!({
+        "baton": null,
+        "base_url": null,
+        "results": [
+            {"type": "error", "error": {"message": "database is locked", "code": "SQLITE_BUSY"}},
+            {"type": "ok", "response": {"type": "close"}},
+        ],
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn a_busy_database_is_tried_past_the_limit_on_other_failures() {
+    let busy_attempts = RetryPolicy::DEFAULT.retries as usize + 5;
+    let server = fake_server(Arc::new(move |index, _| {
+        Some(if index < busy_attempts {
+            (200, busy_response())
+        } else {
+            (200, execute_response(&json!([]), 0))
+        })
+    }))
+    .await;
+    let mut store = fast_store(&server.url, Duration::from_secs(5));
+    store.inner.retry_policy.busy_budget = Duration::from_secs(30);
+    assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
+    assert_eq!(server.requests.load(Ordering::SeqCst), busy_attempts + 1);
+}
+
+#[tokio::test]
+async fn a_busy_database_is_given_up_on_once_its_budget_runs_out() {
+    let server = fake_server(Arc::new(|_, _| Some((200, busy_response())))).await;
+    let store = fast_store(&server.url, Duration::from_secs(5));
+    let started = std::time::Instant::now();
+    let message = store.list(&tenant()).await.unwrap_err().to_string();
+    assert!(message.contains("SQLITE_BUSY"), "{message}");
+    assert!(message.contains("gave up after"), "{message}");
+    assert!(started.elapsed() >= store.inner.retry_policy.busy_budget);
+}
+
+#[tokio::test]
+async fn taking_a_lock_waits_for_a_busy_database() {
+    let inserts = Arc::new(AtomicUsize::new(0));
+    let insert_counter = Arc::clone(&inserts);
+    let busy_attempts = RetryPolicy::DEFAULT.retries as usize + 5;
+    let server = fake_server(Arc::new(move |_, body| {
+        let sql = first_statement(&body);
+        if schema_rows(&sql, LATEST_SCHEMA_VERSION).is_some() {
+            return Some((
+                200,
+                pipeline_response(&body, |sql| schema_rows(sql, LATEST_SCHEMA_VERSION)),
+            ));
+        }
+        if sql.starts_with("INSERT INTO cuenv_infrastructure_locks") {
+            return Some(
+                if insert_counter.fetch_add(1, Ordering::SeqCst) < busy_attempts {
+                    (200, busy_response())
+                } else {
+                    (200, execute_response(&json!([]), 1))
+                },
+            );
+        }
+        Some((200, execute_response(&json!([]), 0)))
+    }))
+    .await;
+    let mut store = fast_store(&server.url, Duration::from_secs(5));
+    store.inner.retry_policy.busy_budget = Duration::from_secs(30);
+    store.lock(&tenant(), "test").await.unwrap();
+    assert_eq!(inserts.load(Ordering::SeqCst), busy_attempts + 1);
+}
+
+/// Against a real server: writers of unrelated tenants contend for the one
+/// write lock of a database, and every one of them gets through.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires sqld (CUENV_INFRASTRUCTURE_TEST_SQLD)"]
+async fn concurrent_writers_of_one_database_all_get_through() {
+    let database = Database::isolated().unwrap();
+    let store = TursoStateStore::try_new(TursoConfiguration {
+        url: database.url().to_owned(),
+        authentication_token: None,
+    })
+    .unwrap();
+    store.migrate().await.unwrap();
+    let writers = (0..16).map(|writer| {
+        let store = store.clone();
+        tokio::spawn(async move {
+            let tenant = TenantKey::try_new("example.com/writers", format!("{writer}")).unwrap();
+            let lock = store.lock(&tenant, "test").await.unwrap();
+            for name in ["a", "b", "c", "d", "e"] {
+                let record = ManagedResource {
+                    address: ResourceAddress::new("random_pet", name),
+                    provider: "random".into(),
+                    provider_source: "registry.terraform.io/hashicorp/random".into(),
+                    schema_version: 0,
+                    state: json!({"id": name}),
+                    private: Vec::new(),
+                    dependencies: Vec::new(),
+                    sensitive_attributes: Vec::new(),
+                    tainted: false,
+                    identity: None,
+                    serial: 0,
+                    generation: uuid::Uuid::nil(),
+                };
+                store.put(&tenant, &lock, &record).await.unwrap();
+            }
+            store.unlock(&tenant, &lock).await.unwrap();
+            store.list(&tenant).await.unwrap().len()
+        })
+    });
+    for writer in writers.collect::<Vec<_>>() {
+        assert_eq!(writer.await.unwrap(), 5);
+    }
 }
 
 #[tokio::test]
@@ -2069,11 +2200,11 @@ async fn addresses_are_read_from_the_key_columns_alone() {
 /// are refused by name, and a waiting migration holds off new locks. Needs an
 /// empty isolated database; it drops cuenv's tables at the end.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL)"]
+#[ignore = "requires sqld (CUENV_INFRASTRUCTURE_TEST_SQLD)"]
 async fn layouts_and_waiting_migrations_against_a_server() {
-    let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL").unwrap();
+    let database = Database::isolated().unwrap();
     let mut store = TursoStateStore::try_new(TursoConfiguration {
-        url,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })
     .unwrap();

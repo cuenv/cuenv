@@ -31,6 +31,7 @@ fn store_at(server: &FakeServer) -> D1StateStore {
     store.inner.retry_policy = RetryPolicy {
         retries: 3,
         initial_delay: Duration::from_millis(1),
+        busy_budget: Duration::from_millis(50),
     };
     store.inner.migration_wait = MigrationWait {
         bound: Duration::ZERO,
@@ -1116,6 +1117,7 @@ async fn connection_failures_name_neither_the_account_nor_the_database() {
     store.inner.retry_policy = RetryPolicy {
         retries: 1,
         initial_delay: Duration::from_millis(1),
+        busy_budget: Duration::from_millis(50),
     };
     let message = store.list(&tenant()).await.unwrap_err().to_string();
     assert!(message.contains("D1 request failed"), "{message}");

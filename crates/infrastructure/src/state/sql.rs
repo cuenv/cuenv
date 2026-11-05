@@ -37,7 +37,7 @@
 //! number.
 
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
@@ -269,25 +269,90 @@ impl Dialect {
     }
 }
 
-/// How transient failures are retried.
+/// How failures worth another attempt are retried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct RetryPolicy {
-    /// Retries after the first attempt.
+    /// Retries of a [`FailureKind::Transient`] failure.
     pub(super) retries: u32,
     /// Delay before the first retry; doubled before each further retry.
     pub(super) initial_delay: Duration,
+    /// How long a [`FailureKind::Busy`] database is tried again. Measured in
+    /// time, not attempts: how many attempts it takes depends on how many
+    /// other writers there are, and each of them finishes in moments.
+    pub(super) busy_budget: Duration,
 }
 
 impl RetryPolicy {
     pub(super) const DEFAULT: Self = Self {
         retries: 3,
         initial_delay: Duration::from_millis(200),
+        busy_budget: Duration::from_secs(30),
     };
 
     /// Delay before retry number `retry` (zero based): 200 ms, 400 ms, 800 ms.
     pub(super) fn delay(self, retry: u32) -> Duration {
         self.initial_delay
             .saturating_mul(2_u32.saturating_pow(retry))
+    }
+}
+
+/// The longest wait between two attempts on a busy database.
+const MAXIMUM_BUSY_DELAY: Duration = Duration::from_secs(2);
+
+/// `delay`, less a random share of up to half of it, so that writers that
+/// collided do not try again in step.
+fn jittered(delay: Duration) -> Duration {
+    let half = delay / 2;
+    let range = u64::try_from(half.as_nanos()).unwrap_or(u64::MAX);
+    let (random, _) = uuid::Uuid::new_v4().as_u64_pair();
+    half + Duration::from_nanos(random % range.saturating_add(1))
+}
+
+/// The retries one operation has taken, and what its policy leaves it.
+struct Retries {
+    policy: RetryPolicy,
+    transient: u32,
+    busy: u32,
+    busy_since: Option<Instant>,
+}
+
+impl Retries {
+    const fn new(policy: RetryPolicy) -> Self {
+        Self {
+            policy,
+            transient: 0,
+            busy: 0,
+            busy_since: None,
+        }
+    }
+
+    /// Take another retry after `failure`: how long to wait before it, or
+    /// `None` when none is left.
+    fn after(&mut self, failure: &Failure) -> Option<Duration> {
+        match failure.kind {
+            FailureKind::Transient if self.transient < self.policy.retries => {
+                let delay = failure.delay(self.policy, self.transient);
+                self.transient += 1;
+                Some(delay)
+            }
+            FailureKind::Busy
+                if self.busy_since.get_or_insert_with(Instant::now).elapsed()
+                    < self.policy.busy_budget =>
+            {
+                let delay = self.policy.delay(self.busy).min(MAXIMUM_BUSY_DELAY);
+                self.busy = self.busy.saturating_add(1);
+                Some(jittered(delay))
+            }
+            FailureKind::Transient
+            | FailureKind::Busy
+            | FailureKind::Statement
+            | FailureKind::Permanent => None,
+        }
+    }
+
+    /// How many attempts have been made once the retries taken so far ran.
+    const fn attempts(&self) -> u32 {
+        self.transient.saturating_add(self.busy).saturating_add(1)
     }
 }
 
@@ -370,29 +435,32 @@ impl<T: SqlTransport> SqlStateStore<T> {
     where
         Attempt: Future<Output = Attempted<Output>>,
     {
-        let mut retry = 0;
+        let mut retries = Retries::new(self.retry_policy);
         loop {
-            match attempt().await {
+            let failure = match attempt().await {
                 Ok(output) => return Ok(output),
-                Err(failure) if failure.is_transient() && retry < self.retry_policy.retries => {
-                    let delay = failure.delay(self.retry_policy, retry);
-                    tracing::warn!(
-                        attempt = retry + 1,
-                        delay_milliseconds = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-                        error = %self.redact(&failure.message),
-                        "transient {} failure; retrying",
-                        T::NAME
-                    );
-                    tokio::time::sleep(delay).await;
-                    retry += 1;
-                }
-                Err(failure) if failure.is_transient() && retry > 0 => {
-                    return Err(Failure::new(
-                        failure.kind,
-                        format!("{} (gave up after {} attempts)", failure.message, retry + 1),
-                    ));
-                }
-                Err(failure) => return Err(failure),
+                Err(failure) => failure,
+            };
+            let attempt_number = retries.attempts();
+            if let Some(delay) = retries.after(&failure) {
+                tracing::warn!(
+                    attempt = attempt_number,
+                    delay_milliseconds = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                    error = %self.redact(&failure.message),
+                    "transient {} failure; retrying",
+                    T::NAME
+                );
+                tokio::time::sleep(delay).await;
+            } else if failure.is_transient() && attempt_number > 1 {
+                return Err(Failure::new(
+                    failure.kind,
+                    format!(
+                        "{} (gave up after {attempt_number} attempts)",
+                        failure.message
+                    ),
+                ));
+            } else {
+                return Err(failure);
             }
         }
     }
@@ -962,9 +1030,9 @@ impl<T: SqlTransport> SqlStateStore<T> {
             lock_identifier: lock_identifier.clone(),
         };
 
-        let mut retry = 0;
+        let mut retries = Retries::new(self.retry_policy);
+        let mut changed_hands = 0;
         loop {
-            let last_attempt = retry >= self.retry_policy.retries;
             match self
                 .transport
                 .execute_once(std::slice::from_ref(&insert))
@@ -993,8 +1061,8 @@ impl<T: SqlTransport> SqlStateStore<T> {
                         if let Some(version) = self.pending_migration().await? {
                             return Err(InfrastructureError::StateMigrationPending { version });
                         }
-                        if !last_attempt {
-                            retry += 1;
+                        if changed_hands < self.retry_policy.retries {
+                            changed_hands += 1;
                             continue;
                         }
                         return Err(InfrastructureError::state(format!(
@@ -1003,16 +1071,26 @@ impl<T: SqlTransport> SqlStateStore<T> {
                     }
                 },
                 Err(failure) if failure.is_transient() => {
+                    let attempt_number = retries.attempts();
+                    let retry = retries.after(&failure);
                     // The insert may have committed even though the response
                     // was lost; check before retrying or failing.
-                    match self.read_lock(tenant).await {
-                        Ok(Some(information)) if ours(&information) => return Ok(acquired()),
-                        Ok(Some(information)) => {
+                    match (self.read_lock(tenant).await, retry) {
+                        (Ok(Some(information)), _) if ours(&information) => return Ok(acquired()),
+                        (Ok(Some(information)), _) => {
                             return Err(locked(tenant, information));
                         }
-                        Ok(None) | Err(_) if !last_attempt => {}
-                        Ok(None) => return Err(self.error(&failure)),
-                        Err(read_error) => {
+                        (Ok(None) | Err(_), Some(delay)) => {
+                            tracing::warn!(
+                                attempt = attempt_number,
+                                error = %self.redact(&failure.message),
+                                "transient {} failure acquiring the state lock; retrying",
+                                T::NAME
+                            );
+                            tokio::time::sleep(delay).await;
+                        }
+                        (Ok(None), None) => return Err(self.error(&failure)),
+                        (Err(read_error), None) => {
                             return Err(InfrastructureError::state(format!(
                                 "{}; the state lock for {tenant} may have been acquired as \
                                  {lock_identifier} (checking failed: {read_error}); if so, \
@@ -1021,18 +1099,9 @@ impl<T: SqlTransport> SqlStateStore<T> {
                             )));
                         }
                     }
-                    let delay = failure.delay(self.retry_policy, retry);
-                    tracing::warn!(
-                        attempt = retry + 1,
-                        error = %self.redact(&failure.message),
-                        "transient {} failure acquiring the state lock; retrying",
-                        T::NAME
-                    );
-                    tokio::time::sleep(delay).await;
                 }
                 Err(failure) => return Err(self.error(&failure)),
             }
-            retry += 1;
         }
     }
 
@@ -1753,6 +1822,9 @@ pub(super) enum FailureKind {
     /// Worth retrying: the request may not have reached the database, or the
     /// database was briefly unavailable. The request may also have committed.
     Transient,
+    /// Worth retrying for longer: the database answered that another writer
+    /// holds its write lock, and did nothing.
+    Busy,
     /// The database rejected a statement.
     Statement,
     /// Retrying cannot help.
@@ -1792,7 +1864,7 @@ impl Failure {
     }
 
     pub(super) fn is_transient(&self) -> bool {
-        self.kind == FailureKind::Transient
+        matches!(self.kind, FailureKind::Transient | FailureKind::Busy)
     }
 }
 

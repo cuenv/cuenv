@@ -7,13 +7,14 @@
 //! These tests are ignored because they need a real provider binary and state server:
 //! ```text
 //! CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER=/path/terraform-provider-random \
-//! CUENV_INFRASTRUCTURE_TEST_TURSO_URL=http://127.0.0.1:8080 \
+//! CUENV_INFRASTRUCTURE_TEST_SQLD=/path/sqld \
 //! cuenv exec -- cargo test -p cuenv --test infrastructure_lifecycle -- --ignored
 //! ```
-//! Start a local server with `sqld --http-listen-addr 127.0.0.1:8080`.
-//! `TURSO_AUTH_TOKEN` is optional for an authenticated test database; every
-//! generated configuration passes it through as the state token. Each run
-//! uses a unique project name and temporary configuration and user directories.
+//! Each test starts its own server. To use a database instead, set
+//! `CUENV_INFRASTRUCTURE_TEST_TURSO_URL`, and `TURSO_AUTH_TOKEN` if it is
+//! authenticated: every generated configuration passes it through as the state
+//! token. Each run uses a unique project name and temporary configuration and
+//! user directories.
 //! Data source tests additionally use `CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER`.
 
 use std::error::Error;
@@ -24,6 +25,10 @@ use std::sync::Mutex;
 
 use cuenv_infrastructure::{StateStore, TenantKey, TursoConfiguration, TursoStateStore};
 use serde_json::Value;
+
+#[path = "../../infrastructure/tests/support/sqld.rs"]
+mod sqld;
+use sqld::Database;
 
 type TestResult<Success = ()> = Result<Success, Box<dyn Error>>;
 
@@ -81,8 +86,9 @@ struct Invocation<'a> {
 async fn moving_infrastructure_to_a_separate_package_preserves_state() -> TestResult {
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let store = TursoStateStore::try_new(backend.clone())?;
@@ -416,8 +422,9 @@ infrastructure: {{
 async fn random_provider_create_edit_destroy_stack() -> TestResult {
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let store = TursoStateStore::try_new(backend.clone())?;
@@ -525,8 +532,9 @@ async fn random_provider_create_edit_destroy_stack() -> TestResult {
 async fn named_environment_passes_an_exec_secret_to_the_provider() -> TestResult {
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let store = TursoStateStore::try_new(backend.clone())?;
@@ -649,8 +657,9 @@ infrastructure: {{
 async fn a_run_without_env_cannot_claim_what_an_environment_records() -> TestResult {
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let store = TursoStateStore::try_new(backend.clone())?;
@@ -707,8 +716,9 @@ async fn a_run_without_env_cannot_claim_what_an_environment_records() -> TestRes
 async fn the_remote_cache_credential_never_reaches_a_provider() -> TestResult {
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let project = format!("random-cache-token-{}", uuid::Uuid::new_v4());
@@ -737,8 +747,9 @@ async fn the_remote_cache_credential_never_reaches_a_provider() -> TestResult {
 async fn a_moved_project_keeps_its_state() -> TestResult {
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let project = format!("random-owner-{}", uuid::Uuid::new_v4());
@@ -929,8 +940,9 @@ async fn generated_provider_types_type_the_project() -> TestResult {
 
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let directory = prepare_directory()?;
@@ -1030,8 +1042,9 @@ infrastructure: {{
 async fn native_output_selectors_resolve_and_infer_dependencies() -> TestResult {
     let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
         .canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let project = format!("native-output-{}", uuid::Uuid::new_v4());
@@ -1099,8 +1112,9 @@ async fn generated_nested_token_references_plan_and_apply_through_cli() -> TestR
 
     let provider =
         PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let directory = prepare_directory()?;
@@ -1211,8 +1225,9 @@ async fn generated_data_sources_resolve_native_selectors() -> TestResult {
 
     let provider =
         PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let directory = prepare_directory()?;
@@ -1419,8 +1434,9 @@ infrastructure: {{
 async fn data_source_only_cli_invocations_read_without_managed_state() -> TestResult {
     let provider =
         PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let directory = prepare_directory()?;
@@ -1523,8 +1539,9 @@ enum SensitiveSource {
 async fn sensitive_data_source_destroy(source: SensitiveSource) -> TestResult {
     let provider =
         PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let database = Database::start()?;
     let backend = TursoConfiguration {
-        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        url: database.url().to_owned(),
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     };
     let directory = prepare_directory()?;
@@ -1716,6 +1733,7 @@ struct OutputLifecycle {
     lifecycle: Lifecycle,
     store: TursoStateStore,
     tenant: TenantKey,
+    _database: Database,
 }
 
 impl OutputLifecycle {
@@ -1723,8 +1741,9 @@ impl OutputLifecycle {
     fn new(label: &str, body: &str) -> TestResult<Self> {
         let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?)
             .canonicalize()?;
+        let database = Database::start()?;
         let backend = TursoConfiguration {
-            url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+            url: database.url().to_owned(),
             authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
         };
         let directory = prepare_directory()?;
@@ -1749,6 +1768,7 @@ impl OutputLifecycle {
             lifecycle,
             store,
             tenant,
+            _database: database,
         })
     }
 
