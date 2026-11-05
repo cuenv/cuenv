@@ -83,12 +83,6 @@ pub struct ExecutorConfig {
     pub project_root: PathBuf,
     /// Path to cue.mod root for resolving relative source paths
     pub cue_module_root: Option<PathBuf>,
-    /// Optional: materialize cached outputs on cache hit
-    pub materialize_outputs: Option<PathBuf>,
-    /// Optional: cache directory override
-    pub cache_dir: Option<PathBuf>,
-    /// Optional: print cache path on hits/misses
-    pub show_cache_path: bool,
     /// Optional task-result caching infrastructure (CAS + action cache + VCS hasher).
     /// When `None`, the executor behaves exactly as it did before content-addressed
     /// caching was wired in: tasks always run, nothing is persisted, nothing is read.
@@ -109,9 +103,6 @@ impl Default for ExecutorConfig {
             working_dir: None,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cue_module_root: None,
-            materialize_outputs: None,
-            cache_dir: None,
-            show_cache_path: false,
             cache: None,
             sandbox_hasher_root: None,
             sandbox_project_roots: BTreeMap::new(),

@@ -41,7 +41,6 @@ struct TaskExecutionInput<'a> {
     environment: Option<&'a str>,
     format: &'a str,
     capture_output: OutputCapture,
-    materialize_outputs: Option<&'a str>,
     skip_dependencies: bool,
     continue_on_error: bool,
     dry_run: DryRun,
@@ -68,11 +67,6 @@ impl<'a> TaskExecutionInput<'a> {
             environment: request.environment.as_deref(),
             format: &request.output.format,
             capture_output: request.output.capture_output,
-            materialize_outputs: request
-                .output
-                .materialize_outputs
-                .as_ref()
-                .and_then(|path| path.to_str()),
             skip_dependencies: request.skip_dependencies,
             continue_on_error: request.continue_on_error,
             dry_run: request.dry_run,
@@ -95,10 +89,6 @@ impl<'a> TaskExecutionInput<'a> {
 
     fn lists_tasks(&self) -> bool {
         self.task_name.is_none() && self.labels.is_empty()
-    }
-
-    fn shows_cache_path(&self) -> bool {
-        self.output.show_cache_path
     }
 
     fn shows_help(&self) -> bool {
@@ -801,12 +791,6 @@ fn task_executor_config(spec: &TaskExecutorConfigSpec<'_, '_>) -> ExecutorConfig
         working_dir: None,
         cue_module_root: spec.context.cue_module_root.clone(),
         project_root: spec.context.project_root.clone(),
-        materialize_outputs: spec
-            .input
-            .materialize_outputs
-            .map(|path| Path::new(path).to_path_buf()),
-        cache_dir: None,
-        show_cache_path: spec.input.shows_cache_path(),
         cache: spec.runtime.cache.clone(),
         sandbox_hasher_root: Some(task_hasher_root(spec.context)),
         sandbox_project_roots: spec.context.project_roots.clone(),

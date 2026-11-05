@@ -60,7 +60,7 @@ Generation rules:
 - Cache-hit streams and outputs are fetched and digest-verified into a workdir-local scratch directory before any workspace path is replaced. Every transient workspace directory (staging, projection, backup) is an `exec_root::ScratchDir` named with `cuenv_vcs::SCRATCH_PREFIX` (`.cuenv-scratch-*`); input hashing and output collection both skip them, so a concurrent task's scratch copies never become inputs or outputs. Cached output paths that escape the workdir or traverse symlink parents are rejected.
 - Miss and hit output projection use staged, rollback-capable replacement. A failed task never projects partial outputs, and a successful result removes declared outputs it omitted so downstream tasks cannot consume stale artifacts.
 - Every sandboxed retry gets a fresh verified execution root. Failed-attempt files never flow into a cached success. In inherited/streaming output mode result caching is disabled because that process path does not capture reproducible stdout/stderr bytes.
-- `--show-cache-path` and `--materialize-outputs` parse but do nothing; never recommend them. There is no `cuenv cache` command surface yet.
+- There is no `cuenv cache` command surface yet.
 - `CUENV_CACHE=off|read|write|read-write` overrides task-result cache mode for one run (the analogue of moon's `MOON_CACHE`). It only narrows a declared policy: each permission applies only when the task's own mode also grants it, so `write` records nothing for a task declared `read` and nothing is ever enabled for `never`. It never disables directory isolation.
 - `collect_outputs` derives walk roots from each output pattern's literal prefix. Do not reintroduce a full-workdir walk; a task declaring `target/release/app` must not traverse `node_modules`.
 

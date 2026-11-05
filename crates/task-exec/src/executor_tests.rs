@@ -1376,15 +1376,11 @@ fn test_executor_config_with_fields() {
         working_dir: Some(PathBuf::from("/tmp")),
         project_root: PathBuf::from("/project"),
         cue_module_root: Some(PathBuf::from("/project/cue.mod")),
-        materialize_outputs: Some(PathBuf::from("/outputs")),
-        cache_dir: Some(PathBuf::from("/cache")),
-        show_cache_path: true,
         ..Default::default()
     };
     assert!(config.capture_output.should_capture());
     assert_eq!(config.max_parallel, 4);
     assert_eq!(config.working_dir, Some(PathBuf::from("/tmp")));
-    assert!(config.show_cache_path);
 }
 
 #[test]

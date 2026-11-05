@@ -20,7 +20,6 @@ impl Commands {
             | Self::Deny { .. }
             | Self::Export { .. }
             | Self::Ci(_)
-            | Self::Web { .. }
             | Self::Completions { .. }) => command.into_general_command(environment),
             command @ Self::Task { .. } => command.into_task_command(environment),
             command @ (Self::Env { .. }
@@ -105,7 +104,6 @@ impl Commands {
                 package,
             },
             Self::Ci(args) => Command::Ci { args },
-            Self::Web { port, host } => Command::Web { port, host },
             Self::Completions { shell } => Command::Completions { shell },
             _ => unreachable!("general command conversion called for another command family"),
         }
@@ -119,8 +117,6 @@ impl Commands {
                 package,
                 labels,
                 output_format,
-                materialize_outputs,
-                show_cache_path,
                 tui,
                 interactive,
                 help,
@@ -135,8 +131,6 @@ impl Commands {
                 labels,
                 environment,
                 format: output_format.map_or(String::new(), |f| f.to_string()),
-                materialize_outputs,
-                show_cache_path,
                 tui,
                 interactive,
                 help,

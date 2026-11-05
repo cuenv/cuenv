@@ -57,12 +57,6 @@ fn selected_task_request<'a>(
     if input.capture_output.should_capture() {
         request = request.with_capture();
     }
-    if let Some(path) = input.materialize_outputs {
-        request = request.with_materialize_outputs(path);
-    }
-    if input.shows_cache_path() {
-        request = request.with_show_cache_path();
-    }
     if input.uses_tui() {
         request = request.with_tui();
     }

@@ -4,7 +4,6 @@
 //! the 16-parameter function signature with a single request struct.
 
 use std::fmt;
-use std::path::PathBuf;
 
 use crate::commands::CommandExecutor;
 use cuenv_core::{DryRun, OutputCapture};
@@ -101,12 +100,6 @@ pub struct OutputConfig {
     /// Whether to capture stdout/stderr instead of streaming
     pub capture_output: OutputCapture,
 
-    /// Whether to show cache paths in output
-    pub show_cache_path: bool,
-
-    /// Path to materialize task outputs to
-    pub materialize_outputs: Option<PathBuf>,
-
     /// Show help for the task instead of executing
     pub help: bool,
 }
@@ -116,8 +109,6 @@ impl Default for OutputConfig {
         Self {
             format: "simple".to_string(),
             capture_output: OutputCapture::Capture,
-            show_cache_path: false,
-            materialize_outputs: None,
             help: false,
         }
     }
@@ -268,20 +259,6 @@ impl<'a> TaskExecutionRequest<'a> {
         self
     }
 
-    /// Set materialize outputs path.
-    #[must_use]
-    pub fn with_materialize_outputs(mut self, path: impl Into<PathBuf>) -> Self {
-        self.output.materialize_outputs = Some(path.into());
-        self
-    }
-
-    /// Enable cache path display.
-    #[must_use]
-    pub const fn with_show_cache_path(mut self) -> Self {
-        self.output.show_cache_path = true;
-        self
-    }
-
     /// Skip executing task dependencies.
     #[must_use]
     pub const fn with_skip_dependencies(mut self) -> Self {
@@ -422,31 +399,10 @@ mod tests {
     }
 
     #[test]
-    fn test_with_materialize_outputs() {
-        let executor = create_test_executor();
-        let req = TaskExecutionRequest::named("./", "cuenv", "build", &executor)
-            .with_materialize_outputs("/tmp/outputs");
-        assert_eq!(
-            req.output.materialize_outputs,
-            Some(PathBuf::from("/tmp/outputs"))
-        );
-    }
-
-    #[test]
-    fn test_with_show_cache_path() {
-        let executor = create_test_executor();
-        let req =
-            TaskExecutionRequest::named("./", "cuenv", "build", &executor).with_show_cache_path();
-        assert!(req.output.show_cache_path);
-    }
-
-    #[test]
     fn test_output_config_default() {
         let config = OutputConfig::default();
         assert_eq!(config.format, "simple");
         assert!(config.capture_output.should_capture());
-        assert!(!config.show_cache_path);
-        assert!(config.materialize_outputs.is_none());
         assert!(!config.help);
     }
 
@@ -490,14 +446,11 @@ mod tests {
         let config = OutputConfig {
             format: "json".to_string(),
             capture_output: OutputCapture::Capture,
-            show_cache_path: true,
-            materialize_outputs: Some(PathBuf::from("/tmp")),
             help: true,
         };
         let cloned = config.clone();
         assert_eq!(cloned.format, "json");
         assert!(cloned.capture_output.should_capture());
-        assert!(cloned.show_cache_path);
     }
 
     #[test]

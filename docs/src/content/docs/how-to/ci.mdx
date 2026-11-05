@@ -263,12 +263,6 @@ cuenv ci --pipeline ci --export buildkite | buildkite-agent pipeline upload
 cuenv ci --pipeline ci --export github-actions --output .github/workflows/ci.yml
 ```
 
-<Aside type="caution" title="`--filter-matrix` is reserved">
-`--filter-matrix` exists in the CLI but is **reserved and rejected** — local
-matrix filtering is not supported yet. Use `cuenv sync ci` to generate
-provider-native matrix workflows.
-</Aside>
-
 ## Provider support, honestly
 
 Export formats and sync paths differ in maturity. Mirror this when you choose a

@@ -210,7 +210,6 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             | cli::Commands::Exec { .. }
             | cli::Commands::Ci { .. }
             | cli::Commands::Build { .. }
-            | cli::Commands::Web { .. }
             | cli::Commands::Allow { .. }
             | cli::Commands::Deny { .. }
             | cli::Commands::Sync { .. }
@@ -354,7 +353,6 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
         | Command::InfrastructureProvider { .. }
         | Command::Ci { .. }
         | Command::ShellInit { .. }
-        | Command::Web { .. }
         | Command::Completions { .. }
         | Command::ChangesetAdd { .. }
         | Command::ChangesetStatus { .. }

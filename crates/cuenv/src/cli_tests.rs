@@ -971,8 +971,6 @@ fn test_commands_package_method() {
         package: "mypackage".to_string(),
         labels: vec![],
         output_format: Some(OutputFormat::Text),
-        materialize_outputs: None,
-        show_cache_path: false,
         tui: false,
         interactive: false,
         help: false,

@@ -162,10 +162,9 @@ Preserving a link *as a link* (`SymlinkNode`) is still not implemented.
 stored, so a cache miss could not be explained or diffed against the
 previous run.
 **F16** — Cached stdout/stderr replay as two blocks, losing interleaving.
-**F17** — `--show-cache-path` and `--materialize-outputs` are parsed, plumbed
-into `ExecutorConfig` (`executor.rs:88`, `executor.rs:92`) and never read. The
-docs told users to use them. Documented as unimplemented in phase 0; the flags
-become real with the `cuenv cache` surface in phase 2.
+**F17 — `--show-cache-path` and `--materialize-outputs` did nothing.** *[fixed]*
+They were parsed, plumbed into `ExecutorConfig` and never read, so both were
+removed.
 
 **F19 — Output collection walked the entire working directory.** *[fixed]*
 `collect_outputs` built a globset and then walked all of `workdir` to filter
@@ -375,8 +374,6 @@ still reach the network and absolute host paths.
   lockfile. **(F12)**
 - `cuenv cache` command surface: `stats`, `gc` (LRU by access time against a
   size budget), `prune`, `verify`. **(F11)**
-- Make `--show-cache-path` and `--materialize-outputs` do what they say, or
-  remove them. **(F17)**
 
 *Exit:* warm no-op run on a large monorepo is dominated by process spawn,
 not by hashing or copying; the cache respects a configured size budget.

@@ -18,10 +18,6 @@ argument parsing and passes a normalized `SyncRequest` to that registry. cuenv
 does not expose a third-party sync-provider API. Runtime execution and secret
 resolution remain on their existing task and resolver paths.
 
-CLI-only note: `cuenv web` has no schema definition. It is reserved for a
-future event server and currently fails fast instead of starting a placeholder
-server.
-
 CLI-only note: cuenv reads `cue.mod/module.cue` only to warn when a module's
 `github.com/cuenv/cuenv` schema dependency version differs from the running CLI.
 `cuenv sync` never writes `cue.mod/module.cue`.

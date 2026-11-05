@@ -234,15 +234,6 @@ cuenv task -i
 
 ### Cache helpers
 
-:::caution[Not implemented]
-`--show-cache-path` and `--materialize-outputs` are accepted on the command
-line but currently do nothing: the flags are parsed and passed to the executor,
-which ignores them. They are listed in
-[ADR-0008](/decisions/adrs/adr-0008-hermetic-task-execution-cache/) as intended
-behaviour and are tracked as part of the `cuenv cache` command surface in
-phase 2 of the hermetic/CAS roadmap. Do not rely on them yet.
-:::
-
 On a cache hit, cuenv restores the task's declared `outputs` into its working
 directory automatically — there is no flag to enable it. Output replacement is
 transactional: all files are staged and validated before previous owned paths

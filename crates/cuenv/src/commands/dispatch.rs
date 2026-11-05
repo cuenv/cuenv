@@ -30,8 +30,7 @@ impl CommandExecutor {
             | Command::Ci { .. }
             | Command::Sync { .. }
             | Command::ShellInit { .. }) => self.execute_handler_command(command).await,
-            Command::Web { .. }
-            | Command::Completions { .. }
+            Command::Completions { .. }
             | Command::Info { .. }
             | Command::Fmt { .. }
             | Command::ChangesetAdd { .. }

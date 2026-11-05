@@ -93,20 +93,6 @@ pub enum Commands {
             value_enum
         )]
         output_format: Option<OutputFormat>,
-        /// Materialize cached outputs to this directory on cache hit.
-        #[arg(
-            long = "materialize-outputs",
-            help = "Materialize cached outputs to this directory on cache hit (off by default)",
-            value_name = "DIR"
-        )]
-        materialize_outputs: Option<String>,
-        /// Print the cache path for this task key.
-        #[arg(
-            long = "show-cache-path",
-            help = "Print the cache path for this task key",
-            default_value_t = false
-        )]
-        show_cache_path: bool,
         /// Use rich TUI for task execution.
         #[arg(long, help = "Use rich TUI for task execution")]
         tui: bool,
@@ -282,25 +268,6 @@ pub enum Commands {
     /// Run CI pipelines.
     #[command(about = "Run CI pipelines")]
     Ci(crate::commands::ci::CiArgs),
-    /// Reserved for the future web event server.
-    #[command(about = "Reserved for the future web event server")]
-    Web {
-        /// Port the future server would listen on.
-        #[arg(
-            long,
-            short = 'p',
-            help = "Port the future server would listen on",
-            default_value = "3000"
-        )]
-        port: u16,
-        /// Host the future server would bind to.
-        #[arg(
-            long,
-            help = "Host the future server would bind to",
-            default_value = "127.0.0.1"
-        )]
-        host: String,
-    },
     /// Manage changesets for release.
     #[command(about = "Manage changesets for release")]
     Changeset {
@@ -617,7 +584,6 @@ impl Commands {
             | Self::Completions { .. }
             | Self::Shell { .. }
             | Self::Ci { .. }
-            | Self::Web { .. }
             | Self::Changeset { .. }
             | Self::Release { .. }
             | Self::Secrets { .. }
