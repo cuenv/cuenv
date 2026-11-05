@@ -2207,6 +2207,25 @@ async fn an_output_declared_with_the_wrong_type_is_refused_while_planning() -> T
     Ok(())
 }
 
+/// A declaration with a constraint cannot be read as an output. That says what is wrong
+/// with the declaration, not that the reference decides any structure.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_refined_output_declaration_is_refused_as_a_declaration() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "refined-output",
+        &outputs_stack(&format!(
+            "producer: {{type: \"fake_plain\", outputs: id: string & =~\"^a\", configuration: name: \"producer\"}}, consumer: {{type: \"fake_plain\", configuration: name: {PRODUCER_ID}}}"
+        )),
+    )?;
+    stack.fails(
+        &["plan"],
+        "output declarations must be bare string, number or bool types",
+    )?;
+    assert_eq!(stack.mutations(), 0);
+    Ok(())
+}
+
 /// A definition with a conditional field reading something outside of it used to
 /// crash the evaluator as soon as it was instantiated.
 #[tokio::test(flavor = "multi_thread")]
