@@ -149,9 +149,8 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const TAB_MARK_HEIGHT: Pixels = px(16.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = px(3.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_HEIGHT: Pixels = px(16.0);
-    pub(in crate::terminal::chrome) const TASK_SIDEBAR_WIDTH: Pixels = px(280.0);
     pub(in crate::terminal::chrome) const PALETTE_WIDTH: Pixels = px(520.0);
-    pub(in crate::terminal::chrome) const PALETTE_ROW_HEIGHT: Pixels = px(32.0);
+    pub(in crate::terminal::chrome) const PALETTE_ROW_HEIGHT: Pixels = px(44.0);
     pub(in crate::terminal::chrome) const PALETTE_TOP_OFFSET: Pixels = px(54.0);
     pub(in crate::terminal::chrome) const PALETTE_FIELD_HEIGHT: Pixels = px(38.0);
     pub(in crate::terminal::chrome) const PALETTE_KIND_WIDTH: Pixels = px(64.0);
@@ -167,9 +166,6 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const TAB_ACTION: Pixels = px(20.0);
     pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
     pub(in crate::terminal::chrome) const SEARCH_BAR_WIDTH: Pixels = px(360.0);
-    /// The least the search bar will be squeezed to before it stops making room for what
-    /// is beside it. Its buttons and count take about half of this.
-    pub(in crate::terminal::chrome) const SEARCH_BAR_MIN_WIDTH: Pixels = px(240.0);
     pub(in crate::terminal::chrome) const SEARCH_BUTTON: Pixels = px(26.0);
     /// How much of the terminal's edge answers to the pointer. Within its default padding,
     /// so a selection can still start in the last column.

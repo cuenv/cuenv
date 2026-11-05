@@ -11,6 +11,7 @@ use crate::terminal::engine::{
 };
 use crate::terminal::model::Rgb;
 use crate::terminal::motion::{HoverTarget, SidebarButton};
+use crate::terminal::palette::Mode as PaletteMode;
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_label::{TabMarkSources, tab_mark, tab_subtitle, tab_tooltip};
 use crate::terminal::tab_rename::TabRename;
@@ -222,14 +223,19 @@ impl TerminalView {
         let palette_chord = self.palette_chord_label();
         let tasks = self
             .control(SidebarButton::Tasks, &colors, cx)
-            .when(self.task_sidebar_open, |this| this.bg(colors.state))
+            .when(
+                self.palette_open
+                    && PaletteMode::from_query(&self.palette_query) == PaletteMode::Tasks,
+                |this| this.bg(colors.state),
+            )
             .cursor_pointer()
             .tooltip(chrome_tooltip(
-                format!("Cuenv tasks · {palette_chord} to search"),
+                format!("Search Cuenv tasks · {palette_chord}, then $"),
                 colors,
             ))
-            .on_click(cx.listener(|view, _event, _window, cx| {
-                view.task_sidebar_open = !view.task_sidebar_open;
+            .on_click(cx.listener(|view, _event, window, cx| {
+                view.open_command_palette(PaletteMode::Tasks);
+                view.focus_terminal(window);
                 cx.notify();
             }))
             .child(Icon::Tasks.element(colors.text_secondary));
@@ -246,10 +252,7 @@ impl TerminalView {
             ))
             .on_click(cx.listener(|view, _event, _window, cx| view.toggle_sidebar(cx)))
             .child(toggle_icon.element(colors.text_secondary));
-        // Only said where the chord works: without a task catalogue, or a shell left to
-        // run one, the key is left alone. A collapsed sidebar has no room for it, and the tasks button's
-        // tooltip says the same.
-        let palette_hint = (has_tasks && mode == SidebarMode::Expanded).then(|| {
+        let palette_hint = (mode == SidebarMode::Expanded).then(|| {
             let target = HoverTarget::Button(SidebarButton::PaletteHint);
             div()
                 .id("cuetty-palette-hint")
@@ -269,11 +272,11 @@ impl TerminalView {
                 .text_size(text::CAPTION)
                 .text_color(colors.text_muted)
                 .on_click(cx.listener(|view, _event, window, cx| {
-                    view.toggle_task_palette();
+                    view.open_command_palette(PaletteMode::Commands);
                     view.focus_terminal(window);
                     cx.notify();
                 }))
-                .child(div().min_w_0().truncate().child("Search tasks"))
+                .child(div().min_w_0().truncate().child("Commands"))
                 .child(
                     div()
                         .flex_none()

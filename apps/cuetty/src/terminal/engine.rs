@@ -26,6 +26,7 @@ use super::motion::{
     ChromeMotion, HoverTarget, MotionPace, SidebarButton, SidebarFrame, TabPlaces,
 };
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
+use super::palette::{self, Command as PaletteCommand, Item as PaletteItem, Mode as PaletteMode};
 use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::scrollbar::ScrollExtent;
 use super::sizing::CellSize;
@@ -37,8 +38,8 @@ use super::workspace_shell::{
 };
 use crate::integrations::cuenv::{
     ChordModifiers, ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher,
-    Evaluation, EvaluationStage, KeyChord, NativeCuenvProvider, SidebarMode, StagedEvaluation,
-    WindowSidebar, evaluate_within,
+    Evaluation, EvaluationStage, KeyChord, Keybindings, NativeCuenvProvider, SidebarMode,
+    StagedEvaluation, WindowSidebar, evaluate_within,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
@@ -1166,12 +1167,6 @@ impl PaneState {
         }
     }
 
-    /// The chord that opens the palette here, where there are tasks for it to find. A
-    /// chord with nothing to open is left to whatever else it means.
-    fn palette_chord(&self) -> Option<&KeyChord> {
-        (!self.task_catalogue().is_empty()).then_some(&self.cuenv.presentation.keybindings.palette)
-    }
-
     /// Fits the grid to the surface. Only a live shell can be told, but an exited one's
     /// output still has to fit, or its last lines end up below the edge of the surface.
     fn fit_grid(&mut self, width: u32, height: u32, cell: CellSize) {
@@ -1748,11 +1743,10 @@ pub(super) struct TerminalView {
     workspace_bounds: Arc<Mutex<(f32, f32)>>,
     window_background: WindowBackgroundAppearance,
     pub(super) window_decorations: Decorations,
-    pub(super) task_palette_open: bool,
-    pub(super) task_sidebar_open: bool,
-    pub(super) task_query: String,
-    pub(super) task_selection: usize,
-    pub(super) task_palette_scroll: ScrollHandle,
+    pub(super) palette_open: bool,
+    pub(super) palette_query: String,
+    pub(super) palette_selection: usize,
+    pub(super) palette_scroll: ScrollHandle,
     pub(super) rail_scroll: ScrollHandle,
     pub(super) rail_revealed_tab: Option<TabId>,
     /// Whether the rail is showing each tab's number key. Stays off until the
@@ -1788,8 +1782,6 @@ struct LiveHoverTargets {
     palette_hint: bool,
     /// How many rows the open palette lists, as its query has them.
     palette_rows: usize,
-    /// How many rows the open task sidebar lists.
-    task_rows: usize,
     session_actions: bool,
     search: bool,
     scrollbar: bool,
@@ -1803,7 +1795,6 @@ impl LiveHoverTargets {
             HoverTarget::TabClose(tab) => self.tab_close_buttons && tabs.contains(&tab),
             HoverTarget::Button(button) => self.button(button),
             HoverTarget::PaletteRow(row) => row < self.palette_rows,
-            HoverTarget::TaskRow(row) => row < self.task_rows,
             HoverTarget::SessionAction(_) => self.session_actions,
             HoverTarget::SearchButton(_) => self.search,
             HoverTarget::Scrollbar => self.scrollbar,
@@ -1882,8 +1873,8 @@ const FIRST_FRAME_CONFIG_WAIT: std::time::Duration = std::time::Duration::from_m
 /// How long the tab number modifier must be held before the hints appear.
 const TAB_HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(350);
 
-/// How many filtered tasks the palette shows and the keyboard can reach.
-pub(super) const PALETTE_RESULT_LIMIT: usize = 9;
+/// How many result rows fit before the palette scrolls.
+pub(super) const PALETTE_VISIBLE_ROWS: usize = 9;
 
 /// Runs an evaluation on a thread of its own, finishing once it has reported everything.
 async fn evaluate_off_thread(evaluation: StagedEvaluation) {
@@ -1893,21 +1884,6 @@ async fn evaluate_off_thread(evaluation: StagedEvaluation) {
         drop(finished_tx);
     });
     let _ = finished_rx.recv().await;
-}
-
-pub(super) fn filtered_tasks<'a>(tasks: &'a [CuenvTask], query: &str) -> Vec<&'a CuenvTask> {
-    let query = query.trim().to_ascii_lowercase();
-    tasks
-        .iter()
-        .filter(|task| {
-            query.is_empty()
-                || task.name.to_ascii_lowercase().contains(&query)
-                || task
-                    .description
-                    .as_deref()
-                    .is_some_and(|description| description.to_ascii_lowercase().contains(&query))
-        })
-        .collect()
 }
 
 fn shell_quote(value: &str) -> String {
@@ -2033,6 +2009,12 @@ fn chord_matches(chord: &KeyChord, key: &str, modifiers: gpui::Modifiers) -> boo
         && modifiers.platform == chord.modifiers.platform
 }
 
+fn active_palette_chord<'a>(state: Option<&'a PaneState>, fallback: &'a KeyChord) -> &'a KeyChord {
+    state.map_or(fallback, |state| {
+        &state.cuenv.presentation.keybindings.palette
+    })
+}
+
 /// Where a key press goes before the terminal gets a look at it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ChordRoute {
@@ -2044,7 +2026,7 @@ enum ChordRoute {
 
 /// What a key press could select.
 struct ChordTargets<'a> {
-    /// The palette's chord, when there is a task catalogue for it to open.
+    /// The active tab's configured palette chord.
     palette: Option<&'a KeyChord>,
     tabs: &'a WorkspaceShell,
 }
@@ -2232,11 +2214,10 @@ impl TerminalView {
             workspace_bounds: Arc::new(Mutex::new(UNMEASURED_SURFACE)),
             window_background,
             window_decorations: Decorations::default(),
-            task_palette_open: false,
-            task_sidebar_open: false,
-            task_query: String::new(),
-            task_selection: 0,
-            task_palette_scroll: ScrollHandle::new(),
+            palette_open: false,
+            palette_query: String::new(),
+            palette_selection: 0,
+            palette_scroll: ScrollHandle::new(),
             rail_scroll: ScrollHandle::new(),
             rail_revealed_tab: None,
             tab_hints_visible: false,
@@ -2494,14 +2475,10 @@ impl TerminalView {
     }
 
     fn reconcile_task_ui(&mut self) {
-        let count = self
-            .active_state()
-            .map_or(0, |state| state.task_catalogue().len());
-        if count == 0 {
-            self.task_palette_open = false;
-            self.task_sidebar_open = false;
+        if self.palette_open {
+            let count = self.palette_items().len();
+            self.palette_selection = self.palette_selection.min(count.saturating_sub(1));
         }
-        self.task_selection = self.task_selection.min(count.saturating_sub(1));
     }
     fn spawn_cwd_poll(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |weak, cx| {
@@ -2634,7 +2611,7 @@ impl TerminalView {
             return;
         };
         self.tab_rename = Some(TabRename::new(tab, tabs[index].custom_name.as_deref()));
-        self.task_palette_open = false;
+        self.palette_open = false;
         // Settled, so that a first evaluation still on its way cannot collapse the row
         // out from under the edit.
         self.sidebar.expand();
@@ -2830,15 +2807,6 @@ impl TerminalView {
         }
     }
 
-    /// How wide the last draw measured the terminal's surface.
-    pub(super) fn terminal_width(&self) -> Pixels {
-        let (width, _) = *self
-            .workspace_bounds
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        px(width)
-    }
-
     fn scroll_active(&mut self, action: TerminalScroll) {
         if let Some(state) = self.active_state_mut() {
             match state.session.scroll(action) {
@@ -2975,21 +2943,37 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// Toggles the task palette, returning whether the active pane has a
-    /// task catalogue to show.
-    pub(super) fn toggle_task_palette(&mut self) -> bool {
+    pub(super) fn palette_items(&self) -> Vec<PaletteItem> {
+        let state = self.active_state();
+        palette::results(
+            &self.palette_query,
+            palette::Available {
+                tasks: state.map_or(&[][..], PaneState::task_catalogue),
+                tab: self.active_tab().is_some(),
+                screen: state.is_some_and(|state| state.error.is_none()),
+            },
+        )
+    }
+
+    /// Opens the shared palette, optionally starting in the active pane's tasks.
+    pub(super) fn open_command_palette(&mut self, mode: PaletteMode) {
         self.commit_tab_rename();
-        if self
-            .active_state()
-            .is_none_or(|state| state.task_catalogue().is_empty())
-        {
-            return false;
+        self.palette_open = true;
+        self.palette_query = match mode {
+            PaletteMode::Commands => String::new(),
+            PaletteMode::Tasks => "$".into(),
+        };
+        self.palette_selection = 0;
+        self.palette_scroll.scroll_to_item(0);
+    }
+
+    fn toggle_command_palette(&mut self, cx: &mut Context<Self>) {
+        if self.palette_open {
+            self.close_command_palette(cx);
+        } else {
+            self.open_command_palette(PaletteMode::Commands);
+            cx.notify();
         }
-        self.task_palette_open = !self.task_palette_open;
-        self.task_query.clear();
-        self.task_selection = 0;
-        self.task_palette_scroll.scroll_to_item(0);
-        true
     }
 
     pub(super) fn launch_task(&mut self, task: CuenvTask, cx: &mut Context<Self>) {
@@ -3009,49 +2993,83 @@ impl TerminalView {
         {
             state.error = Some(error);
         }
-        self.close_task_palette(cx);
+        self.close_command_palette(cx);
     }
 
-    pub(super) fn close_task_palette(&mut self, cx: &mut Context<Self>) {
-        self.task_palette_open = false;
-        self.task_query.clear();
-        self.task_selection = 0;
+    pub(super) fn close_command_palette(&mut self, cx: &mut Context<Self>) {
+        self.palette_open = false;
+        self.palette_query.clear();
+        self.palette_selection = 0;
         cx.notify();
     }
 
-    fn handle_task_palette_key(
+    pub(super) fn run_palette_item(
+        &mut self,
+        item: PaletteItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let command = match item {
+            PaletteItem::Task(task) => {
+                self.launch_task(task, cx);
+                return;
+            }
+            PaletteItem::Command(command) => command,
+        };
+        self.close_command_palette(cx);
+        self.focus_terminal(window);
+        match command {
+            PaletteCommand::NewTab => self.new_tab(window, cx),
+            PaletteCommand::CloseTab => self.close_active_tab(window, cx),
+            PaletteCommand::RenameTab => {
+                if let Some(tab) = self.active_tab() {
+                    self.begin_tab_rename(tab, window, cx);
+                }
+            }
+            PaletteCommand::NextTab | PaletteCommand::PreviousTab => {
+                let direction = if command == PaletteCommand::NextTab {
+                    TabDirection::Next
+                } else {
+                    TabDirection::Previous
+                };
+                if let Some(tab) = self.registry.workspace.tab_in_direction(direction) {
+                    self.select_terminal_tab(tab, window, cx);
+                }
+            }
+            PaletteCommand::ToggleSidebar => self.toggle_sidebar(cx),
+            PaletteCommand::FindOnScreen => {
+                if let Some(state) = self.active_state_mut() {
+                    state.interaction.enter_search(&state.frame);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn handle_command_palette_key(
         &mut self,
         event: &gpui::KeyDownEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.task_palette_open {
+        if !self.palette_open {
             return false;
         }
         let key = event.keystroke.key.as_str();
         match key {
-            "escape" => self.task_palette_open = false,
+            "escape" => self.palette_open = false,
             "backspace" => {
-                self.task_query.pop();
-                self.task_selection = 0;
+                self.palette_query.pop();
+                self.palette_selection = 0;
             }
-            "up" => self.task_selection = self.task_selection.saturating_sub(1),
+            "up" => self.palette_selection = self.palette_selection.saturating_sub(1),
             "down" => {
-                let count = self
-                    .active_state()
-                    .map(|state| filtered_tasks(&state.cuenv.tasks, &self.task_query).len())
-                    .unwrap_or_default()
-                    .min(PALETTE_RESULT_LIMIT);
-                self.task_selection = (self.task_selection + 1).min(count.saturating_sub(1));
+                let count = self.palette_items().len();
+                self.palette_selection = (self.palette_selection + 1).min(count.saturating_sub(1));
             }
             "enter" => {
-                let selected = self.active_state().and_then(|state| {
-                    filtered_tasks(&state.cuenv.tasks, &self.task_query)
-                        .get(self.task_selection)
-                        .cloned()
-                        .cloned()
-                });
-                if let Some(task) = selected {
-                    self.launch_task(task, cx);
+                if let Some(item) = self.palette_items().get(self.palette_selection).cloned() {
+                    self.run_palette_item(item, window, cx);
                     return true;
                 }
             }
@@ -3060,14 +3078,14 @@ impl TerminalView {
                 && !event.keystroke.modifiers.platform =>
             {
                 if let Some(text) = event.keystroke.key_char.as_deref() {
-                    self.task_query.push_str(text);
-                    self.task_selection = 0;
+                    self.palette_query.push_str(text);
+                    self.palette_selection = 0;
                 }
             }
             _ => {}
         }
         // A short window clips the results, so the selection has to stay visible.
-        self.task_palette_scroll.scroll_to_item(self.task_selection);
+        self.palette_scroll.scroll_to_item(self.palette_selection);
         cx.notify();
         true
     }
@@ -3167,26 +3185,19 @@ impl TerminalView {
                     .active_state()
                     .is_some_and(|state| state.marker_notice().is_some()),
             tasks: has_tasks,
-            palette_hint: has_tasks && self.sidebar_mode() == SidebarMode::Expanded,
-            palette_rows: self
-                .active_state()
-                .filter(|_| self.task_palette_open)
-                .map_or(0, |state| {
-                    filtered_tasks(&state.cuenv.tasks, &self.task_query)
-                        .len()
-                        .min(PALETTE_RESULT_LIMIT)
-                }),
-            task_rows: self
-                .active_state()
-                .filter(|_| self.task_sidebar_open)
-                .map_or(0, |state| state.cuenv.tasks.len()),
+            palette_hint: self.sidebar_mode() == SidebarMode::Expanded,
+            palette_rows: if self.palette_open {
+                self.palette_items().len()
+            } else {
+                0
+            },
             session_actions: self
                 .active_state()
                 .is_none_or(|state| state.error.is_some()),
             search: self
                 .active_state()
                 .is_some_and(|state| state.interaction.search().is_some()),
-            scrollbar: !self.task_palette_open
+            scrollbar: !self.palette_open
                 && self
                     .active_state()
                     .is_some_and(|state| ScrollExtent::of_frame(&state.frame).is_some()),
@@ -3230,15 +3241,24 @@ impl TerminalView {
         }
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
-        let palette = self.active_state().and_then(PaneState::palette_chord);
+        let fallback = Keybindings::default();
+        let palette = active_palette_chord(self.active_state(), &fallback.palette);
         let route = route_chord(
             key,
             modifiers,
             &ChordTargets {
-                palette,
+                palette: Some(palette),
                 tabs: &self.registry.workspace,
             },
         );
+        if route == ChordRoute::OpenPalette {
+            self.hide_tab_hints(cx);
+            self.toggle_command_palette(cx);
+            return;
+        }
+        if self.handle_command_palette_key(event, window, cx) {
+            return;
+        }
         // The hints stay up, so another number can follow without letting go.
         if let ChordRoute::SelectTab(tab) = route {
             self.select_terminal_tab(tab, window, cx);
@@ -3246,19 +3266,10 @@ impl TerminalView {
         }
         // The modifier was held for some other chord, such as Ctrl-C.
         self.hide_tab_hints(cx);
-        // Without a task catalogue the chord is unclaimed, so a plain Ctrl-K palette
-        // binding still reaches the shell as kill-line.
-        if route == ChordRoute::OpenPalette && self.toggle_task_palette() {
-            cx.notify();
-            return;
-        }
         if let Some(direction) = Self::tab_shortcut(key, modifiers) {
             if let Some(tab) = self.registry.workspace.tab_in_direction(direction) {
                 self.select_terminal_tab(tab, window, cx);
             }
-            return;
-        }
-        if self.handle_task_palette_key(event, cx) {
             return;
         }
         if let Some(shortcut) = Self::workspace_shortcut(key, modifiers) {
@@ -3679,14 +3690,11 @@ impl Render for TerminalView {
                 terminal_surface = terminal_surface.child(viewport);
             }
         }
-        if let Some(task_sidebar) = self.render_task_sidebar(&theme, cx) {
-            terminal_surface = terminal_surface.child(task_sidebar);
-        }
         if let Some(search_bar) = self.render_search_bar(&theme, cx) {
             terminal_surface = terminal_surface.child(search_bar);
         }
-        if let Some(task_palette) = self.render_task_palette(&theme, cx) {
-            terminal_surface = terminal_surface.child(task_palette);
+        if let Some(command_palette) = self.render_command_palette(&theme, cx) {
+            terminal_surface = terminal_surface.child(command_palette);
         }
         let top_padding = self.top_padding();
         let surface = div()
@@ -3988,17 +3996,13 @@ mod tests {
     fn a_row_a_filter_has_removed_is_no_longer_there_to_be_hovered() {
         let live = LiveHoverTargets {
             palette_rows: 2,
-            task_rows: 1,
             ..LiveHoverTargets::default()
         };
         assert!(live.holds(HoverTarget::PaletteRow(1), &[]));
         assert!(!live.holds(HoverTarget::PaletteRow(2), &[]));
-        assert!(live.holds(HoverTarget::TaskRow(0), &[]));
-        assert!(!live.holds(HoverTarget::TaskRow(1), &[]));
 
         let closed = LiveHoverTargets::default();
         assert!(!closed.holds(HoverTarget::PaletteRow(0), &[]));
-        assert!(!closed.holds(HoverTarget::TaskRow(0), &[]));
     }
 
     #[test]
@@ -4156,27 +4160,6 @@ mod tests {
         let state = registry.sessions.get_mut(&pane).unwrap();
         state.frame = state.session.frame();
         assert!(!registry.active_cursor_changed());
-    }
-
-    #[test]
-    fn task_filter_matches_names_and_descriptions() {
-        let tasks = vec![
-            CuenvTask {
-                name: "docs.build".into(),
-                description: Some("Build the website".into()),
-                kind: crate::integrations::cuenv::CuenvTaskKind::Task,
-                requires_parameters: false,
-            },
-            CuenvTask {
-                name: "lint".into(),
-                description: None,
-                kind: crate::integrations::cuenv::CuenvTaskKind::Task,
-                requires_parameters: false,
-            },
-        ];
-        assert_eq!(filtered_tasks(&tasks, "DOC").len(), 1);
-        assert_eq!(filtered_tasks(&tasks, "website")[0].name, "docs.build");
-        assert!(filtered_tasks(&tasks, "release").is_empty());
     }
 
     #[test]
@@ -4446,7 +4429,7 @@ mod tests {
     }
 
     #[test]
-    fn a_palette_chord_on_a_digit_wins_only_when_there_is_a_catalogue() {
+    fn a_configured_palette_chord_on_a_digit_takes_precedence() {
         let tabs = shell_with_tabs(1);
         let held = tab_number_modifiers_for_test();
         let palette = KeyChord {
@@ -4468,6 +4451,39 @@ mod tests {
         assert_eq!(
             route_chord("1", held, &without_catalogue),
             ChordRoute::SelectTab(tabs.active_tab().unwrap()),
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn default_palette_shortcut_preserves_plain_ctrl_k_without_tasks() {
+        let tabs = shell_with_tabs(1);
+        let default = Keybindings::default();
+        let (state, _) = bracketed_pane("zsh");
+        assert!(state.task_catalogue().is_empty());
+        let targets = ChordTargets {
+            palette: Some(active_palette_chord(Some(&state), &default.palette)),
+            tabs: &tabs,
+        };
+        let control = gpui::Modifiers {
+            control: true,
+            ..gpui::Modifiers::default()
+        };
+        assert_eq!(route_chord("k", control, &targets), ChordRoute::Unclaimed);
+        assert_eq!(
+            route_chord(
+                "k",
+                gpui::Modifiers {
+                    shift: true,
+                    ..control
+                },
+                &targets
+            ),
+            ChordRoute::OpenPalette
+        );
+        assert_eq!(
+            active_palette_chord(None, &default.palette),
+            &default.palette
         );
     }
 
@@ -6030,7 +6046,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_shells_palette_chord_goes_back_to_selecting_tabs() {
+    fn a_failed_shell_still_offers_the_command_palette() {
         let tabs = shell_with_tabs(1);
         let held = tab_number_modifiers_for_test();
         let (mut state, _) = bracketed_pane("zsh");
@@ -6044,7 +6060,10 @@ mod tests {
                 "1",
                 held,
                 &ChordTargets {
-                    palette: state.palette_chord(),
+                    palette: Some(active_palette_chord(
+                        Some(state),
+                        &Keybindings::default().palette,
+                    )),
                     tabs: &tabs,
                 },
             )
@@ -6053,10 +6072,7 @@ mod tests {
         state.status.apply(StatusEvent::SessionFailed(
             crate::terminal::tab_status::ExitFailure::Code(1),
         ));
-        assert_eq!(
-            route(&state),
-            ChordRoute::SelectTab(tabs.active_tab().unwrap()),
-        );
+        assert_eq!(route(&state), ChordRoute::OpenPalette);
     }
 
     #[test]

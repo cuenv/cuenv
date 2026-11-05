@@ -12,6 +12,7 @@ mod input;
 mod interaction;
 mod motion;
 pub mod overlay;
+mod palette;
 pub mod scrollback;
 pub mod search;
 pub mod selection;

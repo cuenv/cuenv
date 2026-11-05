@@ -55,12 +55,12 @@ impl Default for Keybindings {
     fn default() -> Self {
         let macos = cfg!(target_os = "macos");
         Self {
-            // Cmd-K on macOS and Ctrl-K elsewhere, matching common
-            // command-palette conventions.
+            // Keep plain Ctrl-K available to terminal applications off macOS.
             palette: KeyChord {
                 key: "k".into(),
                 modifiers: ChordModifiers {
                     control: !macos,
+                    shift: !macos,
                     platform: macos,
                     ..ChordModifiers::default()
                 },
@@ -1910,6 +1910,7 @@ mod tests {
         let default = palette(serde_json::json!({}));
         assert_eq!(default.key, "k");
         assert_eq!(default.modifiers.control, !cfg!(target_os = "macos"));
+        assert_eq!(default.modifiers.shift, !cfg!(target_os = "macos"));
         assert_eq!(default.modifiers.platform, cfg!(target_os = "macos"));
         assert_eq!(
             palette(serde_json::json!({"keybindings": {"palette": "Ctrl-Shift-P"}})),

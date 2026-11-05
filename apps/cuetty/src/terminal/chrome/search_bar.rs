@@ -11,7 +11,7 @@ use crate::terminal::motion::{HoverTarget, SearchButton};
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::search::LiteralSearch;
 use gpui::{
-    Context, Div, InteractiveElement, IntoElement, ParentElement, Pixels, Stateful,
+    Context, Div, InteractiveElement, IntoElement, ParentElement, Stateful,
     StatefulInteractiveElement, Styled, div,
 };
 
@@ -27,16 +27,6 @@ fn count_label(search: &LiteralSearch) -> Option<String> {
         (None, 1) => "1 match".into(),
         (None, total) => format!("{total} matches"),
     })
-}
-
-/// How far from the terminal's right edge the bar ends. It sits beside the task sidebar
-/// while that is open and there is room for it there. Otherwise it goes to the edge, above
-/// the sidebar, as the query has to stay readable whatever else is open.
-fn right_inset(terminal_width: Pixels, task_sidebar: Option<Pixels>) -> Pixels {
-    task_sidebar
-        .map(|sidebar| sidebar + space::LG * 2.0)
-        .filter(|beside| terminal_width - *beside - space::MD >= size::SEARCH_BAR_MIN_WIDTH)
-        .unwrap_or(space::MD)
 }
 
 impl SearchButton {
@@ -74,8 +64,7 @@ impl SearchButton {
 }
 
 impl TerminalView {
-    /// Floats at the terminal's top right, or beside the task sidebar while that is there,
-    /// and gives up width rather than run off a narrow terminal.
+    /// Floats at the terminal's top right and gives up width in a narrow terminal.
     pub(in crate::terminal) fn render_search_bar(
         &self,
         theme: &TerminalTheme,
@@ -113,17 +102,13 @@ impl TerminalView {
             .child(self.search_button(SearchButton::Previous, &colors, cx))
             .child(self.search_button(SearchButton::Next, &colors, cx))
             .child(self.search_button(SearchButton::Close, &colors, cx));
-        let right = right_inset(
-            self.terminal_width(),
-            self.task_sidebar_open.then_some(size::TASK_SIDEBAR_WIDTH),
-        );
         Some(
             // Both edges are set so a narrow terminal limits the bar, which keeps to the right.
             div()
                 .absolute()
                 .top(space::MD)
                 .left(space::MD)
-                .right(right)
+                .right(space::MD)
                 .flex()
                 .justify_end()
                 .child(fading_in(bar, "cuetty-search-fade", self.motion_pace()))
@@ -171,7 +156,6 @@ mod tests {
     use crate::terminal::model::TerminalCell;
     use crate::terminal::search::SearchOptions;
     use crate::terminal::selection::TextSource;
-    use gpui::px;
 
     struct Line(Vec<TerminalCell>);
 
@@ -192,19 +176,6 @@ mod tests {
         let mut search = LiteralSearch::new(query, SearchOptions::default());
         search.rebuild(&line).unwrap();
         search
-    }
-
-    #[test]
-    fn the_bar_sits_beside_the_task_sidebar_only_where_it_still_has_room() {
-        let sidebar = Some(size::TASK_SIDEBAR_WIDTH);
-        let beside = size::TASK_SIDEBAR_WIDTH + space::LG * 2.0;
-        assert_eq!(right_inset(px(1200.0), None), space::MD);
-        assert_eq!(right_inset(px(1200.0), sidebar), beside);
-        let just_enough = beside + space::MD + size::SEARCH_BAR_MIN_WIDTH;
-        assert_eq!(right_inset(just_enough, sidebar), beside);
-        assert_eq!(right_inset(just_enough - px(1.0), sidebar), space::MD);
-        // The narrowest window, sidebars open: the query stays readable.
-        assert_eq!(right_inset(px(412.0), sidebar), space::MD);
     }
 
     #[test]

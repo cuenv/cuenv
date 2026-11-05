@@ -104,8 +104,7 @@ fn press_widths(gutter: Pixels, thumb: ThumbPress) -> PressWidths {
 impl TerminalView {
     /// The scrollbar over the terminal, where there is history to scroll. Reaching the gutter
     /// is enough to bring it back from having faded, and that part takes nothing from what
-    /// is beneath it. The task palette covers it while it is open. The task sidebar, inset from
-    /// the surface's edge and worked around, leaves it clear.
+    /// is beneath it. The command palette covers it while it is open.
     pub(in crate::terminal) fn render_scrollbar(
         &self,
         request: ScrollbarRequest<'_>,
@@ -119,7 +118,7 @@ impl TerminalView {
             theme,
         } = request;
         let colors = ChromeColors::from_theme(theme);
-        let extent = extent.filter(|_| !self.task_palette_open)?;
+        let extent = extent.filter(|_| !self.palette_open)?;
         let (track_top, track_height) = self.scrollbar_track();
         let thumb = extent.thumb(track_of(track_height));
         let now = std::time::Instant::now();

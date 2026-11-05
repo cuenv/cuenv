@@ -106,8 +106,8 @@ keeps what was last known (a pipeline whose first command has exited, as in
 Nix's `.name-wrapped`
 binaries are shown as `name`. A tab
 list taller than the window scrolls, and follows the active tab. The terminal fades back slightly while its window does not have the keyboard; inactive
-panes have nothing to dim until split panes exist. The foot of the expanded sidebar names the task palette's chord wherever
-the directory has tasks for it to find and a live shell to run them. Dragging a tab onto another moves it to that tab's place in the list. Hovering an expanded tab reveals a button that closes
+panes have nothing to dim until split panes exist. The foot of the expanded sidebar names the command palette's chord.
+Dragging a tab onto another moves it to that tab's place in the list. Hovering an expanded tab reveals a button that closes
 it; a collapsed tab is too narrow for one to stay clear of where a click selects it, so it is closed with the close chord. Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place: Enter
 or clicking elsewhere keeps it, Escape abandons it, and an empty name hands the tab back to
 its derived one. Each expanded tab has a muted
@@ -195,10 +195,9 @@ elsewhere select a tab by position, and 9 selects the last. Those Ctrl chords ar
 one plain set Cuetty takes from applications, including the legacy aliases Ctrl-2 to
 Ctrl-8 for NUL, ESC, FS, GS, RS, US, and DEL, but only when that tab exists; with no
 such tab the key reaches the terminal, and a palette chord on a digit wins. Holding
-the modifier for a moment shows the numbers as faint hints. The task palette defaults to
-Cmd-K on macOS and plain Ctrl-K elsewhere, and only takes the chord when the
-active directory has a task catalogue, so Ctrl-K stays the shell's kill-line in
-ordinary directories. Cmd-D and
+the modifier for a moment shows the numbers as faint hints. The command palette defaults to
+Cmd-K on macOS and Ctrl-Shift-K elsewhere, leaving plain Ctrl-K to the shell.
+It is available in every directory. Cmd-D and
 Cmd-Shift-D report that split panes are unavailable; they never create a fake
 terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse
 selection and every literal visible-frame search hit, opened with Cmd-F (Ctrl-Shift-F on
@@ -376,11 +375,11 @@ created later while the working directory is known, it is picked up on the
 next directory change. When the working directory is unavailable, Cuetty
 applies only the global package and checks for its directory on each poll.
 
-`keybindings: palette: "ctrl-shift-p"` rebinds the task palette. Chords are
+`keybindings: palette: "ctrl-shift-p"` rebinds the command palette. Chords are
 `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`) followed by a
 key and match that exact modifier set. A palette chord takes precedence over the tab
 number and Ctrl-Page chords it conflicts with, as the binding the user chose.
-Task hints show the active tab's chord in the platform's own spelling.
+The sidebar hint shows the active tab's chord in the platform's own spelling.
 
 Home Manager users can link their own CUE file as the global package:
 
@@ -394,9 +393,10 @@ The file should declare `package cuetty` and use defaults for any values that
 per-directory packages should override.
 
 When the same directory contains an evaluable `package cuenv`, Cuetty also
-discovers its `tasks` map. The task button in the sidebar's footer opens a
-floating, non-resizing task sidebar; Cmd-K (Ctrl-K off macOS, configurable
-through `keybindings.palette`) opens a searchable command palette. Selecting a task invokes the existing CLI in the same terminal pane
+discovers its `tasks` map. The command palette opens with Cuetty actions such as
+new tab, rename tab, and find on screen. Type `$` to search the active tab's
+Cuenv tasks, or use the task button in the sidebar to open that mode directly.
+Deleting `$` returns to commands. Selecting a task invokes the existing CLI in the same terminal pane
 whose working directory supplied the catalogue, pasting the command and pressing Enter
 separately, because a shell in bracketed paste mode takes a pasted newline as text. Enter
 is pressed only while the foreground is an interactive shell, judged from the process's
@@ -407,10 +407,10 @@ from outside, so a command launched during one does get an Enter. The
 `cuenv task --path … --package cuenv …` CLI path preserves its graph, cache,
 hook, secret-redaction, cancellation, and exit behaviour. Tasks with required
 parameters are staged at the prompt for editing instead of running
-incompletely. Both panels take pointer input for themselves rather than passing
-it to the terminal beneath, and clicking outside the palette closes it. The
-sidebar lists every task and scrolls. The palette shows up to nine matches and sizes itself to them; in a short window its
-results scroll under a fixed field and hint, following the keyboard selection. Directories without a task catalogue remain ordinary terminals.
+incompletely. The palette takes pointer input rather than passing it to the
+terminal beneath, and clicking outside closes it. Its results scroll under a
+fixed field and hint, following the keyboard selection, so every match remains
+reachable even when there are more than nine.
 
 On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
 compiler that GPUI needs. Runtime is only verified when

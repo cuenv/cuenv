@@ -293,7 +293,6 @@ pub(super) enum HoverTarget {
     TabClose(TabId),
     Button(SidebarButton),
     PaletteRow(usize),
-    TaskRow(usize),
     /// A way out of a tab with no terminal to show, by its place among them.
     SessionAction(usize),
     SearchButton(SearchButton),
@@ -671,7 +670,7 @@ mod tests {
     #[test]
     fn being_told_what_a_hover_already_is_changes_nothing_and_asks_for_no_frames() {
         let now = Instant::now();
-        let target = HoverTarget::TaskRow(1);
+        let target = HoverTarget::PaletteRow(1);
         let mut motion = ChromeMotion::default();
         assert!(!motion.hover_off(target, MotionPace::Full, now));
         assert!(motion.hover.levels.is_empty(), "nothing to remember");
@@ -687,11 +686,11 @@ mod tests {
     #[test]
     fn a_hovered_control_that_left_the_screen_is_not_lit_when_it_returns() {
         let now = Instant::now();
-        let target = HoverTarget::TaskRow(0);
+        let target = HoverTarget::PaletteRow(0);
         let mut motion = ChromeMotion::default();
         motion.hover_on(target, MotionPace::Reduced, now);
         assert_eq!(motion.hover_level(target, now), 1.0);
-        motion.forget_hovers(now, |target| !matches!(target, HoverTarget::TaskRow(_)));
+        motion.forget_hovers(now, |target| !matches!(target, HoverTarget::PaletteRow(_)));
         assert_eq!(motion.hover_level(target, now), 0.0);
     }
 

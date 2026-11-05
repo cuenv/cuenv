@@ -71,7 +71,7 @@ The current usable slice includes:
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
   selection, Rio-owned history navigation, and visible-frame literal search.
 - A thin overlay scrollbar in the terminal's right gutter, where there is history to scroll.
-  An open task sidebar leaves it in reach, and only the task palette covers it.
+  The command palette covers it while open.
   It shows while the view moves, holds a moment, and fades over 150ms, and comes back when
   the pointer reaches the padding it sits in. Its thumb can be dragged and a press beside it jumps there.
   It takes no room from the grid, and an application's wheel or an alternate screen with no
@@ -83,8 +83,7 @@ The current usable slice includes:
   on Linux): the query, where navigation has got to or how many matches there are, and
   buttons for the previous and next match and for closing it, which are Shift-Enter, Enter,
   and Escape from the keyboard. The search covers what is on screen, as its placeholder says.
-  It sits beside the task sidebar while that is open, moves over it when the terminal is too
-  narrow to have both, and narrows with the terminal so the query always stays in view.
+  It narrows with the terminal so the query stays in view.
 - Every match of a search on screen is tinted, with the current one in its own colours on
   top. The search follows output as it moves the text, keeping to the match it was on or
   the nearest after it, and stays open as the view scrolls, searching what comes into view.
@@ -119,7 +118,7 @@ The current usable slice includes:
   on Linux, so plain Ctrl chords such as Ctrl-C reach the shell; the one exception
   is Ctrl-1 to Ctrl-9 selecting a tab that exists.
   Ctrl-Page Up and Ctrl-Page Down switch to the previous and next tab,
-  wrapping at either end. The task palette is configurable (see below).
+  wrapping at either end. The command palette is configurable (see below).
 - A right-side tab sidebar, 200px wide and listing tabs by name, that collapses
   to 56px with its toggle or Cmd-B (Ctrl-Shift-B on Linux). Collapsed, each tab
   shows an initial taken from its user-set name, project banner, or directory, so it
@@ -152,7 +151,7 @@ The current usable slice includes:
   are. Chrome keeps its colours, and the fade costs an idle window no redraws.
 - Chrome that moves briefly, and only in answer to something: the sidebar's controls and
   rows and their close buttons fade their hover over 100ms, and on a switch of tab one
-  marker slides to its new place over 140ms while the row fills hand over. The task palette fades in over 120ms,
+  marker slides to its new place over 140ms while the row fills hand over. The command palette fades in over 120ms,
   already taking keys as it does. A hover stays true when the chrome moves under a still
   pointer, as when the tab list scrolls. Nothing draws once it has landed, and
   `motion: "reduced"`, or the platform's own setting, makes all of it land at once.
@@ -163,11 +162,10 @@ The current usable slice includes:
   start, says why and offers New tab. Enter takes the first of these and the usual chords
   keep working. Restarting that fails stays put and says why.
 - Three elevations for whatever floats over the terminal, each one token for its shadow,
-  outline, fill, and corners: tooltips and a dragged tab sit just off the surface, the task
-  sidebar floats, and the task palette is the highest thing in the window.
-- A hint at the foot of the expanded sidebar naming the active tab's task palette chord,
-  such as `⌘K` or `Ctrl+K`, shown only where the directory has a task catalogue and a live
-  shell to run it, and so the chord does something. Clicking it opens the palette.
+  outline, fill, and corners: tooltips and a dragged tab sit just off the surface, the
+  search bar floats, and the command palette is the highest thing in the window.
+- A hint at the foot of the expanded sidebar naming the active tab's command palette chord,
+  such as `⌘K` or `Ctrl+Shift+K`. Clicking it opens the palette.
 - A muted second line on each expanded tab, such as `cuenv · main`: its directory,
   unless the tab is already named after it, and the git branch that directory is on, or
   a detached commit's short form. Cuetty reads the repository's `HEAD` file every couple
@@ -233,7 +231,7 @@ should not compete with it.
   to a 56px strip of initials; `sidebar` chooses how a window starts.
 - **Type does the hierarchy.** Chrome text is the platform's sans-serif on a small scale
   of 11 to 14px with three text colours; only paths and shortcuts are monospaced.
-- **Depth is for what floats.** The task palette, task sidebar, tooltips, and search bar
+- **Depth is for what floats.** The command palette, tooltips, and search bar
   are opaque, with one shadow per level of elevation, softer on a light theme.
 - **One token set.** All of this comes from `apps/cuetty/src/terminal/chrome/tokens.rs`
   and the theme, so chrome views write no literal colours, sizes, or radii.
@@ -260,7 +258,7 @@ sidebar. Terminal panes are never framed, and the former `border` field is
 rejected as unknown. The title strip shows the active tab's name on the terminal's
 own surface, with a small muted `cuetty` wordmark at its far end, and the window takes the same name as its title in every titlebar state,
 for window switchers and compositors. `titlebar: false` hides it while that tab is active and lets the
-terminal extend to the top of the window; it defaults to `true`. `keybindings: palette:` rebinds the task palette; see
+terminal extend to the top of the window; it defaults to `true`. `keybindings: palette:` rebinds the command palette; see
 [Keybindings](#keybindings). Off macOS the strip draws only under client-side
 decorations: Cuetty asks for server-side ones, and a window that gets them leaves its
 title and moving it to the windowing system, whether or not that shows a title bar, so
@@ -371,7 +369,7 @@ since black at the same strength reads as a smudge on a pale page.
 Two settings colour the chrome, and neither ever fills a region:
 
 - `accent` is the window's accent. It marks the active tab, the integration notice,
-  and the task palette's caret. Set it in the global package to match something
+  and the command palette's caret. Set it in the global package to match something
   outside Cuetty, such as a compositor's window border.
 - `rail` is a project's accent. It colours only the active tab's marker, and only
   while that tab is in a directory that sets it.
@@ -452,15 +450,13 @@ accent marker beside the sidebar's controls, with the message in its tooltip. Th
 tooltip stops at twelve lines; `cue eval .:cuetty` in that directory prints a
 whole evaluation error.
 
-Cuetty separately evaluates `package cuenv` in the same exact directory and
-surfaces its task, group, and sequence names in a floating sidebar and a
-command palette. These overlays do not participate in terminal layout, so
-opening them does not change the PTY's reported rows or columns. They take
-pointer input for themselves, so clicks, drags, and scrolling never reach the
-terminal text they cover, and clicking outside the palette closes it. The sidebar
-lists every task and scrolls. The palette
-shows up to nine matches and sizes itself to them; in a short window its results
-scroll under a fixed field and hint, following the keyboard selection. Launching a
+The command palette lists Cuetty actions, including tabs, the sidebar, and
+terminal search. Type `$` to search task, group, and sequence names from the
+active tab's exact-CWD `package cuenv`; removing `$` returns to commands. The
+task button opens this same task mode. The palette does not participate in
+terminal layout and takes pointer input for itself; clicking outside closes it.
+Results scroll under a fixed field and hint, following the keyboard selection,
+and every match remains reachable. Launching a
 task delegates to `cuenv task` in the same pane that supplied the catalogue, pasting
 the command and pressing Enter separately, because a shell in bracketed paste mode
 takes a pasted newline as text. Enter is pressed only while the foreground is an
@@ -483,8 +479,9 @@ taken from applications whenever that tab exists, including the legacy aliases C
 to Ctrl-8 for NUL, ESC, FS, GS, RS, US, and DEL. With no such tab, the key reaches the
 terminal.
 
-The task palette opens with Cmd-K on macOS and plain Ctrl-K elsewhere, and task
-hints always show the active chord. Rebind it from any `package cuetty`, global
+The command palette opens with Cmd-K on macOS and Ctrl-Shift-K elsewhere,
+leaving plain Ctrl-K to the shell. The sidebar hint shows the active chord.
+Rebind it from any `package cuetty`, global
 or per-directory:
 
 ```cue
@@ -499,10 +496,8 @@ Cmd-B on macOS and Ctrl-Shift-B elsewhere collapse and expand the sidebar.
 Cmd-R on macOS and Ctrl-Shift-R elsewhere rename the active tab.
 
 A palette chord takes precedence over the tab number and Ctrl-Page chords it
-conflicts with, as the binding the user chose.
-The palette only claims its chord when the active directory has a task
-catalogue; elsewhere the key reaches the shell, so the Ctrl-K default does not
-cost kill-line in ordinary directories. An unparseable chord or any other
+conflicts with, as the binding the user chose. The palette is available even
+without a task catalogue. An unparseable chord or any other
 `keybindings` field is an invalid configuration.
 
 ## Current limits

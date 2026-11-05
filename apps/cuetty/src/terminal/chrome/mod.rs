@@ -1,9 +1,10 @@
-//! Window chrome: the title strip, tab rail, task sidebar, and task palette.
+//! Window chrome: the title strip, tab rail, and command palette.
 //!
 //! The terminal engine owns sessions and input; this module only turns view
 //! state into GPUI elements around the terminal surface.
 
 mod clamp;
+mod command_palette;
 mod field;
 mod icons;
 mod layout;
@@ -11,8 +12,6 @@ mod rail;
 mod scrollbar;
 mod search_bar;
 mod session_state;
-mod task_palette;
-mod task_sidebar;
 mod tokens;
 mod tooltip;
 
@@ -117,7 +116,7 @@ impl TerminalView {
         self.metrics.font.family.clone()
     }
 
-    /// The active tab's task palette chord as shown in hints.
+    /// The active tab's command palette chord as shown in hints.
     fn palette_chord_label(&self) -> String {
         self.active_state().map_or_else(
             || Keybindings::default().palette.label(),
