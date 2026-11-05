@@ -46,6 +46,7 @@ const (
 	ErrorCodeInvalidInput  = "INVALID_INPUT"
 	ErrorCodeLoadInstance  = "LOAD_INSTANCE"
 	ErrorCodeBuildValue    = "BUILD_VALUE"
+	ErrorCodeAnalysis      = "ANALYSIS_FAILED"
 	ErrorCodeOrderedJSON   = "ORDERED_JSON"
 	ErrorCodePanicRecover  = "PANIC_RECOVER"
 	ErrorCodeJSONMarshal   = "JSON_MARSHAL_ERROR"

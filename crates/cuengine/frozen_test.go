@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/parser"
 )
 
 func frozenJSON(t testing.TB, value interface{}) string {
@@ -623,7 +625,15 @@ func TestFrozenSnapshotRefusesMixedRevisions(t *testing.T) {
 			}
 		}
 	}
-	mixed, failure := freezeLoadedGraph(config, editOnce)
+	parseThen := func(edit func(string)) func(string, interface{}, parser.Config) (*ast.File, error) {
+		return func(name string, source interface{}, parseConfig parser.Config) (*ast.File, error) {
+			file, err := parser.ParseFile(name, source, parseConfig)
+			edit(name)
+			return file, err
+		}
+	}
+	config.ParseFile = parseThen(editOnce)
+	mixed, failure := freezeLoadedGraph(config)
 	if failure != "" {
 		t.Fatal(failure)
 	}
@@ -634,7 +644,7 @@ func TestFrozenSnapshotRefusesMixedRevisions(t *testing.T) {
 
 	write(version("old"))
 	reads = 0
-	graph, failure := freezeConsistentGraph(config, editOnce)
+	graph, failure := freezeConsistentGraph(config)
 	if failure != "" {
 		t.Fatal(failure)
 	}
@@ -644,12 +654,13 @@ func TestFrozenSnapshotRefusesMixedRevisions(t *testing.T) {
 	}
 
 	counter := 0
-	if _, failure := freezeConsistentGraph(config, func(name string) {
+	config.ParseFile = parseThen(func(name string) {
 		if strings.HasSuffix(name, "a.cue") {
 			counter++
 			write(version(fmt.Sprintf("edit-%d", counter)))
 		}
-	}); !strings.Contains(failure, "kept changing") {
+	})
+	if _, failure := freezeConsistentGraph(config); !strings.Contains(failure, "kept changing") {
 		t.Fatalf("expected a refusal for continuous edits: %s", failure)
 	}
 }

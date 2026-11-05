@@ -24,6 +24,12 @@ pub enum FrozenWorkerFailure {
     /// The configured duration cannot be represented as a monotonic deadline.
     #[error("has an unsupported timeout")]
     InvalidDeadline,
+    /// Provenance analysis could not finish, which says nothing about the values.
+    #[error("could not analyse what the configuration depends on")]
+    Analysis,
+    /// The bridge itself failed, which says nothing about the configuration.
+    #[error("failed inside the CUE bridge")]
+    Bridge,
 }
 
 /// Errors that can occur during CUE evaluation

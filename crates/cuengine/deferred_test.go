@@ -2,6 +2,7 @@ package main
 
 import (
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
 	"reflect"
@@ -15,8 +16,26 @@ type DirectReference struct {
 	Supported           bool
 }
 
-func collectDirectReferences(instance cue.Value, paths []projectionPath) ([]DirectReference, error) {
-	graph, err := newReferenceGraph(instance, nil)
+// analyzedInstance is an evaluated instance and the source its provenance comes from.
+type analyzedInstance struct {
+	cue.Value
+	source *build.Instance
+}
+
+func compileAnalyzed(source string) analyzedInstance {
+	instance := build.NewContext().NewInstance("", nil)
+	if err := instance.AddFile("test.cue", source); err != nil {
+		return analyzedInstance{Value: cuecontext.New().CompileString(source), source: instance}
+	}
+	return analyzedInstance{Value: cuecontext.New().BuildInstance(instance), source: instance}
+}
+
+func collectDirectReferences(instance analyzedInstance, paths []projectionPath) ([]DirectReference, error) {
+	roots := make([]cue.Path, 0, len(paths))
+	for _, path := range paths {
+		roots = append(roots, path.path)
+	}
+	graph, err := newReferenceGraph(instance.source, instance.Value, nil, roots)
 	if err != nil {
 		return nil, err
 	}
@@ -41,8 +60,8 @@ func collectDirectReferences(instance cue.Value, paths []projectionPath) ([]Dire
 	return references, nil
 }
 
-func directReference(value, instance cue.Value) ([]string, error) {
-	graph, err := newReferenceGraph(instance, nil)
+func directReference(value cue.Value, instance analyzedInstance) ([]string, error) {
+	graph, err := newReferenceGraph(instance.source, instance.Value, nil, []cue.Path{value.Path()})
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +93,7 @@ constrained_union: (number | =~"^prefix") & infrastructure.resources.producer.ou
  producer: outputs: number: number
  }
  `
-	instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString(source)
+	instance := compileAnalyzed(source)
 	if instance.Err() != nil {
 		t.Fatal(instance.Err())
 	}
@@ -110,7 +129,7 @@ func TestAbstractOutputDeclarations(t *testing.T) {
 		{"[...string]", false}, {"string | number", false},
 	} {
 		t.Run(test.expression, func(t *testing.T) {
-			value := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString("outputs: id: " + test.expression).LookupPath(cue.ParsePath("outputs"))
+			value := compileAnalyzed("outputs: id: " + test.expression).LookupPath(cue.ParsePath("outputs"))
 			err := validateAbstractNamespace(value, cue.ParsePath("outputs"))
 			if (err == nil) != test.valid {
 				t.Fatalf("valid=%t: %v", test.valid, err)
@@ -120,7 +139,7 @@ func TestAbstractOutputDeclarations(t *testing.T) {
 }
 
 func TestConstrainedReferencesAreDirect(t *testing.T) {
-	instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString(`package app
+	instance := compileAnalyzed(`package app
  resources: {
  producer: outputs: id: string
  consumer: configuration: {
@@ -155,7 +174,7 @@ func TestConstrainedReferencesAreDirect(t *testing.T) {
 }
 
 func TestPrimitiveDeclarationWithPatternConstraint(t *testing.T) {
-	instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString(`#Root: close({outputs: {[string]: string|number|bool}})
+	instance := compileAnalyzed(`#Root: close({outputs: {[string]: string|number|bool}})
 value: #Root & {outputs: id: string}`)
 	if instance.Err() != nil {
 		t.Fatal(instance.Err())
@@ -175,7 +194,7 @@ func TestDefaultedOutputReferenceRemainsDetectable(t *testing.T) {
 		`*"fallback" | fieldAlias`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString(`package app
+			instance := compileAnalyzed(`package app
  let alias = infrastructure.resources.primary.outputs.id
  fieldAlias: alias
  infrastructure: resources: {
@@ -206,7 +225,7 @@ func TestDefaultedOutputReferenceRemainsDetectable(t *testing.T) {
 }
 
 func TestOrdinaryDefaultsRemainOrdinaryValues(t *testing.T) {
-	instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString(`configuration: {name: *"fallback" | string, count: *1 | int}`)
+	instance := compileAnalyzed(`configuration: {name: *"fallback" | string, count: *1 | int}`)
 	paths, err := parseProjectionPaths("paths", []string{"configuration"})
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +250,7 @@ func TestDefaultedOutputReferenceThroughShadowedBuiltin(t *testing.T) {
 		{"defaulted let", `let string = *42 | infrastructure.resources.primary.outputs.id`, "number", `string`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString(`package app
+			instance := compileAnalyzed(`package app
  ` + test.alias + `
  infrastructure: resources: {
  primary: outputs: id: ` + test.primitive + `
@@ -265,7 +284,7 @@ func TestOrdinaryDefaultedStructsDoNotTreatLabelsAsReferences(t *testing.T) {
 		`*{} | string`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString("configuration: name: " + expression)
+			instance := compileAnalyzed("configuration: name: " + expression)
 			paths, err := parseProjectionPaths("paths", []string{"configuration"})
 			if err != nil {
 				t.Fatal(err)
@@ -287,7 +306,7 @@ func TestDefaultedContainerCannotHideOutputReferences(t *testing.T) {
 		`*[] | [infrastructure.resources.primary.outputs.id]`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString(`infrastructure: resources: {
+			instance := compileAnalyzed(`infrastructure: resources: {
  primary: outputs: id: string
  consumer: configuration: name: ` + expression + `
 }`)
@@ -318,7 +337,7 @@ func TestDefaultedUnsupportedExpressionsFailClosed(t *testing.T) {
 		`*[] | [for resource in [infrastructure.resources.primary] {resource.outputs.id}]`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString(`infrastructure: resources: {
+			instance := compileAnalyzed(`infrastructure: resources: {
  primary: outputs: id: string
  consumer: configuration: name: ` + expression + `
 }`)
@@ -353,7 +372,7 @@ func TestOrdinaryDefaultedComprehensionsRemainValid(t *testing.T) {
 		`*[] | [for value in [string] {value}]`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString("configuration: name: " + expression)
+			instance := compileAnalyzed("configuration: name: " + expression)
 			paths, err := parseProjectionPaths("paths", []string{"configuration"})
 			if err != nil {
 				t.Fatal(err)
@@ -376,7 +395,7 @@ func TestDefaultedIndicesAndDynamicLabelsCannotHideOutputs(t *testing.T) {
 		`*{} | {"\(infrastructure.resources.primary.outputs.id)": "literal"}`,
 	} {
 		t.Run(expression, func(t *testing.T) {
-			instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).CompileString(`infrastructure: resources: {
+			instance := compileAnalyzed(`infrastructure: resources: {
  primary: outputs: {id: string, index: number}
  consumer: configuration: name: ` + expression + `
 }`)
@@ -423,7 +442,7 @@ infrastructure: resources: {
 }`),
 			})
 			loaded := load.Instances([]string{"."}, &load.Config{Dir: moduleRoot, Package: testPackageName})
-			instance := cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")).BuildInstance(loaded[0])
+			instance := analyzedInstance{Value: cuecontext.New().BuildInstance(loaded[0]), source: loaded[0]}
 			paths, err := parseProjectionPaths("paths", []string{"infrastructure.resources"})
 			if err != nil {
 				t.Fatal(err)

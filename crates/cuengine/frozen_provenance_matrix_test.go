@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
 )
 
 const (
@@ -213,6 +214,13 @@ func matrixCases() []matrixCase {
 		detected("copy_embedded", matrixBase+"_c: {system.units.producer}\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
 		detected("copy_closed", matrixBase+"_c: close(system.units.producer)\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
 		detected("copy_default", matrixBase+"_c: *system.units.producer | {}\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
+		detected("selected_arm", matrixBase+matrixConfig+"value: (*{if "+source+" == \"x\" {q: \"a\"}} | {q: \"z\"}).q", ""),
+		detected("selected_arm_unified", matrixBase+matrixConfig+"value: ((*{if "+source+" == \"x\" {q: \"a\"}} | {q: \"z\"}) & {r: 1}).q", ""),
+		detected("selected_arm_closed", matrixBase+matrixConfig+"value: close(*{if "+source+" == \"x\" {q: \"a\"}} | {q: \"z\"}).q", ""),
+		detected("selected_arm_list", matrixBase+matrixConfig+"value: (*[if "+source+" == \"x\" {\"a\"}, \"b\"] | [\"c\"])[0]", ""),
+		detected("selected_arm_in_field", matrixBase+matrixConfig+"value: ({a: *{if "+source+" == \"x\" {q: \"a\"}} | {q: \"z\"}}).a.q", ""),
+		detected("selected_arm_in_let", matrixBase+"let D = *{if "+source+" == \"x\" {q: \"a\"}} | {q: \"z\"}\n"+matrixConfig+"value: D.q", ""),
+		clean("selected_arm_unrelated", matrixBase+matrixConfig+"value: (*{q: \"a\"} | {q: \"z\"}).q", ""),
 		detected("copy_or", matrixBase+"_c: or([system.units.producer])\n"+matrixConfig+"*{w: _c.outputs.id & \"x\"} | {w: \"z\"}", ""),
 		edges("two_source_unification", "system: units: {a: outputs: id: string, b: outputs: id: string}\n_c: system.units.a & system.units.b\n"+matrixConfig+"name: _c.outputs.id", "", "system.units.consumer.settings.name<=system.units.a.outputs.id", "system.units.consumer.settings.name<=system.units.b.outputs.id"),
 		detected("json_presence", "import \"encoding/json\"\n"+matrixBase+matrixConfig+"doc: json.Marshal({a: ("+source+" & =~\"^x\") != _|_})", ""),
@@ -299,11 +307,11 @@ func matrixVerdict(t *testing.T, snapshot string) (string, []string, error) {
 	if err := json.Unmarshal([]byte(snapshot), &graph); err != nil {
 		t.Fatal(err)
 	}
-	value, err := graph.buildAnalysis()
+	value, err := graph.build()
 	if err != nil {
 		t.Fatal(err)
 	}
-	referenceAnalysis, err := newReferenceGraph(value, &sources)
+	referenceAnalysis, err := graph.references(value, &sources, cue.ParsePath("system.units"), cue.ParsePath("system.lookups"))
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: %v", errInspection, err)
 	}
@@ -430,7 +438,7 @@ func TestFrozenSharingModesAgree(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				unshared, err := graph.buildAnalysis()
+				unshared, err := graph.evaluate(cuecontext.New(cuecontext.CUE_DEBUG("sharing=false")))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -444,6 +452,15 @@ func TestFrozenSharingModesAgree(t *testing.T) {
 	}
 	if compared < 100 {
 		t.Fatalf("only %d comparisons", compared)
+	}
+}
+
+func TestFrozenAnalysisFailuresAreNotConfigurationFailures(t *testing.T) {
+	if code := analysisFailureCode(fmt.Errorf("%w: limit", errAnalysis)); code != ErrorCodeAnalysis {
+		t.Errorf("an analysis failure was reported as %s", code)
+	}
+	if code := analysisFailureCode(errors.New("selected value is not final")); code != ErrorCodeBuildValue {
+		t.Errorf("a configuration failure was reported as %s", code)
 	}
 }
 
@@ -464,11 +481,11 @@ func TestFrozenImportedAliasAcrossOperations(t *testing.T) {
 		t.Fatalf("strict validation: %s", validation)
 	}
 	fill := []scalarFill{{Path: frozenPath(matrixSource), Value: json.RawMessage(`"plain-1"`)}}
-	specialized := specializeFrozenResponse(snapshot, frozenJSON(t, specializationOptions{Fills: fill, Projection: projection, SourcePaths: &sources, ReferencePaths: roots}))
+	specialized := specializeFrozenResponse(snapshot, frozenJSON(t, specializationOptions{Fills: fill, Projection: projection, SourcePaths: &sources}))
 	if !strings.Contains(specialized, `"plain-1"`) {
 		t.Fatalf("specialization: %s", specialized)
 	}
-	unknown := specializeFrozenResponse(snapshot, frozenJSON(t, specializationOptions{Projection: projection, Deferred: deferred, SourcePaths: &sources, ReferencePaths: roots}))
+	unknown := specializeFrozenResponse(snapshot, frozenJSON(t, specializationOptions{Projection: projection, Deferred: deferred, SourcePaths: &sources}))
 	if strings.Contains(unknown, `"error"`) {
 		t.Fatalf("unknown specialization: %s", unknown)
 	}

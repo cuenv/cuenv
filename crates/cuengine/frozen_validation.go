@@ -36,9 +36,12 @@ func validateFrozenResponse(snapshot, optionsJSON string) (result string) {
 	if json.Unmarshal([]byte(snapshot), &graph) != nil || json.Unmarshal([]byte(optionsJSON), &options) != nil {
 		return frozenFailure(ErrorCodeInvalidInput, "Invalid frozen CUE validation options")
 	}
-	instance, err := graph.buildAnalysis()
-	if err != nil || validateFrozenInstance(instance, options) != nil {
-		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance did not satisfy the selected constraints")
+	instance, err := graph.build()
+	if err == nil {
+		err = validateFrozenInstance(graph, instance, options)
+	}
+	if err != nil {
+		return frozenFailure(analysisFailureCode(err), "Frozen CUE instance did not satisfy the selected constraints")
 	}
 	return createSuccessResponse("true")
 }
@@ -46,7 +49,7 @@ func validateFrozenResponse(snapshot, optionsJSON string) (result string) {
 // validateFrozenInstance is the strict discovery gate. Each selected subtree
 // must be final and concrete except exact verified references and explicitly
 // selected namespaces of bare primitive declarations. No disk reload occurs.
-func validateFrozenInstance(instance cue.Value, options frozenValidationOptions) error {
+func validateFrozenInstance(frozen frozenGraph, instance cue.Value, options frozenValidationOptions) error {
 	abstract := make(map[string]bool)
 	for _, typed := range options.AbstractPaths {
 		path, err := typed.cuePath()
@@ -59,7 +62,22 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 		}
 		abstract[path.String()] = true
 	}
-	graph, err := newReferenceGraph(instance, options.SourcePaths)
+	roots := make([]cue.Path, 0, len(options.ConcretePaths)+len(options.Deferred))
+	for _, typed := range options.ConcretePaths {
+		path, err := typed.cuePath()
+		if err != nil {
+			return err
+		}
+		roots = append(roots, path)
+	}
+	for _, entry := range options.Deferred {
+		path, err := entry.Path.cuePath()
+		if err != nil {
+			return err
+		}
+		roots = append(roots, path)
+	}
+	graph, err := frozen.references(instance, options.SourcePaths, roots...)
 	if err != nil {
 		return err
 	}
@@ -110,7 +128,7 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 			return err
 		}
 		value := instance.LookupPath(path)
-		if !value.Exists() || validateFinal(value, deferred) != nil {
+		if !value.Exists() || validateFinal(instance, value, deferred) != nil {
 			return errors.New("selected subtree is not final")
 		}
 		references, err := graph.frozenReferences(path)
@@ -133,9 +151,10 @@ func validateFrozenInstance(instance cue.Value, options frozenValidationOptions)
 	return nil
 }
 
-// validateFinal checks everything is final except what is computed from a value that
-// is not known yet: the expression producing it cannot complete before then.
-func validateFinal(value cue.Value, unknown map[string]bool) error {
+// validateFinal checks everything in value, part of instance, is final except what
+// is computed from a value that is not known yet: the expression producing it cannot
+// complete before then. It may still be missing a value, but nothing else may be wrong.
+func validateFinal(instance, value cue.Value, unknown map[string]bool) error {
 	err := value.Validate(cue.Final())
 	if err == nil {
 		return nil
@@ -146,7 +165,8 @@ func validateFinal(value cue.Value, unknown map[string]bool) error {
 		for _, label := range path {
 			selectors = append(selectors, cue.ParsePath(label).Selectors()...)
 		}
-		if !unknown[cue.MakePath(selectors...).String()] {
+		location := cue.MakePath(selectors...)
+		if !unknown[location.String()] || instance.LookupPath(location).Validate() != nil {
 			return err
 		}
 	}

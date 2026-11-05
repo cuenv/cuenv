@@ -2,20 +2,33 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/provenance"
 )
 
 // referenceGraph answers which runtime sources a field depends on, from what the
-// evaluator resolved each reference to. Paths are selectors of the analysis build,
-// so a reference inside a definition already names the field it was instantiated at.
+// evaluator resolved each reference to. A reference inside a definition names the
+// field it was instantiated at. Only what the roots it was built for reach is in it.
 type referenceGraph struct {
 	instance cue.Value
 	root     *referenceNode
 	// exhausted records that following copies of a struct did not terminate.
 	exhausted bool
+}
+
+// errAnalysis means the analysis could not finish, which says nothing about whether
+// the configuration is valid.
+var errAnalysis = errors.New("provenance analysis failed")
+
+func analysisFailureCode(err error) string {
+	if errors.Is(err, errAnalysis) {
+		return ErrorCodeAnalysis
+	}
+	return ErrorCodeBuildValue
 }
 
 // maxReferencePath bounds a path built by following copies of a struct. CUE rejects
@@ -29,10 +42,11 @@ type referenceNode struct {
 	source       bool
 }
 
-func newReferenceGraph(instance cue.Value, sources *[]valuePath) (*referenceGraph, error) {
-	dependencies, err := provenance.Analyze(instance)
+// newReferenceGraph analyses source for the fields at roots. instance is its evaluation.
+func newReferenceGraph(source *build.Instance, instance cue.Value, sources *[]valuePath, roots []cue.Path) (*referenceGraph, error) {
+	dependencies, err := provenance.Analyze(source, roots...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errAnalysis, err)
 	}
 	graph := &referenceGraph{instance: instance, root: &referenceNode{}}
 	for _, dependency := range dependencies {
@@ -327,13 +341,13 @@ func (graph *referenceGraph) frozenReferences(root cue.Path) ([]frozenReference,
 				Path:          typed,
 				Target:        typedPath(source.path),
 				PrimitiveType: primitive,
-				Supported:     primitive != "" && !structural,
+				Supported:     !structural,
 				Computed:      use == provenance.Computed || len(sources) > 1,
 			})
 		}
 	}
 	if graph.exhausted {
-		return nil, errors.New("reference nesting limit exceeded")
+		return nil, fmt.Errorf("%w: reference nesting limit exceeded", errAnalysis)
 	}
 	sort.Slice(references, func(i, j int) bool {
 		leftPath, _ := references[i].Path.cuePath()

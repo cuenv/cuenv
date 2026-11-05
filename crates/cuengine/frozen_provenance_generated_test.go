@@ -38,6 +38,7 @@ var generatedWrappers = map[string]string{
 	"embed":         `{C}`,
 	"embed_twice":   `{{C}}`,
 	"default_first": `*C | {key: "z"}`,
+	"selected_arm":  `{key: "k", value: (*C | {value: "z"}).value}`,
 	"default_last":  `{key: "z"} | *C`,
 	"default_close": `*close(C) | {key: "z"}`,
 	"and":           `and([C, {key: "k"}])`,
@@ -237,13 +238,9 @@ func TestFrozenGeneratedControls(t *testing.T) {
 	}
 	t.Logf("tainted %+v", tainted)
 	t.Logf("unrelated %+v", unrelated)
-	// The pinned evaluator's Expr panics on {x: "v"}[y] inside a for. Production
-	// recovers that into a refusal. Nothing else may panic.
 	sort.Strings(panics)
 	for _, entry := range panics {
-		if !strings.HasPrefix(entry, "unrelated ") || !strings.HasSuffix(entry, "/for_once/index_value") {
-			t.Errorf("PANIC %s", entry)
-		}
+		t.Errorf("PANIC %s", entry)
 	}
 	if tainted.clean > 0 || tainted.detected < 700 || unrelated.clean < 1000 {
 		t.Errorf("the generator stopped exercising analysis: tainted %+v, unrelated %+v", tainted, unrelated)

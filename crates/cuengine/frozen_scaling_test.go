@@ -159,7 +159,7 @@ infrastructure: {
 		}
 	}
 	for index, projection := range projections {
-		options := specializationOptions{Projection: projection, Deferred: deferred[index], ReferencePaths: roots, SourcePaths: &sourcePaths}
+		options := specializationOptions{Projection: projection, Deferred: deferred[index], SourcePaths: &sourcePaths}
 		if fixture.capability == "" {
 			fixture.unknown = append(fixture.unknown, frozenJSON(t, options))
 		} else {

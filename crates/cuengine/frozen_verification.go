@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 
 	"cuelang.org/go/cue"
@@ -132,9 +133,6 @@ func compareFilled(comparison filledComparison) error {
 // carries compares what leaves CUE: a scalar embedded next to hidden fields does not
 // equal the bare scalar, but exports as one.
 func carries(leaf, literal cue.Value) bool {
-	if leaf.Equals(literal) {
-		return true
-	}
 	left, leftErr := leaf.MarshalJSON()
 	right, rightErr := literal.MarshalJSON()
 	return leftErr == nil && rightErr == nil && bytes.Equal(left, right)
@@ -150,6 +148,9 @@ func fillScalars(base cue.Value, fills []scalarFill) (cue.Value, map[string]cue.
 		path, err := fill.Path.cuePath()
 		if err != nil || len(path.Selectors()) == 0 || primitiveDeclaration(base.LookupPath(path)) == "" {
 			return cue.Value{}, nil, errors.New("invalid runtime source")
+		}
+		if _, duplicate := literals[path.String()]; duplicate {
+			return cue.Value{}, nil, errors.New("duplicate runtime source")
 		}
 		expression, err := scalarExpression(fill.Value)
 		if err != nil {
@@ -227,7 +228,7 @@ func exportedLeaves(value cue.Value, root cue.Path, mutable []cue.Path) (map[str
 		case cue.StructKind:
 			fields, err := current.Fields(cue.Definitions(false))
 			if err != nil {
-				leaves[path.String()] = "unreadable"
+				leaves[path.String()] = "unreadable " + fmt.Sprint(current)
 				return nil
 			}
 			leaves[path.String()] = "struct"
@@ -240,7 +241,7 @@ func exportedLeaves(value cue.Value, root cue.Path, mutable []cue.Path) (map[str
 		case cue.ListKind:
 			items, err := current.List()
 			if err != nil {
-				leaves[path.String()] = "abstract list"
+				leaves[path.String()] = "abstract " + fmt.Sprint(current)
 				return nil
 			}
 			leaves[path.String()] = "list"
@@ -254,7 +255,7 @@ func exportedLeaves(value cue.Value, root cue.Path, mutable []cue.Path) (map[str
 		encoded, err := current.MarshalJSON()
 		if err != nil {
 			// A non-concrete value compares by what it permits, not by a failure.
-			leaves[path.String()] = "abstract " + current.IncompleteKind().String()
+			leaves[path.String()] = "abstract " + fmt.Sprint(current)
 			return nil
 		}
 		var compact bytes.Buffer

@@ -67,7 +67,7 @@ func prepareFrozenResponse(snapshot, optionsJSON string) (result string) {
 	}()
 	proof, err := prepareFrozen(snapshot, optionsJSON)
 	if err != nil {
-		return frozenFailure(ErrorCodeBuildValue, "CUE provenance could not be prepared")
+		return frozenFailure(analysisFailureCode(err), "CUE provenance could not be prepared")
 	}
 	encoded, err := json.Marshal(proof)
 	if err != nil {
@@ -82,17 +82,10 @@ func prepareFrozen(snapshot, optionsJSON string) (string, error) {
 	if json.Unmarshal([]byte(snapshot), &frozen) != nil || json.Unmarshal([]byte(optionsJSON), &options) != nil {
 		return "", errors.New("invalid preparation options")
 	}
-	base, err := frozen.buildAnalysis()
+	base, err := frozen.build()
 	if err != nil {
 		return "", err
 	}
-	graph, err := newReferenceGraph(base, options.SourcePaths)
-	if err != nil {
-		return "", err
-	}
-	// Requested projections may never expand what these roots checked, even when
-	// contained in a configured root.
-	tracked := make([]frozenReference, 0)
 	roots := make([]cue.Path, 0, len(options.ReferencePaths))
 	for _, typed := range options.ReferencePaths {
 		path, err := typed.cuePath()
@@ -100,6 +93,15 @@ func prepareFrozen(snapshot, optionsJSON string) (string, error) {
 			return "", err
 		}
 		roots = append(roots, path)
+	}
+	graph, err := frozen.references(base, options.SourcePaths, roots...)
+	if err != nil {
+		return "", err
+	}
+	// Requested projections may never expand what these roots checked, even when
+	// contained in a configured root.
+	tracked := make([]frozenReference, 0)
+	for _, path := range roots {
 		references, err := graph.frozenReferences(path)
 		if err != nil {
 			return "", err

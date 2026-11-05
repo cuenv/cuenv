@@ -54,11 +54,10 @@ type deferredValue struct {
 }
 
 type specializationOptions struct {
-	Fills          []scalarFill    `json:"fills"`
-	Projection     valuePath       `json:"projection"`
-	Deferred       []deferredValue `json:"deferred"`
-	ReferencePaths []valuePath     `json:"referencePaths"`
-	SourcePaths    *[]valuePath    `json:"sourcePaths"`
+	Fills       []scalarFill    `json:"fills"`
+	Projection  valuePath       `json:"projection"`
+	Deferred    []deferredValue `json:"deferred"`
+	SourcePaths *[]valuePath    `json:"sourcePaths"`
 }
 
 type specializationResult struct {
@@ -82,17 +81,13 @@ func specializeFrozenResponse(snapshot, optionsJSON string) (result string) {
 	if json.Unmarshal([]byte(snapshot), &graph) != nil || json.Unmarshal([]byte(optionsJSON), &options) != nil {
 		return frozenFailure(ErrorCodeInvalidInput, "Invalid CUE specialization options")
 	}
-	analysis, err := graph.buildAnalysis()
-	if err != nil {
-		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance could not be evaluated")
-	}
 	base, err := graph.build()
 	if err != nil {
 		return frozenFailure(ErrorCodeBuildValue, "Frozen CUE instance could not be evaluated")
 	}
-	value, err := specializeValue(analysis, base, options)
+	value, err := specializeValue(graph, base, options)
 	if err != nil {
-		return frozenFailure(ErrorCodeBuildValue, "CUE specialization did not satisfy the selected constraints")
+		return frozenFailure(analysisFailureCode(err), "CUE specialization did not satisfy the selected constraints")
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -101,16 +96,14 @@ func specializeFrozenResponse(snapshot, optionsJSON string) (result string) {
 	return createSuccessResponse(string(encoded))
 }
 
-// Provenance comes from the analysis build; the fills and validation producing
-// the projected value run on a normally evaluated base.
-func specializeValue(analysis, base cue.Value, options specializationOptions) (*specializationResult, error) {
+func specializeValue(frozen frozenGraph, base cue.Value, options specializationOptions) (*specializationResult, error) {
 	projection, err := options.Projection.cuePath()
-	if err != nil || !analysis.LookupPath(projection).Exists() {
+	if err != nil || !base.LookupPath(projection).Exists() {
 		return nil, errors.New("invalid projection")
 	}
 	// Inspect provenance before any fill. In particular, source & "literal"
 	// is unresolved until source is supplied even though its value is concrete.
-	graph, err := newReferenceGraph(analysis, options.SourcePaths)
+	graph, err := frozen.references(base, options.SourcePaths, projection)
 	if err != nil {
 		return nil, err
 	}
@@ -160,23 +153,9 @@ func specializeWithReferences(base cue.Value, options specializationOptions, ref
 		}
 		deferred[pair] = entry
 	}
-	value := base
-	filled := make(map[string]bool)
-	for _, fill := range options.Fills {
-		path, err := fill.Path.cuePath()
-		if err != nil || len(path.Selectors()) == 0 || filled[path.String()] || primitiveDeclaration(base.LookupPath(path)) == "" {
-			return nil, errors.New("invalid scalar source path")
-		}
-		expression, err := scalarExpression(fill.Value)
-		if err != nil {
-			return nil, err
-		}
-		literal := value.Context().BuildExpr(expression)
-		if literal.Validate(cue.Concrete(true), cue.Final()) != nil {
-			return nil, errors.New("invalid scalar literal")
-		}
-		value = value.FillPath(path, literal)
-		filled[path.String()] = true
+	value, literals, err := fillScalars(base, options.Fills)
+	if err != nil {
+		return nil, err
 	}
 	// Validate the whole instance for conflicts, but require final/concrete
 	// values only inside the requested consumer. Unselected abstract values
@@ -188,7 +167,7 @@ func specializeWithReferences(base cue.Value, options specializationOptions, ref
 	unknown := make(map[string]bool)
 	for path, targets := range allowed {
 		for target := range targets {
-			if filled[target] {
+			if _, filled := literals[target]; filled {
 				continue
 			}
 			entry, exists := deferred[path+"<-"+target]
@@ -210,7 +189,7 @@ func specializeWithReferences(base cue.Value, options specializationOptions, ref
 		return leftTarget.String() < rightTarget.String()
 	})
 	selected := value.LookupPath(projection)
-	if validateFinal(selected, unknown) != nil {
+	if validateFinal(value, selected, unknown) != nil {
 		return nil, errors.New("selected value is not final")
 	}
 	projected, err := projectConcrete(selected, projection, unknown)
