@@ -197,8 +197,10 @@ the environment it was bound in. It only had no public API to report that, so th
 CUE fork now has one, tracked upstream as cue-lang/cue#4547.
 
 1. **Provenance from the evaluator.** `provenance.Analyze` in the fork's `cue/provenance`
-   walks the conjuncts of every field through those environments, with structure sharing
-   off so a definition's fields exist where it was instantiated. It reports each reference
+   walks the conjuncts of the fields it is asked about, and of whatever those read, through
+   those environments. It evaluates the instance itself, with structure sharing off so a
+   definition's fields exist where it was instantiated, and evaluates nothing else, so the
+   rest of a project costs nothing. It reports each reference
    as a field, the field it resolves to, and how it is used: `Value` (unified in, possibly
    constrained), `Computed` (an operand), `Control` (a condition, label, index or the arm
    of a disjunction) or `Presence` (which fields exist). A let, a comprehension variable and
@@ -229,7 +231,7 @@ CUE fork now has one, tracked upstream as cue-lang/cue#4547.
    normal build. Tests compare both modes on every accepted fixture and several values.
 
 The sampling step and the source analysis were removed. Compared with the previous release
-the bridge is about 1,250 lines smaller, and the fork adds about 1,050. Sampling could only refuse and tried values that real
+the bridge is about 1,250 lines smaller, and the fork adds about 1,150. Sampling could only refuse and tried values that real
 outputs may never have, so it refused what depended on nothing real.
 
 ### Admitted and refused forms
@@ -322,11 +324,11 @@ resident set size. Time is wall clock.
 
 | Consumers | 0.65 plan | Plan | Plan peak | 0.65 apply | Apply | 0.65 apply peak | Apply peak |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.20 s | 0.16 s | 68 MB | 0.33 s | 0.28 s | 92 MB | 71 MB |
-| 8 | 0.31 s | 0.22 s | 74 MB | 0.50 s | 0.47 s | 97 MB | 74 MB |
-| 32 | 0.64 s | 0.58 s | 79 MB | 1.34 s | 1.49 s | 97 MB | 84 MB |
-| 64 | 1.40 s | 1.13 s | 83 MB | 2.90 s | 3.40 s | 105 MB | 94 MB |
-| 128 | 3.38 s | 3.40 s | 98 MB | not run | not run | not run | not run |
+| 1 | 0.20 s | 0.17 s | 70 MB | 0.33 s | 0.31 s | 92 MB | 71 MB |
+| 8 | 0.31 s | 0.25 s | 75 MB | 0.50 s | 0.51 s | 97 MB | 87 MB |
+| 32 | 0.64 s | 0.58 s | 78 MB | 1.34 s | 1.60 s | 97 MB | 83 MB |
+| 64 | 1.40 s | 1.23 s | 95 MB | 2.90 s | 3.33 s | 105 MB | 96 MB |
+| 128 | 3.38 s | 3.32 s | 93 MB | not run | not run | not run | not run |
 
 An earlier version filled one output at a time, which took 10 seconds and 538 MB to apply
 64 consumers and a measured 223 seconds for one verification of 500 resources with 5 outputs
@@ -337,7 +339,7 @@ above linear in such stacks. Larger stacks have not been measured through the CL
 ### Cancellation
 
 Deadlines apply per operation, with `CUENV_EVAL_TIMEOUT` defaulting to 60 seconds. At
-`CUENV_EVAL_TIMEOUT=1`, the 128-consumer plan finished in 3.39 seconds because no single
+`CUENV_EVAL_TIMEOUT=1`, the 128-consumer plan finished in 3.37 seconds because no single
 operation reached the deadline; an earlier, slower build stopped with exit code 3 after 1.42
 seconds, which is the behaviour when one does. CUE cannot be cancelled: the caller stops waiting, and an unfinished worker keeps its memory,
 including any filled values, and one of 16 process-wide slots until it returns or the
@@ -351,35 +353,58 @@ planning at a destination whose provider type is a list, because a reference nee
 destination. At a scalar destination it stops the apply with a type error once its value is
 known. CUE decides the shape of such a value, so analysis cannot say more ahead of time.
 
-Analysis evaluates with structure sharing off, which instantiates every definition. Definitions
-that fan out are exponential to evaluate this way even if nothing uses them: twenty levels of
-`#T1: {a: #T0, b: #T0}` took 9 seconds and 9 GB, against microseconds with sharing on. The
-evaluation timeout bounds the wait but not the memory, because CUE cannot be cancelled. Generated
-provider types form trees, which are linear, but no provider as large as Cloudflare has been
-measured through this path.
+Analysis costs what the configuration reaches, not what the project holds. On cuenv's own project,
+one field takes 1.4 ms, its generated workflows 1 second, and all of it 1.1 seconds, where the first
+version of this analysis ran out of memory at 37 GB. That had three causes: finishing the instance
+first, which instantiated every definition with sharing off whether used or not; arms of a disjunction
+that still claimed to be under evaluation, so each reference read through one evaluated all of it
+again; and evaluating every inline struct that was an operand afresh, when its references can simply be
+walked. `TestFrozenAnalysisOfALargeProject` freezes that project, as nothing smaller showed these costs.
+
+Definitions that fan out are still exponential with sharing off if the configuration does reach them:
+`#T1: {a: #T0, b: #T0}` doubles at each level. Exporting such a value would be as well. The evaluation
+timeout bounds the wait but not the memory, because CUE cannot be cancelled. Generated provider types
+form trees, which are linear, but no provider as large as Cloudflare has been measured through this path.
 
 A comprehension that adds a field with a dynamic label, beside a field the configuration reads,
 is refused if an output decides it, even when the labels differ: `(expr)` could produce any label.
 
-An output declared with the wrong type in an untyped configuration, such as `number` for a
-string attribute or `string` for a list, is not caught while planning: the resource is
-created and the run then stops naming that output, and plans stay refused until the
-declaration is corrected or the resource destroyed. Generated provider types declare the
-correct type. A declared output the provider never returns, or returns as null, is not
-checked; a reference to one still fails when it is resolved.
+An output declared with the wrong type for its provider, such as `number` for a string attribute,
+is refused while planning, whether or not anything reads it. A declared output the provider never
+returns, or returns as null, is not checked; a reference to one still fails when it is resolved.
 
-The end-to-end suite runs the tests sharing one `sqld` at most eight at a time. With thirty-two at
-once on a 32-core machine, `sqld` 0.24.32 stopped serving writes in three of four full flake runs
-and once in six runs of the suite under CPU and disk load. The revision before this work did so
-once in about forty-five of those loaded runs, so the fault predates it, though this work's extra
-tests may make it more likely. The log shows the write slot still held by a connection that had
-failed with `SQLITE_BUSY_SNAPSHOT` and closed, and every other writer spinning on that slot. Eight
-at a time gave no hang in 35 loaded runs, and a stall now fails its test after five minutes instead
-of blocking the check forever.
+### `sqld` write contention
 
-One of those 35 runs failed differently, as did five of 27 at four at a time: the store gave up on
-`SQLITE_BUSY` after four attempts, about 1.4 seconds of backoff. A real apply that hits this after
-changing a resource stops with an unrecorded change and a recovery file.
+`sqld` 0.24.32 can stop serving writes for good under write contention, while still answering reads
+and `/health`. With thirty-two tests sharing one server, it did so in three of four full flake runs.
+The defect is in `libsql-server/src/connection/connection_manager.rs`, and upstream's main branch
+still has it:
+
+1. A writer that has to queue pushes itself onto `write_queue` and parks.
+2. When it wakes and another connection holds the slot for a checkpoint, `acquire` returns
+   `SQLITE_BUSY` and its entry stays in the queue, as the comment beside that check warns.
+3. The connection closes. `close` releases the slot only if the connection holds it then.
+4. A later `schedule_next` takes the dead entry and gives the slot to that connection as `Notified`.
+5. Only the owner of a slot moves it on from `Notified`, and other writers only wait, spinning once
+   the slot's deadline passes. Nothing times out a `Notified` slot.
+
+The captured log shows this exactly: connection 4006 closed at 21:24:43.787629, and was given the
+slot at 21:24:43.813194, which it held until the server was killed. A client cannot prevent this.
+It needs concurrent writers and a checkpoint, which `sqld` runs every 1,000 pages of log.
+
+What this means for a run: while the server is stuck, a state write fails after four attempts of
+thirty seconds, and the run stops as it does for any state store failure. Releasing its lock then
+takes as long. A loopback proxy that stops answering writes, as a stuck server does, ended a run this
+way after 273 seconds, naming the timeout. A write that follows a provider change stops with an
+unrecorded change and a recovery file. Restarting `sqld` clears it. Whether Turso Cloud shares this
+code is unknown.
+
+Two things changed because of it. Tests no longer share a server, as a shared database made every
+test contend with every other for the sake of nothing they test, and one stuck writer failed them
+all. And the store no longer gives up on `SQLITE_BUSY` after four attempts, about 1.4 seconds of
+backoff, which failed five of 27 loaded runs at four tests at a time. `SQLITE_BUSY` means the
+database did nothing and another writer will finish in moments, so it is retried for thirty seconds,
+with jitter so that colliding writers do not collide again.
 
 ## Proof and integration gates
 
