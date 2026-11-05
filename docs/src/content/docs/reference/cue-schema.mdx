@@ -80,7 +80,6 @@ config: {
 | -------------- | ---------------- | ------- | --------------------------------------------- |
 | `outputFormat` | `string`         | -       | Task output format                            |
 | `commands`     | `#CommandsConfig`| -       | Per-command defaults (`task.list.format`)     |
-| `backend`      | `#BackendConfig` | -       | Legacy task backend: `type` (`"host"` or `"dagger"`) and `options.image`; see [Dagger](/explanation/dagger-backend/) |
 | `ci`           | `#CIConfig`      | -       | CI settings such as how CI installs cuenv     |
 
 **Output Formats:**
@@ -484,8 +483,7 @@ tasks: build: schema.#Task & {
   through. Task env passthrough markers cannot select host
   `HOME` either. Declared environment values override these defaults. For host
   execution, use `hermetic: false` to inherit the caller's home and ambient
-  environment; such tasks are never cached. Dagger tasks use the configured
-  container image. Other undeclared ambient host variables — `TERM`, `TMPDIR`,
+  environment; such tasks are never cached. Other undeclared ambient host variables — `TERM`, `TMPDIR`,
   `XDG_*` — are excluded, so two machines with the same checkout and toolchain
   compute the same key.
 

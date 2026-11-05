@@ -392,7 +392,7 @@ async fn execute_service_task_dependencies(
         task_roots.join(", ")
     ));
 
-    let executor = build_up_task_executor(ExecutorConfig {
+    let executor = TaskExecutor::new(ExecutorConfig {
         capture_output: OutputCapture::Capture,
         max_parallel: 0,
         continue_on_error: false,
@@ -403,8 +403,6 @@ async fn execute_service_task_dependencies(
         materialize_outputs: None,
         cache_dir: None,
         show_cache_path: false,
-        backend_config: None,
-        cli_backend: None,
         cache: None,
         sandbox_hasher_root: None,
         sandbox_project_roots: std::collections::BTreeMap::new(),
@@ -433,16 +431,6 @@ async fn task_dependency_environment(
     }
 
     Ok(runtime_env)
-}
-
-#[cfg(feature = "dagger-backend")]
-fn build_up_task_executor(config: ExecutorConfig) -> TaskExecutor {
-    TaskExecutor::with_dagger_factory(config, Some(cuenv_dagger::create_dagger_backend))
-}
-
-#[cfg(not(feature = "dagger-backend"))]
-fn build_up_task_executor(config: ExecutorConfig) -> TaskExecutor {
-    TaskExecutor::new(config)
 }
 
 fn include_service_dependencies(

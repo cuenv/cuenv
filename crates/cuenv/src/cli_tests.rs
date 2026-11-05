@@ -804,13 +804,13 @@ fn test_cuenv_core_error_conversion() {
     assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
 
     // Execution errors should map to Eval (exit code 3)
-    let exec_err = cuenv_core::Error::execution("Dagger execution failed");
+    let exec_err = cuenv_core::Error::execution("Process execution failed");
     let cli_err: CliError = exec_err.into();
     assert!(matches!(cli_err, CliError::Eval { .. }));
     assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
     // Verify message extraction
     let display = format!("{cli_err}");
-    assert!(display.contains("Dagger execution failed"));
+    assert!(display.contains("Process execution failed"));
     assert!(!display.contains("Task execution failed: Task execution failed"));
 
     // Task graph errors should map to Config (exit code 2)
@@ -973,7 +973,6 @@ fn test_commands_package_method() {
         output_format: Some(OutputFormat::Text),
         materialize_outputs: None,
         show_cache_path: false,
-        backend: None,
         tui: false,
         interactive: false,
         help: false,

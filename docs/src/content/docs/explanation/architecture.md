@@ -95,7 +95,7 @@ should name intentionally unread fields with an underscore rather than carrying
 local `dead_code` allowances.
 Task schema support types follow the same pattern: `crates/manifest/src/tasks/`
 keeps the executable task and task-tree model, while params, retry config,
-legacy task-level Dagger config, cache policy, capture metadata, shell
+cache policy, capture metadata, shell
 configuration, input references, and dependency references live in sibling
 modules there; `crates/core/src/tasks/mod.rs` re-exports the DTOs. The task
 executor (in `crates/task-exec`) keeps

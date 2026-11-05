@@ -18,8 +18,6 @@ pub enum Runtime {
     Devenv(DevenvRuntime),
     /// Simple container execution
     Container(ContainerRuntime),
-    /// Advanced container with caching, secrets, chaining
-    Dagger(DaggerRuntime),
     /// OCI-based binary fetching from container images
     Oci(OciRuntime),
     /// Multi-source tool management (GitHub, OCI, Nix)
@@ -63,47 +61,6 @@ pub struct DevenvRuntime {
 pub struct ContainerRuntime {
     /// Container image (e.g., "node:20-alpine", "rust:1.75-slim")
     pub image: String,
-}
-
-/// Dagger runtime configuration (advanced container orchestration)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct DaggerRuntime {
-    /// Base container image (required unless 'from' is specified)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
-    /// Use container from a previous task as base
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
-    /// Secrets to mount or expose as environment variables
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub secrets: Vec<DaggerSecret>,
-    /// Cache volumes for persistent build caching
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cache: Vec<DaggerCacheMount>,
-}
-
-/// Secret configuration for Dagger containers
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DaggerSecret {
-    /// Name identifier for the secret
-    pub name: String,
-    /// Mount secret as a file at this path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    /// Expose secret as an environment variable with this name
-    #[serde(rename = "envVar", skip_serializing_if = "Option::is_none")]
-    pub env_var: Option<String>,
-    /// Secret resolver configuration
-    pub resolver: serde_json::Value,
-}
-
-/// Cache volume mount configuration for Dagger
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DaggerCacheMount {
-    /// Path inside the container to mount the cache
-    pub path: String,
-    /// Unique name for the cache volume
-    pub name: String,
 }
 
 /// OCI-based binary runtime configuration.
@@ -344,29 +301,4 @@ pub enum GitHubExtract {
         #[serde(skip_serializing_if = "Option::is_none")]
         env: Option<String>,
     },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dagger_runtime_secret_reads_camel_case_env_var() {
-        // `schema.#DaggerSecret` declares `envVar`; the export uses that key.
-        let runtime: Runtime = serde_json::from_value(serde_json::json!({
-            "type": "dagger",
-            "image": "alpine:3",
-            "secrets": [{
-                "name": "npm",
-                "envVar": "NPM_TOKEN",
-                "resolver": {"resolver": "exec", "command": "echo"}
-            }]
-        }))
-        .expect("dagger runtime should deserialize");
-
-        let Runtime::Dagger(dagger) = runtime else {
-            panic!("expected a dagger runtime, got {runtime:?}");
-        };
-        assert_eq!(dagger.secrets[0].env_var.as_deref(), Some("NPM_TOKEN"));
-    }
 }

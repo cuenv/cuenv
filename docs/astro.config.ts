@@ -91,7 +91,6 @@ const nimbusConfig = defineNimbusConfig({
           { label: "cuenv-formatters", link: "/explanation/cuenv-formatters/" },
           { label: "cuenv-ignore", link: "/explanation/cuenv-ignore/" },
           { label: "cuenv-workspaces", link: "/explanation/cuenv-workspaces/" },
-          { label: "Dagger backend", link: "/explanation/dagger-backend/" },
           { label: "Roadmap", link: "/explanation/roadmap/" },
           { label: "Decisions (ADRs & RFCs)", link: "/decisions/" },
         ],

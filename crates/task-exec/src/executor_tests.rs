@@ -60,43 +60,6 @@ async fn test_executor_config_default() {
 }
 
 #[tokio::test]
-async fn test_executor_records_backend_in_cache_identity() {
-    let cache_root = TempDir::new().unwrap();
-    let workspace = TempDir::new().unwrap();
-    let cache = TaskCacheConfig {
-        cas: Arc::new(LocalCas::open(cache_root.path()).unwrap()),
-        action_cache: Arc::new(LocalActionCache::open(cache_root.path()).unwrap()),
-        vcs_hasher: Arc::new(WalkHasher::new(workspace.path())),
-        vcs_hasher_root: workspace.path().to_path_buf(),
-        action_semantics_version: 1,
-        runtime_identity_properties: std::collections::BTreeMap::new(),
-        cache_disabled_reason: None,
-        secret_salt: Some("test-salt".to_string()),
-        mode_override: None,
-        cache_root: cache_root.path().to_path_buf(),
-        project_roots: std::collections::BTreeMap::new(),
-    };
-
-    let executor = TaskExecutor::new(ExecutorConfig {
-        project_root: workspace.path().to_path_buf(),
-        cache: Some(cache),
-        ..ExecutorConfig::default()
-    });
-
-    assert_eq!(
-        executor
-            .config
-            .cache
-            .as_ref()
-            .unwrap()
-            .runtime_identity_properties
-            .get("cuenv.backend")
-            .map(String::as_str),
-        Some("host")
-    );
-}
-
-#[tokio::test]
 async fn test_task_result() {
     let result = TaskResult {
         name: "test".to_string(),
@@ -1416,7 +1379,6 @@ fn test_executor_config_with_fields() {
         materialize_outputs: Some(PathBuf::from("/outputs")),
         cache_dir: Some(PathBuf::from("/cache")),
         show_cache_path: true,
-        cli_backend: Some("host".to_string()),
         ..Default::default()
     };
     assert!(config.capture_output.should_capture());

@@ -26,7 +26,6 @@ impl<'a> TaskHandler<'a> {
             format,
             materialize_outputs,
             show_cache_path,
-            backend,
             tui,
             interactive,
             help,
@@ -69,9 +68,6 @@ impl<'a> TaskHandler<'a> {
         }
         if show_cache_path {
             request = request.with_show_cache_path();
-        }
-        if let Some(backend) = backend {
-            request = request.with_backend(backend);
         }
         if tui {
             request = request.with_tui();

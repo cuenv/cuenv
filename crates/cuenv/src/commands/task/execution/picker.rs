@@ -63,9 +63,6 @@ fn selected_task_request<'a>(
     if input.shows_cache_path() {
         request = request.with_show_cache_path();
     }
-    if let Some(backend) = input.backend {
-        request = request.with_backend(backend);
-    }
     if input.uses_tui() {
         request = request.with_tui();
     }

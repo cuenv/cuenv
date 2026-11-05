@@ -162,13 +162,6 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
-            name: "dagger-task",
-            min_task_count: 5, // hello, python-info, stage1, stage2, cached-install, etc.
-            has_hooks: false,
-            has_env: false,
-            expect_eval_failure: false,
-        },
-        ExampleExpectations {
             name: "test-fail",
             min_task_count: 0, // No tasks, just a failing hook
             has_hooks: true,
@@ -625,28 +618,6 @@ fn test_reusable_task_refs_example_preserves_dependencies() -> TestResult {
         })?;
 
     assert_eq!(pipeline_task.task_name(), "deploy");
-
-    Ok(())
-}
-
-#[test]
-fn test_dagger_task_loads_successfully() -> TestResult {
-    skip_if_ffi_unavailable!();
-
-    // The dagger-task example uses shorthand task references in the `inputs` field
-    // (e.g., `{task: "build.deps"}`) using the #TaskOutput type.
-    let examples_dir = get_examples_dir()?;
-    let manifest = load_named_example(&examples_dir, "dagger-task")?;
-
-    // Verify the dagger-task example has expected tasks
-    assert!(
-        manifest.tasks.contains_key("hello"),
-        "dagger-task example should have 'hello' task"
-    );
-    assert!(
-        manifest.tasks.contains_key("build.deps"),
-        "dagger-task example should have 'build.deps' task"
-    );
 
     Ok(())
 }

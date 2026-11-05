@@ -3,9 +3,7 @@ use super::dag_export;
 use super::discovery::evaluate_manifest;
 use super::list_builder::prepare_task_index;
 use super::rendering::get_task_cli_help;
-use super::runner::{
-    build_task_executor, execute_task_with_strategy, execute_with_rich_tui, format_task_results,
-};
+use super::runner::{execute_task_with_strategy, execute_with_rich_tui, format_task_results};
 use super::types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
 use crate::commands::CommandExecutor;
 use crate::commands::env_file::find_cue_module_root;
@@ -19,7 +17,7 @@ use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_core::{DryRun, OutputCapture, Result};
 use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
-use cuenv_task_exec::{ExecutorConfig, TaskGraph, TaskIndex};
+use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph, TaskIndex};
 use cuenv_tool_runtime::apply_resolved_tool_activation;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -44,7 +42,6 @@ struct TaskExecutionInput<'a> {
     format: &'a str,
     capture_output: OutputCapture,
     materialize_outputs: Option<&'a str>,
-    backend: Option<&'a str>,
     skip_dependencies: bool,
     continue_on_error: bool,
     dry_run: DryRun,
@@ -76,7 +73,6 @@ impl<'a> TaskExecutionInput<'a> {
                 .materialize_outputs
                 .as_ref()
                 .and_then(|path| path.to_str()),
-            backend: request.backend.as_deref(),
             skip_dependencies: request.skip_dependencies,
             continue_on_error: request.continue_on_error,
             dry_run: request.dry_run,
@@ -747,7 +743,7 @@ async fn execute_resolved_task(request: TaskRunRequest<'_, '_>) -> Result<String
         runtime: &request.runtime,
         capture_output: request.input.capture_output,
     });
-    let executor = build_task_executor(executor_config);
+    let executor = TaskExecutor::new(executor_config);
 
     if request.input.uses_tui() && request.task_graph.task_count() > 0 {
         let tui_config = task_executor_config(&TaskExecutorConfigSpec {
@@ -756,7 +752,7 @@ async fn execute_resolved_task(request: TaskRunRequest<'_, '_>) -> Result<String
             runtime: &request.runtime,
             capture_output: OutputCapture::Capture,
         });
-        let tui_executor = build_task_executor(tui_config);
+        let tui_executor = TaskExecutor::new(tui_config);
 
         return execute_with_rich_tui(
             &tui_executor,
@@ -811,13 +807,6 @@ fn task_executor_config(spec: &TaskExecutorConfigSpec<'_, '_>) -> ExecutorConfig
             .map(|path| Path::new(path).to_path_buf()),
         cache_dir: None,
         show_cache_path: spec.input.shows_cache_path(),
-        backend_config: spec
-            .context
-            .manifest
-            .config
-            .as_ref()
-            .and_then(|config| config.backend.clone()),
-        cli_backend: spec.input.backend.map(ToString::to_string),
         cache: spec.runtime.cache.clone(),
         sandbox_hasher_root: Some(task_hasher_root(spec.context)),
         sandbox_project_roots: spec.context.project_roots.clone(),

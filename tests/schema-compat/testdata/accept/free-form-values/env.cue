@@ -39,5 +39,3 @@ ci: {
 		}]
 	}]
 }
-
-config: backend: {type: "dagger", options: image: "alpine:3"}

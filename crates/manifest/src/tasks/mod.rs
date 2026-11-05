@@ -13,7 +13,6 @@
 
 mod cache_policy;
 mod capture_types;
-mod dagger;
 mod dependency;
 mod group;
 mod hermetic;
@@ -27,10 +26,9 @@ mod task;
 
 pub use cache_policy::{TaskCacheMode, TaskCachePolicy};
 pub use capture_types::{CaptureSource, TaskCapture, TaskCaptureRef};
-pub use dagger::{DaggerCacheMount, DaggerSecret, DaggerTaskConfig};
 pub use dependency::TaskDependency;
 pub use group::TaskGroup;
-pub use hermetic::{Hermetic, HermeticOptions, Sandbox, SandboxPolicy};
+pub use hermetic::{Hermetic, HermeticOptions, Sandbox};
 pub use inputs::{
     Input, MappedInput, Mapping, ProjectReference, SourceLocation, TaskDirectory,
     TaskDirectoryBase, TaskOutput,

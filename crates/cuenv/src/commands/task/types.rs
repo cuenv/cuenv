@@ -34,9 +34,6 @@ pub struct TaskExecutionRequest<'a> {
     /// Execution mode (TUI vs simple)
     pub execution_mode: ExecutionMode,
 
-    /// Backend to use for task execution (e.g., "dagger")
-    pub backend: Option<String>,
-
     /// Skip executing task dependencies (for CI orchestrators that handle deps externally)
     pub skip_dependencies: bool,
 
@@ -62,7 +59,6 @@ impl fmt::Debug for TaskExecutionRequest<'_> {
             .field("environment", &self.environment)
             .field("output", &self.output)
             .field("execution_mode", &self.execution_mode)
-            .field("backend", &self.backend)
             .field("skip_dependencies", &self.skip_dependencies)
             .field("continue_on_error", &self.continue_on_error)
             .field("dry_run", &self.dry_run)
@@ -153,7 +149,6 @@ impl<'a> TaskExecutionRequest<'a> {
             environment: None,
             output: OutputConfig::default(),
             execution_mode: ExecutionMode::default(),
-            backend: None,
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
@@ -179,7 +174,6 @@ impl<'a> TaskExecutionRequest<'a> {
             environment: None,
             output: OutputConfig::default(),
             execution_mode: ExecutionMode::default(),
-            backend: None,
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
@@ -202,7 +196,6 @@ impl<'a> TaskExecutionRequest<'a> {
             environment: None,
             output: OutputConfig::default(),
             execution_mode: ExecutionMode::default(),
-            backend: None,
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
@@ -224,7 +217,6 @@ impl<'a> TaskExecutionRequest<'a> {
             environment: None,
             output: OutputConfig::default(),
             execution_mode: ExecutionMode::default(),
-            backend: None,
             skip_dependencies: false,
             continue_on_error: false,
             dry_run: DryRun::No,
@@ -266,13 +258,6 @@ impl<'a> TaskExecutionRequest<'a> {
     #[must_use]
     pub const fn with_tui(mut self) -> Self {
         self.execution_mode = ExecutionMode::Tui;
-        self
-    }
-
-    /// Set the backend.
-    #[must_use]
-    pub fn with_backend(mut self, backend: impl Into<String>) -> Self {
-        self.backend = Some(backend.into());
         self
     }
 
@@ -427,14 +412,6 @@ mod tests {
         let executor = create_test_executor();
         let req = TaskExecutionRequest::interactive("./", "cuenv", &executor);
         assert!(matches!(req.selection, TaskSelection::Interactive));
-    }
-
-    #[test]
-    fn test_with_backend() {
-        let executor = create_test_executor();
-        let req =
-            TaskExecutionRequest::named("./", "cuenv", "build", &executor).with_backend("dagger");
-        assert_eq!(req.backend, Some("dagger".to_string()));
     }
 
     #[test]

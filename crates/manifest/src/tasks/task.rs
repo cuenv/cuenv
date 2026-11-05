@@ -7,9 +7,8 @@ use serde::Serialize;
 
 use super::cache_policy::TaskCachePolicy;
 use super::capture_types::TaskCapture;
-use super::dagger::DaggerTaskConfig;
 use super::dependency::TaskDependency;
-use super::hermetic::{Hermetic, SandboxPolicy};
+use super::hermetic::{Hermetic, Sandbox};
 use super::inputs::{Input, ProjectReference, SourceLocation, TaskDirectory, TaskOutput};
 use super::params::TaskParams;
 use super::retry::RetryConfig;
@@ -98,11 +97,6 @@ pub struct Task {
     /// Environment variables for this task
     #[serde(default)]
     pub env: HashMap<String, serde_json::Value>,
-
-    /// Dagger-specific configuration for running this task in a container
-    /// DEPRECATED: Use runtime field with Dagger variant instead
-    #[serde(default)]
-    pub dagger: Option<DaggerTaskConfig>,
 
     /// Runtime override for this task (inherits from project if not set)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -219,8 +213,6 @@ impl<'de> serde::Deserialize<'de> for Task {
             #[serde(default)]
             env: HashMap<String, serde_json::Value>,
             #[serde(default)]
-            dagger: Option<DaggerTaskConfig>,
-            #[serde(default)]
             runtime: Option<crate::manifest::Runtime>,
             #[serde(default = "default_hermetic")]
             hermetic: Hermetic,
@@ -288,7 +280,6 @@ impl<'de> serde::Deserialize<'de> for Task {
             shell_options: helper.shell_options,
             args: helper.args,
             env: helper.env,
-            dagger: helper.dagger,
             runtime: helper.runtime,
             hermetic: helper.hermetic,
             depends_on: helper.depends_on,
@@ -322,7 +313,6 @@ impl Default for Task {
             shell_options: None,
             args: vec![],
             env: HashMap::new(),
-            dagger: None,
             runtime: None,
             hermetic: Hermetic::Enabled(true), // Default to hermetic execution
             depends_on: vec![],
@@ -400,7 +390,7 @@ impl Task {
 
     /// Filesystem isolation policy this task runs under.
     #[must_use]
-    pub fn sandbox(&self) -> SandboxPolicy {
+    pub fn sandbox(&self) -> Sandbox {
         self.hermetic.sandbox()
     }
 

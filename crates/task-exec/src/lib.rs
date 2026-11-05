@@ -10,7 +10,6 @@
 //! re-exported here for convenience, mirroring the former
 //! `cuenv_core::tasks` module surface.
 
-pub mod backend;
 pub mod cache;
 pub mod captures;
 mod command;
@@ -40,10 +39,6 @@ pub use cuenv_manifest::tasks::*;
 // The task-domain error stays in cuenv-core (core::Error composes it).
 pub use cuenv_core::TaskError;
 
-pub use backend::{
-    BackendFactory, HostBackend, TaskBackend, TaskExecutionContext, create_backend,
-    create_backend_with_factory, should_use_dagger,
-};
 pub use command_ext::TaskCommandExt;
 pub use executor::*;
 pub use graph::*;

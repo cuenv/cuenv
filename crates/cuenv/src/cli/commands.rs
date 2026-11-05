@@ -107,13 +107,6 @@ pub enum Commands {
             default_value_t = false
         )]
         show_cache_path: bool,
-        /// Force specific execution backend (e.g., 'host', 'dagger').
-        #[arg(
-            long = "backend",
-            help = "Force specific execution backend (e.g., 'host', 'dagger')",
-            value_name = "BACKEND"
-        )]
-        backend: Option<String>,
         /// Use rich TUI for task execution.
         #[arg(long, help = "Use rich TUI for task execution")]
         tui: bool,

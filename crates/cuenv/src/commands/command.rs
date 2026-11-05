@@ -100,8 +100,6 @@ pub enum Command {
         materialize_outputs: Option<String>,
         /// Whether to show the cache path for tasks.
         show_cache_path: bool,
-        /// Execution backend override (e.g., "dagger").
-        backend: Option<String>,
         /// Whether to use the TUI for task execution.
         tui: bool,
         /// Whether to run in interactive mode.

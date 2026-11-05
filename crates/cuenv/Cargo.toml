@@ -26,7 +26,6 @@ workspace = true
 
 [features]
 default = [
-    "dagger-backend",
     "github",
     "gitlab",
     "bitbucket",
@@ -37,7 +36,6 @@ default = [
     "aws",
     "gcp",
 ]
-dagger-backend = ["dep:cuenv-dagger"]
 # Platform-specific providers
 github = ["dep:cuenv-github"]
 gitlab = ["dep:cuenv-gitlab"]
@@ -77,7 +75,6 @@ cuenv-workspaces = { workspace = true, features = [
     "discovery-rust",
 ] }
 cuenv-codegen = { workspace = true }
-cuenv-dagger = { workspace = true, optional = true }
 cuenv-ci = { workspace = true }
 cuenv-editorconfig = { workspace = true }
 cuenv-events = { workspace = true }

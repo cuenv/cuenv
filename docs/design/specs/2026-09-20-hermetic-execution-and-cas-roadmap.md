@@ -333,11 +333,8 @@ inputs gets an empty root. Cache mode `never`, task-local runtime environment,
 resolved input snapshot and sandbox the process.
 
 **Degradation is an error, not a fallback.** If inputs cannot be resolved,
-cuenv refuses to expose the live checkout silently. Dagger supplies container
-isolation but currently mounts the full project rather than the resolved input
-root, so its task-result cache is disabled; explicitly asking it for the host
-`"dir"` strategy is rejected. The same reasoning keeps stricter tiers out of
-`#Sandbox` until they exist.
+cuenv refuses to expose the live checkout silently. The same reasoning keeps
+stricter tiers out of `#Sandbox` until they exist.
 
 Every retry builds a fresh verified root, so failed-attempt files cannot make a
 later attempt succeed under the original action key. Successful output

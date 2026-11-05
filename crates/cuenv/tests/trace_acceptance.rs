@@ -234,31 +234,6 @@ fn test_hook_example_verify_env_dag() -> TestResult {
 }
 
 // =============================================================================
-// Dagger Task Example DAG Tests
-// =============================================================================
-
-#[test]
-fn test_dagger_task_hello_dag() -> TestResult {
-    skip_if_binary_unavailable!();
-
-    let dag = run_dry_run("dagger-task", "hello")?;
-
-    // DAG should have tasks
-    assert!(!dag.tasks.is_empty(), "DAG should have tasks");
-
-    // All tasks should have commands
-    for task in &dag.tasks {
-        assert!(
-            task.command.is_some(),
-            "Task {} should have a command",
-            task.name
-        );
-    }
-
-    Ok(())
-}
-
-// =============================================================================
 // CI Pipeline Example Tests
 // =============================================================================
 

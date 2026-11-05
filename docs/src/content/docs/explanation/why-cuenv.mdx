@@ -190,9 +190,9 @@ So the inspiration above stays trustworthy, here is what is *not* fully done:
   that depend on image builds still fail fast until image execution backends are
   wired into service startup.
 - **Container images** (`cuenv build`) — **Partial.** Builds Dockerfile images
-  via the local Docker CLI / buildx and Nix images. Multi-arch Nix, Dagger
-  execution, and downstream image output-reference resolution are incomplete.
-- **OCI and Dagger runtimes** — **Partial.** `cuenv sync lock` resolves OCI
+  via the local Docker CLI / buildx and Nix images. Multi-arch Nix and
+  downstream image output-reference resolution are incomplete.
+- **OCI runtime** — **Partial.** `cuenv sync lock` resolves OCI
   digests and `extract` paths into `cuenv.lock`, and the OCI activation hook
   prepends extracted binaries to `PATH`. The **container runtime is Preview**
   and not complete.

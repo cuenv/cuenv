@@ -14,7 +14,6 @@ members = [
     "crates/task-exec",
     "crates/services",
     "crates/infrastructure",
-    "crates/dagger",
     "crates/cuengine",
     "crates/cuenv",
     "crates/workspaces",
@@ -72,7 +71,6 @@ cuenv-task-discovery = { path = "crates/task-discovery", version = "0.66.0" }
 cuenv-task-exec = { path = "crates/task-exec", version = "0.66.0" }
 cuenv-services = { path = "crates/services", version = "0.66.0" }
 cuenv-infrastructure = { path = "crates/infrastructure", version = "0.66.0" }
-cuenv-dagger = { path = "crates/dagger", version = "0.66.0" }
 cuenv-workspaces = { path = "crates/workspaces", version = "0.66.0" }
 cuenv-ci = { path = "crates/ci", version = "0.66.0" }
 cuenv-release = { path = "crates/release", version = "0.66.0" }

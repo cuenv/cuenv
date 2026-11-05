@@ -28,7 +28,6 @@ cuenv-workspaces = { workspace = true, features = ["detection"] }
 
 tokio = { workspace = true }
 tracing = { workspace = true }
-async-trait = { workspace = true }
 async-recursion = "1.1"
 futures = { workspace = true }
 petgraph = { workspace = true }
@@ -52,4 +51,3 @@ bazel-remote-apis = { workspace = true }
 prost = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
-async-trait = { workspace = true }

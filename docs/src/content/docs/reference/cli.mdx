@@ -206,12 +206,7 @@ cuenv task [NAME] [OPTIONS] [-- TASK_ARGS...]
 - `-n, --dry-run`: Export the task dependency graph as JSON without executing tasks.
 - `--materialize-outputs <DIR>`: Materialize cached outputs to this directory on cache hit (off by default).
 - `--show-cache-path`: Print the cache path for this task key.
-- `--backend <BACKEND>`: Force a specific execution backend (`host` or `dagger`).
 - `--help`: Print task-specific help (when a task name is provided).
-
-:::note[Backend status]
-The `dagger` backend is optional and gated behind the `dagger-backend` build feature. Host execution is the default and fully supported. See [Schema status](/reference/schema/status/) for current backend coverage.
-:::
 
 **Label-based execution:**
 
@@ -346,7 +341,7 @@ is configured; local multi-platform builds require a registry. Nix images (with
 and pushed with `docker`.
 
 :::note[Image backends are partial]
-`#ContainerImage` is partially implemented: `cuenv build` lists and builds images with the local Docker CLI, and registry builds are pushed with Docker buildx. Dagger execution and downstream image output-reference resolution remain incomplete. See [Schema status](/reference/schema/status/).
+`#ContainerImage` is partially implemented: `cuenv build` lists and builds images with the local Docker CLI, and registry builds are pushed with Docker buildx. Downstream image output-reference resolution remains incomplete. See [Schema status](/reference/schema/status/).
 :::
 
 **Examples:**

@@ -108,7 +108,6 @@ If a change does not match one of the required full-flake triggers, keep the che
 | **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.) |
 | **cuenv-ci**                      | CI pipeline integration                                      |
 | **cuenv-release**                 | Version management and publishing                            |
-| **cuenv-dagger**                  | Optional containerized task execution backend                |
 | **cuenv-codegen**                 | CUE-based code generation                                    |
 | **cuenv-infrastructure**          | Terraform provider plugins over gRPC, Turso resource state   |
 | **cuenv-ignore**                  | .gitignore/.dockerignore generation                          |

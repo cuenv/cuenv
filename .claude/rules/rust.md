@@ -437,7 +437,7 @@ let result = unsafe { CStr::from_ptr(ptr) };
 default = []                           # Empty by default (opt-in model)
 github = ["dep:octocrab"]              # VCS providers
 gitlab = ["dep:gitlab"]
-dagger-backend = ["dep:cuenv-dagger"]  # Optional backends
+homebrew = ["dep:cuenv-homebrew"]      # Optional integrations
 ```
 
 - **Lowercase kebab-case** for all feature names
@@ -448,8 +448,8 @@ dagger-backend = ["dep:cuenv-dagger"]  # Optional backends
 #[cfg(feature = "github")]
 pub mod github;
 
-#[cfg(feature = "dagger-backend")]
-pub async fn execute_with_dagger(task: &Task) -> Result<Output> {
+#[cfg(feature = "homebrew")]
+pub async fn publish_formula(release: &Release) -> Result<()> {
     // ...
 }
 ```
