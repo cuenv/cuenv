@@ -285,12 +285,10 @@ impl<'a> TaskExecutionRequest<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc;
 
     /// Create a test executor for unit tests.
     fn create_test_executor() -> CommandExecutor {
-        let (sender, _receiver) = mpsc::unbounded_channel();
-        CommandExecutor::new(sender, "cuenv".to_string())
+        CommandExecutor::new("cuenv".to_string())
     }
 
     #[test]

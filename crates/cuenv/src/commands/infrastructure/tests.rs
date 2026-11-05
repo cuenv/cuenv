@@ -793,10 +793,7 @@ fn the_infrastructure_block_must_be_concrete_only_for_this_command() {
     assert!(error.to_string().contains("infrastructure"), "{error}");
 
     // Other commands evaluate the same instance without the requirement.
-    let executor = crate::commands::CommandExecutor::new(
-        tokio::sync::mpsc::unbounded_channel().0,
-        "cuenv".to_string(),
-    );
+    let executor = crate::commands::CommandExecutor::new("cuenv".to_string());
     assert!(executor.get_module(&root.join("app")).is_ok());
 }
 

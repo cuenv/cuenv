@@ -977,8 +977,7 @@ mod tests {
             // A directory with no CUE module and no lockfile: formatters must
             // fall back to the inherited environment rather than erroring.
             let project = FakeProject::new();
-            let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-            let executor = CommandExecutor::new(sender, "cuenv".to_string());
+            let executor = CommandExecutor::new("cuenv".to_string());
             let path = project.root().to_string_lossy().into_owned();
 
             let environments = FormatterEnvironments::resolve(

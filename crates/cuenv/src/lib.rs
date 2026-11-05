@@ -12,7 +12,6 @@ pub mod commands;
 pub mod completions;
 /// Multi-process event coordination.
 /// Event handling and routing.
-pub mod events;
 /// Performance measurement utilities.
 pub mod performance;
 /// CI/CODEOWNERS detection and `.rules.cue` evaluation helpers.

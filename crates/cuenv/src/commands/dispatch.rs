@@ -15,7 +15,10 @@ impl CommandExecutor {
     /// - I/O errors for file system operations
     pub async fn execute(&self, command: Command) -> Result<()> {
         match command {
-            Command::Version { format: _ } => self.execute_version().await,
+            Command::Version { format: _ } => {
+                cuenv_events::println_redacted(&super::version::get_version_info());
+                Ok(())
+            }
             command @ (Command::EnvPrint { .. }
             | Command::EnvList { .. }
             | Command::EnvLoad { .. }
@@ -197,7 +200,7 @@ impl CommandExecutor {
                 .await
             }
             Command::ShellInit { shell } => {
-                handler::ShellInitHandler { shell }.execute_sync(self);
+                cuenv_events::println_redacted(&super::hooks::execute_shell_init(shell));
                 Ok(())
             }
             _ => unreachable!("handler dispatch called for another command family"),

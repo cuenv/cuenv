@@ -204,7 +204,6 @@ fn extend_task_scope_with_cross_project(
     let mut loaded_aliases = BTreeMap::<String, PathBuf>::new();
     while let Some(request) = pending.pop_front() {
         let loaded = load_external_project(ExternalProjectLoad {
-            executor,
             request: &request,
             project_roots: &mut project_roots,
             loaded_aliases: &loaded_aliases,
@@ -238,7 +237,6 @@ fn extend_task_scope_with_cross_project(
 }
 
 struct ExternalProjectLoad<'a> {
-    executor: &'a CommandExecutor,
     request: &'a ExternalProjectRequest,
     project_roots: &'a mut BTreeMap<String, PathBuf>,
     loaded_aliases: &'a BTreeMap<String, PathBuf>,
@@ -253,7 +251,6 @@ enum ExternalProjectOutcome {
 
 fn load_external_project(load: ExternalProjectLoad<'_>) -> Result<ExternalProjectOutcome> {
     let ExternalProjectLoad {
-        executor,
         request,
         project_roots,
         loaded_aliases,
@@ -273,7 +270,7 @@ fn load_external_project(load: ExternalProjectLoad<'_>) -> Result<ExternalProjec
     }
 
     let external_package = cue_package_name(&external_root)?;
-    let external_executor = executor.for_package(external_package.clone());
+    let external_executor = CommandExecutor::new(external_package.clone());
     let mut external_manifest =
         evaluate_manifest(&external_root, &external_package, &external_executor)?;
     let external_index = prepare_task_index(&mut external_manifest, &external_root)?;

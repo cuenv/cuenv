@@ -536,8 +536,7 @@ struct InitResult {
 /// The executor provides centralized module evaluation - commands that need
 /// CUE access can call `executor.get_module()` to get the cached evaluation.
 fn create_executor(package: &str) -> Arc<CommandExecutor> {
-    let (event_sender, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
-    Arc::new(CommandExecutor::new(event_sender, package.to_string()))
+    Arc::new(CommandExecutor::new(package.to_string()))
 }
 
 /// Initialize CLI parsing and tracing configuration
