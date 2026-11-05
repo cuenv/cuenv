@@ -43,6 +43,8 @@ type frozenNode struct {
 
 type frozenGraph struct {
 	Nodes []frozenNode `json:"nodes"`
+	// Embedded holds what @embed attributes read, by absolute path.
+	Embedded map[string][]byte `json:"embedded,omitempty"`
 }
 
 type freezeOptions struct {
@@ -214,7 +216,21 @@ func freezeBuildGraph(root *build.Instance, sources map[*ast.File]string) (*froz
 		graph.Nodes[index] = node
 		return index, nil
 	}
-	_, err := visit(root)
+	if _, err := visit(root); err != nil {
+		return graph, err
+	}
+	instances := make([]*build.Instance, 0, len(seen))
+	for instance := range seen {
+		instances = append(instances, instance)
+	}
+	files := make(map[string]bool)
+	for _, node := range graph.Nodes {
+		for _, file := range node.Files {
+			files[file.Source] = true
+		}
+	}
+	var err error
+	graph.Embedded, err = captureEmbedded(root, instances, files)
 	return graph, err
 }
 
@@ -252,6 +268,7 @@ func (graph frozenGraph) instance() (*build.Instance, error) {
 	instances := make([]*build.Instance, len(graph.Nodes))
 	for index, node := range graph.Nodes {
 		instance := context.NewInstance(node.Dir, nil)
+		instance.EmbedFS = graph.embedFS
 		instance.Root, instance.Module, instance.ImportPath, instance.PkgName, instance.User = node.Root, node.Module, node.ImportPath, node.PkgName, node.User
 		if json.Unmarshal(node.ModuleFile, &instance.ModuleFile) != nil {
 			return nil, errors.New("invalid frozen module")

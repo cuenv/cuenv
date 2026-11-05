@@ -1911,6 +1911,30 @@ async fn a_real_output_violating_a_constraint_stops_before_the_consumer() -> Tes
     Ok(())
 }
 
+/// A real output conflicting inside a let used to be lost, so the consumer was created
+/// with the let's other conjunct, as if the output had been that value.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn a_real_output_conflicting_inside_a_let_stops_before_the_consumer() -> TestResult {
+    let stack = OutputLifecycle::new(
+        "let-conflict",
+        &format!(
+            "let M = {PRODUCER_ID} & \"never\"\n{}",
+            outputs_stack(&format!(
+                "{OUTPUT_PRODUCER}, consumer: {{type: \"fake_plain\", configuration: name: \"\\(M)\"}}"
+            ))
+        ),
+    )?;
+    stack.lifecycle.run(&["plan"])?;
+    stack.fails(
+        &["apply", "--yes"],
+        "the real value of output fake_plain.producer.id",
+    )?;
+    assert_eq!(stack.creates(), ["producer"]);
+    assert!(stack.record("consumer").await.is_err());
+    Ok(())
+}
+
 /// Output-dependent structure is refused before the provider changes anything.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
