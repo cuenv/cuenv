@@ -12,7 +12,7 @@ on:
         options:
         - '0.70.0'
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 jobs:
   build-cuenv-namespace-profile-cuenv-macos-arm64:
