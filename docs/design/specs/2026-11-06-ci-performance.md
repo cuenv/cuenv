@@ -16,7 +16,9 @@ the baseline before the optimizations below.
   `cachix/install-nix-action@v31`, without installer OIDC. Buildkite's installer
   and profile sourcing use upstream Nix too. The unused hosted `flake-schemas`
   input has been removed from both the flake and lockfile. No active flake input
-  or installer config uses FlakeHub.
+  or installer config uses FlakeHub. Namespace preparation transfers restored
+  root-owned Nix state to the runner on Linux without systemd, matching the
+  install action's single-user mode; daemon installations retain their ownership.
 - The repository's Cachix contributor installs its client with
   `nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix`, using the exact nixpkgs
   revision already in `flake.lock` instead of a separate mutable install expression.
@@ -37,6 +39,16 @@ dependencies, working directory and outputs, retained Cachix setup, skipped
 cuenv setup and its dependent phases, and release bootstrap. Live speedup and
 cache-publication results must be recorded from subsequent CI runs; the
 historical timings below are not measurements of the changed workflow.
+
+The first changed-source run, [42277205456](https://github.com/cuenv/cuenv/actions/runs/42277205456),
+passed both macOS checks. macOS nextest took **9m 50s** after starting, including
+**31s** for Nix installation, **24s** for Cachix setup, and **53.803s** for 4,226
+passing tests. Its Cachix daemon published the minimal Rust toolchain,
+`cuenv-deps-0.69.0`, and `cuenv-nextest-0.69.0`, confirming publication from the
+direct check. The runner queued for **8m 26s** before starting. Linux jobs
+exposed the restored root-owned store's incompatibility with single-user Nix;
+the Namespace preparation above corrects that failure. This partial run is
+not a successful end-to-end timing comparison.
 
 On x86_64 Linux, `nix path-info --json --closure-size` measured the original
 development toolchain closure at **2,633.8 MiB** and the new native build
@@ -62,6 +74,10 @@ Nix expressions and generated workflow changes; its final result belongs in
 the PR validation record. Local cache publication cannot be exercised because
 this execution environment blocks the project's Cachix host, so a warm-cache
 CI comparison remains necessary to measure elapsed-time improvement.
+
+The initial local full gate exhausted its 32 GiB filesystem while two source
+snapshots were building; its failures are not passing gate evidence. The gate
+is rerun serially after reclaiming obsolete artifacts.
 
 ## Measured bottleneck
 

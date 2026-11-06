@@ -355,8 +355,11 @@ Example:
 - **GitHub Action:** `namespacelabs/nscloud-cache-action@v1` (Linux only)
 
 Use this on Namespace Linux runner profiles with cache volumes alongside
-`#Cachix`. It does not install Nix; it removes legacy installer receipts
-around the upstream Nix install step and skips the `/nix` cache action on macOS runners.
+`#Cachix`. It removes legacy installer receipts around the upstream Nix install
+step. On Linux runners without systemd, it transfers restored root-owned Nix
+state to the runner so upstream Nix can install in single-user mode. Daemon
+installations retain their ownership. The `/nix` cache action is skipped on
+macOS runners.
 Namespace gives concurrent jobs private forks of the latest committed volume
 and publishes successful updates with last-write-wins semantics. It may also
 serve a stale committed generation. Parallel jobs sharing one cache volume

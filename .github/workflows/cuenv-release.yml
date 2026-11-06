@@ -33,7 +33,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -78,7 +78,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -123,7 +123,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -171,7 +171,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -241,7 +241,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -311,7 +311,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -384,7 +384,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -462,7 +462,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -527,7 +527,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -589,7 +589,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:
@@ -655,7 +655,7 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
     - name: Install Nix
       uses: cachix/install-nix-action@v31
       with:

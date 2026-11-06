@@ -557,6 +557,10 @@ and their Nix closures are not merged. A successful mount is not the same as a
 derivation-level cache hit. Use Hestia when parallel jobs need a coherent union
 of their outputs.
 
+The contributor prepares restored root-owned Nix state for single-user
+installation on Linux runners without systemd. macOS and systemd-based
+daemon installations retain their ownership.
+
 </TabItem>
 <TabItem label="cuenv install">
 
