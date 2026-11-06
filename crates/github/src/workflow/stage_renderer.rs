@@ -307,14 +307,14 @@ mod tests {
     fn test_render_action_step() {
         let mut inputs = BTreeMap::new();
         inputs.insert(
-            "extra-conf".to_string(),
+            "extra_nix_config".to_string(),
             serde_json::Value::String("accept-flake-config = true".to_string()),
         );
 
         let mut task = make_test_task("install-nix", &["curl", "-L", "https://install.nix"]);
         task.label = Some("Install Nix".to_string());
         task.provider_hints = Some(make_github_action_hints(
-            "DeterminateSystems/determinate-nix-action@v3",
+            "cachix/install-nix-action@v31",
             inputs,
         ));
         if let Some(hints) = task.provider_hints.as_mut() {
@@ -326,12 +326,9 @@ mod tests {
         let step = renderer.render_task(&task);
 
         assert_eq!(step.name, Some("Install Nix".to_string()));
-        assert_eq!(
-            step.uses,
-            Some("DeterminateSystems/determinate-nix-action@v3".to_string())
-        );
+        assert_eq!(step.uses, Some("cachix/install-nix-action@v31".to_string()));
         assert!(step.run.is_none());
-        assert!(step.with_inputs.contains_key("extra-conf"));
+        assert!(step.with_inputs.contains_key("extra_nix_config"));
         assert_eq!(step.if_condition, Some("runner.os == 'Linux'".to_string()));
     }
 

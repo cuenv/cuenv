@@ -164,7 +164,7 @@ impl BuildkiteEmitter {
             if let Some(runtime) = ir.runtimes.iter().find(|r| r.id == *runtime_id) {
                 // Source nix profile and run in nix develop
                 Some(CommandValue::Single(format!(
-                    ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix develop {}#{} --command {}",
+                    "if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; else . \"$HOME/.nix-profile/etc/profile.d/nix.sh\"; fi && nix develop {}#{} --command {}",
                     runtime.flake, runtime.output, base_command
                 )))
             } else {
@@ -649,7 +649,7 @@ mod tests {
         let mut bootstrap_task = make_phase_task(
             "install-nix",
             &[
-                "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none",
+                "curl --proto '=https' --tlsv1.2 -sSf -L https://releases.nixos.org/nix/nix-2.31.2/install | sh -s -- --no-daemon --no-channel-add",
             ],
             BuildStage::Bootstrap,
             0,
@@ -683,7 +683,7 @@ mod tests {
         let yaml = emitter.emit(&ir).unwrap();
 
         // Should contain Nix bootstrap from phase tasks
-        assert!(yaml.contains("install.determinate.systems/nix"));
+        assert!(yaml.contains("releases.nixos.org/nix/nix-2.31.2/install"));
         assert!(yaml.contains("nix-daemon.sh"));
 
         // Should contain nix develop command with flake reference
@@ -706,7 +706,7 @@ mod tests {
         let yaml = emitter.emit(&ir).unwrap();
 
         // Should NOT contain Nix bootstrap
-        assert!(!yaml.contains("install.determinate.systems/nix"));
+        assert!(!yaml.contains("releases.nixos.org/nix/nix-2.31.2/install"));
         assert!(!yaml.contains("nix develop"));
 
         // Should just have plain cuenv task

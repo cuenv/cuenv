@@ -34,10 +34,16 @@ pub fn build_hestia_gc_workflow() -> Workflow {
         },
     );
 
-    let install_nix = Step::uses("DeterminateSystems/determinate-nix-action@v3")
-        .with_name("Install Determinate Nix")
+    let install_nix = Step::uses("cachix/install-nix-action@v31")
+        .with_name("Install Nix")
         .with_input(
-            "extra-conf",
+            "install_url",
+            serde_yaml::Value::String(
+                "https://releases.nixos.org/nix/nix-2.31.2/install".to_string(),
+            ),
+        )
+        .with_input(
+            "extra_nix_config",
             serde_yaml::Value::String("accept-flake-config = true".to_string()),
         );
     let install_hestia = Step::uses(HESTIA_ACTION)

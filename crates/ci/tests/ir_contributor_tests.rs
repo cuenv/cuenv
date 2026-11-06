@@ -292,9 +292,9 @@ fn test_namespace_cache_contributor_active_with_config() -> Result<(), String> {
                 .and_then(|hints| hints.get("github_action"))
                 .and_then(|action| action.get("uses"))
                 .and_then(|uses| uses.as_str())
-                != Some("DeterminateSystems/determinate-nix-action@v3")
+                != Some("cachix/install-nix-action@v31")
         }),
-        "Namespace cache contributor must not inject Determinate Nix"
+        "Namespace cache contributor must not install Nix"
     );
 
     let setup_namespace_cache = phase_task(&bootstrap_tasks, "namespaceCache.setup")?;
@@ -501,8 +501,18 @@ fn test_nix_contributor_provides_github_action_hints() -> Result<(), String> {
     );
 
     assert!(
-        github_action_uses(install_nix)?.contains("DeterminateSystems/determinate-nix-action"),
-        "provider_hints.github_action.uses should contain DeterminateSystems/determinate-nix-action"
+        github_action_uses(install_nix)?.contains("cachix/install-nix-action"),
+        "provider_hints.github_action.uses should contain cachix/install-nix-action"
+    );
+    assert_eq!(
+        github_action_inputs(install_nix)?
+            .get("install_url")
+            .and_then(Value::as_str),
+        Some("https://releases.nixos.org/nix/nix-2.31.2/install")
+    );
+    assert!(
+        !install_nix.github_permissions.contains_key("id-token"),
+        "upstream Nix installation does not require OIDC"
     );
     Ok(())
 }

@@ -5,7 +5,7 @@ description: How cuenv injects Nix, cuenv, Cachix, 1Password, and workspace setu
 
 
 You wrote one task: `build`. Your generated GitHub Actions workflow installs
-Determinate Nix, sets up cuenv, configures Cachix, restores the cache, and only
+upstream Nix, sets up cuenv, configures Cachix, restores the cache, and only
 then runs your build — in the right order, every time. You never wrote a single
 line of that scaffolding.
 
@@ -168,12 +168,13 @@ matches, so adding `#DefaultContributors` is safe.
 `#InfisicalOidc` and `#InfisicalSecretsAction` are opt-in and are not in any
 of these sets; add them next to the set you use.
 
-### `#Nix` — install Determinate Nix
+### `#Nix` — install upstream Nix
 
 - **CUE id:** `nix` (task `nix.install`) · **Compiled IR id:** `install-nix`
 - **Stage:** Bootstrap (priority **2**)
 - **Activates when:** the project uses a Nix runtime (`runtimeType: ["nix"]`)
-- **GitHub Action:** `DeterminateSystems/determinate-nix-action@v3`
+- **GitHub Action:** `cachix/install-nix-action@v31`, installing upstream Nix 2.31.2
+- **Token permissions:** no OIDC requirement
 
 ```cue
 package examples
@@ -283,6 +284,21 @@ The action receives `name` and `authToken` inputs; `authToken` defaults to the
 `${CACHIX_AUTH_TOKEN}` secret. Example:
 [`examples/ci-cachix`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cachix).
 
+To install the Cachix client from your repository's locked nixpkgs input, extend
+the contributor's action inputs:
+
+```cue
+ci: contributors: [xContributors.#Cachix & {
+	tasks: [{provider: github: with: installCommand: "nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix"}]
+}]
+```
+
+Use the same contributors import alias as the surrounding configuration. This
+avoids fetching a separate mutable installer expression. Non-release expanded
+Nix jobs, including architecture matrices, execute Nix directly so the runner's
+Cachix configuration and publication hook remain available. Keep matching
+commands, features, and profiles between dependency builds and their consumers.
+
 ### `#Hestia` — GitHub Actions-backed Nix binary cache
 
 - **CUE id:** `hestia` (task `hestia.setup`)
@@ -338,9 +354,12 @@ Example:
 - **Activates when:** `ci.provider.github.namespaceCache` is configured
 - **GitHub Action:** `namespacelabs/nscloud-cache-action@v1` (Linux only)
 
-Use this on Namespace Linux runner profiles with cache volumes instead of
-`#Cachix`. It does not install Nix; it manages the Determinate Nix receipt
-around the install step and skips the `/nix` cache action on macOS runners.
+Use this on Namespace Linux runner profiles with cache volumes alongside
+`#Cachix`. It removes legacy installer receipts around the upstream Nix install
+step. On Linux runners without systemd, it transfers restored root-owned Nix
+state to the runner so upstream Nix can install in single-user mode. Daemon
+installations retain their ownership. The `/nix` cache action is skipped on
+macOS runners.
 Namespace gives concurrent jobs private forks of the latest committed volume
 and publishes successful updates with last-write-wins semantics. It may also
 serve a stale committed generation. Parallel jobs sharing one cache volume
@@ -597,8 +616,7 @@ or contributor before regenerating workflows.
 
 The cuenv bootstrap job ignores pipeline maps and uses only its own injected
 steps' requirements. Checkout and artifact upload alone need `contents: read`;
-Determinate/FlakeHub cache authentication adds `id-token: write` when its
-contributor step is present. Namespace cache volumes use the runner's existing
+Upstream Nix installation does not require OIDC. Namespace cache volumes use the runner's existing
 credentials; their cache action does not request OIDC. Hestia's ordinary cache
 action uses the Actions runtime cache token, not OIDC. Its separate GC job needs `actions: write`
 for cache maintenance. Release asset publishing needs `contents: write`; OIDC is

@@ -15,7 +15,6 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    flake-schemas.url = "https://flakehub.com/f/DeterminateSystems/flake-schemas/0.2.0";
   };
 
   nixConfig = {
@@ -30,7 +29,7 @@
     accept-flake-config = true;
   };
 
-  outputs = { self, nixpkgs, nixpkgs-unstable, crane, advisory-db, flake-utils, rust-overlay, flake-schemas, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, crane, advisory-db, flake-utils, rust-overlay, ... }:
     let
       systems = [
         "aarch64-darwin"
@@ -52,7 +51,13 @@
         };
         cuetty = import ./apps/cuetty/nix.nix { pkgs = cuettyPkgs; inherit cue-bridge; };
 
-        rustToolchain = pkgs.rust-bin.stable."1.98.1".default.override {
+        # Native packages and checks need the compiler and lint/format tools,
+        # not Rust documentation, an analyzer, or four platforms' std libraries.
+        rustToolchain = pkgs.rust-bin.stable."1.98.1".minimal.override {
+          extensions = [ "clippy" "rustfmt" ];
+        };
+
+        rustDevToolchain = pkgs.rust-bin.stable."1.98.1".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
           targets = [
             "x86_64-unknown-linux-gnu"
@@ -63,6 +68,7 @@
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        craneDevLib = (crane.mkLib pkgs).overrideToolchain rustDevToolchain;
 
         # Read version from Cargo.toml
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
@@ -80,10 +86,11 @@
           hash = "sha256-hY3SBC679vUNDkpREjfUWAaQxC5mrPQhdYSuUKx+j2o=";
         };
 
-        rustsec-advisory-db = pkgs.runCommand "rustsec-advisory-db-sanitized" {
-          src = advisory-db;
-          nativeBuildInputs = with pkgs; [ findutils gnugrep ];
-        } ''
+        rustsec-advisory-db = pkgs.runCommand "rustsec-advisory-db-sanitized"
+          {
+            src = advisory-db;
+            nativeBuildInputs = with pkgs; [ findutils gnugrep ];
+          } ''
           mkdir -p "$out"
           cp -R "$src"/. "$out"/
           chmod -R +w "$out"
@@ -208,6 +215,14 @@
         workspaceAllFeaturesCargoExtraArgs = "${lockedCargoExtraArgs} --workspace --all-features";
         workspaceDocCargoExtraArgs = "${lockedCargoExtraArgs} --workspace";
         cuenvPackageCargoExtraArgs = "${lockedCargoExtraArgs} --package cuenv";
+        bddCargoExtraArgs = "${cuenvPackageCargoExtraArgs} --test bdd";
+
+        # Test checks need no debugger payload. Keep dependency and consumer
+        # profiles identical so Cargo can reuse every compiled dependency.
+        ciBuildArgs = {
+          CARGO_PROFILE = "ci";
+          CARGO_PROFILE_CI_DEBUG = "0";
+        };
 
         # Keep dependency-only derivations aligned with downstream cargo flags.
         # Mixing workspace-wide and package-specific scopes forces Cargo to rebuild.
@@ -218,37 +233,63 @@
 
         workspaceCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
+          # Clippy consumes metadata, so building and linking release binaries
+          # and test executables here only wastes compilation and cache space.
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile check ${workspaceAllFeaturesCargoExtraArgs} --all-targets";
         });
 
         # Test binaries are built with the lightweight `ci` profile (no LTO,
         # default codegen-units) so the workspace-wide nextest compile stays
         # within CI runner memory. The release binary keeps `[profile.release]`.
-        workspaceCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
+        workspaceCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
-          CARGO_PROFILE = "ci";
+          # One pass prepares regular and dev dependencies together. Crane's
+          # default check/build/test sequence compiles them three times.
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile test ${workspaceAllFeaturesCargoExtraArgs} --no-run";
         });
 
         workspaceDocCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = workspaceDocCargoExtraArgs;
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile test ${workspaceDocCargoExtraArgs} --lib --no-run";
         });
 
         cuenvCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = cuenvPackageCargoExtraArgs;
+          # The package is smoke-tested after installation; its Rust tests have
+          # dedicated checks and do not belong in a bootstrap dependency build.
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile build ${cuenvPackageCargoExtraArgs}";
+        });
+
+        # BDD uses the same package/features as the CLI, with the lightweight
+        # test profile. Keep its dependency build aligned with those settings.
+        cuenvCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
+          cargoExtraArgs = bddCargoExtraArgs;
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile test ${bddCargoExtraArgs} --no-run";
         });
 
         workspaceCheckArgs = commonArgs // {
           cargoArtifacts = workspaceCargoArtifacts;
           doCheck = true;
+          # Terminal checks have no artifact consumers. Only dependency builds
+          # and packages need their Cargo target directories in the cache.
+          doInstallCargoArtifacts = false;
         };
 
         workspaceDocCheckArgs = commonArgs // {
           cargoArtifacts = workspaceDocCargoArtifacts;
           doCheck = true;
+          doInstallCargoArtifacts = false;
         };
 
-        cuenvCheckArgs = commonArgs // {
-          cargoArtifacts = cuenvCargoArtifacts;
+        cuenvCheckArgs = commonArgs // ciBuildArgs // {
+          cargoArtifacts = cuenvCiCargoArtifacts;
           doCheck = true;
+          doInstallCargoArtifacts = false;
         };
 
         clippy-check = craneLib.cargoClippy (workspaceCheckArgs // {
@@ -256,10 +297,9 @@
           cargoClippyExtraArgs = "--all-targets -- -D warnings";
         });
 
-        nextest-check = craneLib.cargoNextest (workspaceCheckArgs // {
+        nextest-check = craneLib.cargoNextest (workspaceCheckArgs // ciBuildArgs // {
           cargoArtifacts = workspaceCiCargoArtifacts;
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
-          CARGO_PROFILE = "ci";
           # HTTP client construction loads native roots, including in mock tests.
           SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         });
@@ -315,15 +355,20 @@
         # Only the crates and targets the suites live in are built, without debug
         # information, with their own dependency artifacts: the workspace-wide
         # artifacts of `cuenv-nextest` would compile every test binary again.
-        infrastructureE2eCargoExtraArgs = builtins.concatStringsSep " " [
+        infrastructureE2eTestFiles = [
+          "crates/infrastructure/tests/provider_end_to_end.rs"
+          "crates/cuenv/tests/infrastructure_lifecycle.rs"
+        ] ++ pkgs.lib.optionals (system == "x86_64-linux") [
+          "crates/infrastructure/tests/cloudflare_offline.rs"
+        ];
+        infrastructureE2eCargoExtraArgs = builtins.concatStringsSep " " ([
           lockedCargoExtraArgs
           "--package cuenv-infrastructure"
           "--package cuenv"
-        ];
-        infrastructureE2eBuildArgs = {
-          CARGO_PROFILE = "ci";
-          CARGO_PROFILE_CI_DEBUG = "0";
-        };
+          "--lib"
+        ] ++ map
+          (testFile: "--test ${pkgs.lib.removeSuffix ".rs" (builtins.baseNameOf testFile)}")
+          infrastructureE2eTestFiles);
 
         # Formatting is part of the merge gate; without this check rustfmt drift
         # reached a pushed head unnoticed.
@@ -333,20 +378,23 @@
           inherit version;
         };
 
-        infrastructureE2eCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // infrastructureE2eBuildArgs // {
+        infrastructureE2eCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
           pname = "cuenv-infrastructure-e2e";
           cargoExtraArgs = infrastructureE2eCargoExtraArgs;
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile test ${infrastructureE2eCargoExtraArgs} --no-run";
+          # These targets are discovered from tests/*.rs rather than declared
+          # in Cargo.toml, so Crane's dummy source needs explicit placeholders.
+          extraDummyScript = pkgs.lib.concatMapStringsSep "\n" (testFile: ''
+            mkdir -p "$out/${builtins.dirOf testFile}"
+            printf '%s\n' '//! Dependency-only integration test target.' > "$out/${testFile}"
+          '') infrastructureE2eTestFiles;
         });
 
-        infrastructure-e2e-check = craneLib.cargoNextest (workspaceCheckArgs // infrastructureE2eBuildArgs // {
+        infrastructure-e2e-check = craneLib.cargoNextest (workspaceCheckArgs // ciBuildArgs // {
           pname = "cuenv-infrastructure-e2e";
           cargoArtifacts = infrastructureE2eCargoArtifacts;
-          cargoExtraArgs = builtins.concatStringsSep " " ([
-            infrastructureE2eCargoExtraArgs
-            "--lib"
-            "--test provider_end_to_end"
-            "--test infrastructure_lifecycle"
-          ] ++ pkgs.lib.optionals (system == "x86_64-linux") [ "--test cloudflare_offline" ]);
+          cargoExtraArgs = infrastructureE2eCargoExtraArgs;
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
             pkgs.curl
             pkgsUnstable.rustfs
@@ -467,8 +515,29 @@
         });
 
         bdd-check = craneLib.cargoTest (cuenvCheckArgs // {
-          cargoExtraArgs = cuenvPackageCargoExtraArgs;
-          cargoTestExtraArgs = "--test bdd";
+          cargoExtraArgs = bddCargoExtraArgs;
+          # Exercise the real runner's exit status as well as its happy path.
+          # A failing scenario must make cargo and the Nix check fail.
+          postCheck = ''
+            probe="crates/cuenv/tests/bdd/features/ci-exit-status.feature"
+            cat > "$probe" <<'EOF'
+            Feature: CI exit status
+              Scenario: CI rejects a failing scenario
+                Given cuenv is installed and available
+                When I run "cuenv --version"
+                Then the exit code should be 42
+            EOF
+
+            probe_status=0
+            cargoWithProfile test ${bddCargoExtraArgs} -- --name 'CI rejects a failing scenario' > "$TMPDIR/bdd-exit-status.log" 2>&1 || probe_status=$?
+            rm "$probe"
+            if [ "$probe_status" -eq 0 ] || ! grep -q '1 failed' "$TMPDIR/bdd-exit-status.log"; then
+              cat "$TMPDIR/bdd-exit-status.log" >&2
+              echo "BDD failure did not produce the expected nonzero exit" >&2
+              exit 1
+            fi
+            echo "Verified BDD exits nonzero for a failing scenario."
+          '';
         });
 
         deny-check = craneLib.cargoDeny {
@@ -550,10 +619,10 @@
           bun
         ] ++ lib.optionals stdenv.isLinux [
           cargo-llvm-cov
-          gcc   # Provides cc linker for cargo
+          gcc # Provides cc linker for cargo
           patchelf
           libgccjit
-          mold  # Fast linker for faster link times
+          mold # Fast linker for faster link times
           clang # Required for mold integration
         ];
 
@@ -588,11 +657,11 @@
 
         devShells.cuetty = cuetty.devShell;
 
-        devShells.default = craneLib.devShell ({
+        devShells.default = craneDevLib.devShell ({
           packages = devTools;
 
           RUST_BACKTRACE = "1";
-          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+          RUST_SRC_PATH = "${rustDevToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
 
           shellHook = ''

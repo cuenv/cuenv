@@ -19,7 +19,6 @@ jobs:
   build-cuenv-namespace-profile-cuenv-macos-arm64:
     permissions:
       contents: read
-      id-token: write
     name: build.cuenv (namespace-profile-cuenv-macos-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
     timeout-minutes: 30
@@ -34,24 +33,22 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Build cuenv (nix)
-      run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
+      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Upload cuenv
@@ -63,7 +60,6 @@ jobs:
   build-cuenv-namespace-profile-cuenv-linux-arm64:
     permissions:
       contents: read
-      id-token: write
     name: build.cuenv (namespace-profile-cuenv-linux-arm64)
     runs-on: namespace-profile-cuenv-linux-arm64
     timeout-minutes: 30
@@ -78,24 +74,22 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Build cuenv (nix)
-      run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
+      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Upload cuenv
@@ -107,7 +101,6 @@ jobs:
   build-cuenv-namespace-profile-cuenv-linux-x86:
     permissions:
       contents: read
-      id-token: write
     name: build.cuenv (namespace-profile-cuenv-linux-x86)
     runs-on: namespace-profile-cuenv-linux-x86
     timeout-minutes: 30
@@ -122,24 +115,22 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Build cuenv (nix)
-      run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
+      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Upload cuenv
@@ -152,7 +143,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
     name: cargo.build (darwin-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
     needs:
@@ -169,17 +159,19 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
@@ -190,7 +182,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -208,7 +204,7 @@ jobs:
         GITHUB_ACTOR: ${{ github.actor }}
         GITHUB_REF_TYPE: ${{ github.ref_type }}
         GITHUB_REF_NAME: ${{ github.ref_name }}
-        CUENV_ARCH: darwin-arm64
+        CUENV_ARCH: cuenv:passthrough:CUENV_ARCH
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -221,7 +217,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
     name: cargo.build (linux-arm64)
     runs-on: namespace-profile-cuenv-linux-arm64
     needs:
@@ -238,17 +233,19 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
@@ -259,7 +256,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -277,7 +278,7 @@ jobs:
         GITHUB_ACTOR: ${{ github.actor }}
         GITHUB_REF_TYPE: ${{ github.ref_type }}
         GITHUB_REF_NAME: ${{ github.ref_name }}
-        CUENV_ARCH: linux-arm64
+        CUENV_ARCH: cuenv:passthrough:CUENV_ARCH
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -290,7 +291,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
     name: cargo.build (linux-x64)
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -307,17 +307,19 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
@@ -328,7 +330,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -346,7 +352,7 @@ jobs:
         GITHUB_ACTOR: ${{ github.actor }}
         GITHUB_REF_TYPE: ${{ github.ref_type }}
         GITHUB_REF_NAME: ${{ github.ref_name }}
-        CUENV_ARCH: linux-x64
+        CUENV_ARCH: cuenv:passthrough:CUENV_ARCH
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -359,7 +365,6 @@ jobs:
     permissions:
       contents: write
       packages: write
-      id-token: write
     name: publish.github
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -379,17 +384,19 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
@@ -400,7 +407,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -455,17 +466,19 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
@@ -476,7 +489,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -502,7 +519,6 @@ jobs:
   publish-homebrew:
     permissions:
       contents: read
-      id-token: write
     name: publish.homebrew
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -519,17 +535,19 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
@@ -540,7 +558,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -563,7 +585,6 @@ jobs:
   docs-deploy:
     permissions:
       contents: read
-      id-token: write
     name: docs.deploy
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -580,17 +601,19 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
@@ -601,7 +624,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -629,7 +656,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
     name: docs.build
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -645,17 +671,19 @@ jobs:
       with:
         cache: nix
     - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
+    - name: Install Nix
+      uses: cachix/install-nix-action@v31
       with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
+        extra_nix_config: accept-flake-config = true
+        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
+    - name: Prune legacy Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Download cuenv
       uses: actions/download-artifact@v4
@@ -666,7 +694,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"

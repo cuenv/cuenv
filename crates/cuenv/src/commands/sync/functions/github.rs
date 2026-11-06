@@ -955,6 +955,101 @@ mod tests {
     }
 
     #[test]
+    fn nix_matrix_checks_execute_directly_without_bootstrap() -> cuenv_core::Result<()> {
+        let mut tasks = make_bootstrap_ir().tasks;
+        let mut prepare = make_regular_task("prepare");
+        prepare.command = vec!["nix".into(), "build".into(), ".#inputs".into()];
+        tasks.push(prepare);
+        let mut check = make_regular_task("darwin.nextest");
+        check.command = vec![
+            "nix".into(),
+            "build".into(),
+            ".#checks.aarch64-darwin.cuenv-nextest".into(),
+        ];
+        check.depends_on = vec!["prepare".into()];
+        check.env.insert("NIX_BUILD_CORES".into(), "4".into());
+        tasks.push(check);
+        let mut ctx = make_pipeline_context(cuenv_manifest::config::CuenvSource::Nix, tasks);
+        ctx.github_config.runner = Some(cuenv_core::ci::StringOrVec::String("macos-14".into()));
+        ctx.project_path = Some("tools/cli".into());
+        ctx.pipeline_tasks = vec![cuenv_core::ci::PipelineTask::Matrix(
+            cuenv_core::ci::MatrixTask {
+                task_type: None,
+                task: cuenv_core::ci::TaskRef::from_name("darwin.nextest"),
+                matrix: BTreeMap::from([("arch".into(), vec!["darwin-arm64".into()])]),
+                artifacts: None,
+                params: None,
+            },
+        )];
+
+        let workflows = emit_matrix_workflow("ci", &ctx)?;
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&workflows[0].1).expect("valid matrix workflow");
+        let jobs = &document["jobs"];
+        assert!(jobs.get("build-cuenv").is_none());
+        let job = &jobs["darwin-nextest-darwin-arm64"];
+        assert_eq!(job["runs-on"].as_str(), Some("macos-14"));
+        assert_eq!(job["needs"][0].as_str(), Some("prepare"));
+        assert!(jobs.get("prepare").is_some());
+        let steps = job["steps"].as_sequence().expect("matrix steps");
+        let check = steps
+            .iter()
+            .find(|step| step["name"].as_str() == Some("darwin.nextest (darwin-arm64)"))
+            .expect("check step");
+        assert_eq!(
+            check["run"].as_str(),
+            Some("nix build .#checks.aarch64-darwin.cuenv-nextest")
+        );
+        assert_eq!(check["env"]["NIX_BUILD_CORES"].as_str(), Some("4"));
+        assert_eq!(check["env"]["CUENV_ARCH"].as_str(), Some("darwin-arm64"));
+        assert_eq!(check["working-directory"].as_str(), Some("tools/cli"));
+        assert!(steps.iter().all(|step| {
+            !step["uses"]
+                .as_str()
+                .is_some_and(|action| action.contains("artifact"))
+                && step["name"].as_str() != Some("Build cuenv (nix)")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn release_nix_matrix_keeps_orchestrated_bootstrap() -> cuenv_core::Result<()> {
+        let mut tasks = make_bootstrap_ir().tasks;
+        let mut build = make_regular_task("release.build");
+        build.command = vec!["nix".into(), "build".into(), ".#cuenv".into()];
+        tasks.push(build);
+        let mut ctx = make_pipeline_context(cuenv_manifest::config::CuenvSource::Nix, tasks);
+        ctx.is_release = true;
+        ctx.pipeline_tasks = vec![cuenv_core::ci::PipelineTask::Matrix(
+            cuenv_core::ci::MatrixTask {
+                task_type: None,
+                task: cuenv_core::ci::TaskRef::from_name("release.build"),
+                matrix: BTreeMap::from([("arch".into(), vec!["linux-x64".into()])]),
+                artifacts: None,
+                params: None,
+            },
+        )];
+
+        let workflows = emit_matrix_workflow("release", &ctx)?;
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&workflows[0].1).expect("valid release matrix workflow");
+        let jobs = &document["jobs"];
+        assert!(jobs.get("build-cuenv").is_some());
+        let job = &jobs["release-build-linux-x64"];
+        assert_eq!(job["needs"][0].as_str(), Some("build-cuenv"));
+        assert!(
+            job["steps"]
+                .as_sequence()
+                .expect("release steps")
+                .iter()
+                .any(|step| {
+                    step["run"].as_str() == Some("cuenv task release.build --skip-dependencies")
+                })
+        );
+        Ok(())
+    }
+
+    #[test]
     fn bootstrap_injection_targets_only_orchestrated_runner_consumers() {
         let ir = make_bootstrap_ir();
         let emitter = cuenv_github::workflow::GitHubActionsEmitter::new().with_nix();

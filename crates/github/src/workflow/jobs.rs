@@ -110,6 +110,8 @@ pub struct MatrixJobOptions<'a> {
     pub previous_jobs: &'a [String],
     /// Optional working directory for monorepo jobs.
     pub project_path: Option<&'a str>,
+    /// Whether to run the task through cuenv or directly.
+    pub execution: TaskExecution,
     /// Optional mapping from runner label to bootstrap artifact name.
     pub cuenv_artifacts_by_runner: Option<&'a HashMap<String, String>>,
 }
@@ -195,7 +197,11 @@ impl GitHubActionsEmitter {
             Step::run(format!(
                 "set -euo pipefail\n\
                  if ! command -v nix >/dev/null; then\n\
-                   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\
+                   if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\
+                     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\
+                   else\n\
+                     . \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\
+                   fi\n\
                  fi\n\
                  cuenv_package=\"$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)\"\n\
                  cmp \"$cuenv_package/bin/cuenv\" \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}/cuenv\"\n\
@@ -340,7 +346,9 @@ impl GitHubActionsEmitter {
                 }
             }
         }
-        if let CuenvSetup::DownloadArtifact { artifact_name } = cuenv_setup {
+        if execution == TaskExecution::Orchestrated
+            && let CuenvSetup::DownloadArtifact { artifact_name } = cuenv_setup
+        {
             let bootstrap_count = ir.sorted_phase_tasks(BuildStage::Bootstrap).len();
             let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
             let skipped = Self::skipped_setup_task_ids(ir, execution, cuenv_setup);
@@ -671,7 +679,17 @@ impl GitHubActionsEmitter {
                 steps.push(
                     Step::uses("actions/checkout@v7")
                         .with_name("Checkout")
-                        .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
+                        .with_input(
+                            "fetch-depth",
+                            serde_yaml::Value::Number(
+                                if options.execution == TaskExecution::Direct {
+                                    2
+                                } else {
+                                    0
+                                }
+                                .into(),
+                            ),
+                        ),
                 );
 
                 let cuenv_setup = options
@@ -683,15 +701,17 @@ impl GitHubActionsEmitter {
                         }
                     });
                 let (phase_steps, secret_env_vars) =
-                    self.render_phase_steps(ir, TaskExecution::Orchestrated, &cuenv_setup);
+                    self.render_phase_steps(ir, options.execution, &cuenv_setup);
                 steps.extend(phase_steps);
 
-                let task_command = options.environment.map_or_else(
-                    || format!("cuenv task {} --skip-dependencies", task.id),
-                    |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-                );
-                let mut task_step =
-                    Step::run(&task_command).with_name(format!("{} ({arch})", task.id));
+                let mut task_step = match options.execution {
+                    TaskExecution::Direct => self.stage_renderer().render_task(task),
+                    TaskExecution::Orchestrated => Step::run(options.environment.map_or_else(
+                        || format!("cuenv task {} --skip-dependencies", task.id),
+                        |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
+                    )),
+                }
+                .with_name(format!("{} ({arch})", task.id));
                 Self::add_github_context_env(&mut task_step);
 
                 if let Some(path) = options.project_path {
@@ -738,18 +758,16 @@ impl GitHubActionsEmitter {
                     "include-hidden-files".to_string(),
                     serde_yaml::Value::Bool(true),
                 );
-                steps.push(upload_step);
+                if options.execution == TaskExecution::Orchestrated || !task.outputs.is_empty() {
+                    steps.push(upload_step);
+                }
 
                 jobs.insert(
                     job_id,
                     Job {
                         permissions: Some(self.build_job_permissions(
                             task,
-                            &Self::emitted_phase_tasks(
-                                ir,
-                                TaskExecution::Orchestrated,
-                                &cuenv_setup,
-                            ),
+                            &Self::emitted_phase_tasks(ir, options.execution, &cuenv_setup),
                         )),
                         name: Some(format!("{} ({arch})", task.id)),
                         runs_on: RunsOn::Label(runner),

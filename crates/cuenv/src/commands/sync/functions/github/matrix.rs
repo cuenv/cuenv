@@ -197,15 +197,14 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                     jobs.insert(job_id, job);
                 } else {
                     let ir_task = request.ctx.tasks.iter().find(|t| t.id == task_name);
-                    let outputs = ir_task.map(|t| t.outputs.clone()).unwrap_or_default();
-                    let mut synthetic_task =
-                        create_synthetic_matrix_task(task_name, matrix_task, outputs);
-                    if let Some(original) = ir_task {
-                        synthetic_task
-                            .github_permissions
-                            .clone_from(&original.github_permissions);
-                        synthetic_task.deployment = original.deployment;
-                    }
+                    let synthetic_task =
+                        create_synthetic_matrix_task(task_name, matrix_task, ir_task);
+                    let execution = simple_job_execution(request.ctx, &synthetic_task);
+                    let previous_jobs: Vec<_> = synthetic_task
+                        .depends_on
+                        .iter()
+                        .map(|dep| dep.replace(['.', ' '], "-"))
+                        .collect();
                     let arch_runners = request
                         .ctx
                         .github_config
@@ -219,15 +218,18 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                         &cuenv_github::workflow::MatrixJobOptions {
                             environment: request.ctx.environment.as_ref(),
                             arch_runners: arch_runners.as_ref(),
-                            previous_jobs: &[],
+                            previous_jobs: &previous_jobs,
                             project_path: request.ctx.project_path.as_deref(),
+                            execution,
                             cuenv_artifacts_by_runner: cuenv_artifacts_by_runner.as_ref(),
                         },
                     );
 
                     for (id, job) in expanded_jobs {
                         artifact_source_jobs.insert(id.clone());
-                        if request.use_cuenv_bootstrap {
+                        if request.use_cuenv_bootstrap
+                            && execution == cuenv_github::workflow::TaskExecution::Orchestrated
+                        {
                             bootstrap_consumers.insert(id.clone());
                         }
                         jobs.insert(id, job);
@@ -383,7 +385,7 @@ fn create_synthetic_aggregation_task(
 fn create_synthetic_matrix_task(
     task_name: &str,
     matrix_task: &cuenv_core::ci::MatrixTask,
-    outputs: Vec<cuenv_ci::ir::OutputDeclaration>,
+    original: Option<&cuenv_ci::ir::Task>,
 ) -> cuenv_ci::ir::Task {
     use cuenv_ci::ir::MatrixConfig;
 
@@ -405,8 +407,9 @@ fn create_synthetic_matrix_task(
         fail_fast: true,
     };
 
-    let mut task = synthetic_task_base(task_name);
-    task.outputs = outputs;
+    let mut task = original
+        .cloned()
+        .unwrap_or_else(|| synthetic_task_base(task_name));
     task.matrix = Some(matrix);
     task
 }

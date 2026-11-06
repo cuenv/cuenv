@@ -9,14 +9,16 @@ import "github.com/cuenv/cuenv/schema"
 //
 // Injects tasks:
 // - cuenv:contributor:namespaceCache.setup: Configures Namespace cache volumes
-// - cuenv:contributor:namespaceCache.prepareDeterminateReceipt: Removes stale Determinate receipt metadata restored from cache
-// - cuenv:contributor:namespaceCache.cleanupDeterminateReceipt: Removes new Determinate receipt metadata before cache save
+// - cuenv:contributor:namespaceCache.prepareDeterminateReceipt: Prepares restored Nix state for installation
+// - cuenv:contributor:namespaceCache.cleanupDeterminateReceipt: Removes legacy receipt metadata before cache save
 //
 // This is a GitHub-specific contributor and requires a Namespace runner profile
-// with a cache volume attached. It does not install Nix. When paired with
-// Determinate Nix, the prepare task removes restored /nix/receipt.json before
-// Nix installation, and the cleanup task removes the new receipt before the
-// Namespace cache action saves state.
+// with a cache volume attached. It does not install Nix. The receipt cleanup
+// tasks remove legacy installer metadata from restored volumes and before
+// saving state. Their task IDs remain stable for existing configurations;
+// upstream Nix does not create a receipt. Linux runners without systemd use a
+// single-user installation, so restored root-owned state must belong to the
+// runner before installation. Daemon installations retain their ownership.
 //
 // Usage:
 //
@@ -53,11 +55,15 @@ let _removeDeterminateReceipt = """
 			id:       "namespaceCache.prepareDeterminateReceipt"
 			label:    "Prepare Namespace Nix Cache"
 			priority: 1
-			script:   _removeDeterminateReceipt
+			script: _removeDeterminateReceipt + "\n" + """
+				if [ "$(uname -s)" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then
+					sudo chown -R "$(id -u):$(id -g)" /nix
+				fi
+				"""
 		},
 		{
 			id:       "namespaceCache.cleanupDeterminateReceipt"
-			label:    "Prune Determinate Nix receipt"
+			label:    "Prune legacy Nix receipt"
 			priority: 3
 			script:   _removeDeterminateReceipt
 		},

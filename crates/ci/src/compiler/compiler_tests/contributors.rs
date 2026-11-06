@@ -310,7 +310,7 @@ fn test_contributor_task_to_ir_github_action() {
 
     let mut inputs = std::collections::BTreeMap::new();
     inputs.insert(
-        "extra-conf".to_string(),
+        "extra_nix_config".to_string(),
         serde_json::Value::String("accept-flake-config = true".to_string()),
     );
 
@@ -338,7 +338,7 @@ fn test_contributor_task_to_ir_github_action() {
         condition: None,
         provider: Some(TaskProviderConfig {
             github: Some(GitHubActionConfig {
-                uses: "DeterminateSystems/determinate-nix-action@v3".to_string(),
+                uses: "cachix/install-nix-action@v31".to_string(),
                 inputs,
                 if_condition: Some("runner.os == 'Linux'".to_string()),
             }),
@@ -365,7 +365,7 @@ fn test_contributor_task_to_ir_github_action() {
     let github_action = hints.get("github_action").unwrap();
     assert_eq!(
         github_action.get("uses").and_then(|v| v.as_str()),
-        Some("DeterminateSystems/determinate-nix-action@v3")
+        Some("cachix/install-nix-action@v31")
     );
     assert_eq!(
         github_action.get("if").and_then(|v| v.as_str()),
