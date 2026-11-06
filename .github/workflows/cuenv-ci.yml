@@ -47,6 +47,7 @@ on:
     - nix/source-files.json/**
     - schema/**
     - schema/**/*.cue
+    - specs/quint/**
   pull_request:
     branches:
     - main
@@ -91,6 +92,7 @@ on:
     - nix/source-files.json/**
     - schema/**
     - schema/**/*.cue
+    - specs/quint/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -466,6 +468,43 @@ jobs:
         name: cuenv
     - name: checks.nextest
       run: nix build .#checks.x86_64-linux.cuenv-nextest -L --accept-flake-config
+      working-directory: .
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
+  checks-quint:
+    permissions:
+      contents: read
+      id-token: write
+    name: checks.quint
+    runs-on: namespace-profile-cuenv-linux-x86
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 2
+    - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
+    - name: checks.quint
+      run: nix build .#checks.x86_64-linux.cuenv-quint-specs -L --accept-flake-config
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

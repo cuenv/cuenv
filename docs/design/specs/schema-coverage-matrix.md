@@ -152,6 +152,20 @@ CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
 and generated workflow action; it requires `id-token: write` and is intended
 for production release pipelines.
 
+CI note: `checks.quint` builds the flake check `cuenv-quint-specs` (Linux),
+which model-checks the Quint specs in `specs/quint` with TLC: the object-store
+state lock and compare-and-swap protocol, and the layered task cache (CAS and
+action cache, local and remote). `specs/quint` is listed under `specTrees` in
+`nix/source-files.json`, so it is a flake input outside the Rust fileset. No
+schema or CLI support status changes.
+
+Cache note: a remote blob that fails digest verification is logged at warning
+level and treated as absent for the rest of the run; a verified remote result
+is promoted into the local action cache only when the local CAS holds every
+blob it names. With uploads enabled, a corrupt remote blob is re-uploaded and
+read back before any result naming it is published. Uploads remain disabled
+in the CLI. No schema or CLI support status changes.
+
 Build-only note: the root and Cuetty app-local Nix flakes pin Rust `1.98.1`
 with matching `rust-overlay` locks. This compiler update changes no schema,
 CLI support status, or declared workspace MSRV. The infrastructure tests use

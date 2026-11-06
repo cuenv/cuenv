@@ -285,6 +285,27 @@
           };
         };
 
+        # Model checks of the Quint specs in specs/quint: TLC explores every
+        # reachable state of each spec's finite instance and fails the build on
+        # a violated invariant. The nixpkgs quint wrapper bundles Apalache (which
+        # carries TLC) and sets QUINT_HOME, so nothing is downloaded. tlc.json
+        # caps the JVM heap below quint's default of 8 GiB. specs/quint is
+        # listed under specTrees in nix/source-files.json, outside the Rust
+        # fileset, so editing a spec rebuilds only this check.
+        quint-specs = pkgs.runCommand "cuenv-quint-specs" {
+          nativeBuildInputs = [ pkgsUnstable.quint ];
+        } ''
+          export HOME=$TMPDIR
+          cp -r ${./specs/quint} specs
+          chmod -R u+w specs
+          cd specs
+          quint verify object_state_cas.qnt --backend=tlc --tlc-config=tlc.json \
+            --invariants safety unlockReportsTruth
+          quint verify task_cache.qnt --backend=tlc --tlc-config=tlc.json \
+            --invariants safety fixes
+          touch $out
+        '';
+
         # Real Terraform protocol codecs used by the exact-number round-trip
         # test; dependencies are vendored so the E2E check stays offline.
         numeric-interop = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
@@ -578,6 +599,9 @@
           # validated on darwin.
           cuenv-infrastructure-e2e = infrastructure-e2e-check;
           cuenv-numeric-interop = numeric-interop;
+          # Linux only: the specs are platform-independent, so one platform
+          # suffices.
+          cuenv-quint-specs = quint-specs;
         };
 
         packages = {

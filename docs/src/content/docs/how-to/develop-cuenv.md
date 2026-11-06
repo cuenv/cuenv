@@ -115,6 +115,31 @@ cargo build -p cuengine
 cargo test -p cuenv-core
 ```
 
+## Formal specs (Quint)
+
+`specs/quint` holds [Quint](https://quint-lang.org) models of two protocols
+whose bugs only show up under concurrency, lost responses and partial
+failures:
+
+- `object_state_cas.qnt`: the object-store state backend's lock and
+  compare-and-swap writes (`crates/infrastructure/src/state/object/store.rs`).
+- `task_cache.qnt`: the layered task cache, local and remote CAS and action
+  cache (`crates/cas`, `crates/cas-remote`, `crates/task-exec/src/cache.rs`).
+
+CI runs `checks.quint`, which builds the flake check `cuenv-quint-specs`. TLC
+explores every reachable state of each model's finite instance (a few million
+states, a few minutes) and fails on a violated invariant:
+
+```bash
+nix build .#checks.x86_64-linux.cuenv-quint-specs -L --accept-flake-config
+```
+
+The models are written by hand from the code. CI proves the model, not the
+Rust: when you change one of those protocols, change its model in the same
+pull request and keep the invariant list in `flake.nix` in step. Each model
+has mutation switches (constants at the top) that turn off one mechanism, so
+you can confirm an invariant still catches the bug it exists for.
+
 ## Working with FFI
 
 The cuengine crate uses FFI to call Go from Rust.
