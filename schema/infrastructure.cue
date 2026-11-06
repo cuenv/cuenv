@@ -10,6 +10,9 @@ import "strings"
 	projectPackage?: string & !=""
 }
 
+// Refine a secret-valued resource argument to use its verified write-only binding.
+#WriteOnly: #Secret & {writeOnly: true}
+
 // =============================================================================
 // Infrastructure — infrastructure as code through Terraform provider plugins
 // =============================================================================
@@ -58,12 +61,15 @@ import "strings"
 //
 // Secrets: a string argument of a resource or data source, including a
 // nested object, map or list element (not a set element, a number, a bool,
-// or a computed-only or write-only argument), can be a `#Secret`. cuenv
+// or a computed-only argument), can be a `#Secret`. cuenv
 // resolves it with the project's resolvers only when the configuration
 // reaches a provider (never through CUE), once per command, and registers it
 // for redaction first. Plans mask the argument as (sensitive); state stores
 // the value in plaintext, marked sensitive. Provider `configuration` cannot
 // take a `#Secret` yet.
+// Managed string arguments can refine a secret with #WriteOnly. Explicit,
+// schema-verified bindings select the provider write-only attribute; these
+// values stay null in all states and require manual companion-version bumps.
 //
 // Closedness: every nested definition is referenced inside a struct literal
 // (`{#InfrastructureState}` rather than `#InfrastructureState`). A project

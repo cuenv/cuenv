@@ -23,13 +23,15 @@ pub struct SecretArgument {
     pub destination: DestinationPath,
     /// The secret, as configured.
     pub secret: SecretReference,
+    /// Provider destination when the argument is write-only.
+    pub write_only: Option<DestinationPath>,
+    pub(crate) schema_write_only: bool,
 }
 
 /// Why a position cannot take a secret, even though it is a string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Restriction {
     Computed,
-    WriteOnly,
     Set,
 }
 
@@ -37,9 +39,6 @@ impl Restriction {
     const fn reason(self) -> &'static str {
         match self {
             Self::Computed => "a secret cannot set a computed-only attribute",
-            Self::WriteOnly => {
-                "a secret cannot set a write-only attribute yet (https://github.com/cuenv/cuenv/issues/571)"
-            }
             Self::Set => "a secret cannot be placed inside a set",
         }
     }
@@ -67,6 +66,7 @@ pub(super) fn secret_arguments(
 struct Position {
     steps: Vec<PathStep>,
     restriction: Option<Restriction>,
+    write_only: bool,
 }
 
 impl Position {
@@ -74,6 +74,7 @@ impl Position {
         Self {
             steps: Vec::new(),
             restriction: None,
+            write_only: false,
         }
     }
 
@@ -83,6 +84,7 @@ impl Position {
         Self {
             steps,
             restriction: self.restriction,
+            write_only: self.write_only,
         }
     }
 
@@ -102,6 +104,17 @@ struct Walk<'found> {
 
 impl Walk<'_> {
     fn block(&mut self, block: &Block, value: &Map<String, Json>, at: &Position) -> Result<()> {
+        for (name, attribute) in &block.attributes {
+            if attribute.write_only
+                && attribute.presence == Presence::Required
+                && !value.contains_key(name)
+            {
+                return Err(at
+                    .step(PathStep::Attribute(name.clone()))
+                    .path()?
+                    .problem("a required write-only argument must name a secret"));
+            }
+        }
         for (name, value) in value {
             let here = at.step(PathStep::Attribute(name.clone()));
             if let Some(attribute) = block.attributes.get(name) {
@@ -115,13 +128,33 @@ impl Walk<'_> {
     }
 
     fn attribute(&mut self, attribute: &Attribute, value: &Json, at: Position) -> Result<()> {
-        let at = if attribute.presence == Presence::Computed {
+        let mut at = if attribute.presence == Presence::Computed {
             at.restricted(Restriction::Computed)
-        } else if attribute.write_only {
-            at.restricted(Restriction::WriteOnly)
         } else {
             at
         };
+        at.write_only |= attribute.write_only;
+        if attribute.write_only && attribute.presence.is_computed() {
+            return Err(at
+                .path()?
+                .problem("a write-only attribute cannot be computed"));
+        }
+        if attribute.write_only
+            && (!matches!(attribute.value_type, Type::String) || attribute.nested.is_some())
+        {
+            return Err(at
+                .path()?
+                .problem("write-only secrets require a string attribute"));
+        }
+        if attribute.write_only
+            && !value
+                .as_object()
+                .is_some_and(|object| object.contains_key("resolver"))
+        {
+            return Err(at
+                .path()?
+                .problem("a write-only argument requires #WriteOnly and a secret descriptor"));
+        }
         match &attribute.nested {
             Some(nested) => self.collection(nested.nesting, value, &at, |walk, element, here| {
                 walk.attributes(&nested.attributes, element, here)
@@ -139,6 +172,17 @@ impl Walk<'_> {
         let Json::Object(object) = value else {
             return Ok(());
         };
+        for (name, attribute) in attributes {
+            if attribute.write_only
+                && attribute.presence == Presence::Required
+                && !object.contains_key(name)
+            {
+                return Err(at
+                    .step(PathStep::Attribute(name.clone()))
+                    .path()?
+                    .problem("a required write-only argument must name a secret"));
+            }
+        }
         for (name, value) in object {
             if let Some(attribute) = attributes.get(name) {
                 self.attribute(attribute, value, at.step(PathStep::Attribute(name.clone())))?;
@@ -194,6 +238,9 @@ impl Walk<'_> {
     }
 
     fn typed(&mut self, value_type: &Type, value: &Json, at: &Position) -> Result<()> {
+        if *value_type == Type::Dynamic {
+            crate::write_only::reject_markers(value)?;
+        }
         match (value_type, value) {
             (Type::String, Json::Object(object)) if object.contains_key("resolver") => {
                 self.secret(object, at)
@@ -253,10 +300,21 @@ impl Walk<'_> {
         if let Some(restriction) = at.restriction {
             return Err(destination.problem(restriction.reason()));
         }
+        let marked = match object.get("writeOnly") {
+            None if !at.write_only => false,
+            Some(Json::Bool(true)) => true,
+            _ => {
+                return Err(destination.problem(
+                    "write-only arguments require writeOnly: true and a secret descriptor",
+                ));
+            }
+        };
         let secret = SecretReference::from_descriptor(object.clone())
             .map_err(|reason| destination.problem(reason))?;
         self.found.push(SecretArgument {
             destination_attribute: destination.root_attribute().to_string(),
+            write_only: marked.then(|| destination.clone()),
+            schema_write_only: at.write_only,
             destination,
             secret,
         });
@@ -426,7 +484,7 @@ mod tests {
             ),
             (
                 json!({"value_wo": secret()}),
-                "value_wo: a secret cannot set a write-only attribute yet",
+                "value_wo: write-only arguments require writeOnly: true",
             ),
             (
                 json!({"id": secret()}),

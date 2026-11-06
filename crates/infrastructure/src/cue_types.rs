@@ -250,8 +250,8 @@ pub async fn load_schema(
 /// the provider block and every managed resource and data source, each attribute's type,
 /// nesting and flags and each nested block's nesting and item bounds.
 /// Descriptions, deprecation messages and schema versions are left out.
-/// Providers without data sources retain their legacy digest. Existing pins
-/// for providers with data sources must be regenerated with `provider add`.
+/// Providers without data sources or write-only managed attributes retain
+/// their legacy digest. Pins predating either contract need `provider add`.
 #[must_use]
 pub fn schema_digest(schema: &ProviderSchema) -> String {
     let resources: BTreeMap<&String, serde_json::Value> = schema
@@ -264,6 +264,15 @@ pub fn schema_digest(schema: &ProviderSchema) -> String {
         "provider": block_document(&schema.provider.block),
         "resources": resources,
     });
+    // An old binary must not accept new generated #WriteOnly configuration
+    // and silently resolve it into an ordinary, persisted argument.
+    if schema
+        .resources
+        .values()
+        .any(|resource| resource.block.contains_write_only())
+    {
+        document["write_only_contract"] = json!(1);
+    }
     if !schema.data_sources.is_empty() {
         let data_sources: BTreeMap<&String, serde_json::Value> = schema
             .data_sources
@@ -381,6 +390,7 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         };
         let mut package =
             Package::with_secrets(&description, &format!("the {resource_type} resource"));
+        package.managed = Some((release.source.to_string(), resource_type.clone()));
         package.line(
             0,
             &format!("// #Resource declares a managed resource of type {resource_type}."),
@@ -460,6 +470,8 @@ struct Package {
     /// What a string argument of `#Configuration` accepts.
     strings: Strings,
     uses_secret: bool,
+    managed: Option<(String, String)>,
+    uses_write_only: bool,
 }
 
 /// Where a field is written: its indentation, and what its strings accept.
@@ -495,6 +507,8 @@ impl Package {
             uses_list: false,
             strings: Strings::Plain,
             uses_secret: false,
+            managed: None,
+            uses_write_only: false,
         }
     }
 
@@ -517,14 +531,21 @@ impl Package {
                         .to_string(),
                     "cuenv resolves it only when the configuration reaches the provider,"
                         .to_string(),
-                    "never through CUE. Plans show the argument as (sensitive); state".to_string(),
-                    "stores its value, as it stores every argument.".to_string(),
+                    "never through CUE. Ordinary secret arguments are sensitive and stored;"
+                        .to_string(),
+                    "write-only arguments are shown as (write-only) and stay out of state."
+                        .to_string(),
                 ],
             );
             self.line(0, "#Secret: {");
             self.field(1, "resolver!", "string & !=\"\"");
             self.line(1, "...");
             self.line(0, "}");
+        }
+        if self.uses_write_only {
+            self.blank();
+            self.line(0, "#Value: string | #Secret");
+            self.line(0, "#WriteOnly: #Secret & {writeOnly: true}");
         }
         let mut output = self.header;
         let _ = write!(output, "\n\npackage {package_name}\n\n");
@@ -600,6 +621,25 @@ impl Package {
     fn block_struct(&mut self, block: &Block, depth: usize, strings: Strings) -> String {
         let mut fields = Fields::default();
         for (name, attribute) in &block.attributes {
+            if depth == 0
+                && let Some((source, resource)) = &self.managed
+            {
+                if block.attributes.keys().any(|logical| {
+                    crate::write_only::available_binding((source, resource), block, logical)
+                        == Some(name.as_str())
+                }) {
+                    continue;
+                }
+                if crate::write_only::available_binding((source, resource), block, name).is_some() {
+                    self.uses_secret = true;
+                    self.uses_write_only = true;
+                    fields.0.insert(name.clone(), Field {
+                        comments: documentation_lines(&attribute.documentation, &["Use #WriteOnly & a secret to select the provider's write-only argument; bump its version manually."]),
+                        label: label(name), marker: '?', value: "#Value".to_string(),
+                    });
+                    continue;
+                }
+            }
             if let Some(field) = self.attribute_field(
                 name,
                 attribute,
@@ -632,8 +672,33 @@ impl Package {
         scope: Scope,
     ) -> Option<Field> {
         let Scope { depth, strings } = scope;
-        if attribute.write_only || attribute.presence == Presence::Computed {
+        if attribute.presence == Presence::Computed {
             return None;
+        }
+        if attribute.write_only {
+            if self.managed.is_none()
+                || strings != Strings::OrSecret
+                || attribute.value_type != Type::String
+                || attribute.nested.is_some()
+                || attribute.presence.is_computed()
+            {
+                return None;
+            }
+            self.uses_secret = true;
+            self.uses_write_only = true;
+            return Some(Field {
+                comments: documentation_lines(
+                    &attribute.documentation,
+                    &["Write-only: requires a secret; bump the companion version manually."],
+                ),
+                label: label(name),
+                marker: if attribute.presence == Presence::Required {
+                    '!'
+                } else {
+                    '?'
+                },
+                value: "#Value & #WriteOnly".to_string(),
+            });
         }
         let mut notes = Vec::new();
         if attribute.presence == Presence::OptionalComputed {

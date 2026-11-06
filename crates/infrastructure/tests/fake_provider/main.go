@@ -156,6 +156,7 @@ func (p *fakeProvider) DataSources(context.Context) []func() datasource.DataSour
 func (p *fakeProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		func() resource.Resource { return &nested{} },
+		func() resource.Resource { return &writeOnly{} },
 		func() resource.Resource { return &simple{kind: "semantic"} },
 		func() resource.Resource { return &simple{kind: "taintdel"} },
 		func() resource.Resource { return &simple{kind: "jsonplan"} },
@@ -585,6 +586,10 @@ func toJSON(value *tfprotov6.DynamicValue) (*tfprotov6.DynamicValue, bool) {
 
 func (w *wrap) PlanResourceChange(ctx context.Context, request *tfprotov6.PlanResourceChangeRequest) (*tfprotov6.PlanResourceChangeResponse, error) {
 	response, err := w.ProviderServer.PlanResourceChange(ctx, request)
+	if err == nil && request.TypeName == "fake_write_only" && flag("write-only-echo-plan") {
+		response.PlannedState, err = echoWriteOnly(response.PlannedState, request.Config)
+		response.UnsafeToUseLegacyTypeSystem = true
+	}
 	if err == nil && request.TypeName == "fake_jsonplan" {
 		var converted bool
 		response.PlannedState, converted = toJSON(response.PlannedState)
@@ -607,6 +612,10 @@ func (w *wrap) ApplyResourceChange(ctx context.Context, request *tfprotov6.Apply
 		journal("jsonplan: ApplyResourceChange received planned_state null=%v", isNull)
 	}
 	response, err := w.ProviderServer.ApplyResourceChange(ctx, request)
+	if err == nil && request.TypeName == "fake_write_only" && flag("write-only-echo-apply") {
+		response.NewState, err = echoWriteOnly(response.NewState, request.Config)
+		response.UnsafeToUseLegacyTypeSystem = true
+	}
 	if err == nil && (request.TypeName == "fake_json_number" || request.TypeName == "fake_json_sensitive_number") {
 		if priorNull, _ := request.PriorState.IsNull(); priorNull {
 			number := "1e400"
@@ -665,6 +674,9 @@ func (w *wrap) UpgradeResourceState(ctx context.Context, request *tfprotov6.Upgr
 		return &tfprotov6.UpgradeResourceStateResponse{UpgradedState: &tfprotov6.DynamicValue{JSON: passed}}, nil
 	}
 	response, err := w.ProviderServer.UpgradeResourceState(ctx, request)
+	if err == nil && request.TypeName == "fake_write_only" && flag("write-only-echo-upgrade") {
+		response.UpgradedState, err = echoWriteOnly(response.UpgradedState, nil)
+	}
 	if err == nil && request.TypeName == "fake_plain" && flag("upgrade-json") {
 		var converted bool
 		response.UpgradedState, converted = toJSON(response.UpgradedState)
@@ -731,10 +743,26 @@ func (w *wrap) ReadResource(ctx context.Context, request *tfprotov6.ReadResource
 			return &tfprotov6.ReadResourceResponse{NewState: &state, Private: request.Private}, nil
 		}
 	}
-	return w.ProviderServer.ReadResource(ctx, request)
+	response, err := w.ProviderServer.ReadResource(ctx, request)
+	if err == nil && request.TypeName == "fake_write_only" && flag("write-only-echo-read") {
+		response.NewState, err = echoWriteOnly(response.NewState, nil)
+	}
+	return response, err
 }
 
 func (w *wrap) ImportResourceState(ctx context.Context, request *tfprotov6.ImportResourceStateRequest) (*tfprotov6.ImportResourceStateResponse, error) {
+	if request.TypeName == "fake_write_only" {
+		response, err := w.ProviderServer.ImportResourceState(ctx, request)
+		if err == nil && flag("write-only-echo-import") {
+			for _, resource := range response.ImportedResources {
+				resource.State, err = echoWriteOnly(resource.State, nil)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		return response, err
+	}
 	if request.TypeName != "fake_plain" {
 		return w.ProviderServer.ImportResourceState(ctx, request)
 	}

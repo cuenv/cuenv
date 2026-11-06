@@ -34,7 +34,7 @@ pub struct Secret {
     pub op_ref: Option<String>,
 
     /// Additional fields for extensibility
-    #[serde(flatten)]
+    #[serde(flatten, deserialize_with = "ordinary_secret_fields")]
     pub extra: HashMap<String, Value>,
 }
 
@@ -79,5 +79,33 @@ impl Secret {
     #[must_use]
     pub fn provider(&self) -> &str {
         &self.resolver
+    }
+}
+
+fn ordinary_secret_fields<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HashMap<String, Value>, D::Error> {
+    let fields = HashMap::<String, Value>::deserialize(deserializer)?;
+    if fields.contains_key("writeOnly") {
+        return Err(serde::de::Error::custom(
+            "writeOnly is only supported on infrastructure managed-resource arguments",
+        ));
+    }
+    Ok(fields)
+}
+
+#[cfg(test)]
+mod write_only_tests {
+    use super::Secret;
+    use serde_json::json;
+
+    #[test]
+    fn ordinary_secrets_reject_write_only_metadata() {
+        for marker in [json!(true), json!(false), json!(null), json!("true")] {
+            let result = serde_json::from_value::<Secret>(
+                json!({"resolver":"exec", "command":"unused", "writeOnly":marker}),
+            );
+            assert!(result.is_err());
+        }
     }
 }

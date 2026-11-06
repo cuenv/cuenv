@@ -205,6 +205,8 @@ import "list"
 	}] & list.MinItems(1) & list.MaxItems(3)
 	// The provider chooses a value when this is not set.
 	separator?: string | #Secret
+	// Write-only: requires a secret; bump the companion version manually.
+	token?: #Value & #WriteOnly
 }
 
 // #Outputs contains selectable top-level scalar provider outputs.
@@ -219,12 +221,15 @@ import "list"
 
 // #Secret is a cuenv secret, such as `schema.#OnePasswordRef & {ref: "..."}`.
 // cuenv resolves it only when the configuration reaches the provider,
-// never through CUE. Plans show the argument as (sensitive); state
-// stores its value, as it stores every argument.
+// never through CUE. Ordinary secret arguments are sensitive and stored;
+// write-only arguments are shown as (write-only) and stay out of state.
 #Secret: {
 	resolver!: string & !=""
 	...
 }
+
+#Value: string | #Secret
+#WriteOnly: #Secret & {writeOnly: true}
 "#;
     assert_eq!(pet, expected);
     let empty = types
@@ -352,6 +357,8 @@ fn data_source_packages_share_configuration_and_output_rules_with_resources() {
                 )
                 .replace("#Resource", "#DataSource")
                 .replace("a managed resource", "a read-only data source")
+                .replace("\t// Write-only: requires a secret; bump the companion version manually.\n\ttoken?: #Value & #WriteOnly\n", "")
+                .replace("\n#Value: string | #Secret\n#WriteOnly: #Secret & {writeOnly: true}\n", "")
         );
     }
 }
@@ -982,4 +989,23 @@ fn generated_arguments_accept_a_secret_only_at_string_positions_outside_sets() -
     )?;
     assert!(!cue_export(directory.path())?.status.success());
     Ok(())
+}
+
+#[test]
+fn write_only_generated_types_are_fenced_from_older_runtimes() {
+    let schema = provider_schema();
+    let resources: BTreeMap<_, _> = schema
+        .resources
+        .iter()
+        .map(|(name, resource)| (name, block_document(&resource.block)))
+        .collect();
+    let legacy =
+        json!({"format":1,"provider":block_document(&schema.provider.block),"resources":resources});
+    let mut hasher = Sha256::new();
+    hasher.update(legacy.to_string().as_bytes());
+    let legacy = format!("sha256:{}", hex::encode(hasher.finalize()));
+    assert_ne!(schema_digest(&schema), legacy);
+    let types = generated();
+    assert!(types.files[&PathBuf::from("provider.cue")].contains(&types.schema_digest));
+    assert_ne!(types.schema_digest, legacy);
 }

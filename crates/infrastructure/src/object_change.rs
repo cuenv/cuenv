@@ -145,7 +145,9 @@ fn proposed_new_attributes(
         .map(|(name, attribute)| {
             let prior_value = member(prior, name);
             let configured = member(configuration, name);
-            let value = if attribute.presence.is_computed() && configured.is_null() {
+            let value = if attribute.write_only {
+                Value::Null
+            } else if attribute.presence.is_computed() && configured.is_null() {
                 // An optional attribute whose prior value holds anything the
                 // provider cannot compute must have been configured before;
                 // it was removed, so propose the (null) configuration.
@@ -640,6 +642,12 @@ impl PlanCheck {
             planned,
         } = values;
         let value_type = &attribute.value_type;
+        if attribute.write_only {
+            if !planned.is_null() {
+                self.problem("provider planned a non-null write-only attribute");
+            }
+            return;
+        }
         if raw_equal(planned, configuration, value_type) {
             return;
         }

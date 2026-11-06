@@ -4622,3 +4622,219 @@ async fn fake_unresolvable_secret_stops_the_plan_before_any_provider_call() -> T
     assert!(fake.journal().is_empty(), "{}", fake.journal());
     Ok(())
 }
+
+fn write_only_resource(version: u64) -> serde_json::Value {
+    json!({"thing":{"type":"fake_write_only", "configuration":{
+        "value":{"resolver":"exec","command":"resolve-write-only-test","writeOnly":true},
+        "value_wo_version":version,
+    }}})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and sqld"]
+async fn fake_write_only_value_lifecycle_and_manual_rotation() -> TestResult {
+    let mut fake = Fake::new().await?;
+    let resolver = FixedSecret::new(Some(ROOT_TOKEN));
+    fake.secrets = Some(Arc::new(Secrets::new(resolver.clone())));
+    let resources = write_only_resource(1);
+    let run = fake.converge(&resources, PlanMode::Apply).await?;
+    run.applied?;
+    assert_eq!(resolver.calls(), 1);
+    let rendered = cuenv_infrastructure::render_plan(&run.plan);
+    assert!(rendered.contains("value = (write-only)"), "{rendered}");
+    assert!(!rendered.contains(ROOT_TOKEN));
+    assert!(!format!("{:?}", run.plan).contains(ROOT_TOKEN));
+    let record = fake.record("thing").await?;
+    assert!(record.state["value_wo"].is_null());
+    assert!(record.state["value"].is_null());
+    assert!(!serde_json::to_string(&record)?.contains(ROOT_TOKEN));
+    let journal = fake.journal();
+    assert!(
+        journal.contains("write_only: Validate received=true"),
+        "{journal}"
+    );
+    assert!(
+        journal.contains("write_only: Plan received=true state_null=true"),
+        "{journal}"
+    );
+    assert!(
+        journal.contains("write_only: Create received=true"),
+        "{journal}"
+    );
+    assert!(!journal.contains(ROOT_TOKEN));
+
+    let unchanged = fake.plan(&resources).await?;
+    fake.secrets = Some(Arc::new(Secrets::new(FixedSecret::new(Some(
+        ROTATED_TOKEN,
+    )))));
+    let rotated = fake.plan(&resources).await?;
+    assert!(!rotated.has_changes());
+    assert_eq!(unchanged.digest(), rotated.digest());
+    let updated = fake
+        .converge(&write_only_resource(2), PlanMode::Apply)
+        .await?;
+    assert_eq!(updated.plan.summary().update, 1);
+    let text = cuenv_infrastructure::render_plan(&updated.plan);
+    assert!(text.contains("value = (write-only)"));
+    assert!(text.contains("value_wo_version: 1 -> 2"), "{text}");
+    updated.applied?;
+    assert_eq!(fake.record("thing").await?.state["value_wo_version"], 2);
+    assert!(fake.journal().contains("write_only: Update received=true"));
+
+    let untouched = FixedSecret::new(None);
+    fake.secrets = Some(Arc::new(Secrets::new(untouched.clone())));
+    fake.converge(&resources, PlanMode::Destroy)
+        .await?
+        .applied?;
+    assert_eq!(untouched.calls(), 0);
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and sqld"]
+async fn fake_write_only_provider_echo_never_enters_state_or_recovery() -> TestResult {
+    for mode in ["write-only-echo-plan", "write-only-echo-apply"] {
+        for format in ["message-pack", "write-only-json", "write-only-unknown"] {
+            let mut fake = Fake::new().await?;
+            fake.secrets = Some(Arc::new(Secrets::new(FixedSecret::new(Some(ROOT_TOKEN)))));
+            fake.set_flag(mode)?;
+            if format != "message-pack" {
+                fake.set_flag(format)?;
+            }
+            let error = match fake
+                .converge(&write_only_resource(1), PlanMode::Apply)
+                .await
+            {
+                Ok(run) => run.applied.expect_err("invalid apply result must fail"),
+                Err(error) => *error
+                    .downcast::<InfrastructureError>()
+                    .map_err(|_| "expected infrastructure error")?,
+            };
+            assert!(error.to_string().contains("write-only"), "{error}");
+            assert!(!error.to_string().contains(ROOT_TOKEN));
+            assert!(fake.store.list(&fake.tenant).await?.is_empty());
+            let engine = fake.engine(&write_only_resource(1), &Cancellation::default())?;
+            assert!(engine.unrecorded_store()?.list(&fake.tenant)?.is_empty());
+            engine.shutdown().await;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and sqld"]
+async fn fake_write_only_replacement_at_null_state_path_is_preserved() -> TestResult {
+    let mut fake = Fake::new().await?;
+    fake.secrets = Some(Arc::new(Secrets::new(FixedSecret::new(Some(ROOT_TOKEN)))));
+    let resources = write_only_resource(1);
+    fake.converge(&resources, PlanMode::Apply).await?.applied?;
+    fake.set_flag("write-only-replace")?;
+    let plan = fake.plan(&resources).await?;
+    assert_eq!(plan.summary().replace, 1);
+    assert_eq!(plan.changes[0].requires_replace, ["value_wo"]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and sqld"]
+async fn fake_write_only_short_and_escaped_diagnostics_are_redacted() -> TestResult {
+    for secret in ["xy", "short\nq\n<&>\\\""] {
+        let mut fake = Fake::new().await?;
+        fake.secrets = Some(Arc::new(Secrets::new(FixedSecret::new(Some(secret)))));
+        fake.set_flag("write-only-fail-validation")?;
+        let error = fake
+            .plan(&write_only_resource(1))
+            .await
+            .expect_err("validation must reject");
+        assert!(!error.to_string().contains(secret));
+        assert!(!error.to_string().contains("\nq\n"));
+        assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and sqld"]
+async fn fake_write_only_bad_update_retains_exact_prior_record() -> TestResult {
+    let mut fake = Fake::new().await?;
+    fake.secrets = Some(Arc::new(Secrets::new(FixedSecret::new(Some(ROOT_TOKEN)))));
+    fake.converge(&write_only_resource(1), PlanMode::Apply)
+        .await?
+        .applied?;
+    let before = fake.record("thing").await?;
+    fake.set_flag("write-only-echo-apply")?;
+    let run = fake
+        .converge(&write_only_resource(2), PlanMode::Apply)
+        .await?;
+    assert!(run.applied.is_err());
+    assert_eq!(fake.record("thing").await?, before);
+    let engine = fake.engine(&write_only_resource(1), &Cancellation::default())?;
+    assert!(engine.unrecorded_store()?.list(&fake.tenant)?.is_empty());
+    engine.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and sqld"]
+async fn fake_write_only_refresh_and_upgrade_reject_non_null_slots() -> TestResult {
+    for flag in ["write-only-echo-read", "write-only-echo-upgrade"] {
+        let mut fake = Fake::new().await?;
+        fake.secrets = Some(Arc::new(Secrets::new(FixedSecret::new(Some(ROOT_TOKEN)))));
+        fake.converge(&write_only_resource(1), PlanMode::Apply)
+            .await?
+            .applied?;
+        let before = fake.record("thing").await?;
+        fake.set_flag(flag)?;
+        let untouched = FixedSecret::new(None);
+        fake.secrets = Some(Arc::new(Secrets::new(untouched.clone())));
+        let Err(error) = fake
+            .converge(&write_only_resource(1), PlanMode::Destroy)
+            .await
+        else {
+            return Err("destroy refresh must reject invalid write-only state".into());
+        };
+        assert!(error.to_string().contains("non-null write-only"), "{error}");
+        assert_eq!(untouched.calls(), 0);
+        assert_eq!(fake.record("thing").await?, before);
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and sqld"]
+async fn fake_write_only_import_never_resolves_and_refuses_echoes() -> TestResult {
+    for echo in [
+        None,
+        Some("write-only-echo-import"),
+        Some("write-only-echo-read"),
+    ] {
+        let mut fake = Fake::new().await?;
+        let untouched = FixedSecret::new(None);
+        fake.secrets = Some(Arc::new(Secrets::new(untouched.clone())));
+        if let Some(flag) = echo {
+            fake.set_flag(flag)?;
+        }
+        let mut engine = fake.engine(&write_only_resource(1), &Cancellation::default())?;
+        let lock = fake.store.lock(&fake.tenant, "write-only import").await?;
+        let imported = engine
+            .import(
+                &cuenv_infrastructure::ResourceAddress::new("fake_write_only", "thing"),
+                "write-only-object",
+                &lock,
+            )
+            .await;
+        fake.store.unlock(&fake.tenant, &lock).await?;
+        assert_eq!(untouched.calls(), 0);
+        if echo.is_some() {
+            assert!(imported.is_err());
+            assert!(fake.store.list(&fake.tenant).await?.is_empty());
+            assert!(engine.unrecorded_store()?.list(&fake.tenant)?.is_empty());
+        } else {
+            imported?;
+            assert!(fake.record("thing").await?.state["value_wo"].is_null());
+        }
+        engine.shutdown().await;
+    }
+    Ok(())
+}

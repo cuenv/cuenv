@@ -49,7 +49,7 @@ string position can never legally hold an object, so this is unambiguous. The
 same object at a dynamic position is data, and a provider attribute that is
 itself called `resolver` is never mistaken for one. A secret is refused in a
 number, a bool, a set element (a set element is identified by its value), and a
-computed-only or write-only argument. Generated resource and data source types
+computed-only argument. Write-only handling is described in the follow-up below. Generated resource and data source types
 accept `string | #Secret` at the same positions, with a structural `#Secret`
 defined in each generated package so the packages keep no dependency on
 cuenv's schema; the engine is the real validator.
@@ -98,6 +98,19 @@ the way to keep it out ([#571](https://github.com/cuenv/cuenv/issues/571)).
   `"Bearer \(token)"`).
 - Provider `configuration` does not take a `#Secret` yet. The machinery is the
   same and the value would never be stored, so it is the natural next step.
-- Write-only arguments ([#571](https://github.com/cuenv/cuenv/issues/571)) will
-  reuse this classification and resolution, switching write-only positions
-  from refused to `#Secret` only.
+- Write-only arguments ([#571](https://github.com/cuenv/cuenv/issues/571)) reuse
+  this classification and resolution through the composition described below.
+
+## Follow-up: write-only composition (#571)
+
+Managed string arguments can now refine the same value with
+`schema.#WriteOnly & <secret>`. Generated `#Value` constraints and `#WriteOnly`
+compose without adding a second value property. Explicit, live-schema-verified
+bindings select the provider's write-only argument; standalone write-only string
+fields retain their provider names. Ordinary secrets retain the persisted
+semantics above. Write-only slots must be null in provider state, and invalid
+responses fail before recording or recovery. Companion versions remain manual;
+a rotated secret alone does not trigger an update. Providers exposing write-only fields gain a digest-contract marker that fences
+old runtimes; existing affected pins need same-version repinning. The lockfile
+format stays unchanged. See the implementation specification
+in `docs/design/specs/2026-11-06-infrastructure-write-only-arguments.md`.

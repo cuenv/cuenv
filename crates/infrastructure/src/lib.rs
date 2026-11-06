@@ -31,6 +31,7 @@ pub mod state;
 pub mod tenant;
 pub mod type_system;
 pub mod unrecorded;
+mod write_only;
 
 pub use cancellation::{Cancellation, RecordingGuard};
 pub use engine::{

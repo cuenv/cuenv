@@ -63,7 +63,7 @@ const MAGIC_COOKIE_VALUE: &str = "d602bf8f470bc67ca7faa0386276bbdd4330efaf76d1a2
 
 /// Version string cuenv reports to providers during configuration.
 /// Providers gate behaviour on this, so report a modern Terraform.
-const TERRAFORM_VERSION: &str = "1.9.0";
+const TERRAFORM_VERSION: &str = "1.11.0";
 
 /// Terraform raises gRPC message limits to 256 MiB; large provider schemas
 /// (AWS, Azure) exceed tonic's 4 MiB default.
@@ -406,6 +406,8 @@ pub fn install_log_redactor(redactor: LogRedactor) {
 
 /// `text` with the installed redactor applied; unchanged when none is
 /// installed.
+mod write_only_redaction;
+
 pub(crate) fn redact_provider_text(text: &str) -> String {
     LOG_REDACTOR
         .get()
@@ -567,6 +569,7 @@ fn kill_with_parent(command: &mut Command) {
 #[derive(Debug, Clone, Default)]
 struct ProviderLog {
     lines: Arc<Mutex<VecDeque<String>>>,
+    redaction: Arc<write_only_redaction::Redaction>,
 }
 
 impl ProviderLog {
@@ -588,7 +591,11 @@ impl ProviderLog {
                 if lines.is_empty() {
                     String::new()
                 } else {
-                    let joined = lines.iter().cloned().collect::<Vec<_>>().join("\n  ");
+                    let joined = lines
+                        .iter()
+                        .map(|line| self.redaction.redact(line))
+                        .collect::<Vec<_>>()
+                        .join("\n  ");
                     format!("\nrecent provider log:\n  {joined}")
                 }
             })
@@ -690,6 +697,10 @@ pub struct ProviderClient {
 }
 
 impl ProviderClient {
+    pub(crate) fn register_write_only_secret(&self, value: &str) {
+        self.log.redaction.register(value);
+    }
+
     /// Start a provider binary and connect to it.
     ///
     /// # Errors
@@ -816,26 +827,31 @@ impl ProviderClient {
     ) -> Result<ResponseMessage>
     where
         RequestMessage: prost::Message + Send + Sync + 'static,
-        ResponseMessage: prost::Message + Default + Send + Sync + 'static,
+        ResponseMessage: ProviderResponse + Default + Send + Sync + 'static,
     {
         let path = rpc.path(self.protocol);
-        unary(&self.channel, path, request).await.map_err(|status| {
-            let transport_failure = matches!(
-                status.code(),
-                tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Internal
-            );
-            // The message comes from the provider and is displayed.
-            let message = displayable_provider_message(status.message());
-            let status = if transport_failure {
-                tonic::Status::new(status.code(), format!("{message}{}", self.log.render()))
-            } else {
-                tonic::Status::new(status.code(), message)
-            };
-            InfrastructureError::RemoteProcedure {
-                method: path.to_string(),
-                status: Box::new(status),
-            }
-        })
+        let mut response = unary::<RequestMessage, ResponseMessage>(&self.channel, path, request)
+            .await
+            .map_err(|status| {
+                let transport_failure = matches!(
+                    status.code(),
+                    tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Internal
+                );
+                // The message comes from the provider and is displayed.
+                let message =
+                    displayable_provider_message(&self.log.redaction.redact(status.message()));
+                let status = if transport_failure {
+                    tonic::Status::new(status.code(), format!("{message}{}", self.log.render()))
+                } else {
+                    tonic::Status::new(status.code(), message)
+                };
+                InfrastructureError::RemoteProcedure {
+                    method: path.to_string(),
+                    status: Box::new(status),
+                }
+            })?;
+        response.protect(&self.log.redaction);
+        Ok(response)
     }
 
     /// Fetch the provider, managed resource and data source schemas.
@@ -1117,6 +1133,43 @@ impl ProviderClient {
     }
 }
 
+trait ProviderResponse: prost::Message {
+    fn protect(&mut self, redaction: &write_only_redaction::Redaction);
+}
+
+macro_rules! provider_responses {
+    ($($response:ty),+ $(,)?) => {$(
+        impl ProviderResponse for $response {
+            fn protect(&mut self, redaction: &write_only_redaction::Redaction) {
+                for diagnostic in &mut self.diagnostics {
+                    diagnostic.summary = redaction.redact(&diagnostic.summary);
+                    diagnostic.detail = redaction.redact(&diagnostic.detail);
+                    if let Some(path) = &mut diagnostic.attribute {
+                        for step in &mut path.steps {
+                            if let Some(protocol::Selector::AttributeName(name) | protocol::Selector::ElementKeyString(name)) = &mut step.selector {
+                                *name = redaction.redact(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )+};
+}
+
+provider_responses!(
+    protocol::version5::GetProviderSchemaResponse,
+    protocol::version6::GetProviderSchemaResponse,
+    protocol::ValidateProviderConfigurationResponse,
+    protocol::DiagnosticsResponse,
+    protocol::ReadDataSourceResponse,
+    protocol::UpgradeResourceStateResponse,
+    protocol::ImportResourceStateResponse,
+    protocol::ReadResourceResponse,
+    protocol::PlanResourceChangeResponse,
+    protocol::ApplyResourceChangeResponse,
+);
+
 /// Issue one unary gRPC call with Terraform's message size limits.
 async fn unary<RequestMessage, ResponseMessage>(
     channel: &Channel,
@@ -1145,7 +1198,6 @@ where
 
 /// Arguments for [`ProviderClient::plan_resource_change`]. All values are
 /// cty MessagePack encoded against the resource schema.
-#[derive(Debug)]
 pub struct PlanRequest<'request> {
     /// Resource type name.
     pub type_name: &'request str,
@@ -1160,7 +1212,6 @@ pub struct PlanRequest<'request> {
 }
 
 /// Arguments for [`ProviderClient::apply_resource_change`].
-#[derive(Debug)]
 pub struct ApplyRequest<'request> {
     /// Resource type name.
     pub type_name: &'request str,
@@ -1174,6 +1225,24 @@ pub struct ApplyRequest<'request> {
     pub planned_private: Vec<u8>,
 }
 
+impl fmt::Debug for PlanRequest<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PlanRequest")
+            .field("type_name", &self.type_name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for ApplyRequest<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApplyRequest")
+            .field("type_name", &self.type_name)
+            .finish_non_exhaustive()
+    }
+}
+
 const fn message_pack_value(bytes: Vec<u8>) -> DynamicValue {
     DynamicValue {
         message_pack: bytes,
@@ -1184,7 +1253,7 @@ const fn message_pack_value(bytes: Vec<u8>) -> DynamicValue {
 const fn client_capabilities() -> protocol::ClientCapabilities {
     protocol::ClientCapabilities {
         deferral_allowed: false,
-        write_only_attributes_allowed: false,
+        write_only_attributes_allowed: true,
     }
 }
 
@@ -1220,9 +1289,9 @@ fn spawn_log_drain(
                 // terminal cuenv writes to. Redact the raw text first:
                 // stripping control characters can change a secret that
                 // contains one.
-                let printable = strip_control_characters(
-                    redact_provider_log_line(line.text.trim_end()).as_str(),
-                );
+                let protected = log.redaction.redact(&line.text);
+                let protected = redact_provider_log_line(&protected);
+                let printable = strip_control_characters(protected.trim_end());
                 log.record(printable);
             }
         }
@@ -1432,8 +1501,11 @@ mod tests {
             client_capabilities: Some(client_capabilities()),
         };
         // Both protocols use type_name=1, id=2 and client_capabilities=3.
-        // Empty capabilities encode false for every supported feature.
-        assert_eq!(request.encode_to_vec(), b"\x0a\x01t\x12\x03a/b\x1a\x00");
+        // Write-only attributes are advertised; deferral stays disabled.
+        assert_eq!(
+            request.encode_to_vec(),
+            b"\x0a\x01t\x12\x03a/b\x1a\x02\x10\x01"
+        );
     }
 
     fn busy() -> std::io::Error {
@@ -1962,6 +2034,19 @@ mod tests {
             }
             assert!(!alive(), "grandchild {grandchild} survived");
         }
+    }
+
+    #[tokio::test]
+    async fn write_only_log_values_are_redacted_before_trimming_whitespace() {
+        let log = ProviderLog::default();
+        log.redaction.register("write-only-whitespace-secret\t");
+        let output: &'static [u8] = b"panic: write-only-whitespace-secret\t\n";
+        spawn_log_drain("stand-in".into(), output, log.clone())
+            .await
+            .unwrap();
+        let rendered = log.render();
+        assert!(!rendered.contains("write-only-whitespace-secret"));
+        assert!(rendered.contains("*_*"));
     }
 
     #[tokio::test]

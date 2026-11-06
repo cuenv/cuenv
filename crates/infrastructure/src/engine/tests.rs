@@ -2444,6 +2444,7 @@ fn replacement_paths_compare_with_schema_types() {
         prior: &prior,
         planned: &planned,
         value_type: &object_type(),
+        block: &Block::default(),
     })
     .unwrap();
     assert_eq!(changed.rendered, vec!["name".to_string()]);
@@ -2458,6 +2459,7 @@ fn replacement_paths_compare_with_schema_types() {
         prior: &prior,
         planned: &unknown,
         value_type: &object_type(),
+        block: &Block::default(),
     })
     .unwrap();
     assert_eq!(changed.rendered, vec!["length".to_string()]);
@@ -2475,6 +2477,7 @@ fn replacement_paths_that_exist_nowhere_are_provider_errors() {
         prior: &prior,
         planned: &prior,
         value_type: &object_type(),
+        block: &Block::default(),
     })
     .unwrap_err();
     assert!(error.to_string().contains("[<hidden key>]"), "{error}");
@@ -2510,6 +2513,7 @@ fn masked_replacement_paths_keep_distinct_plan_identities() {
         prior: &prior,
         planned: &planned,
         value_type: &value_type,
+        block: &Block::default(),
     })
     .unwrap();
     assert_eq!(
@@ -5053,4 +5057,76 @@ mod secret_arguments {
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
         Ok(())
     }
+}
+
+#[test]
+fn write_only_parent_replacement_paths_survive_equal_null_state() {
+    let mut leaf = string_block("token", crate::schema::Presence::Optional, false);
+    leaf.attributes.get_mut("token").unwrap().write_only = true;
+    let block = Block {
+        attributes: BTreeMap::from([(
+            "credentials".into(),
+            crate::schema::Attribute {
+                value_type: leaf.implied_type(),
+                nested: Some(crate::schema::NestedAttributes {
+                    attributes: leaf.attributes,
+                    nesting: crate::schema::Nesting::Single,
+                }),
+                presence: crate::schema::Presence::Optional,
+                sensitive: false,
+                write_only: false,
+                documentation: crate::schema::Documentation::default(),
+            },
+        )]),
+        ..Block::default()
+    };
+    let value_type = block.implied_type();
+    let state = Value::from_configuration_json(&json!({"credentials":{"token":null}}), &value_type)
+        .unwrap();
+    let paths = [protocol_path(&[protocol::Selector::AttributeName(
+        "credentials".into(),
+    )])];
+    let changed = replacement_paths(&ReplacementCheck {
+        address: &ResourceAddress::new("example", "one"),
+        paths: &paths,
+        prior: &state,
+        planned: &state,
+        value_type: &value_type,
+        block: &block,
+    })
+    .unwrap();
+    assert_eq!(changed.rendered, ["credentials"]);
+}
+
+#[test]
+fn write_only_digest_binds_presence_and_paths_without_descriptors() {
+    let mut block = string_block("value", crate::schema::Presence::Optional, false);
+    let mut write_only = block.attributes["value"].clone();
+    write_only.write_only = true;
+    block.attributes.insert("value_wo".into(), write_only);
+    let base = plan_of(vec![change(
+        ResourceAddress::new("fake_write_only", "thing"),
+        Action::Create,
+    )]);
+    let mut marked = base.clone();
+    for command in ["first-descriptor", "second-descriptor"] {
+        let configured = json!({"value":{"resolver":"exec","command":command,"writeOnly":true}});
+        let mut references = ConfigurationReferences::extract_with_schema(
+            configured.as_object().unwrap(),
+            &block,
+            &[],
+        )
+        .unwrap();
+        references
+            .bind_write_only("example.com/test/fake", "fake_write_only", &block)
+            .unwrap();
+        let mut candidate = base.clone();
+        candidate.changes[0].references = references;
+        if command == "first-descriptor" {
+            marked = candidate;
+        } else {
+            assert_eq!(marked.digest(), candidate.digest());
+        }
+    }
+    assert_ne!(base.digest(), marked.digest());
 }

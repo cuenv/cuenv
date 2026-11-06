@@ -77,6 +77,68 @@ pub struct ConfigurationReferences {
 }
 
 impl ConfigurationReferences {
+    /// Bind a marked logical argument to an explicitly supported provider path.
+    pub(crate) fn bind_write_only(
+        &mut self,
+        source: &str,
+        resource: &str,
+        block: &crate::schema::Block,
+    ) -> Result<()> {
+        for argument in &mut self.secrets {
+            let Some(destination) = &mut argument.write_only else {
+                continue;
+            };
+            if destination.steps().len() == 1
+                && block.attributes.keys().any(|logical| {
+                    crate::write_only::available_binding((source, resource), block, logical)
+                        == Some(destination.root_attribute())
+                })
+            {
+                return Err(InfrastructureError::configuration(format!(
+                    "configuration.{}: use the logical argument with #WriteOnly instead of its provider alias",
+                    argument.destination
+                )));
+            }
+            if destination.steps().len() == 1
+                && let Some(target) =
+                    crate::write_only::binding(source, resource, destination.root_attribute())
+            {
+                crate::write_only::verified_binding(block, destination.root_attribute(), target)?;
+                *destination = DestinationPath::attribute(target);
+            } else if !argument.schema_write_only {
+                return Err(InfrastructureError::configuration(format!(
+                    "configuration.{}: no verified write-only provider binding is available",
+                    argument.destination
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn without_write_only_values(&self, value: &Value) -> Result<Value> {
+        let mut value = value.clone();
+        for argument in &self.secrets {
+            if let Some(destination) = &argument.write_only {
+                destination.replace_value(&mut value, Value::Null)?;
+            }
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn reject_write_only(&self) -> Result<()> {
+        if let Some(argument) = self
+            .secrets
+            .iter()
+            .find(|argument| argument.write_only.is_some())
+        {
+            return Err(InfrastructureError::configuration(format!(
+                "configuration.{}: writeOnly is only supported on managed resources",
+                argument.destination
+            )));
+        }
+        Ok(())
+    }
+
     /// References in configuration path order.
     #[must_use]
     pub fn references(&self) -> &[ResourceOutputReference] {
