@@ -29,6 +29,22 @@ pub enum InfrastructureError {
         reason: &'static str,
     },
 
+    /// A secret in resource or data-source configuration could not be
+    /// resolved. Carries no value and nothing the resolver printed.
+    #[error(
+        "{consumer} configuration.{destination}: cannot resolve the {resolver} secret: {reason}"
+    )]
+    Secret {
+        /// Resource or data source whose configuration holds the secret.
+        consumer: String,
+        /// Position of the secret in that configuration, map keys hidden.
+        destination: String,
+        /// The secret's resolver kind, such as `onepassword`.
+        resolver: String,
+        /// A value-free reason.
+        reason: String,
+    },
+
     /// Failure encoding or decoding Terraform values.
     #[error("value codec error: {0}")]
     Codec(String),

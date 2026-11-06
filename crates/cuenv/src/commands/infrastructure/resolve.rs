@@ -3,11 +3,14 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use cuenv_infrastructure::StateStore;
+use cuenv_infrastructure::secrets::{SecretFailure, SecretReference, SecretResolver, Secrets};
 use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::manifest::{
     InfrastructurePolicyAction, InfrastructureState, ProviderEnvironment, StateToken,
 };
+use cuenv_manifest::secrets::Secret;
 
 use super::action::InfrastructureAction;
 use super::dispatch::{StoreScope, connect};
@@ -302,5 +305,63 @@ pub(super) fn environment_variables_for_action(
         project_environment.clone()
     } else {
         HashMap::new()
+    }
+}
+
+/// The secrets of resource and data-source configuration for `action`: each
+/// is resolved at most once for the whole command, through the same
+/// resolvers as the project's variables. A command that starts no provider
+/// never resolves one.
+pub(super) fn configuration_secrets(action: &InfrastructureAction) -> Arc<Secrets> {
+    let resolver: Arc<dyn SecretResolver> = if action.uses_provider_environment() {
+        Arc::new(ConfigurationSecretResolver {
+            action: action.policy_name(),
+        })
+    } else {
+        Arc::new(NoSecrets)
+    };
+    Arc::new(Secrets::new(resolver))
+}
+
+/// Resolves a `#Secret` from resource or data-source configuration.
+///
+/// The secret is declared by the infrastructure configuration itself, so no
+/// `allowInfrastructure` policy applies: policies govern the project's shared
+/// variables. Failures carry no resolver output, which could echo the value.
+struct ConfigurationSecretResolver {
+    action: InfrastructurePolicyAction,
+}
+
+#[async_trait]
+impl SecretResolver for ConfigurationSecretResolver {
+    async fn resolve(&self, secret: &SecretReference) -> Result<String, SecretFailure> {
+        const NAME: &str = "configuration secret";
+        let parsed: Secret =
+            serde_json::from_value(serde_json::Value::Object(secret.descriptor().clone()))
+                .map_err(|_| SecretFailure::new("its fields do not describe a secret"))?;
+        let single = HashMap::from([(NAME.to_string(), EnvValue::Secret(parsed))]);
+        let (mut values, parts) =
+            cuenv_core::environment::Environment::resolve_for_infrastructure_with_secrets(
+                self.action,
+                &single,
+            )
+            .await
+            .map_err(|_| SecretFailure::new("the resolver reported an error"))?;
+        cuenv_events::register_secrets(parts);
+        values
+            .remove(NAME)
+            .ok_or_else(|| SecretFailure::new("the resolver returned no value"))
+    }
+}
+
+/// For commands that start no provider: they never need a secret's value.
+struct NoSecrets;
+
+#[async_trait]
+impl SecretResolver for NoSecrets {
+    async fn resolve(&self, _secret: &SecretReference) -> Result<String, SecretFailure> {
+        Err(SecretFailure::new(
+            "this command does not resolve configuration secrets",
+        ))
     }
 }

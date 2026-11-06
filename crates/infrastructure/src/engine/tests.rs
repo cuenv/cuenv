@@ -3499,6 +3499,7 @@ mod native_configuration {
                     references: &references,
                     block: &block,
                     phase: ConfigurationPhase::Planning,
+                    secrets: SecretUse::Resolve,
                 },
                 |_| Ok(Value::Unknown),
             )
@@ -3516,6 +3517,7 @@ mod native_configuration {
                     references: &references,
                     block: &block,
                     phase: ConfigurationPhase::Apply,
+                    secrets: SecretUse::Resolve,
                 },
                 |_| Ok(Value::String("narrowed".into())),
             )
@@ -3532,6 +3534,7 @@ mod native_configuration {
                     references: &references,
                     block: &block,
                     phase: ConfigurationPhase::Apply,
+                    secrets: SecretUse::Resolve,
                 },
                 |_| Ok(Value::String("contradicts-the-projection".into())),
             )
@@ -3567,6 +3570,7 @@ mod native_configuration {
                     references: &references,
                     block: &block,
                     phase: ConfigurationPhase::Planning,
+                    secrets: SecretUse::Resolve,
                 },
                 |_| Ok(Value::Unknown),
             )
@@ -3596,6 +3600,7 @@ mod native_configuration {
                     references: &empty_references,
                     block: &block,
                     phase: ConfigurationPhase::Planning,
+                    secrets: SecretUse::Resolve,
                 },
                 |_| {
                     Err(InfrastructureError::configuration(
@@ -4797,4 +4802,255 @@ async fn malformed_apply_sensitivity_write_failure_recovers_only_the_retained_re
     assert_eq!(current.serial, prior.serial + 1);
     assert!(!recovery.has_pending(&tenant()).unwrap());
     failing.inner.unlock(&tenant(), &lock).await.unwrap();
+}
+
+mod secret_arguments {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::references::{
+        ConfigurationEvaluator, ConfigurationVerification, OutputIdentity, SpecializedConfiguration,
+    };
+    use crate::secrets::{SecretFailure, SecretReference, SecretResolver, Secrets};
+
+    const VALUE: &str = "unit-secret-value-7f3a";
+
+    struct Counting {
+        value: Option<&'static str>,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl SecretResolver for Counting {
+        async fn resolve(
+            &self,
+            _secret: &SecretReference,
+        ) -> std::result::Result<String, SecretFailure> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.value
+                .map(str::to_string)
+                .ok_or_else(|| SecretFailure::new("the resolver is not signed in"))
+        }
+    }
+
+    fn counting(value: Option<&'static str>) -> Arc<Counting> {
+        Arc::new(Counting {
+            value,
+            calls: AtomicUsize::new(0),
+        })
+    }
+
+    fn consumer() -> SourceAddress {
+        SourceAddress::Resource(ResourceAddress::new("fake_obj", "consumer"))
+    }
+
+    fn secret_declaration() -> ManagedResourceDeclaration {
+        let mut declaration = declaration("fake_obj", &[]);
+        declaration.configuration.insert(
+            "argument".into(),
+            json!({"resolver": "onepassword", "ref": "op://vault/item/field"}),
+        );
+        declaration
+    }
+
+    fn block() -> Block {
+        string_block("argument", crate::schema::Presence::Required, false)
+    }
+
+    async fn prepare(
+        engine: &InfrastructureEngine,
+        declaration: &ManagedResourceDeclaration,
+        secrets: SecretUse,
+    ) -> Result<Value> {
+        let block = block();
+        let references =
+            ConfigurationReferences::extract_with_schema(&declaration.configuration, &block, &[])?;
+        engine
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: &consumer(),
+                    declaration,
+                    references: &references,
+                    block: &block,
+                    phase: ConfigurationPhase::Planning,
+                    secrets,
+                },
+                |_| Ok(Value::Unknown),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn checking_declarations_keeps_the_secret_unknown_and_resolves_nothing() -> Result<()> {
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = engine(Arc::new(MemoryStateStore::new()), directory.path());
+        let resolver = counting(Some(VALUE));
+        engine.set_secrets(Arc::new(Secrets::new(resolver.clone())));
+        let configuration = prepare(&engine, &secret_declaration(), SecretUse::Placeholder).await?;
+        assert_eq!(configuration.attribute("argument"), Some(&Value::Unknown));
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_configuration_for_a_provider_carries_the_value_resolved_once() -> Result<()> {
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = engine(Arc::new(MemoryStateStore::new()), directory.path());
+        let resolver = counting(Some(VALUE));
+        engine.set_secrets(Arc::new(Secrets::new(resolver.clone())));
+        for _ in 0..2 {
+            let configuration = prepare(&engine, &secret_declaration(), SecretUse::Resolve).await?;
+            assert_eq!(
+                configuration.attribute("argument"),
+                Some(&Value::String(VALUE.into()))
+            );
+        }
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+        assert!(!cuenv_events::redact(VALUE).contains(VALUE));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_failed_resolution_names_the_position_and_not_the_value() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = engine(Arc::new(MemoryStateStore::new()), directory.path());
+        engine.set_secrets(Arc::new(Secrets::new(counting(None))));
+        let error = prepare(&engine, &secret_declaration(), SecretUse::Resolve)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, InfrastructureError::Secret { .. }));
+        assert_eq!(
+            error.to_string(),
+            "fake_obj.consumer configuration.argument: cannot resolve the onepassword secret: \
+             the resolver is not signed in"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_resolver_a_secret_cannot_reach_a_provider() {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = engine(Arc::new(MemoryStateStore::new()), directory.path());
+        let error = prepare(&engine, &secret_declaration(), SecretUse::Resolve)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no secret resolver is available"), "{error}");
+        assert!(
+            prepare(&engine, &secret_declaration(), SecretUse::Placeholder)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn arguments_set_from_a_secret_are_sensitive() -> Result<()> {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = engine(Arc::new(MemoryStateStore::new()), directory.path());
+        let block = block();
+        let references = ConfigurationReferences::extract_with_schema(
+            &secret_declaration().configuration,
+            &block,
+            &[],
+        )?;
+        let sensitive =
+            engine.validate_output_references(consumer().address(), &references, &block)?;
+        assert_eq!(sensitive, ["argument"]);
+        assert_eq!(masked_attributes(&block, sensitive), ["argument"]);
+        Ok(())
+    }
+
+    /// Projects the consumer with its secret replaced, as no CUE evaluation
+    /// should ever do.
+    struct ChangedSecret {
+        references: Vec<NativeReference>,
+    }
+
+    impl ConfigurationEvaluator for ChangedSecret {
+        fn references(&self) -> &[NativeReference] {
+            &self.references
+        }
+
+        fn declared_outputs(&self) -> &[OutputIdentity] {
+            &[]
+        }
+
+        fn declared_output_type(
+            &self,
+            _identity: &OutputIdentity,
+        ) -> Option<cuenv_manifest::manifest::InfrastructureOutputType> {
+            None
+        }
+
+        fn verify(&self, _input: &ConfigurationVerification<'_>) -> Result<()> {
+            Ok(())
+        }
+
+        fn specialize(
+            &self,
+            input: &ConfigurationSpecialization<'_>,
+        ) -> Result<SpecializedConfiguration> {
+            Ok(SpecializedConfiguration {
+                configuration: serde_json::Map::from_iter([
+                    ("source_id".into(), json!(null)),
+                    (
+                        "argument".into(),
+                        json!({"resolver": "onepassword", "ref": "op://other/item/field"}),
+                    ),
+                ]),
+                unresolved: input.deferred.to_vec(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_secret_cue_did_not_classify_never_reaches_a_provider() -> Result<()> {
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = engine(Arc::new(MemoryStateStore::new()), directory.path());
+        let resolver = counting(Some(VALUE));
+        engine.set_secrets(Arc::new(Secrets::new(resolver.clone())));
+        let native = NativeReference {
+            consumer: consumer(),
+            destination: vec![ConfigurationSelector::Field("source_id".into())],
+            source: SourceAddress::Resource(ResourceAddress::new("fake_obj", "source")),
+            attribute: "id".into(),
+            computed: false,
+        };
+        engine.set_configuration_evaluator(Arc::new(ChangedSecret {
+            references: vec![native.clone()],
+        }));
+        let mut declaration = secret_declaration();
+        declaration
+            .configuration
+            .insert("source_id".into(), json!(null));
+        let mut block = block();
+        block
+            .attributes
+            .extend(string_block("source_id", crate::schema::Presence::Required, false).attributes);
+        let references = ConfigurationReferences::extract_with_schema(
+            &declaration.configuration,
+            &block,
+            std::slice::from_ref(&native),
+        )?;
+        let error = engine
+            .prepare_configuration(
+                ConfigurationInput {
+                    consumer: &consumer(),
+                    declaration: &declaration,
+                    references: &references,
+                    block: &block,
+                    phase: ConfigurationPhase::Planning,
+                    secrets: SecretUse::Resolve,
+                },
+                |_| Ok(Value::Unknown),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("the secret changed after it was classified"),
+            "{error}"
+        );
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
 }

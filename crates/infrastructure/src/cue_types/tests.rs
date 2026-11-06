@@ -191,20 +191,20 @@ import "list"
 }
 
 #Configuration: {
-	keepers?: {[string]: string}
+	keepers?: {[string]: string | #Secret}
 	// The length (in words) of the pet name.
 	length?: number
 	// Deprecated: Use `separator`.
-	prefix?: string
+	prefix?: string | #Secret
 	rule!: [...{
 		"for"?: {
-			cidr!: string
+			cidr!: string | #Secret
 			ports!: [number, number]
 		}
 		port!: number
 	}] & list.MinItems(1) & list.MaxItems(3)
 	// The provider chooses a value when this is not set.
-	separator?: string
+	separator?: string | #Secret
 }
 
 // #Outputs contains selectable top-level scalar provider outputs.
@@ -216,6 +216,15 @@ import "list"
 	secret: string
 	separator: string
 }
+
+// #Secret is a cuenv secret, such as `schema.#OnePasswordRef & {ref: "..."}`.
+// cuenv resolves it only when the configuration reaches the provider,
+// never through CUE. Plans show the argument as (sensitive); state
+// stores its value, as it stores every argument.
+#Secret: {
+	resolver!: string & !=""
+	...
+}
 "#;
     assert_eq!(pet, expected);
     let empty = types
@@ -224,7 +233,66 @@ import "list"
         .unwrap();
     assert!(empty.contains("#Configuration: {}\n"), "{empty}");
     assert!(empty.ends_with("#Outputs: {\n}\n"), "{empty}");
+    assert!(!empty.contains("#Secret"), "{empty}");
     assert!(!empty.contains("import"), "{empty}");
+}
+
+#[test]
+fn only_resource_and_data_source_strings_accept_a_secret() {
+    let types = generated();
+    let provider = &types.files[Path::new("provider.cue")];
+    assert!(!provider.contains("#Secret"), "{provider}");
+
+    let mut block = Block::default();
+    for (name, value_type) in [
+        ("listed", Type::List(Box::new(Type::String))),
+        ("unordered", Type::Set(Box::new(Type::String))),
+        (
+            "unordered_objects",
+            Type::Set(Box::new(Type::Object(BTreeMap::from([(
+                "token".to_string(),
+                Type::String,
+            )])))),
+        ),
+    ] {
+        block
+            .attributes
+            .insert(name.to_string(), attribute(value_type, Presence::Optional));
+    }
+    block.attributes.insert(
+        "nested_unordered".into(),
+        Attribute {
+            nested: Some(NestedAttributes {
+                attributes: BTreeMap::from([(
+                    "token".to_string(),
+                    attribute(Type::String, Presence::Required),
+                )]),
+                nesting: Nesting::Set,
+            }),
+            ..attribute(Type::Dynamic, Presence::Optional)
+        },
+    );
+    block.blocks.insert(
+        "unordered_block".into(),
+        NestedBlock {
+            block: Block {
+                attributes: BTreeMap::from([(
+                    "token".to_string(),
+                    attribute(Type::String, Presence::Required),
+                )]),
+                ..Block::default()
+            },
+            nesting: Nesting::Set,
+            minimum_items: 0,
+            maximum_items: 0,
+        },
+    );
+    let mut package = Package::with_secrets("x 1.0.0", "a test");
+    package.configuration(&block);
+    assert_eq!(
+        package.body,
+        "#Configuration: {\n\tlisted?: [...string | #Secret]\n\tnested_unordered?: [...{\n\t\ttoken!: string\n\t}]\n\tunordered?: [...string]\n\tunordered_block?: [...{\n\t\ttoken!: string\n\t}]\n\tunordered_objects?: [...{\n\t\ttoken!: string\n\t}]\n}\n"
+    );
 }
 
 #[test]
@@ -851,5 +919,67 @@ value: consumer.configuration
     let value = String::from_utf8(output.stdout)?;
     assert!(value.contains("string"), "{value}");
     assert!(value.contains("nested_sequence"), "{value}");
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires the CUE command"]
+fn generated_arguments_accept_a_secret_only_at_string_positions_outside_sets() -> TestResult {
+    let types = generated_shape_types()?;
+    let directory = generated_cue_module(&types)?;
+    let secret = r#"{resolver: "onepassword", ref: "op://vault/item/field"}"#;
+    let accepted = [
+        format!("{{string_argument: {secret}}}"),
+        format!("{{sequence: [\"literal\", {secret}]}}"),
+        format!("{{mapping: {{key: {secret}}}}}"),
+        format!("{{pair: [{secret}, 2]}}"),
+        format!("{{object: {{token: {secret}, sibling: true}}}}"),
+        format!("{{nested_object: {{token: {secret}, sibling: \"ordinary\"}}}}"),
+        format!("{{nested_sequence: [{{token: {secret}, sibling: \"ordinary\"}}]}}"),
+        format!("{{nested_mapping: {{key: {{token: {secret}, sibling: \"ordinary\"}}}}}}"),
+        format!("{{nested_object_block: {{token: {secret}, sibling: \"ordinary\"}}}}"),
+    ];
+    let refused = [
+        format!("{{number_argument: {secret}}}"),
+        format!("{{boolean_argument: {secret}}}"),
+        format!("{{unordered_strings: [{secret}]}}"),
+        format!("{{unordered: [{{token: {secret}}}]}}"),
+        format!("{{nested_unordered: [{{token: {secret}, sibling: \"ordinary\"}}]}}"),
+        format!("{{nested_unordered_block: [{{token: {secret}, sibling: \"ordinary\"}}]}}"),
+        r#"{string_argument: {ref: "op://vault/item/field"}}"#.to_string(),
+        r#"{string_argument: {resolver: ""}}"#.to_string(),
+    ];
+    for (import_path, package) in [
+        (types.resource_import("example_shapes"), "example_shapes"),
+        (types.data_source_import("example_shapes"), "example_shapes"),
+    ] {
+        for (configurations, expected) in [(&accepted[..], true), (&refused[..], false)] {
+            for configuration in configurations {
+                std::fs::write(
+                    directory.path().join("test.cue"),
+                    format!(
+                        "package test\nimport {import_path}\nvalue: {package}.#Configuration & {configuration}\n"
+                    ),
+                )?;
+                let output = cue_export(directory.path())?;
+                assert_eq!(
+                    output.status.success(),
+                    expected,
+                    "{configuration}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+    }
+    // The provider block keeps reading credentials from its environment.
+    std::fs::write(
+        directory.path().join("test.cue"),
+        format!(
+            "package test\nimport {}\nvalue: {}.#Configuration & {{string_argument: {secret}}}\n",
+            types.provider_import(),
+            types.package_name
+        ),
+    )?;
+    assert!(!cue_export(directory.path())?.status.success());
     Ok(())
 }

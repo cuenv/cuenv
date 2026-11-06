@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::references::ConfigurationEvaluator;
+use cuenv_infrastructure::secrets::Secrets;
 use cuenv_infrastructure::{
     AddressingChoice, Credentials, D1Configuration, D1StateStore, EngineOptions, EngineSetup,
     InfrastructureEngine, InfrastructureError, ObjectLocation, ObjectStateStore,
@@ -65,6 +66,9 @@ pub(super) struct EngineInputs {
     /// Where unrecorded changes are saved; the user state directory when
     /// `None`.
     pub(super) unrecorded_directory: Option<PathBuf>,
+    /// Resolves the secrets of resource and data-source configuration, once
+    /// each for the whole command.
+    pub(super) secrets: Arc<Secrets>,
 }
 
 pub(super) async fn dispatch(
@@ -289,10 +293,12 @@ pub(super) fn engine(
     mut inputs: EngineInputs,
 ) -> InfrastructureEngine {
     let evaluator = inputs.configuration_evaluator.take();
+    let secrets = Arc::clone(&inputs.secrets);
     let mut engine = InfrastructureEngine::new(engine_setup(context, inputs));
     if let Some(evaluator) = evaluator {
         engine.set_configuration_evaluator(evaluator);
     }
+    engine.set_secrets(secrets);
     engine
 }
 

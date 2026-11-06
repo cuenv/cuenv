@@ -379,7 +379,8 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         let Some(resource) = schema.resources.get(resource_type) else {
             continue;
         };
-        let mut package = Package::new(&description, &format!("the {resource_type} resource"));
+        let mut package =
+            Package::with_secrets(&description, &format!("the {resource_type} resource"));
         package.line(
             0,
             &format!("// #Resource declares a managed resource of type {resource_type}."),
@@ -413,7 +414,7 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
             continue;
         };
         let mut package =
-            Package::new(&description, &format!("the {data_source_type} data source"));
+            Package::with_secrets(&description, &format!("the {data_source_type} data source"));
         package.line(
             0,
             &format!("// #DataSource declares a read-only data source of type {data_source_type}."),
@@ -456,6 +457,26 @@ struct Package {
     header: String,
     body: String,
     uses_list: bool,
+    /// What a string argument of `#Configuration` accepts.
+    strings: Strings,
+    uses_secret: bool,
+}
+
+/// Where a field is written: its indentation, and what its strings accept.
+#[derive(Debug, Clone, Copy)]
+struct Scope {
+    depth: usize,
+    strings: Strings,
+}
+
+/// What a generated string argument accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Strings {
+    /// Only a string: provider configuration, outputs, and set elements.
+    Plain,
+    /// A string or a `#Secret`, resolved when the configuration reaches the
+    /// provider.
+    OrSecret,
 }
 
 impl Package {
@@ -472,10 +493,39 @@ impl Package {
             header,
             body: String::new(),
             uses_list: false,
+            strings: Strings::Plain,
+            uses_secret: false,
         }
     }
 
-    fn finish(self, package_name: &str) -> String {
+    /// A resource or data source package: its string arguments accept a
+    /// `#Secret`.
+    fn with_secrets(release: &str, subject: &str) -> Self {
+        Self {
+            strings: Strings::OrSecret,
+            ..Self::new(release, subject)
+        }
+    }
+
+    fn finish(mut self, package_name: &str) -> String {
+        if self.uses_secret {
+            self.blank();
+            self.comment_lines(
+                0,
+                &[
+                    "#Secret is a cuenv secret, such as `schema.#OnePasswordRef & {ref: \"...\"}`."
+                        .to_string(),
+                    "cuenv resolves it only when the configuration reaches the provider,"
+                        .to_string(),
+                    "never through CUE. Plans show the argument as (sensitive); state".to_string(),
+                    "stores its value, as it stores every argument.".to_string(),
+                ],
+            );
+            self.line(0, "#Secret: {");
+            self.field(1, "resolver!", "string & !=\"\"");
+            self.line(1, "...");
+            self.line(0, "}");
+        }
         let mut output = self.header;
         let _ = write!(output, "\n\npackage {package_name}\n\n");
         if self.uses_list {
@@ -513,7 +563,7 @@ impl Package {
     }
 
     fn configuration(&mut self, block: &Block) {
-        let value = self.block_struct(block, 0);
+        let value = self.block_struct(block, 0, self.strings);
         self.line(0, &format!("#Configuration: {value}"));
     }
 
@@ -538,7 +588,7 @@ impl Package {
                         "// Sensitive: plans mask receiving arguments; strings of at least four characters are redacted.",
                     );
                 }
-                let value = Self::type_expression(&attribute.value_type, 1);
+                let value = self.type_expression(&attribute.value_type, 1, Strings::Plain);
                 self.field(1, &label(name), &value);
             }
         }
@@ -547,15 +597,29 @@ impl Package {
 
     /// The struct a block's configuration is written as, opening at the
     /// current position and closing at `depth`.
-    fn block_struct(&mut self, block: &Block, depth: usize) -> String {
+    fn block_struct(&mut self, block: &Block, depth: usize, strings: Strings) -> String {
         let mut fields = Fields::default();
         for (name, attribute) in &block.attributes {
-            if let Some(field) = self.attribute_field(name, attribute, depth + 1) {
+            if let Some(field) = self.attribute_field(
+                name,
+                attribute,
+                Scope {
+                    depth: depth + 1,
+                    strings,
+                },
+            ) {
                 fields.0.insert(name.clone(), field);
             }
         }
         for (name, nested) in &block.blocks {
-            let field = self.nested_block_field(name, nested, depth + 1);
+            let field = self.nested_block_field(
+                name,
+                nested,
+                Scope {
+                    depth: depth + 1,
+                    strings,
+                },
+            );
             fields.0.insert(name.clone(), field);
         }
         fields.render(depth)
@@ -565,8 +629,9 @@ impl Package {
         &mut self,
         name: &str,
         attribute: &Attribute,
-        depth: usize,
+        scope: Scope,
     ) -> Option<Field> {
+        let Scope { depth, strings } = scope;
         if attribute.write_only || attribute.presence == Presence::Computed {
             return None;
         }
@@ -578,8 +643,8 @@ impl Package {
             notes.push("Sensitive: plans show it as (sensitive).");
         }
         let value = match &attribute.nested {
-            Some(nested) => self.nested_attributes(nested, depth),
-            None => Self::type_expression(&attribute.value_type, depth),
+            Some(nested) => self.nested_attributes(nested, depth, strings),
+            None => self.type_expression(&attribute.value_type, depth, strings),
         };
         Some(Field {
             comments: documentation_lines(&attribute.documentation, &notes),
@@ -593,10 +658,28 @@ impl Package {
         })
     }
 
-    fn nested_attributes(&mut self, nested: &NestedAttributes, depth: usize) -> String {
+    fn nested_attributes(
+        &mut self,
+        nested: &NestedAttributes,
+        depth: usize,
+        strings: Strings,
+    ) -> String {
+        // A set element cannot hold a secret: its identity is its value.
+        let strings = if nested.nesting == Nesting::Set {
+            Strings::Plain
+        } else {
+            strings
+        };
         let mut fields = Fields::default();
         for (name, attribute) in &nested.attributes {
-            if let Some(field) = self.attribute_field(name, attribute, depth + 1) {
+            if let Some(field) = self.attribute_field(
+                name,
+                attribute,
+                Scope {
+                    depth: depth + 1,
+                    strings,
+                },
+            ) {
                 fields.0.insert(name.clone(), field);
             }
         }
@@ -608,8 +691,14 @@ impl Package {
         }
     }
 
-    fn nested_block_field(&mut self, name: &str, nested: &NestedBlock, depth: usize) -> Field {
-        let object = self.block_struct(&nested.block, depth);
+    fn nested_block_field(&mut self, name: &str, nested: &NestedBlock, scope: Scope) -> Field {
+        let Scope { depth, strings } = scope;
+        let strings = if nested.nesting == Nesting::Set {
+            Strings::Plain
+        } else {
+            strings
+        };
+        let object = self.block_struct(&nested.block, depth, strings);
         let required = nested.minimum_items > 0 && nested.nesting != Nesting::Group;
         let value = match nested.nesting {
             Nesting::Single | Nesting::Group => object,
@@ -636,23 +725,36 @@ impl Package {
     }
 
     /// Render the provider's cty type, retaining its nested container shape.
-    fn type_expression(value_type: &Type, depth: usize) -> String {
+    fn type_expression(&mut self, value_type: &Type, depth: usize, strings: Strings) -> String {
         match value_type {
             Type::Boolean => "bool".to_string(),
             Type::Number => "number".to_string(),
+            Type::String if strings == Strings::OrSecret => {
+                self.uses_secret = true;
+                "string | #Secret".to_string()
+            }
             Type::String => "string".to_string(),
             Type::Dynamic => "_".to_string(),
-            Type::List(element) | Type::Set(element) => {
-                format!("[...{}]", Self::type_expression(element, depth))
+            Type::List(element) => {
+                format!("[...{}]", self.type_expression(element, depth, strings))
+            }
+            Type::Set(element) => {
+                format!(
+                    "[...{}]",
+                    self.type_expression(element, depth, Strings::Plain)
+                )
             }
             Type::Map(element) => {
-                format!("{{[string]: {}}}", Self::type_expression(element, depth))
+                format!(
+                    "{{[string]: {}}}",
+                    self.type_expression(element, depth, strings)
+                )
             }
             Type::Tuple(elements) => format!(
                 "[{}]",
                 elements
                     .iter()
-                    .map(|element| Self::type_expression(element, depth))
+                    .map(|element| self.type_expression(element, depth, strings))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -667,7 +769,7 @@ impl Package {
                             comments: Vec::new(),
                             label: label(name),
                             marker: '!',
-                            value: Self::type_expression(attribute_type, depth + 1),
+                            value: self.type_expression(attribute_type, depth + 1, strings),
                         },
                     );
                 }

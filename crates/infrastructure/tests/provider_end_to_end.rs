@@ -31,6 +31,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cuenv_infrastructure::secrets::{SecretFailure, SecretReference, SecretResolver, Secrets};
 use cuenv_infrastructure::{
     Action, ApplyContext, ApplyEvent, Cancellation, ConditionalPut, EngineOptions, EngineSetup,
     InfrastructureEngine, InfrastructureError, LockRequest, MemoryStateStore, Plan, PlanMode,
@@ -1195,6 +1196,8 @@ struct Fake {
     tenant: TenantKey,
     /// The provider executable the engines launch.
     binary: String,
+    /// Resolves secrets in the configuration of every engine from now on.
+    secrets: Option<Arc<Secrets>>,
     _cleanup: TenantCleanup,
     _database: Option<Database>,
 }
@@ -1217,6 +1220,7 @@ impl Fake {
             _cleanup: TenantCleanup::new(&tenant),
             tenant,
             binary: environment_path("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?,
+            secrets: None,
             _database: database,
         })
     }
@@ -1278,6 +1282,9 @@ impl Fake {
         });
         if evaluator.has_references() {
             engine.set_configuration_evaluator(evaluator);
+        }
+        if let Some(secrets) = &self.secrets {
+            engine.set_secrets(Arc::clone(secrets));
         }
         Ok(engine)
     }
@@ -4469,5 +4476,149 @@ async fn fake_an_identity_handoff_deletes_the_old_object_before_the_new_one_take
     );
     fake.converge(&second, PlanMode::Destroy).await?.applied?;
     assert!(!fake.exists("K") && !fake.exists("A2"));
+    Ok(())
+}
+
+// Secrets in resource configuration (#570)
+
+/// Hands out one value for every secret, or fails, and counts its calls.
+struct FixedSecret {
+    value: Option<&'static str>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl FixedSecret {
+    fn new(value: Option<&'static str>) -> Arc<Self> {
+        Arc::new(Self {
+            value,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl SecretResolver for FixedSecret {
+    async fn resolve(&self, secret: &SecretReference) -> Result<String, SecretFailure> {
+        assert_eq!(secret.resolver(), "exec");
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.value
+            .map(str::to_string)
+            .ok_or_else(|| SecretFailure::new("the command exited with status 1"))
+    }
+}
+
+fn secret_consumer() -> serde_json::Value {
+    json!({"consumer": nested_token_consumer(&json!({
+        "resolver": "exec",
+        "command": "print-cloudflare-root-token",
+    }))})
+}
+
+const ROOT_TOKEN: &str = "fake-cloudflare-root-token-91c2";
+const ROTATED_TOKEN: &str = "fake-cloudflare-rotated-token-5d07";
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_secret_argument_is_resolved_once_masked_and_recorded_sensitive() -> TestResult {
+    let mut fake = Fake::new().await?;
+    let resolver = FixedSecret::new(Some(ROOT_TOKEN));
+    fake.secrets = Some(Arc::new(Secrets::new(resolver.clone())));
+    let resources = secret_consumer();
+
+    let run = fake.converge(&resources, PlanMode::Apply).await?;
+    run.applied?;
+    let [change] = run.plan.changes.as_slice() else {
+        return Err("expected one change".into());
+    };
+    assert_eq!(change.action, Action::Create);
+    assert_eq!(change.sensitive, ["config"]);
+    let rendered = cuenv_infrastructure::render_plan(&run.plan);
+    assert!(rendered.contains("+ config = (sensitive)"), "{rendered}");
+    assert!(!rendered.contains(ROOT_TOKEN), "{rendered}");
+    assert!(!cuenv_events::redact(ROOT_TOKEN).contains(ROOT_TOKEN));
+    // The provider got the value, and state keeps it, marked sensitive.
+    let record = fake.record("consumer").await?;
+    assert_eq!(record.state["config"]["token"], ROOT_TOKEN);
+    assert_eq!(record.sensitive_attributes, ["config"]);
+    assert!(!fake.journal().contains(ROOT_TOKEN));
+
+    // The same secret plans no change and is not resolved again.
+    let unchanged = fake.plan(&resources).await?;
+    assert!(!unchanged.has_changes());
+    assert_eq!(resolver.calls(), 1);
+
+    // A rotated secret is a change, shown without either value.
+    fake.secrets = Some(Arc::new(Secrets::new(FixedSecret::new(Some(
+        ROTATED_TOKEN,
+    )))));
+    let rotated = fake.converge(&resources, PlanMode::Apply).await?;
+    rotated.applied?;
+    let [change] = rotated.plan.changes.as_slice() else {
+        return Err("expected one change".into());
+    };
+    assert!(change.action.changes_infrastructure());
+    let rendered = cuenv_infrastructure::render_plan(&rotated.plan);
+    assert!(rendered.contains("(sensitive)"), "{rendered}");
+    assert!(!rendered.contains(ROOT_TOKEN) && !rendered.contains(ROTATED_TOKEN));
+    assert_eq!(
+        fake.record("consumer").await?.state["config"]["token"],
+        ROTATED_TOKEN
+    );
+
+    // Destroying needs no resource argument, so nothing is resolved.
+    let untouched = FixedSecret::new(Some("never-resolved"));
+    fake.secrets = Some(Arc::new(Secrets::new(untouched.clone())));
+    let destroyed = fake.converge(&resources, PlanMode::Destroy).await?;
+    destroyed.applied?;
+    assert_eq!(untouched.calls(), 0);
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_secret_argument_echoed_by_validation_is_redacted() -> TestResult {
+    let mut fake = Fake::new().await?;
+    fake.secrets = Some(Arc::new(Secrets::new(FixedSecret::new(Some(
+        "fake-echoed-secret-value-0b4e",
+    )))));
+    fake.set_flag("token-consumer-fail-validation")?;
+    let error = fake
+        .plan(&secret_consumer())
+        .await
+        .expect_err("validation rejects the known token");
+    let rendered = error.to_string();
+    assert!(rendered.contains("rejected"), "{rendered}");
+    assert!(
+        !rendered.contains("fake-echoed-secret-value-0b4e"),
+        "{rendered}"
+    );
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_unresolvable_secret_stops_the_plan_before_any_provider_call() -> TestResult {
+    let mut fake = Fake::new().await?;
+    fake.secrets = Some(Arc::new(Secrets::new(FixedSecret::new(None))));
+    let error = fake
+        .plan(&secret_consumer())
+        .await
+        .expect_err("an unresolvable secret stops the plan");
+    let error = error
+        .downcast_ref::<InfrastructureError>()
+        .ok_or("expected an infrastructure error")?;
+    assert!(matches!(error, InfrastructureError::Secret { .. }));
+    assert_eq!(
+        error.to_string(),
+        "fake_token_consumer.consumer configuration.config.token: cannot resolve the exec \
+         secret: the command exited with status 1"
+    );
+    assert!(fake.journal().is_empty(), "{}", fake.journal());
     Ok(())
 }

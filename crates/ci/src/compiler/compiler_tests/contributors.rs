@@ -715,3 +715,21 @@ fn test_contributor_secrets_provider_uses_infrastructure_secrets() {
     let compiler = Compiler::new(project);
     assert!(!compiler.cue_contributor_is_active(&contributor, &test_ir()));
 }
+
+#[test]
+fn test_contributor_secrets_provider_uses_resource_argument_secrets() {
+    let mut project = Project::new("test");
+    project.infrastructure = Some(serde_json::json!({
+        "state": {"turso": {"url": "http://127.0.0.1:8080", "token": "plain"}},
+        "resources": {"ci_token": {
+            "type": "infisical_secret",
+            "configuration": {
+                "name": "CLOUDFLARE_API_TOKEN",
+                "value": {"resolver": "onepassword", "ref": "op://vault/item/field"},
+            },
+        }},
+    }));
+    let compiler = Compiler::new(project);
+    let contributor = test_contributor("1password", Some(secrets_provider_condition()));
+    assert!(compiler.cue_contributor_is_active(&contributor, &test_ir()));
+}

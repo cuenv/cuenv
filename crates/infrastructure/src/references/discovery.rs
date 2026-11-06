@@ -7,13 +7,15 @@ use crate::error::Result;
 use crate::schema::Block;
 
 impl ConfigurationReferences {
-    /// Classify native provenance and validate its projected destinations.
+    /// Classify native provenance and validate its projected destinations,
+    /// and find the secrets placed at string arguments.
     /// Provider configuration is ordinary data, including objects whose keys
     /// happen to resemble a former reference descriptor.
     ///
     /// # Errors
     /// Returns a configuration error for unsupported paths, unsettable schema
-    /// fields, inconsistent placeholders, or duplicate destinations.
+    /// fields, inconsistent placeholders, duplicate destinations, or a secret
+    /// at a position that cannot take one.
     pub fn extract_with_schema(
         configuration: &Map<String, Json>,
         block: &Block,
@@ -49,7 +51,11 @@ impl ConfigurationReferences {
             });
         }
         references.sort_by(|left, right| left.destination.cmp(&right.destination));
-        Ok(Self { references })
+        let secrets = super::secrets::secret_arguments(configuration, block)?;
+        Ok(Self {
+            references,
+            secrets,
+        })
     }
 }
 

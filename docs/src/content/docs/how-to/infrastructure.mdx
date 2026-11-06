@@ -341,7 +341,7 @@ DEPLOY_TOKEN: {
 
 ### Secrets in output
 
-Every resolved secret, and the state authentication token, is registered for redaction before any state or provider work starts, as are the values of cuenv's own resolver credentials in its environment (`OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, every `OP_SESSION_*`, `INFISICAL_*`, `VAULT_TOKEN`, `CUENV_SECRET_SALT` and `CUENV_SECRET_SALT_PREV`, and the variables a project's `cache.remote.auth` names). cuenv replaces registered values in everything it prints: events on standard output and standard error, the JSON documents and error envelopes (string by string, so a secret that JSON escapes is still found; the names of fields are never rewritten, whatever the secret is), tracing logs, error messages and their help text, and provider log lines and gRPC messages (redacted before control characters are stripped). A provider's JSON log line is parsed and each decoded string redacted, so a secret that Go's JSON encoder writes with `\u0026` for `&` is found too. A multi-line secret is also redacted line by line, and a secret that contains a quote, a backslash or a control character is also redacted as it appears when printed quoted. Where two secrets overlap in a text, the whole overlapping stretch is replaced. Provider log lines that are not warnings or errors are discarded without being redacted. Values shorter than four characters are not redacted. Redaction is a safety net, not a reason to put a secret in `configuration`: resource records still hold sensitive attribute values in plaintext (see [Configure the state database](#configure-the-state-database)).
+Every resolved secret, and the state authentication token, is registered for redaction before any state or provider work starts, as are the values of cuenv's own resolver credentials in its environment (`OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, every `OP_SESSION_*`, `INFISICAL_*`, `VAULT_TOKEN`, `CUENV_SECRET_SALT` and `CUENV_SECRET_SALT_PREV`, and the variables a project's `cache.remote.auth` names). cuenv replaces registered values in everything it prints: events on standard output and standard error, the JSON documents and error envelopes (string by string, so a secret that JSON escapes is still found; the names of fields are never rewritten, whatever the secret is), tracing logs, error messages and their help text, and provider log lines and gRPC messages (redacted before control characters are stripped). A provider's JSON log line is parsed and each decoded string redacted, so a secret that Go's JSON encoder writes with `\u0026` for `&` is found too. A multi-line secret is also redacted line by line, and a secret that contains a quote, a backslash or a control character is also redacted as it appears when printed quoted. Where two secrets overlap in a text, the whole overlapping stretch is replaced. Provider log lines that are not warnings or errors are discarded without being redacted. Values shorter than four characters are not redacted. Redaction is a safety net, not a reason to put a secret in `configuration` without thought: resource records still hold sensitive attribute values in plaintext (see [Pass a secret to a resource](#pass-a-secret-to-a-resource)).
 
 ### Provider environment
 
@@ -738,7 +738,7 @@ infrastructure: providers: {
 - Set exactly one of `version` (an exact semantic version; constraints such as `~> 3.7` are not supported) or `path`. The engine validates every provider source and install choice up front, including unused declarations, before reading state or starting any provider.
 - Downloads must be HTTPS, are verified against the registry's SHA-256 checksum (and, for a provider pinned in `cuenv.lock`, against the pinned checksum — see [Typed configuration](#keep-types-and-providers-in-step)), and are cached using Terraform's layout in `$TF_PLUGIN_CACHE_DIR` when set, otherwise in your platform's cache directory under `cuenv/infrastructure/providers` (`~/.cache` on Linux, `~/Library/Caches` on macOS). cuenv records a manifest with the binary's SHA-256 and re-verifies it on every use; a cache populated by Terraform is reinstalled once. That manifest only detects accidental corruption: anyone who can write to the cache can replace a binary and its manifest together, so never share a writable plugin cache between trust boundaries. The registry's GPG signature is not verified yet.
 - With generated types, `providers: random: random_provider.#Provider` sets `source`, `version` and `schemaDigest` for you (see [Typed configuration](#typed-configuration)).
-- `configuration` is the provider block. Keep credentials out of it: providers read their usual environment variables (`CLOUDFLARE_API_TOKEN`, `AWS_PROFILE`, …) from the caller's environment as limited by `providerEnvironment` (see [Provider environment](#provider-environment)), with authorized cuenv project values overlaid. Secret-typed resource arguments are not supported yet.
+- `configuration` is the provider block. Keep credentials out of it: providers read their usual environment variables (`CLOUDFLARE_API_TOKEN`, `AWS_PROFILE`, …) from the caller's environment as limited by `providerEnvironment` (see [Provider environment](#provider-environment)), with authorized cuenv project values overlaid. A `#Secret` cannot be a provider argument yet; resource and data source arguments can take one (see [Pass a secret to a resource](#pass-a-secret-to-a-resource)).
 
 ## Declare resources
 
@@ -774,6 +774,40 @@ With or without generated types, `configuration` is also validated by the provid
 The `infrastructure` block is closed at every level: a misspelled field such as `resource:` or `sourcee:` fails evaluation instead of being ignored (which would otherwise plan the deletion of everything under the real field). The schema also checks the references and the provider install choice with CUE's `error()`: a provider must set exactly one of `version` and `path`, every `dependsOn` entry must name a resource of the same configuration, every resource's provider (explicit, or the prefix of its `type`) must be declared in the same configuration, and the state `url` must be valid. The checks apply to the top level and to every `environments.NAME` configuration, **selected or not**, so a mistake in an environment you are not using is still found. A provider, resource or `configuration` that CUE itself rejects (a conflicting value, a `version` that is not exact) is rejected before the checks that read it, so one mistake does not produce false "no provider named" messages. These checks need no network and no provider. See [the schema reference](/reference/cue-schema/#checks).
 
 The Rust engine repeats these checks before launching a provider, as defense in depth for projects that do not unify with cuenv's schema. It collects **every** problem rather than stopping at the first, each with its full field path, for example `infrastructure.environments.dev.resources.pet.dependsOn[0]`, and an environment's messages say that top-level providers are not inherited. Each dependency cycle is reported on its own, with only its member resources and the `dependsOn` entries that form it, even when other dependencies are unknown.
+
+## Pass a secret to a resource
+
+Some providers can only receive a secret as a resource argument: the secret manager resource that stores it, or a resource that needs a credential to create another. A string argument of a resource or a data source can be a `#Secret`, resolved through the same resolvers as the project's `env`:
+
+```cue
+import (
+	"github.com/cuenv/cuenv/schema"
+	"registry.terraform.io/infisical/infisical/resources/infisical_secret"
+)
+
+let cloudflareRoot = schema.#OnePasswordRef & {ref: "op://Infrastructure/Cloudflare root/credential"}
+
+infrastructure: resources: ci_cloudflare_token: infisical_secret.#Resource & {
+	configuration: {
+		name:         "CLOUDFLARE_API_TOKEN"
+		env_slug:     "ci"
+		folder_path:  "/"
+		workspace_id: "..."
+		value:        cloudflareRoot
+	}
+}
+```
+
+- **Where a secret can go.** Any string argument: a top-level string, a list or tuple element, a map value, or a field of a nested attribute, block or object. Generated types accept `string | #Secret` there. Not a number or bool, nothing inside a set (a set element is identified by its value), and not a computed-only or write-only argument (write-only arguments are [#571](https://github.com/cuenv/cuenv/issues/571)). An object with a `resolver` field inside a dynamic-typed argument is ordinary data. Provider `configuration` does not take a `#Secret` yet.
+- **When it is resolved.** Only when the configuration is about to reach a provider: `plan` and `apply` resolve the secrets of the resources and data sources they plan. `destroy`, `import` and the state commands never resolve one. Each distinct secret is resolved once per command, however many arguments name it, so the plan `apply` makes again under the lock sees the value you confirmed.
+- **CUE never sees the value.** cuenv replaces the secret after evaluation, so a CUE constraint, interpolation or builtin cannot read or transform it: `"Bearer \(token)"` does not work with a `#Secret`.
+- **What is shown.** The argument holding the secret is masked as `(sensitive)` in plans, a changed secret plans an update (or the replacement the provider asks for) without printing either value, and the value is registered for redaction before any provider receives it.
+- **Failures.** A secret that cannot be resolved fails the command with an error that names the resource, the argument and the resolver, never the resolver's own message (exit code `3`).
+- **No policy gate.** `allowInfrastructure` restricts the project's shared variables; a secret written in the infrastructure configuration is available to the commands that need it. The configuration can already run any provider binary, so an `#ExecSecret` there grants nothing new. Resolver credentials are still withheld from providers.
+
+:::caution[The value is stored in state]
+Terraform providers return the arguments they were given, so the resolved value is written to the resource's state record in plaintext, as Terraform does, and marked sensitive there. Anyone who can read the state backend can read the secret, including through `state pull`, and so can anyone who can read a saved unrecorded-change file (written `0600` under your user state directory). Treat state access as secret access. Write-only arguments, which a provider never returns, will keep a secret out of state ([#571](https://github.com/cuenv/cuenv/issues/571)).
+:::
 
 ## Plan and apply
 
@@ -866,6 +900,7 @@ A replacement whose old object was destroyed but whose new object was not create
 
 - **Copying a whole resource into another field is refused by CUE** under the closed schema. Move the value to a named field or use a direct selector instead.
 - **A self-hosted `sqld` can stop serving writes when several runs write to one database at once.** Version 0.24.32 can leave its write slot with a connection that has closed, after which every write waits until the server is restarted, while reads and `/health` still answer. Each state write then fails after four attempts of thirty seconds, and a run that had already changed a resource stops with an unrecorded change and a recovery file. See [the design notes](https://github.com/cuenv/cuenv/blob/main/docs/design/specs/2026-11-03-infrastructure-nested-output-references.md) for the cause. A database reporting `SQLITE_BUSY` is otherwise retried for thirty seconds.
+- **Secret arguments** are string-only, cannot be placed in sets or write-only arguments, and are stored in plaintext in state; provider configuration cannot take one (see [Pass a secret to a resource](#pass-a-secret-to-a-resource)).
 - **Output reference boundaries.** Sources must be top-level scalar provider attributes, and source/destination types must match. Nested object, map and ordered collection destinations are supported; nested or collection sources, sets and write-only destinations are not. If a value was unknown at plan time and its final value makes an existing consumer require replacement, apply stops before deleting or updating that consumer; plan again after the source is recorded.
 - **Early CUE diagnostics.** Infrastructure commands report a value-free evaluation error when CUE fails before provider sensitivity is known. Raw CUE details, including field names, source positions and custom error text, are withheld because they can contain private configuration keys or values. This does not change CUE evaluation; other cuenv commands may still display their normal CUE diagnostics.
 - **Numeric precision.** Provider-bound numbers outside cuenv's lossless Terraform codec range are rejected. Some CUE numeric literals that cannot be represented without loss in the selected configuration's JSON are rejected as well; see [Import and connect resources](#import-and-connect-resources).
