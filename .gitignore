@@ -17,3 +17,7 @@ node_modules
 result
 sbom.json
 target
+
+# Quint / Apalache / TLC scratch output
+specs/quint/_apalache-out/
+specs/quint/tmp/
