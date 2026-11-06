@@ -30,8 +30,10 @@ _flakeSourceFiles: _ @embed(file="nix/source-files.json")
 let _flakeInputs = list.Concat([
 	["flake.nix", "flake.lock"],
 	_flakeSourceFiles.files,
+	_flakeSourceFiles.cuettyFiles,
 	[for tree in _flakeSourceFiles.trees {"\(tree)/**"}],
 	[for tree in _flakeSourceFiles.cueTrees {"\(tree)/**/*.cue"}],
+	[for tree in _flakeSourceFiles.cuettyTrees {"\(tree)/**"}],
 ])
 
 let _schemaDocsInputs = [
@@ -597,24 +599,14 @@ schema.#Project & {
 				inputs: _baseInputs
 			}
 
-			// The release binary is the flake's `cuenv` package. Its inputs are
-			// the flake's own source list, so this evaluates to the store path
-			// the CI bootstrap job already built and pushed: the release
-			// substitutes that binary instead of compiling a second one.
+			// GitHub release binaries use their own toolchain and portable Go
+			// bridge. The public flake package is the Nix-native CLI.
 			build: schema.#Task & {
 				hermetic: {passthrough: ["PATH"]}
-				script: """
-					#!/usr/bin/env bash
-					set -euo pipefail
-
-					nix build .#cuenv -L --accept-flake-config
-					mkdir -p target/release
-					cp result/bin/cuenv target/release/cuenv
-
-					echo "Binary at: target/release/cuenv ($(readlink -f result))"
-					file target/release/cuenv
-					"""
-				inputs: _flakeInputs
+				env: CUENV_ARCH: schema.#EnvPassthrough & {name: "CUENV_ARCH"}
+				command: "nix"
+				args:    ["develop", "--accept-flake-config", "--no-write-lock-file", "--file", ".github/release-tools.nix", "--command", "bash", ".github/scripts/release-build.sh"]
+				inputs:  list.Concat([_flakeInputs, [".github/release-tools.nix", ".github/scripts/release-build.sh"]])
 				outputs: ["target/release/cuenv"]
 			}
 
@@ -648,7 +640,7 @@ schema.#Project & {
 
 					nix build .#cuenv -L --accept-flake-config
 					"""]
-				inputs: list.Concat([_baseInputs, ["flake.nix", "flake.lock"]])
+				inputs: _flakeInputs
 				outputs: ["result/bin/cuenv"]
 			}
 		}

@@ -19,6 +19,15 @@ on:
     - Cargo.lock/**
     - Cargo.toml
     - Cargo.toml/**
+    - apps/cuetty/Cargo.lock
+    - apps/cuetty/Cargo.lock/**
+    - apps/cuetty/Cargo.toml
+    - apps/cuetty/Cargo.toml/**
+    - apps/cuetty/assets/**
+    - apps/cuetty/nix.nix
+    - apps/cuetty/nix.nix/**
+    - apps/cuetty/src/**
+    - apps/cuetty/tests/**
     - clippy.toml
     - clippy.toml/**
     - contrib/**
@@ -82,6 +91,15 @@ on:
     - Cargo.lock/**
     - Cargo.toml
     - Cargo.toml/**
+    - apps/cuetty/Cargo.lock
+    - apps/cuetty/Cargo.lock/**
+    - apps/cuetty/Cargo.toml
+    - apps/cuetty/Cargo.toml/**
+    - apps/cuetty/assets/**
+    - apps/cuetty/nix.nix
+    - apps/cuetty/nix.nix/**
+    - apps/cuetty/src/**
+    - apps/cuetty/tests/**
     - clippy.toml
     - clippy.toml/**
     - contrib/**

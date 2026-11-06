@@ -17,6 +17,15 @@ on:
     - Cargo.lock/**
     - Cargo.toml
     - Cargo.toml/**
+    - apps/cuetty/Cargo.lock
+    - apps/cuetty/Cargo.lock/**
+    - apps/cuetty/Cargo.toml
+    - apps/cuetty/Cargo.toml/**
+    - apps/cuetty/assets/**
+    - apps/cuetty/nix.nix
+    - apps/cuetty/nix.nix/**
+    - apps/cuetty/src/**
+    - apps/cuetty/tests/**
     - clippy.toml
     - clippy.toml/**
     - contrib/**
@@ -52,6 +61,15 @@ on:
     - Cargo.lock/**
     - Cargo.toml
     - Cargo.toml/**
+    - apps/cuetty/Cargo.lock
+    - apps/cuetty/Cargo.lock/**
+    - apps/cuetty/Cargo.toml
+    - apps/cuetty/Cargo.toml/**
+    - apps/cuetty/assets/**
+    - apps/cuetty/nix.nix
+    - apps/cuetty/nix.nix/**
+    - apps/cuetty/src/**
+    - apps/cuetty/tests/**
     - clippy.toml
     - clippy.toml/**
     - contrib/**
@@ -493,6 +511,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: darwin.clippy (darwin-arm64)
@@ -550,6 +574,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: darwin.nextest (darwin-arm64)

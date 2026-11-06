@@ -579,3 +579,8 @@ paths are not added to `LD_LIBRARY_PATH`, so terminal shells inherit the caller'
 value without Cuetty's libraries overriding their own programs. The package
 uses the root flake's NixOS unstable input so its C library can load graphics
 drivers built against recent NixOS releases.
+
+The Linux `checks.<system>.cuetty` flake output builds that same package and
+checks its executable, desktop launcher, icon, and dynamically loaded library
+paths. The `cuetty-test`, `cuetty-clippy`, and `cuetty-fmt` outputs run the
+app's focused tests and checks.

@@ -26,7 +26,8 @@ pub enum CuenvSetup {
     /// Render the normal `cuenv.setup` phase task inside the job.
     #[default]
     BuildInJob,
-    /// Download a `cuenv` binary produced by an earlier bootstrap job.
+    /// Download a Nix-built `cuenv` binary produced by an earlier bootstrap job.
+    /// Its runtime closure is realized on the consuming runner before use.
     DownloadArtifact {
         /// Name of the GitHub Actions artifact containing the `cuenv` binary.
         artifact_name: String,
@@ -192,7 +193,14 @@ impl GitHubActionsEmitter {
                     serde_yaml::Value::String(CUENV_BOOTSTRAP_ARTIFACT_DIR.to_string()),
                 ),
             Step::run(format!(
-                "chmod +x \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}/cuenv\"\necho \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}\" >> \"$GITHUB_PATH\""
+                "set -euo pipefail\n\
+                 if ! command -v nix >/dev/null; then\n\
+                   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\
+                 fi\n\
+                 cuenv_package=\"$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)\"\n\
+                 cmp \"$cuenv_package/bin/cuenv\" \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}/cuenv\"\n\
+                 chmod +x \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}/cuenv\"\n\
+                 echo \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}\" >> \"$GITHUB_PATH\""
             ))
             .with_name("Add cuenv to PATH"),
         ]
@@ -334,8 +342,22 @@ impl GitHubActionsEmitter {
         }
         if let CuenvSetup::DownloadArtifact { artifact_name } = cuenv_setup {
             let bootstrap_count = ir.sorted_phase_tasks(BuildStage::Bootstrap).len();
+            let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
+            let skipped = Self::skipped_setup_task_ids(ir, execution, cuenv_setup);
+            let requires_cuenv =
+                Self::direct_execution_skipped_setup_task_ids(ir, TaskExecution::Direct);
+            let insertion_index = setup_tasks
+                .iter()
+                .position(|task| requires_cuenv.contains(&task.id))
+                .map_or(bootstrap_count, |index| {
+                    bootstrap_count
+                        + setup_tasks[..index]
+                            .iter()
+                            .filter(|task| !skipped.contains(&task.id))
+                            .count()
+                });
             steps.splice(
-                bootstrap_count..bootstrap_count,
+                insertion_index..insertion_index,
                 Self::cuenv_artifact_steps(artifact_name),
             );
         }

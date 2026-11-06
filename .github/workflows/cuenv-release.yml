@@ -188,6 +188,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
@@ -251,6 +257,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
@@ -314,6 +326,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
@@ -380,6 +398,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
@@ -450,6 +474,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
@@ -508,6 +538,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
@@ -563,6 +599,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
@@ -622,6 +664,12 @@ jobs:
         path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
+        set -euo pipefail
+        if ! command -v nix >/dev/null; then
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        fi
+        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
+        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password

@@ -19,5 +19,15 @@
     "cue.mod",
     "examples",
     "schema"
+  ],
+  "cuettyFiles": [
+    "apps/cuetty/Cargo.lock",
+    "apps/cuetty/Cargo.toml",
+    "apps/cuetty/nix.nix"
+  ],
+  "cuettyTrees": [
+    "apps/cuetty/assets",
+    "apps/cuetty/src",
+    "apps/cuetty/tests"
   ]
 }

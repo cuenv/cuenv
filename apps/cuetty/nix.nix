@@ -13,29 +13,19 @@ let
   };
   cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
   version = cargoToml.package.version;
-  src = lib.cleanSourceWith {
-    # Cuetty is an app-local workspace, but its Cuenv integration uses
-    # the public `cuengine` crate from the repository. Package the
-    # repository root so that Cargo can resolve that path dependency and
-    # the workspace metadata it inherits.
-    src = ../..;
-    filter =
-      path: type:
-      let
-        root = toString ../..;
-        rel = lib.removePrefix "${root}/" (toString path);
-      in
-      !(
-        lib.hasPrefix "target/" rel
-        || lib.hasInfix "/target/" rel
-        || lib.hasPrefix ".direnv/" rel
-        || lib.hasInfix "/.direnv/" rel
-        || lib.hasPrefix ".git/" rel
-        || lib.hasInfix "/.git/" rel
-        || lib.hasPrefix ".jj/" rel
-        || lib.hasInfix "/.jj/" rel
-        || rel == "result"
-      );
+  # Cuetty needs the root workspace and CUE files for its cuengine dependency
+  # and repository integration test. Use the same explicit membership as the
+  # flake tasks, plus the app's own inputs, so unrelated checkout files do not
+  # change its derivations and task exec roots evaluate the same sources.
+  sourceFiles = builtins.fromJSON (builtins.readFile ../../nix/source-files.json);
+  fs = lib.fileset;
+  toRepoPath = relative: ../.. + "/${relative}";
+  src = fs.toSource {
+    root = ../..;
+    fileset = fs.unions (
+      map toRepoPath (sourceFiles.files ++ sourceFiles.trees ++ sourceFiles.cuettyFiles ++ sourceFiles.cuettyTrees)
+      ++ map (tree: fs.fileFilter (file: file.hasExt "cue") (toRepoPath tree)) sourceFiles.cueTrees
+    );
   };
   xcodeXcrun = pkgs.writeShellScriptBin "xcrun" ''
     unset DEVELOPER_DIR SDKROOT

@@ -3,8 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    # Packages newer than the stable release: RustFS for infrastructure tests
-    # and cargo-zigbuild for compatibility with the current Rust toolchain.
+    # Packages newer than the stable release: RustFS and Cuetty's dependencies.
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane/v0.21.1";
     advisory-db = {
@@ -69,34 +68,6 @@
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
         version = cargoToml.workspace.package.version;
 
-        # Zig target for C compilation (used by CGO)
-        zigTarget =
-          let
-            cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
-            os = pkgs.stdenv.hostPlatform.parsed.kernel.name;
-          in
-          if os == "linux" then
-            if cpu == "x86_64" then "x86_64-linux-gnu.2.17"
-            else if cpu == "aarch64" then "aarch64-linux-gnu.2.17"
-            else throw "Unsupported Linux architecture: ${cpu}"
-          else if os == "darwin" then
-            if cpu == "aarch64" then "aarch64-macos.11.0"
-            else if cpu == "x86_64" then "x86_64-macos.11.0"
-            else throw "Unsupported macOS architecture: ${cpu}"
-          else throw "Unsupported OS: ${os}";
-
-
-        # Zig wrappers for CGO (CC cannot contain spaces)
-        zigCCWrapper = pkgs.writeShellScriptBin "zig-cc" ''
-          exec ${pkgs.zig}/bin/zig cc -target ${zigTarget} "$@"
-        '';
-        zigCXXWrapper = pkgs.writeShellScriptBin "zig-cxx" ''
-          exec ${pkgs.zig}/bin/zig c++ -target ${zigTarget} "$@"
-        '';
-        zigARWrapper = pkgs.writeShellScriptBin "zig-ar" ''
-          exec ${pkgs.zig}/bin/zig ar "$@"
-        '';
-
         # Platform-specific build inputs
         # Note: darwin frameworks (CoreFoundation, Security, etc.) are now provided
         # automatically by the default SDK - no explicit references needed
@@ -122,42 +93,22 @@
           done < <(find "$out" -name '*.md' -print0)
         '';
 
-        # CGO toolchain shared by the CUE bridge's build and check phases
-        cgoToolchainSetup = ''
-          export CGO_ENABLED=1
-          export GOOS=${pkgs.stdenv.hostPlatform.parsed.kernel.name}
-          export GOARCH=${
-            let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
-            in if cpu == "x86_64" then "amd64"
-            else if cpu == "aarch64" then "arm64"
-            else cpu
-          }
-          export CC=${zigCCWrapper}/bin/zig-cc
-          export CXX=${zigCXXWrapper}/bin/zig-cxx
-          export AR=${zigARWrapper}/bin/zig-ar
-
-          # Zig needs writable cache directories in Nix sandbox
-          export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
-          export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-        '';
-
         # CUE bridge builder
         cue-bridge = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
           pname = "libcue-bridge";
           inherit version;
           src = ./crates/cuengine;
           vendorHash = "sha256-2127EeuvrvXzjJQNgN3yVd7il9PCISlS+8+N1sUlYPQ=";
-          nativeBuildInputs = [ pkgs.zig zigCCWrapper zigCXXWrapper zigARWrapper ]
-            ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
+          nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
 
           # buildGoModule's default checkPhase calls `getGoDirs`, which only its own
           # buildPhase defines. Overriding buildPhase therefore made the inherited
           # checkPhase fail silently and skip every Go test, so the check phase is
-          # explicit and shares the CGO toolchain setup with the build.
+          # explicit and uses the same native CGO toolchain as the build.
           buildPhase = ''
             runHook preBuild
 
-            ${cgoToolchainSetup}
+            export CGO_ENABLED=1
 
             mkdir -p $out/debug $out/release
             go_sources=$(find . -maxdepth 1 -name '*.go' ! -name '*_test.go' -print | sort)
@@ -172,18 +123,10 @@
           '';
 
           doCheck = true;
-          # Tests use the stdenv compiler wrapper rather than zig: the test
-          # binaries run here, and zig links them against a dynamic loader
-          # path that does not exist inside the Nix sandbox. Zig is only
-          # needed for the portable archives the build phase produces.
           checkPhase = ''
             runHook preCheck
 
-            # buildPhase exported the zig wrappers into this shell; replace them.
             export CGO_ENABLED=1
-            export CC=${pkgs.stdenv.cc}/bin/cc
-            export CXX=${pkgs.stdenv.cc}/bin/c++
-            unset AR
 
             go vet ./...
             go test ./...
@@ -260,13 +203,6 @@
           CUE_BRIDGE_PATH = cue-bridge;
           ONEPASSWORD_WASM_PATH = onepassword-wasm;
         };
-
-        # Rust target for cargo-zigbuild (arch-specific, with glibc version)
-        zigbuildTarget =
-          let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
-          in if cpu == "x86_64" then "x86_64-unknown-linux-gnu.2.17"
-          else if cpu == "aarch64" then "aarch64-unknown-linux-gnu.2.17"
-          else throw "Unsupported Linux architecture: ${cpu}";
 
         lockedCargoExtraArgs = "--locked";
         workspaceAllFeaturesCargoExtraArgs = "${lockedCargoExtraArgs} --workspace --all-features";
@@ -575,68 +511,23 @@
           nativeBuildInputs = [ pkgs.cargo-audit ];
         };
 
-        # Main package build
-        # On Linux: Use cargo-zigbuild for portable glibc 2.17 binaries
-        # On macOS: Use regular cargo with deployment target env var
+        # Nix consumers need the native toolchain and runtime closure on every platform.
         cuenv = craneLib.buildPackage (commonArgs // {
           cargoArtifacts = cuenvCargoArtifacts;
           cargoExtraArgs = cuenvPackageCargoExtraArgs;
           pname = "cuenv";
           inherit version;
-          doCheck = false; # Tests run via cuenv task check, not nix build
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            (pkgsUnstable.cargo-zigbuild.override { zig = pkgs.zig; })
-          ];
-        } // (if pkgs.stdenv.isLinux then {
-          # Linux: Use cargo-zigbuild for portable glibc 2.17 binaries
-          auditable = false; # cargo-auditable passes --undefined which zig doesn't support
-          doNotPostBuildInstallCargoBinaries = true;
-          buildPhaseCargoCommand = ''
-            export XDG_CACHE_HOME="$TMPDIR/xdg_cache"
-            export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/zigbuild_cache"
-            cargo zigbuild --release ${cuenvPackageCargoExtraArgs} --target ${zigbuildTarget}
+          doCheck = false; # Rust tests have dedicated checks below.
+          doInstallCheck = true;
+          installCheckPhase = ''
+            runHook preInstallCheck
+            "$out/bin/cuenv" --version
+            "$out/bin/cuenv" env print --path examples/env-basic --package examples --output json > "$TMPDIR/cuenv-example-env.json"
+            grep -q 'DATABASE_URL' "$TMPDIR/cuenv-example-env.json"
+            runHook postInstallCheck
           '';
-          installPhaseCommand = ''
-            mkdir -p $out/bin
-            cp target/${pkgs.lib.removeSuffix ".2.17" zigbuildTarget}/release/cuenv $out/bin/
-          '';
-        } else {
-          # macOS: Use regular cargo with deployment target set explicitly
-          doNotPostBuildInstallCargoBinaries = true;
-          buildPhaseCargoCommand = ''
-            export MACOSX_DEPLOYMENT_TARGET="11.0"
-            cargo build --release ${cuenvPackageCargoExtraArgs}
-          '';
-          installPhaseCommand = ''
-            mkdir -p $out/bin
-            cp target/release/cuenv $out/bin/
-
-            libiconv_path="$(${pkgs.darwin.cctools}/bin/otool -L $out/bin/cuenv | awk '/libiconv\.2\.dylib/ {print $1; exit}')"
-            if [[ -n "$libiconv_path" && "$libiconv_path" == /nix/store/* ]]; then
-              ${pkgs.darwin.cctools}/bin/install_name_tool -change "$libiconv_path" /usr/lib/libiconv.2.dylib $out/bin/cuenv
-            fi
-          '';
-        }));
-
-        # Nix-native cuenv for flake consumers (profiles, NixOS, home-manager).
-        # On Linux, `cuenv` is a portable glibc 2.17 binary that loads
-        # /lib64/ld-linux-*.so.2, which NixOS does not provide. CI and releases
-        # ship `result/bin/cuenv` to generic distros, so `cuenv` stays portable
-        # and this copy is pointed at the Nix glibc loader instead.
-        cuenv-nix =
-          if pkgs.stdenv.isLinux then
-            pkgs.runCommand "cuenv-${version}" {
-              nativeBuildInputs = [ pkgs.patchelf ];
-              meta.mainProgram = "cuenv";
-            } ''
-              mkdir -p $out/bin
-              cp ${cuenv}/bin/cuenv $out/bin/cuenv
-              chmod u+w $out/bin/cuenv
-              patchelf --set-interpreter ${pkgs.stdenv.cc.bintools.dynamicLinker} $out/bin/cuenv
-              $out/bin/cuenv --version
-            ''
-          else
-            cuenv;
+          meta.mainProgram = "cuenv";
+        });
 
         # Development tools configuration
         devTools = with pkgs; [
@@ -681,7 +572,7 @@
           cuenv-nextest = nextest-check;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           # Building the package also checks its executable and dlopen paths.
-          cuetty-package = cuetty.package;
+          cuetty = cuetty.package;
           # Linux only: the suites need sqld, the nixpkgs Terraform providers and
           # loopback networking in the build sandbox, none of which has been
           # validated on darwin.
@@ -690,8 +581,8 @@
         };
 
         packages = {
-          default = cuenv-nix;
-          inherit cuenv cuenv-nix cue-bridge;
+          default = cuenv;
+          inherit cuenv cue-bridge;
           cuetty = cuetty.package;
         };
 
@@ -748,7 +639,7 @@
           cuetty = flake-utils.lib.mkApp { drv = cuetty.package; };
           default = {
             type = "app";
-            program = "${cuenv-nix}/bin/cuenv";
+            program = "${cuenv}/bin/cuenv";
             meta = {
               description = "cuenv CLI app";
             };

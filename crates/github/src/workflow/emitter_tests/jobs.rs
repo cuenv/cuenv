@@ -344,6 +344,15 @@ fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
     bootstrap_task.label = Some("Install Nix".to_string());
     bootstrap_task.contributor = Some("nix".to_string());
 
+    let mut cachix_setup = make_phase_task(
+        "cuenv:contributor:cachix.setup",
+        &["setup cachix"],
+        BuildStage::Setup,
+        9,
+    );
+    cachix_setup.label = Some("Setup Cachix".to_string());
+    cachix_setup.contributor = Some("cachix".to_string());
+
     let mut cuenv_setup = make_phase_task(
         "cuenv:contributor:cuenv.setup",
         &["nix build .#cuenv"],
@@ -366,6 +375,7 @@ fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
     let task = make_task("publish.github", &["gh", "release", "upload"]);
     let ir = make_ir(vec![
         bootstrap_task,
+        cachix_setup,
         cuenv_setup,
         onepassword_setup,
         task.clone(),
@@ -382,12 +392,18 @@ fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
     );
     let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_deref()).collect();
 
-    assert!(step_names.contains(&"Install Nix"));
-    assert!(step_names.contains(&"Download cuenv"));
-    assert!(step_names.contains(&"Add cuenv to PATH"));
-    assert!(step_names.contains(&"Setup 1Password"));
-    assert!(step_names.contains(&"publish.github"));
-    assert!(!step_names.contains(&"Build cuenv (nix)"));
+    assert_eq!(
+        step_names,
+        [
+            "Checkout",
+            "Install Nix",
+            "Setup Cachix",
+            "Download cuenv",
+            "Add cuenv to PATH",
+            "Setup 1Password",
+            "publish.github",
+        ]
+    );
 
     let download_step = job
         .steps
@@ -412,10 +428,137 @@ fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
         .iter()
         .find(|s| s.name.as_deref() == Some("Add cuenv to PATH"))
         .expect("missing cuenv path step");
-    assert_eq!(
-        path_step.run.as_deref(),
-        Some(
-            "chmod +x \"$RUNNER_TEMP/cuenv-bootstrap/cuenv\"\necho \"$RUNNER_TEMP/cuenv-bootstrap\" >> \"$GITHUB_PATH\""
-        )
+    let script = path_step.run.as_deref().expect("missing setup script");
+    assert!(script.contains("nix build .#cuenv --no-link --print-out-paths"));
+    assert!(script.contains("cmp \"$cuenv_package/bin/cuenv\""));
+}
+
+#[test]
+fn bootstrap_artifact_precedes_early_cuenv_dependent() {
+    let mut setup = make_phase_task("cuenv.setup", &["nix build"], BuildStage::Setup, 10);
+    setup.contributor = Some("cuenv".to_string());
+
+    let mut dependent = make_phase_task("needs.cuenv", &["cuenv sync"], BuildStage::Setup, 5);
+    dependent.label = Some("Needs cuenv".to_string());
+    dependent.depends_on.push("cuenv.setup".to_string());
+
+    let task = make_task("test", &["true"]);
+    let ir = make_ir(vec![setup, dependent, task.clone()]);
+    let job = GitHubActionsEmitter::new().build_simple_job(
+        &task,
+        &ir,
+        &SimpleJobOptions::orchestrated_with_cuenv_artifact(None, None, "cuenv".to_string()),
     );
+    let names: Vec<_> = job
+        .steps
+        .iter()
+        .filter_map(|step| step.name.as_deref())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Checkout",
+            "Download cuenv",
+            "Add cuenv to PATH",
+            "Needs cuenv",
+            "test"
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_artifact_requires_matching_realized_package() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir()?;
+    let fake_bin = temp.path().join("fake tools");
+    let package = temp.path().join("realized package");
+    let runner_temp = temp.path().join("runner temp");
+    let artifact_dir = runner_temp.join("cuenv-bootstrap");
+    let github_path = temp.path().join("github-path");
+    std::fs::create_dir_all(&fake_bin)?;
+    std::fs::create_dir_all(package.join("bin"))?;
+    std::fs::create_dir_all(&artifact_dir)?;
+    std::fs::write(package.join("bin/cuenv"), b"matching cuenv")?;
+    std::fs::write(artifact_dir.join("cuenv"), b"different cuenv")?;
+
+    let fake_nix = fake_bin.join("nix");
+    std::fs::write(
+        &fake_nix,
+        "#!/bin/sh\n\
+         [ \"$*\" = 'build .#cuenv --no-link --print-out-paths -L --accept-flake-config' ] || exit 97\n\
+         [ \"$TEST_NIX_MODE\" != fail ] || exit 42\n\
+         printf '%s\\n' \"$TEST_CUENV_PACKAGE\"\n",
+    )?;
+    std::fs::set_permissions(&fake_nix, std::fs::Permissions::from_mode(0o755))?;
+
+    let mut setup = make_phase_task("cuenv.setup", &["nix build"], BuildStage::Setup, 10);
+    setup.contributor = Some("cuenv".to_string());
+    let task = make_task("test", &["true"]);
+    let ir = make_ir(vec![setup, task.clone()]);
+    let job = GitHubActionsEmitter::new().build_simple_job(
+        &task,
+        &ir,
+        &SimpleJobOptions::orchestrated_with_cuenv_artifact(None, None, "cuenv".to_string()),
+    );
+    let script = job
+        .steps
+        .iter()
+        .find(|step| step.name.as_deref() == Some("Add cuenv to PATH"))
+        .and_then(|step| step.run.as_deref())
+        .ok_or_else(|| std::io::Error::other("missing bootstrap script"))?;
+
+    let existing_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin).chain(std::env::split_paths(&existing_path)),
+    )?;
+    let run = |mode: &str| {
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .env("PATH", &path)
+            .env("RUNNER_TEMP", &runner_temp)
+            .env("GITHUB_PATH", &github_path)
+            .env("TEST_CUENV_PACKAGE", &package)
+            .env("TEST_NIX_MODE", mode)
+            .output()
+    };
+
+    assert!(
+        !run("ok")?.status.success(),
+        "mismatched artifact must fail"
+    );
+    assert!(
+        !github_path.exists(),
+        "mismatched artifact must not be used"
+    );
+
+    std::fs::write(artifact_dir.join("cuenv"), b"matching cuenv")?;
+    let success = run("ok")?;
+    assert!(
+        success.status.success(),
+        "matching artifact failed: {}",
+        String::from_utf8_lossy(&success.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&github_path)?,
+        format!("{}\n", artifact_dir.display())
+    );
+    assert_ne!(
+        std::fs::metadata(artifact_dir.join("cuenv"))?
+            .permissions()
+            .mode()
+            & 0o111,
+        0
+    );
+
+    std::fs::write(&github_path, "")?;
+    assert!(
+        !run("fail")?.status.success(),
+        "failed realization must fail the job"
+    );
+    assert_eq!(std::fs::read_to_string(&github_path)?, "");
+    Ok(())
 }
