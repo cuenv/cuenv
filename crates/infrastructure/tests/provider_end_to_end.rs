@@ -4625,9 +4625,35 @@ async fn fake_unresolvable_secret_stops_the_plan_before_any_provider_call() -> T
 
 fn write_only_resource(version: u64) -> serde_json::Value {
     json!({"thing":{"type":"fake_write_only", "configuration":{
-        "value":{"resolver":"exec","command":"resolve-write-only-test","writeOnly":true},
+        "value_wo":{"resolver":"exec","command":"resolve-write-only-test","writeOnly":true},
         "value_wo_version":version,
     }}})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and sqld"]
+async fn fake_marked_ordinary_argument_fails_before_resolution_or_provider_calls() -> TestResult {
+    let mut fake = Fake::new().await?;
+    let resolver = FixedSecret::new(Some(ROOT_TOKEN));
+    fake.secrets = Some(Arc::new(Secrets::new(resolver.clone())));
+    let resources = json!({"thing":{"type":"fake_write_only", "configuration":{
+        "value":{"resolver":"exec","command":"must-not-run","writeOnly":true},
+        "value_wo_version":1,
+    }}});
+    let error = fake
+        .plan(&resources)
+        .await
+        .expect_err("ordinary fields cannot be write-only");
+    assert!(
+        error
+            .to_string()
+            .contains("marked write-only by the provider schema"),
+        "{error}"
+    );
+    assert_eq!(resolver.calls(), 0);
+    assert!(fake.journal().is_empty(), "{}", fake.journal());
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4641,7 +4667,7 @@ async fn fake_write_only_value_lifecycle_and_manual_rotation() -> TestResult {
     run.applied?;
     assert_eq!(resolver.calls(), 1);
     let rendered = cuenv_infrastructure::render_plan(&run.plan);
-    assert!(rendered.contains("value = (write-only)"), "{rendered}");
+    assert!(rendered.contains("value_wo = (write-only)"), "{rendered}");
     assert!(!rendered.contains(ROOT_TOKEN));
     assert!(!format!("{:?}", run.plan).contains(ROOT_TOKEN));
     let record = fake.record("thing").await?;
@@ -4675,7 +4701,7 @@ async fn fake_write_only_value_lifecycle_and_manual_rotation() -> TestResult {
         .await?;
     assert_eq!(updated.plan.summary().update, 1);
     let text = cuenv_infrastructure::render_plan(&updated.plan);
-    assert!(text.contains("value = (write-only)"));
+    assert!(text.contains("value_wo = (write-only)"));
     assert!(text.contains("value_wo_version: 1 -> 2"), "{text}");
     updated.applied?;
     assert_eq!(fake.record("thing").await?.state["value_wo_version"], 2);

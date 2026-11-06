@@ -271,7 +271,7 @@ pub fn schema_digest(schema: &ProviderSchema) -> String {
         .values()
         .any(|resource| resource.block.contains_write_only())
     {
-        document["write_only_contract"] = json!(1);
+        document["write_only_contract"] = json!(2);
     }
     if !schema.data_sources.is_empty() {
         let data_sources: BTreeMap<&String, serde_json::Value> = schema
@@ -388,9 +388,11 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         let Some(resource) = schema.resources.get(resource_type) else {
             continue;
         };
-        let mut package =
-            Package::with_secrets(&description, &format!("the {resource_type} resource"));
-        package.managed = Some((release.source.to_string(), resource_type.clone()));
+        let mut package = Package::with_secrets(
+            &description,
+            &format!("the {resource_type} resource"),
+            PackageKind::Resource,
+        );
         package.line(
             0,
             &format!("// #Resource declares a managed resource of type {resource_type}."),
@@ -423,8 +425,11 @@ pub fn render(schema: &ProviderSchema, release: ProviderRelease<'_>) -> Result<G
         let Some(data_source) = schema.data_sources.get(data_source_type) else {
             continue;
         };
-        let mut package =
-            Package::with_secrets(&description, &format!("the {data_source_type} data source"));
+        let mut package = Package::with_secrets(
+            &description,
+            &format!("the {data_source_type} data source"),
+            PackageKind::DataSource,
+        );
         package.line(
             0,
             &format!("// #DataSource declares a read-only data source of type {data_source_type}."),
@@ -470,8 +475,15 @@ struct Package {
     /// What a string argument of `#Configuration` accepts.
     strings: Strings,
     uses_secret: bool,
-    managed: Option<(String, String)>,
+    kind: PackageKind,
     uses_write_only: bool,
+}
+
+#[derive(PartialEq, Eq)]
+enum PackageKind {
+    Provider,
+    Resource,
+    DataSource,
 }
 
 /// Where a field is written: its indentation, and what its strings accept.
@@ -507,16 +519,17 @@ impl Package {
             uses_list: false,
             strings: Strings::Plain,
             uses_secret: false,
-            managed: None,
+            kind: PackageKind::Provider,
             uses_write_only: false,
         }
     }
 
     /// A resource or data source package: its string arguments accept a
     /// `#Secret`.
-    fn with_secrets(release: &str, subject: &str) -> Self {
+    fn with_secrets(release: &str, subject: &str, kind: PackageKind) -> Self {
         Self {
             strings: Strings::OrSecret,
+            kind,
             ..Self::new(release, subject)
         }
     }
@@ -621,25 +634,6 @@ impl Package {
     fn block_struct(&mut self, block: &Block, depth: usize, strings: Strings) -> String {
         let mut fields = Fields::default();
         for (name, attribute) in &block.attributes {
-            if depth == 0
-                && let Some((source, resource)) = &self.managed
-            {
-                if block.attributes.keys().any(|logical| {
-                    crate::write_only::available_binding((source, resource), block, logical)
-                        == Some(name.as_str())
-                }) {
-                    continue;
-                }
-                if crate::write_only::available_binding((source, resource), block, name).is_some() {
-                    self.uses_secret = true;
-                    self.uses_write_only = true;
-                    fields.0.insert(name.clone(), Field {
-                        comments: documentation_lines(&attribute.documentation, &["Use #WriteOnly & a secret to select the provider's write-only argument; bump its version manually."]),
-                        label: label(name), marker: '?', value: "#Value".to_string(),
-                    });
-                    continue;
-                }
-            }
             if let Some(field) = self.attribute_field(
                 name,
                 attribute,
@@ -676,7 +670,7 @@ impl Package {
             return None;
         }
         if attribute.write_only {
-            if self.managed.is_none()
+            if self.kind != PackageKind::Resource
                 || strings != Strings::OrSecret
                 || attribute.value_type != Type::String
                 || attribute.nested.is_some()

@@ -1295,15 +1295,16 @@ see [Checks](#checks) for the errors.
 
 ### #WriteOnly
 
-Refines a managed string argument to a runtime secret that stays out of provider
-state: `value: schema.#WriteOnly & schema.#OnePasswordRef & {ref: "op://vault/item/field"}`.
+Refines a managed string argument marked write-only by its provider to a runtime
+secret that stays out of provider state:
+`value_wo: schema.#WriteOnly & schema.#OnePasswordRef & {ref: "op://vault/item/field"}`.
 The marker is `#Secret & {writeOnly: true}`. Generated field constraints supply
-`#Value`; literals conflict with the secret-only refinement. Explicit bindings
-map supported logical fields to schema-verified provider write-only attributes.
+`#Value`; literals conflict with the secret-only refinement. Native provider names
+are preserved, and only the live schema's `write_only` flag grants write-only behavior.
 Companion version arguments remain manually configured. Existing providers with
 managed write-only fields need same-version repinning for the digest contract
-that prevents old binaries from accepting new generated configurations. Unsupported bindings,
-data/provider arguments and ordinary environment secrets reject the marker.
+that prevents old binaries from accepting new generated configurations. Ordinary
+arguments, data/provider arguments and ordinary environment secrets reject the marker.
 See [write-only arguments](/how-to/infrastructure/#keep-a-value-out-of-state-with-writeonly).
 
 ### #ManagedResource
@@ -1399,7 +1400,7 @@ Field rules in `#Configuration`:
 | required attribute | `name!: T` |
 | optional, or optional and computed | `name?: T` (no `\| null`) |
 | computed only | left out |
-| managed write-only string | `#Value & #WriteOnly`; verified pairs expose one logical field |
+| managed write-only string | `#Value & #WriteOnly`; native provider name and requiredness |
 | `string`, `number`, `bool`, `dynamic` | `string`, `number`, `bool`, `_` |
 | `list(T)`, `set(T)` / `map(T)` / `object({...})` / `tuple([...])` | `[...T]` / `{[string]: T}` / `{a!: T, ...}` / `[A, B]` |
 | nested block, single or group | `name?: {...}` (`name!:` when the provider requires at least one) |

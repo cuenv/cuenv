@@ -103,14 +103,16 @@ the way to keep it out ([#571](https://github.com/cuenv/cuenv/issues/571)).
 
 ## Follow-up: write-only composition (#571)
 
-Managed string arguments can now refine the same value with
+Managed string arguments marked write-only by the provider can use
 `schema.#WriteOnly & <secret>`. Generated `#Value` constraints and `#WriteOnly`
-compose without adding a second value property. Explicit, live-schema-verified
-bindings select the provider's write-only argument; standalone write-only string
-fields retain their provider names. Ordinary secrets retain the persisted
+compose on the native Terraform attribute, such as `value_wo`. The provider's
+schema flag is authoritative; cuenv neither renames nor pairs attributes, and
+ordinary fields reject the marker before resolution. This replaces 0.69.0's
+limited logical aliases. Ordinary secrets retain the persisted
 semantics above. Write-only slots must be null in provider state, and invalid
 responses fail before recording or recovery. Companion versions remain manual;
-a rotated secret alone does not trigger an update. Providers exposing write-only fields gain a digest-contract marker that fences
-old runtimes; existing affected pins need same-version repinning. The lockfile
+a rotated secret alone does not trigger an update. Providers exposing write-only
+fields use digest contract 2 to fence older runtimes; existing affected pins need
+same-version repinning. The lockfile
 format stays unchanged. See the implementation specification
 in `docs/design/specs/2026-11-06-infrastructure-write-only-arguments.md`.

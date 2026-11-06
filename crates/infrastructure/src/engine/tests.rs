@@ -5110,16 +5110,13 @@ fn write_only_digest_binds_presence_and_paths_without_descriptors() {
     )]);
     let mut marked = base.clone();
     for command in ["first-descriptor", "second-descriptor"] {
-        let configured = json!({"value":{"resolver":"exec","command":command,"writeOnly":true}});
-        let mut references = ConfigurationReferences::extract_with_schema(
+        let configured = json!({"value_wo":{"resolver":"exec","command":command,"writeOnly":true}});
+        let references = ConfigurationReferences::extract_with_schema(
             configured.as_object().unwrap(),
             &block,
             &[],
         )
         .unwrap();
-        references
-            .bind_write_only("example.com/test/fake", "fake_write_only", &block)
-            .unwrap();
         let mut candidate = base.clone();
         candidate.changes[0].references = references;
         if command == "first-descriptor" {

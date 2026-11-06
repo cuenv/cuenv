@@ -1,6 +1,7 @@
 use super::*;
 use crate::references::ConfigurationReferences;
-use crate::schema::{Documentation, NestedAttributes};
+use crate::schema::{Documentation, NestedAttributes, NestedBlock, Presence};
+use crate::type_system::Type;
 use serde_json::json;
 
 fn attribute() -> Attribute {
@@ -31,25 +32,23 @@ fn block() -> Block {
 }
 
 fn references(configuration: &serde_json::Value) -> Result<ConfigurationReferences> {
-    let mut references = ConfigurationReferences::extract_with_schema(
+    ConfigurationReferences::extract_with_schema(
         configuration
             .as_object()
             .ok_or_else(|| InfrastructureError::configuration("expected object"))?,
         &block(),
         &[],
-    )?;
-    references.bind_write_only("example.com/test/fake", "fake_write_only", &block())?;
-    Ok(references)
+    )
 }
 
 #[test]
-fn composed_value_selects_verified_provider_path() -> Result<()> {
+fn write_only_uses_the_native_provider_path() -> Result<()> {
     let references =
-        references(&json!({"value":{"resolver":"exec","command":"unused","writeOnly":true}}))?;
+        references(&json!({"value_wo":{"resolver":"exec","command":"unused","writeOnly":true}}))?;
     let [argument] = references.secrets() else {
         return Err(InfrastructureError::configuration("expected one secret"));
     };
-    assert_eq!(argument.destination.to_string(), "value");
+    assert_eq!(argument.destination.to_string(), "value_wo");
     assert_eq!(
         argument
             .write_only
@@ -63,11 +62,11 @@ fn composed_value_selects_verified_provider_path() -> Result<()> {
 }
 
 #[test]
-fn missing_invalid_or_conflicting_bindings_fail_closed() {
+fn only_schema_marked_arguments_accept_write_only_secrets() {
     for configuration in [
         json!({"value_wo":"literal"}),
-        json!({"value_wo":null}),
-        json!({"value_wo":{"resolver":"exec","writeOnly":true}}),
+        json!({"value_wo":{"resolver":"exec"}}),
+        json!({"value":{"resolver":"exec","writeOnly":true}}),
         json!({"value":{"resolver":"exec","writeOnly":false}}),
         json!({"value":{"resolver":"exec","writeOnly":null}}),
         json!({"value":{"resolver":"exec","writeOnly":"true"}}),
@@ -75,21 +74,203 @@ fn missing_invalid_or_conflicting_bindings_fail_closed() {
     ] {
         assert!(references(&configuration).is_err());
     }
-    let configuration = json!({"value":{"resolver":"exec","writeOnly":true}});
-    let mut references = ConfigurationReferences::extract_with_schema(
-        configuration.as_object().unwrap(),
-        &block(),
-        &[],
-    )
-    .unwrap();
-    assert!(
-        references
-            .bind_write_only("example.com/other/fake", "fake_write_only", &block())
+}
+
+#[test]
+fn optional_write_only_null_is_absence_and_required_null_is_rejected() -> Result<()> {
+    let configuration = json!({"value_wo":null});
+    let references = references(&configuration)?;
+    assert!(references.secrets().is_empty());
+    let prepared =
+        references.prepare(configuration.as_object().unwrap(), &block().implied_type())?;
+    let absent = Value::from_configuration_json(&json!({}), &block().implied_type())?;
+    assert_eq!(prepared, absent);
+    for presence in [
+        Presence::Required,
+        Presence::Computed,
+        Presence::OptionalComputed,
+    ] {
+        let mut schema = block();
+        schema.attributes.get_mut("value_wo").unwrap().presence = presence;
+        assert!(
+            ConfigurationReferences::extract_with_schema(
+                configuration.as_object().unwrap(),
+                &schema,
+                &[]
+            )
             .is_err()
+        );
+    }
+    let mut schema = block();
+    schema.attributes.get_mut("value_wo").unwrap().value_type = Type::Number;
+    assert!(
+        ConfigurationReferences::extract_with_schema(
+            configuration.as_object().unwrap(),
+            &schema,
+            &[]
+        )
+        .is_err()
     );
-    let mut required = block();
-    required.attributes.get_mut("value").unwrap().presence = Presence::Required;
-    assert!(verified_binding(&required, "value", "value_wo").is_err());
+    Ok(())
+}
+
+#[test]
+fn ordinary_and_write_only_arguments_are_independent() -> Result<()> {
+    let configuration = json!({
+        "value": {"resolver":"exec","command":"ordinary"},
+        "value_wo": {"resolver":"exec","command":"write-only","writeOnly":true},
+    });
+    let references = references(&configuration)?;
+    assert_eq!(references.secrets().len(), 2);
+    assert!(references.secrets()[0].write_only.is_none());
+    assert_eq!(
+        references.secrets()[1].write_only.as_ref(),
+        Some(&references.secrets()[1].destination)
+    );
+    let prepared =
+        references.prepare(configuration.as_object().unwrap(), &block().implied_type())?;
+    assert!(prepared.attribute("value").is_some_and(Value::is_unknown));
+    assert!(
+        prepared
+            .attribute("value_wo")
+            .is_some_and(Value::is_unknown)
+    );
+    Ok(())
+}
+
+#[test]
+fn attribute_suffixes_do_not_grant_write_only_behavior() {
+    for name in ["value", "value_wo", "token"] {
+        for write_only in [false, true] {
+            let schema = Block {
+                attributes: BTreeMap::from([(
+                    name.into(),
+                    Attribute {
+                        write_only,
+                        ..attribute()
+                    },
+                )]),
+                ..Block::default()
+            };
+            let configuration = json!({name: {"resolver":"exec","writeOnly":true}});
+            let result = ConfigurationReferences::extract_with_schema(
+                configuration.as_object().unwrap(),
+                &schema,
+                &[],
+            );
+            assert_eq!(
+                result.is_ok(),
+                write_only,
+                "{name}: write_only={write_only}"
+            );
+            if let Ok(references) = result {
+                let argument = &references.secrets()[0];
+                assert_eq!(argument.destination.to_string(), name);
+                assert_eq!(argument.write_only.as_ref(), Some(&argument.destination));
+            }
+        }
+    }
+}
+
+#[test]
+fn nested_write_only_arguments_keep_provider_paths() -> Result<()> {
+    for nesting in [
+        Nesting::Single,
+        Nesting::Group,
+        Nesting::List,
+        Nesting::Map,
+        Nesting::Set,
+    ] {
+        let (value, path) = match nesting {
+            Nesting::Single | Nesting::Group => (
+                json!({"value_wo":{"resolver":"exec","writeOnly":true}}),
+                "credentials.value_wo",
+            ),
+            Nesting::List | Nesting::Set => (
+                json!([{"value_wo":{"resolver":"exec","writeOnly":true}}]),
+                "credentials[0].value_wo",
+            ),
+            Nesting::Map => (
+                json!({"value_wo":{"value_wo":{"resolver":"exec","writeOnly":true}}}),
+                "credentials[<hidden key>].value_wo",
+            ),
+        };
+        let configuration = json!({"credentials": value});
+        let nested = NestedAttributes {
+            attributes: block().attributes,
+            nesting,
+        };
+        let attribute_schema = Block {
+            attributes: BTreeMap::from([(
+                "credentials".into(),
+                Attribute {
+                    value_type: match nesting {
+                        Nesting::Single | Nesting::Group => block().implied_type(),
+                        Nesting::List => Type::List(Box::new(block().implied_type())),
+                        Nesting::Set => Type::Set(Box::new(block().implied_type())),
+                        Nesting::Map => Type::Map(Box::new(block().implied_type())),
+                    },
+                    nested: Some(nested),
+                    ..attribute()
+                },
+            )]),
+            ..Block::default()
+        };
+        let block_schema = Block {
+            blocks: BTreeMap::from([(
+                "credentials".into(),
+                NestedBlock {
+                    block: block(),
+                    nesting,
+                    minimum_items: 0,
+                    maximum_items: 0,
+                },
+            )]),
+            ..Block::default()
+        };
+        for schema in [attribute_schema, block_schema] {
+            let result = ConfigurationReferences::extract_with_schema(
+                configuration.as_object().unwrap(),
+                &schema,
+                &[],
+            );
+            if nesting == Nesting::Set {
+                assert!(result.is_err());
+                continue;
+            }
+            let references = result?;
+            let argument = &references.secrets()[0];
+            assert_eq!(argument.destination.to_string(), path);
+            assert_eq!(argument.write_only.as_ref(), Some(&argument.destination));
+            let prepared =
+                references.prepare(configuration.as_object().unwrap(), &schema.implied_type())?;
+            assert!(
+                argument
+                    .destination
+                    .value(&prepared)
+                    .is_some_and(Value::is_unknown)
+            );
+            let mut optional_null = configuration.clone();
+            argument
+                .destination
+                .replace_json(&mut optional_null, serde_json::Value::Null)?;
+            let null_references = ConfigurationReferences::extract_with_schema(
+                optional_null.as_object().unwrap(),
+                &schema,
+                &[],
+            )?;
+            assert!(null_references.secrets().is_empty());
+            let prepared = null_references
+                .prepare(optional_null.as_object().unwrap(), &schema.implied_type())?;
+            assert!(
+                argument
+                    .destination
+                    .value(&prepared)
+                    .is_some_and(Value::is_null)
+            );
+        }
+    }
+    Ok(())
 }
 
 #[test]

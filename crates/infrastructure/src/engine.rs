@@ -950,18 +950,13 @@ impl InfrastructureEngine {
                 .cloned()
                 .collect();
             let block = self.declaration_block(&source)?;
-            let mut classified_references = ConfigurationReferences::extract_with_schema(
+            let classified_references = ConfigurationReferences::extract_with_schema(
                 &declaration.configuration,
                 block,
                 &references,
             )?;
-            match &source {
-                SourceAddress::Resource(address) => classified_references.bind_write_only(
-                    &self.loaded(declaration.provider_name())?.source,
-                    &address.resource_type,
-                    block,
-                )?,
-                SourceAddress::DataSource(_) => classified_references.reject_write_only()?,
+            if matches!(source, SourceAddress::DataSource(_)) {
+                classified_references.reject_write_only()?;
             }
             classified.insert(source.clone(), classified_references);
         }
@@ -1206,19 +1201,14 @@ impl InfrastructureEngine {
                     reason: failure.reason().to_string(),
                 }
             })?;
-            if let Some(destination) = &argument.write_only {
+            if argument.write_only.is_some() {
                 self.loaded(input.declaration.provider_name())?
                     .client
                     .register_write_only_secret(&value);
-                argument
-                    .destination
-                    .replace_value(configuration, Value::Null)?;
-                destination.replace_value(configuration, Value::String(value))?;
-            } else {
-                argument
-                    .destination
-                    .replace_value(configuration, Value::String(value))?;
             }
+            argument
+                .destination
+                .replace_value(configuration, Value::String(value))?;
         }
         Ok(())
     }

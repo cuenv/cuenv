@@ -292,7 +292,7 @@ fn only_resource_and_data_source_strings_accept_a_secret() {
             maximum_items: 0,
         },
     );
-    let mut package = Package::with_secrets("x 1.0.0", "a test");
+    let mut package = Package::with_secrets("x 1.0.0", "a test", PackageKind::Resource);
     package.configuration(&block);
     assert_eq!(
         package.body,
@@ -1001,6 +1001,13 @@ fn write_only_generated_types_are_fenced_from_older_runtimes() {
         .collect();
     let legacy =
         json!({"format":1,"provider":block_document(&schema.provider.block),"resources":resources});
+    let mut contract_one = legacy.clone();
+    contract_one["write_only_contract"] = json!(1);
+    let contract_one = format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(contract_one.to_string().as_bytes()))
+    );
+    assert_ne!(schema_digest(&schema), contract_one);
     let mut hasher = Sha256::new();
     hasher.update(legacy.to_string().as_bytes());
     let legacy = format!("sha256:{}", hex::encode(hasher.finalize()));
@@ -1008,4 +1015,73 @@ fn write_only_generated_types_are_fenced_from_older_runtimes() {
     let types = generated();
     assert!(types.files[&PathBuf::from("provider.cue")].contains(&types.schema_digest));
     assert_ne!(types.schema_digest, legacy);
+}
+
+#[test]
+fn generated_write_only_arguments_keep_native_names_for_every_provider() -> TestResult {
+    for source in ["example.com/test/fake", "example.com/independent/fake"] {
+        let source = ProviderSource::parse(source)?;
+        let mut schema = provider_schema();
+        let mut write_only = attribute(Type::String, Presence::Optional);
+        write_only.write_only = true;
+        schema.resources = HashMap::from([(
+            "fake_write_only".into(),
+            Schema {
+                version: 0,
+                block: Block {
+                    attributes: BTreeMap::from([
+                        ("value".into(), attribute(Type::String, Presence::Optional)),
+                        ("value_wo".into(), write_only.clone()),
+                        (
+                            "value_wo_version".into(),
+                            attribute(Type::Number, Presence::Optional),
+                        ),
+                        (
+                            "token".into(),
+                            Attribute {
+                                presence: Presence::Required,
+                                ..write_only
+                            },
+                        ),
+                    ]),
+                    ..Block::default()
+                },
+            },
+        )]);
+        let types = render(
+            &schema,
+            ProviderRelease {
+                source: &source,
+                version: "1.2.3",
+            },
+        )?;
+        let content = &types.files[&PathBuf::from("resources/fake_write_only/resource.cue")];
+        assert!(
+            content.contains("\tvalue?: string | #Secret\n"),
+            "{content}"
+        );
+        assert!(
+            content.contains("\tvalue_wo?: #Value & #WriteOnly\n"),
+            "{content}"
+        );
+        assert!(
+            content.contains("\tvalue_wo_version?: number\n"),
+            "{content}"
+        );
+        assert!(
+            content.contains("\ttoken!: #Value & #WriteOnly\n"),
+            "{content}"
+        );
+        let outputs = content
+            .split("#Outputs: {")
+            .nth(1)
+            .ok_or("missing outputs")?
+            .split('}')
+            .next()
+            .ok_or("missing outputs body")?;
+        assert!(outputs.contains("\tvalue: string"));
+        assert!(!outputs.contains("value_wo:"));
+        assert!(!outputs.contains("token:"));
+    }
+    Ok(())
 }

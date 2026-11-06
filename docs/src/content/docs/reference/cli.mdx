@@ -531,8 +531,9 @@ cuenv infrastructure provider remove <SOURCE> [-p <PATH>]
   `cuenv.lock` pin, a configured version other than the pinned one, and an
   archive other than the pinned one for this platform.
 
-Managed resource arguments refined with `schema.#WriteOnly` render as
-`(write-only)` and use a verified provider write-only binding. The companion
+Managed resource arguments marked write-only by the live provider schema and
+refined with `schema.#WriteOnly` render as `(write-only)`. They keep their native
+Terraform attribute names. Ordinary fields reject the refinement. The companion
 version is manual: secret rotation alone does not plan a change. Invalid
 non-null write-only provider state fails without recording that response;
 resource argument secrets are never resolved by destroy, import or state commands.
