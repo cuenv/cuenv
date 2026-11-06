@@ -25,6 +25,8 @@ pub mod store;
 pub mod xml;
 
 #[cfg(test)]
+mod mbt;
+#[cfg(test)]
 mod tests;
 
 pub use sigv4::Credentials;

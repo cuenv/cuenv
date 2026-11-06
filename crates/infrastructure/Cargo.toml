@@ -54,6 +54,8 @@ default = []
 fake-s3 = []
 
 [dev-dependencies]
+anyhow = { workspace = true }
+quint-connect = { workspace = true }
 rusqlite = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
