@@ -844,11 +844,14 @@ experimental.
     verification of `SHA256SUMS`. Until then the cache manifest only detects
     accidental corruption: anyone who can write to the plugin cache can replace
     both a binary and its manifest.
-16. Secret-typed provider and resource arguments resolved through cuenv's
-    secret resolvers instead of plaintext CUE. Provider environment values and
-    the state token already use the selected project environment, existing
-    resolvers and `allowInfrastructure`; the token remains configured by
-    environment-variable name.
+16. Secret-typed provider arguments resolved through cuenv's secret resolvers
+    instead of plaintext CUE. Resource and data source arguments take a
+    `#Secret` since 0.68.0 ([#570](https://github.com/cuenv/cuenv/issues/570),
+    ADR-0013); provider `configuration` does not yet, and write-only arguments
+    that would keep a secret out of state are
+    [#571](https://github.com/cuenv/cuenv/issues/571). Provider environment
+    values and the state token already use the selected project environment,
+    existing resolvers and `allowInfrastructure`.
 17. Lock leases with expiry and heartbeat instead of manual release, and a
     `--lock-timeout` that waits for a running apply instead of failing
     immediately. Note that one stale lock also blocks future schema migrations.

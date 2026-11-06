@@ -22,6 +22,19 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
     let message = printable_text(&error.to_string());
     let (kind, help) = match error {
         InfrastructureError::Configuration(_) => return CliError::config(message),
+        // A failure of the secret provider, like a project variable's
+        // (exit code 3), never of the command line.
+        InfrastructureError::Secret { resolver, .. } => {
+            return CliError::eval_with_help(
+                message,
+                format!(
+                    "Check the secret's fields and the credentials of its `{}` resolver. The \
+                     resolver's own message is not shown, so that nothing it printed can \
+                     reveal the value; run the resolver by hand to see it.",
+                    strip_control_characters(resolver)
+                ),
+            );
+        }
         InfrastructureError::Locked {
             lock_identifier, ..
         } => {

@@ -23,8 +23,8 @@ use super::sensitivity::{
 use super::{
     Action, ApplyEvent, ConfigurationInput, ConfigurationPhase, DataSourceReadContext,
     DigestWriter, InfrastructureEngine, LoadedProvider, OperationFailure, OperationRunner, Plan,
-    ReferenceValueInput, check_diagnostics, declared_resource, masked_attributes, reference_error,
-    register_value_strings, topological_order,
+    ReferenceValueInput, SecretUse, check_diagnostics, declared_resource, masked_attributes,
+    reference_error, register_value_strings, topological_order,
 };
 
 /// One data source read by this invocation, or deferred until apply.
@@ -302,6 +302,7 @@ impl InfrastructureEngine {
                     references: &references,
                     block: &schema.block,
                     phase: ConfigurationPhase::Planning,
+                    secrets: SecretUse::Resolve,
                 },
                 |reference| planned_output(input.outputs, reference),
             )
@@ -494,6 +495,7 @@ impl InfrastructureEngine {
                     references: &read.references,
                     block: &schema.block,
                     phase: ConfigurationPhase::Apply,
+                    secrets: SecretUse::Resolve,
                 },
                 |reference| {
                     outputs

@@ -56,6 +56,15 @@ import "strings"
 // for output redaction; numeric and boolean values are only masked.
 // Use `dependsOn` when only ordering is needed.
 //
+// Secrets: a string argument of a resource or data source, including a
+// nested object, map or list element (not a set element, a number, a bool,
+// or a computed-only or write-only argument), can be a `#Secret`. cuenv
+// resolves it with the project's resolvers only when the configuration
+// reaches a provider (never through CUE), once per command, and registers it
+// for redaction first. Plans mask the argument as (sensitive); state stores
+// the value in plaintext, marked sensitive. Provider `configuration` cannot
+// take a `#Secret` yet.
+//
 // Closedness: every nested definition is referenced inside a struct literal
 // (`{#InfrastructureState}` rather than `#InfrastructureState`). A project
 // file usually embeds `schema.#Project` at file level, which opens the

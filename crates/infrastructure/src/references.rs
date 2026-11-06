@@ -15,6 +15,7 @@ mod destination;
 mod discovery;
 mod evaluation;
 mod path;
+mod secrets;
 
 pub use destination::ReferenceDestination;
 pub use evaluation::{
@@ -22,6 +23,7 @@ pub use evaluation::{
     ConfigurationVerification, NativeReference, OutputIdentity, SpecializedConfiguration,
 };
 pub use path::DestinationPath;
+pub use secrets::SecretArgument;
 
 /// Identity of an output producer. Data sources never have managed state addresses.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -66,10 +68,12 @@ pub struct ResourceOutputReference {
     pub attribute: String,
 }
 
-/// Parsed references, without configuration values or resolved outputs.
+/// What a configuration takes from outside itself: resource and data-source
+/// outputs, and secrets. Parsed, without resolved outputs or secret values.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigurationReferences {
     references: Vec<ResourceOutputReference>,
+    secrets: Vec<SecretArgument>,
 }
 
 impl ConfigurationReferences {
@@ -77,6 +81,25 @@ impl ConfigurationReferences {
     #[must_use]
     pub fn references(&self) -> &[ResourceOutputReference] {
         &self.references
+    }
+
+    /// Secrets at string arguments, in configuration path order.
+    #[must_use]
+    pub fn secrets(&self) -> &[SecretArgument] {
+        &self.secrets
+    }
+
+    /// Top-level arguments that contain a secret. Plans mask them and state
+    /// records them as sensitive.
+    #[must_use]
+    pub fn secret_attributes(&self) -> Vec<String> {
+        let mut attributes: Vec<String> = self
+            .secrets
+            .iter()
+            .map(|secret| secret.destination_attribute.clone())
+            .collect();
+        attributes.dedup();
+        attributes
     }
 
     /// Decode ordinary arguments and put an unknown value at each reference.
@@ -108,16 +131,13 @@ impl ConfigurationReferences {
             }
         }
         let mut ordinary = Json::Object(ordinary);
-        for reference in &self.references {
-            reference
-                .destination
-                .replace_json(&mut ordinary, Json::Null)?;
+        for destination in self.destinations() {
+            destination.replace_json(&mut ordinary, Json::Null)?;
         }
         let mut prepared = Value::from_configuration_json(&ordinary, value_type)?;
-        for reference in &self.references {
-            reference
-                .destination
-                .replace_value(&mut prepared, Value::Unknown)?;
+        // A secret stays unknown until the engine resolves it for a provider.
+        for destination in self.destinations() {
+            destination.replace_value(&mut prepared, Value::Unknown)?;
         }
         Ok(prepared)
     }
@@ -153,6 +173,13 @@ impl ConfigurationReferences {
         resolver: impl FnMut(&ResourceOutputReference) -> Result<Value>,
     ) -> Result<Value> {
         self.fill(prepared, UnknownOutputs::Keep, resolver)
+    }
+
+    fn destinations(&self) -> impl Iterator<Item = &DestinationPath> {
+        self.references
+            .iter()
+            .map(|reference| &reference.destination)
+            .chain(self.secrets.iter().map(|secret| &secret.destination))
     }
 
     /// Whether any reference destination of `configuration` is unknown.
@@ -267,6 +294,7 @@ mod tests {
 
     fn references() -> ConfigurationReferences {
         ConfigurationReferences {
+            secrets: Vec::new(),
             references: vec![reference(
                 "zone_id",
                 SourceAddress::Resource(ResourceAddress::new("cloudflare_zone", "primary")),
@@ -307,6 +335,7 @@ mod tests {
             ("lookup".into(), Json::Null),
         ]);
         let references = ConfigurationReferences {
+            secrets: Vec::new(),
             references: vec![
                 reference(
                     "managed",
@@ -352,6 +381,7 @@ mod tests {
         ] {
             let configuration = Map::from_iter([("argument".into(), Json::Null)]);
             let references = ConfigurationReferences {
+                secrets: Vec::new(),
                 references: vec![reference(
                     "argument",
                     SourceAddress::Resource(ResourceAddress::new("example_resource", "primary")),

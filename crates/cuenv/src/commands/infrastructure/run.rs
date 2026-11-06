@@ -19,7 +19,7 @@ use super::guard::{GuardRequest, SelectionFacts, Siblings, guard_selection};
 use super::interrupts::Interrupts;
 use super::invocation::Invocation;
 use super::output::Output;
-use super::resolve::resolve;
+use super::resolve::{configuration_secrets, resolve};
 use crate::cli::CliError;
 
 pub(super) async fn run(
@@ -99,6 +99,7 @@ pub(super) async fn run(
         withheld_environment_variables: resolved.withheld_environment_variables,
         // The user state directory (see `UnrecordedStore`).
         unrecorded_directory: None,
+        secrets: configuration_secrets(&options.action),
     };
     let request = GuardRequest {
         action: &options.action,

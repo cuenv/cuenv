@@ -26,6 +26,7 @@ mod protocol;
 pub mod references;
 pub mod registry;
 pub mod schema;
+pub mod secrets;
 pub mod state;
 pub mod tenant;
 pub mod type_system;

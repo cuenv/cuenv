@@ -72,6 +72,7 @@ use crate::registry::{
     ProviderInstaller, ProviderSource, current_platform, default_cache_directory,
 };
 use crate::schema::{Block, ProviderSchema, Schema};
+use crate::secrets::Secrets;
 use crate::state::{
     ConditionalPut, ManagedResource, RecordVersion, ResourceAddress, StateLock, StateStore,
 };
@@ -709,6 +710,9 @@ pub struct InfrastructureEngine {
     /// Effective sensitivity for this plan, including reference propagation.
     output_sensitivity: BTreeMap<SourceAddress, Vec<String>>,
     configuration_evaluation: Option<ConfigurationEvaluation>,
+    /// Resolves secrets in resource and data-source configuration; without
+    /// one, a configuration that holds a secret cannot reach a provider.
+    secrets: Option<Arc<Secrets>>,
 }
 
 impl fmt::Debug for InfrastructureEngine {
@@ -790,6 +794,17 @@ struct ConfigurationInput<'input> {
     references: &'input ConfigurationReferences,
     block: &'input Block,
     phase: ConfigurationPhase,
+    secrets: SecretUse,
+}
+
+/// Whether a prepared configuration carries its secrets' values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SecretUse {
+    /// Checking declarations only: each secret stays an unknown string, and
+    /// nothing is resolved.
+    Placeholder,
+    /// The configuration is about to reach a provider: resolve each secret.
+    Resolve,
 }
 
 #[derive(Clone, Copy)]
@@ -849,7 +864,15 @@ impl InfrastructureEngine {
             providers: BTreeMap::new(),
             output_sensitivity: BTreeMap::new(),
             configuration_evaluation: None,
+            secrets: None,
         }
+    }
+
+    /// Resolve the secrets of resource and data-source configuration through
+    /// `secrets`. Share one [`Secrets`] between the engines of a command so
+    /// each secret is resolved once.
+    pub fn set_secrets(&mut self, secrets: Arc<Secrets>) {
+        self.secrets = Some(secrets);
     }
 
     /// Bind one immutable native CUE evaluator to future plans. Replacing this
@@ -961,6 +984,7 @@ impl InfrastructureEngine {
                     references,
                     block,
                     phase: ConfigurationPhase::Planning,
+                    secrets: SecretUse::Placeholder,
                 },
                 |_| Ok(Value::Unknown),
             )
@@ -1107,10 +1131,56 @@ impl InfrastructureEngine {
                     reference_error(input.consumer.address(), reference, "was not resolved")
                 })
         };
-        match input.phase {
+        let mut configuration = match input.phase {
             ConfigurationPhase::Planning => input.references.resolve_planned(&prepared, resolve),
             ConfigurationPhase::Apply => input.references.resolve(&prepared, resolve),
+        }?;
+        self.fill_secrets(&input, &projected, &mut configuration)
+            .await?;
+        Ok(configuration)
+    }
+
+    /// Put each secret's value at its position, for a configuration about to
+    /// reach a provider. The value never passes through CUE: it replaces the
+    /// unknown placeholder after evaluation, and was registered for
+    /// redaction when it was resolved.
+    async fn fill_secrets(
+        &self,
+        input: &ConfigurationInput<'_>,
+        projected: &serde_json::Value,
+        configuration: &mut Value,
+    ) -> Result<()> {
+        if input.secrets == SecretUse::Placeholder || input.references.secrets().is_empty() {
+            return Ok(());
         }
+        let secrets = self.secrets.as_ref().ok_or_else(|| {
+            InfrastructureError::configuration(format!(
+                "{}: configuration holds a secret, but no secret resolver is available",
+                input.consumer
+            ))
+        })?;
+        for argument in input.references.secrets() {
+            let configured = serde_json::Value::Object(argument.secret.descriptor().clone());
+            if argument.destination.json_value(projected) != Some(&configured) {
+                return Err(InfrastructureError::configuration(format!(
+                    "{} configuration.{}: the secret changed after it was classified",
+                    input.consumer, argument.destination
+                )));
+            }
+            self.ensure_not_stopped()?;
+            let value = secrets.value(&argument.secret).await.map_err(|failure| {
+                InfrastructureError::Secret {
+                    consumer: input.consumer.to_string(),
+                    destination: argument.destination.to_string(),
+                    resolver: argument.secret.resolver().to_string(),
+                    reason: failure.reason().to_string(),
+                }
+            })?;
+            argument
+                .destination
+                .replace_value(configuration, Value::String(value))?;
+        }
+        Ok(())
     }
 
     /// Where in the `infrastructure` block this engine's configuration
@@ -2566,6 +2636,7 @@ impl InfrastructureEngine {
                 references: &change.references,
                 block: destination_block,
                 phase: ConfigurationPhase::Apply,
+                secrets: SecretUse::Resolve,
             },
             |reference| {
                 outputs
@@ -2732,6 +2803,7 @@ impl InfrastructureEngine {
                     references: &input.references,
                     block,
                     phase: ConfigurationPhase::Planning,
+                    secrets: SecretUse::Resolve,
                 },
                 |reference| planned_output(input.planned_outputs, reference),
             )
@@ -2983,8 +3055,9 @@ impl InfrastructureEngine {
     /// Check that every reference joins compatible top-level scalar
     /// attributes. Provider schemas are authoritative; generated CUE types
     /// catch the common mistakes before the engine starts a provider.
-    /// Returns the destination arguments set from a sensitive source output:
-    /// plans mask them as they mask the provider's own sensitive attributes.
+    /// Returns the destination arguments set from a sensitive source output or
+    /// from a secret: plans mask them as they mask the provider's own
+    /// sensitive attributes, and state records them as sensitive.
     fn validate_output_references(
         &self,
         destination: &ResourceAddress,
@@ -3024,6 +3097,13 @@ impl InfrastructureEngine {
                 && !sensitive.contains(&reference.destination_attribute)
             {
                 sensitive.push(reference.destination_attribute.clone());
+            }
+        }
+        // An argument set from a secret is as sensitive as the secret, whatever
+        // the provider's schema says about it.
+        for attribute in references.secret_attributes() {
+            if !sensitive.contains(&attribute) {
+                sensitive.push(attribute);
             }
         }
         Ok(sensitive)

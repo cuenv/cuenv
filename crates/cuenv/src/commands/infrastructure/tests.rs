@@ -1054,6 +1054,7 @@ impl Harness {
             unrecorded_directory: Some(self.directory.path().join("unrecorded")),
             provider_environment_variables: std::collections::BTreeMap::default(),
             withheld_environment_variables: Vec::new(),
+            secrets: super::resolve::configuration_secrets(&InfrastructureAction::Plan),
         }
     }
 

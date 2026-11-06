@@ -1214,6 +1214,121 @@ infrastructure: {{
     Ok(())
 }
 
+/// A `#Secret` at a generated string argument reaches the provider through
+/// the CLI: resolved by its own resolver, masked in the plan, recorded as
+/// sensitive, never printed, and not resolved by `destroy`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider and Turso/sqld; see module documentation"]
+async fn generated_arguments_take_a_secret_through_cli() -> TestResult {
+    use cuenv_infrastructure::Cancellation;
+    use cuenv_infrastructure::cue_types::{self, ProviderRelease};
+    use cuenv_infrastructure::registry::ProviderSource;
+
+    const ARGUMENT_SECRET: &str = "argument-secret-3e8a51-never-printed";
+    let provider =
+        PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?).canonicalize()?;
+    let database = Database::start()?;
+    let backend = TursoConfiguration {
+        url: database.url().to_owned(),
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let directory = prepare_directory()?;
+    let (schema, _) = cue_types::load_schema(&provider, &Cancellation::default()).await?;
+    let source = ProviderSource::parse("example.com/test/fake")?;
+    let types = cue_types::render(
+        &schema,
+        ProviderRelease {
+            source: &source,
+            version: "0.0.0",
+        },
+    )?;
+    for (relative, content) in &types.files {
+        let path = directory.path().join(&types.directory).join(relative);
+        fs::create_dir_all(path.parent().ok_or("generated file has no parent")?)?;
+        fs::write(path, content)?;
+    }
+    // The resolver counts its runs, so the test can tell which commands used it.
+    let secret_command = directory.path().join("argument-secret.sh");
+    let runs = directory.path().join("argument-secret.runs");
+    write_executable(
+        &secret_command,
+        &format!(
+            "#!/bin/sh\necho run >> {}\nprintf '%s' '{ARGUMENT_SECRET}'\n",
+            serde_json::to_string(&runs)?
+        ),
+    )?;
+    let runs_so_far = || fs::read_to_string(&runs).map_or(0, |text| text.lines().count());
+    let project = format!("argument-secret-lifecycle-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::try_new(MODULE, &project)?;
+    let store = TursoStateStore::try_new(backend.clone())?;
+    let configuration = format!(
+        r#"package examples
+import (
+ "github.com/cuenv/cuenv/schema"
+ "example.com/test/fake:fake_provider"
+ "example.com/test/fake/resources/fake_token_consumer"
+)
+schema.#Project
+name: {project}
+let rootToken = schema.#ExecSecret & {{command: {command}}}
+infrastructure: {{
+ state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
+ providers: fake: {{
+  source: "example.com/test/fake"
+  path: {provider}
+  schemaDigest: {digest}
+  configuration: fake_provider.#Configuration & {{directory: {directory}}}
+ }}
+ resources: {{
+  first: fake_token_consumer.#Resource & {{configuration: config: {{
+   label: "first"
+   token: rootToken
+  }}}}
+  second: fake_token_consumer.#Resource & {{configuration: config: {{
+   label: "second"
+   token: rootToken
+  }}}}
+ }}
+}}
+"#,
+        project = serde_json::to_string(&project)?,
+        command = serde_json::to_string(&secret_command)?,
+        url = serde_json::to_string(&backend.url)?,
+        provider = serde_json::to_string(&provider)?,
+        digest = serde_json::to_string(&types.schema_digest)?,
+        directory = serde_json::to_string(directory.path())?,
+    );
+    let lifecycle = Lifecycle::from_configuration(directory, configuration, &backend)?;
+    let preview = lifecycle.execute_text(&["plan"])?;
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let preview_text = String::from_utf8_lossy(&preview.stdout);
+    assert!(
+        preview_text.contains("+ config = (sensitive)"),
+        "{preview_text}"
+    );
+    // Two arguments name the same secret: one run of its resolver.
+    assert_eq!(runs_so_far(), 1);
+
+    assert_eq!(lifecycle.run(&["apply", "--yes"])?["applied"]["create"], 2);
+    for row in store.list(&tenant).await? {
+        assert_eq!(row.state["config"]["token"], ARGUMENT_SECRET);
+        assert_eq!(row.sensitive_attributes, ["config"]);
+    }
+    assert_eq!(lifecycle.run(&["plan"])?["summary"]["unchanged"], 2);
+    let before_destroy = runs_so_far();
+    lifecycle.run(&["destroy", "--yes"])?;
+    assert_eq!(runs_so_far(), before_destroy, "destroy resolved the secret");
+    assert!(store.list(&tenant).await?.is_empty());
+    assert!(!lifecycle.transcript()?.contains(ARGUMENT_SECRET));
+    let journal = fs::read_to_string(lifecycle.directory.path().join("journal.log"))?;
+    assert!(!journal.contains(ARGUMENT_SECRET));
+    Ok(())
+}
+
 /// Generated data source packages type actual CUE inputs, and native selectors
 /// resolve fresh lookup results through the CLI.
 #[tokio::test(flavor = "multi_thread")]
@@ -1345,6 +1460,8 @@ infrastructure: {{
         let launches_before = fs::read_to_string(&launches)?;
         // Generated types reject the old object at the string field before
         // starting the provider, even when the descriptor is otherwise valid.
+        // The field also accepts a `#Secret`, whose `resolver` the object
+        // lacks, so it is refused as incomplete rather than as a conflict.
         fs::write(
             &env_cue,
             configuration.replacen(selector, &format!("name: {descriptor}"), 1),
@@ -1357,7 +1474,7 @@ infrastructure: {{
         );
         assert_eq!(output.status.code(), Some(3), "{printed}");
         assert!(
-            printed.contains("CUE infrastructure configuration could not be evaluated"),
+            printed.contains("configuration is incomplete or violates its constraints"),
             "{printed}"
         );
         assert_eq!(fs::read_to_string(&launches)?, launches_before);
