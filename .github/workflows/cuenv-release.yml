@@ -1,7 +1,7 @@
 # One-off recovery for the already-published 0.70.0 release.
-# Every job checks out the unchanged annotated tag; this branch only supplies runner parameters.
+# Publish already-verified binaries from run 42313030213; no binary rebuilds.
 
-name: cuenv-release-recovery
+name: cuenv-release-publish-recovery
 on:
   workflow_dispatch:
     inputs:
@@ -15,377 +15,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 jobs:
-  build-cuenv-namespace-profile-cuenv-macos-arm64:
-    permissions:
-      contents: read
-    name: build.cuenv (namespace-profile-cuenv-macos-arm64)
-    runs-on: namespace-profile-cuenv-macos-arm64
-    timeout-minutes: 30
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 2
-        ref: 0.70.0
-    - name: Verify immutable release source
-      run: test "$(git rev-parse HEAD)" = c02cd755b4cbc3257a5b7a44121bb27e25b179cb
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Build cuenv (nix)
-      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Upload cuenv
-      uses: actions/upload-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
-        path: result/bin/cuenv
-        if-no-files-found: error
-  build-cuenv-namespace-profile-cuenv-linux-arm64:
-    permissions:
-      contents: read
-    name: build.cuenv (namespace-profile-cuenv-linux-arm64)
-    runs-on: namespace-profile-cuenv-linux-arm64
-    timeout-minutes: 30
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 2
-        ref: 0.70.0
-    - name: Verify immutable release source
-      run: test "$(git rev-parse HEAD)" = c02cd755b4cbc3257a5b7a44121bb27e25b179cb
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Build cuenv (nix)
-      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Upload cuenv
-      uses: actions/upload-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-arm64
-        path: result/bin/cuenv
-        if-no-files-found: error
-  build-cuenv-namespace-profile-cuenv-linux-x86:
-    permissions:
-      contents: read
-    name: build.cuenv (namespace-profile-cuenv-linux-x86)
-    runs-on: namespace-profile-cuenv-linux-x86
-    timeout-minutes: 30
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 2
-        ref: 0.70.0
-    - name: Verify immutable release source
-      run: test "$(git rev-parse HEAD)" = c02cd755b4cbc3257a5b7a44121bb27e25b179cb
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Build cuenv (nix)
-      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Upload cuenv
-      uses: actions/upload-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: result/bin/cuenv
-        if-no-files-found: error
-  cargo-build-darwin-arm64:
-    permissions:
-      contents: read
-      packages: write
-    name: cargo.build (darwin-arm64)
-    runs-on: namespace-profile-cuenv-macos-arm64
-    needs:
-    - build-cuenv-namespace-profile-cuenv-macos-arm64
-    timeout-minutes: 60
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 0
-        ref: 0.70.0
-    - name: Verify immutable release source
-      run: test "$(git rev-parse HEAD)" = c02cd755b4cbc3257a5b7a44121bb27e25b179cb
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
-        path: ${{ runner.temp }}/cuenv-bootstrap
-    - name: Add cuenv to PATH
-      run: |-
-        set -euo pipefail
-        if ! command -v nix >/dev/null; then
-        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        else
-        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
-        fi
-        fi
-        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
-        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
-    - name: Setup 1Password
-      run: cuenv secrets setup onepassword
-      env:
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: cargo.build (darwin-arm64)
-      run: cuenv task cargo.build -e production --skip-dependencies
-      working-directory: .
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: tag
-        GITHUB_REF_NAME: 0.70.0
-        CUENV_ARCH: darwin-arm64
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: cargo-build-darwin-arm64
-        path: target/release/cuenv
-        if-no-files-found: ignore
-        include-hidden-files: true
-  cargo-build-linux-arm64:
-    permissions:
-      contents: read
-      packages: write
-    name: cargo.build (linux-arm64)
-    runs-on: namespace-profile-cuenv-linux-arm64
-    needs:
-    - build-cuenv-namespace-profile-cuenv-linux-arm64
-    timeout-minutes: 60
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 0
-        ref: 0.70.0
-    - name: Verify immutable release source
-      run: test "$(git rev-parse HEAD)" = c02cd755b4cbc3257a5b7a44121bb27e25b179cb
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-arm64
-        path: ${{ runner.temp }}/cuenv-bootstrap
-    - name: Add cuenv to PATH
-      run: |-
-        set -euo pipefail
-        if ! command -v nix >/dev/null; then
-        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        else
-        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
-        fi
-        fi
-        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
-        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
-    - name: Setup 1Password
-      run: cuenv secrets setup onepassword
-      env:
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: cargo.build (linux-arm64)
-      run: cuenv task cargo.build -e production --skip-dependencies
-      working-directory: .
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: tag
-        GITHUB_REF_NAME: 0.70.0
-        CUENV_ARCH: linux-arm64
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: cargo-build-linux-arm64
-        path: target/release/cuenv
-        if-no-files-found: ignore
-        include-hidden-files: true
-  cargo-build-linux-x64:
-    permissions:
-      contents: read
-      packages: write
-    name: cargo.build (linux-x64)
-    runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv-namespace-profile-cuenv-linux-x86
-    timeout-minutes: 60
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 0
-        ref: 0.70.0
-    - name: Verify immutable release source
-      run: test "$(git rev-parse HEAD)" = c02cd755b4cbc3257a5b7a44121bb27e25b179cb
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
-    - name: Add cuenv to PATH
-      run: |-
-        set -euo pipefail
-        if ! command -v nix >/dev/null; then
-        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        else
-        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
-        fi
-        fi
-        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
-        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
-    - name: Setup 1Password
-      run: cuenv secrets setup onepassword
-      env:
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: cargo.build (linux-x64)
-      run: cuenv task cargo.build -e production --skip-dependencies
-      working-directory: .
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: tag
-        GITHUB_REF_NAME: 0.70.0
-        CUENV_ARCH: linux-x64
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: cargo-build-linux-x64
-        path: target/release/cuenv
-        if-no-files-found: ignore
-        include-hidden-files: true
   publish-github:
     permissions:
+      actions: read
       contents: write
       packages: write
     name: publish.github
     runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv-namespace-profile-cuenv-linux-x86
-    - cargo-build-darwin-arm64
-    - cargo-build-linux-arm64
-    - cargo-build-linux-x64
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -415,11 +51,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -442,98 +73,30 @@ jobs:
       with:
         name: cargo-build-darwin-arm64
         path: dist/darwin-arm64
+        run-id: 42313030213
+        github-token: ${{ secrets.GITHUB_TOKEN }}
     - name: Download cargo-build-linux-arm64
       uses: actions/download-artifact@v4
       with:
         name: cargo-build-linux-arm64
         path: dist/linux-arm64
+        run-id: 42313030213
+        github-token: ${{ secrets.GITHUB_TOKEN }}
     - name: Download cargo-build-linux-x64
       uses: actions/download-artifact@v4
       with:
         name: cargo-build-linux-x64
         path: dist/linux-x64
+        run-id: 42313030213
+        github-token: ${{ secrets.GITHUB_TOKEN }}
     - name: publish.github
-      run: cuenv task publish.github -e production --skip-dependencies
+      run: GITHUB_REF_NAME=0.70.0 GITHUB_REF_TYPE=tag cuenv task publish.github -e production --skip-dependencies
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: tag
-        GITHUB_REF_NAME: 0.70.0
         PATHS: dist/**/*
         TAG: 0.70.0
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-  publish-cue:
-    if: ${{ false }}
-    permissions:
-      contents: read
-      id-token: write
-    name: publish.cue
-    runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv-namespace-profile-cuenv-linux-x86
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 2
-        ref: 0.70.0
-    - name: Verify immutable release source
-      run: test "$(git rev-parse HEAD)" = c02cd755b4cbc3257a5b7a44121bb27e25b179cb
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
-    - name: Add cuenv to PATH
-      run: |-
-        set -euo pipefail
-        if ! command -v nix >/dev/null; then
-        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        else
-        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
-        fi
-        fi
-        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
-        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
-    - name: Setup 1Password
-      run: cuenv secrets setup onepassword
-      env:
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Authenticate with the CUE Registry
-      if: github.job == 'publish-cue'
-      uses: cue-labs/registry-login-action@v1
-    - name: publish.cue
-      run: cuenv task publish.cue -e production --skip-dependencies
-      working-directory: .
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: tag
-        GITHUB_REF_NAME: 0.70.0
-        TAG: cuenv:passthrough:GITHUB_REF_NAME
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-homebrew:
     permissions:
@@ -541,7 +104,6 @@ jobs:
     name: publish.homebrew
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
-    - build-cuenv-namespace-profile-cuenv-linux-x86
     - publish-github
     steps:
     - name: Checkout
@@ -571,11 +133,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -594,160 +151,10 @@ jobs:
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: publish.homebrew
-      run: cuenv task publish.homebrew -e production --skip-dependencies
+      run: GITHUB_REF_NAME=0.70.0 GITHUB_REF_TYPE=tag cuenv task publish.homebrew -e production --skip-dependencies
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: tag
-        GITHUB_REF_NAME: 0.70.0
-        TAG: cuenv:passthrough:GITHUB_REF_NAME
+        TAG: 0.70.0
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-  docs-deploy:
-    if: ${{ false }}
-    permissions:
-      contents: read
-    name: docs.deploy
-    runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv-namespace-profile-cuenv-linux-x86
-    - docs-build
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 2
-        ref: 0.70.0
-    - name: Verify immutable release source
-      run: test "$(git rev-parse HEAD)" = c02cd755b4cbc3257a5b7a44121bb27e25b179cb
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
-    - name: Add cuenv to PATH
-      run: |-
-        set -euo pipefail
-        if ! command -v nix >/dev/null; then
-        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        else
-        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
-        fi
-        fi
-        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
-        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
-    - name: Setup 1Password
-      run: cuenv secrets setup onepassword
-      env:
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Download docs-build-artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: docs-build-artifacts
-        path: docs/dist
-    - name: docs.deploy
-      run: cuenv task docs.deploy -e production --skip-dependencies
-      working-directory: .
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: tag
-        GITHUB_REF_NAME: 0.70.0
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-  docs-build:
-    if: ${{ false }}
-    permissions:
-      contents: read
-      packages: write
-    name: docs.build
-    runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv-namespace-profile-cuenv-linux-x86
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 2
-        ref: 0.70.0
-    - name: Verify immutable release source
-      run: test "$(git rev-parse HEAD)" = c02cd755b4cbc3257a5b7a44121bb27e25b179cb
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
-    - name: Add cuenv to PATH
-      run: |-
-        set -euo pipefail
-        if ! command -v nix >/dev/null; then
-        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        else
-        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
-        fi
-        fi
-        cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
-        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
-    - name: Setup 1Password
-      run: cuenv secrets setup onepassword
-      env:
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: docs.build
-      run: cuenv task docs.build -e production --skip-dependencies
-      working-directory: .
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: tag
-        GITHUB_REF_NAME: 0.70.0
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: docs-build-artifacts
-        path: docs/dist
-        if-no-files-found: ignore
-        include-hidden-files: true
