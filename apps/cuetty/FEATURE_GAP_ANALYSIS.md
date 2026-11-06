@@ -27,9 +27,9 @@ Cuetty currently has:
   still needs human acceptance.
 
 The known live-UI limits are incomplete IME/emoji presentation and
-visible-frame-only selection/search coordinates. Rio-owned scrollback is live
-through wheel/trackpad and keyboard navigation. Mouse selection/Cmd-C copy and
-literal visible-frame search are live,
+visible-frame-only search. Rio-owned scrollback is live through wheel/trackpad,
+keyboard navigation, and selection drags at the top or bottom of the grid.
+Mouse selections copy on release and Cmd-C can copy them again; literal visible-frame search is live,
 including grid-painted selection and current-match overlays;
 the GPUI shell creates independent local Rio sessions for tabs. Split actions
 remain rejected; the product never renders a fake pane. Pure persistence,
@@ -46,8 +46,8 @@ behind replaceable traits.
 | Unicode width/combining | Backend cluster text and wide occupancy preserved; IME/emoji rendering incomplete | Rich render-cell text/width model | Rich render-cell text/width model | P0 |
 | Cursor and terminal modes | Cursor shape/visibility, application cursor keys, and a tested negotiated extended-keyboard subset; mouse/keypad/focus modes incomplete | Cursor styles, keyboard/mouse modes | Cursor/mouse modes and richer metadata | P0 |
 | Damage and render cache | Coalesced wakeups; full-frame paint | Dirty spans and shaped-line cache | Damage-aware batched rendering | P0 |
-| Clipboard and paste | Cmd-V, OSC 52, mouse selection and Cmd-C copy | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
-| Scrollback and selection | Rio-owned history navigation live; selection remains visible-viewport-only | Present | Present | P1 |
+| Clipboard and paste | Cmd-V, OSC 52, mouse selection auto-copy and Cmd-C copy | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
+| Scrollback and selection | Rio-owned history navigation and selection, including edge scrolling | Present | Present | P1 |
 | Search | Literal visible-frame search live; regex/full history staged | Present | Inline/regex search | P1 |
 | Fonts, themes, configuration | CUE-configurable font family, size, and line height, padding, transparency, keybinding for the palette, and four curated themes with `auto` following the desktop; custom palettes are not offered | Configurable themes, keybindings, fonts | Font family, themes, zoom, shell choice, and additional keybindings | P1 |
 | Tabs, splits, focus navigation | Independent local Rio tabs; 200px sidebar collapsible to 56px; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
@@ -80,10 +80,8 @@ Linux, and a live resize plus Unicode probe has visual evidence.
 
 ### P1 — usable daily terminal
 
-1. Extend selection and search across Rio's authoritative history without
-   duplicating terminal state.
-2. Wire copy, paste, selection export, and literal search into the live surface
-   (regex remains a later capability).
+1. Extend search across Rio's authoritative history without duplicating terminal state.
+2. Add richer selection and search interactions (regex remains a later capability).
 3. Move the remaining cursor and keybinding preferences into configuration; font,
    theme, and line height already live in CUE.
 4. Extend the drawn glyph path, which already covers box-drawing, block, and

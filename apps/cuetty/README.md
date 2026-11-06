@@ -79,7 +79,7 @@ Manual acceptance is: a visible shell prompt with immediate keyboard focus;
 command typing and output redraw; Unicode paste; `stty size` matching the
 resized grid; an OSC 52 clipboard
 write; shell control chords such as Ctrl-C and Ctrl-U; a new tab opening in
-`$HOME`; and clean shell/window close.
+the current tab's directory; and clean shell/window close.
 
 ## Visual contract
 
@@ -202,12 +202,13 @@ Cmd-Shift-D report that split panes are unavailable; they never create a fake
 terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse
 selection and every literal visible-frame search hit, opened with Cmd-F (Ctrl-Shift-F on
 Linux) into a search bar at the terminal's top right, are painted directly
-over the terminal grid, with the current hit picked out from the rest; Cmd-C copy and paste
-are live too. Rio-owned scrollback is live, with a thin overlay scrollbar that shows while
-the view moves or the pointer comes to the padding at the terminal's edge, fades away, and can be dragged, but
-a selection is cleared when the viewport moves
-because its coordinates are still visible-frame-only; an open search stays open and searches
-what has come into view. It does not yet have live workspace restore,
+over the terminal grid, with the current hit picked out from the rest. Releasing a mouse
+selection copies it to the system clipboard; a click without a selection leaves the clipboard
+alone. Hold a drag at the top or bottom row to scroll through Rio's history and extend the
+selection. Cmd-C can copy the selected text again. Rio-owned scrollback also has a thin overlay
+scrollbar that shows while the view moves or the pointer comes to the padding at the terminal's
+edge, fades away, and can be dragged. An open search stays open and searches what has come into
+view. It does not yet have live workspace restore,
 plugin runtime, Kitty graphics, ligatures, or complete IME/non-Latin
 composition. Workspace persistence has a bounded versioned codec and atomic
 file store, but live restore and Rio session reconnect are not wired into the

@@ -22,6 +22,7 @@ pub mod model;
 mod presentation;
 mod rio_adapter;
 mod rio_input;
+mod rio_selection;
 mod scrollbar;
 mod sizing;
 mod tab_label;

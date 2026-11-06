@@ -69,7 +69,10 @@ The current usable slice includes:
   the window's edges so it sits comfortably with rounded corners, stable single-line
   tab labels, and a full-bleed terminal.
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
-  selection, Rio-owned history navigation, and visible-frame literal search.
+  selection, Rio-owned history navigation, and visible-frame literal search. A mouse selection is
+  copied to the system clipboard on release; an empty click leaves it alone. Holding a selection
+  drag on the top or bottom row scrolls through history until the pointer moves away or is released.
+  Selection and its copied text use Rio's history; changing column width invalidates the selection.
 - A thin overlay scrollbar in the terminal's right gutter, where there is history to scroll.
   The command palette covers it while open.
   It shows while the view moves, holds a moment, and fades over 150ms, and comes back when
@@ -111,7 +114,8 @@ The current usable slice includes:
   explicit background still stops at the grid.
 - Independent live Rio sessions for each tab with a replaceable workspace
   model. Cmd-T creates a session-backed tab and Cmd-W closes the active one;
-  every newly-created session starts in `$HOME`,
+  a new tab starts in the current tab's local foreground process directory when
+  available, otherwise it uses a reported directory that still exists or `$HOME`,
   split shortcuts are rejected with a visible notice until pane/session
   allocation is implemented, and the UI never presents a fake terminal pane.
   Application shortcuts written as Cmd-* use Command on macOS and Ctrl-Shift
@@ -512,9 +516,8 @@ without a task catalogue. An unparseable chord or any other
 The following are deliberately documented as staged work rather than implied
 support:
 
-- Full-history selection and search; history navigation is live, but current
-  selection/search coordinates cover one visible viewport and search is
-  literal-only.
+- Full-history and regular-expression search; search covers the visible viewport
+  and is literal-only.
 - Application mouse reporting covers wheel events only. Clicks, drags, and
   pointer motion are not reported to applications; local text selection remains
   available. Original X10 mouse mode has no wheel reports, and legacy non-SGR
@@ -531,8 +534,10 @@ support:
 
 Earlier implementation work recorded focused Rust validation and macOS bundle
 verification. For the current direct-`rio-vt` path, Linux app compilation and
-the real PTY lifecycle suite pass; a private Xvfb/Niri smoke also exercised
-initial keyboard focus and Codex transcript scrolling. An Apple Silicon smoke
+the real PTY lifecycle suite pass; private Xvfb/Niri smoke runs also exercised
+initial keyboard focus, Codex transcript scrolling, drag selection through history
+in both directions, automatic clipboard copying, and new-tab directory inheritance.
+An Apple Silicon smoke
 run is still required. The GPUI-representable Kitty and
 `modifyOtherKeys` subset now has deterministic coverage; IME, focus reporting,
 application keypad identity, key releases, alternate-key reporting, and

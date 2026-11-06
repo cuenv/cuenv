@@ -35,7 +35,7 @@ persistence contracts are also more mature than the live product shell.
 | Shell, resize, ANSI colour, tabs | Working proof of concept with an interactive macOS shell/history smoke pass | Needs the real-workload acceptance corpus and broader regression coverage. |
 | Text model | Complete backend cluster text, wide-cell placeholders, and observed cursor state | New direct-Rio path needs executable and macOS validation; full Unicode and IME acceptance remain open. |
 | Input protocol | Direct-host input and mode-aware bracketed-paste encoding in source; local selection | Executable compatibility checks remain; mouse, keypad, focus and advanced keyboard integration are not qualified. |
-| Scrollback and search | Rio-owned wheel/keyboard history navigation is live; the UI searches only the visible frame | No selection/search across history or scrollbar. |
+| Scrollback and search | Rio-owned history navigation, scrollbar, and selection with auto-copy and edge scrolling are implemented; the UI searches only the visible frame | Full-history search and interactive qualification remain open. |
 | Tabs and splits | Each tab owns a live session; the pure layout model supports splits | Split shortcuts are intentionally rejected because session allocation is not wired. |
 | Configuration | Global and exact-CWD CUE packages configure theme, font family, size, and line height, padding, transparency, and Cuetty presentation | Font-family validation and stable working-directory policy remain open. |
 | Distribution | Development bundle with ad-hoc signing and a local launch check | No signed/notarized release, installer, update path, or release-quality macOS CI. |
@@ -178,9 +178,9 @@ retained librio control comparison remain open.
 Rio-owned history navigation is now wired through `TerminalSession` to
 wheel/trackpad scrolling and Shift-Page Up/Down or Shift-Home/End. A real-PTY
 fixture proves navigation to retained history and back to the live viewport.
-Selection and literal search still address only one sampled viewport, so a
-viewport move clears their coordinates rather than silently copying or
-highlighting different text.
+Mouse selections now use Rio's history and copy on release; dragging at the
+top or bottom of the grid scrolls and extends the selection. Literal search
+still addresses one sampled viewport and is rebuilt when the viewport moves.
 
 The ad-hoc-signed app bundle also launched into a visible shell. Direct command
 input produced output, Shift-Page Up reached older output, Shift-End returned to
@@ -248,7 +248,7 @@ day.
 - [ ] Search the full transcript incrementally. Keep literal search first;
   introduce regex only after its performance and match-navigation contract are
   clear.
-- [ ] Finish selection: word and line selection, copy from history, multi-line
+- [ ] Finish selection: word and line selection, multi-line
   Unicode correctness, and a predictable policy when an application has mouse
   reporting enabled.
 - [ ] Extend the existing global and per-directory CUE configuration with font
@@ -261,10 +261,9 @@ day.
 - [ ] Provide familiar macOS actions before inventing a keybinding language:
   new tab, close tab, copy, paste, find, next/previous result, zoom, and reset
   zoom.
-- [ ] Make new-tab location a user choice. Preserve the existing `$HOME`
-  behaviour as an option, then support active-directory inheritance and an
-  explicit configured directory. Do not silently change a user's session
-  semantics.
+- [ ] Make new-tab location a user choice. New tabs inherit the active
+  directory when it is available, with `$HOME` as the fallback; add explicit
+  home-directory and configured-directory options.
 - [ ] Ask before closing a tab or window that has a running foreground process,
   then make the outcome and error state visible.
 

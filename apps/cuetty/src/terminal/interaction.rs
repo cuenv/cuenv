@@ -99,9 +99,11 @@ impl InteractionState {
         self.selection
     }
 
-    /// Whether a press in the terminal is being dragged into a selection.
-    pub fn selecting(&self) -> bool {
-        self.dragging
+    /// Search selections use frame coordinates; pointer selections belong to Rio.
+    pub fn search_selection(&self) -> Option<Selection> {
+        (self.selection_source == SelectionSource::SearchMatch)
+            .then_some(self.selection())
+            .flatten()
     }
 
     pub fn search(&self) -> Option<&LiteralSearch> {

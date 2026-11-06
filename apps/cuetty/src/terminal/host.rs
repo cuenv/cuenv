@@ -8,6 +8,8 @@ use super::model::{CursorState, SamplingToken, TerminalFrame};
 use super::presentation::extended_palette;
 use super::rio_adapter::{cursor_state, snapshot};
 use super::rio_input::{encode_key, encode_paste};
+use super::rio_selection::{SelectionDrag, selection_text, visible_selection};
+use super::selection::{LogicalPosition, Selection};
 use super::sizing::{CellSize, TerminalSize, terminal_size};
 #[cfg(unix)]
 use super::tab_label::is_shell;
@@ -81,11 +83,22 @@ pub trait TerminalSession: Send {
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String>;
     fn paste(&mut self, text: &str) -> Result<(), String>;
     fn scroll(&mut self, action: TerminalScroll) -> Result<(), String>;
+    fn begin_selection(&mut self, position: LogicalPosition);
+    /// Returns false when the terminal has invalidated the drag.
+    fn extend_selection(&mut self, position: LogicalPosition) -> bool;
+    fn end_selection(&mut self);
+    fn clear_selection(&mut self);
+    fn visible_selection(&self) -> Option<Selection>;
+    fn selection_text(&self) -> Option<String>;
     fn frame(&mut self) -> TerminalFrame;
     /// The cursor as it is now, without taking the damage a frame collects.
     fn cursor(&self) -> CursorState;
     /// OSC 7 directory, with a foreground-process fallback while the PTY is open.
     fn working_directory(&self) -> Option<String>;
+    /// A local working directory suitable for starting another shell.
+    fn new_tab_working_directory(&self) -> Option<String> {
+        self.working_directory()
+    }
     /// The foreground process while the PTY is open, shells included. `None` or a
     /// blank name means it could not be told, not that a shell is waiting.
     fn foreground_process(&self) -> Option<ForegroundProcess>;
@@ -353,6 +366,7 @@ pub struct RioTerminalSession {
     listener: Listener,
     io_thread: Option<IoThread>,
     next_sampling_token: u64,
+    selection_drag: Option<SelectionDrag>,
     #[cfg(unix)]
     shell_pid: u32,
     #[cfg(unix)]
@@ -446,6 +460,7 @@ impl RioTerminalSession {
                 listener,
                 io_thread,
                 next_sampling_token: 0,
+                selection_drag: None,
                 #[cfg(unix)]
                 shell_pid,
                 #[cfg(unix)]
@@ -511,6 +526,53 @@ impl RioTerminalSession {
 }
 
 impl TerminalSession for RioTerminalSession {
+    fn begin_selection(&mut self, position: LogicalPosition) {
+        self.selection_drag = Some(SelectionDrag::begin(&mut self.terminal.lock(), position));
+    }
+
+    fn extend_selection(&mut self, position: LogicalPosition) -> bool {
+        self.selection_drag
+            .as_mut()
+            .is_some_and(|drag| drag.extend(&mut self.terminal.lock(), position))
+    }
+
+    fn end_selection(&mut self) {
+        if self
+            .selection_drag
+            .take()
+            .is_some_and(|drag| drag.is_empty())
+        {
+            self.terminal.lock().selection = None;
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        self.selection_drag = None;
+        self.terminal.lock().selection = None;
+    }
+
+    fn visible_selection(&self) -> Option<Selection> {
+        if self
+            .selection_drag
+            .as_ref()
+            .is_some_and(SelectionDrag::is_empty)
+        {
+            return None;
+        }
+        visible_selection(&self.terminal.lock())
+    }
+
+    fn selection_text(&self) -> Option<String> {
+        if self
+            .selection_drag
+            .as_ref()
+            .is_some_and(SelectionDrag::is_empty)
+        {
+            return None;
+        }
+        selection_text(&self.terminal.lock()).filter(|text| !text.is_empty())
+    }
+
     fn set_palette(&mut self, palette: ThemeColors) {
         *self
             .listener
@@ -616,6 +678,20 @@ impl TerminalSession for RioTerminalSession {
                 .map(|path| path.to_string_lossy().into_owned());
         }
         None
+    }
+
+    fn new_tab_working_directory(&self) -> Option<String> {
+        #[cfg(unix)]
+        if self
+            .io_thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+            && let Ok(path) = teletypewriter::foreground_process_path(self.main_fd, self.shell_pid)
+            && path.is_dir()
+        {
+            return Some(path.to_string_lossy().into_owned());
+        }
+        self.working_directory()
     }
 
     fn foreground_process(&self) -> Option<ForegroundProcess> {
@@ -1321,6 +1397,61 @@ sleep 5
         let bottom = session.frame();
         assert!(frame_text(&bottom).contains("M0-READY"));
         assert_eq!(bottom.viewport_offset, Some(0));
+        session.close().expect("close should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_selection_copies_across_scrollback() {
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["history"]);
+        wait_for_text(&mut session, "M0-READY");
+        session.begin_selection(LogicalPosition { line: 0, column: 0 });
+        assert_eq!(session.visible_selection(), None);
+        assert_eq!(session.selection_text(), None);
+        session.end_selection();
+        assert_eq!(session.selection_text(), None);
+        session.scroll(TerminalScroll::Top).unwrap();
+        session.begin_selection(LogicalPosition { line: 0, column: 0 });
+        session.scroll(TerminalScroll::Bottom).unwrap();
+        let frame = session.frame();
+        let ready_row = frame
+            .rows
+            .iter()
+            .position(|row| {
+                row.cells
+                    .iter()
+                    .filter_map(|cell| cell.text.as_deref())
+                    .collect::<String>()
+                    .contains("M0-READY")
+            })
+            .expect("ready row remains on the live screen");
+        assert!(session.extend_selection(LogicalPosition {
+            line: ready_row,
+            column: 7
+        }));
+        session.end_selection();
+        let text = session
+            .selection_text()
+            .expect("history selection has text");
+        assert_eq!(
+            text.lines().next().map(str::trim_end),
+            Some("M0-HISTORY-01")
+        );
+        assert!(text.ends_with("M0-READY"));
+        session.close().expect("close should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_new_tab_directory_prefers_the_live_process_over_a_stale_report() {
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["stale-cwd"]);
+        wait_for_text(&mut session, "M0-READY");
+        assert_eq!(session.working_directory().as_deref(), Some("/tmp"));
+        assert_eq!(session.new_tab_working_directory().as_deref(), Some("/"));
         session.close().expect("close should succeed");
     }
 

@@ -74,8 +74,16 @@ case "${1:-}" in
         IFS= read -r command
         printf 'M0-UNEXPECTED-INPUT:%s\r\n' "$command"
         ;;
+    stale-cwd)
+        stty -echo
+        cd /tmp
+        printf '\033]7;file:///tmp\007'
+        cd /
+        printf 'M0-READY\r\n'
+        IFS= read -r command
+        ;;
     *)
-        printf 'usage: m0-pty-child.sh exit|full-exit|resize|shell-level|raw COUNT|bracketed COUNT|kitty COUNT|modify-other-keys COUNT|mouse-sgr COUNT|codex-sgr COUNT|alt-scroll COUNT|alt-scroll-app COUNT|alt-scroll-kitty COUNT|hold|history\n' >&2
+        printf 'usage: m0-pty-child.sh exit|full-exit|resize|shell-level|raw COUNT|bracketed COUNT|kitty COUNT|modify-other-keys COUNT|mouse-sgr COUNT|codex-sgr COUNT|alt-scroll COUNT|alt-scroll-app COUNT|alt-scroll-kitty COUNT|hold|history|stale-cwd\n' >&2
         exit 64
         ;;
 esac

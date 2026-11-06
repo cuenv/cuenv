@@ -43,13 +43,14 @@ use crate::integrations::cuenv::{
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
-    App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Decorations, Edges,
-    Element, FocusHandle, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyBinding, Menu, MenuItem, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, PathBuilder, Pixels, Render, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, StrikethroughStyle, Styled, SystemMenuType, TextRun,
-    Timer, UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions, actions, canvas, div, point, px, quad, size,
+    App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Decorations,
+    DispatchPhase, Edges, Element, FocusHandle, Font, FontStyle, FontWeight, Hsla,
+    InteractiveElement, IntoElement, KeyBinding, Menu, MenuItem, ModifiersChangedEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels,
+    Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Size, StrikethroughStyle,
+    Styled, SystemMenuType, TextRun, Timer, UnderlineStyle as GpuiUnderlineStyle, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, canvas, div, point, px, quad,
+    size,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -1006,6 +1007,7 @@ pub(super) struct PaneState {
     told_palette: Option<ThemeColors>,
     frame: TerminalFrame,
     interaction: InteractionState,
+    selection_dragging: bool,
     scroll_remainder: f32,
     /// What the terminal is doing, which is what its tab is named after.
     activity: PaneActivity,
@@ -1039,6 +1041,7 @@ impl PaneState {
             told_palette: None,
             frame,
             interaction: InteractionState::default(),
+            selection_dragging: false,
             scroll_remainder: 0.0,
             activity: PaneActivity::default(),
             status: TabStatus::default(),
@@ -1149,7 +1152,7 @@ impl PaneState {
 
     /// Whether a press in this pane's terminal is being dragged into a selection.
     pub(super) fn selecting(&self) -> bool {
-        self.interaction.selecting()
+        self.selection_dragging
     }
 
     /// Whether this pane's shell has gone and only its final output is left.
@@ -1469,16 +1472,21 @@ impl SessionRegistry {
         ),
         RegistryError,
     > {
-        let presentation = self
-            .active_pane()
-            .and_then(|pane| self.sessions.get(&pane))
+        let active = self.active_pane().and_then(|pane| self.sessions.get(&pane));
+        let presentation = active
             .map(|state| state.cuenv.presentation.carried_over())
             .unwrap_or_default();
+        // Query the session at the moment the tab is opened: the periodic
+        // configuration poll can lag behind a recent `cd`.
+        let directory = active
+            .and_then(|state| state.session.new_tab_working_directory())
+            .map(std::path::PathBuf::from)
+            .filter(|directory| directory.is_dir());
         let mut start = geometry
             .start_session(
                 self.factory.as_ref(),
                 SessionSeed {
-                    working_directory: None,
+                    working_directory: directory.as_deref(),
                     palette: &presentation.terminal.colors_for(appearance),
                 },
             )
@@ -1765,11 +1773,41 @@ pub(super) struct TerminalView {
     scrollbar_track: Arc<Mutex<(f32, f32)>>,
     /// Where along the thumb a drag took hold, while one is going.
     pub(super) scrollbar_grab: Option<f32>,
+    selection_gesture: Option<SelectionGesture>,
+    selection_gesture_id: u64,
     /// When the draw an animation has asked for is due.
     frame_due: Option<std::time::Instant>,
     /// What the platform says about motion, read once as the window opens.
     system_motion: MotionPace,
     pub(super) motion: ChromeMotion,
+}
+
+#[derive(Clone, Copy)]
+struct SelectionGesture {
+    id: u64,
+    pane: crate::workspace::PaneId,
+    generation: SessionGeneration,
+    position: gpui::Point<Pixels>,
+    moved: bool,
+}
+
+const SELECTION_SCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The first and last grid rows are the drag-to-scroll zones.
+fn selection_scroll_direction(y: f32, hit: CellHitTest) -> i32 {
+    if hit.rows == 0 {
+        return 0;
+    }
+    let height = hit.cell_height.max(1.0);
+    let bottom = height * hit.rows as f32;
+    let edge = height.min(bottom / 2.0);
+    if y < edge {
+        1
+    } else if y >= bottom - edge {
+        -1
+    } else {
+        0
+    }
 }
 
 /// What besides the tabs is on screen for the pointer to be over.
@@ -2138,6 +2176,7 @@ impl TerminalView {
             view.registry.window_presence = window_presence(window);
             if !window.is_window_active() {
                 view.hide_tab_hints(cx);
+                let _ = view.finish_selection();
             }
             // The cursor shows whether this window has the keyboard.
             cx.notify();
@@ -2228,6 +2267,8 @@ impl TerminalView {
             cursor_animator: CursorAnimator::new(std::time::Instant::now()),
             scrollbar_track: Arc::new(Mutex::new((0.0, 1.0))),
             scrollbar_grab: None,
+            selection_gesture: None,
+            selection_gesture_id: 0,
             frame_due: None,
             system_motion: MotionPace::default(),
             motion: ChromeMotion::default(),
@@ -2803,6 +2844,7 @@ impl TerminalView {
         if let Some(state) = self.active_state_mut()
             && let Some(matched) = state.interaction.search_key(key, &state.frame)
         {
+            state.session.clear_selection();
             state.interaction.select_match(matched);
         }
     }
@@ -3337,10 +3379,13 @@ impl TerminalView {
             return;
         }
         if app_chord(modifiers).is_some() && key.eq_ignore_ascii_case("c") {
-            if let Some(text) = self
-                .active_state()
-                .and_then(|state| state.interaction.copy(&state.frame))
-            {
+            if let Some(text) = self.active_state().and_then(|state| {
+                if state.interaction.search_selection().is_some() {
+                    state.interaction.copy(&state.frame)
+                } else {
+                    state.session.selection_text()
+                }
+            }) {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
             return;
@@ -3415,36 +3460,146 @@ impl TerminalView {
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.finish_selection();
         if let Some(pane) = self.active_pane() {
             self.apply_workspace_action(ShellAction::FocusPane(pane));
         }
         self.focus.focus(window);
         let (hit_test, position) = self.hit_test(event.position);
+        let Some(pane) = self.active_pane() else {
+            return;
+        };
         if let Some(state) = self.active_state_mut() {
             state.interaction.begin_selection(hit_test, position);
+            state.session.begin_selection(position);
+            state.selection_dragging = true;
+            let generation = state.generation;
+            self.selection_gesture_id = self.selection_gesture_id.wrapping_add(1);
+            let id = self.selection_gesture_id;
+            self.selection_gesture = Some(SelectionGesture {
+                id,
+                pane,
+                generation,
+                position: event.position,
+                moved: false,
+            });
+            cx.spawn(async move |weak, cx| {
+                loop {
+                    Timer::after(SELECTION_SCROLL_INTERVAL).await;
+                    match weak.update(cx, |view, cx| view.selection_scroll_tick(id, cx)) {
+                        Ok(true) => {}
+                        Ok(false) | Err(_) => break,
+                    }
+                }
+            })
+            .detach();
         }
         cx.notify();
+    }
+
+    fn update_selection_position(&mut self, position: gpui::Point<Pixels>) {
+        let Some(gesture) = self.selection_gesture.as_mut() else {
+            return;
+        };
+        gesture.moved |= gesture.position != position;
+        gesture.position = position;
+        let pane = gesture.pane;
+        if self.active_pane() != Some(pane) {
+            let _ = self.finish_selection();
+            return;
+        }
+        let (hit_test, cell) = self.hit_test(position);
+        if let Some(state) = self.active_state_mut() {
+            state.interaction.extend_selection(hit_test, cell);
+            if !state.session.extend_selection(cell) {
+                let _ = self.finish_selection();
+            }
+        }
+    }
+
+    fn selection_scroll_tick(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        let Some(gesture) = self.selection_gesture.filter(|gesture| gesture.id == id) else {
+            return false;
+        };
+        if self.active_pane() != Some(gesture.pane)
+            || !self
+                .registry
+                .sessions
+                .get(&gesture.pane)
+                .is_some_and(|state| {
+                    state.generation == gesture.generation
+                        && state.selection_dragging
+                        && state.error.is_none()
+                })
+        {
+            let _ = self.finish_selection();
+            return false;
+        }
+        if !gesture.moved {
+            return true;
+        }
+        let (hit, _) = self.hit_test(gesture.position);
+        let Some(state) = self.active_state() else {
+            return false;
+        };
+        let (_, top) = *state
+            .viewport_origin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let direction = selection_scroll_direction(f32::from(gesture.position.y) - top, hit);
+        let Some((offset, history)) = state.frame.viewport_offset.zip(state.frame.scrollback_rows)
+        else {
+            return true;
+        };
+        let target = match direction {
+            1 => offset.saturating_add(1).min(history),
+            -1 => offset.saturating_sub(1),
+            _ => offset,
+        };
+        if target != offset {
+            self.scroll_active(TerminalScroll::ToOffset(target));
+            self.update_selection_position(gesture.position);
+            cx.notify();
+        }
+        self.selection_gesture
+            .is_some_and(|gesture| gesture.id == id)
+    }
+
+    /// Finish only the session that owned the press, even if the active tab changed.
+    fn finish_selection(&mut self) -> Option<String> {
+        let gesture = self.selection_gesture.take()?;
+        let state = self.registry.sessions.get_mut(&gesture.pane)?;
+        if state.generation != gesture.generation {
+            return None;
+        }
+        state.selection_dragging = false;
+        state.interaction.end_selection();
+        state.session.end_selection();
+        state.session.selection_text()
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if event.dragging() {
-            let (hit_test, position) = self.hit_test(event.position);
-            if let Some(state) = self.active_state_mut() {
-                state.interaction.extend_selection(hit_test, position);
-            }
+            self.update_selection_position(event.position);
             cx.notify();
-        } else if let Some(state) = self.active_state_mut() {
+        } else {
             // Moving with no button held means the press ended where no release
             // could reach this view, such as outside the window.
-            state.interaction.end_selection();
+            if let Some(text) = self.finish_selection() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            cx.notify();
         }
     }
 
-    fn mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(state) = self.active_state_mut() {
-            state.interaction.end_selection();
+    fn mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if event.button == MouseButton::Left {
+            self.update_selection_position(event.position);
+            if let Some(text) = self.finish_selection() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            cx.notify();
         }
-        cx.notify();
     }
 }
 
@@ -3588,7 +3743,10 @@ impl Render for TerminalView {
             .sessions
             .get(&active_pane)
             .map(|state| TerminalOverlays {
-                selection: state.interaction.selection(),
+                selection: state
+                    .interaction
+                    .search_selection()
+                    .or_else(|| state.session.visible_selection()),
                 search_matches: state.interaction.search_matches().to_vec(),
                 current_search_match: state.interaction.current_match(),
             })
@@ -3647,6 +3805,7 @@ impl Render for TerminalView {
                 let pane_measured = Arc::clone(&measured);
                 let pane_viewport_origin = Arc::clone(&viewport_origin);
                 let pane_entity = entity.clone();
+                let selection_entity = entity.clone();
                 let live_content = content
                     .take()
                     .expect("the active tab contains its live Rio pane");
@@ -3662,12 +3821,6 @@ impl Render for TerminalView {
                         .on_key_down(cx.listener(Self::key))
                         .on_modifiers_changed(cx.listener(Self::modifiers_changed))
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
-                        .on_mouse_move(cx.listener(Self::mouse_move))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
-                        // A drag can end over chrome, whose panels occlude this
-                        // element. The gesture still has to end there, or a later
-                        // drag starting on that chrome extends the old selection.
-                        .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
                         .on_scroll_wheel(cx.listener(Self::scroll_wheel))
                         .child(
                             canvas(
@@ -3680,7 +3833,32 @@ impl Render for TerminalView {
                                         (f32::from(bounds.origin.x), f32::from(bounds.origin.y)),
                                     );
                                 },
-                                |_, _, _, _| {},
+                                move |_, _, window, _| {
+                                    let moved = selection_entity.clone();
+                                    window.on_mouse_event(
+                                        move |event: &MouseMoveEvent, phase, window, app| {
+                                            if phase == DispatchPhase::Capture {
+                                                let _ = moved.update(app, |view, cx| {
+                                                    if view.selection_gesture.is_some() {
+                                                        view.mouse_move(event, window, cx);
+                                                    }
+                                                });
+                                            }
+                                        },
+                                    );
+                                    let released = selection_entity.clone();
+                                    window.on_mouse_event(
+                                        move |event: &MouseUpEvent, phase, window, app| {
+                                            if phase == DispatchPhase::Capture {
+                                                let _ = released.update(app, |view, cx| {
+                                                    if view.selection_gesture.is_some() {
+                                                        view.mouse_up(event, window, cx);
+                                                    }
+                                                });
+                                            }
+                                        },
+                                    );
+                                },
                             )
                             .absolute()
                             .inset_0(),
@@ -3803,6 +3981,29 @@ mod tests {
     use rio_vt::crosswords::Mode;
     use std::collections::VecDeque;
 
+    #[test]
+    fn selection_scroll_zones_follow_grid_metrics_and_outside_edges() {
+        let hit = CellHitTest {
+            cell_width: 8.0,
+            cell_height: 20.0,
+            rows: 4,
+            columns: 10,
+        };
+        assert_eq!(selection_scroll_direction(-30.0, hit), 1);
+        assert_eq!(selection_scroll_direction(19.9, hit), 1);
+        assert_eq!(selection_scroll_direction(20.0, hit), 0);
+        assert_eq!(selection_scroll_direction(59.9, hit), 0);
+        assert_eq!(selection_scroll_direction(60.0, hit), -1);
+        assert_eq!(selection_scroll_direction(100.0, hit), -1);
+        let single = CellHitTest { rows: 1, ..hit };
+        assert_eq!(selection_scroll_direction(5.0, single), 1);
+        assert_eq!(selection_scroll_direction(15.0, single), -1);
+        assert_eq!(
+            selection_scroll_direction(0.0, CellHitTest { rows: 0, ..hit }),
+            0
+        );
+    }
+
     struct FakeSession {
         frame: TerminalFrame,
         effects: Arc<Mutex<Vec<ControlEvent>>>,
@@ -3812,6 +4013,7 @@ mod tests {
         sent: Arc<Mutex<Vec<u8>>>,
         /// A cursor a test can move, for a change that marks no damage.
         cursor: Option<Arc<Mutex<CursorState>>>,
+        cwd: Arc<Mutex<Option<String>>>,
         /// Every palette the session has been told about, oldest first.
         palette: FakePalettes,
     }
@@ -3843,6 +4045,24 @@ mod tests {
             Ok(())
         }
 
+        fn begin_selection(&mut self, _: LogicalPosition) {}
+
+        fn extend_selection(&mut self, _: LogicalPosition) -> bool {
+            true
+        }
+
+        fn end_selection(&mut self) {}
+
+        fn clear_selection(&mut self) {}
+
+        fn visible_selection(&self) -> Option<super::super::selection::Selection> {
+            None
+        }
+
+        fn selection_text(&self) -> Option<String> {
+            None
+        }
+
         fn frame(&mut self) -> TerminalFrame {
             self.frame.cursor = self.cursor();
             self.frame.clone()
@@ -3855,7 +4075,7 @@ mod tests {
         }
 
         fn working_directory(&self) -> Option<String> {
-            None
+            self.cwd.lock().unwrap().clone()
         }
 
         fn foreground_process(&self) -> Option<ForegroundProcess> {
@@ -4144,6 +4364,7 @@ mod tests {
             sent: Arc::default(),
             cursor: Some(Arc::clone(&cursor)),
             palette: Arc::default(),
+            cwd: Arc::default(),
         };
         let start = SessionStart {
             session: Box::new(session),
@@ -4198,6 +4419,7 @@ mod tests {
             sent: Arc::default(),
             cursor: None,
             palette: Arc::default(),
+            cwd: Arc::default(),
         };
         (
             SessionStart {
@@ -4205,6 +4427,33 @@ mod tests {
                 wake_rx,
             },
             effects,
+        )
+    }
+
+    fn directory_recording_start(
+        directory: Option<std::path::PathBuf>,
+    ) -> (SessionStart, Arc<Mutex<Option<String>>>) {
+        let cwd = Arc::new(Mutex::new(
+            directory.map(|path| path.to_string_lossy().into_owned()),
+        ));
+        let (wake_tx, wake_rx) = async_channel::unbounded();
+        drop(wake_tx);
+        let session = FakeSession {
+            frame: frame_with('a'),
+            effects: Arc::default(),
+            close_error: None,
+            foreground: Arc::new(Mutex::new("zsh".into())),
+            sent: Arc::default(),
+            cursor: None,
+            palette: Arc::default(),
+            cwd: Arc::clone(&cwd),
+        };
+        (
+            SessionStart {
+                session: Box::new(session),
+                wake_rx,
+            },
+            cwd,
         )
     }
 
@@ -4222,6 +4471,7 @@ mod tests {
             sent: Arc::default(),
             cursor: None,
             palette: Arc::default(),
+            cwd: Arc::default(),
         };
         (
             SessionStart {
@@ -5191,6 +5441,52 @@ mod tests {
     }
 
     #[test]
+    fn new_tabs_follow_the_current_session_directory_and_fall_back_when_unavailable() {
+        let first_directory = std::env::temp_dir();
+        let second_directory = std::env::current_dir().unwrap();
+        let (initial, initial_cwd) = directory_recording_start(None);
+        let (second, _) = directory_recording_start(Some(second_directory.clone()));
+        let (third, _) = directory_recording_start(None);
+        let (fourth, _) =
+            directory_recording_start(Some(first_directory.join("cuetty-missing-directory")));
+        let (fifth, _) = directory_recording_start(None);
+        let (factory, directories) = fake_factory_recording(vec![
+            Ok(initial),
+            Ok(second),
+            Ok(third),
+            Ok(fourth),
+            Ok(fifth),
+        ]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        // The live session has moved since the last configuration poll.
+        let pane = registry.active_pane().unwrap();
+        registry
+            .sessions
+            .get_mut(&pane)
+            .unwrap()
+            .cuenv
+            .observe_cwd(second_directory.clone());
+        *initial_cwd.lock().unwrap() = Some(first_directory.to_string_lossy().into_owned());
+
+        for _ in 0..4 {
+            registry
+                .start_tab(test_geometry(), SystemAppearance::Dark)
+                .unwrap();
+        }
+
+        assert_eq!(
+            directories.lock().unwrap().as_slice(),
+            [
+                None,
+                Some(first_directory),
+                Some(second_directory),
+                None,
+                None
+            ]
+        );
+    }
+
+    #[test]
     fn a_broken_pane_offers_no_tasks() {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let factory = fake_factory(vec![Ok(initial)]);
@@ -5233,6 +5529,7 @@ mod tests {
             sent: Arc::default(),
             cursor: None,
             palette: Arc::clone(&palette),
+            cwd: Arc::default(),
         };
         let start = SessionStart {
             session: Box::new(session),
@@ -5601,6 +5898,7 @@ mod tests {
             sent: Arc::clone(&sent),
             cursor: None,
             palette: Arc::default(),
+            cwd: Arc::default(),
         };
         let pane = PaneState::new(
             SessionGeneration(1),
@@ -5891,6 +6189,7 @@ mod tests {
             close_error: None,
             cursor: None,
             palette: Arc::default(),
+            cwd: Arc::default(),
         };
         let foreground = Arc::clone(&session.foreground);
         let mut state = PaneState::new(

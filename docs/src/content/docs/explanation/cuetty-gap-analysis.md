@@ -18,7 +18,7 @@ Cuetty as a daily driver, see the [Cuetty daily-driver roadmap](/explanation/cue
 | --- | --- | --- | --- |
 | Terminal core | Mature terminal runtime and renderer with broader protocol coverage. | Rio-backed session, semantic frame adapter, fixed-grid GPUI renderer. | More protocol, Unicode, scrollback, and lifecycle coverage. |
 | Rendering | Fixed cell geometry, shaping, cursor and selection behaviour tuned for daily use. | Fixed-grid rows and cells with wide-cell, soft-wrap, semantic-style, and cursor policies. | Human visual acceptance and broader glyph/IME coverage. |
-| Interaction | Selection, clipboard, search, scrolling, and keyboard modes integrated into the terminal surface. | Input, resize, selection/copy, Rio-owned history navigation, visible-frame literal search, and a negotiated Kitty/modifyOtherKeys subset are live. | Selection/search across history, regex, keypad/key-release/alternate-key reporting, and IME. |
+| Interaction | Selection, clipboard, search, scrolling, and keyboard modes integrated into the terminal surface. | Input, resize, history selection with auto-copy and edge scrolling, Rio-owned history navigation, visible-frame literal search, and a negotiated Kitty/modifyOtherKeys subset are implemented. | Search across history, regex, keypad/key-release/alternate-key reporting, and IME. |
 | Product shell | Mature tabs, panes, commands, settings, persistence, and notifications. | Real GPUI tabs with one independent Rio session per tab; split actions remain rejected until pane/session allocation exists. | Wire splits and the remaining daily-use shell. |
 | Persistence | Saved layouts and richer app state. | Versioned metadata-only workspace codec/storage traits. | Live restore/reconnect and durable file integration. |
 | Extensibility | Project-specific command and integration surfaces. | Capability and session-backend traits with deny-by-default scopes. | Remote, tmux, Wasm, and plugin runtimes. |
@@ -31,8 +31,8 @@ Cuetty as a daily driver, see the [Cuetty daily-driver roadmap](/explanation/cue
 The single Rio-backed terminal is the critical path. The next correctness work
 should cover:
 
-- Selection/search over complete Rio history and a scrollbar affordance; Rio
-  already owns viewport offsets and live wheel/keyboard navigation.
+- Search over complete Rio history; Rio owns viewport offsets, selection,
+  edge scrolling, and wheel/keyboard navigation.
 - Application keypad identity, extended key-release/alternate-key reporting,
   mouse reporting, alternate-screen handling, and remaining protocol replies.
 - Complete Unicode width and shaping behaviour, including combining marks,
@@ -46,7 +46,7 @@ should cover:
 The pure interaction and workspace contracts exist, but the live shell still
 needs:
 
-1. Full-history selection and search, including regex only after a clear
+1. Full-history search, including regex only after a clear
    search contract exists.
 2. Independent Rio sessions for each live split (tabs are already session-backed).
 3. Close/reopen lifecycle, titles, pane resizing, and live workspace restore.
@@ -85,7 +85,7 @@ implementations, but no unsupported backend is being advertised:
 1. Finish per-session Rio correctness and human visual/input acceptance.
 2. Implement independent Rio session allocation and lifecycle for splits; tabs
    already own independent sessions.
-3. Wire full-history selection/search, configuration, and workspace restore.
+3. Wire full-history search, configuration, and workspace restore.
 4. Add Cuenv task/environment affordances behind the existing traits.
 5. Qualify Linux and Windows builds separately; do not infer support from Rust
    compilation alone.
