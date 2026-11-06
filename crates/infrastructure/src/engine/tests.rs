@@ -1,6 +1,6 @@
 use super::*;
 use crate::references::{ConfigurationSelector, NativeReference};
-use crate::state::MemoryStateStore;
+use crate::state::{MemoryStateStore, UnlockOutcome};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -2955,7 +2955,7 @@ impl StateStore for FailingWrites {
         self.inner.acquire_lock(tenant, request).await
     }
 
-    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
+    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<UnlockOutcome> {
         self.inner.unlock(tenant, lock).await
     }
 

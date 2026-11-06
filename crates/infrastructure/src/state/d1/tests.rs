@@ -603,8 +603,14 @@ async fn records_round_trip_through_d1() {
     // Deleting what is gone is not an error while the lock is held.
     store.delete(&tenant(), &lock, &bare.address).await.unwrap();
     assert_eq!(store.list(&tenant()).await.unwrap().len(), 1);
-    assert!(store.unlock(&tenant(), &lock).await.unwrap());
-    assert!(!store.unlock(&tenant(), &lock).await.unwrap());
+    assert_eq!(
+        store.unlock(&tenant(), &lock).await.unwrap(),
+        crate::UnlockOutcome::Released
+    );
+    assert_eq!(
+        store.unlock(&tenant(), &lock).await.unwrap(),
+        crate::UnlockOutcome::NotHeld
+    );
 }
 
 #[tokio::test]

@@ -30,7 +30,11 @@ schema.#Project & {
 Reads fall through to the remote and whatever is fetched is streamed,
 digest-verified, and kept locally, so the second read of a blob is local. A
 remote action result is promoted into the local action cache only after all of
-its streams and outputs have been verified and committed successfully.
+its streams and outputs have been verified and committed successfully, and only
+when every blob it names was kept in the local store. A blob that was served
+but could not be stored locally leaves the result unpromoted, so the next run
+reads it from the remote again instead of from a local entry that points at
+nothing.
 
 ## Uploads are currently disabled
 
@@ -107,7 +111,17 @@ broken.
 
 The one exception is integrity: every blob fetched from a remote is
 digest-checked before its bytes reach your workspace. A server that returns
-the wrong content for a digest is rejected outright rather than trusted.
+the wrong content for a digest is rejected outright rather than trusted: the
+read becomes a miss and the task runs. cuenv logs a warning naming the digest
+and, for the rest of the run, treats that blob as absent from the remote.
+
+A REAPI server reports a blob as present from its index, without checking the
+stored bytes, so a blob that rots on the server stays "present". Once uploads
+are enabled, a run that produces such a blob re-uploads it even though the
+server reports it present, reads it back, and only publishes results that
+name it after the read-back verifies. A server that ignores writes for digests
+it already holds cannot be repaired from the client; the warning then says so,
+and an operator must evict the blob.
 
 ## What is not wired yet
 

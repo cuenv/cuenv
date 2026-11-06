@@ -40,6 +40,6 @@ pub use object::{
     RestoreRequest, StateSize, StoredTenant, TenantImport,
 };
 pub use resource::{ConditionalPut, ManagedResource, RecordVersion, ResourceAddress};
-pub use store::StateStore;
+pub use store::{StateStore, UnlockOutcome};
 pub use turso::{TursoConfiguration, TursoStateStore};
 pub use writer::LastWriter;

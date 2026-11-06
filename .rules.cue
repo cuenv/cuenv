@@ -23,6 +23,9 @@ rules.#DirectoryRules & {
             "node_modules",
             "result",
             "sbom.json",
+            // Quint / Apalache / TLC scratch output
+            "specs/quint/_apalache-out",
+            "specs/quint/tmp",
             "target",
         ]
     }

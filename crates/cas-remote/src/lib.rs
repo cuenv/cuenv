@@ -44,12 +44,15 @@ pub mod action_cache;
 pub mod cas;
 pub mod client;
 pub mod config;
+pub mod corruption;
 pub mod error;
 pub mod layered;
+mod temporary;
 
 pub use action_cache::RemoteActionCache;
 pub use cas::RemoteCas;
 pub use client::RemoteClient;
 pub use config::{Credentials, RemoteConfig};
+pub use corruption::CorruptionAwareCas;
 pub use error::{Error, Result};
 pub use layered::{LayeredActionCache, LayeredCas};

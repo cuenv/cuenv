@@ -34,6 +34,7 @@ let _flakeInputs = list.Concat([
 	[for tree in _flakeSourceFiles.trees {"\(tree)/**"}],
 	[for tree in _flakeSourceFiles.cueTrees {"\(tree)/**/*.cue"}],
 	[for tree in _flakeSourceFiles.cuettyTrees {"\(tree)/**"}],
+	[for tree in _flakeSourceFiles.specTrees {"\(tree)/**"}],
 ])
 
 let _schemaDocsInputs = [
@@ -383,6 +384,13 @@ schema.#Project & {
 			nextest: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-nextest", "-L", "--accept-flake-config"]
+				inputs: _flakeInputs
+			}
+
+			// Model-checks the Quint specs in specs/quint with TLC.
+			quint: schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-quint-specs", "-L", "--accept-flake-config"]
 				inputs: _flakeInputs
 			}
 		}

@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use cuenv_events::emit_stderr;
-use cuenv_infrastructure::{Cancellation, StateLock, StateStore, TenantKey};
+use cuenv_infrastructure::{Cancellation, StateLock, StateStore, TenantKey, UnlockOutcome};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -426,10 +426,14 @@ async fn exit_now(context: &ForcedExitContext) {
             match (phase, released) {
                 // The request may commit after the release was attempted.
                 (LockPhase::Acquiring, _) => ExitLock::MaybeAcquired(identifier),
-                (LockPhase::Held, Ok(Ok(true))) => ExitLock::Released(identifier),
-                // The lock was already gone: nothing is held, and nothing was
-                // released.
-                (LockPhase::Held, Ok(Ok(false))) => ExitLock::None,
+                (LockPhase::Held, Ok(Ok(UnlockOutcome::Released))) => {
+                    ExitLock::Released(identifier)
+                }
+                // The lock is gone: nothing is held, and no release is
+                // claimed.
+                (LockPhase::Held, Ok(Ok(UnlockOutcome::NotHeld | UnlockOutcome::Superseded))) => {
+                    ExitLock::None
+                }
                 (LockPhase::Held, Ok(Err(_)) | Err(_)) => ExitLock::NotReleased(identifier),
             }
         }

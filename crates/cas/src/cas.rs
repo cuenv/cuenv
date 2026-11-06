@@ -58,6 +58,33 @@ pub trait Cas: Send + Sync {
     /// Returns an I/O error if the source cannot be read or the blob
     /// cannot be written to the store.
     async fn put_file(&self, source: &Path) -> Result<Digest>;
+
+    /// Store `bytes` even when the store reports that it already holds
+    /// their digest.
+    ///
+    /// A store that answers "present" from its index alone, as a REAPI
+    /// server's `FindMissingBlobs` does, can hold bytes that no longer hash
+    /// to their digest. A verifying read detects that; this is how the
+    /// caller then replaces them. The default is [`Cas::put_bytes`], which is
+    /// right for a store that verifies a blob before skipping a write, as
+    /// [`LocalCas`] does.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Cas::put_bytes`].
+    async fn replace_bytes(&self, bytes: &[u8]) -> Result<Digest> {
+        self.put_bytes(bytes).await
+    }
+
+    /// Stream a file into the store even when the store reports that it
+    /// already holds its digest. See [`Cas::replace_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// As for [`Cas::put_file`].
+    async fn replace_file(&self, source: &Path) -> Result<Digest> {
+        self.put_file(source).await
+    }
 }
 
 /// A blob store rooted at a local directory.

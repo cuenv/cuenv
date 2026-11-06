@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use super::{
     ConditionalPut, LastWriter, LockInformation, LockRequest, ManagedResource, RecordVersion,
-    ResourceAddress, StateLock, StateStore, TenantLock,
+    ResourceAddress, StateLock, StateStore, TenantLock, UnlockOutcome,
 };
 use crate::error::{InfrastructureError, Result};
 use crate::tenant::TenantKey;
@@ -197,8 +197,12 @@ impl StateStore for MemoryStateStore {
         Ok(request.lock.clone())
     }
 
-    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
-        self.force_unlock(tenant, &lock.lock_identifier).await
+    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<UnlockOutcome> {
+        Ok(if self.force_unlock(tenant, &lock.lock_identifier).await? {
+            UnlockOutcome::Released
+        } else {
+            UnlockOutcome::NotHeld
+        })
     }
 
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
@@ -467,8 +471,14 @@ mod tests {
         let information = store.current_lock(&tenant).await.unwrap().unwrap();
         assert_eq!(information.holder, "first");
         // Releasing reports whether the lock was still held.
-        assert!(store.unlock(&tenant, &lock).await.unwrap());
-        assert!(!store.unlock(&tenant, &lock).await.unwrap());
+        assert_eq!(
+            store.unlock(&tenant, &lock).await.unwrap(),
+            crate::UnlockOutcome::Released
+        );
+        assert_eq!(
+            store.unlock(&tenant, &lock).await.unwrap(),
+            crate::UnlockOutcome::NotHeld
+        );
         assert!(store.current_lock(&tenant).await.unwrap().is_none());
         store.lock(&tenant, "third").await.unwrap();
     }

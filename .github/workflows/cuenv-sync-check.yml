@@ -74,6 +74,7 @@ on:
     - scripts/check-schema-docs.sh/**
     - scripts/flake-drv-paths.sh
     - scripts/flake-drv-paths.sh/**
+    - specs/quint/**
     - tests/schema-compat/**
   pull_request:
     branches:
@@ -146,6 +147,7 @@ on:
     - scripts/check-schema-docs.sh/**
     - scripts/flake-drv-paths.sh
     - scripts/flake-drv-paths.sh/**
+    - specs/quint/**
     - tests/schema-compat/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
