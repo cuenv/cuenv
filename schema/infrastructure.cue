@@ -10,7 +10,7 @@ import "strings"
 	projectPackage?: string & !=""
 }
 
-// Refine a secret-valued resource argument to use its verified write-only binding.
+// Require a secret for a managed string argument marked write-only by its provider.
 #WriteOnly: #Secret & {writeOnly: true}
 
 // =============================================================================
@@ -67,9 +67,9 @@ import "strings"
 // for redaction first. Plans mask the argument as (sensitive); state stores
 // the value in plaintext, marked sensitive. Provider `configuration` cannot
 // take a `#Secret` yet.
-// Managed string arguments can refine a secret with #WriteOnly. Explicit,
-// schema-verified bindings select the provider write-only attribute; these
-// values stay null in all states and require manual companion-version bumps.
+// Managed string arguments marked write-only by the provider can refine a secret
+// with #WriteOnly. Attribute names stay exactly as the provider declares them;
+// these values stay null in all states and require manual companion-version bumps.
 //
 // Closedness: every nested definition is referenced inside a struct literal
 // (`{#InfrastructureState}` rather than `#InfrastructureState`). A project

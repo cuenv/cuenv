@@ -5,58 +5,50 @@ Dependency [#570](https://github.com/cuenv/cuenv/issues/570) is implemented by
 `0eb7da22` / [#572](https://github.com/cuenv/cuenv/pull/572).
 Infrastructure remains experimental.
 
-## Value composition
+## Native provider arguments
 
-Expose one logical value property and compose its constraints:
+Preserve the provider's Terraform attribute names and compose input constraints:
 
 ```cue
 #Value: string | #Secret
 #WriteOnly: #Secret & {writeOnly: true}
 
-value: #Value & #WriteOnly & schema.#OnePasswordRef & {
+value_wo: #Value & #WriteOnly & schema.#OnePasswordRef & {
     ref: "op://Infrastructure/Cloudflare root/credential"
 }
 ```
 
-Generated configuration supplies the base `#Value` constraint. Users write
-`value: schema.#WriteOnly & <secret>` on that same field, with the provider's
-companion version argument separately. Write-only input is always a secret;
-a literal conflicts with the refinement. The marker survives CUE export but
-never reaches the resolver or the provider as metadata.
+Generated configuration supplies `#Value & #WriteOnly` on the native write-only
+string field. Users write `value_wo: schema.#WriteOnly & <secret>`, with the
+provider's companion version argument separately. cuenv currently requires a
+secret descriptor; Terraform itself also permits literal write-only input.
+The marker survives CUE export but never reaches the resolver or provider as metadata.
 
-CUE unification cannot change a provider's storage behavior. Explicit bindings
-in `crates/infrastructure/src/write_only.rs`, shared by the generator and engine,
-map the logical input to a real write-only provider attribute. They are keyed by
-canonical provider source and resource type, never guessed by suffix:
+The live attribute's `write_only` flag is authoritative for every provider and
+resource. An ordinary `value` and a write-only `value_wo` remain independent
+arguments, and provider validation owns any conflict between them. Attribute
+suffixes have no semantic meaning to cuenv. A write-only field without `_wo`
+works identically, and an ordinary field ending in `_wo` remains ordinary.
+Requiredness, nested paths, state and outputs all retain the original schema;
+write-only attributes never become output reference sources or destinations.
+Marking an ordinary string as write-only fails during classification, before
+secret resolution or provider configuration/resource calls.
 
-| Provider | Resource | Logical field | Provider field |
-| --- | --- | --- | --- |
-| `hashicorp/aws` | `aws_ssm_parameter` | `value` | `value_wo` |
-| `hashicorp/aws` | `aws_db_instance` | `password` | `password_wo` |
-| `hashicorp/azurerm` | `azurerm_key_vault_secret` | `value` | `value_wo` |
-| `example.com/test/fake` (tests) | `fake_write_only` | `value` | `value_wo` |
-
-The live schema must have a nullable ordinary string argument and an optional
-write-only string destination. Missing, ambiguous or incompatible bindings
-fail before resolution/resource calls. Generated types omit the raw alias of a
-bound pair. Standalone write-only string fields retain their provider names and
-require the same refinement. Provider state and `#Outputs` keep provider names;
-no write-only source or destination becomes an output reference.
-
-Bindings are runtime-owned and verified against the schema; no user-supplied or
-generated binding metadata is trusted. No lockfile/binding-identity field is
-needed. Providers exposing managed write-only attributes add a write-only contract
-marker to their schema digest, so an old binary cannot accept newly generated
-types and silently send a marked secret to an ordinary persisted argument.
+This replaces 0.69.0's limited logical aliases. There is no alias table, schema
+projection, inferred pairing or configuration-path translation. Existing alias
+users must use the provider's native write-only field. No lockfile format change
+or state migration is needed. Managed write-only schemas use contract marker 2
+in the schema digest to fence generated configurations from older runtimes,
+including the contract-1 runtime in 0.69.0.
 Affected existing pins require `cuenv infrastructure provider add <source>@<same-version>`;
 sync/init verify pins and cannot update this digest. Providers without write-only
-attributes retain their existing digest rules. Unpinned/untyped declarations have
+attributes retain their existing digest rules. Declarations with neither an applicable lock pin nor `schemaDigest` have
 no downgrade fence: use a compatible cuenv build for every plan/apply.
 
 ## Execution and persistence
 
-- Classification retains logical paths and the original marked descriptor for
-  CUE specialization/integrity checks. Only RPC configuration translates paths.
+- Classification retains native provider paths and the original marked descriptor
+  for CUE specialization/integrity checks. No paths are translated.
   Resolver payloads and memoization identity omit the marker, so one descriptor
   shared by ordinary and write-only arguments resolves once per command.
 - Declaration validation keeps secrets unknown. Plan/apply resolve lazily after
@@ -78,9 +70,9 @@ no downgrade fence: use a compatible cuenv build for every plan/apply.
 - Preserve a provider's replacement request at a write-only path or its containing
   object even when both state values compare equal as null. Create-time spurious
   replacement paths remain ignored as before.
-- The digest domain advances to version 5 and includes structured logical/provider
-  path pairs and presence, never write-only values, descriptor payloads or their
-  hashes. Text plans show `value = (write-only)`; JSON plans remain value-free.
+- The digest domain remains version 5 and includes structured provider paths and
+  presence, never write-only values, descriptor payloads or their hashes.
+  Text plans show `value_wo = (write-only)`; JSON plans remain value-free.
 
 **Rotation is manual.** A changed secret without a changed companion version does
 not plan an update. cuenv does not infer version arguments or create fingerprints.
@@ -111,7 +103,8 @@ CUE types, digest behavior, malformed markers, nested requiredness, unknown
 containers, replacement paths, provider receipt, manual rotation, short/escaped
 redaction, failed create/update state rejection, and recovery-file absence.
 The generated CLI lifecycle checks the actual `#WriteOnly & #ExecSecret`
-composition, value-free plans/state pull, raw-alias and literal rejection, and
+composition on native fields, value-free plans/state pull, ordinary-field marker
+and literal rejection before resolution, and
 resolver-free state/destroy operations. The existing fake-provider wrapper injects
 invalid MessagePack/JSON/unknown states after the Plugin Framework's own checks.
 
@@ -120,6 +113,13 @@ reviews identified and drove fixes for unknown ancestors, nested requiredness,
 ordinary `writeOnly` field compatibility, null replacement paths, redactor overlap
 and Unicode escaping, and descriptor identity preservation. Findings and final
 validation results are recorded in the pull request.
+
+The native-name correction was reviewed by the same five personas. Confirmed
+findings: marker eligibility must move into schema classification when removing
+the binding pass; names must not grant semantics; ordinary and write-only fields
+must remain independent; the digest must fence contract 1; optional null is absence, while required null
+and invalid write-only schemas still fail. All are addressed by
+the correction and its regression tests.
 
 Run focused Nix development-shell tests/clippy and the infrastructure end-to-end
 flake check, schema documentation validation and formatting. Cross-crate runtime

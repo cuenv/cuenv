@@ -1,63 +1,10 @@
-//! Write-only configuration bindings and the provider-state null invariant.
+//! Schema-classified write-only arguments and the provider-state null invariant.
 
 use std::collections::BTreeMap;
 
 use crate::error::{InfrastructureError, Result};
-use crate::schema::{Attribute, Block, Nesting, Presence};
-use crate::type_system::{PathStep, Type, Value};
-
-/// An explicit pairing, never inferred from an attribute suffix.
-pub fn binding(source: &str, resource: &str, logical: &str) -> Option<&'static str> {
-    match (source, resource, logical) {
-        ("registry.terraform.io/hashicorp/aws", "aws_ssm_parameter", "value")
-        | ("registry.terraform.io/hashicorp/azurerm", "azurerm_key_vault_secret", "value")
-        | ("example.com/test/fake", "fake_write_only", "value") => Some("value_wo"),
-        ("registry.terraform.io/hashicorp/aws", "aws_db_instance", "password") => {
-            Some("password_wo")
-        }
-        _ => None,
-    }
-}
-
-/// Validate an explicit pairing against the live provider schema.
-pub fn verified_binding<'schema>(
-    block: &'schema Block,
-    logical: &str,
-    target: &'static str,
-) -> Result<&'schema Attribute> {
-    let ordinary = block.attributes.get(logical);
-    let destination = block.attributes.get(target);
-    match (ordinary, destination) {
-        (Some(ordinary), Some(destination))
-            if ordinary.value_type == Type::String
-                && ordinary.nested.is_none()
-                && !ordinary.write_only
-                && matches!(
-                    ordinary.presence,
-                    Presence::Optional | Presence::OptionalComputed
-                )
-                && destination.value_type == Type::String
-                && destination.nested.is_none()
-                && destination.write_only
-                && destination.presence == Presence::Optional =>
-        {
-            Ok(destination)
-        }
-        _ => Err(InfrastructureError::configuration(format!(
-            "configuration.{logical}: provider schema does not support the declared write-only binding"
-        ))),
-    }
-}
-
-/// A pairing is exposed only when both provider attributes support it.
-pub fn available_binding(
-    provider: (&str, &str),
-    block: &Block,
-    logical: &str,
-) -> Option<&'static str> {
-    binding(provider.0, provider.1, logical)
-        .filter(|target| verified_binding(block, logical, target).is_ok())
-}
+use crate::schema::{Attribute, Block, Nesting};
+use crate::type_system::{PathStep, Value};
 
 /// Every non-null write-only leaf in a provider result is a protocol error.
 pub fn check_state(block: &Block, value: &Value, context: &str) -> Result<()> {
@@ -205,13 +152,13 @@ fn register_strings(value: &Value) {
     }
 }
 
-/// Refuse write-only secret markers in contexts with no managed binding.
+/// Refuse write-only secret markers outside schema-classified managed arguments.
 pub fn reject_markers(value: &serde_json::Value) -> Result<()> {
     match value {
         serde_json::Value::Object(fields) => {
             if fields.contains_key("writeOnly") && fields.contains_key("resolver") {
                 return Err(InfrastructureError::configuration(
-                    "writeOnly is only supported on managed string arguments with a verified provider binding",
+                    "writeOnly is only supported on managed string arguments marked write-only by the provider schema",
                 ));
             }
             for value in fields.values() {

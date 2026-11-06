@@ -1349,7 +1349,7 @@ async fn generated_arguments_compose_write_only_through_cli() -> TestResult {
     };
     let directory = prepare_directory()?;
     let (schema, _) = cue_types::load_schema(&provider, &Cancellation::default()).await?;
-    let source = ProviderSource::parse("example.com/test/fake")?;
+    let source = ProviderSource::parse("example.com/independent/fake")?;
     let types = cue_types::render(
         &schema,
         ProviderRelease {
@@ -1380,8 +1380,8 @@ async fn generated_arguments_compose_write_only_through_cli() -> TestResult {
         r#"package examples
 import (
  "github.com/cuenv/cuenv/schema"
- "example.com/test/fake:fake_provider"
- "example.com/test/fake/resources/fake_write_only"
+ "example.com/independent/fake:fake_provider"
+ "example.com/independent/fake/resources/fake_write_only"
 )
 schema.#Project
 name: {project}
@@ -1389,13 +1389,13 @@ let rootToken = schema.#ExecSecret & {{command: {command}}}
 infrastructure: {{
  state: turso: {{url: {url}, token: {{cuenvPassthrough: true, name: "TURSO_AUTH_TOKEN"}}}}
  providers: fake: {{
-  source: "example.com/test/fake"
+  source: "example.com/independent/fake"
   path: {provider}
   schemaDigest: {digest}
   configuration: fake_provider.#Configuration & {{directory: {directory}}}
  }}
  resources: only: fake_write_only.#Resource & {{configuration: {{
-  value: schema.#WriteOnly & rootToken
+  value_wo: schema.#WriteOnly & rootToken
   value_wo_version: 1
  }}}}
 }}
@@ -1416,7 +1416,7 @@ infrastructure: {{
     );
     let preview_text = String::from_utf8_lossy(&preview.stdout);
     assert!(
-        preview_text.contains("value = (write-only)"),
+        preview_text.contains("value_wo = (write-only)"),
         "{preview_text}"
     );
     // Composition preserves one resolver call per command.
@@ -1435,20 +1435,31 @@ infrastructure: {{
     lifecycle.run(&["state", "list"])?;
     assert_eq!(runs_so_far(), before_state);
 
-    // The refinement rejects literals and the generated API exposes no raw alias.
+    // Literals and marked ordinary attributes fail before any secret resolution.
+    let before_invalid = runs_so_far();
+    let validations = fs::read_to_string(lifecycle.directory.path().join("journal.log"))?
+        .matches("write_only: Validate")
+        .count();
     for invalid in [
         lifecycle.configuration.replace(
             "schema.#WriteOnly & rootToken",
             "schema.#WriteOnly & \"literal\"",
         ),
         lifecycle.configuration.replace(
-            "value: schema.#WriteOnly & rootToken",
             "value_wo: schema.#WriteOnly & rootToken",
+            "value: schema.#WriteOnly & rootToken",
         ),
     ] {
         fs::write(lifecycle.directory.path().join("env.cue"), invalid)?;
         let rejected = lifecycle.execute_text(&["plan"])?;
         assert!(!rejected.status.success());
+        assert_eq!(runs_so_far(), before_invalid);
+        assert_eq!(
+            fs::read_to_string(lifecycle.directory.path().join("journal.log"))?
+                .matches("write_only: Validate")
+                .count(),
+            validations
+        );
     }
     fs::write(
         lifecycle.directory.path().join("env.cue"),

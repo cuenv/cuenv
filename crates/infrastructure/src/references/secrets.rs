@@ -25,7 +25,6 @@ pub struct SecretArgument {
     pub secret: SecretReference,
     /// Provider destination when the argument is write-only.
     pub write_only: Option<DestinationPath>,
-    pub(crate) schema_write_only: bool,
 }
 
 /// Why a position cannot take a secret, even though it is a string.
@@ -145,6 +144,9 @@ impl Walk<'_> {
             return Err(at
                 .path()?
                 .problem("write-only secrets require a string attribute"));
+        }
+        if attribute.write_only && attribute.presence == Presence::Optional && value.is_null() {
+            return Ok(());
         }
         if attribute.write_only
             && !value
@@ -309,12 +311,16 @@ impl Walk<'_> {
                 ));
             }
         };
+        if marked && !at.write_only {
+            return Err(destination.problem(
+                "writeOnly requires an argument marked write-only by the provider schema",
+            ));
+        }
         let secret = SecretReference::from_descriptor(object.clone())
             .map_err(|reason| destination.problem(reason))?;
         self.found.push(SecretArgument {
             destination_attribute: destination.root_attribute().to_string(),
             write_only: marked.then(|| destination.clone()),
-            schema_write_only: at.write_only,
             destination,
             secret,
         });

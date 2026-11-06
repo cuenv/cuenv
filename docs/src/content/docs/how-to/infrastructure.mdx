@@ -504,7 +504,7 @@ The generated files, the lock and the provider binary are tied together by the s
 
 cuenv only replaces or removes a `cue.mod/gen` directory whose `provider.cue` starts with its generated-code header, and refuses otherwise. A `cuenv.lock` that pins infrastructure providers is lockfile format version 5; cuenv versions that do not know the section refuse such a lockfile rather than drop it. Lockfiles without the section stay at version 4.
 
-Generated resource and data source configuration accepts scalar arguments, including supported nested arguments, as either their normal value or an output reference. Data source packages are generated under `data/<type>/data_source.cue`. Provider functions and ephemeral resources are not generated. Managed write-only string arguments use the [single-field refinement](#keep-a-value-out-of-state-with-writeonly); data source and provider arguments do not support it. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource or data source type, so evaluation only pays for the packages you import, but the generated directory is large and `cuenv sync` writes all of it.
+Generated resource and data source configuration accepts scalar arguments, including supported nested arguments, as either their normal value or an output reference. Data source packages are generated under `data/<type>/data_source.cue`. Provider functions and ephemeral resources are not generated. Managed write-only string arguments use the [write-only refinement](#keep-a-value-out-of-state-with-writeonly); data source and provider arguments do not support it. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource or data source type, so evaluation only pays for the packages you import, but the generated directory is large and `cuenv sync` writes all of it.
 
 Data source schemas now participate in the schema digest. For a provider with data sources pinned before this support, rerun `cuenv infrastructure provider add <source>@<same-version>` to regenerate its types and update its digest pin. Ordinary sync refuses the old digest rather than silently changing a pin. Providers with neither data sources nor managed write-only attributes retain their previous digest.
 
@@ -811,15 +811,15 @@ Terraform providers return the arguments they were given, so the resolved value 
 
 ### Keep a value out of state with `#WriteOnly`
 
-Infrastructure remains experimental. Compose `schema.#WriteOnly` with a secret
-on the same logical value property:
+Infrastructure remains experimental. Use the provider's write-only argument,
+with its native Terraform name, and compose `schema.#WriteOnly` with a secret:
 
 ```cue
 infrastructure: resources: ci_token: aws_ssm_parameter.#Resource & {
     configuration: {
         name: "/ci/cloudflare-token"
         type: "SecureString"
-        value: schema.#WriteOnly & schema.#OnePasswordRef & {
+        value_wo: schema.#WriteOnly & schema.#OnePasswordRef & {
             ref: "op://Infrastructure/Cloudflare root/credential"
         }
         value_wo_version: 1
@@ -827,26 +827,25 @@ infrastructure: resources: ci_token: aws_ssm_parameter.#Resource & {
 }
 ```
 
-The generated `#Value` accepts an ordinary string or secret; intersecting it with
-`#WriteOnly` requires a secret and selects the provider's write-only argument.
-The logical field stays `value`; cuenv sends its resolved value as `value_wo`
-and leaves the ordinary provider `value` null. Generated types reject the raw
-write-only alias and literal values with the refinement applied.
+Generated configuration preserves every provider attribute name and its
+requiredness. An ordinary `value` and a write-only `value_wo` are separate
+arguments, as in Terraform; cuenv does not pair or rename them. The live provider
+schema's `write_only` flag determines eligibility, regardless of the provider,
+resource type or attribute suffix. Provider validation decides whether ordinary
+and write-only arguments can be configured together.
 
-Explicit bindings currently cover `hashicorp/aws` `aws_ssm_parameter.value` and
-`aws_db_instance.password`, and `hashicorp/azurerm`
-`azurerm_key_vault_secret.value`. Each binding is checked against the live schema;
-unsupported provider versions or bindings fail before resource calls. Other
-standalone write-only string arguments retain their provider name and require
-`schema.#WriteOnly & <secret>`. Numbers, booleans, structured write-only values,
-set elements, data sources, provider configuration and project environment
+A generated write-only string field has the constraint `#Value & #WriteOnly`.
+cuenv requires a secret descriptor for that input; unlike Terraform, literal
+write-only values are currently unsupported. Applying `#WriteOnly` to an ordinary
+argument fails before secret resolution. Numbers, booleans, structured write-only
+values, set elements, data sources, provider configuration and project environment
 variables do not accept this refinement.
 
 **Bump the companion version to rotate the value.** Changing a secret in its
 secret manager without changing `value_wo_version` does not plan an update.
 cuenv does not infer a companion argument or generate its version. Plans show
-`value = (write-only)` alongside the version change. The digest includes the
-selected binding and argument presence, never the secret or a hash of it.
+`value_wo = (write-only)` alongside the version change. The digest includes the
+configured provider path and argument presence, never the secret or a hash of it.
 
 The value reaches validation, planning and apply configuration only. A provider
 returning a non-null write-only state attribute causes an error; cuenv accepts
@@ -860,10 +859,14 @@ Providers exposing managed write-only fields use a new digest contract, which
 makes older cuenv binaries reject newly generated typed configurations before
 resolving secrets. Refresh an existing affected pin with
 `cuenv infrastructure provider add <source>@<same-version>`; sync/init verify the
-pin and cannot change that digest. Unpinned or untyped declarations have no
+pin and cannot change that digest. Declarations with neither an applicable lock pin nor `schemaDigest` have no
 runtime downgrade fence: run them only with a cuenv build supporting write-only
 arguments. Switching a formerly persisted secret to write-only does not erase
 old backend history or saved recovery files.
+
+Configurations using the logical aliases introduced in cuenv 0.69.0 must switch
+to native provider names, such as `value_wo` or `password_wo`, and refresh the
+affected pins with the same-version `provider add` command above.
 
 ## Plan and apply
 
