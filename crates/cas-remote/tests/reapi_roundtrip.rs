@@ -23,7 +23,9 @@ use bazel_remote_apis::google::bytestream::{
     WriteResponse,
 };
 use cuenv_cas::{ActionCache, Cas, Digest};
-use cuenv_cas_remote::{Credentials, RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig};
+use cuenv_cas_remote::{
+    CorruptionAwareCas, Credentials, RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
@@ -463,6 +465,39 @@ async fn writable_cas(server: &TestServer) -> RemoteCas {
 // =============================================================================
 // Tests
 // =============================================================================
+
+#[tokio::test]
+async fn a_blob_the_server_holds_corrupt_is_replaced_by_the_next_upload() {
+    let server = TestServer::start(Store::default(), sha256()).await;
+    let remote: Arc<dyn Cas> = Arc::new(writable_cas(&server).await);
+    let digest = Digest::of_bytes(b"task output");
+    // The server's index holds the digest, with bytes that do not match it.
+    lock(&server.store.blobs).insert(
+        format!("{}/{}", digest.hash, digest.size_bytes),
+        b"task outpux".to_vec(),
+    );
+
+    // Before: FindMissingBlobs says "present", so a plain upload is skipped
+    // and the blob stays corrupt.
+    remote.put_bytes(b"task output").await.unwrap();
+    assert!(remote.get(&digest).await.is_err());
+
+    let cas = CorruptionAwareCas::new(remote);
+    assert!(cas.contains(&digest).await.unwrap());
+    assert!(matches!(
+        cas.get(&digest).await,
+        Err(cuenv_cas::Error::DigestMismatch { .. })
+    ));
+    assert!(
+        !cas.contains(&digest).await.unwrap(),
+        "a corrupt blob is not offered"
+    );
+
+    cas.put_bytes(b"task output").await.unwrap();
+    assert_eq!(cas.get(&digest).await.unwrap(), b"task output");
+    assert!(!cas.is_known_corrupt(&digest));
+    assert!(cas.contains(&digest).await.unwrap());
+}
 
 #[tokio::test]
 async fn small_blob_round_trips_through_batch_rpcs() {

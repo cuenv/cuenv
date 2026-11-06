@@ -16,38 +16,12 @@
 //! The one thing that is *not* forgiven is a digest mismatch, which
 //! [`RemoteCas`](crate::RemoteCas) rejects before the bytes reach this layer.
 
+use crate::temporary::TemporaryFile;
 use async_trait::async_trait;
 use cuenv_cas::{ActionCache, ActionResult, Cas, Digest, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, warn};
-use uuid::Uuid;
-
-struct TemporaryFile {
-    path: PathBuf,
-}
-
-impl TemporaryFile {
-    fn new() -> Result<Self> {
-        let path = std::env::temp_dir().join(format!("cuenv-layered-cas-{}.tmp", Uuid::new_v4()));
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| cuenv_cas::Error::io(error, &path, "create temporary file"))?;
-        Ok(Self { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TemporaryFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
 
 fn verify_digest(expected: &Digest, actual: &Digest) -> Result<()> {
     (expected == actual).then_some(()).ok_or_else(|| {
@@ -226,6 +200,7 @@ pub struct LayeredActionCache {
     local: Arc<dyn ActionCache>,
     remote: Arc<dyn ActionCache>,
     remote_cas: Option<Arc<dyn Cas>>,
+    local_cas: Option<Arc<dyn Cas>>,
     push: bool,
 }
 
@@ -245,8 +220,18 @@ impl LayeredActionCache {
             local,
             remote,
             remote_cas: None,
+            local_cas: None,
             push: false,
         }
+    }
+
+    /// Supply the local CAS used to check that a verified remote result's
+    /// blobs were kept locally before the result is promoted into the local
+    /// action cache.
+    #[must_use]
+    pub fn with_local_cas(mut self, local_cas: Arc<dyn Cas>) -> Self {
+        self.local_cas = Some(local_cas);
+        self
     }
 
     /// Supply the remote CAS used to verify that an action result is complete
@@ -324,6 +309,23 @@ impl ActionCache for LayeredActionCache {
     }
 
     async fn commit_verified(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
+        // A blob fetched from the remote is served even when keeping a local
+        // copy fails. Promoting the result then would leave a local entry
+        // that names blobs the local store does not hold, and that entry
+        // shadows the remote one on every later lookup.
+        if let Some(local_cas) = &self.local_cas {
+            match cuenv_cas::missing_blobs(local_cas.as_ref(), result).await {
+                Ok(missing) if missing.is_empty() => {}
+                Ok(missing) => {
+                    debug!(action = %action_digest, ?missing, "not promoting remote result: blobs were not kept locally");
+                    return Ok(());
+                }
+                Err(error) => {
+                    debug!(action = %action_digest, %error, "not promoting remote result: local blobs could not be checked");
+                    return Ok(());
+                }
+            }
+        }
         self.local.update(action_digest, result).await
     }
 }
@@ -696,6 +698,54 @@ mod tests {
 
         assert_eq!(local.lookup(&digest).await.unwrap(), Some(result));
         assert!(remote.lookup(&digest).await.unwrap().is_none());
+    }
+
+    fn result_naming(bytes: &[u8]) -> ActionResult {
+        ActionResult {
+            exit_code: 0,
+            output_files: vec![cuenv_cas::OutputFile {
+                path: "out.txt".to_string(),
+                digest: Digest::of_bytes(bytes),
+                is_executable: false,
+            }],
+            ..ActionResult::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_verified_result_whose_blobs_are_local_is_promoted() {
+        let local_dir = TempDir::new().unwrap();
+        let cas_dir = TempDir::new().unwrap();
+        let local: Arc<dyn ActionCache> =
+            Arc::new(LocalActionCache::open(local_dir.path()).unwrap());
+        let local_cas = local_cas(&cas_dir);
+        local_cas.put_bytes(b"kept").await.unwrap();
+
+        let digest = Digest::of_bytes(b"action");
+        let result = result_naming(b"kept");
+        let layered = LayeredActionCache::new(local.clone(), Arc::new(BrokenActionCache))
+            .with_local_cas(local_cas);
+        layered.commit_verified(&digest, &result).await.unwrap();
+
+        assert_eq!(local.lookup(&digest).await.unwrap(), Some(result));
+    }
+
+    #[tokio::test]
+    async fn a_verified_result_whose_blobs_were_not_kept_locally_is_not_promoted() {
+        let local_dir = TempDir::new().unwrap();
+        let cas_dir = TempDir::new().unwrap();
+        let local: Arc<dyn ActionCache> =
+            Arc::new(LocalActionCache::open(local_dir.path()).unwrap());
+
+        let digest = Digest::of_bytes(b"action");
+        let layered = LayeredActionCache::new(local.clone(), Arc::new(BrokenActionCache))
+            .with_local_cas(local_cas(&cas_dir));
+        layered
+            .commit_verified(&digest, &result_naming(b"served but not kept"))
+            .await
+            .unwrap();
+
+        assert!(local.lookup(&digest).await.unwrap().is_none());
     }
 
     #[tokio::test]

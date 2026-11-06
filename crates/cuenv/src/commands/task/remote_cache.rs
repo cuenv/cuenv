@@ -7,8 +7,8 @@
 
 use cuenv_cas::{ActionCache, Cas};
 use cuenv_cas_remote::{
-    Credentials, LayeredActionCache, LayeredCas, RemoteActionCache, RemoteCas, RemoteClient,
-    RemoteConfig,
+    CorruptionAwareCas, Credentials, LayeredActionCache, LayeredCas, RemoteActionCache, RemoteCas,
+    RemoteClient, RemoteConfig,
 };
 use cuenv_core::manifest::{Cache, RemoteCache};
 use std::sync::Arc;
@@ -215,11 +215,15 @@ pub async fn build(
         "remote cache connected"
     );
 
-    let remote_cas = Arc::new(remote_cas) as Arc<dyn Cas>;
-    let mut cas = LayeredCas::new(local.cas, remote_cas.clone());
+    // Shared by the CAS and the action cache, so a blob that reads back
+    // corrupt is both re-uploaded and kept out of published results.
+    let remote_cas =
+        Arc::new(CorruptionAwareCas::new(Arc::new(remote_cas) as Arc<dyn Cas>)) as Arc<dyn Cas>;
+    let mut cas = LayeredCas::new(local.cas.clone(), remote_cas.clone());
     let mut action_cache =
         LayeredActionCache::new(local.action_cache, Arc::new(RemoteActionCache::new(client)))
-            .with_remote_cas(remote_cas);
+            .with_remote_cas(remote_cas)
+            .with_local_cas(local.cas);
     if upload {
         cas = cas.with_push();
         action_cache = action_cache.with_push();

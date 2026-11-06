@@ -509,9 +509,10 @@ impl RemoteCas {
         self.client.ensure_writable("upload a blob")?;
         let digest = Digest::of_bytes(bytes);
 
-        // Skip the upload when the server already holds the blob. Content
-        // addressing makes this safe and it is the common case in a warm
-        // cache.
+        // Skip the upload when the server reports the blob, the common case
+        // in a warm cache. The report comes from the server's index, not its
+        // bytes: a blob that reads back corrupt is replaced through
+        // `replace_bytes` instead (see `CorruptionAwareCas`).
         if self
             .find_missing(std::slice::from_ref(&digest))
             .await?
@@ -521,14 +522,57 @@ impl RemoteCas {
             return Ok(digest);
         }
 
-        if self.fits_in_a_batch(digest.size_bytes) {
-            self.write_batched(&digest, bytes).await?;
-        } else {
-            self.write_streamed(&digest, bytes).await?;
-        }
-        trace!(digest = %digest, "uploaded blob to remote CAS");
+        self.upload(&digest, bytes).await?;
         Ok(digest)
     }
+
+    /// Upload `bytes` under `digest` without asking whether the server
+    /// already holds it.
+    async fn upload(&self, digest: &Digest, bytes: &[u8]) -> Result<()> {
+        self.client.ensure_writable("upload a blob")?;
+        if self.fits_in_a_batch(digest.size_bytes) {
+            self.write_batched(digest, bytes).await?;
+        } else {
+            self.write_streamed(digest, bytes).await?;
+        }
+        trace!(digest = %digest, "uploaded blob to remote CAS");
+        Ok(())
+    }
+
+    /// Upload the file at `source`, whose digest is `digest`, without asking
+    /// whether the server already holds it.
+    async fn upload_file(&self, digest: &Digest, source: &Path) -> cuenv_cas::Result<()> {
+        self.client
+            .ensure_writable("upload a file")
+            .map_err(cuenv_cas::Error::from)?;
+        if self.fits_in_a_batch(digest.size_bytes) {
+            let bytes = tokio::fs::read(source)
+                .await
+                .map_err(|error| cuenv_cas::Error::io(error, source, "read"))?;
+            let actual = Digest::of_bytes(&bytes);
+            if &actual != digest {
+                return Err(cuenv_cas::Error::digest_mismatch(
+                    digest.to_resource(),
+                    actual.to_resource(),
+                ));
+            }
+            self.write_batched(digest, &bytes)
+                .await
+                .map_err(cuenv_cas::Error::from)?;
+        } else {
+            self.write_file_streamed(digest, source).await?;
+        }
+        Ok(())
+    }
+}
+
+/// The digest of the file at `source`, read once in full.
+///
+/// # Errors
+///
+/// Returns an I/O error if the file cannot be read.
+pub(crate) async fn digest_file(source: &Path) -> cuenv_cas::Result<Digest> {
+    RemoteCas::digest_file(source).await
 }
 
 fn validate_response_digest(
@@ -618,23 +662,21 @@ impl Cas for RemoteCas {
         {
             return Ok(digest);
         }
-        if self.fits_in_a_batch(digest.size_bytes) {
-            let bytes = tokio::fs::read(source)
-                .await
-                .map_err(|error| cuenv_cas::Error::io(error, source, "read"))?;
-            let actual = Digest::of_bytes(&bytes);
-            if actual != digest {
-                return Err(cuenv_cas::Error::digest_mismatch(
-                    digest.to_resource(),
-                    actual.to_resource(),
-                ));
-            }
-            self.write_batched(&digest, &bytes)
-                .await
-                .map_err(cuenv_cas::Error::from)?;
-        } else {
-            self.write_file_streamed(&digest, source).await?;
-        }
+        self.upload_file(&digest, source).await?;
+        Ok(digest)
+    }
+
+    async fn replace_bytes(&self, bytes: &[u8]) -> cuenv_cas::Result<Digest> {
+        let digest = Digest::of_bytes(bytes);
+        self.upload(&digest, bytes)
+            .await
+            .map_err(cuenv_cas::Error::from)?;
+        Ok(digest)
+    }
+
+    async fn replace_file(&self, source: &Path) -> cuenv_cas::Result<Digest> {
+        let digest = Self::digest_file(source).await?;
+        self.upload_file(&digest, source).await?;
         Ok(digest)
     }
 }
