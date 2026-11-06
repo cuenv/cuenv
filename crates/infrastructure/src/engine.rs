@@ -186,7 +186,7 @@ impl StepKind {
 
 /// One provider call needed to realize a change. Every value is cty
 /// MessagePack.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ApplyStep {
     kind: StepKind,
     prior: Vec<u8>,
@@ -199,6 +199,15 @@ struct ApplyStep {
     /// The planned state `planned` encodes, which the provider's result
     /// must complete; null for a delete.
     planned_value: Value,
+}
+
+impl fmt::Debug for ApplyStep {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApplyStep")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Planned change to one managed resource.
@@ -372,7 +381,7 @@ impl Plan {
     #[must_use]
     pub fn digest(&self) -> PlanDigest {
         let mut digest = DigestWriter::default();
-        digest.field(b"cuenv infrastructure plan digest 4");
+        digest.field(b"cuenv infrastructure plan digest 5");
         digest.field(self.tenant.module_path().as_bytes());
         digest.field(self.tenant.project().as_bytes());
         match self.tenant.environment() {
@@ -414,6 +423,19 @@ impl Plan {
             digest.count(change.replacement_path_identities.len());
             for identity in &change.replacement_path_identities {
                 digest.field(identity);
+            }
+            let write_only: Vec<_> = change
+                .references
+                .secrets()
+                .iter()
+                .filter(|argument| argument.write_only.is_some())
+                .collect();
+            digest.count(write_only.len());
+            for argument in write_only {
+                digest.path(argument.destination.steps());
+                if let Some(destination) = &argument.write_only {
+                    digest.path(destination.steps());
+                }
             }
             digest.count(change.references.references().len());
             for reference in change.references.references() {
@@ -927,14 +949,21 @@ impl InfrastructureEngine {
                 .filter(|reference| reference.consumer == source)
                 .cloned()
                 .collect();
-            classified.insert(
-                source.clone(),
-                ConfigurationReferences::extract_with_schema(
-                    &declaration.configuration,
-                    self.declaration_block(&source)?,
-                    &references,
+            let block = self.declaration_block(&source)?;
+            let mut classified_references = ConfigurationReferences::extract_with_schema(
+                &declaration.configuration,
+                block,
+                &references,
+            )?;
+            match &source {
+                SourceAddress::Resource(address) => classified_references.bind_write_only(
+                    &self.loaded(declaration.provider_name())?.source,
+                    &address.resource_type,
+                    block,
                 )?,
-            );
+                SourceAddress::DataSource(_) => classified_references.reject_write_only()?,
+            }
+            classified.insert(source.clone(), classified_references);
         }
         DeclarationGraph::with_references(&self.infrastructure, &classified)
     }
@@ -1135,6 +1164,7 @@ impl InfrastructureEngine {
             ConfigurationPhase::Planning => input.references.resolve_planned(&prepared, resolve),
             ConfigurationPhase::Apply => input.references.resolve(&prepared, resolve),
         }?;
+        configuration = input.block.normalize_configuration(configuration);
         self.fill_secrets(&input, &projected, &mut configuration)
             .await?;
         Ok(configuration)
@@ -1176,9 +1206,19 @@ impl InfrastructureEngine {
                     reason: failure.reason().to_string(),
                 }
             })?;
-            argument
-                .destination
-                .replace_value(configuration, Value::String(value))?;
+            if let Some(destination) = &argument.write_only {
+                self.loaded(input.declaration.provider_name())?
+                    .client
+                    .register_write_only_secret(&value);
+                argument
+                    .destination
+                    .replace_value(configuration, Value::Null)?;
+                destination.replace_value(configuration, Value::String(value))?;
+            } else {
+                argument
+                    .destination
+                    .replace_value(configuration, Value::String(value))?;
+            }
         }
         Ok(())
     }
@@ -1340,11 +1380,12 @@ impl InfrastructureEngine {
                     "provider import for {address} returned a different resource type"
                 )));
             }
-            sensitive_provider_value(SensitiveProviderValue {
+            let (value, _) = sensitive_provider_value(SensitiveProviderValue {
                 value: resource.state.as_ref(),
                 value_type: &value_type,
                 sensitive: &sensitive,
             })?;
+            crate::write_only::check_state(&schema.block, &value, &format!("import {address}"))?;
         }
         check_diagnostics(
             &format!("import {address}"),
@@ -1375,6 +1416,11 @@ impl InfrastructureEngine {
             value_type: &value_type,
             sensitive: &sensitive,
         })?;
+        crate::write_only::check_state(
+            &schema.block,
+            &imported_state,
+            &format!("import {address}"),
+        )?;
         check_upgraded(address, &imported_state)?;
 
         self.ensure_not_stopped()?;
@@ -1391,6 +1437,11 @@ impl InfrastructureEngine {
             value_type: &value_type,
             sensitive: &sensitive,
         })?;
+        crate::write_only::check_state(
+            &schema.block,
+            &state,
+            &format!("refresh imported {address}"),
+        )?;
         check_diagnostics(
             &format!("refresh imported {address}"),
             &refreshed.diagnostics,
@@ -1554,7 +1605,7 @@ impl InfrastructureEngine {
         // Order, and refuse an impossible order, now: before anyone is asked
         // to confirm the plan.
         let ordered = in_schedule_order(changes)?;
-        let changes = ordered.changes;
+        let mut changes = ordered.changes;
         warnings.extend(ordered.warnings);
         if mode == PlanMode::Apply {
             let mut rows = stored;
@@ -1577,6 +1628,28 @@ impl InfrastructureEngine {
                 pending: &pending,
             })
             .await?;
+        }
+        for change in &mut changes {
+            let provider = self.loaded(&change.provider)?;
+            let schema =
+                resource_schema(provider, &change.provider, &change.address.resource_type)?;
+            let value_type = schema.block.implied_type();
+            for step in &mut change.steps {
+                if step.kind != StepKind::Delete
+                    && change
+                        .references
+                        .secrets()
+                        .iter()
+                        .any(|argument| argument.write_only.is_some())
+                {
+                    let configuration =
+                        type_system::from_message_pack(&step.configuration, &value_type)?;
+                    let configuration = change
+                        .references
+                        .without_write_only_values(&configuration)?;
+                    step.configuration = type_system::to_message_pack(&configuration, &value_type)?;
+                }
+            }
         }
         Ok(Plan {
             tenant: self.tenant.clone(),
@@ -2246,13 +2319,42 @@ impl InfrastructureEngine {
                 self.ensure_not_stopped()
                     .map_err(OperationFailure::Continue)?;
             }
+            let has_write_only = change
+                .references
+                .secrets()
+                .iter()
+                .any(|argument| argument.write_only.is_some());
+            let configuration = if step.kind == StepKind::Delete || !has_write_only {
+                step.configuration.clone()
+            } else {
+                let mut configuration =
+                    type_system::from_message_pack(&step.configuration, &value_type)?;
+                for argument in change.references.secrets() {
+                    if let Some(destination) = &argument.write_only {
+                        let secrets = self.secrets.as_ref().ok_or_else(|| {
+                            InfrastructureError::configuration(
+                                "write-only configuration requires a secret resolver",
+                            )
+                        })?;
+                        let value = secrets.value(&argument.secret).await.map_err(|_| {
+                            InfrastructureError::configuration(
+                                "write-only secret could not be resolved",
+                            )
+                        })?;
+                        provider.client.register_write_only_secret(&value);
+                        destination.replace_value(&mut configuration, Value::String(value))?;
+                    }
+                }
+                self.ensure_not_stopped()?;
+                type_system::to_message_pack(&configuration, &value_type)?
+            };
             let response = provider
                 .client
                 .apply_resource_change(ApplyRequest {
                     type_name: &change.address.resource_type,
                     prior_state: step.prior.clone(),
                     planned_state: step.planned.clone(),
-                    configuration: step.configuration.clone(),
+                    configuration,
                     planned_private: step.planned_private.clone(),
                 })
                 .await?;
@@ -2261,6 +2363,11 @@ impl InfrastructureEngine {
             let _recording = self.cancellation().begin_recording();
             let context = format!("apply {}", change.address);
             let failed = response.diagnostics.iter().any(is_error);
+            if schema.block.contains_write_only() {
+                let checked = decode_provider_value(response.new_state.as_ref(), &value_type)
+                    .map_err(|_| InfrastructureError::plugin(format!("{context}: provider returned undecodable state; no returned state was accepted; the remote object may have changed")))?;
+                crate::write_only::check_state(&schema.block, &checked, &context)?;
+            }
             let returned = self
                 .decode_apply_response(
                     sensitivity::ApplyResponseValue {
@@ -2275,6 +2382,7 @@ impl InfrastructureEngine {
                     },
                 )
                 .await?;
+            crate::write_only::check_state(&schema.block, &returned, &context)?;
             register_typed_attributes(&returned, &change.sensitive, &value_type);
             let problem = apply_result_problem(&ApplyResult {
                 address: &change.address,
@@ -2482,6 +2590,7 @@ impl InfrastructureEngine {
             value_type: &value_type,
             sensitive: &change.sensitive,
         })?;
+        crate::write_only::check_state(&schema.block, &planned, "plan resource")?;
         check_diagnostics(
             &format!("final plan for {}", change.address),
             &response.diagnostics,
@@ -2522,6 +2631,7 @@ impl InfrastructureEngine {
                     prior: &prior_value,
                     planned: &planned,
                     value_type: &value_type,
+                    block: &schema.block,
                 })?;
                 if !replacements.is_empty() {
                     return Err(InfrastructureError::plugin(format!(
@@ -2853,8 +2963,11 @@ impl InfrastructureEngine {
             replacement_path_identities: Vec::new(),
             dependencies: input.dependencies.clone(),
             references: input.references.clone(),
-            reference_configuration: (!input.references.references().is_empty())
-                .then(|| configuration.clone()),
+            reference_configuration: if input.references.references().is_empty() {
+                None
+            } else {
+                Some(input.references.without_write_only_values(&configuration)?)
+            },
             steps: Vec::new(),
             refreshed_record: None,
             stored: input.stored.cloned(),
@@ -2908,6 +3021,7 @@ impl InfrastructureEngine {
             value_type: &value_type,
             sensitive: &change.sensitive,
         })?;
+        crate::write_only::check_state(block, &planned, "plan resource")?;
         check_diagnostics(&format!("plan {address}"), &response.diagnostics, warnings)?;
         reject_deferral(&address, response.deferred.as_ref())?;
         PlanValidity {
@@ -2920,9 +3034,18 @@ impl InfrastructureEngine {
         }
         .check()?;
 
+        let requires_replace = replacement_paths(&ReplacementCheck {
+            address: &address,
+            paths: &response.requires_replace,
+            prior: &prior.value,
+            planned: &planned,
+            value_type: &value_type,
+            block,
+        })?;
         let reference_output_unknown = input.references.has_unknown_destination(&configuration);
 
-        if !reference_output_unknown
+        if requires_replace.is_empty()
+            && !reference_output_unknown
             && type_system::semantically_equal(&planned, &prior.value, &value_type)
         {
             change.after = planned;
@@ -2953,14 +3076,6 @@ impl InfrastructureEngine {
             }
             return Ok(change);
         }
-
-        let requires_replace = replacement_paths(&ReplacementCheck {
-            address: &address,
-            paths: &response.requires_replace,
-            prior: &prior.value,
-            planned: &planned,
-            value_type: &value_type,
-        })?;
 
         if requires_replace.rendered.is_empty() {
             change.action = Action::Update;
@@ -3201,6 +3316,8 @@ impl InfrastructureEngine {
                 InfrastructureError::configuration("provider declaration disappeared")
             })?;
             let block = &provider.schema.provider.block;
+            ConfigurationReferences::extract_with_schema(&declaration.configuration, block, &[])?
+                .reject_write_only()?;
             let value_type = block.implied_type();
             let raw_configuration = Value::from_configuration_json(
                 &serde_json::Value::Object(declaration.configuration.clone()),
@@ -3340,8 +3457,8 @@ impl InfrastructureEngine {
         {
             return Err(InfrastructureError::configuration(format!(
                 "{declared_at}: cuenv.lock pins {source} {version} with schema {}, but the \
-                 installed provider reports {live}; the binary is not the release that was \
-                 pinned. Run `cuenv infrastructure provider add {source}@{version}` to pin it \
+                 installed provider reports {live}; the schema or cuenv generation contract has \
+                 changed. Run `cuenv infrastructure provider add {source}@{version}` to pin it \
                  again",
                 locked.schema_digest
             )));
@@ -3728,6 +3845,12 @@ async fn plan_destroy(input: &DestroyPlanInput<'_>, warnings: &mut Vec<String>) 
         value_type: input.value_type,
         sensitive: input.sensitive,
     })?;
+    let schema = resource_schema(
+        input.provider,
+        &input.provider.source,
+        &address.resource_type,
+    )?;
+    crate::write_only::check_state(&schema.block, &planned, &format!("plan destroy {address}"))?;
     check_diagnostics(
         &format!("plan destroy of {address}"),
         &response.diagnostics,
@@ -3778,6 +3901,7 @@ async fn refresh(
         value_type: &value_type,
         sensitive,
     })?;
+    crate::write_only::check_state(&schema.block, &value, &format!("refresh {}", row.address))?;
     check_diagnostics(
         &format!("refresh {}", row.address),
         &response.diagnostics,
@@ -3840,6 +3964,11 @@ async fn upgrade_state(
         // UpgradeResourceState accepts raw JSON and provider codecs can round
         // or underflow its numbers. Check with the known schema before sending.
         let stored = type_system::from_json_bytes(&state_json, &value_type)?;
+        crate::write_only::check_state(
+            &schema.block,
+            &stored,
+            &format!("stored state of {}", row.address),
+        )?;
         let _ = type_system::to_message_pack(&stored, &value_type)?;
     } else {
         // The old schema is unavailable. A numeric-looking string may be our
@@ -3856,6 +3985,11 @@ async fn upgrade_state(
         value_type: &value_type,
         sensitive,
     })?;
+    crate::write_only::check_state(
+        &schema.block,
+        &upgraded,
+        &format!("upgrade {}", row.address),
+    )?;
     check_diagnostics(
         &format!("upgrade state of {}", row.address),
         &upgrade.diagnostics,
@@ -3965,6 +4099,7 @@ async fn plan_create(
         value_type: &value_type,
         sensitive: input.sensitive,
     })?;
+    crate::write_only::check_state(&input.schema.block, &planned, "plan create")?;
     check_diagnostics(
         &format!("plan create of {address}"),
         &response.diagnostics,
@@ -4006,6 +4141,11 @@ struct PlanValidity<'check> {
 
 impl PlanValidity<'_> {
     fn check(&self) -> Result<()> {
+        crate::write_only::check_state(
+            self.block,
+            self.planned,
+            &format!("plan {}", self.address),
+        )?;
         // Applying a null planned state would delete the resource; never
         // tolerated, not even from legacy providers.
         if self.planned.is_null() {
@@ -4064,6 +4204,7 @@ struct ReplacementCheck<'check> {
     prior: &'check Value,
     planned: &'check Value,
     value_type: &'check Type,
+    block: &'check Block,
 }
 
 #[derive(Debug, Default)]
@@ -4099,7 +4240,13 @@ fn replacement_paths(check: &ReplacementCheck<'_>) -> Result<ReplacementPaths> {
         let value_type = check.value_type.at_path(&steps).unwrap_or(Type::Dynamic);
         let before = before.unwrap_or(&Value::Null);
         let after = after.unwrap_or(&Value::Null);
-        if !type_system::semantically_equal(before, after, &value_type) {
+        let write_only = crate::write_only::paths(check.block, check.planned)
+            .iter()
+            .any(|path| path.starts_with(&steps))
+            || crate::write_only::paths(check.block, check.prior)
+                .iter()
+                .any(|path| path.starts_with(&steps));
+        if write_only || !type_system::semantically_equal(before, after, &value_type) {
             changed
                 .rendered
                 .push(render_schema_path(&steps, check.value_type));
@@ -4568,6 +4715,14 @@ pub fn render_plan(plan: &Plan) -> String {
             rendered.push_str("      ");
             rendered.push_str(&line);
             rendered.push('\n');
+        }
+        for argument in change
+            .references
+            .secrets()
+            .iter()
+            .filter(|argument| argument.write_only.is_some())
+        {
+            let _ = writeln!(rendered, "      {} = (write-only)", argument.destination);
         }
         for path in sensitive_reference_paths(&change.references, &change.sensitive) {
             let _ = writeln!(rendered, "      # {path} = (sensitive)");

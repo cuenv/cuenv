@@ -30,6 +30,12 @@ impl SecretReference {
     /// Returns a value-free reason when `resolver` is missing, empty or not a
     /// string.
     pub fn from_descriptor(descriptor: Map<String, Json>) -> Result<Self, &'static str> {
+        if descriptor
+            .get("writeOnly")
+            .is_some_and(|marker| marker != &Json::Bool(true))
+        {
+            return Err("writeOnly must be true when present");
+        }
         match descriptor.get("resolver") {
             Some(Json::String(resolver)) if !resolver.is_empty() => Ok(Self { descriptor }),
             Some(Json::String(_)) => Err("a secret's `resolver` must not be empty"),
@@ -56,7 +62,9 @@ impl SecretReference {
     /// A key equal for two descriptions of the same secret, whatever their
     /// field order.
     fn identity(&self) -> String {
-        canonical(&Json::Object(self.descriptor.clone()))
+        let mut descriptor = self.descriptor.clone();
+        descriptor.remove("writeOnly");
+        canonical(&Json::Object(descriptor))
     }
 }
 
@@ -141,7 +149,12 @@ impl Secrets {
             Arc::clone(resolved.entry(secret.identity()).or_default())
         };
         cell.get_or_try_init(|| async {
-            let value = self.resolver.resolve(secret).await?;
+            let mut descriptor = secret.descriptor.clone();
+            descriptor.remove("writeOnly");
+            let value = self
+                .resolver
+                .resolve(&SecretReference { descriptor })
+                .await?;
             // Before the value leaves this function: a provider or an error
             // that echoes it is redacted from the first output on.
             cuenv_events::register_secret(value.clone());
@@ -196,6 +209,7 @@ mod tests {
     #[async_trait]
     impl SecretResolver for Counting {
         async fn resolve(&self, secret: &SecretReference) -> Result<String, SecretFailure> {
+            assert!(!secret.descriptor().contains_key("writeOnly"));
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail {
                 return Err(SecretFailure::new("unavailable"));
@@ -283,5 +297,20 @@ mod tests {
             canonical(&json!({"b": [1, {"d": 2, "c": "x"}], "a": null})),
             r#"{"a":null,"b":[1,{"c":"x","d":2}]}"#
         );
+    }
+    #[tokio::test]
+    async fn ordinary_and_write_only_descriptors_share_one_resolution() {
+        let resolver = Arc::new(Counting {
+            calls: AtomicUsize::new(0),
+            fail: false,
+        });
+        let secrets = Secrets::new(resolver.clone());
+        let ordinary = reference(json!({"resolver":"exec","command":"unused"}));
+        let write_only = reference(json!({"resolver":"exec","command":"unused","writeOnly":true}));
+        assert_eq!(
+            secrets.value(&ordinary).await.unwrap(),
+            secrets.value(&write_only).await.unwrap()
+        );
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
     }
 }

@@ -84,7 +84,7 @@ pub struct Attribute {
     /// Value is sensitive and must not be displayed.
     pub sensitive: bool,
     /// Configuration may set it, but the provider never stores it. cuenv
-    /// does not send write-only values.
+    /// sends these values only in resource configuration.
     pub write_only: bool,
     /// What the provider documents about the attribute.
     pub documentation: Documentation,
@@ -128,10 +128,19 @@ impl Presence {
 }
 
 impl Attribute {
+    pub(crate) fn contains_write_only(&self) -> bool {
+        self.write_only
+            || self
+                .nested
+                .as_ref()
+                .is_some_and(|nested| nested.attributes.values().any(Self::contains_write_only))
+    }
+
     /// Whether this attribute, or any nested attribute, is sensitive.
     #[must_use]
     pub fn contains_sensitive(&self) -> bool {
         self.sensitive
+            || self.write_only
             || self
                 .nested
                 .as_ref()
@@ -288,6 +297,14 @@ impl Block {
             .filter(|(_, nested)| nested.block.contains_sensitive())
             .map(|(name, _)| name.clone());
         attributes.chain(blocks).collect()
+    }
+
+    pub(crate) fn contains_write_only(&self) -> bool {
+        self.attributes.values().any(Attribute::contains_write_only)
+            || self
+                .blocks
+                .values()
+                .any(|nested| nested.block.contains_write_only())
     }
 
     /// Whether any attribute in this block, at any depth, is sensitive.

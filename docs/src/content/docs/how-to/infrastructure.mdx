@@ -504,9 +504,9 @@ The generated files, the lock and the provider binary are tied together by the s
 
 cuenv only replaces or removes a `cue.mod/gen` directory whose `provider.cue` starts with its generated-code header, and refuses otherwise. A `cuenv.lock` that pins infrastructure providers is lockfile format version 5; cuenv versions that do not know the section refuse such a lockfile rather than drop it. Lockfiles without the section stay at version 4.
 
-Generated resource and data source configuration accepts scalar arguments, including supported nested arguments, as either their normal value or an output reference. Data source packages are generated under `data/<type>/data_source.cue`. Provider functions and ephemeral resources are not generated; write-only arguments are left out because cuenv does not send them. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource or data source type, so evaluation only pays for the packages you import, but the generated directory is large and `cuenv sync` writes all of it.
+Generated resource and data source configuration accepts scalar arguments, including supported nested arguments, as either their normal value or an output reference. Data source packages are generated under `data/<type>/data_source.cue`. Provider functions and ephemeral resources are not generated. Managed write-only string arguments use the [single-field refinement](#keep-a-value-out-of-state-with-writeonly); data source and provider arguments do not support it. Local `path` providers cannot be added yet, so they stay untyped. A module holds one version of each provider source. Very large providers generate one package per resource or data source type, so evaluation only pays for the packages you import, but the generated directory is large and `cuenv sync` writes all of it.
 
-Data source schemas now participate in the schema digest. For a provider with data sources pinned before this support, rerun `cuenv infrastructure provider add <source>@<same-version>` to regenerate its types and update its digest pin. Ordinary sync refuses the old digest rather than silently changing a pin. Providers with no data sources retain their previous digest.
+Data source schemas now participate in the schema digest. For a provider with data sources pinned before this support, rerun `cuenv infrastructure provider add <source>@<same-version>` to regenerate its types and update its digest pin. Ordinary sync refuses the old digest rather than silently changing a pin. Providers with neither data sources nor managed write-only attributes retain their previous digest.
 
 
 ## A minimal example without typed configuration
@@ -798,7 +798,7 @@ infrastructure: resources: ci_cloudflare_token: infisical_secret.#Resource & {
 }
 ```
 
-- **Where a secret can go.** Any string argument: a top-level string, a list or tuple element, a map value, or a field of a nested attribute, block or object. Generated types accept `string | #Secret` there. Not a number or bool, nothing inside a set (a set element is identified by its value), and not a computed-only or write-only argument (write-only arguments are [#571](https://github.com/cuenv/cuenv/issues/571)). An object with a `resolver` field inside a dynamic-typed argument is ordinary data. Provider `configuration` does not take a `#Secret` yet.
+- **Where a secret can go.** Any string argument: a top-level string, a list or tuple element, a map value, or a field of a nested attribute, block or object. Generated types accept `string | #Secret` there. Not a number or bool, nothing inside a set (a set element is identified by its value), and not a computed-only argument. Managed write-only arguments use the refinement below. An object with a `resolver` field inside a dynamic-typed argument is ordinary data unless it also carries the reserved `writeOnly` marker, which is rejected there. Provider `configuration` does not take a `#Secret` yet.
 - **When it is resolved.** Only when the configuration is about to reach a provider: `plan` and `apply` resolve the secrets of the resources and data sources they plan. `destroy`, `import` and the state commands never resolve one. Each distinct secret is resolved once per command, however many arguments name it, so the plan `apply` makes again under the lock sees the value you confirmed.
 - **CUE never sees the value.** cuenv replaces the secret after evaluation, so a CUE constraint, interpolation or builtin cannot read or transform it: `"Bearer \(token)"` does not work with a `#Secret`.
 - **What is shown.** The argument holding the secret is masked as `(sensitive)` in plans, a changed secret plans an update (or the replacement the provider asks for) without printing either value, and the value is registered for redaction before any provider receives it.
@@ -806,8 +806,64 @@ infrastructure: resources: ci_cloudflare_token: infisical_secret.#Resource & {
 - **No policy gate.** `allowInfrastructure` restricts the project's shared variables; a secret written in the infrastructure configuration is available to the commands that need it. The configuration can already run any provider binary, so an `#ExecSecret` there grants nothing new. Resolver credentials are still withheld from providers.
 
 :::caution[The value is stored in state]
-Terraform providers return the arguments they were given, so the resolved value is written to the resource's state record in plaintext, as Terraform does, and marked sensitive there. Anyone who can read the state backend can read the secret, including through `state pull`, and so can anyone who can read a saved unrecorded-change file (written `0600` under your user state directory). Treat state access as secret access. Write-only arguments, which a provider never returns, will keep a secret out of state ([#571](https://github.com/cuenv/cuenv/issues/571)).
+Terraform providers return the arguments they were given, so the resolved value is written to the resource's state record in plaintext, as Terraform does, and marked sensitive there. Anyone who can read the state backend can read the secret, including through `state pull`, and so can anyone who can read a saved unrecorded-change file (written `0600` under your user state directory). Treat state access as secret access. Use a supported write-only argument below when the secret must stay out of state.
 :::
+
+### Keep a value out of state with `#WriteOnly`
+
+Infrastructure remains experimental. Compose `schema.#WriteOnly` with a secret
+on the same logical value property:
+
+```cue
+infrastructure: resources: ci_token: aws_ssm_parameter.#Resource & {
+    configuration: {
+        name: "/ci/cloudflare-token"
+        type: "SecureString"
+        value: schema.#WriteOnly & schema.#OnePasswordRef & {
+            ref: "op://Infrastructure/Cloudflare root/credential"
+        }
+        value_wo_version: 1
+    }
+}
+```
+
+The generated `#Value` accepts an ordinary string or secret; intersecting it with
+`#WriteOnly` requires a secret and selects the provider's write-only argument.
+The logical field stays `value`; cuenv sends its resolved value as `value_wo`
+and leaves the ordinary provider `value` null. Generated types reject the raw
+write-only alias and literal values with the refinement applied.
+
+Explicit bindings currently cover `hashicorp/aws` `aws_ssm_parameter.value` and
+`aws_db_instance.password`, and `hashicorp/azurerm`
+`azurerm_key_vault_secret.value`. Each binding is checked against the live schema;
+unsupported provider versions or bindings fail before resource calls. Other
+standalone write-only string arguments retain their provider name and require
+`schema.#WriteOnly & <secret>`. Numbers, booleans, structured write-only values,
+set elements, data sources, provider configuration and project environment
+variables do not accept this refinement.
+
+**Bump the companion version to rotate the value.** Changing a secret in its
+secret manager without changing `value_wo_version` does not plan an update.
+cuenv does not infer a companion argument or generate its version. Plans show
+`value = (write-only)` alongside the version change. The digest includes the
+selected binding and argument presence, never the secret or a hash of it.
+
+The value reaches validation, planning and apply configuration only. A provider
+returning a non-null write-only state attribute causes an error; cuenv accepts
+neither that state nor a recovery file containing it. A failed apply can still
+have changed the remote object: fix the provider and inspect/import the object
+before retrying. Destroy, import, state commands and unlock never resolve a
+resource argument secret. Providers remain trusted programs: opaque private
+bytes and unrelated state fields are provider-owned, not a security sandbox.
+
+Providers exposing managed write-only fields use a new digest contract, which
+makes older cuenv binaries reject newly generated typed configurations before
+resolving secrets. Refresh an existing affected pin with
+`cuenv infrastructure provider add <source>@<same-version>`; sync/init verify the
+pin and cannot change that digest. Unpinned or untyped declarations have no
+runtime downgrade fence: run them only with a cuenv build supporting write-only
+arguments. Switching a formerly persisted secret to write-only does not erase
+old backend history or saved recovery files.
 
 ## Plan and apply
 
