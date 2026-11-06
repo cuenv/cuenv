@@ -33,6 +33,19 @@ the baseline before the optimizations below.
   Test-only dependency artifacts remain separate where scopes or profiles
   differ. Terminal Clippy, nextest, doctest, and BDD checks no longer install
   their Cargo target directories into the cache.
+- Test dependency derivations compile their required targets in one
+  `cargo test --no-run` pass. Doctest preparation uses library targets, while
+  BDD and infrastructure preparation select the same targets as their checks.
+  Production package dependencies use one `cargo build` pass. Clippy retains
+  its separate metadata-only preparation.
+- Nix test checks and their dependency derivations share `ci` profile settings
+  with debug information disabled, reducing linker output and artifact size.
+- Cuetty's test derivation runs its test-profile compilation directly rather
+  than first building a release application. Its package check still builds
+  and validates the installed release executable.
+- BDD scenario failures now fail the runner. The Nix BDD check also runs an
+  intentional failing scenario and verifies a nonzero exit, so a fast green
+  check establishes that the failure path works too.
 
 Regression tests cover direct matrix execution, preserved environment,
 dependencies, working directory and outputs, retained Cachix setup, skipped
@@ -66,6 +79,35 @@ steps. The docs preview passed; the separate sync workflow found an outdated
 runtime digest, corrected with `cuenv sync lock`. These observations compare
 different source revisions and cache/queue states; they do not establish a
 median or p95 improvement.
+
+## Remaining cost found in the changed-source run
+
+Linux nextest became the critical job in run 42281253736. Its dependency
+derivation used Crane's default three-pass preparation:
+
+| Command | Elapsed |
+| --- | --- |
+| `cargo check --profile ci --locked --workspace --all-features --all-targets` | 2m 27s |
+| `cargo build --profile ci --locked --workspace --all-features` | 2m 34s |
+| `cargo test --profile ci --locked --workspace --all-features --no-run` | 2m 04s |
+
+The actual workspace test compilation then took 48.18s and all 4,232 Linux
+tests ran in 14.863s. The follow-up removes separate metadata/build passes
+from test preparation and disables Nix CI debug information. Its new timing
+and artifact size need a new run; the 9m 27s measurement predates this change.
+
+For the same local 0.68.0 dependency set and compiler, the compressed BDD
+dependency archive fell from **1,141,528,573 bytes to 480,432,416 bytes**
+(**57.9% smaller**) after narrowing its targets and disabling Nix CI debug
+information. This is an artifact-size measurement, not a CI elapsed-time claim.
+The nextest dependency archive fell from **1,283,172,601 bytes to 504,605,830
+bytes** (**60.7% smaller**) with the same local version and compiler.
+
+The local full gate also showed Cuetty compiling a release application for
+5m 30s in its package check and repeating that release build before its test
+check invoked `cargo test` in the dev profile. The test derivation now skips
+that unused release build. The release package and all-target test command
+remain separate checks.
 
 On x86_64 Linux, `nix path-info --json --closure-size` measured the original
 development toolchain closure at **2,633.8 MiB** and the new native build

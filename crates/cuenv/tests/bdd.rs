@@ -21,5 +21,7 @@ async fn main() {
         return;
     }
 
-    TestWorld::cucumber().run("tests/bdd/features/").await;
+    TestWorld::cucumber()
+        .run_and_exit("tests/bdd/features/")
+        .await;
 }

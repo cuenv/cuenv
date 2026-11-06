@@ -215,6 +215,14 @@
         workspaceAllFeaturesCargoExtraArgs = "${lockedCargoExtraArgs} --workspace --all-features";
         workspaceDocCargoExtraArgs = "${lockedCargoExtraArgs} --workspace";
         cuenvPackageCargoExtraArgs = "${lockedCargoExtraArgs} --package cuenv";
+        bddCargoExtraArgs = "${cuenvPackageCargoExtraArgs} --test bdd";
+
+        # Test checks need no debugger payload. Keep dependency and consumer
+        # profiles identical so Cargo can reuse every compiled dependency.
+        ciBuildArgs = {
+          CARGO_PROFILE = "ci";
+          CARGO_PROFILE_CI_DEBUG = "0";
+        };
 
         # Keep dependency-only derivations aligned with downstream cargo flags.
         # Mixing workspace-wide and package-specific scopes forces Cargo to rebuild.
@@ -234,13 +242,18 @@
         # Test binaries are built with the lightweight `ci` profile (no LTO,
         # default codegen-units) so the workspace-wide nextest compile stays
         # within CI runner memory. The release binary keeps `[profile.release]`.
-        workspaceCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
+        workspaceCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
-          CARGO_PROFILE = "ci";
+          # One pass prepares regular and dev dependencies together. Crane's
+          # default check/build/test sequence compiles them three times.
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile test ${workspaceAllFeaturesCargoExtraArgs} --no-run";
         });
 
         workspaceDocCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = workspaceDocCargoExtraArgs;
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile test ${workspaceDocCargoExtraArgs} --lib --no-run";
         });
 
         cuenvCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
@@ -248,13 +261,15 @@
           # The package is smoke-tested after installation; its Rust tests have
           # dedicated checks and do not belong in a bootstrap dependency build.
           doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile build ${cuenvPackageCargoExtraArgs}";
         });
 
         # BDD uses the same package/features as the CLI, with the lightweight
         # test profile. Keep its dependency build aligned with those settings.
-        cuenvCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
-          cargoExtraArgs = cuenvPackageCargoExtraArgs;
-          CARGO_PROFILE = "ci";
+        cuenvCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
+          cargoExtraArgs = bddCargoExtraArgs;
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile test ${bddCargoExtraArgs} --no-run";
         });
 
         workspaceCheckArgs = commonArgs // {
@@ -271,9 +286,8 @@
           doInstallCargoArtifacts = false;
         };
 
-        cuenvCheckArgs = commonArgs // {
+        cuenvCheckArgs = commonArgs // ciBuildArgs // {
           cargoArtifacts = cuenvCiCargoArtifacts;
-          CARGO_PROFILE = "ci";
           doCheck = true;
           doInstallCargoArtifacts = false;
         };
@@ -283,10 +297,9 @@
           cargoClippyExtraArgs = "--all-targets -- -D warnings";
         });
 
-        nextest-check = craneLib.cargoNextest (workspaceCheckArgs // {
+        nextest-check = craneLib.cargoNextest (workspaceCheckArgs // ciBuildArgs // {
           cargoArtifacts = workspaceCiCargoArtifacts;
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
-          CARGO_PROFILE = "ci";
           # HTTP client construction loads native roots, including in mock tests.
           SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         });
@@ -342,15 +355,14 @@
         # Only the crates and targets the suites live in are built, without debug
         # information, with their own dependency artifacts: the workspace-wide
         # artifacts of `cuenv-nextest` would compile every test binary again.
-        infrastructureE2eCargoExtraArgs = builtins.concatStringsSep " " [
+        infrastructureE2eCargoExtraArgs = builtins.concatStringsSep " " ([
           lockedCargoExtraArgs
           "--package cuenv-infrastructure"
           "--package cuenv"
-        ];
-        infrastructureE2eBuildArgs = {
-          CARGO_PROFILE = "ci";
-          CARGO_PROFILE_CI_DEBUG = "0";
-        };
+          "--lib"
+          "--test provider_end_to_end"
+          "--test infrastructure_lifecycle"
+        ] ++ pkgs.lib.optionals (system == "x86_64-linux") [ "--test cloudflare_offline" ]);
 
         # Formatting is part of the merge gate; without this check rustfmt drift
         # reached a pushed head unnoticed.
@@ -360,20 +372,17 @@
           inherit version;
         };
 
-        infrastructureE2eCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // infrastructureE2eBuildArgs // {
+        infrastructureE2eCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
           pname = "cuenv-infrastructure-e2e";
           cargoExtraArgs = infrastructureE2eCargoExtraArgs;
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile test ${infrastructureE2eCargoExtraArgs} --no-run";
         });
 
-        infrastructure-e2e-check = craneLib.cargoNextest (workspaceCheckArgs // infrastructureE2eBuildArgs // {
+        infrastructure-e2e-check = craneLib.cargoNextest (workspaceCheckArgs // ciBuildArgs // {
           pname = "cuenv-infrastructure-e2e";
           cargoArtifacts = infrastructureE2eCargoArtifacts;
-          cargoExtraArgs = builtins.concatStringsSep " " ([
-            infrastructureE2eCargoExtraArgs
-            "--lib"
-            "--test provider_end_to_end"
-            "--test infrastructure_lifecycle"
-          ] ++ pkgs.lib.optionals (system == "x86_64-linux") [ "--test cloudflare_offline" ]);
+          cargoExtraArgs = infrastructureE2eCargoExtraArgs;
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
             pkgs.curl
             pkgsUnstable.rustfs
@@ -494,8 +503,29 @@
         });
 
         bdd-check = craneLib.cargoTest (cuenvCheckArgs // {
-          cargoExtraArgs = cuenvPackageCargoExtraArgs;
-          cargoTestExtraArgs = "--test bdd";
+          cargoExtraArgs = bddCargoExtraArgs;
+          # Exercise the real runner's exit status as well as its happy path.
+          # A failing scenario must make cargo and the Nix check fail.
+          postCheck = ''
+            probe="crates/cuenv/tests/bdd/features/ci-exit-status.feature"
+            cat > "$probe" <<'EOF'
+            Feature: CI exit status
+              Scenario: CI rejects a failing scenario
+                Given cuenv is installed and available
+                When I run "cuenv --version"
+                Then the exit code should be 42
+            EOF
+
+            probe_status=0
+            cargoWithProfile test ${bddCargoExtraArgs} -- --name 'CI rejects a failing scenario' > "$TMPDIR/bdd-exit-status.log" 2>&1 || probe_status=$?
+            rm "$probe"
+            if [ "$probe_status" -eq 0 ] || ! grep -q '1 failed' "$TMPDIR/bdd-exit-status.log"; then
+              cat "$TMPDIR/bdd-exit-status.log" >&2
+              echo "BDD failure did not produce the expected nonzero exit" >&2
+              exit 1
+            fi
+            echo "Verified BDD exits nonzero for a failing scenario."
+          '';
         });
 
         deny-check = craneLib.cargoDeny {

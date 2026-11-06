@@ -149,8 +149,13 @@ Repository CI timings and proposed optimizations are recorded in the
 Non-release Nix matrices execute their original commands directly, retaining
 task environment, outputs, and dependencies. CI installs upstream Nix 2.31.2
 without OIDC and installs Cachix from the locked nixpkgs input. Terminal Rust
-checks discard Cargo artifacts; BDD uses the lightweight `ci` profile with
-matching package-scoped dependency artifacts.
+checks discard Cargo artifacts. Nix test checks share the `ci` profile with
+debug information disabled and prepare dependencies with one target-matched
+`cargo test --no-run` pass; production dependencies use one build pass and
+Clippy uses metadata-only preparation. BDD failures produce a nonzero exit,
+verified with an intentional failing scenario in its Nix check. Cuetty's test
+check compiles its test profile directly instead of first building an unused
+release application.
 
 CLI note: project discovery (`cuenv ci`, `cuenv sync`) accepts file attributes
 such as `@extern(embed)` or `@if(tag)` before an `env.cue` package clause.

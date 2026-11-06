@@ -155,6 +155,9 @@ let
     commonArgs
     // {
       pname = "cuetty-test";
+      # The package check already builds the release application. This check
+      # only needs the test profile used by its explicit cargo test command.
+      dontBuild = true;
       doCheck = true;
       checkPhase = "CUETTY_SKIP_PTY_TEST=1 cargo test --manifest-path apps/cuetty/Cargo.toml --locked --all-targets";
       installPhase = "mkdir -p $out";
