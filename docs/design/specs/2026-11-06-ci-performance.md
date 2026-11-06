@@ -19,6 +19,9 @@ the baseline before the optimizations below.
   or installer config uses FlakeHub. Namespace preparation transfers restored
   root-owned Nix state to the runner on Linux without systemd, matching the
   install action's single-user mode; daemon installations retain their ownership.
+- When Nix is not already on `PATH`, source-install scripts and downloaded
+  bootstrap closure setup source the daemon profile or the upstream single-user
+  profile. Fresh Namespace stores must not depend on a legacy daemon profile.
 - The repository's Cachix contributor installs its client with
   `nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix`, using the exact nixpkgs
   revision already in `flake.lock` instead of a separate mutable install expression.
@@ -36,6 +39,8 @@ the baseline before the optimizations below.
 - Test dependency derivations compile their required targets in one
   `cargo test --no-run` pass. Doctest preparation uses library targets, while
   BDD and infrastructure preparation select the same targets as their checks.
+  Infrastructure's auto-discovered integration targets receive explicit dummy
+  source files because Crane only stubs targets declared in Cargo.toml.
   Production package dependencies use one `cargo build` pass. Clippy retains
   its separate metadata-only preparation.
 - Nix test checks and their dependency derivations share `ci` profile settings
@@ -102,6 +107,12 @@ dependency archive fell from **1,141,528,573 bytes to 480,432,416 bytes**
 information. This is an artifact-size measurement, not a CI elapsed-time claim.
 The nextest dependency archive fell from **1,283,172,601 bytes to 504,605,830
 bytes** (**60.7% smaller**) with the same local version and compiler.
+
+In [run 42291426496](https://github.com/cuenv/cuenv/actions/runs/42291426496),
+Linux nextest's dependency preparation fell from **7m 06s to 3m 34s**.
+The workspace then compiled in 28.04s and all 4,232 tests passed in 8.716s.
+That partial run exposed the fresh single-user bootstrap and dummy-target
+issues corrected above; it is not a successful end-to-end workflow benchmark.
 
 The local full gate also showed Cuetty compiling a release application for
 5m 30s in its package check and repeating that release build before its test

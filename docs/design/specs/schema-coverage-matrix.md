@@ -156,6 +156,10 @@ Clippy uses metadata-only preparation. BDD failures produce a nonzero exit,
 verified with an intentional failing scenario in its Nix check. Cuetty's test
 check compiles its test profile directly instead of first building an unused
 release application.
+Nix-backed source installs and downloaded-bootstrap closure setup support
+both daemon profiles and the upstream single-user profile. Infrastructure
+dependency preparation explicitly stubs its auto-discovered integration test
+targets before compiling them with Crane's dummy source.
 
 CLI note: project discovery (`cuenv ci`, `cuenv sync`) accepts file attributes
 such as `@extern(embed)` or `@if(tag)` before an `env.cue` package clause.

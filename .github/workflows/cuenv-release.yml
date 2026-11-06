@@ -48,11 +48,7 @@ jobs:
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Build cuenv (nix)
-      run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
+      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Upload cuenv
@@ -93,11 +89,7 @@ jobs:
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Build cuenv (nix)
-      run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
+      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Upload cuenv
@@ -138,11 +130,7 @@ jobs:
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: Build cuenv (nix)
-      run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
+      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Upload cuenv
@@ -194,7 +182,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -264,7 +256,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -334,7 +330,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -407,7 +407,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -485,7 +489,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -550,7 +558,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -612,7 +624,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
@@ -678,7 +694,11 @@ jobs:
       run: |-
         set -euo pipefail
         if ! command -v nix >/dev/null; then
+        if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        else
+        . "$HOME/.nix-profile/etc/profile.d/nix.sh"
+        fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
         cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"

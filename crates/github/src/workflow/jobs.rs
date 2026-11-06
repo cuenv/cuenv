@@ -197,7 +197,11 @@ impl GitHubActionsEmitter {
             Step::run(format!(
                 "set -euo pipefail\n\
                  if ! command -v nix >/dev/null; then\n\
-                   . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\
+                   if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\
+                     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\
+                   else\n\
+                     . \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\
+                   fi\n\
                  fi\n\
                  cuenv_package=\"$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)\"\n\
                  cmp \"$cuenv_package/bin/cuenv\" \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}/cuenv\"\n\

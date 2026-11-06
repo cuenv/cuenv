@@ -90,7 +90,13 @@ import "github.com/cuenv/cuenv/schema"
 		priority: 10
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 		script: """
-			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+			if ! command -v nix >/dev/null 2>&1; then
+				if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+					. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+				else
+					. "$HOME/.nix-profile/etc/profile.d/nix.sh"
+				fi
+			fi
 			nix develop -c cargo build --release -p cuenv
 			echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
 			./target/release/cuenv sync ci
@@ -165,7 +171,13 @@ import "github.com/cuenv/cuenv/schema"
 		priority: 10
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 		script: """
-			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+			if ! command -v nix >/dev/null 2>&1; then
+				if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+					. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+				else
+					. "$HOME/.nix-profile/etc/profile.d/nix.sh"
+				fi
+			fi
 			nix build .#cuenv -L --accept-flake-config
 			echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
 			./result/bin/cuenv sync ci

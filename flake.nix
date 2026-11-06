@@ -355,14 +355,20 @@
         # Only the crates and targets the suites live in are built, without debug
         # information, with their own dependency artifacts: the workspace-wide
         # artifacts of `cuenv-nextest` would compile every test binary again.
+        infrastructureE2eTestFiles = [
+          "crates/infrastructure/tests/provider_end_to_end.rs"
+          "crates/cuenv/tests/infrastructure_lifecycle.rs"
+        ] ++ pkgs.lib.optionals (system == "x86_64-linux") [
+          "crates/infrastructure/tests/cloudflare_offline.rs"
+        ];
         infrastructureE2eCargoExtraArgs = builtins.concatStringsSep " " ([
           lockedCargoExtraArgs
           "--package cuenv-infrastructure"
           "--package cuenv"
           "--lib"
-          "--test provider_end_to_end"
-          "--test infrastructure_lifecycle"
-        ] ++ pkgs.lib.optionals (system == "x86_64-linux") [ "--test cloudflare_offline" ]);
+        ] ++ map
+          (testFile: "--test ${pkgs.lib.removeSuffix ".rs" (builtins.baseNameOf testFile)}")
+          infrastructureE2eTestFiles);
 
         # Formatting is part of the merge gate; without this check rustfmt drift
         # reached a pushed head unnoticed.
@@ -377,6 +383,12 @@
           cargoExtraArgs = infrastructureE2eCargoExtraArgs;
           doCheck = false;
           buildPhaseCargoCommand = "cargoWithProfile test ${infrastructureE2eCargoExtraArgs} --no-run";
+          # These targets are discovered from tests/*.rs rather than declared
+          # in Cargo.toml, so Crane's dummy source needs explicit placeholders.
+          extraDummyScript = pkgs.lib.concatMapStringsSep "\n" (testFile: ''
+            mkdir -p "$out/${builtins.dirOf testFile}"
+            printf '%s\n' '//! Dependency-only integration test target.' > "$out/${testFile}"
+          '') infrastructureE2eTestFiles;
         });
 
         infrastructure-e2e-check = craneLib.cargoNextest (workspaceCheckArgs // ciBuildArgs // {
