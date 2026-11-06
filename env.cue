@@ -389,6 +389,13 @@ schema.#Project & {
 				args: ["build", ".#checks.x86_64-linux.cuenv-quint-specs", "-L", "--accept-flake-config"]
 				inputs: _flakeInputs
 			}
+
+			// Replays traces of those specs against the code.
+			"quint-mbt": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-quint-mbt", "-L", "--accept-flake-config"]
+				inputs: _flakeInputs
+			}
 		}
 
 		// The same flake checks built for aarch64-darwin. They run on the macOS
