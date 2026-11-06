@@ -184,8 +184,14 @@ pub async fn conforms(store: &dyn StateStore) {
     assert_eq!(store.list(&tenant).await.unwrap().len(), 3);
 
     // Releasing ends the lock; writes with it fail afterwards.
-    assert!(store.unlock(&tenant, &lock).await.unwrap());
-    assert!(!store.unlock(&tenant, &lock).await.unwrap());
+    assert_eq!(
+        store.unlock(&tenant, &lock).await.unwrap(),
+        crate::UnlockOutcome::Released
+    );
+    assert_eq!(
+        store.unlock(&tenant, &lock).await.unwrap(),
+        crate::UnlockOutcome::NotHeld
+    );
     assert!(matches!(
         store.put(&tenant, &lock, &pet).await,
         Err(InfrastructureError::LockLost { .. })

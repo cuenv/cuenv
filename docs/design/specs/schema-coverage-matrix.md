@@ -166,6 +166,15 @@ blob it names. With uploads enabled, a corrupt remote blob is re-uploaded and
 read back before any result naming it is published. Uploads remain disabled
 in the CLI. No schema or CLI support status changes.
 
+Lock note: `StateStore::unlock` returns `UnlockOutcome` (`Released`,
+`NotHeld`, `Superseded`) instead of a boolean. The object-store backend
+reports `Released`, and writes a history snapshot, only when the state shows
+the lock released; a lock that disappeared after its release was sent but is
+now held by another run is `Superseded`. The CLI prints a third release
+notice, "whether this run's release removed it is unknown", for that case and
+for a lock found gone on a retry after a failed attempt, and reports
+`lockReleased: false`. No schema or CLI support status changes.
+
 Build-only note: the root and Cuetty app-local Nix flakes pin Rust `1.98.1`
 with matching `rust-overlay` locks. This compiler update changes no schema,
 CLI support status, or declared workspace MSRV. The infrastructure tests use

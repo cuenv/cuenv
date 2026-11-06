@@ -49,7 +49,7 @@ pub use state::{
     ManifestEntry, MemoryStateStore, MigrationManifest, ObjectLocation, ObjectStateFeatures,
     ObjectStateStore, ObjectStoreConfiguration, ObjectTenant, RecordVersion, ResourceAddress,
     RestoreRequest, StateLock, StateSize, StateStore, StoredTenant, TenantImport, TenantLock,
-    TursoConfiguration, TursoStateStore,
+    TursoConfiguration, TursoStateStore, UnlockOutcome,
 };
 pub use tenant::{ProjectInstance, TenantKey, read_module_path};
 

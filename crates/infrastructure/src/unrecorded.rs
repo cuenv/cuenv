@@ -918,6 +918,7 @@ mod tests {
     use super::*;
     use crate::state::{
         LockInformation, LockRequest, MemoryStateStore, TursoConfiguration, TursoStateStore,
+        UnlockOutcome,
     };
 
     /// Only the backend binding is overridden.
@@ -999,7 +1000,7 @@ mod tests {
             self.inner.acquire_lock(tenant, request).await
         }
 
-        async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
+        async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<UnlockOutcome> {
             self.inner.unlock(tenant, lock).await
         }
 

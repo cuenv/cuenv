@@ -25,9 +25,14 @@ quint verify task_cache.qnt --backend=tlc --tlc-config=tlc.json --invariants saf
 
 The models are written by hand from the code, so CI checks the model, not the
 Rust. Change a model in the same pull request as the protocol it describes.
-Each model has mutation switches (constants at the top). Setting one to its
-other value turns off one mechanism; the invariants should then fail, which
-shows they still guard what they are meant to.
+Each model has mutation switches (constants at the top). Setting one to
+another value turns off one mechanism or restores an earlier, buggy version
+of it; the invariants should then fail, which shows they still guard what
+they are meant to. In `object_state_cas.qnt`, `RELEASE` selects how
+`release()` reads a lock that disappeared after it sent its PUT: `"checked"`
+is the code, while `"notHeld"` (0.68.0) and `"anyGone"` (the first fix,
+which snapshotted another run's locked document) both fail
+`unlockReportsTruth`.
 
 This is model checking of small instances (two clients or machines, one record
 or action, a few retries and faults), not a proof for every size.

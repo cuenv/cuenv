@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use cuenv_infrastructure::{
     ChangedRecord, ConditionalPut, InfrastructureError, LastWriter, LockInformation, LockRequest,
     ManagedResource, MemoryStateStore, ProjectInstance, RecordVersion, RecoverOverrides,
-    ResourceAddress, StateLock, StateStore, TenantKey, UnrecordedStore,
+    ResourceAddress, StateLock, StateStore, TenantKey, UnlockOutcome, UnrecordedStore,
 };
 use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, InfrastructureState};
@@ -866,7 +866,7 @@ impl StateStore for CountingStore {
         &self,
         tenant: &TenantKey,
         lock: &StateLock,
-    ) -> cuenv_infrastructure::Result<bool> {
+    ) -> cuenv_infrastructure::Result<UnlockOutcome> {
         self.inner.unlock(tenant, lock).await
     }
 
@@ -1686,10 +1686,10 @@ impl StateStore for UnreleasableStore {
         &self,
         _tenant: &TenantKey,
         _lock: &StateLock,
-    ) -> cuenv_infrastructure::Result<bool> {
+    ) -> cuenv_infrastructure::Result<UnlockOutcome> {
         let earlier = self.unlock_attempts.fetch_add(1, Ordering::SeqCst);
         if self.lands_late && earlier > 0 {
-            return Ok(false);
+            return Ok(UnlockOutcome::NotHeld);
         }
         Err(InfrastructureError::state("unavailable"))
     }
@@ -1727,7 +1727,9 @@ async fn release_does_not_wait_after_its_last_attempt() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_release_that_landed_after_its_attempt_failed_is_reported_released() {
+async fn a_lock_gone_after_a_failed_attempt_is_reported_uncertain() {
+    // The failed attempt may have released the lock, or an operator
+    // force-unlocked it meanwhile: neither is claimed.
     let store = UnreleasableStore {
         lands_late: true,
         ..UnreleasableStore::default()
@@ -1737,7 +1739,7 @@ async fn a_release_that_landed_after_its_attempt_failed_is_reported_released() {
         release(&store, &tenant, &StateLock::generate())
             .await
             .unwrap(),
-        super::lock::Release::Released
+        super::lock::Release::Uncertain
     );
     assert_eq!(store.unlock_attempts.load(Ordering::SeqCst), 2);
 }
@@ -1840,6 +1842,11 @@ fn the_release_notice_says_what_the_release_did() {
     assert!(gone.contains("no longer held"), "{gone}");
     assert!(gone.contains("nothing was released"), "{gone}");
     assert!(gone.contains(&lock.lock_identifier), "{gone}");
+    let uncertain = super::lock::release_notice(&lock, &tenant, super::lock::Release::Uncertain);
+    assert!(!uncertain.starts_with("Released"), "{uncertain}");
+    assert!(uncertain.contains("no longer held"), "{uncertain}");
+    assert!(uncertain.contains("unknown"), "{uncertain}");
+    assert!(uncertain.contains(&lock.lock_identifier), "{uncertain}");
 }
 
 // ---------------------------------------------------------------------------

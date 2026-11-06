@@ -23,14 +23,17 @@
 // - MAX_ATTEMPTS stands in for MUTATION_ATTEMPTS (8 in the code). 3 is the
 //   smallest value that reaches every branch of the retry loops.
 //
-// Check (TLC explores every reachable state of this instance; ~90 s):
+// Check (TLC explores every reachable state of this instance; ~2 min):
 //   quint verify object_state_cas.qnt --backend=tlc --tlc-config=tlc.json --invariants safety unlockReportsTruth
 //
 // Results, 2 clients, 1 record, 3 attempts:
-// - safety and unlockReportsTruth: hold; ~3M distinct states.
-// - unlockReportsTruth with FIXED_RELEASE = false (the code at 0.68.0):
+// - safety and unlockReportsTruth: hold; ~4.4M distinct states.
+// - unlockReportsTruth with RELEASE = "notHeld" (the code at 0.68.0):
 //   violated. unlock() reported "no longer held" after its own release
 //   landed late.
+// - unlockReportsTruth with RELEASE = "anyGone" (the first fix): violated.
+//   After a force-unlock and another run's acquire, unlock() reported
+//   "released" and returned that run's locked document for a snapshot.
 // - errorMeansNotWritten: violated, by design (see below). Not checked in CI.
 // Mutants caught by `safety`: no lock check before a record write; a record
 // PUT without If-Match. Not caught: dropping the serial clause from
@@ -48,12 +51,17 @@ module object_state_cas {
   pure val ABSENT = -1        // the condition `If-None-Match: *`
   pure val OPERATOR = -1
 
-  // true: release() as in the code. Once it has sent its own PUT, a re-read
-  // that no longer shows its lock means "released" (by this call, or by a
-  // force-unlock it raced). `lastReleased == id`, the rule in the design
-  // spec, is not enough: a later acquire/release overwrites it.
-  // false: release() before that fix, which reported "no longer held".
-  pure val FIXED_RELEASE = true
+  // What release() concludes when, after sending its own PUT, a re-read no
+  // longer shows its lock:
+  // "checked": the code. "released" only if the document shows this lock
+  //   released (`lock` empty, `lastReleased == id`): its own release landed
+  //   late, or an operator force-unlocked it. Otherwise "gone": the lock is
+  //   not held, but this call cannot tell whose write removed it, and the
+  //   document it read is not one it may snapshot.
+  // "anyGone": the first fix (PR 576 before review). "released", returning
+  //   whatever document it read, even one another run has locked since.
+  // "notHeld": the code at 0.68.0, which reported "no longer held".
+  pure val RELEASE = "checked"
 
   // ---- types --------------------------------------------------------------
 
@@ -71,6 +79,7 @@ module object_state_cas {
     round: int, tries: int, replay: bool,
     expGen: int, expSerial: int, payGen: int,
     putOut: str, relOut: str,
+    relLock: int,           // the lock in the document release() returned
     // ghost: what the store committed on this client's behalf
     puts: int, putFromExpected: bool, putRound: int, relRound: int,
   }
@@ -85,6 +94,7 @@ module object_state_cas {
     round: 1, tries: 0, replay: false,
     expGen: 0, expSerial: 0, payGen: 0,
     putOut: "", relOut: "",
+    relLock: 0,
     puts: 0, putFromExpected: false, putRound: 0, relRound: 0,
   }
 
@@ -121,7 +131,7 @@ module object_state_cas {
   var doc: Doc
   var inflight: Set[Req]
   var clients: int -> Client
-  var forced: bool
+  var forcedLock: int     // the lock an operator force-unlocked; 0 before
   // ghost
   var fenceOk: bool       // every committed record write replaced a version holding its lock
   var lastPut: int        // content of the last committed record write
@@ -131,7 +141,7 @@ module object_state_cas {
     doc' = NO_DOC,
     inflight' = Set(),
     clients' = CLIENTS.mapBy(_ => FRESH),
-    forced' = false,
+    forcedLock' = 0,
     fenceOk' = true,
     lastPut' = 0,
     writers' = Set(),
@@ -141,7 +151,7 @@ module object_state_cas {
 
   action local(c: int, s: Client): bool = all {
     clients' = clients.set(c, s),
-    doc' = doc, inflight' = gc(inflight, doc, clients.set(c, s)), forced' = forced,
+    doc' = doc, inflight' = gc(inflight, doc, clients.set(c, s)), forcedLock' = forcedLock,
     fenceOk' = fenceOk, lastPut' = lastPut, writers' = writers,
   }
 
@@ -154,7 +164,7 @@ module object_state_cas {
         kind: kind, cond: cond, body: { ...body, writer: nonce },
       })),
       clients' = clients.set(c, { ...s, pc: waitPc, waiting: nonce, resp: "none" }),
-      doc' = doc, forced' = forced,
+      doc' = doc, forcedLock' = forcedLock,
       fenceOk' = fenceOk, lastPut' = lastPut, writers' = writers,
     }
   }
@@ -165,8 +175,8 @@ module object_state_cas {
   pure def putDone(s: Client, out: str): Client =
     { ...s, pc: "rel_read", attempt: 0, waiting: 0, resp: "none", putOut: out }
 
-  pure def relDone(s: Client, out: str): Client =
-    { ...s, pc: "released", waiting: 0, resp: "none", relOut: out }
+  pure def relDone(s: Client, out: str, lock: int): Client =
+    { ...s, pc: "released", waiting: 0, resp: "none", relOut: out, relLock: lock }
 
   pure def retry(s: Client, readPc: str): Client =
     { ...s, pc: readPc, attempt: s.attempt + 1, waiting: 0, resp: "none" }
@@ -230,21 +240,25 @@ module object_state_cas {
                  else retry(s, "put_read")) },
 
       // release(own lock)
-      all { s.pc == "rel_read", s.attempt >= MAX_ATTEMPTS, local(c, relDone(s, "error")) },
+      // `attempt > 0` exactly when this call has sent a release.
+      all { s.pc == "rel_read", s.attempt >= MAX_ATTEMPTS, local(c, relDone(s, "error", 0)) },
       all { s.pc == "rel_read", s.attempt < MAX_ATTEMPTS,
         if (not(doc.exists))
-          local(c, relDone(s, "notHeld"))
+          local(c, relDone(s, "notHeld", 0))
         else if (doc.lock != me)
-          local(c, relDone(s,
-            if (FIXED_RELEASE and s.attempt > 0) "released" else "notHeld"))
+          local(c,
+            if (s.attempt == 0 or RELEASE == "notHeld") relDone(s, "notHeld", 0)
+            else if (RELEASE == "anyGone") relDone(s, "released", doc.lock)
+            else if (doc.lock == 0 and doc.lastReleased == me) relDone(s, "released", 0)
+            else relDone(s, "gone", 0))
         else
           send(c, s, 3, "release", doc.ver, { ...doc, ver: doc.ver + 1, lock: 0, lastReleased: me }, "rel_wait")
       },
-      all { s.pc == "rel_wait", s.resp == "ok", local(c, relDone(s, "released")) },
+      all { s.pc == "rel_wait", s.resp == "ok", local(c, relDone(s, "released", 0)) },
       all { s.pc == "rel_wait", s.resp == "412", local(c, retry(s, "rel_read")) },
       all { s.pc == "rel_wait", local(c, timedOut(s, "rel_readback")) },
       all { s.pc == "rel_readback",
-        local(c, if (doc.exists and doc.lastReleased == me and doc.lock == 0) relDone(s, "released")
+        local(c, if (doc.exists and doc.lastReleased == me and doc.lock == 0) relDone(s, "released", 0)
                  else retry(s, "rel_read")) },
 
       // After unlock: replay an unrecorded change in a new run, or stop.
@@ -276,7 +290,7 @@ module object_state_cas {
       doc' = if (matches) r.body else doc,
       clients' = clients.set(r.client, s2),
       inflight' = gc(inflight.exclude(Set(r)), if (matches) r.body else doc, clients.set(r.client, s2)),
-      forced' = forced,
+      forcedLock' = forcedLock,
       fenceOk' = (fenceOk and (not(isPut) or doc.lock == r.holder)),
       lastPut' = if (isPut) r.body.content else lastPut,
       writers' = if (isPut) writers.union(Set(r.client)) else writers,
@@ -288,11 +302,11 @@ module object_state_cas {
 
   // `state unlock --force <id>` on whatever lock is held, once.
   action forceUnlock = all {
-    not(forced),
+    forcedLock == 0,
     doc.exists,
     doc.lock != 0,
     doc' = { ...doc, ver: doc.ver + 1, lock: 0, lastReleased: doc.lock, writer: OPERATOR },
-    forced' = true,
+    forcedLock' = doc.lock,
     inflight' = gc(inflight, { ...doc, ver: doc.ver + 1, lock: 0, lastReleased: doc.lock, writer: OPERATOR }, clients),
     clients' = clients,
     fenceOk' = fenceOk, lastPut' = lastPut, writers' = writers,
@@ -300,7 +314,7 @@ module object_state_cas {
 
   action quiescent = all {
     CLIENTS.forall(c => clients.get(c).pc == "done"),
-    doc' = doc, inflight' = inflight, clients' = clients, forced' = forced,
+    doc' = doc, inflight' = inflight, clients' = clients, forcedLock' = forcedLock,
     fenceOk' = fenceOk, lastPut' = lastPut, writers' = writers,
   }
 
@@ -338,11 +352,22 @@ module object_state_cas {
 
   val safety = and { fencing, noLostUpdate, okMeansWritten, conflictIsReal, atMostOnce }
 
-  // unlock() returns false only if this run's own release did not commit.
-  // FAILS with FIXED_RELEASE = false.
+  // unlock() reports the release truthfully:
+  // - "notHeld" only if this run's own release did not commit.
+  //   FAILS with RELEASE = "notHeld".
+  // - "released" only if this run's lock really was released, by its own
+  //   release or by an operator's force-unlock.
+  // - the document it returns, which unlock() snapshots into history, holds
+  //   no lock. FAILS with RELEASE = "anyGone": a force-unlock, another
+  //   run's acquire, then this run's retry returns that run's locked
+  //   document.
   val unlockReportsTruth = CLIENTS.forall(c => {
     val s = clients.get(c)
-    s.relOut == "notHeld" implies s.relRound != s.round
+    and {
+      s.relOut == "notHeld" implies s.relRound != s.round,
+      s.relOut == "released" implies (s.relRound == s.round or forcedLock == lockOf(c, s)),
+      s.relOut == "released" implies s.relLock == 0,
+    }
   })
 
   // Characterisation, expected to FAIL: an error from put_if_unchanged does

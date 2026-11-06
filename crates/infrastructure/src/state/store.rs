@@ -9,6 +9,22 @@ use super::writer::LastWriter;
 use crate::error::Result;
 use crate::tenant::TenantKey;
 
+/// What [`StateStore::unlock`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnlockOutcome {
+    /// The lock is released: by this call, or by an operator's force-unlock
+    /// that raced it. The stored state shows it released.
+    Released,
+    /// The lock was not held: nothing was released.
+    NotHeld,
+    /// This call sent a release whose outcome it could not see, and the lock
+    /// is now gone, but the stored state no longer shows it released:
+    /// another run has taken the tenant's lock since. Whether this call's
+    /// release or an operator's force-unlock removed the lock cannot be
+    /// told.
+    Superseded,
+}
+
 /// Storage backend for managed resource state.
 ///
 /// Every operation is scoped to a [`TenantKey`]; implementations must never
@@ -108,11 +124,10 @@ pub trait StateStore: Send + Sync {
 
     /// Release a lock acquired with [`StateStore::lock`].
     ///
-    /// Returns whether the lock was still held and is now released: `false`
-    /// means nothing was released because the lock was already gone (another
-    /// actor released it, or took it over), which the caller reports instead
-    /// of claiming a release.
-    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool>;
+    /// Never claims a release it cannot show: the caller reports
+    /// [`UnlockOutcome::NotHeld`] and [`UnlockOutcome::Superseded`] instead
+    /// of saying the lock was released.
+    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<UnlockOutcome>;
 
     /// Describe the tenant's current lock, if any. Never migrates.
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>>;

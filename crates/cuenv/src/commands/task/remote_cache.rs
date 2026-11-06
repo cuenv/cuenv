@@ -216,7 +216,8 @@ pub async fn build(
     );
 
     // Shared by the CAS and the action cache, so a blob that reads back
-    // corrupt is both re-uploaded and kept out of published results.
+    // corrupt is treated as absent for the rest of the run, kept out of
+    // published results, and (once uploads are enabled) replaced.
     let remote_cas =
         Arc::new(CorruptionAwareCas::new(Arc::new(remote_cas) as Arc<dyn Cas>)) as Arc<dyn Cas>;
     let mut cas = LayeredCas::new(local.cas.clone(), remote_cas.clone());

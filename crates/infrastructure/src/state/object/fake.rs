@@ -29,6 +29,10 @@ pub enum FaultAction {
     /// was lost, lands just before its retry: the retry gets a 412 although
     /// the change is in.
     ApplyThenStatus(u16, String),
+    /// Another writer's PUT of this body lands first; then the request is
+    /// processed as usual, so a conditional write fails with 412. What a
+    /// client sees when another actor wins the race for the object.
+    LandFirst(Vec<u8>),
 }
 
 /// A fault for the next request that matches.
@@ -51,6 +55,16 @@ pub struct RecordedRequest {
     pub key: String,
     /// Lower-case header names and values.
     pub headers: Vec<(String, String)>,
+}
+
+impl Inner {
+    /// Store `body` under `full_key` with a fresh ETag, and return the ETag.
+    fn store(&mut self, full_key: String, body: Vec<u8>) -> String {
+        self.next_etag += 1;
+        let etag = format!("\"{}\"", self.next_etag);
+        self.objects.insert(full_key, (body, etag.clone()));
+        etag
+    }
 }
 
 #[derive(Debug, Default)]
@@ -131,12 +145,7 @@ impl FakeS3 {
 
     /// Replace (or create) an object directly.
     pub fn put_object(&self, bucket: &str, key: &str, body: Vec<u8>) {
-        let mut inner = self.inner();
-        inner.next_etag += 1;
-        let etag = format!("\"{}\"", inner.next_etag);
-        inner
-            .objects
-            .insert(format!("{bucket}/{key}"), (body, etag));
+        self.inner().store(format!("{bucket}/{key}"), body);
     }
 
     /// Remove an object directly.
@@ -336,11 +345,7 @@ fn apply(inner: &mut Inner, request: &Request) -> Reply {
                     }
                 }
             }
-            inner.next_etag += 1;
-            let etag = format!("\"{}\"", inner.next_etag);
-            inner
-                .objects
-                .insert(full_key, (request.body.clone(), etag.clone()));
+            let etag = inner.store(full_key, request.body.clone());
             (200, vec![("etag".to_string(), etag)], Vec::new())
         }
         "DELETE" => {
@@ -386,6 +391,10 @@ async fn answer(mut stream: TcpStream, inner: Arc<Mutex<Inner>>) {
             Some(FaultAction::ApplyThenStatus(status, body)) => {
                 let _ = apply(&mut inner, &request);
                 Some((status, Vec::new(), body.into_bytes()))
+            }
+            Some(FaultAction::LandFirst(body)) => {
+                inner.store(format!("{}/{}", request.bucket, request.key), body);
+                Some(apply(&mut inner, &request))
             }
             None => Some(apply(&mut inner, &request)),
         }

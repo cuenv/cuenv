@@ -82,7 +82,8 @@ impl CorruptionAwareCas {
                 digest = %digest,
                 %error,
                 "remote CAS served bytes that do not match their digest; \
-                 treating the blob as absent and re-uploading it when this run produces it"
+                 treating the blob as absent for the rest of this run (it is replaced \
+                 only when this run uploads to the remote cache)"
             );
             self.corrupt
                 .lock()

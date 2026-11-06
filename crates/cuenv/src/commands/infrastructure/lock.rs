@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cuenv_events::emit_stderr;
-use cuenv_infrastructure::{InfrastructureError, LockRequest, StateLock, StateStore, TenantKey};
+use cuenv_infrastructure::{
+    InfrastructureError, LockRequest, StateLock, StateStore, TenantKey, UnlockOutcome,
+};
 
 use super::dispatch::CommandContext;
 use super::failure::{failure, printable_text};
@@ -201,6 +203,10 @@ pub(super) enum Release {
     /// The lock was already gone when the run ended (another actor released
     /// it, or took it over): nothing was released.
     NoLongerHeld,
+    /// The lock is gone, but whether this run's release removed it cannot be
+    /// told: an earlier attempt failed after it may have landed, or another
+    /// run has taken the lock since.
+    Uncertain,
 }
 
 /// The line that tells what releasing the lock did, saying nothing was
@@ -218,6 +224,13 @@ pub(super) fn release_notice(lock: &StateLock, tenant: &TenantKey, release: Rele
             lock.lock_identifier,
             tenant_label(tenant)
         ),
+        Release::Uncertain => format!(
+            "warning: lock {} for {} is no longer held, but whether this run's release \
+             removed it is unknown (an earlier attempt may have landed, or the lock was \
+             force-unlocked and another run has taken it since)",
+            lock.lock_identifier,
+            tenant_label(tenant)
+        ),
     }
 }
 
@@ -226,7 +239,8 @@ pub(super) fn release_notice(lock: &StateLock, tenant: &TenantKey, release: Rele
 ///
 /// A failed attempt may still have released the lock: its write can land
 /// after the store gave up waiting for it. A retry that then finds the lock
-/// gone reports it released, not taken by another run.
+/// gone cannot tell that from another actor's release, so it reports
+/// [`Release::Uncertain`], never a release it cannot show.
 pub(super) async fn release(
     store: &dyn StateStore,
     tenant: &TenantKey,
@@ -235,9 +249,10 @@ pub(super) async fn release(
     let mut attempt = 1;
     loop {
         match store.unlock(tenant, lock).await {
-            Ok(true) => return Ok(Release::Released),
-            Ok(false) if attempt > 1 => return Ok(Release::Released),
-            Ok(false) => return Ok(Release::NoLongerHeld),
+            Ok(UnlockOutcome::Released) => return Ok(Release::Released),
+            Ok(UnlockOutcome::NotHeld) if attempt > 1 => return Ok(Release::Uncertain),
+            Ok(UnlockOutcome::NotHeld) => return Ok(Release::NoLongerHeld),
+            Ok(UnlockOutcome::Superseded) => return Ok(Release::Uncertain),
             Err(error) if attempt >= RELEASE_ATTEMPTS => return Err(error),
             Err(_) => {
                 tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;

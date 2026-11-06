@@ -43,7 +43,7 @@ use async_trait::async_trait;
 
 use super::{
     ConditionalPut, LastWriter, LockInformation, LockRequest, ManagedResource, RecordVersion,
-    ResourceAddress, StateLock, TenantLock,
+    ResourceAddress, StateLock, TenantLock, UnlockOutcome,
 };
 use crate::error::{
     InfrastructureError, Result, describe_json_error, json_error_category, strip_control_characters,
@@ -1105,14 +1105,24 @@ impl<T: SqlTransport> SqlStateStore<T> {
         }
     }
 
-    pub(super) async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
+    pub(super) async fn unlock(
+        &self,
+        tenant: &TenantKey,
+        lock: &StateLock,
+    ) -> Result<UnlockOutcome> {
         self.execute(Statement::new(
             "DELETE FROM cuenv_infrastructure_locks \
              WHERE module_path = ? AND project = ? AND environment = ? AND lock_identifier = ?",
             lock_arguments(tenant, lock),
         ))
         .await
-        .map(|deleted| deleted.affected_row_count > 0)
+        .map(|deleted| {
+            if deleted.affected_row_count > 0 {
+                UnlockOutcome::Released
+            } else {
+                UnlockOutcome::NotHeld
+            }
+        })
     }
 
     pub(super) async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
@@ -1328,7 +1338,7 @@ macro_rules! sql_state_store {
                 &self,
                 tenant: &crate::tenant::TenantKey,
                 lock: &crate::state::StateLock,
-            ) -> crate::error::Result<bool> {
+            ) -> crate::error::Result<crate::state::UnlockOutcome> {
                 self.inner.unlock(tenant, lock).await
             }
 

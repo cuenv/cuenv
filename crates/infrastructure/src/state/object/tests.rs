@@ -183,8 +183,9 @@ async fn a_release_that_lands_before_its_retry_is_reported_released() {
         "state.json",
         FaultAction::ApplyThenStatus(412, String::new()),
     );
-    assert!(
+    assert_eq!(
         store.unlock(&tenant(), &lock).await.unwrap(),
+        crate::UnlockOutcome::Released,
         "this call released the lock"
     );
     assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
@@ -194,7 +195,57 @@ async fn a_release_that_lands_before_its_retry_is_reported_released() {
         "the run's history snapshot is written"
     );
     // A lock that was never held by this call is still reported as gone.
-    assert!(!store.unlock(&tenant(), &lock).await.unwrap());
+    assert_eq!(
+        store.unlock(&tenant(), &lock).await.unwrap(),
+        crate::UnlockOutcome::NotHeld
+    );
+}
+
+#[tokio::test]
+async fn a_release_that_loses_to_another_run_is_not_reported_released() {
+    let server = FakeS3::start().await.unwrap();
+    let store = store(&server);
+    let key = "example.com/infra/_cuenv/web/_default/state.json";
+    let lock = take(&store, None).await;
+    store
+        .put(&tenant(), &lock, &record("pet", "a"))
+        .await
+        .unwrap();
+    let held = server.object(BUCKET, key).unwrap();
+    // Before this run releases, an operator force-unlocks it and another
+    // run takes the lock.
+    let other = self::store(&server);
+    assert!(
+        other
+            .force_unlock(&tenant(), &lock.lock_identifier)
+            .await
+            .unwrap()
+    );
+    let taken = take(&other, None).await;
+    let taken_over = server.object(BUCKET, key).unwrap();
+    server.put_object(BUCKET, key, held);
+    let history = store.history(&tenant()).await.unwrap().len();
+    // This run reads its own lock; its release then loses to that sequence.
+    server.fault("PUT", "state.json", FaultAction::LandFirst(taken_over));
+    assert_eq!(
+        store.unlock(&tenant(), &lock).await.unwrap(),
+        crate::UnlockOutcome::Superseded,
+        "whose write removed the lock cannot be told"
+    );
+    assert_eq!(
+        store
+            .current_lock(&tenant())
+            .await
+            .unwrap()
+            .map(|held| held.lock_identifier),
+        Some(taken.lock_identifier),
+        "the other run still holds the lock"
+    );
+    assert_eq!(
+        store.history(&tenant()).await.unwrap().len(),
+        history,
+        "the other run's locked document is not snapshotted"
+    );
 }
 
 #[tokio::test]

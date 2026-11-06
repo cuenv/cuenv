@@ -35,7 +35,7 @@ use super::{
 use crate::error::{InfrastructureError, Result, strip_control_characters};
 use crate::state::{
     ConditionalPut, LastWriter, LockInformation, LockRequest, ManagedResource, RecordVersion,
-    ResourceAddress, StateLock, StateStore, TenantLock,
+    ResourceAddress, StateLock, StateStore, TenantLock, UnlockOutcome,
 };
 use crate::tenant::{ProjectInstance, TenantKey};
 
@@ -864,6 +864,42 @@ impl MigrationManifest {
     }
 }
 
+/// What [`ObjectStateStore::release`] did.
+enum ReleaseOutcome {
+    /// The lock is released; the document shows it released.
+    Released(Box<StateDocument>),
+    /// The lock was not held: nothing was sent.
+    NotHeld,
+    /// A release was sent, and the lock is gone, but the stored state does
+    /// not show it released.
+    Superseded,
+}
+
+impl ReleaseOutcome {
+    /// The lock is gone without a document showing it released.
+    const fn gone(sent: bool) -> Self {
+        if sent {
+            Self::Superseded
+        } else {
+            Self::NotHeld
+        }
+    }
+
+    const fn unlock_outcome(&self) -> UnlockOutcome {
+        match self {
+            Self::Released(_) => UnlockOutcome::Released,
+            Self::NotHeld => UnlockOutcome::NotHeld,
+            Self::Superseded => UnlockOutcome::Superseded,
+        }
+    }
+}
+
+/// Whether `document` shows the lock `lock_identifier` released: no lock is
+/// held and it was the last released.
+fn shows_released(document: &StateDocument, lock_identifier: &str) -> bool {
+    document.lock.is_none() && document.last_released.as_deref() == Some(lock_identifier)
+}
+
 fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(200 * u64::from(attempt.saturating_add(1)))
 }
@@ -1097,7 +1133,7 @@ impl StateStore for ObjectStateStore {
         acquired.map(|_| request.lock.clone())
     }
 
-    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
+    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<UnlockOutcome> {
         let path = self.path(tenant)?;
         let acquired_serial = self
             .acquired_at_serial
@@ -1105,7 +1141,9 @@ impl StateStore for ObjectStateStore {
             .ok()
             .and_then(|serials| serials.get(&lock.lock_identifier).copied());
         let released = self.release(&path, tenant, &lock.lock_identifier).await?;
-        if let Some(document) = &released
+        // Only a document that shows this lock released is snapshotted:
+        // never one another run holds.
+        if let ReleaseOutcome::Released(document) = &released
             && acquired_serial.is_none_or(|serial| document.serial > serial.saturating_add(1))
         {
             self.snapshot(&path, document).await;
@@ -1114,7 +1152,7 @@ impl StateStore for ObjectStateStore {
             serials.remove(&lock.lock_identifier);
         }
         self.delete_marker(&path, &lock.lock_identifier).await;
-        Ok(released.is_some())
+        Ok(released.unlock_outcome())
     }
 
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
@@ -1148,10 +1186,11 @@ impl StateStore for ObjectStateStore {
     async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {
         let path = self.path(tenant)?;
         let released = self.release(&path, tenant, lock_identifier).await?;
-        if released.is_some() {
+        if !matches!(released, ReleaseOutcome::NotHeld) {
+            // The lock is gone either way: its marker is stale.
             self.delete_marker(&path, lock_identifier).await;
         }
-        Ok(released.is_some())
+        Ok(matches!(released, ReleaseOutcome::Released(_)))
     }
 
     async fn last_writer(&self, tenant: &TenantKey) -> Result<Option<LastWriter>> {
@@ -1267,35 +1306,42 @@ impl ObjectStateStore {
         )))
     }
 
-    /// Clear the lock `lock_identifier` and record it as released. Returns
-    /// the committed document, or `None` when that lock was not held.
+    /// Clear the lock `lock_identifier` and record it as released.
     ///
     /// Once this call has sent a release, a re-read that no longer shows the
-    /// lock means it is released: either that release landed after its
-    /// response was lost (or after a retry was already on its way, which
-    /// then fails with 412), or a force-unlock raced it. `lastReleased`
-    /// cannot tell these apart from "never held": any later acquire and
-    /// release overwrites it. The document read then is returned.
+    /// lock is not by itself "released": that release may have landed after
+    /// its response was lost (a retry then fails with 412), but an operator
+    /// may instead have force-unlocked it, and another run taken the lock
+    /// since. Only a document that shows this lock released (no lock,
+    /// `lastReleased` naming it) is reported released and returned for a
+    /// snapshot; anything else is [`ReleaseOutcome::Superseded`].
+    /// `specs/quint/object_state_cas.qnt` checks this (`unlockReportsTruth`).
     async fn release(
         &self,
         path: &TenantPath,
         tenant: &TenantKey,
         lock_identifier: &str,
-    ) -> Result<Option<StateDocument>> {
+    ) -> Result<ReleaseOutcome> {
         let key = path.state_key();
         let _gate = self.write_gate.lock().await;
         let mut last_failure = String::new();
         let mut sent = false;
         for attempt in 0..MUTATION_ATTEMPTS {
             let Some((document, etag)) = self.read(path).await? else {
-                return Ok(None);
+                return Ok(ReleaseOutcome::gone(sent));
             };
             if document
                 .lock
                 .as_ref()
                 .is_none_or(|held| held.lock_identifier != lock_identifier)
             {
-                return Ok(sent.then_some(document));
+                return Ok(if !sent {
+                    ReleaseOutcome::NotHeld
+                } else if shows_released(&document, lock_identifier) {
+                    ReleaseOutcome::Released(Box::new(document))
+                } else {
+                    ReleaseOutcome::Superseded
+                });
             }
             document.require_writable(&key)?;
             let mut next = document.clone();
@@ -1310,7 +1356,7 @@ impl ObjectStateStore {
                 .put(&key, body, &Condition::Matches(etag))
                 .await?
             {
-                Ok(_) => return Ok(Some(next)),
+                Ok(_) => return Ok(ReleaseOutcome::Released(Box::new(next))),
                 Err(S3Failure::PreconditionFailed) => {
                     last_failure = "the object changed concurrently".to_string();
                 }
@@ -1320,15 +1366,14 @@ impl ObjectStateStore {
                 }
                 Err(S3Failure::Ambiguous(message)) => {
                     if let Some((stored, _)) = self.read(path).await?
-                        && stored.last_released.as_deref() == Some(lock_identifier)
-                        && stored.lock.is_none()
+                        && shows_released(&stored, lock_identifier)
                     {
-                        return Ok(Some(stored));
+                        return Ok(ReleaseOutcome::Released(Box::new(stored)));
                     }
                     tokio::time::sleep(backoff(attempt)).await;
                     last_failure = message;
                 }
-                Err(S3Failure::Missing) => return Ok(None),
+                Err(S3Failure::Missing) => return Ok(ReleaseOutcome::gone(sent)),
                 Err(S3Failure::Permanent(message)) => {
                     return Err(InfrastructureError::state(format!(
                         "object storage refused writing {key}: {message}"
@@ -1868,7 +1913,7 @@ impl ObjectStateStore {
             .await?;
         self.delete_marker(step.source, &step.lock.lock_identifier)
             .await;
-        if let Some(released) = self
+        if let ReleaseOutcome::Released(released) = self
             .release(step.target, &step.to.tenant, &step.lock.lock_identifier)
             .await?
         {

@@ -208,8 +208,14 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
         "{both:?}"
     );
     // Releasing reports whether the lock was still held.
-    assert!(store.unlock(&tenant, &lock).await?);
-    assert!(!store.unlock(&tenant, &lock).await?);
+    assert_eq!(
+        store.unlock(&tenant, &lock).await?,
+        crate::UnlockOutcome::Released
+    );
+    assert_eq!(
+        store.unlock(&tenant, &lock).await?,
+        crate::UnlockOutcome::NotHeld
+    );
     assert!(matches!(
         store.inner.migrate_to(&migrations).await,
         Err(InfrastructureError::StateMigrationBlocked { version: 3, .. })
