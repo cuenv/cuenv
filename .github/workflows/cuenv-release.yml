@@ -200,9 +200,8 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -277,9 +276,8 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -354,9 +352,8 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -434,9 +431,8 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -520,9 +516,8 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -592,9 +587,8 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -662,9 +656,8 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -736,9 +729,8 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        "$cuenv_package/bin/cuenv" --version | grep -Fx 'cuenv 0.70.0'
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
