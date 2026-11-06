@@ -13,10 +13,10 @@ import "github.com/cuenv/cuenv/schema"
 // - cuenv:contributor:namespaceCache.cleanupDeterminateReceipt: Removes new Determinate receipt metadata before cache save
 //
 // This is a GitHub-specific contributor and requires a Namespace runner profile
-// with a cache volume attached. It does not install Nix. When paired with
-// Determinate Nix, the prepare task removes restored /nix/receipt.json before
-// Nix installation, and the cleanup task removes the new receipt before the
-// Namespace cache action saves state.
+// with a cache volume attached. It does not install Nix. The receipt cleanup
+// tasks remove legacy installer metadata from restored volumes and before
+// saving state. Their task IDs remain stable for existing configurations;
+// upstream Nix does not create a receipt.
 //
 // Usage:
 //
@@ -57,7 +57,7 @@ let _removeDeterminateReceipt = """
 		},
 		{
 			id:       "namespaceCache.cleanupDeterminateReceipt"
-			label:    "Prune Determinate Nix receipt"
+			label:    "Prune legacy Nix receipt"
 			priority: 3
 			script:   _removeDeterminateReceipt
 		},

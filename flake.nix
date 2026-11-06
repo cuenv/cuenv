@@ -15,7 +15,6 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    flake-schemas.url = "https://flakehub.com/f/DeterminateSystems/flake-schemas/0.2.0";
   };
 
   nixConfig = {
@@ -30,7 +29,7 @@
     accept-flake-config = true;
   };
 
-  outputs = { self, nixpkgs, nixpkgs-unstable, crane, advisory-db, flake-utils, rust-overlay, flake-schemas, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, crane, advisory-db, flake-utils, rust-overlay, ... }:
     let
       systems = [
         "aarch64-darwin"
@@ -52,7 +51,13 @@
         };
         cuetty = import ./apps/cuetty/nix.nix { pkgs = cuettyPkgs; inherit cue-bridge; };
 
-        rustToolchain = pkgs.rust-bin.stable."1.98.1".default.override {
+        # Native packages and checks need the compiler and lint/format tools,
+        # not Rust documentation, an analyzer, or four platforms' std libraries.
+        rustToolchain = pkgs.rust-bin.stable."1.98.1".minimal.override {
+          extensions = [ "clippy" "rustfmt" ];
+        };
+
+        rustDevToolchain = pkgs.rust-bin.stable."1.98.1".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
           targets = [
             "x86_64-unknown-linux-gnu"
@@ -63,6 +68,7 @@
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        craneDevLib = (crane.mkLib pkgs).overrideToolchain rustDevToolchain;
 
         # Read version from Cargo.toml
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
@@ -80,10 +86,11 @@
           hash = "sha256-hY3SBC679vUNDkpREjfUWAaQxC5mrPQhdYSuUKx+j2o=";
         };
 
-        rustsec-advisory-db = pkgs.runCommand "rustsec-advisory-db-sanitized" {
-          src = advisory-db;
-          nativeBuildInputs = with pkgs; [ findutils gnugrep ];
-        } ''
+        rustsec-advisory-db = pkgs.runCommand "rustsec-advisory-db-sanitized"
+          {
+            src = advisory-db;
+            nativeBuildInputs = with pkgs; [ findutils gnugrep ];
+          } ''
           mkdir -p "$out"
           cp -R "$src"/. "$out"/
           chmod -R +w "$out"
@@ -218,6 +225,10 @@
 
         workspaceCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
+          # Clippy consumes metadata, so building and linking release binaries
+          # and test executables here only wastes compilation and cache space.
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile check ${workspaceAllFeaturesCargoExtraArgs} --all-targets";
         });
 
         # Test binaries are built with the lightweight `ci` profile (no LTO,
@@ -234,21 +245,37 @@
 
         cuenvCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = cuenvPackageCargoExtraArgs;
+          # The package is smoke-tested after installation; its Rust tests have
+          # dedicated checks and do not belong in a bootstrap dependency build.
+          doCheck = false;
+        });
+
+        # BDD uses the same package/features as the CLI, with the lightweight
+        # test profile. Keep its dependency build aligned with those settings.
+        cuenvCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
+          cargoExtraArgs = cuenvPackageCargoExtraArgs;
+          CARGO_PROFILE = "ci";
         });
 
         workspaceCheckArgs = commonArgs // {
           cargoArtifacts = workspaceCargoArtifacts;
           doCheck = true;
+          # Terminal checks have no artifact consumers. Only dependency builds
+          # and packages need their Cargo target directories in the cache.
+          doInstallCargoArtifacts = false;
         };
 
         workspaceDocCheckArgs = commonArgs // {
           cargoArtifacts = workspaceDocCargoArtifacts;
           doCheck = true;
+          doInstallCargoArtifacts = false;
         };
 
         cuenvCheckArgs = commonArgs // {
-          cargoArtifacts = cuenvCargoArtifacts;
+          cargoArtifacts = cuenvCiCargoArtifacts;
+          CARGO_PROFILE = "ci";
           doCheck = true;
+          doInstallCargoArtifacts = false;
         };
 
         clippy-check = craneLib.cargoClippy (workspaceCheckArgs // {
@@ -550,10 +577,10 @@
           bun
         ] ++ lib.optionals stdenv.isLinux [
           cargo-llvm-cov
-          gcc   # Provides cc linker for cargo
+          gcc # Provides cc linker for cargo
           patchelf
           libgccjit
-          mold  # Fast linker for faster link times
+          mold # Fast linker for faster link times
           clang # Required for mold integration
         ];
 
@@ -588,11 +615,11 @@
 
         devShells.cuetty = cuetty.devShell;
 
-        devShells.default = craneLib.devShell ({
+        devShells.default = craneDevLib.devShell ({
           packages = devTools;
 
           RUST_BACKTRACE = "1";
-          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+          RUST_SRC_PATH = "${rustDevToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
 
           shellHook = ''

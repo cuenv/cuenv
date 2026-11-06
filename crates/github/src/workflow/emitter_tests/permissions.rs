@@ -173,6 +173,7 @@ fn matrix_jobs_keep_own_task_grants_and_drop_unrelated_phase_grants() {
             arch_runners: None,
             previous_jobs: &[],
             project_path: None,
+            execution: TaskExecution::Orchestrated,
             cuenv_artifacts_by_runner: None,
         },
     );

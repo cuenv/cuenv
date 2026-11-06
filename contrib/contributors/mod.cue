@@ -9,7 +9,7 @@
 //   - #NpmWorkspace: Installs npm dependencies (auto-detects package-lock.json)
 //
 // Runtime Contributors:
-//   - #Nix: Installs Nix via Determinate Systems installer
+//   - #Nix: Installs upstream Nix
 //   - #Cuenv: Installs or builds cuenv (multiple modes: release, git, nix, homebrew)
 //   - #OnePassword: Sets up 1Password WASM SDK for secret resolution
 //   - #Infisical: Validates Infisical REST API credentials for secret resolution

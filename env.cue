@@ -109,7 +109,11 @@ schema.#Project & {
 		contributors: [
 			xContributors.#NamespaceCache,
 			xContributors.#Nix,
-			xContributors.#Cachix,
+			xContributors.#Cachix & {
+				// Install the client from our locked nixpkgs input, with upstream
+				// binary substitution instead of an unpinned installer expression.
+				tasks: [{provider: github: with: installCommand: "nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix"}]
+			},
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xCodecov.#Codecov,

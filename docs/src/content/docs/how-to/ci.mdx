@@ -128,6 +128,13 @@ Thin mode keeps the workflow tiny and pushes all orchestration into `cuenv ci`,
 so what you see locally is what runs in CI. Expanded mode trades that for native
 provider visibility per task.
 
+Expanded non-release Nix tasks run their Nix command directly, including tasks
+expanded over an architecture matrix. They keep the original task environment,
+dependencies, outputs, and project working directory, and do not wait for a
+cuenv bootstrap build. This also preserves the runner's Nix cache publication
+configuration. Release tasks and tasks requiring cuenv orchestration continue
+to use the configured cuenv setup.
+
 ## Affected-task detection
 
 `cuenv ci` runs the **same DAG locally** that CI runs — there is no separate code

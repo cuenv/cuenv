@@ -414,7 +414,7 @@ mod tests {
         phase_task.phase = Some(crate::ir::BuildStage::Bootstrap);
         phase_task.provider_hints = Some(serde_json::json!({
             "github_action": {
-                "uses": "DeterminateSystems/determinate-nix-action@v3"
+                "uses": "cachix/install-nix-action@v31"
             }
         }));
         ir.tasks.push(phase_task);

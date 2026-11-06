@@ -1,7 +1,7 @@
 { pkgs, cue-bridge }:
 let
   lib = pkgs.lib;
-  rustToolchain = pkgs.rust-bin.stable."1.98.1".default.override {
+  rustToolchain = pkgs.rust-bin.stable."1.98.1".minimal.override {
     extensions = [
       "clippy"
       "rustfmt"

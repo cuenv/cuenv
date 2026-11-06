@@ -22,9 +22,9 @@ fn test_workflow_with_nix() {
     // Build provider_hints for GitHub Actions (matching NixContributor)
     let provider_hints = serde_json::json!({
         "github_action": {
-            "uses": "DeterminateSystems/determinate-nix-action@v3",
+            "uses": "cachix/install-nix-action@v31",
             "inputs": {
-                "extra-conf": "accept-flake-config = true"
+                "extra_nix_config": "accept-flake-config = true"
             }
         }
     });
@@ -50,7 +50,7 @@ fn test_workflow_with_nix() {
 
     let yaml = emitter.emit(&ir).unwrap();
 
-    assert!(yaml.contains("DeterminateSystems/determinate-nix-action"));
+    assert!(yaml.contains("cachix/install-nix-action"));
     assert!(yaml.contains("nix build .#cuenv"));
 }
 
@@ -63,9 +63,9 @@ fn test_workflow_with_cachix() {
     // Build provider_hints for GitHub Actions (matching NixContributor)
     let nix_provider_hints = serde_json::json!({
         "github_action": {
-            "uses": "DeterminateSystems/determinate-nix-action@v3",
+            "uses": "cachix/install-nix-action@v31",
             "inputs": {
-                "extra-conf": "accept-flake-config = true"
+                "extra_nix_config": "accept-flake-config = true"
             }
         }
     });

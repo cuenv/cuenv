@@ -2,13 +2,13 @@ package contributors
 
 import "github.com/cuenv/cuenv/schema"
 
-// #Nix installs Determinate Nix.
+// #Nix installs upstream Nix.
 //
 // Active when:
 // - Project uses Nix runtime (detected via runtimeType condition)
 //
 // Injects tasks:
-// - cuenv:contributor:nix.install: Installs Determinate Nix
+// - cuenv:contributor:nix.install: Installs upstream Nix
 //
 // Usage:
 //
@@ -19,13 +19,15 @@ import "github.com/cuenv/cuenv/schema"
 	id: "nix"
 	tasks: [{
 		id:       "nix.install"
-		label:    "Install Determinate Nix"
+		label:    "Install Nix"
 		priority: 2
-		script:   "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none"
-		ci: github: permissions: "id-token": "write"
+		script:   "curl --proto '=https' --tlsv1.2 -sSf -L https://releases.nixos.org/nix/nix-2.31.2/install | sh -s -- --no-daemon --no-channel-add"
 		provider: github: {
-			uses: "DeterminateSystems/determinate-nix-action@v3"
-			with: "extra-conf": "accept-flake-config = true"
+			uses: "cachix/install-nix-action@v31"
+			with: {
+				install_url: "https://releases.nixos.org/nix/nix-2.31.2/install"
+				extra_nix_config: "accept-flake-config = true"
+			}
 		}
 	}]
 }

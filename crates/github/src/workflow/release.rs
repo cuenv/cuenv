@@ -413,9 +413,9 @@ mod tests {
             tasks: vec![
                 action_task(&ActionTaskFixture {
                     id: "install-nix",
-                    label: "Install Determinate Nix",
+                    label: "Install Nix",
                     priority: 2,
-                    uses: "DeterminateSystems/determinate-nix-action@v3",
+                    uses: "cachix/install-nix-action@v31",
                 }),
                 action_task(&ActionTaskFixture {
                     id: "hestia.setup",
@@ -431,9 +431,7 @@ mod tests {
         let nix_index = job
             .steps
             .iter()
-            .position(|step| {
-                step.uses.as_deref() == Some("DeterminateSystems/determinate-nix-action@v3")
-            })
+            .position(|step| step.uses.as_deref() == Some("cachix/install-nix-action@v31"))
             .ok_or_else(|| {
                 format!(
                     "{} should install Nix",

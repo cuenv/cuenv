@@ -2,6 +2,67 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
+fn direct_matrix_retains_cache_setup_environment_and_outputs() {
+    let emitter = GitHubActionsEmitter::new();
+    let mut task = make_task("check", &["nix", "build", ".#check"]);
+    task.matrix = Some(cuenv_ci::ir::MatrixConfig {
+        dimensions: BTreeMap::from([("arch".into(), vec!["darwin-arm64".into()])]),
+        ..Default::default()
+    });
+    task.env.insert("TOKEN".into(), "${CACHE_TOKEN}".into());
+    task.outputs.push(cuenv_ci::ir::OutputDeclaration {
+        path: "reports/check.json".into(),
+        output_type: cuenv_ci::ir::OutputType::Orchestrator,
+    });
+    let mut cache = make_phase_task("cache", &["configure cache"], BuildStage::Bootstrap, 9);
+    cache.contributor = Some("cachix".into());
+    let mut cuenv = make_phase_task("cuenv.setup", &["build cuenv"], BuildStage::Setup, 10);
+    cuenv.contributor = Some("cuenv".into());
+    let mut secret_setup =
+        make_phase_task("secrets", &["cuenv secrets setup"], BuildStage::Setup, 20);
+    secret_setup.depends_on = vec![cuenv.id.clone()];
+    let ir = make_ir(vec![task.clone(), cache, cuenv, secret_setup]);
+    let artifacts = HashMap::from([("ubuntu-latest".into(), "bootstrap".into())]);
+
+    let jobs = emitter.build_matrix_jobs(
+        &task,
+        &ir,
+        &MatrixJobOptions {
+            execution: TaskExecution::Direct,
+            cuenv_artifacts_by_runner: Some(&artifacts),
+            ..Default::default()
+        },
+    );
+    let job = &jobs["check-darwin-arm64"];
+    assert!(
+        job.steps
+            .iter()
+            .any(|step| step.run.as_deref() == Some("configure cache"))
+    );
+    assert!(job.steps.iter().all(|step| {
+        !matches!(
+            step.run.as_deref(),
+            Some("build cuenv" | "cuenv secrets setup")
+        ) && step.uses.as_deref() != Some("actions/download-artifact@v4")
+    }));
+    let command = job
+        .steps
+        .iter()
+        .find(|step| step.run.as_deref() == Some("nix build .#check"))
+        .expect("direct Nix command");
+    assert_eq!(command.env["TOKEN"], "${{ secrets.CACHE_TOKEN }}");
+    let upload = job
+        .steps
+        .iter()
+        .find(|step| step.name.as_deref() == Some("Upload artifacts"))
+        .expect("declared output upload");
+    assert_eq!(
+        upload.with_inputs["path"].as_str(),
+        Some("reports/check.json")
+    );
+}
+
+#[test]
 fn test_build_matrix_jobs() {
     use cuenv_ci::ir::MatrixConfig;
 
@@ -26,6 +87,7 @@ fn test_build_matrix_jobs() {
             arch_runners: None,
             previous_jobs: &[],
             project_path: None,
+            execution: TaskExecution::Orchestrated,
             cuenv_artifacts_by_runner: None,
         },
     );
@@ -90,6 +152,7 @@ fn test_build_matrix_jobs_with_arch_runners() {
             arch_runners: Some(&arch_runners),
             previous_jobs: &[],
             project_path: None,
+            execution: TaskExecution::Orchestrated,
             cuenv_artifacts_by_runner: None,
         },
     );
@@ -244,6 +307,7 @@ fn test_build_matrix_jobs_download_cuenv_artifact_per_runner() {
             arch_runners: Some(&arch_runners),
             previous_jobs: &[],
             project_path: None,
+            execution: TaskExecution::Orchestrated,
             cuenv_artifacts_by_runner: Some(&cuenv_artifacts_by_runner),
         },
     );

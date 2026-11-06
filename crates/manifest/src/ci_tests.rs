@@ -210,7 +210,7 @@ fn test_contributor_task_with_script() {
     let json = r#"{
             "id": "nix.install",
             "command": "sh",
-            "args": ["-c", "curl -sSL https://install.determinate.systems/nix | sh"]
+            "args": ["-c", "curl -sSL https://releases.nixos.org/nix/nix-2.31.2/install | sh"]
         }"#;
     let task: ContributorTask = serde_json::from_str(json).unwrap();
     assert_eq!(task.id, "nix.install");
@@ -219,7 +219,7 @@ fn test_contributor_task_with_script() {
         task.args,
         vec![
             "-c",
-            "curl -sSL https://install.determinate.systems/nix | sh"
+            "curl -sSL https://releases.nixos.org/nix/nix-2.31.2/install | sh"
         ]
     );
 }
