@@ -167,6 +167,37 @@ async fn every_write_changes_serial_and_writer() {
 }
 
 #[tokio::test]
+async fn a_release_that_lands_before_its_retry_is_reported_released() {
+    let server = FakeS3::start().await.unwrap();
+    let store = store(&server);
+    let lock = take(&store, None).await;
+    store
+        .put(&tenant(), &lock, &record("pet", "a"))
+        .await
+        .unwrap();
+    let history = store.history(&tenant()).await.unwrap().len();
+    // The release is applied, but the client sees a 412, as when its own
+    // earlier send landed first. Re-reading then shows no lock.
+    server.fault(
+        "PUT",
+        "state.json",
+        FaultAction::ApplyThenStatus(412, String::new()),
+    );
+    assert!(
+        store.unlock(&tenant(), &lock).await.unwrap(),
+        "this call released the lock"
+    );
+    assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
+    assert_eq!(
+        store.history(&tenant()).await.unwrap().len(),
+        history + 1,
+        "the run's history snapshot is written"
+    );
+    // A lock that was never held by this call is still reported as gone.
+    assert!(!store.unlock(&tenant(), &lock).await.unwrap());
+}
+
+#[tokio::test]
 async fn a_lost_response_is_resolved_by_reading_the_writer_back() {
     let server = FakeS3::start().await.unwrap();
     let store = store(&server);

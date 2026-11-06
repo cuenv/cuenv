@@ -223,6 +223,10 @@ pub(super) fn release_notice(lock: &StateLock, tenant: &TenantKey, release: Rele
 
 /// Release the lock, retrying a failure twice (after 250 ms, then 500 ms)
 /// and never waiting after the last attempt.
+///
+/// A failed attempt may still have released the lock: its write can land
+/// after the store gave up waiting for it. A retry that then finds the lock
+/// gone reports it released, not taken by another run.
 pub(super) async fn release(
     store: &dyn StateStore,
     tenant: &TenantKey,
@@ -232,6 +236,7 @@ pub(super) async fn release(
     loop {
         match store.unlock(tenant, lock).await {
             Ok(true) => return Ok(Release::Released),
+            Ok(false) if attempt > 1 => return Ok(Release::Released),
             Ok(false) => return Ok(Release::NoLongerHeld),
             Err(error) if attempt >= RELEASE_ATTEMPTS => return Err(error),
             Err(_) => {

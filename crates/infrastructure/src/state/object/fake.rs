@@ -24,6 +24,11 @@ pub enum FaultAction {
     DropAfterApply,
     /// Close the connection without applying or answering.
     DropBeforeApply,
+    /// Apply the request, then answer with this status and body. What a
+    /// client sees when an earlier send of the same write, whose response
+    /// was lost, lands just before its retry: the retry gets a 412 although
+    /// the change is in.
+    ApplyThenStatus(u16, String),
 }
 
 /// A fault for the next request that matches.
@@ -377,6 +382,10 @@ async fn answer(mut stream: TcpStream, inner: Arc<Mutex<Inner>>) {
             Some(FaultAction::DropAfterApply) => {
                 let _ = apply(&mut inner, &request);
                 None
+            }
+            Some(FaultAction::ApplyThenStatus(status, body)) => {
+                let _ = apply(&mut inner, &request);
+                Some((status, Vec::new(), body.into_bytes()))
             }
             None => Some(apply(&mut inner, &request)),
         }

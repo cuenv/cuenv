@@ -1269,6 +1269,13 @@ impl ObjectStateStore {
 
     /// Clear the lock `lock_identifier` and record it as released. Returns
     /// the committed document, or `None` when that lock was not held.
+    ///
+    /// Once this call has sent a release, a re-read that no longer shows the
+    /// lock means it is released: either that release landed after its
+    /// response was lost (or after a retry was already on its way, which
+    /// then fails with 412), or a force-unlock raced it. `lastReleased`
+    /// cannot tell these apart from "never held": any later acquire and
+    /// release overwrites it. The document read then is returned.
     async fn release(
         &self,
         path: &TenantPath,
@@ -1278,6 +1285,7 @@ impl ObjectStateStore {
         let key = path.state_key();
         let _gate = self.write_gate.lock().await;
         let mut last_failure = String::new();
+        let mut sent = false;
         for attempt in 0..MUTATION_ATTEMPTS {
             let Some((document, etag)) = self.read(path).await? else {
                 return Ok(None);
@@ -1287,7 +1295,7 @@ impl ObjectStateStore {
                 .as_ref()
                 .is_none_or(|held| held.lock_identifier != lock_identifier)
             {
-                return Ok(None);
+                return Ok(sent.then_some(document));
             }
             document.require_writable(&key)?;
             let mut next = document.clone();
@@ -1296,6 +1304,7 @@ impl ObjectStateStore {
             let writer = Self::nonce();
             next.advance(&writer);
             let body = encode_bounded(&next, &key)?;
+            sent = true;
             match self
                 .client
                 .put(&key, body, &Condition::Matches(etag))

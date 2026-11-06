@@ -1613,10 +1613,13 @@ async fn unlock_with_another_identifier_is_a_lock_failure() {
 }
 
 /// A store whose lock is free and whose unlock always fails, counting
-/// attempts.
+/// attempts. With `lands_late`, the first failed unlock did release the lock
+/// (its write landed after the store gave up), so later attempts find the
+/// lock gone.
 #[derive(Debug, Default)]
 struct UnreleasableStore {
     unlock_attempts: AtomicUsize,
+    lands_late: bool,
 }
 
 #[async_trait]
@@ -1684,7 +1687,10 @@ impl StateStore for UnreleasableStore {
         _tenant: &TenantKey,
         _lock: &StateLock,
     ) -> cuenv_infrastructure::Result<bool> {
-        self.unlock_attempts.fetch_add(1, Ordering::SeqCst);
+        let earlier = self.unlock_attempts.fetch_add(1, Ordering::SeqCst);
+        if self.lands_late && earlier > 0 {
+            return Ok(false);
+        }
         Err(InfrastructureError::state("unavailable"))
     }
 
@@ -1718,6 +1724,22 @@ async fn release_does_not_wait_after_its_last_attempt() {
     // Time is paused and advances only through the waits: 250 ms and
     // 500 ms between the three attempts, and none after the last.
     assert_eq!(started.elapsed().as_millis(), 750);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_release_that_landed_after_its_attempt_failed_is_reported_released() {
+    let store = UnreleasableStore {
+        lands_late: true,
+        ..UnreleasableStore::default()
+    };
+    let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
+    assert_eq!(
+        release(&store, &tenant, &StateLock::generate())
+            .await
+            .unwrap(),
+        super::lock::Release::Released
+    );
+    assert_eq!(store.unlock_attempts.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test(start_paused = true)]
