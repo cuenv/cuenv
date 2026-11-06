@@ -30,6 +30,9 @@ hex = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
+anyhow = { workspace = true }
+quint-connect = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tempfile = { workspace = true }

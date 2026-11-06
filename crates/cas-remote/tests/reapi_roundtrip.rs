@@ -44,6 +44,18 @@ struct Store {
     seen_authorization: Mutex<Vec<String>>,
     /// Maximum batch payload advertised. 0 means "unset".
     max_batch_total_size_bytes: i64,
+    /// Skip writes of digests already held, as REAPI lets a server do.
+    ignore_overwrites: std::sync::atomic::AtomicBool,
+}
+
+impl Store {
+    /// Whether a write of `key` replaces what is stored.
+    fn writes(&self, blobs: &HashMap<String, Vec<u8>>, key: &str) -> bool {
+        !(self
+            .ignore_overwrites
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && blobs.contains_key(key))
+    }
 }
 
 impl Store {
@@ -113,7 +125,10 @@ impl CasService for CasImpl {
             let Some(digest) = entry.digest else {
                 return Err(Status::invalid_argument("missing digest"));
             };
-            blobs.insert(key(&digest), entry.data);
+            let key = key(&digest);
+            if self.0.writes(&blobs, &key) {
+                blobs.insert(key, entry.data);
+            }
             responses.push(pb::batch_update_blobs_response::Response {
                 digest: Some(digest),
                 status: None,
@@ -294,7 +309,10 @@ impl ByteStreamService for ByteStreamImpl {
         }
         let key = key.ok_or_else(|| Status::invalid_argument("no resource name was sent"))?;
         let committed_size = i64::try_from(data.len()).unwrap_or(i64::MAX);
-        lock(&self.0.blobs).insert(key, data);
+        let mut blobs = lock(&self.0.blobs);
+        if self.0.writes(&blobs, &key) {
+            blobs.insert(key, data);
+        }
         Ok(Response::new(WriteResponse { committed_size }))
     }
 
@@ -461,6 +479,11 @@ async fn writable_cas(server: &TestServer) -> RemoteCas {
         Err(e) => panic!("capabilities handshake failed: {e}"),
     }
 }
+
+// Model-based test of the layered cache against specs/quint/task_cache.qnt,
+// using this server as the shared remote.
+#[path = "reapi_roundtrip/mbt.rs"]
+mod mbt;
 
 // =============================================================================
 // Tests
