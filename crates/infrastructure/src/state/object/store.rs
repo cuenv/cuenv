@@ -27,6 +27,10 @@ use super::key::{
     TenantPath, markers_prefix, module_prefix, parse_history_serial, parse_marker_key,
     parse_state_key, validate_package, validate_root,
 };
+use super::protocol::{
+    Acquire, AcquireRequest, Action, Context, Input, Mutate, Protocol, RATE_LIMIT_WAIT,
+    RandomNonces, Release, ReleaseOutcome, Step, backoff,
+};
 use super::sigv4::Credentials;
 use super::{
     HistoryEntry, LockDetails, ObjectStateFeatures, ObjectTenant, RestoreRequest, StateSize,
@@ -47,9 +51,6 @@ const MUTATION_ATTEMPTS: u32 = 8;
 
 /// Attempts a read makes.
 const READ_ATTEMPTS: u32 = 4;
-
-/// The wait after a 429 without `Retry-After`.
-const RATE_LIMIT_WAIT: Duration = Duration::from_secs(1);
 
 /// The host suffix of Cloudflare R2's S3 API.
 const R2_HOST_SUFFIX: &str = ".r2.cloudflarestorage.com";
@@ -436,69 +437,71 @@ impl ObjectStateStore {
         path: &TenantPath,
         tenant: &TenantKey,
         lock: &StateLock,
-        mut change: Change,
+        change: Change,
     ) -> Result<()>
     where
         Change: FnMut(&mut StateDocument) -> Result<Mutation> + Send,
     {
-        let path = path.clone();
-        let key = path.state_key();
         let _gate = self.write_gate.lock().await;
-        let mut last_failure = String::new();
-        for attempt in 0..MUTATION_ATTEMPTS {
-            let (document, etag) = self
-                .read(&path)
-                .await?
-                .ok_or_else(|| self.vanished(&path))?;
-            self.refuse_tombstone(&path, &document)?;
-            if document
-                .lock
-                .as_ref()
-                .is_none_or(|held| held.lock_identifier != lock.lock_identifier)
-            {
-                return Err(lock_lost(tenant, lock));
-            }
-            document.require_writable(&key)?;
-            let mut next = document.clone();
-            if change(&mut next)? == Mutation::Unchanged {
-                return Ok(());
-            }
-            let writer = Self::nonce();
-            next.advance(&writer);
-            let body = encode_bounded(&next, &key)?;
-            match self
-                .client
-                .put(&key, body, &Condition::Matches(etag))
-                .await?
-            {
-                Ok(_) => return Ok(()),
-                Err(S3Failure::PreconditionFailed) => {
-                    last_failure = "the object changed concurrently".to_string();
-                }
-                Err(S3Failure::RateLimited(wait)) => {
-                    tokio::time::sleep(wait.unwrap_or(RATE_LIMIT_WAIT)).await;
-                    last_failure = "rate limited".to_string();
-                }
-                Err(S3Failure::Ambiguous(message)) => {
-                    match self.read(&path).await? {
-                        Some((stored, _)) if stored.writer == writer => return Ok(()),
-                        Some(_) => {}
-                        None => return Err(self.vanished(&path)),
-                    }
-                    tokio::time::sleep(backoff(attempt)).await;
-                    last_failure = message;
-                }
-                Err(S3Failure::Missing) => return Err(self.vanished(&path)),
-                Err(S3Failure::Permanent(message)) => {
-                    return Err(InfrastructureError::state(format!(
-                        "object storage refused writing {key}: {message}"
-                    )));
-                }
-            }
+        let protocol = Mutate::new(
+            self.context(path, tenant),
+            &lock.lock_identifier,
+            change,
+            RandomNonces,
+        );
+        self.drive(path, protocol).await
+    }
+
+    /// The context a write protocol names in its errors.
+    fn context(&self, path: &TenantPath, tenant: &TenantKey) -> Context {
+        let key = path.state_key();
+        Context {
+            tenant: tenant.clone(),
+            location: self.object_location(&key),
+            key,
+            attempts: MUTATION_ATTEMPTS,
         }
-        Err(InfrastructureError::state(format!(
-            "could not write {key} after {MUTATION_ATTEMPTS} attempts: {last_failure}"
-        )))
+    }
+
+    /// Carry out `protocol`'s actions against `state.json` until it
+    /// finishes. The decisions are the protocol's; this only does the I/O.
+    async fn drive<P>(&self, path: &TenantPath, mut protocol: P) -> Result<P::Output>
+    where
+        P: Protocol + Send,
+    {
+        let key = path.state_key();
+        let mut step = protocol.start()?;
+        loop {
+            let action = match step {
+                Step::Done(output) => return Ok(output),
+                Step::Next(action) => action,
+            };
+            let input = match action {
+                Action::Read => {
+                    let found = self.read(path).await?;
+                    if protocol.refuses_tombstones()
+                        && let Some((document, _)) = &found
+                    {
+                        self.refuse_tombstone(path, document)?;
+                    }
+                    Input::Read(found.map(Box::new))
+                }
+                Action::ReadBack => Input::Read(self.read(path).await?.map(Box::new)),
+                Action::CheckNotVanished => {
+                    self.require_not_vanished(path).await?;
+                    Input::NotVanished
+                }
+                Action::Put { body, condition } => {
+                    let body = encode_bounded(&body, &key)?;
+                    Input::Put(self.client.put(&key, body, &condition).await?.map(|_| ()))
+                }
+                Action::Wait(duration) => {
+                    tokio::time::sleep(duration).await;
+                    Input::Waited
+                }
+            };
+            step = protocol.resume(input)?;
+        }
     }
 
     /// Create the tenant's document with `If-None-Match: *`. Returns `false`
@@ -823,14 +826,7 @@ impl ObjectStateStore {
     }
 }
 
-/// What a mutation did to the document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mutation {
-    /// The document changed and must be written.
-    Write,
-    /// Nothing to write.
-    Unchanged,
-}
+pub use super::protocol::Mutation;
 
 /// One tenant in a migration manifest.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -861,53 +857,6 @@ impl MigrationManifest {
         self.tenants.iter().any(|entry| {
             entry.environment.as_deref() == path.environment() && entry.status != "migrated"
         })
-    }
-}
-
-/// What [`ObjectStateStore::release`] did.
-enum ReleaseOutcome {
-    /// The lock is released; the document shows it released.
-    Released(Box<StateDocument>),
-    /// The lock was not held: nothing was sent.
-    NotHeld,
-    /// A release was sent, and the lock is gone, but the stored state does
-    /// not show it released.
-    Superseded,
-}
-
-impl ReleaseOutcome {
-    /// The lock is gone without a document showing it released.
-    const fn gone(sent: bool) -> Self {
-        if sent {
-            Self::Superseded
-        } else {
-            Self::NotHeld
-        }
-    }
-
-    const fn unlock_outcome(&self) -> UnlockOutcome {
-        match self {
-            Self::Released(_) => UnlockOutcome::Released,
-            Self::NotHeld => UnlockOutcome::NotHeld,
-            Self::Superseded => UnlockOutcome::Superseded,
-        }
-    }
-}
-
-/// Whether `document` shows the lock `lock_identifier` released: no lock is
-/// held and it was the last released.
-fn shows_released(document: &StateDocument, lock_identifier: &str) -> bool {
-    document.lock.is_none() && document.last_released.as_deref() == Some(lock_identifier)
-}
-
-fn backoff(attempt: u32) -> Duration {
-    Duration::from_millis(200 * u64::from(attempt.saturating_add(1)))
-}
-
-fn lock_lost(tenant: &TenantKey, lock: &StateLock) -> InfrastructureError {
-    InfrastructureError::LockLost {
-        tenant: tenant.to_string(),
-        lock_identifier: lock.lock_identifier.clone(),
     }
 }
 
@@ -953,6 +902,45 @@ fn record(
         generation,
         ..resource.clone()
     })
+}
+
+/// The generation a conditional put inserts its record with: the payload's
+/// own when it has one, so an exact retry can recognise its earlier write.
+pub(super) fn insertion_of(put: &ConditionalPut<'_>) -> uuid::Uuid {
+    if put.resource.generation.is_nil() {
+        uuid::Uuid::new_v4()
+    } else {
+        put.resource.generation
+    }
+}
+
+/// [`StateStore::put_if_unchanged`] applied to one read of the document:
+/// write the record if it is still at `put.expected`, acknowledge an exact
+/// retry of a write that already landed, and refuse anything else.
+pub(super) fn apply_conditional_put(
+    document: &mut StateDocument,
+    put: &ConditionalPut<'_>,
+    insertion: uuid::Uuid,
+) -> Result<Mutation> {
+    let stored = document.resource(&put.resource.address)?;
+    let found = RecordVersion::of(stored.as_ref());
+    if found != put.expected {
+        if stored
+            .as_ref()
+            .is_some_and(|stored| put.is_recorded(stored))
+        {
+            return Ok(Mutation::Unchanged);
+        }
+        return Err(InfrastructureError::StateChanged {
+            address: put.resource.address.to_string(),
+            expected: put.expected.to_string(),
+            found: found.to_string(),
+            file: None,
+        });
+    }
+    record(document, put.resource, insertion)?;
+    note_change(document, &put.resource.address, "put");
+    Ok(Mutation::Write)
 }
 
 fn note_change(document: &mut StateDocument, address: &ResourceAddress, action: &str) {
@@ -1058,31 +1046,9 @@ impl StateStore for ObjectStateStore {
         lock: &StateLock,
         put: &ConditionalPut<'_>,
     ) -> Result<()> {
-        let insertion = if put.resource.generation.is_nil() {
-            uuid::Uuid::new_v4()
-        } else {
-            put.resource.generation
-        };
+        let insertion = insertion_of(put);
         self.mutate(&self.path(tenant)?, tenant, lock, |document| {
-            let stored = document.resource(&put.resource.address)?;
-            let found = RecordVersion::of(stored.as_ref());
-            if found != put.expected {
-                if stored
-                    .as_ref()
-                    .is_some_and(|stored| put.is_recorded(stored))
-                {
-                    return Ok(Mutation::Unchanged);
-                }
-                return Err(InfrastructureError::StateChanged {
-                    address: put.resource.address.to_string(),
-                    expected: put.expected.to_string(),
-                    found: found.to_string(),
-                    file: None,
-                });
-            }
-            record(document, put.resource, insertion)?;
-            note_change(document, &put.resource.address, "put");
-            Ok(Mutation::Write)
+            apply_conditional_put(document, put, insertion)
         })
         .await
     }
@@ -1213,177 +1179,39 @@ impl ObjectStateStore {
         tenant: &TenantKey,
         request: &LockRequest<'_>,
     ) -> Result<u64> {
-        let identifier = &request.lock.lock_identifier;
-        let new_lock = || DocumentLock {
-            lock_identifier: identifier.clone(),
-            holder: request.holder.to_string(),
-            acquired_at: now(),
-            cuenv_version: env!("CARGO_PKG_VERSION").to_string(),
-            last_change: None,
-            extra: serde_json::Map::new(),
+        let acquire = AcquireRequest {
+            lock: DocumentLock {
+                lock_identifier: request.lock.lock_identifier.clone(),
+                holder: request.holder.to_string(),
+                acquired_at: now(),
+                cuenv_version: env!("CARGO_PKG_VERSION").to_string(),
+                last_change: None,
+                extra: serde_json::Map::new(),
+            },
+            writer: request
+                .instance
+                .map(|instance: &ProjectInstance| DocumentWriter {
+                    instance: instance.as_str().to_string(),
+                    at: now(),
+                }),
+            fresh: StateDocument::new(path, 1),
         };
-        let writer_record = request
-            .instance
-            .map(|instance: &ProjectInstance| DocumentWriter {
-                instance: instance.as_str().to_string(),
-                at: now(),
-            });
         let _gate = self.write_gate.lock().await;
-        let mut last_failure = String::new();
-        for attempt in 0..MUTATION_ATTEMPTS {
-            let Some((document, etag)) = self.read(path).await? else {
-                self.require_not_vanished(path).await?;
-                let mut document = StateDocument::new(path, 1);
-                document.lock = Some(new_lock());
-                document.last_writer.clone_from(&writer_record);
-                if self.create(path, document).await? {
-                    return Ok(1);
-                }
-                continue;
-            };
-            self.refuse_tombstone(path, &document)?;
-            if let Some(held) = &document.lock {
-                if &held.lock_identifier == identifier {
-                    // An earlier attempt whose response was lost did commit.
-                    return Ok(document.serial);
-                }
-                let information = held.information();
-                return Err(InfrastructureError::Locked {
-                    tenant: tenant.to_string(),
-                    lock_identifier: information.lock_identifier,
-                    holder: information.holder,
-                    acquired_at: information.acquired_at,
-                });
-            }
-            let key = path.state_key();
-            document.require_writable(&key)?;
-            let mut next = document.clone();
-            next.lock = Some(new_lock());
-            if writer_record.is_some() {
-                next.last_writer.clone_from(&writer_record);
-            }
-            let writer = Self::nonce();
-            next.advance(&writer);
-            let body = encode_bounded(&next, &key)?;
-            match self
-                .client
-                .put(&key, body, &Condition::Matches(etag))
-                .await?
-            {
-                Ok(_) => return Ok(next.serial),
-                Err(S3Failure::PreconditionFailed) => {
-                    last_failure = "the object changed concurrently".to_string();
-                }
-                Err(S3Failure::RateLimited(wait)) => {
-                    tokio::time::sleep(wait.unwrap_or(RATE_LIMIT_WAIT)).await;
-                    last_failure = "rate limited".to_string();
-                }
-                Err(S3Failure::Ambiguous(message)) => {
-                    if let Some((stored, _)) = self.read(path).await?
-                        && stored
-                            .lock
-                            .as_ref()
-                            .is_some_and(|held| &held.lock_identifier == identifier)
-                    {
-                        return Ok(stored.serial);
-                    }
-                    tokio::time::sleep(backoff(attempt)).await;
-                    last_failure = message;
-                }
-                Err(S3Failure::Missing) => {
-                    last_failure = "the object vanished".to_string();
-                }
-                Err(S3Failure::Permanent(message)) => {
-                    return Err(InfrastructureError::state(format!(
-                        "object storage refused writing {key}: {message}"
-                    )));
-                }
-            }
-        }
-        Err(InfrastructureError::state(format!(
-            "could not acquire the state lock for {tenant}: {last_failure}; the lock may have \
-             been acquired as {identifier}; if so, release that lock by its identifier"
-        )))
+        let protocol = Acquire::new(self.context(path, tenant), acquire, RandomNonces);
+        self.drive(path, protocol).await
     }
 
-    /// Clear the lock `lock_identifier` and record it as released.
-    ///
-    /// Once this call has sent a release, a re-read that no longer shows the
-    /// lock is not by itself "released": that release may have landed after
-    /// its response was lost (a retry then fails with 412), but an operator
-    /// may instead have force-unlocked it, and another run taken the lock
-    /// since. Only a document that shows this lock released (no lock,
-    /// `lastReleased` naming it) is reported released and returned for a
-    /// snapshot; anything else is [`ReleaseOutcome::Superseded`].
-    /// `specs/quint/object_state_cas.qnt` checks this (`unlockReportsTruth`).
+    /// Clear the lock `lock_identifier` and record it as released. See
+    /// [`Release`] for when a lock that disappeared counts as released.
     async fn release(
         &self,
         path: &TenantPath,
         tenant: &TenantKey,
         lock_identifier: &str,
     ) -> Result<ReleaseOutcome> {
-        let key = path.state_key();
         let _gate = self.write_gate.lock().await;
-        let mut last_failure = String::new();
-        let mut sent = false;
-        for attempt in 0..MUTATION_ATTEMPTS {
-            let Some((document, etag)) = self.read(path).await? else {
-                return Ok(ReleaseOutcome::gone(sent));
-            };
-            if document
-                .lock
-                .as_ref()
-                .is_none_or(|held| held.lock_identifier != lock_identifier)
-            {
-                return Ok(if !sent {
-                    ReleaseOutcome::NotHeld
-                } else if shows_released(&document, lock_identifier) {
-                    ReleaseOutcome::Released(Box::new(document))
-                } else {
-                    ReleaseOutcome::Superseded
-                });
-            }
-            document.require_writable(&key)?;
-            let mut next = document.clone();
-            next.lock = None;
-            next.last_released = Some(lock_identifier.to_string());
-            let writer = Self::nonce();
-            next.advance(&writer);
-            let body = encode_bounded(&next, &key)?;
-            sent = true;
-            match self
-                .client
-                .put(&key, body, &Condition::Matches(etag))
-                .await?
-            {
-                Ok(_) => return Ok(ReleaseOutcome::Released(Box::new(next))),
-                Err(S3Failure::PreconditionFailed) => {
-                    last_failure = "the object changed concurrently".to_string();
-                }
-                Err(S3Failure::RateLimited(wait)) => {
-                    tokio::time::sleep(wait.unwrap_or(RATE_LIMIT_WAIT)).await;
-                    last_failure = "rate limited".to_string();
-                }
-                Err(S3Failure::Ambiguous(message)) => {
-                    if let Some((stored, _)) = self.read(path).await?
-                        && shows_released(&stored, lock_identifier)
-                    {
-                        return Ok(ReleaseOutcome::Released(Box::new(stored)));
-                    }
-                    tokio::time::sleep(backoff(attempt)).await;
-                    last_failure = message;
-                }
-                Err(S3Failure::Missing) => return Ok(ReleaseOutcome::gone(sent)),
-                Err(S3Failure::Permanent(message)) => {
-                    return Err(InfrastructureError::state(format!(
-                        "object storage refused writing {key}: {message}"
-                    )));
-                }
-            }
-        }
-        Err(InfrastructureError::state(format!(
-            "could not release the state lock {lock_identifier} of {tenant}: {last_failure}"
-        )))
+        let protocol = Release::new(self.context(path, tenant), lock_identifier, RandomNonces);
+        self.drive(path, protocol).await
     }
 
     /// The locks held under `module` (every lock when `None`), found

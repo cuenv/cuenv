@@ -156,8 +156,11 @@ CI note: `checks.quint` builds the flake check `cuenv-quint-specs` (Linux),
 which model-checks the Quint specs in `specs/quint` with TLC: the object-store
 state lock and compare-and-swap protocol, and the layered task cache (CAS and
 action cache, local and remote). `specs/quint` is listed under `specTrees` in
-`nix/source-files.json`, so it is a flake input outside the Rust fileset. No
-schema or CLI support status changes.
+`nix/source-files.json`, so it is a flake input outside the Rust fileset.
+`checks.quint-mbt` builds `cuenv-quint-mbt`, which replays traces of those
+models against the code (`quint-connect` model-based tests, ignored in the
+default suite because they need quint). No schema or CLI support status
+changes.
 
 Cache note: a remote blob that fails digest verification is logged at warning
 level and treated as absent for the rest of the run; a verified remote result

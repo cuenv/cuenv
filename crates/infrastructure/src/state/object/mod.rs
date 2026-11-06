@@ -19,10 +19,13 @@ pub mod document;
 #[cfg(any(test, feature = "fake-s3"))]
 pub mod fake;
 pub mod key;
+mod protocol;
 pub mod sigv4;
 pub mod store;
 pub mod xml;
 
+#[cfg(test)]
+mod mbt;
 #[cfg(test)]
 mod tests;
 

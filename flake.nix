@@ -306,6 +306,38 @@
           touch $out
         '';
 
+        # Model-based tests: traces of the Quint specs in specs/quint replayed
+        # against the code, comparing the two after every step (the object
+        # store's write protocols; the layered task cache against an
+        # in-process REAPI server). They are ignored in the default suite
+        # because they need quint; this check runs only them. The source adds
+        # specs/quint to the Rust fileset, and the e2e check's dependency
+        # artifacts cover both packages.
+        quint-mbt-check = craneLib.cargoNextest (workspaceCheckArgs // infrastructureE2eBuildArgs // {
+          pname = "cuenv-quint-mbt";
+          src = toCraneSource (fs.unions [ sourceFileset ./specs/quint ]);
+          cargoArtifacts = infrastructureE2eCargoArtifacts;
+          cargoExtraArgs = builtins.concatStringsSep " " [
+            lockedCargoExtraArgs
+            "--package cuenv-infrastructure"
+            "--package cuenv-cas-remote"
+          ];
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgsUnstable.quint ];
+          cargoNextestExtraArgs = builtins.concatStringsSep " " [
+            "--run-ignored ignored-only"
+            "--no-fail-fast"
+            "--retries 0"
+            "--status-level pass"
+            "--hide-progress-bar"
+            "-E 'test(/mbt::/)'"
+          ];
+          preCheck = ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+          '';
+          doInstallCargoArtifacts = false;
+        });
+
         # Real Terraform protocol codecs used by the exact-number round-trip
         # test; dependencies are vendored so the E2E check stays offline.
         numeric-interop = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
@@ -386,7 +418,8 @@
             # Tests that need the network are left out: a registry download, and
             # a real Cloudflare D1 database (the D1 backend runs here against a
             # SQLite-backed stand-in in the default suite instead).
-            "'(package(cuenv-infrastructure) | (package(cuenv) & binary(infrastructure_lifecycle))) & not test(installs_provider_from_registry) & not test(lifecycle_against_d1)'"
+            # Model-based tests (`mbt::`) need quint and run in cuenv-quint-mbt.
+            "'(package(cuenv-infrastructure) | (package(cuenv) & binary(infrastructure_lifecycle))) & not test(installs_provider_from_registry) & not test(lifecycle_against_d1) & not test(/mbt::/)'"
           ];
           preCheck = ''
             export HOME="$TMPDIR/home"
@@ -602,6 +635,7 @@
           # Linux only: the specs are platform-independent, so one platform
           # suffices.
           cuenv-quint-specs = quint-specs;
+          cuenv-quint-mbt = quint-mbt-check;
         };
 
         packages = {

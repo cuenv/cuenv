@@ -21,8 +21,13 @@
 //   names a result some machine produced. A malicious writer is out of scope.
 // - Workspace commit (renames out of staging) does not fail.
 //
-// Check (TLC explores every reachable state of this instance; ~2 min):
+// Check (TLC explores every reachable state of this instance; ~3 min):
 //   quint verify task_cache.qnt --backend=tlc --tlc-config=tlc.json --invariants safety fixes
+//
+// The machine steps are the calls cuenv makes, one call per step, so the
+// model-based test in crates/cas-remote/tests/reapi_roundtrip/mbt.rs can
+// replay traces against the real stores. `update` is one step because
+// LayeredActionCache::update checks and publishes in one call.
 //
 // The model lets machines upload and publish. The CLI keeps the remote
 // read-only for now (remote_cache.rs: `let upload = false`), so in production
@@ -30,7 +35,7 @@
 // ahead of being enabled.
 //
 // Results, 2 machines, 2 runs each, 2 faults:
-// - safety and fixes: hold; ~1.5M distinct states.
+// - safety and fixes: hold; ~1.2M distinct states.
 // - With TRACK_CORRUPT = false (the code at 0.68.0), `fixes` fails: a corrupt
 //   remote blob is never replaced, because FindMissingBlobs reports it present
 //   and the upload is skipped.
@@ -150,158 +155,147 @@ module task_cache {
 
   // ---- one machine step ---------------------------------------------------
 
-  action step_m(m: int, reach: bool, localWriteFails: bool, honours: bool): bool = {
-    val s = machines.get(m)
+  // A machine's step, as a function of the stores, its state and the
+  // environment's choices for this step: whether the remote answers, whether
+  // a local CAS write fails, whether the server honours an overwrite.
+  type Next = { st: Stores, s: Machine, g: Ghost }
+
+  pure def machineNext(st: Stores, g: Ghost, m: int, s: Machine,
+                       reach: bool, localWriteFails: bool, honours: bool): Next = {
     val loc = st.local.get(m)
     val dA = fileA(s.cand)
     val dB = fileB(s.cand)
-    any {
+    if (s.pc == "start")
       // build_action: the Action blob is written through LayeredCas.
-      all { s.pc == "start",
-        st' = remotePut(localPut(st, m, ACTION_BLOB), reach, ACTION_BLOB),
-        machines' = machines.set(m, { ...s, pc: "lookup", cand: 0, stagedA: OLD, stagedB: OLD, outcome: "",
-                                      knownBad: Set() }),
-        g' = g },
-
+      { st: remotePut(localPut(st, m, ACTION_BLOB), reach, ACTION_BLOB),
+        s: { ...s, pc: "lookup", cand: 0, stagedA: OLD, stagedB: OLD, outcome: "", knownBad: Set() },
+        g: g }
+    else if (s.pc == "lookup") {
       // LayeredActionCache::lookup: local first, then remote (unreachable = miss).
-      all { s.pc == "lookup",
-        val c = if (st.localAC.get(m) != 0) st.localAC.get(m)
-                else if (reach) st.remoteAC else 0
-        all {
-          st' = st,
-          machines' = machines.set(m, { ...s, cand: c, pc: if (c != 0) "check" else "exec" }),
-          g' = g,
-        } },
-
+      val c = if (st.localAC.get(m) != 0) st.localAC.get(m) else if (reach) st.remoteAC else 0
+      { st: st, s: { ...s, cand: c, pc: if (c != 0) "check" else "exec" }, g: g }
+    }
+    else if (s.pc == "check")
       // cache::lookup -> missing_blobs over LayeredCas.
-      all { s.pc == "check",
-        st' = st,
-        machines' = machines.set(m, { ...s,
-          pc: if (present(st, m, s, reach, dA) and present(st, m, s, reach, dB)) "fetchA" else "exec" }),
-        g' = g },
-
+      { st: st,
+        s: { ...s, pc: if (present(st, m, s, reach, dA) and present(st, m, s, reach, dB)) "fetchA" else "exec" },
+        g: g }
+    else if (s.pc == "fetchA" or s.pc == "fetchB") {
       // materialize_outputs: LayeredCas::get_to_file per output.
-      all { s.pc == "fetchA" or s.pc == "fetchB",
-        val d = if (s.pc == "fetchA") dA else dB
-        val nextPc = if (s.pc == "fetchA") "fetchB" else "commit"
-        // Where the bytes come from, if anywhere:
-        //   local OK -> local; else remote reachable and not ABSENT -> remote
-        //   (verified when VERIFY_READS); otherwise the read fails.
-        val fromLocal = loc.get(d) == OK
-        val remoteServes = and { not(fromLocal), remoteHas(st, s, reach, d),
-                                 st.remote.get(d) == OK or not(VERIFY_READS) }
-        // A read that fails verification is remembered by CorruptionAwareCas.
-        val sawCorrupt = and { not(fromLocal), remoteHas(st, s, reach, d),
-                               st.remote.get(d) == CORRUPT, VERIFY_READS }
-        val s0 = if (sawCorrupt) { ...s, knownBad: s.knownBad.union(Set(d)) } else s
-        val bytes = if (fromLocal or (remoteServes and st.remote.get(d) == OK)) d else BAD_BYTES
-        val failsLocalCopy = remoteServes and localWriteFails and st.faults > 0
-        val keepsCopy = remoteServes and not(failsLocalCopy) and st.remote.get(d) == OK
-        val s2 =
-          if (not(fromLocal) and not(remoteServes)) { ...s0, pc: "exec", stagedA: OLD, stagedB: OLD }
-          else if (not(STAGE_OUTPUTS))
-            // Mutant: write straight into the workspace.
-            if (s.pc == "fetchA") { ...s0, pc: nextPc, wsA: bytes } else { ...s0, pc: nextPc, wsB: bytes }
-          else if (s.pc == "fetchA") { ...s0, pc: nextPc, stagedA: bytes }
-          else { ...s0, pc: nextPc, stagedB: bytes }
-        all {
-          st' = if (failsLocalCopy) { ...st, faults: st.faults - 1 }
-                else if (keepsCopy) localPut(st, m, d)
-                else st,
-          machines' = machines.set(m, s2),
-          g' = g,
-        } },
-
+      val d = if (s.pc == "fetchA") dA else dB
+      val nextPc = if (s.pc == "fetchA") "fetchB" else "commit"
+      // Where the bytes come from, if anywhere: local OK -> local; else the
+      // remote, if it has them (verified when VERIFY_READS); else the read
+      // fails.
+      val fromLocal = loc.get(d) == OK
+      val remoteServes = and { not(fromLocal), remoteHas(st, s, reach, d),
+                               st.remote.get(d) == OK or not(VERIFY_READS) }
+      // A read that fails verification is remembered by CorruptionAwareCas.
+      val sawCorrupt = and { not(fromLocal), remoteHas(st, s, reach, d),
+                             st.remote.get(d) == CORRUPT, VERIFY_READS }
+      val s0 = if (sawCorrupt) { ...s, knownBad: s.knownBad.union(Set(d)) } else s
+      val bytes = if (fromLocal or (remoteServes and st.remote.get(d) == OK)) d else BAD_BYTES
+      val failsLocalCopy = remoteServes and localWriteFails and st.faults > 0
+      val keepsCopy = remoteServes and not(failsLocalCopy) and st.remote.get(d) == OK
+      val s2 =
+        if (not(fromLocal) and not(remoteServes)) { ...s0, pc: "exec", stagedA: OLD, stagedB: OLD }
+        else if (not(STAGE_OUTPUTS))
+          // Mutant: write straight into the workspace.
+          if (s.pc == "fetchA") { ...s0, pc: nextPc, wsA: bytes } else { ...s0, pc: nextPc, wsB: bytes }
+        else if (s.pc == "fetchA") { ...s0, pc: nextPc, stagedA: bytes }
+        else { ...s0, pc: nextPc, stagedB: bytes }
+      { st: if (failsLocalCopy) { ...st, faults: st.faults - 1 }
+            else if (keepsCopy) localPut(st, m, d)
+            else st,
+        s: s2, g: g }
+    }
+    else if (s.pc == "commit") {
       // commit_staged_outputs, then ActionCache::commit_verified (local
       // only), which promotes only when the local CAS holds every blob.
-      all { s.pc == "commit",
-        val blobsLocal = loc.get(dA) == OK and loc.get(dB) == OK
-        val promote = blobsLocal or not(CHECK_PROMOTION)
-        all {
-          st' = if (promote) { ...st, localAC: st.localAC.set(m, s.cand) } else st,
-          machines' = machines.set(m,
-            if (STAGE_OUTPUTS) { ...s, pc: "finish", wsA: s.stagedA, wsB: s.stagedB, outcome: "hit" }
-            else { ...s, pc: "finish", outcome: "hit" }),
-          g' = { ...g, promotedIncomplete: g.promotedIncomplete or (promote and not(blobsLocal)) },
-        } },
-
+      val blobsLocal = loc.get(dA) == OK and loc.get(dB) == OK
+      val promote = blobsLocal or not(CHECK_PROMOTION)
+      { st: if (promote) { ...st, localAC: st.localAC.set(m, s.cand) } else st,
+        s: if (STAGE_OUTPUTS) { ...s, pc: "finish", wsA: s.stagedA, wsB: s.stagedB, outcome: "hit" }
+           else { ...s, pc: "finish", outcome: "hit" },
+        g: { ...g, promotedIncomplete: g.promotedIncomplete or (promote and not(blobsLocal)) } }
+    }
+    else if (s.pc == "exec") {
       // Miss: run the task. Its outputs land in the workspace.
-      all { s.pc == "exec",
-        val r = resultOf(m)
-        all {
-          st' = st,
-          machines' = machines.set(m, { ...s, pc: "putA", cand: r, wsA: fileA(r), wsB: fileB(r),
-                                        stagedA: OLD, stagedB: OLD }),
-          g' = { ...g, produced: g.produced.union(Set(r)) },
-        } },
-
+      val r = resultOf(m)
+      { st: st,
+        s: { ...s, pc: "putA", cand: r, wsA: fileA(r), wsB: fileB(r), stagedA: OLD, stagedB: OLD },
+        g: { ...g, produced: g.produced.union(Set(r)) } }
+    }
+    else if (s.pc == "putA" or s.pc == "putB") {
       // record_resolved: LayeredCas::put_file per output (local, then push).
-      // A digest this process saw corrupt is replaced, then read back;
-      // only a verified read-back clears it.
-      all { s.pc == "putA" or s.pc == "putB",
-        val d = if (s.pc == "putA") dA else dB
-        val replacing = TRACK_CORRUPT and s.knownBad.contains(d)
-        val st1 = localPut(st, m, d)
-        val st2 = if (replacing) remoteReplace(st1, reach, honours, d) else remotePut(st1, reach, d)
-        val repaired = replacing and reach and st2.remote.get(d) == OK
-        all {
-          st' = st2,
-          machines' = machines.set(m, { ...s, pc: if (s.pc == "putA") "putB" else "update",
-                                        knownBad: if (repaired) s.knownBad.exclude(Set(d)) else s.knownBad }),
-          g' = { ...g, uploadLeftCorrupt: g.uploadLeftCorrupt or
-                   (reach and honours and s.knownBad.contains(d) and st2.remote.get(d) == CORRUPT) },
-        } },
+      // A digest this process saw corrupt is replaced, then read back; only
+      // a verified read-back clears it.
+      val d = if (s.pc == "putA") dA else dB
+      val replacing = TRACK_CORRUPT and s.knownBad.contains(d)
+      val st1 = localPut(st, m, d)
+      val st2 = if (replacing) remoteReplace(st1, reach, honours, d) else remotePut(st1, reach, d)
+      val repaired = replacing and reach and st2.remote.get(d) == OK
+      { st: st2,
+        s: { ...s, pc: if (s.pc == "putA") "putB" else "update",
+             knownBad: if (repaired) s.knownBad.exclude(Set(d)) else s.knownBad },
+        g: { ...g, uploadLeftCorrupt: g.uploadLeftCorrupt or
+               (reach and honours and s.knownBad.contains(d) and st2.remote.get(d) == CORRUPT) } }
+    }
+    else if (s.pc == "update") {
+      // LayeredActionCache::update: the local entry, then, in the same call,
+      // the publish check (the Action blob and every output in the remote
+      // CAS) and the publish.
+      val st1 = { ...st, localAC: st.localAC.set(m, s.cand) }
+      val publish = and { remoteHas(st, s, reach, ACTION_BLOB),
+                          remoteHas(st, s, reach, dA), remoteHas(st, s, reach, dB) }
+      { st: if (publish) { ...st1, remoteAC: s.cand } else st1,
+        s: { ...s, pc: "finish", outcome: "executed" },
+        g: { ...g, publishedKnownBad: g.publishedKnownBad or
+               (publish and (s.knownBad.contains(dA) or s.knownBad.contains(dB))) } }
+    }
+    else // finish: the next run of the same task, with the workspace as it was left.
+      { st: st,
+        s: if (s.round < RUNS) { ...s, pc: "start", round: s.round + 1 } else { ...s, pc: "done" },
+        g: g }
+  }
 
-      // LayeredActionCache::update: local entry, then the publish check
-      // (Action blob and every output in the remote CAS), then publish.
-      all { s.pc == "update",
-        st' = { ...st, localAC: st.localAC.set(m, s.cand) },
-        machines' = machines.set(m, { ...s,
-          pc: if (and { remoteHas(st, s, reach, ACTION_BLOB),
-                        remoteHas(st, s, reach, dA), remoteHas(st, s, reach, dB) })
-              "publish" else "executed" }),
-        g' = g },
-      all { s.pc == "publish",
-        st' = if (reach) { ...st, remoteAC: s.cand } else st,
-        machines' = machines.set(m, { ...s, pc: "executed" }),
-        g' = { ...g, publishedKnownBad: g.publishedKnownBad or
-                 (reach and (s.knownBad.contains(dA) or s.knownBad.contains(dB))) } },
-      all { s.pc == "executed",
-        st' = st,
-        machines' = machines.set(m, { ...s, pc: "finish", outcome: "executed" }),
-        g' = g },
-
-      // The next run of the same task, with the workspace as it was left.
-      all { s.pc == "finish",
-        st' = st,
-        machines' = machines.set(m,
-          if (s.round < RUNS) { ...s, pc: "start", round: s.round + 1 } else { ...s, pc: "done" }),
-        g' = g },
+  // One step of one machine.
+  action machine = {
+    nondet m = MACHINES.oneOf()
+    nondet reach = Set(true, false).oneOf()
+    nondet failing = Set(true, false).oneOf()   // the next local CAS write fails
+    nondet honours = Set(true, false).oneOf()
+    val s = machines.get(m)
+    val n = machineNext(st, g, m, s, reach, failing, honours)
+    all {
+      s.pc != "done",
+      st' = n.st,
+      machines' = machines.set(m, n.s),
+      g' = n.g,
     }
   }
 
   // ---- the adversary ------------------------------------------------------
+
+  pure def applyFault(st: Stores, d: int, m: int, kind: str): Stores = {
+    val f = st.faults - 1
+    if (kind == "evictRemote") { ...st, faults: f, remote: st.remote.set(d, ABSENT) }
+    else if (kind == "corruptRemote")
+      { ...st, faults: f, remote: st.remote.set(d, if (st.remote.get(d) == OK) CORRUPT else st.remote.get(d)) }
+    else if (kind == "evictRemoteAC") { ...st, faults: f, remoteAC: 0 }
+    else if (kind == "evictLocal")
+      { ...st, faults: f, local: st.local.set(m, st.local.get(m).set(d, ABSENT)) }
+    else
+      { ...st, faults: f, local: st.local.set(m, st.local.get(m).set(d,
+          if (st.local.get(m).get(d) == OK) CORRUPT else st.local.get(m).get(d))) }
+  }
 
   action fault = all {
     st.faults > 0,
     nondet d = BLOBS.oneOf()
     nondet m = MACHINES.oneOf()
     nondet kind = Set("evictRemote", "corruptRemote", "evictRemoteAC", "evictLocal", "corruptLocal").oneOf()
-    val f = st.faults - 1
-    all {
-      st' =
-        if (kind == "evictRemote") { ...st, faults: f, remote: st.remote.set(d, ABSENT) }
-        else if (kind == "corruptRemote")
-          { ...st, faults: f, remote: st.remote.set(d, if (st.remote.get(d) == OK) CORRUPT else st.remote.get(d)) }
-        else if (kind == "evictRemoteAC") { ...st, faults: f, remoteAC: 0 }
-        else if (kind == "evictLocal")
-          { ...st, faults: f, local: st.local.set(m, st.local.get(m).set(d, ABSENT)) }
-        else
-          { ...st, faults: f, local: st.local.set(m, st.local.get(m).set(d,
-              if (st.local.get(m).get(d) == OK) CORRUPT else st.local.get(m).get(d))) },
-      machines' = machines,
-      g' = g,
-    }
+    all { st' = applyFault(st, d, m, kind), machines' = machines, g' = g },
   }
 
   action quiescent = all {
@@ -309,15 +303,50 @@ module task_cache {
     st' = st, machines' = machines, g' = g,
   }
 
-  action step = any {
+  action step = any { machine, fault, quiescent }
+
+  // ---- a narrower environment, for focused runs ---------------------------
+  //
+  // Random runs of `step` rarely line up a corrupt remote output with a
+  // machine that must read it. `corruptionStep` keeps the remote reachable
+  // and lets the adversary only corrupt remote outputs and evict local
+  // ones, which is what drives a machine to read a corrupt blob, re-upload
+  // it and decide whether to publish. Same model, same properties.
+
+  pure val OUTPUTS = Set(11, 12, 21, 22)
+
+  action reachableMachine = {
     nondet m = MACHINES.oneOf()
-    nondet reach = Set(true, false).oneOf()
-    nondet localWriteFails = Set(true, false).oneOf()
+    nondet failing = Set(true, false).oneOf()
     nondet honours = Set(true, false).oneOf()
-    step_m(m, reach, localWriteFails, honours),
-    fault,
-    quiescent,
+    val s = machines.get(m)
+    val n = machineNext(st, g, m, s, true, failing, honours)
+    all {
+      s.pc != "done",
+      st' = n.st,
+      machines' = machines.set(m, n.s),
+      g' = n.g,
+    }
   }
+
+  action damage = all {
+    st.faults > 0,
+    nondet d = OUTPUTS.oneOf()
+    nondet m = MACHINES.oneOf()
+    nondet kind = Set("corruptRemote", "evictLocal").oneOf()
+    all {
+      // Only damage that lands: a present remote output, a present local one.
+      if (kind == "corruptRemote") st.remote.get(d) == OK else st.local.get(m).get(d) == OK,
+      st' = applyFault(st, d, m, kind), machines' = machines, g' = g,
+    }
+  }
+
+  action corruptionStep = any { reachableMachine, damage, quiescent }
+
+  // `localFailureStep` spends the whole fault budget on local CAS writes
+  // that fail while a fetched blob is being kept: the path where a remote
+  // hit is served but must not be promoted.
+  action localFailureStep = any { reachableMachine, quiescent }
 
   // ---- properties ---------------------------------------------------------
 

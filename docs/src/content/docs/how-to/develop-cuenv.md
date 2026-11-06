@@ -122,23 +122,46 @@ whose bugs only show up under concurrency, lost responses and partial
 failures:
 
 - `object_state_cas.qnt`: the object-store state backend's lock and
-  compare-and-swap writes (`crates/infrastructure/src/state/object/store.rs`).
+  compare-and-swap writes. Its client states are the states of the write
+  protocols in `crates/infrastructure/src/state/object/protocol.rs`
+  (`Acquire`, `Mutate`, `Release`).
 - `task_cache.qnt`: the layered task cache, local and remote CAS and action
   cache (`crates/cas`, `crates/cas-remote`, `crates/task-exec/src/cache.rs`).
 
-CI runs `checks.quint`, which builds the flake check `cuenv-quint-specs`. TLC
-explores every reachable state of each model's finite instance (a few million
-states, a few minutes) and fails on a violated invariant:
+Two flake checks use them, and CI runs both:
+
+- `checks.quint` (`cuenv-quint-specs`): TLC explores every reachable state of
+  each model's finite instance (a few million states, a few minutes) and fails
+  on a violated invariant. This checks the design.
+- `checks.quint-mbt` (`cuenv-quint-mbt`): model-based tests replay random
+  traces of the models against the code and compare the two after every
+  step. The state-store test drives the real write protocols against an
+  in-memory bucket; the cache test drives the real `LayeredCas`,
+  `LayeredActionCache`, `CorruptionAwareCas`, `LocalCas` and `RemoteCas`
+  against an in-process REAPI server, with the model's faults applied for
+  real. This checks that the code does what the model says.
 
 ```bash
 nix build .#checks.x86_64-linux.cuenv-quint-specs -L --accept-flake-config
+nix build .#checks.x86_64-linux.cuenv-quint-mbt -L --accept-flake-config
 ```
 
-The models are written by hand from the code. CI proves the model, not the
-Rust: when you change one of those protocols, change its model in the same
-pull request and keep the invariant list in `flake.nix` in step. Each model
-has mutation switches (constants at the top) that turn off one mechanism, so
-you can confirm an invariant still catches the bug it exists for.
+The model-based tests are `#[ignore]`d in the default suite because they need
+`quint` on `PATH`. To run them from a shell with quint (the nixpkgs build
+bundles its Rust evaluator):
+
+```bash
+cargo test -p cuenv-infrastructure --lib state::object::mbt -- --ignored
+cargo test -p cuenv-cas-remote --test reapi_roundtrip mbt -- --ignored
+```
+
+A failure prints a diff of model and code state and a `QUINT_SEED` to
+reproduce it; `QUINT_SEED` and `QUINT_VERBOSE=1` are read when the tests are
+compiled.
+
+When you change one of these protocols, change its model in the same pull
+request. A model change that the code does not follow fails
+`checks.quint-mbt`; a code change the model does not allow fails it too.
 
 ## Working with FFI
 
