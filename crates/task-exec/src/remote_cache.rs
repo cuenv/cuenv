@@ -7,9 +7,9 @@
 
 use cuenv_cas::{ActionCache, ActionPublisher, Cas};
 use cuenv_cas_remote::{
-    CredentialProvider, Credentials, HttpActionCache, HttpCas, HttpRemoteClient,
-    LayeredActionCache, LayeredCas, RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig,
-    RemoteProtocol, RemotePublisher, TlsConfig,
+    CorruptBlobs, CorruptionAwareCas, CredentialProvider, Credentials, HttpActionCache, HttpCas,
+    HttpRemoteClient, LayeredActionCache, LayeredCas, RemoteActionCache, RemoteCas, RemoteClient,
+    RemoteConfig, RemoteProtocol, RemotePublisher, TlsConfig,
 };
 use cuenv_core::manifest::{Cache, CacheAuth, CacheProtocol, CacheTls, RemoteCache};
 use cuenv_events::{CacheEvent, EventCategory};
@@ -688,6 +688,10 @@ pub async fn build(
         .with_credentials(credentials)
         .with_tls(tls);
     let write_config = read_config.clone().writable();
+    // Shared by the read side and the publisher: a blob that reads back
+    // corrupt is treated as absent for the rest of the run and re-uploaded
+    // when a published action names it.
+    let corrupt = Arc::new(CorruptBlobs::new());
 
     let (remote_cas, remote_ac, publisher): RemoteHandles = match remote.protocol {
         CacheProtocol::Grpc => {
@@ -725,8 +729,10 @@ pub async fn build(
                             remote_cas.capabilities().clone(),
                         ));
                         let write_ac = Arc::new(RemoteActionCache::new(write_client));
-                        Some(Arc::new(RemotePublisher::grpc(write_cas, write_ac))
-                            as Arc<dyn ActionPublisher>)
+                        Some(Arc::new(
+                            RemotePublisher::grpc(write_cas, write_ac)
+                                .with_corrupt_blobs(Arc::clone(&corrupt)),
+                        ) as Arc<dyn ActionPublisher>)
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -776,8 +782,10 @@ pub async fn build(
                     Ok(write_client) => {
                         let write_cas = Arc::new(HttpCas::new(write_client.clone()));
                         let write_ac = Arc::new(HttpActionCache::new(write_client));
-                        Some(Arc::new(RemotePublisher::http(write_cas, write_ac))
-                            as Arc<dyn ActionPublisher>)
+                        Some(Arc::new(
+                            RemotePublisher::http(write_cas, write_ac)
+                                .with_corrupt_blobs(Arc::clone(&corrupt)),
+                        ) as Arc<dyn ActionPublisher>)
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -814,9 +822,12 @@ pub async fn build(
         upload_enabled: publisher.is_some(),
     }));
 
-    let cas = LayeredCas::new(local.cas, remote_cas.clone());
-    let action_cache =
-        LayeredActionCache::new(local.action_cache, remote_ac).with_remote_cas(remote_cas);
+    let remote_cas = Arc::new(CorruptionAwareCas::with_record(remote_cas, corrupt)) as Arc<dyn Cas>;
+    let cas = LayeredCas::new(Arc::clone(&local.cas), Arc::clone(&remote_cas));
+    // Promote a remote hit only when every blob it names was kept locally.
+    let action_cache = LayeredActionCache::new(local.action_cache, remote_ac)
+        .with_remote_cas(remote_cas)
+        .with_local_cas(local.cas);
 
     CacheLayers {
         cas: Arc::new(cas),
