@@ -98,8 +98,8 @@ derivation used Crane's default three-pass preparation:
 
 The actual workspace test compilation then took 48.18s and all 4,232 Linux
 tests ran in 14.863s. The follow-up removes separate metadata/build passes
-from test preparation and disables Nix CI debug information. Its new timing
-and artifact size need a new run; the 9m 27s measurement predates this change.
+from test preparation and disables Nix CI debug information. The 9m 27s
+measurement predates this change; the follow-up measurements are below.
 
 For the same local 0.68.0 dependency set and compiler, the compressed BDD
 dependency archive fell from **1,141,528,573 bytes to 480,432,416 bytes**
@@ -113,6 +113,16 @@ Linux nextest's dependency preparation fell from **7m 06s to 3m 34s**.
 The workspace then compiled in 28.04s and all 4,232 tests passed in 8.716s.
 That partial run exposed the fresh single-user bootstrap and dummy-target
 issues corrected above; it is not a successful end-to-end workflow benchmark.
+
+The corrected second pass, [run 42297118480](https://github.com/cuenv/cuenv/actions/runs/42297118480),
+passed all **11 main CI jobs in 5m 57s**, compared with the original **21m 10s**.
+The separate sync and docs-preview workflows also passed, giving **13 green
+checks** on commit `43a4e179359a33ead87e88f29ab269adabc7fd47`. macOS nextest
+substituted the new dependency archive, compiled the workspace in 36.28s, and
+passed 4,226 tests in 56.333s. Its 5m 31s job duration included 37s for Nix
+installation, 34s for Cachix setup, and toolchain/dependency downloads.
+These individual runs have different source revisions and cache/queue states;
+they establish working publication and substitution, not a median or p95.
 
 The local full gate also showed Cuetty compiling a release application for
 5m 30s in its package check and repeating that release build before its test
