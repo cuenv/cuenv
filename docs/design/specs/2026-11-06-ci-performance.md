@@ -37,8 +37,7 @@ the baseline before the optimizations below.
 Regression tests cover direct matrix execution, preserved environment,
 dependencies, working directory and outputs, retained Cachix setup, skipped
 cuenv setup and its dependent phases, and release bootstrap. Live speedup and
-cache-publication results must be recorded from subsequent CI runs; the
-historical timings below are not measurements of the changed workflow.
+cache-publication results from the changed workflow are recorded below.
 
 The first changed-source run, [42277205456](https://github.com/cuenv/cuenv/actions/runs/42277205456),
 passed both macOS checks. macOS nextest took **9m 50s** after starting, including
@@ -49,6 +48,24 @@ direct check. The runner queued for **8m 26s** before starting. Linux jobs
 exposed the restored root-owned store's incompatibility with single-user Nix;
 the Namespace preparation above corrects that failure. This partial run is
 not a successful end-to-end timing comparison.
+
+The corrected run, [42281253736](https://github.com/cuenv/cuenv/actions/runs/42281253736),
+passed all **11 main CI jobs in 9m 27s**, compared with the baseline's 21m 10s.
+macOS nextest completed in **3m 57s**, including 33s for Nix installation,
+39s for Cachix setup, 29.82s of workspace compilation, and 43.778s for 4,226
+passing tests. Its fresh runner substituted the exact dependency output
+published by the first run:
+
+```text
+/nix/store/11hj7qqwgiq9mzmimjv7r4ws7b9997bn-cuenv-deps-0.69.0
+```
+
+macOS Clippy also substituted its dependencies and compiled in 14.44s.
+Linux BDD passed all 19 implemented scenarios (16 skipped) and 152 implemented
+steps. The docs preview passed; the separate sync workflow found an outdated
+runtime digest, corrected with `cuenv sync lock`. These observations compare
+different source revisions and cache/queue states; they do not establish a
+median or p95 improvement.
 
 On x86_64 Linux, `nix path-info --json --closure-size` measured the original
 development toolchain closure at **2,633.8 MiB** and the new native build
@@ -65,15 +82,17 @@ The native CLI package builds and passes its installed-binary smoke checks.
 inspection confirms both Darwin checks have no bootstrap job, artifact
 setup, or unresolved job dependencies. Active build/workflow configuration
 contains no FlakeHub integration, and unrelated lockfile input revisions are
-unchanged. Workspace all-target Clippy passes with `-D warnings`.
+unchanged. Workspace all-target Clippy passes with `-D warnings`. Regenerate the
+runtime digest with `cuenv sync lock` when changing the flake, then run
+`cuenv sync --check` as well as the provider-specific workflow checks.
 
 The locked Cachix client resolves to 1.9.1 and provides the daemon run, push,
 and stop interface used by `cachix/cachix-action@v17`. Global registry lookup
 is disabled during its installation. The full root flake gate is run for the
 Nix expressions and generated workflow changes; its final result belongs in
 the PR validation record. Local cache publication cannot be exercised because
-this execution environment blocks the project's Cachix host, so a warm-cache
-CI comparison remains necessary to measure elapsed-time improvement.
+this execution environment blocks the project's Cachix host. The two CI runs
+above verify publication and subsequent substitution on fresh macOS runners.
 
 The initial local full gate exhausted its 32 GiB filesystem while two source
 snapshots were building; its failures are not passing gate evidence. The gate

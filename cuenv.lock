@@ -3,5 +3,5 @@ version = 4
 [runtimes."."]
 type = "nix"
 flake = "."
-digest = "sha256:ba97c9c4df28fa4153b130510c7fce583bc138c4712154a77fe97dfc5c1836fa"
+digest = "sha256:534c4b0d82a01f7eba14cd8eb6f2fd089524ec640ef9930be81ee8005144f8bd"
 lockfile = "flake.lock"
