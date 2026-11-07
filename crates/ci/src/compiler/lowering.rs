@@ -197,6 +197,27 @@ impl Compiler {
         Ok(())
     }
 
+    /// A directly executed task runs without cuenv, so nothing would resolve a
+    /// secret or passthrough in its environment. Matrix jobs set `CUENV_ARCH` themselves.
+    fn reject_env_needing_cuenv(id: &str, task: &Task) -> Result<(), CompilerError> {
+        let needs_cuenv = task
+            .env
+            .iter()
+            .filter(|(name, value)| {
+                value.as_str().map_or(true, |value| {
+                    value.starts_with("cuenv:passthrough:") && name.as_str() != "CUENV_ARCH"
+                })
+            })
+            .map(|(name, _)| name)
+            .min();
+
+        needs_cuenv.map_or(Ok(()), |name| {
+            Err(CompilerError::InvalidTaskStructure(format!(
+                "Task '{id}' sets ci.github.execution to \"direct\", but only cuenv can resolve its env var '{name}'"
+            )))
+        })
+    }
+
     /// Compile a single task to IR format
     pub(super) fn compile_single_task(
         &self,
@@ -223,6 +244,15 @@ impl Compiler {
 
         // A script's invocation already names its shell.
         let shell = task.shell.is_some() && task.script.is_none();
+
+        let github_execution = task
+            .ci
+            .as_ref()
+            .and_then(|ci| ci.github.as_ref())
+            .and_then(|gh| gh.execution);
+        if github_execution.is_some() {
+            Self::reject_env_needing_cuenv(id, task)?;
+        }
 
         // Convert environment variables (filter out complex JSON values)
         let env: BTreeMap<String, String> = task
@@ -316,6 +346,7 @@ impl Compiler {
                 .and_then(|ci| ci.github.as_ref())
                 .map(|gh| gh.permissions.clone())
                 .unwrap_or_default(),
+            github_execution,
             provider_hints: None,
         })
     }

@@ -266,8 +266,9 @@ from this package.
 `cargo.build` cross-compiles the `linux-arm64` binary on the x86 runner, because
 building it on the ARM runner takes about three times as long. Its smoke test runs
 under `qemu-aarch64`, and `cuenv-arm` builds and smoke-tests the flake package on
-real ARM hardware. To run the binary builds on a branch without publishing
-anything:
+real ARM hardware. `cargo.build` sets `ci: github: execution: "direct"`, so its
+jobs start without waiting for `build.cuenv` and hold no 1Password token. To run
+the binary builds on a branch without publishing anything:
 
 ```bash
 gh workflow run cuenv-release-dry-run.yml --ref <branch>
@@ -432,7 +433,8 @@ do not present it as a finished pipeline.
   `publish.cue` explicitly passes along with `XDG_CONFIG_HOME`; its CUE cache
   and temporary directories stay inside the task workspace. `cargo.build`
   builds release artifacts separately from the Nix-native `cuenv` package;
-  the Linux artifacts target glibc 2.17. Nix uses the writable `HOME` cuenv
+  the Linux artifacts target glibc 2.17. In CI its jobs run the task's command
+  directly in the checkout, not hermetically through `cuenv task`. Nix uses the writable `HOME` cuenv
   gives every hermetic task, while the host `HOME` stays excluded. `docs.deploy`
   consumes the `docs.build` output, declares Wrangler's config and locked Bun
   workspace files, and installs from `bun.lock` before using the local

@@ -563,10 +563,11 @@ fn simple_job_execution(
     ctx: &PipelineContext,
     task: &cuenv_ci::ir::Task,
 ) -> cuenv_github::workflow::TaskExecution {
+    let opted_in = task.github_execution == Some(cuenv_core::ci::TaskGitHubExecution::Direct);
     let is_direct_nix_job =
         !ctx.is_release && task.command.first().is_some_and(|command| command == "nix");
 
-    if is_direct_nix_job {
+    if opted_in || is_direct_nix_job {
         cuenv_github::workflow::TaskExecution::Direct
     } else {
         cuenv_github::workflow::TaskExecution::Orchestrated
@@ -793,6 +794,7 @@ mod tests {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_execution: None,
             provider_hints: None,
         }
     }
@@ -850,6 +852,7 @@ mod tests {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_execution: None,
             provider_hints: None,
         }
     }
@@ -1046,6 +1049,77 @@ mod tests {
                 .is_some_and(|script| script.contains("echo \"$cuenv_package/bin\""))
         }));
         assert!(!workflows[0].1.contains("cuenv-bootstrap"));
+        Ok(())
+    }
+
+    #[test]
+    fn release_matrix_task_opting_in_runs_directly_without_bootstrap() -> cuenv_core::Result<()> {
+        let mut tasks = make_bootstrap_ir().tasks;
+        let mut build = make_regular_task("release.build");
+        build.command = vec!["nix".into(), "develop".into()];
+        build.github_execution = Some(cuenv_core::ci::TaskGitHubExecution::Direct);
+        build.outputs.push(cuenv_ci::ir::OutputDeclaration {
+            path: "target/release/tool".into(),
+            output_type: cuenv_ci::ir::OutputType::Orchestrator,
+        });
+        tasks.push(build);
+        tasks.push(make_regular_task("publish"));
+        let mut ctx = make_pipeline_context(cuenv_manifest::config::CuenvSource::Nix, tasks);
+        ctx.is_release = true;
+        ctx.github_config.runners = Some(cuenv_core::ci::RunnerMapping {
+            arch: Some(std::collections::HashMap::from([(
+                "darwin-arm64".to_string(),
+                "macos-14".to_string(),
+            )])),
+        });
+        ctx.pipeline_tasks = vec![
+            cuenv_core::ci::PipelineTask::Matrix(cuenv_core::ci::MatrixTask {
+                task_type: None,
+                task: cuenv_core::ci::TaskRef::from_name("release.build"),
+                matrix: BTreeMap::from([("arch".into(), vec!["darwin-arm64".into()])]),
+                artifacts: None,
+                params: None,
+            }),
+            cuenv_core::ci::PipelineTask::Simple(cuenv_core::ci::TaskRef::from_name("publish")),
+        ];
+
+        let workflows = emit_matrix_workflow("release", &ctx)?;
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&workflows[0].1).expect("valid release matrix workflow");
+        let jobs = document["jobs"].as_mapping().expect("workflow jobs");
+
+        let build_job = &jobs["release-build-darwin-arm64"];
+        assert_eq!(build_job["runs-on"].as_str(), Some("macos-14"));
+        assert!(build_job.get("needs").is_none());
+        let steps = build_job["steps"].as_sequence().expect("build steps");
+        assert!(steps.iter().any(|step| {
+            step["name"].as_str() == Some("release.build (darwin-arm64)")
+                && step["run"].as_str() == Some("nix develop")
+        }));
+        assert!(steps.iter().all(|step| {
+            !matches!(
+                step["name"].as_str(),
+                Some("Add cuenv to PATH" | "Build cuenv (nix)")
+            )
+        }));
+        assert!(
+            steps
+                .iter()
+                .any(|step| { step["with"]["path"].as_str() == Some("target/release/tool") })
+        );
+
+        // Tasks that did not opt in keep their bootstrap, and only on their runner.
+        let bootstrap_jobs: Vec<_> = jobs
+            .keys()
+            .filter_map(serde_yaml::Value::as_str)
+            .filter(|id| id.starts_with("build-cuenv"))
+            .collect();
+        assert_eq!(bootstrap_jobs, ["build-cuenv"]);
+        assert_eq!(jobs["publish"]["needs"][0].as_str(), Some("build-cuenv"));
+        assert_eq!(
+            jobs["build-cuenv"]["runs-on"].as_str(),
+            Some("ubuntu-latest")
+        );
         Ok(())
     }
 

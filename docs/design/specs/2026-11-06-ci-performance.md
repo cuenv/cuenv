@@ -399,5 +399,22 @@ that only the cross-built binary hits on real hardware could go unnoticed. Two
 things limit that: the `arm` pipeline builds and smoke-tests the flake package on
 real ARM after every merge, and it also keeps publishing that package to Cachix for
 flake users, which the ARM `build.cuenv` job used to do. The manual `release-dry-run`
-pipeline runs the three binary builds on any branch, publishing nothing, though as
-a non-release pipeline it runs them directly rather than through `cuenv task`.
+pipeline runs the three binary builds on any branch, publishing nothing.
+
+### Running `cargo.build` directly
+
+macOS's `build.cuenv` still cost 5m 37s on a cold release, only to run `cargo.build`,
+which needs nothing from cuenv: it runs a Nix command, and its script copies its
+sources to a clean workspace and unsets inherited build settings.
+
+Tasks can now set `ci: github: execution: "direct"`, and `cargo.build` does. Its
+three jobs start immediately, so the only `build.cuenv` left is the x86 one the
+publishing jobs need. They also no longer receive `OP_SERVICE_ACCOUNT_TOKEN`, so the
+jobs producing release binaries hold no 1Password token. `release-dry-run` now runs
+the same command as a release, rather than a direct version of it.
+
+This is an explicit opt-in rather than a rule for every release Nix task. A release
+task can depend on secrets from its pipeline's `environment`, and running it directly
+would silently drop them. Compilation rejects the setting when a task's own `env`
+needs cuenv, but it can't see which pipeline environment variables a script reads,
+so the opt-in stays the author's decision.

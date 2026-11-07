@@ -34,6 +34,11 @@ package schema
 		permissions?: #GitHubPermissions
 		// Contributor steps only: restrict emission to these task IDs.
 		tasks?: [...string]
+		// Tasks in expanded pipelines only: run the task's command in its job
+		// without `cuenv task`. The job needs no cuenv setup, and the task gets no
+		// secrets or environment through cuenv. Non-release Nix tasks already run
+		// this way; use it for a release task that needs nothing from cuenv.
+		execution?: "direct"
 	}
 }
 

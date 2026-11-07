@@ -541,6 +541,7 @@ impl Compiler {
                 .and_then(|ci| ci.github.as_ref())
                 .map(|gh| gh.permissions.clone())
                 .unwrap_or_default(),
+            github_execution: None,
             provider_hints,
         }
     }

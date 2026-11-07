@@ -655,6 +655,9 @@ schema.#Project & {
 			// GitHub release binaries use their own toolchain and portable Go
 			// bridge. The public flake package is the Nix-native CLI.
 			build: schema.#Task & {
+				// Needs nothing from cuenv, so release jobs don't wait for a build
+				// of it, and the jobs producing release binaries hold no 1Password token.
+				ci: github: execution: "direct"
 				hermetic: {passthrough: ["PATH"]}
 				env: CUENV_ARCH: schema.#EnvPassthrough & {name: "CUENV_ARCH"}
 				command: "nix"

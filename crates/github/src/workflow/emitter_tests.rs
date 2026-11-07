@@ -51,6 +51,7 @@ fn make_phase_task(id: &str, command: &[&str], phase: BuildStage, priority: i32)
         condition: None,
         github_task_filter: Vec::new(),
         github_permissions: std::collections::BTreeMap::new(),
+        github_execution: None,
         provider_hints: None,
     }
 }
@@ -81,6 +82,7 @@ fn make_task(id: &str, command: &[&str]) -> Task {
         condition: None,
         github_task_filter: Vec::new(),
         github_permissions: std::collections::BTreeMap::new(),
+        github_execution: None,
         provider_hints: None,
     }
 }
