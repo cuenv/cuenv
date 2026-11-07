@@ -362,6 +362,18 @@ pub enum Command {
         /// Complete named infrastructure configuration to select.
         environment: Option<String>,
     },
+    /// Compare the infrastructure configuration with a git revision, from
+    /// CUE alone.
+    InfrastructureDiff {
+        /// Path to the project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Git revision to compare with.
+        base: String,
+        /// Complete named infrastructure configuration to select.
+        environment: Option<String>,
+    },
     /// Generate provider CUE types and pin providers in cuenv.lock.
     InfrastructureProvider {
         /// Directory inside the CUE module that receives the types.

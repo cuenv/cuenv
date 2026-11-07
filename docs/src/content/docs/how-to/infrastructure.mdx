@@ -17,6 +17,7 @@ Schema version 1 databases migrate in place to version 2. Incompatible earlier d
 | --------------------------------------------- | ----------------------- | ----------------------------------------------------------------------- |
 | `cuenv infrastructure init`                   | `cuenv infra init`      | Restore pinned provider binaries and generated CUE types                |
 | `cuenv infrastructure plan`                   | `cuenv i plan`          | Refresh recorded resources and show what `apply` would change           |
+| `cuenv infrastructure diff --base <revision>`  | `cuenv i diff`          | Show how the configuration differs from a git revision, without credentials |
 | `cuenv infrastructure apply`                  | `cuenv i apply`         | Lock, plan, confirm, apply                                              |
 | `cuenv infrastructure destroy`                | `cuenv i destroy`       | Delete every managed resource the project owns                          |
 | `cuenv infrastructure import <address> <id>`  | `cuenv i import`        | Refresh and record one existing provider resource                       |
@@ -36,7 +37,7 @@ Schema version 1 databases migrate in place to version 2. Incompatible earlier d
 
 `apply` also takes `--allow-separate-state` (see [Moving between identities](#moving-between-identities)). `apply`, `destroy` and `import` take `--new-identity` (see [Renames and moves](#renames-and-moves)). `unlock` takes `--module` and `--project` to act on the lock of a project that is not the one being evaluated (see [Stale locks](#when-things-go-wrong)), and `--migration-fence` to release the lock a migration leaves on its source.
 
-`i` and `infra` are aliases for `infrastructure`. Infrastructure operations honour the global `--json` flag; `apply`, `destroy` and `state restore` require `--yes` with `--json`.
+`i` and `infra` are aliases for `infrastructure`. Infrastructure operations honour the global `--json` flag; `apply`, `destroy` and `state restore` require `--yes` with `--json`. `diff` puts its Markdown in the `result` field of the JSON envelope.
 
 `import` takes the provider's opaque import identifier. Declare the resource first, select the desired environment with `--env` when needed, then run for example `cuenv i import cloudflare_record.www <provider-specific-id>`. cuenv asks the provider to import one object, refreshes it, and records the refreshed state without calling the provider's apply operation. Review the suggested `plan` command afterward; it includes the same environment, path and package selection. The provider defines the identifier format. Sensitive import identifiers are registered for output redaction and are not included in cuenv's own output or trace fields.
 
@@ -900,7 +901,38 @@ Every plan is checked the way Terraform checks it: a provider that plans a value
 
 Resources removed from `infrastructure.resources` are deleted. Stored state is only ever handed back to the provider source that created it.
 
-### Plan and apply from GitHub Actions
+### Diff a change without credentials
+
+`cuenv i diff --base <revision>` shows how the working tree changes the configuration compared with a git revision, from CUE alone: it reads no state, resolves no secret, starts no provider and sends nothing over the network, so it needs no credential at all. It is a review of the code, not of the real world; `plan` is the command that compares with what exists.
+
+```bash
+cuenv i diff --base origin/main -p infrastructure/dns
+```
+
+It evaluates the working tree's configuration the way `plan` selects it (the top level, or `--env NAME`), checks the revision out into a temporary detached `git worktree`, evaluates the same path and package there, and removes the worktree again, also when the diff fails or is interrupted. A base where the project, its `infrastructure` block or the selected environment does not exist yet counts as empty, so everything is added. A base that declares the configuration but does not evaluate is an error.
+
+The output is Markdown: a summary line, then the providers, managed resources (by `type.name`) and data sources (by `data.type.name`) that were added, removed or changed, sorted by address. An added declaration lists its fields; a changed one lists the fields of `configuration`, `provider` (the provider the declaration uses) and `dependsOn` that differ, with the old and the new value:
+
+```markdown
+Infrastructure changes compared with `origin/main` (`c36bbd8`). Resources: 1 added, 1 changed, 1 removed.
+
+#### Resources
+
+- **removed** `cloudflare_dns_record.legacy`
+- **added** `cloudflare_r2_bucket.bucket`
+  - `configuration.location`: `"weur"`
+  - `configuration.name`: `"assets"`
+  - `provider`: `"cloudflare"`
+- **changed** `cloudflare_workers_script.api`
+  - `configuration.bindings[0].bucket_name`: `"assets-old"` → `(output of cloudflare_r2_bucket.bucket: name)`
+  - `configuration.secret_text`: `(secret onepassword: ref="op://ci/api/token-2025")` → `(secret onepassword: ref="op://ci/api/token-2026")`
+```
+
+A `#Secret` is shown as the reference it is — the resolver and the fields that name the secret — never a value; an [output reference](#import-and-connect-resources) as the output it reads, and a value CUE computes from outputs as `(computed from outputs of …)`. Only the outputs such a computed value reads are compared: a change to the rest of its expression (the text around an interpolated output, for example) does not show. Values longer than 200 characters are shortened, with their length and a SHA-256 prefix so a change still shows. When nothing changed it says so (`No infrastructure changes compared with …`). The command exits `0` whenever it computed the diff, changes or not, and non-zero only on errors.
+
+Generated provider types live in the git-ignored `cue.mod/gen`, so the checkout of the base has none: it borrows the working tree's wherever it has none of its own (run `cuenv infra init` first, as for any command that evaluates the project). The versions and schema digests of the base's pinned providers then come from the base's own `cuenv.lock`, so moving a pin shows as a provider change. A base whose configuration does not evaluate against the working tree's provider types (an argument the new provider release dropped, for example) fails the diff.
+
+### Diff and apply from GitHub Actions
 
 Set `infrastructure.workflows`, list `github` in `ci.providers`, and run `cuenv sync ci`:
 
@@ -912,12 +944,14 @@ infrastructure: workflows: {}
 
 cuenv writes two workflows:
 
-- `<project>-infrastructure-plan.yml` runs `cuenv i plan` on pull requests that touch the project, adds the plan to the job summary and posts it as a pull request comment. Each project keeps one comment, which later pushes edit; set `plan: comment: false` to keep only the summary. Pull requests from forks get no comment, since their token cannot write one, and a plan cancelled by a newer push posts nothing.
-- `<project>-infrastructure-apply.yml` runs `cuenv i apply --yes` on pushes to `main`. Set `apply: on` to `"tag"` (pushed tags matching `apply.tags`), `"release"` (published releases) or `"manual"` (manual runs only); manual runs are allowed alongside the others unless `apply: manual: false`. With `on: "push"`, a manual run from any branch other than `apply.branch` skips the job. `apply: environment` names a GitHub environment for the job, for example one that requires approval or restricts the refs that may deploy. Every apply run, whatever its ref, waits for the one in progress instead of cancelling it, because a cancelled apply can leave the lock held.
+- `<project>-infrastructure-diff.yml` runs `cuenv i diff --base "origin/$GITHUB_BASE_REF"` on pull requests that touch the project, adds the diff to the job summary and posts it as a pull request comment. The job needs no credential: it checks out the full history (`fetch-depth: 0`, so the base branch is there), installs cuenv, restores the generated provider types with `cuenv infra init` (public provider downloads), diffs and comments. It leaves out every `ci` contributor that sets up a secret provider (the contributors a `secretsProvider` condition activates, such as 1Password and Infisical) and every one that reads secrets or asks for an OIDC token (`id-token: write`). Each project keeps one comment, which later pushes edit; set `diff: comment: false` to keep only the summary. Pull requests from forks get no comment, since their token cannot write one, and a diff cancelled by a newer push posts nothing.
+- `<project>-infrastructure-apply.yml` runs `cuenv i apply --yes` on pushes to `main`. Set `apply: on` to `"tag"` (pushed tags matching `apply.tags`), `"release"` (published releases) or `"manual"` (manual runs only); manual runs are allowed alongside the others unless `apply: manual: false`. With `on: "push"`, a manual run from any branch other than `apply.branch` skips the job. `apply: environment` names a GitHub environment for the job, for example one that requires approval or restricts the refs that may deploy; keep the apply's credentials as secrets of that environment so that only an approved apply can read them. Every apply run, whatever its ref, waits for the one in progress instead of cancelling it, because a cancelled apply can leave the lock held.
 
-Both workflows run the project's `ci` contributors first, so cuenv is installed and secret providers are set up the same way as for its pipelines; a secret provider counts as used when the project's variables or its `infrastructure` block (the state token, for example) refer to it. Turning `workflows` off removes the two files on the next `cuenv sync ci`.
+The apply workflow runs all of the project's `ci` contributors first, so cuenv is installed and secret providers are set up the same way as for its pipelines; a secret provider counts as used when the project's variables or its `infrastructure` block (the state token, for example) refer to it. Turning `workflows` off removes the two files on the next `cuenv sync ci`.
 
-The workflows run when a file the project's configuration is loaded from changes: cuenv asks the CUE loader for the project's files, the same-package files of parent directories that CUE unifies into it, and the files of every package it imports from the module, and adds them to the project directory and `cue.mod/**`. Run `cuenv sync ci` after adding an import so the trigger paths follow it (`cuenv sync ci --check` in CI reports the drift). Only the top-level configuration is planned and applied; named environments are not.
+Earlier versions planned on pull requests (`<project>-infrastructure-plan.yml`, `workflows: plan:`), which needed the state backend's and the providers' credentials in every pull request. `workflows.plan` is now `workflows.diff`; `cuenv sync ci` refuses the old name and removes the old workflow file, and the diff comment replaces the plan comment an open pull request already has.
+
+The workflows run when a file the project's configuration is loaded from changes: cuenv asks the CUE loader for the project's files, the same-package files of parent directories that CUE unifies into it, and the files of every package it imports from the module, and adds them to the project directory and `cue.mod/**`. Run `cuenv sync ci` after adding an import so the trigger paths follow it (`cuenv sync ci --check` in CI reports the drift). Only the top-level configuration is diffed and applied; named environments are not.
 
 ### Apply order
 

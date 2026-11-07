@@ -136,8 +136,11 @@ enum InterruptPolicy {
 /// owns interrupts.
 const fn interrupt_policy(cli: &cli::Cli) -> InterruptPolicy {
     match &cli.command {
+        // `diff` holds no lock and starts no provider; abandoning it drops its
+        // base checkout, which removes the temporary worktree.
         Some(cli::Commands::Infrastructure {
-            subcommand: cli::InfrastructureCommands::Init { .. },
+            subcommand:
+                cli::InfrastructureCommands::Init { .. } | cli::InfrastructureCommands::Diff { .. },
         }) => InterruptPolicy::Process,
         Some(cli::Commands::Infrastructure { .. }) => InterruptPolicy::Command,
         _ => InterruptPolicy::Process,
@@ -349,6 +352,7 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
         | Command::Ps { .. }
         | Command::Restart { .. }
         | Command::Infrastructure { .. }
+        | Command::InfrastructureDiff { .. }
         | Command::InfrastructureProvider { .. }
         | Command::Ci { .. }
         | Command::ShellInit { .. }

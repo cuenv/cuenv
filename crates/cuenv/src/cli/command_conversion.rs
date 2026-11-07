@@ -685,6 +685,18 @@ fn infrastructure_command(
         InfrastructureCommands::Plan { path, package } => {
             (path, package, InfrastructureAction::Plan)
         }
+        InfrastructureCommands::Diff {
+            base,
+            path,
+            package,
+        } => {
+            return Command::InfrastructureDiff {
+                path,
+                package,
+                base,
+                environment,
+            };
+        }
         InfrastructureCommands::Apply {
             path,
             package,

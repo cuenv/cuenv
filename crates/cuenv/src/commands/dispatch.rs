@@ -55,6 +55,7 @@ impl CommandExecutor {
             | Command::Ps { .. }
             | Command::Restart { .. }
             | Command::Infrastructure { .. }
+            | Command::InfrastructureDiff { .. }
             | Command::InfrastructureProvider { .. } => Ok(()),
         }
     }

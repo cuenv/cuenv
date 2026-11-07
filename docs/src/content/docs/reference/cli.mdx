@@ -500,6 +500,7 @@ covered by the stability promises of the other commands.
 ```bash
 cuenv infrastructure init    [-p <PATH>]
 cuenv infrastructure plan    [OPTIONS]
+cuenv infrastructure diff    --base <REVISION> [OPTIONS]
 cuenv infrastructure apply   [OPTIONS] [--yes] [--allow-separate-state] [--new-identity]
 cuenv infrastructure destroy [OPTIONS] [--yes] [--new-identity]
 cuenv infrastructure import  <ADDRESS> <IDENTIFIER> [OPTIONS] [--new-identity]
@@ -542,6 +543,19 @@ resource argument secrets are never resolved by destroy, import or state command
   including records it would refresh ("N to refresh"), in the order `apply`
   would run them. Dependency cycles and changes that no order can apply are
   refused here, before anything changes. It takes no lock.
+- `diff --base <REVISION>`: print, as Markdown, how the configuration
+  (`-p`, `--package` and `--env` select it as for `plan`) differs from the
+  same project at a git revision such as `origin/main`: the providers,
+  resources and data sources added, removed or changed, by address, with
+  every changed field of `configuration`, `provider` and `dependsOn` as old →
+  new. Only CUE is evaluated: no state is read, no secret resolved, no
+  provider started and nothing sent over the network, so it needs no
+  credentials. Secrets show as their reference, output references as the
+  output they read. The revision is checked out into a temporary detached
+  `git worktree`, removed afterwards; a revision without the project, its
+  `infrastructure` block or the selected environment counts as empty. It
+  exits `0` whether or not anything changed. See
+  [Diff a change without credentials](/how-to/infrastructure/#diff-a-change-without-credentials).
 - `apply`: converge on the configuration. Resources removed from
   `infrastructure.resources` are deleted. As in Terraform, `apply` takes the
   project's state lock, plans, shows the plan and asks for confirmation

@@ -120,21 +120,23 @@ import "strings"
 
 	// CI workflows that `cuenv sync ci` emits for this infrastructure, for
 	// the project's `ci.providers`. Only the top-level configuration is
-	// planned and applied.
+	// diffed and applied.
 	workflows?: {#InfrastructureWorkflows}
 
 	// Top-level configuration, used when no `--env` is given.
 	#InfrastructureConfiguration
 }
 
-// CI workflows for infrastructure: `cuenv infrastructure plan` on pull
+// CI workflows for infrastructure: `cuenv infrastructure diff` on pull
 // requests that touch the project, and `cuenv infrastructure apply --yes` on
 // `apply.on`. They are emitted for the project's `ci.providers` (only GitHub
-// Actions so far) and reuse its `ci` contributors (cuenv install, secret
-// providers).
+// Actions so far) and reuse its `ci` contributors to install cuenv. The diff
+// evaluates CUE only, so its job sets up no secret provider and needs no
+// credential; only the apply job sets up the secret providers the project
+// uses.
 #InfrastructureWorkflows: {
-	plan: {
-		// Post the plan as a pull request comment. Each project keeps one
+	diff: {
+		// Post the diff as a pull request comment. Each project keeps one
 		// comment, which later runs edit in place.
 		comment: *true | bool
 	}

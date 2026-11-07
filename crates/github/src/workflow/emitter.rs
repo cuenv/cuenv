@@ -19,6 +19,28 @@ pub use super::jobs::{
 };
 pub use super::release::{ReleaseTarget, ReleaseWorkflowBuilder};
 
+/// How much git history the checkout step of a command workflow fetches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CheckoutHistory {
+    /// The commit and its parent (`fetch-depth: 2`).
+    #[default]
+    Recent,
+    /// Every branch and tag with its whole history (`fetch-depth: 0`), for a
+    /// command that compares the commit with another revision.
+    Full,
+}
+
+impl CheckoutHistory {
+    /// The `fetch-depth` input of `actions/checkout`.
+    #[must_use]
+    pub const fn fetch_depth(self) -> u64 {
+        match self {
+            Self::Recent => 2,
+            Self::Full => 0,
+        }
+    }
+}
+
 /// The main step of a workflow emitted by
 /// [`GitHubActionsEmitter::emit_command_workflow`].
 #[derive(Debug, Clone, Copy)]
@@ -43,6 +65,8 @@ pub struct CommandWorkflow<'a> {
     /// GitHub environment for the job. Unlike the pipeline environment, it
     /// does not select a cuenv environment (`CUENV_ENVIRONMENT`).
     pub job_environment: Option<&'a str>,
+    /// How much git history the checkout step fetches.
+    pub history: CheckoutHistory,
 }
 
 /// GitHub Actions workflow emitter
@@ -322,7 +346,10 @@ impl GitHubActionsEmitter {
         steps.push(
             Step::uses("actions/checkout@v7")
                 .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
+                .with_input(
+                    "fetch-depth",
+                    serde_yaml::Value::Number(command.history.fetch_depth().into()),
+                ),
         );
 
         // Bootstrap and setup phase steps
@@ -755,6 +782,7 @@ impl Emitter for GitHubActionsEmitter {
                 job_if: None,
                 follow_up_steps: &[],
                 job_environment: None,
+                history: CheckoutHistory::Recent,
             },
         )
     }

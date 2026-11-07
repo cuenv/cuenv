@@ -26,8 +26,8 @@ pub use formatters::*;
 pub use hooks::*;
 pub use infrastructure::{
     D1State, DataSourceDeclaration, Infrastructure, InfrastructureApplyTrigger,
-    InfrastructureApplyWorkflow, InfrastructureConfiguration, InfrastructureOutputType,
-    InfrastructurePlanWorkflow, InfrastructurePolicyAction, InfrastructureProvider,
+    InfrastructureApplyWorkflow, InfrastructureConfiguration, InfrastructureDiffWorkflow,
+    InfrastructureOutputType, InfrastructurePolicyAction, InfrastructureProvider,
     InfrastructureSelectionError, InfrastructureState, InfrastructureWorkflows,
     ManagedResourceDeclaration, ProviderEnvironment, S3Addressing, S3State, StateCredentialField,
     StateToken, TursoState,

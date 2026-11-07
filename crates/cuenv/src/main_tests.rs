@@ -86,6 +86,13 @@ fn test_infrastructure_owns_interrupts_and_sends_json_events_to_stderr() {
     let task = cli::Cli::try_parse_from(["cuenv", "--json", "task", "build"]).unwrap();
     assert_eq!(interrupt_policy(&task), InterruptPolicy::Process);
     assert_eq!(json_event_stream(&task), JsonEventStream::StandardOutput);
+
+    // `diff` holds nothing an interrupt must wait for: the process drops it,
+    // and with it the base checkout. Its JSON envelope stays alone on stdout.
+    let diff = cli::Cli::try_parse_from(["cuenv", "--json", "i", "diff", "--base", "origin/main"])
+        .unwrap();
+    assert_eq!(interrupt_policy(&diff), InterruptPolicy::Process);
+    assert_eq!(json_event_stream(&diff), JsonEventStream::StandardError);
 }
 
 #[test]

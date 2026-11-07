@@ -13,11 +13,15 @@
 //! which also creates or upgrades the state tables first, so commands that
 //! only read never do. The command owns interrupt handling for its whole
 //! run (see [`interrupts`]).
+//!
+//! `diff` is separate: it compares the configuration with a git revision
+//! from CUE alone, without state, secrets or providers (see [`diff`]).
 
 mod action;
 mod apply;
 mod configuration_evaluator;
 mod confirm;
+mod diff;
 mod dispatch;
 mod evaluation;
 mod failure;
@@ -51,6 +55,7 @@ pub use self::action::{
     LockListing, MigrateRequest, MigrationDirection, MigrationScope, RenameSource, SeparateState,
     SourceEnvironment, SourceUpgrade, StateAction, UnlockScope,
 };
+pub use self::diff::{DiffOptions, execute_diff};
 pub use self::provider::{ProviderAction, execute_provider};
 
 /// Execute `cuenv infrastructure`.

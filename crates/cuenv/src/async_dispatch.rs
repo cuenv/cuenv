@@ -54,6 +54,23 @@ pub async fn execute_command_safe(
         return commands::infrastructure::execute_infrastructure(&options).await;
     }
 
+    if let Command::InfrastructureDiff {
+        path,
+        package,
+        base,
+        environment,
+    } = &command
+    {
+        let options = commands::infrastructure::DiffOptions {
+            path: path.clone(),
+            package: package.clone(),
+            environment: environment.clone(),
+            base: base.clone(),
+        };
+        let markdown = commands::infrastructure::execute_diff(&options).await?;
+        return print_enveloped_output(markdown.trim_end(), json_format, EnvelopeField::Result);
+    }
+
     if let Some(result) = execute_service_command(&command, executor).await {
         return result;
     }

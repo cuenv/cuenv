@@ -344,6 +344,76 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     })
 }
 
+/// Evaluate the target like [`evaluate`], or `None` when the directory does
+/// not declare the configuration at all: it has no instance of the package,
+/// the project has no `infrastructure` block (inline or through
+/// `.infrastructure.cue`), or not the selected environment. For a revision
+/// the project may not exist in yet.
+///
+/// # Errors
+///
+/// Returns the evaluation error when the configuration is declared but does
+/// not evaluate.
+pub(super) fn evaluate_if_declared(request: TargetRequest<'_>) -> Result<Option<Target>, CliError> {
+    match evaluate(request) {
+        Ok(target) => Ok(Some(target)),
+        // Probed only after a failure, so a declared configuration costs one
+        // evaluation.
+        Err(_) if !declares_configuration(&request) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether the project at the request's path declares the selected
+/// configuration, judged by a lenient evaluation. When that cannot tell
+/// (the CUE does not evaluate), it counts as declared, so the real error is
+/// reported.
+fn declares_configuration(request: &TargetRequest<'_>) -> bool {
+    let Ok(project_path) = Path::new(request.path).canonicalize() else {
+        return false;
+    };
+    let locator = match super::locator::load(&project_path) {
+        Ok(locator) => locator.filter(|locator| locator.project_package == request.package),
+        Err(_) => return true,
+    };
+    let (target_path, package) = locator
+        .as_ref()
+        .map_or((project_path.as_path(), request.package), |locator| {
+            (locator.directory.as_path(), locator.package.as_str())
+        });
+    match evaluate_path(PathEvaluation {
+        target_path,
+        package,
+        concrete_paths: Vec::new(),
+        export_paths: vec![INFRASTRUCTURE_PATH.to_string()],
+    }) {
+        Ok(module) => {
+            let relative_path = compute_relative_path(target_path, &module.root);
+            module
+                .get(Path::new(&relative_path))
+                .and_then(|instance| instance.value.get(INFRASTRUCTURE_PATH))
+                .is_some_and(|infrastructure| {
+                    request.environment.is_none_or(|name| {
+                        infrastructure
+                            .get("environments")
+                            .and_then(|environments| environments.get(name))
+                            .is_some()
+                    })
+                })
+        }
+        // No CUE module, or no file of the package: nothing is declared.
+        Err(cuenv_core::Error::Configuration(detail)) => {
+            !(detail
+                .message
+                .starts_with("No env.cue files declaring package '")
+                || detail
+                    .message
+                    .starts_with("No CUE module found (looking for cue.mod/)"))
+        }
+        Err(_) => true,
+    }
+}
+
 /// The fields of the project every evaluation of this command exports: its
 /// name, its values, the part of `infrastructure` the command needs, and the
 /// `cache` block, where the remote cache names the variables its credentials

@@ -272,6 +272,47 @@ fn infrastructure_command_receives_global_environment_selector() {
 }
 
 #[test]
+fn infrastructure_diff_takes_a_base_revision_path_package_and_environment() {
+    let cli = Cli::try_parse_from([
+        "cuenv",
+        "--env",
+        "staging",
+        "infra",
+        "diff",
+        "--base",
+        "origin/main",
+        "-p",
+        "infrastructure/dns",
+        "--package",
+        "operations",
+    ])
+    .unwrap();
+    let command = cli.command.unwrap().into_command(cli.environment);
+    let Command::InfrastructureDiff {
+        path,
+        package,
+        base,
+        environment,
+    } = command
+    else {
+        panic!("Expected Command::InfrastructureDiff");
+    };
+    assert_eq!(path, "infrastructure/dns");
+    assert_eq!(package, "operations");
+    assert_eq!(base, "origin/main");
+    assert_eq!(environment.as_deref(), Some("staging"));
+
+    let cli = Cli::try_parse_from(["cuenv", "i", "diff", "--base", "HEAD"]).unwrap();
+    let Command::InfrastructureDiff { path, package, .. } = cli.command.unwrap().into_command(None)
+    else {
+        panic!("Expected Command::InfrastructureDiff");
+    };
+    assert_eq!((path.as_str(), package.as_str()), (".", "cuenv"));
+    // There is nothing to compare with without a base.
+    assert!(Cli::try_parse_from(["cuenv", "i", "diff"]).is_err());
+}
+
+#[test]
 fn test_invalid_log_level() {
     let result = Cli::try_parse_from(["cuenv", "--level", "invalid", "version"]);
     assert!(result.is_err());

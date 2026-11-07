@@ -63,31 +63,32 @@ pub struct Infrastructure {
     pub workflows: Option<InfrastructureWorkflows>,
 }
 
-/// CI workflows that plan on pull requests and apply on `apply.on`, emitted
-/// for the project's `ci.providers`.
+/// CI workflows that diff the configuration on pull requests and apply on
+/// `apply.on`, emitted for the project's `ci.providers`.
 ///
 /// Based on `#InfrastructureWorkflows` in schema/infrastructure.cue.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct InfrastructureWorkflows {
-    /// The pull request plan workflow.
+    /// The pull request diff workflow, which needs no credentials.
     #[serde(default)]
-    pub plan: InfrastructurePlanWorkflow,
+    pub diff: InfrastructureDiffWorkflow,
     /// The apply workflow.
     #[serde(default)]
     pub apply: InfrastructureApplyWorkflow,
 }
 
-/// The pull request plan workflow.
+/// The pull request diff workflow: `cuenv infrastructure diff` against the
+/// pull request's base branch, without credentials.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct InfrastructurePlanWorkflow {
-    /// Post the plan as a pull request comment that later runs edit.
+pub struct InfrastructureDiffWorkflow {
+    /// Post the diff as a pull request comment that later runs edit.
     #[serde(default = "default_true")]
     pub comment: bool,
 }
 
-impl Default for InfrastructurePlanWorkflow {
+impl Default for InfrastructureDiffWorkflow {
     fn default() -> Self {
         Self { comment: true }
     }
@@ -1263,5 +1264,20 @@ mod tests {
     fn the_top_level_mode_alone_does_not_stop_a_run_without_an_environment() {
         let selected = Infrastructure::select(declared_with_environments(), None).unwrap();
         assert_eq!(selected.provider_environment, ProviderEnvironment::Isolated);
+    }
+
+    #[test]
+    fn workflows_comment_the_diff_by_default_and_refuse_the_retired_plan() {
+        let workflows: InfrastructureWorkflows =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(workflows.diff.comment);
+        let quiet: InfrastructureWorkflows =
+            serde_json::from_value(serde_json::json!({"diff": {"comment": false}})).unwrap();
+        assert!(!quiet.diff.comment);
+        let error =
+            serde_json::from_value::<InfrastructureWorkflows>(serde_json::json!({"plan": {}}))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("unknown field `plan`"), "{error}");
     }
 }
