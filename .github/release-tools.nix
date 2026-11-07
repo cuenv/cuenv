@@ -13,7 +13,14 @@ let
     overlays = [ (import (input "rust-overlay")) ];
   };
   unstable = import (input "nixpkgs-unstable") { inherit system; };
-  rust = pkgs.rust-bin.stable."1.98.1".default;
+
+  # x86_64 Linux cross-compiles the linux-arm64 artifact. It only needs ARM's
+  # glibc for the smoke test, which Nix substitutes instead of building.
+  crossCompilesArm = system == "x86_64-linux";
+  armGlibc = (import (input "nixpkgs") { system = "aarch64-linux"; }).glibc;
+  nativeRust = pkgs.rust-bin.stable."1.98.1".default;
+  rust =
+    if crossCompilesArm then nativeRust.override { targets = [ "aarch64-unknown-linux-gnu" ]; } else nativeRust;
 in
 pkgs.mkShell {
   packages =
@@ -37,6 +44,7 @@ pkgs.mkShell {
       binutils
       (unstable.cargo-zigbuild.override { inherit zig; })
     ]
+    ++ lib.optionals crossCompilesArm [ qemu-user ]
     ++ lib.optionals stdenv.isDarwin [
       darwin.cctools
       darwin.sigtool
@@ -48,5 +56,7 @@ pkgs.mkShell {
   # interpreter. This loader is used only for the release smoke test.
   CUENV_RELEASE_LOADER = pkgs.lib.optionalString pkgs.stdenv.isLinux pkgs.stdenv.cc.bintools.dynamicLinker;
   CUENV_RELEASE_GLIBC_LIB = pkgs.lib.optionalString pkgs.stdenv.isLinux "${pkgs.glibc}/lib";
+  CUENV_RELEASE_ARM64_LOADER = pkgs.lib.optionalString crossCompilesArm "${armGlibc}/lib/ld-linux-aarch64.so.1";
+  CUENV_RELEASE_ARM64_GLIBC_LIB = pkgs.lib.optionalString crossCompilesArm "${armGlibc}/lib";
   SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 }

@@ -9,7 +9,7 @@ case "${CUENV_ARCH:-}:$(uname -s):$(uname -m)" in
 		go_arch="amd64"
 		interpreter="/lib64/ld-linux-x86-64.so.2"
 		;;
-	linux-arm64:Linux:aarch64)
+	linux-arm64:Linux:x86_64 | linux-arm64:Linux:aarch64)
 		rust_target="aarch64-unknown-linux-gnu"
 		zig_target="aarch64-linux-gnu.2.17"
 		go_arch="arm64"
@@ -129,7 +129,12 @@ if [[ "$CUENV_ARCH" == linux-* ]]; then
 			exit 1
 		fi
 	done <<< "$versions"
-	runner=("${CUENV_RELEASE_LOADER:?Missing Nix glibc loader}" --library-path "${CUENV_RELEASE_GLIBC_LIB:?Missing Nix glibc library path}")
+	if [[ "$CUENV_ARCH:$(uname -m)" == linux-arm64:x86_64 ]]; then
+		# A cross-compiled binary can't run on this host, so emulate it.
+		runner=(qemu-aarch64 "${CUENV_RELEASE_ARM64_LOADER:?Missing Nix ARM glibc loader}" --library-path "${CUENV_RELEASE_ARM64_GLIBC_LIB:?Missing Nix ARM glibc library path}")
+	else
+		runner=("${CUENV_RELEASE_LOADER:?Missing Nix glibc loader}" --library-path "${CUENV_RELEASE_GLIBC_LIB:?Missing Nix glibc library path}")
+	fi
 else
 	libiconv="$(otool -L "$binary" | awk '/libiconv\.2\.dylib/ {print $1; exit}')"
 	if [[ "$libiconv" == /nix/store/* ]]; then
