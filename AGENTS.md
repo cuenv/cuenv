@@ -250,7 +250,7 @@ nix flake check -L --accept-flake-config
 - Git tags must be annotated: `git tag -a 0.27.1 -m "message"`.
 - Release commit message format: `release: 0.27.1`.
 - Version lives in root `Cargo.toml` under `[workspace.package]`. All crates inherit via `version.workspace = true`. Update the workspace version and all `[workspace.dependencies]` version strings.
-- `apps/cuetty` is a separate Cargo workspace. Bump the `cuengine` entry in `apps/cuetty/Cargo.lock` to the new version too; CI does not build the cuetty checks, so a stale entry only fails the local flake gate.
+- `apps/cuetty` is a separate Cargo workspace. Bump the `cuengine` entry in `apps/cuetty/Cargo.lock` to the new version too; a stale entry fails the `checks.cuetty` CI job on the release commit.
 - Add release notes at `docs/releases/<version>.md`.
 - Do not edit `cue.mod/module.cue` for release-only version bumps unless there is a separate CUE module metadata change. `cuenv sync` never writes `cue.mod/module.cue`; consumer projects update their schema dependency with `cue mod get`.
 - Create a GitHub release with `gh release create <tag>` using the bare version as the title.

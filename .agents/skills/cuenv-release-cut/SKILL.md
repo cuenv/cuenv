@@ -32,7 +32,7 @@ Read the current release rules before acting:
    - Run `cuenv exec -- cargo update --workspace`.
    - Run `cuenv exec -- cargo metadata --locked --format-version 1`.
    - Inspect `git diff -- Cargo.lock`; expected release-only lockfile changes are workspace package version entries matching the new version.
-   - `apps/cuetty` is a separate Cargo workspace with its own `Cargo.lock` that pins the path dependency `cuengine`. Set that entry's `version` to the new version, then run `cuenv exec -- cargo metadata --locked --format-version 1 --manifest-path apps/cuetty/Cargo.toml`. Its diff must be that one line. CI does not build the cuetty checks, so a stale entry only fails the local flake gate.
+   - `apps/cuetty` is a separate Cargo workspace with its own `Cargo.lock` that pins the path dependency `cuengine`. Set that entry's `version` to the new version, then run `cuenv exec -- cargo metadata --locked --format-version 1 --manifest-path apps/cuetty/Cargo.toml`. Its diff must be that one line. A stale entry fails the `checks.cuetty` CI job on the release commit, after the tag already exists.
 
 4. Write the release notes:
    - Add `docs/releases/<version>.md`, headed `# cuenv <version>`, summarizing the user-visible changes since the previous release with links to their pull requests. Follow the previous notes in `docs/releases/`.

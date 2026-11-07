@@ -149,7 +149,11 @@ on demand. `cargo.build` cross-compiles `linux-arm64` on the x86 runner, because
 a `runners.arch` entry names the job's runner, not necessarily its target's
 hardware. `ci.github.execution: "direct"` runs a task without `cuenv task`, which
 `cargo.build` uses so its jobs need no `build.cuenv` or 1Password token. The manual
-`release-dry-run` pipeline runs those builds without publishing.
+`release-dry-run` pipeline runs those builds without publishing. The `checks`
+group covers every `x86_64-linux` flake check: `checks.cuetty` builds the four
+cuetty checks in one job, and `checks.infrastructure-e2e` also names
+`cuenv-fake-terraform-provider` and `cuenv-numeric-interop`, which its suite is
+built from.
 
 Repository CI timings and proposed optimizations are recorded in the
 [2026-11-06 CI performance investigation](2026-11-06-ci-performance.md).
