@@ -418,3 +418,16 @@ task can depend on secrets from its pipeline's `environment`, and running it dir
 would silently drop them. Compilation rejects the setting when a task's own `env`
 needs cuenv, but it can't see which pipeline environment variables a script reads,
 so the opt-in stays the author's decision.
+
+### Covering every flake check
+
+`cuenv-ci` named nine of the fifteen `x86_64-linux` flake checks. The release commit
+for 0.70.2 left `apps/cuetty/Cargo.lock` pinning `cuengine` 0.70.1, which only the
+local `nix flake check` caught, because no CI job built the cuetty checks.
+
+`checks.cuetty` now builds `cuetty`, `cuetty-test`, `cuetty-clippy` and `cuetty-fmt`
+in one job, so a pull request takes one more runner rather than four.
+`cuenv-fake-terraform-provider` and `cuenv-numeric-interop` were already built,
+because `cuenv-infrastructure-e2e` is built from both; that job now names them, so
+they stay covered if the suite stops using them. macOS still runs only
+`cuenv-clippy` and `cuenv-nextest`.

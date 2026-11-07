@@ -410,10 +410,36 @@ schema.#Project & {
 			}
 
 			// Runs the ignored infrastructure suites against sqld and real/fake
-			// Terraform providers inside the Nix sandbox.
+			// Terraform providers inside the Nix sandbox. The suite is built from
+			// the fake provider and numeric-interop checks, so naming them here
+			// costs nothing and keeps them covered if that ever changes.
 			"infrastructure-e2e": schema.#Task & {
 				command: "nix"
-				args: ["build", ".#checks.x86_64-linux.cuenv-infrastructure-e2e", "-L", "--accept-flake-config"]
+				args: [
+					"build",
+					".#checks.x86_64-linux.cuenv-infrastructure-e2e",
+					".#checks.x86_64-linux.cuenv-fake-terraform-provider",
+					".#checks.x86_64-linux.cuenv-numeric-interop",
+					"-L",
+					"--accept-flake-config",
+				]
+				inputs: _flakeInputs
+			}
+
+			// cuetty is a separate Cargo workspace that links cuengine, so a
+			// release that misses `apps/cuetty/Cargo.lock` fails here. Its four
+			// checks share one job, so a pull request takes one runner, not four.
+			cuetty: schema.#Task & {
+				command: "nix"
+				args: [
+					"build",
+					".#checks.x86_64-linux.cuetty",
+					".#checks.x86_64-linux.cuetty-test",
+					".#checks.x86_64-linux.cuetty-clippy",
+					".#checks.x86_64-linux.cuetty-fmt",
+					"-L",
+					"--accept-flake-config",
+				]
 				inputs: _flakeInputs
 			}
 
