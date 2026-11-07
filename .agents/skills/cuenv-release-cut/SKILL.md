@@ -63,6 +63,7 @@ Read the current release rules before acting:
    - The release workflow is `cuenv-release.yml` and triggers on a published release. Its manual-dispatch example may show a `v` prefix; ignore that stale example and use the bare tag.
    - Watch the release run with `gh run list --repo cuenv/cuenv --workflow cuenv-release.yml --event release --limit 5`, then `gh run watch <run-id> --repo cuenv/cuenv`.
    - The workflow builds binaries, uploads GitHub release assets, publishes the CUE module using `cue mod publish v$TAG`, updates Homebrew, and deploys docs. The internal `v$TAG` in CUE publishing does not change the project rule that Git tags and release titles are bare.
+   - Dependabot does not rebase its pull requests automatically (`rebase-strategy: "disabled"` in `.github/dependabot.yml`), so open Cargo updates may conflict after the release commit. Do not rebase them while the release runs, because their CI competes with the release builds for x86 runners; comment `@dependabot rebase` on one when it is about to be merged.
 
 ## Guardrails
 

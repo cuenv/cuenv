@@ -293,6 +293,13 @@ job on the release commit, after the tag already exists. Add release notes at
 release-only version bump unless there is a separate CUE module metadata
 change.
 
+Dependabot does not rebase its pull requests automatically
+(`rebase-strategy: "disabled"` in `.github/dependabot.yml`). Release commits
+change every workspace version in `Cargo.lock`, so open Cargo updates used to
+rebase as each release started, and their CI took the x86 runners the release
+binaries were waiting for. Comment `@dependabot rebase` on a Dependabot pull
+request when it is about to be merged.
+
 For release-only version bumps from an already-green `main`, skip local test
 execution and the full root flake check. Verify that `HEAD` is the green
 `origin/main` commit, Cargo manifests and `Cargo.lock` agree on the target
