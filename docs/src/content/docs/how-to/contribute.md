@@ -99,7 +99,11 @@ Full root flake check is required before marking a PR ready for review, merging,
 
 If a change does not match one of those full-flake triggers, keep the check focused and record the focused validation in the PR.
 
-Continuous integration runs the flake checks on `x86_64-linux` for every pull request and push to `main`, and also builds the `cuenv-clippy` and `cuenv-nextest` checks for `aarch64-darwin` on a macOS runner (the `darwin` tasks in `env.cue`), so code that differs by platform is compiled and tested on macOS before it merges, not only when a release is built.
+Continuous integration runs the flake checks on `x86_64-linux` for every pull request and push to `main`. Pull requests run no macOS or ARM jobs. The `cuenv-darwin` workflow builds the `cuenv-clippy` and `cuenv-nextest` checks for `aarch64-darwin` on a macOS runner (the `darwin` tasks in `env.cue`) on every push to `main`, so code that differs by platform is compiled and tested on macOS after it merges, not only when a release is built. If your change touches platform-specific code, run those checks on your branch before merging:
+
+```bash
+gh workflow run cuenv-darwin.yml --ref <branch>
+```
 
 CI jobs get Nix store paths from a Namespace cache volume: each Linux runner mounts one at `/nix`, so a job starts with whatever an earlier job on that volume built, and anything missing comes from cache.nixos.org or is built. Volumes are per runner profile and the last job to finish writes it, so a job can still rebuild something another job built. macOS jobs do not mount a volume. To see whether a job started warm, check the Namespace cache step: it reports whether the cache paths were found and how much space they use. The repository no longer uses Hestia: its GitHub Actions cache was rate limited and evicting packs under parallel load, and once the volume was warm it served nothing.
 

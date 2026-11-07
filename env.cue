@@ -174,8 +174,19 @@ schema.#Project & {
 					pullRequest: true
 				}
 				provider: github: permissions: "id-token": "write"
+				tasks: [_t.checks]
+			}
+
+			// Pull requests validate x86_64 Linux only. macOS checks run after
+			// merge, and on demand for a branch that needs them sooner:
+			//   gh workflow run cuenv-darwin.yml --ref <branch>
+			darwin: {
+				mode: "expanded"
+				when: {
+					branch: "main"
+					manual: true
+				}
 				tasks: [
-					_t.checks,
 					{
 						task: _t.darwin.clippy
 						matrix: arch: ["darwin-arm64"]
@@ -388,9 +399,9 @@ schema.#Project & {
 		}
 
 		// The same flake checks built for aarch64-darwin. They run on the macOS
-		// runner only (see the `ci` pipeline), so platform-specific code paths
+		// runner only (see the `darwin` pipeline), so platform-specific code paths
 		// (process handling, file systems, the Go bridge) are compiled and tested
-		// on macOS for every pull request, not only at release time.
+		// on macOS for every push to main, not only at release time.
 		darwin: {
 			type: "group"
 

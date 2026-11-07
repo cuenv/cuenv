@@ -285,7 +285,8 @@ without validating hits and publication would not address the evidence.
 
 Implement direct matrix execution and cache publication first, then measure
 before changing test coverage or adding test shards. Preserve macOS tests,
-Clippy, the Linux suites, and release packaging.
+Clippy, the Linux suites, and release packaging. macOS checks have since moved
+off pull requests; see the follow-up below.
 
 Regression tests should cover direct Nix matrix commands, preserved task
 metadata and dependencies, runner selection, absence of unnecessary bootstrap
@@ -304,7 +305,9 @@ completion range of roughly 6–9 minutes. This is a target, not a benchmark of
 an implemented optimization. Cache-service failures and cold dependency
 changes need separate measurements.
 
-## Follow-up: release bootstrap (2026-11-07)
+## Follow-up: release bootstrap and pull request scope (2026-11-07)
+
+### Removing the bootstrap artifact
 
 [Release run 42322678159](https://github.com/cuenv/cuenv/actions/runs/42322678159)
 failed at "Add cuenv to PATH" because `cmp` found two different binaries for one
@@ -329,3 +332,22 @@ come from `cargo.build`'s own outputs.
 
 Removing the transfer is a correctness change, not a measurable speedup: in the
 failed run "Download cuenv" took about a second and "Upload cuenv" two to four.
+
+### Pull request scope
+
+`darwin.clippy` and `darwin.nextest` moved from the `ci` pipeline to a `darwin`
+pipeline that runs on pushes to `main` and on `workflow_dispatch`. Those two jobs
+were the only macOS or ARM jobs on pull requests, so pull requests now run only
+`x86_64-linux` jobs. ARM Linux only runs in the release workflow.
+
+The cost is that a macOS regression is first reported after merge. `cuenv-darwin`
+is part of a green `main`, and `gh workflow run cuenv-darwin.yml --ref <branch>`
+checks a branch before merge. Pull requests also no longer publish macOS
+dependencies to Cachix, so the first `main` push after a dependency change pays
+for that build.
+
+In [PR run 42322944747](https://github.com/cuenv/cuenv/actions/runs/42322944747),
+the two macOS jobs ran for 3m 19s and 6m 38s, but the run finished 5m 47s after
+them, on `checks.doctest`. That run's elapsed time was set by when Linux jobs
+started, not by macOS. Expect saved macOS runner time and no dependence on macOS
+capacity; a change in elapsed time needs measuring across runs, as above.
