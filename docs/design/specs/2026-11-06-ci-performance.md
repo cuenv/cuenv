@@ -419,6 +419,40 @@ would silently drop them. Compilation rejects the setting when a task's own `env
 needs cuenv, but it can't see which pipeline environment variables a script reads,
 so the opt-in stays the author's decision.
 
+### Measured releases
+
+Time from the first job until all three release binaries were built:
+
+| Release | Binaries built | Slowest build job | Longest wait for a runner |
+| --- | --- | --- | --- |
+| 0.70.1, attempt 1 (nothing cached) | 29m 38s | linux-arm64, 14m 29s on ARM | not measured |
+| 0.70.1, attempt 2 (cached) | 14m 36s | linux-arm64, 14m 03s on ARM | not measured |
+| [0.70.2](https://github.com/cuenv/cuenv/actions/runs/42363040694), cross-compiled ARM | 22m 18s | linux-arm64, 14m 16s on x86 | 3m 43s |
+| [0.71.0](https://github.com/cuenv/cuenv/actions/runs/42369534144), direct `cargo.build` | 11m 56s | darwin-arm64, 6m 15s | 7m 04s |
+
+In 0.70.2 the ARM job's Cargo build took 3m 42s, but `cuenv task` spent 8m 55s
+before starting `nix develop`, with nothing logged. The same step took 11 to 80
+seconds for every target in 0.70.1, and 11s for x64 in 0.70.2. The cause was not
+found; 0.71.0 no longer runs `cargo.build` through `cuenv task`.
+
+In 0.71.0 the build jobs ran for 4m 52s (x64), 5m 23s (ARM on x86) and 6m 15s
+(macOS), so with free runners the binaries would have been ready after about six
+and a half minutes. Over half of the 11m 56s was spent waiting for x86 runners.
+
+### Runner contention at release time
+
+Cross-compiling ARM moved a release build onto the x86 pool that pull request CI
+uses. Each release commit also starts `cuenv-ci` on `main`, and it changed every
+workspace version in `Cargo.lock`, which conflicted with the open Dependabot Cargo
+updates. Dependabot rebases a pull request whenever it conflicts, so #541 and #543
+were force-pushed within three minutes of each release commit for 0.70.0 through
+0.71.0, and their CI took x86 runners while the release builds waited.
+
+`.github/dependabot.yml` now sets `rebase-strategy: "disabled"` for every
+ecosystem. Dependabot pull requests are updated with `@dependabot rebase` when they
+are about to be merged. A separate runner profile for releases would also remove
+the wait, but it has to be created in Namespace first.
+
 ### Covering every flake check
 
 `cuenv-ci` named nine of the fifteen `x86_64-linux` flake checks. The release commit

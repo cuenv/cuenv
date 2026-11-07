@@ -1,4 +1,9 @@
 version: 2
+# Dependabot rebases a pull request whenever it conflicts with main. Release
+# commits change every workspace version in Cargo.lock, so open Cargo updates
+# conflicted on each release and rebased the moment the release started, and
+# their CI took the x86 runners the release binaries were waiting for. Comment
+# `@dependabot rebase` on a pull request to update it.
 updates:
   # Cargo dependencies
   - package-ecosystem: "cargo"
@@ -7,6 +12,7 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    rebase-strategy: "disabled"
     reviewers:
       - "rawkode"
     labels:
@@ -31,6 +37,7 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 3
+    rebase-strategy: "disabled"
     reviewers:
       - "rawkode"
     labels:
@@ -47,6 +54,7 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 3
+    rebase-strategy: "disabled"
     reviewers:
       - "rawkode"
     labels:

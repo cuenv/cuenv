@@ -153,7 +153,8 @@ hardware. `ci.github.execution: "direct"` runs a task without `cuenv task`, whic
 group covers every `x86_64-linux` flake check: `checks.cuetty` builds the four
 cuetty checks in one job, and `checks.infrastructure-e2e` also names
 `cuenv-fake-terraform-provider` and `cuenv-numeric-interop`, which its suite is
-built from.
+built from. Dependabot pull requests do not rebase automatically, so release
+commits do not start their CI while release binaries wait for x86 runners.
 
 Repository CI timings and proposed optimizations are recorded in the
 [2026-11-06 CI performance investigation](2026-11-06-ci-performance.md).
