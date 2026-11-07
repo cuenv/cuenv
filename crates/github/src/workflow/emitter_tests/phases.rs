@@ -20,7 +20,7 @@ fn test_render_phase_steps() {
     let ir = make_ir(vec![bootstrap_task, setup_task]);
 
     let (steps, secret_env_vars) =
-        emitter.render_phase_steps(&ir, TaskExecution::Orchestrated, &CuenvSetup::BuildInJob);
+        emitter.render_phase_steps(&ir, TaskExecution::Orchestrated, CuenvSetup::BuildInJob);
 
     assert_eq!(steps.len(), 2);
     assert_eq!(steps[0].name.as_deref(), Some("Install Nix"));

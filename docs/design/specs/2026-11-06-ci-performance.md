@@ -200,7 +200,7 @@ Nix command.
 
 The implementation applies the existing non-release direct-Nix rule to matrix jobs, retaining the
 original task's command, environment, dependencies, and outputs during matrix
-expansion. Only orchestrated jobs consume a cuenv bootstrap artifact.
+expansion. Only orchestrated jobs depend on the cuenv bootstrap job.
 Runner selection and release orchestration remain intact. Regenerate
 workflows with `cuenv sync ci`; do not edit the generated YAML by hand.
 
@@ -303,3 +303,29 @@ An initial target is to bring ordinary PR CI closer to the observed Linux
 completion range of roughly 6–9 minutes. This is a target, not a benchmark of
 an implemented optimization. Cache-service failures and cold dependency
 changes need separate measurements.
+
+## Follow-up: release bootstrap (2026-11-07)
+
+[Release run 42322678159](https://github.com/cuenv/cuenv/actions/runs/42322678159)
+failed at "Add cuenv to PATH" because `cmp` found two different binaries for one
+store path. `cuenv-ci`'s `checks.cuenv` and the release's `build.cuenv` built
+`/nix/store/mslxzdrd14bqqjjl1ssviy9jjipgkkj9-cuenv-0.70.1` concurrently. Cachix
+kept the first push, so consumers realized that copy and compared it with the
+artifact from the second build. The `.#cuenv` derivation is not bit-reproducible.
+
+The artifact dates from #436, when the flake package was a portable binary that
+consumers could run without Nix. `bf730d14` made the package Nix-native, so every
+consumer already had to run `nix build .#cuenv` for the runtime closure. From then
+on the artifact only supplied the bytes for the comparison. #575 changed how that
+step finds Nix and did not depend on the artifact.
+
+Consumers now put `$cuenv_package/bin` on `PATH`. No compilation returns:
+consumers ran the same `nix build` before this change, and `build.cuenv` remains
+so that they substitute the package rather than compile it. Without a working
+binary cache each consumer compiles, as it did before. The artifact had no other
+reader: `cargo.build`, `docs.build`, `docs.deploy`, `publish.cue`, `publish.github`,
+and `publish.homebrew` only found `cuenv` through `PATH`, and published binaries
+come from `cargo.build`'s own outputs.
+
+Removing the transfer is a correctness change, not a measurable speedup: in the
+failed run "Download cuenv" took about a second and "Upload cuenv" two to four.

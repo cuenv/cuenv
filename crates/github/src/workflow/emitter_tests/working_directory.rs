@@ -72,7 +72,7 @@ fn test_build_matrix_jobs_with_working_directory() {
             previous_jobs: &[],
             project_path: Some("apps/my-service"),
             execution: TaskExecution::Orchestrated,
-            cuenv_artifacts_by_runner: None,
+            cuenv_setup: CuenvSetup::BuildInJob,
         },
     );
 
@@ -115,7 +115,7 @@ fn test_build_matrix_jobs_without_working_directory() {
             previous_jobs: &[],
             project_path: None,
             execution: TaskExecution::Orchestrated,
-            cuenv_artifacts_by_runner: None,
+            cuenv_setup: CuenvSetup::BuildInJob,
         },
     );
 

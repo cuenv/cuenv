@@ -220,14 +220,17 @@ ci: contributors: [contributors.#CuenvNix]
 ```
 
 In generated GitHub workflows, expanded jobs that run through `cuenv task` can
-share a bootstrap artifact only when `config.ci.cuenv.source: "nix"` selects
-`#CuenvNix`. The workflow emits one `build.cuenv` job per runner, uploads the
-built `result/bin/cuenv` binary, and has downstream orchestrated jobs download
-that artifact into the runner temp directory before running later setup tasks
-such as 1Password. The temp-directory download keeps the checkout clean for
-VCS-sensitive release commands such as `cue mod publish`. Release,
-Homebrew, native, git, and artifact sources render their normal setup task
-inside each job instead. Direct Nix jobs, such as `nix build .#checks...`, do
+share one build of cuenv only when `config.ci.cuenv.source: "nix"` selects
+`#CuenvNix`. The workflow emits one `build.cuenv` job per runner. Downstream
+orchestrated jobs wait for it, realize the package with
+`nix build .#cuenv --no-link`, and add its store path to `PATH` before running
+later setup tasks such as 1Password. A binary cache lets those jobs substitute
+the package; without one, each job builds it. Leaving no `result` link keeps the
+checkout clean for VCS-sensitive release commands such as `cue mod publish`.
+The store path identifies the package, so jobs never compare binaries: the
+derivation is not bit-reproducible, and two valid builds can differ byte for byte.
+Release, Homebrew, native, git, and artifact sources render their normal setup
+task inside each job instead. Direct Nix jobs, such as `nix build .#checks...`, do
 not consume that bootstrap and start as soon as their normal Nix setup is ready.
 
 Examples: [`examples/ci-cuenv-nix`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cuenv-nix)

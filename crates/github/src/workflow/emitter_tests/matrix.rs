@@ -22,14 +22,13 @@ fn direct_matrix_retains_cache_setup_environment_and_outputs() {
         make_phase_task("secrets", &["cuenv secrets setup"], BuildStage::Setup, 20);
     secret_setup.depends_on = vec![cuenv.id.clone()];
     let ir = make_ir(vec![task.clone(), cache, cuenv, secret_setup]);
-    let artifacts = HashMap::from([("ubuntu-latest".into(), "bootstrap".into())]);
 
     let jobs = emitter.build_matrix_jobs(
         &task,
         &ir,
         &MatrixJobOptions {
             execution: TaskExecution::Direct,
-            cuenv_artifacts_by_runner: Some(&artifacts),
+            cuenv_setup: CuenvSetup::RealizeNixPackage,
             ..Default::default()
         },
     );
@@ -118,7 +117,7 @@ fn test_build_matrix_jobs() {
             previous_jobs: &[],
             project_path: None,
             execution: TaskExecution::Orchestrated,
-            cuenv_artifacts_by_runner: None,
+            cuenv_setup: CuenvSetup::BuildInJob,
         },
     );
 
@@ -183,7 +182,7 @@ fn test_build_matrix_jobs_with_arch_runners() {
             previous_jobs: &[],
             project_path: None,
             execution: TaskExecution::Orchestrated,
-            cuenv_artifacts_by_runner: None,
+            cuenv_setup: CuenvSetup::BuildInJob,
         },
     );
 
@@ -252,7 +251,7 @@ fn test_build_artifact_aggregation_job() {
 }
 
 #[test]
-fn test_build_matrix_jobs_download_cuenv_artifact_per_runner() {
+fn test_build_matrix_jobs_realize_nix_cuenv_package_per_runner() {
     use cuenv_ci::ir::MatrixConfig;
 
     let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
@@ -316,18 +315,6 @@ fn test_build_matrix_jobs_download_cuenv_artifact_per_runner() {
     ]
     .into_iter()
     .collect();
-    let cuenv_artifacts_by_runner: HashMap<String, String> = [
-        (
-            "ubuntu-24.04".to_string(),
-            "cuenv-bootstrap-ubuntu-24-04".to_string(),
-        ),
-        (
-            "macos-14".to_string(),
-            "cuenv-bootstrap-macos-14".to_string(),
-        ),
-    ]
-    .into_iter()
-    .collect();
 
     let jobs = emitter.build_matrix_jobs(
         &task,
@@ -338,7 +325,7 @@ fn test_build_matrix_jobs_download_cuenv_artifact_per_runner() {
             previous_jobs: &[],
             project_path: None,
             execution: TaskExecution::Orchestrated,
-            cuenv_artifacts_by_runner: Some(&cuenv_artifacts_by_runner),
+            cuenv_setup: CuenvSetup::RealizeNixPackage,
         },
     );
     let linux_job = jobs
@@ -356,7 +343,6 @@ fn test_build_matrix_jobs_download_cuenv_artifact_per_runner() {
             "Checkout",
             "Install Nix",
             "Setup Cachix",
-            "Download cuenv",
             "Add cuenv to PATH",
             "Setup 1Password",
             "release.build (linux-x64)",
@@ -364,35 +350,16 @@ fn test_build_matrix_jobs_download_cuenv_artifact_per_runner() {
         ]
     );
 
-    let download_step = linux_job
-        .steps
-        .iter()
-        .find(|s| s.name.as_deref() == Some("Download cuenv"))
-        .expect("missing cuenv download step");
-    assert_eq!(
-        download_step.with_inputs.get("name"),
-        Some(&serde_yaml::Value::String(
-            "cuenv-bootstrap-ubuntu-24-04".to_string()
-        ))
-    );
-    assert_eq!(
-        download_step.with_inputs.get("path"),
-        Some(&serde_yaml::Value::String(
-            "${{ runner.temp }}/cuenv-bootstrap".to_string()
-        ))
-    );
-
     let path_step = linux_job
         .steps
         .iter()
         .find(|s| s.name.as_deref() == Some("Add cuenv to PATH"))
         .expect("missing cuenv path step");
-    assert!(
-        path_step
-            .run
-            .as_deref()
-            .is_some_and(|script| script.contains("nix build .#cuenv --no-link --print-out-paths"))
-    );
+    assert!(path_step.run.as_deref().is_some_and(|script| {
+        script.contains("nix build .#cuenv --no-link --print-out-paths")
+            && script.contains("echo \"$cuenv_package/bin\" >> \"$GITHUB_PATH\"")
+            && !script.contains("cmp ")
+    }));
 
     let darwin_job = jobs
         .get("release-build-darwin-arm64")
@@ -408,23 +375,11 @@ fn test_build_matrix_jobs_download_cuenv_artifact_per_runner() {
             "Checkout",
             "Install Nix",
             "Setup Cachix",
-            "Download cuenv",
             "Add cuenv to PATH",
             "Setup 1Password",
             "release.build (darwin-arm64)",
             "Upload artifacts",
         ]
-    );
-    let darwin_download = darwin_job
-        .steps
-        .iter()
-        .find(|step| step.name.as_deref() == Some("Download cuenv"))
-        .expect("missing darwin cuenv download step");
-    assert_eq!(
-        darwin_download.with_inputs.get("name"),
-        Some(&serde_yaml::Value::String(
-            "cuenv-bootstrap-macos-14".to_string()
-        ))
     );
 }
 

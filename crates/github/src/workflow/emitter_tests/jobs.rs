@@ -268,7 +268,6 @@ fn test_build_cuenv_bootstrap_job_includes_cuenv_and_prereqs_but_not_dependents(
             CuenvBootstrapJobOptions {
                 runs_on: RunsOn::Label("ubuntu-latest".to_string()),
                 name: "build.cuenv",
-                artifact_name: "cuenv-bootstrap-ubuntu-latest",
             },
         )
         .expect("expected cuenv bootstrap job");
@@ -278,27 +277,11 @@ fn test_build_cuenv_bootstrap_job_includes_cuenv_and_prereqs_but_not_dependents(
     assert!(step_names.contains(&"Install Nix"));
     assert!(step_names.contains(&"Setup Cachix"));
     assert!(step_names.contains(&"Build cuenv (nix)"));
-    assert!(step_names.contains(&"Upload cuenv"));
     assert!(!step_names.contains(&"Setup 1Password"));
-
-    let upload_step = job
-        .steps
-        .iter()
-        .find(|s| s.name.as_deref() == Some("Upload cuenv"))
-        .expect("missing cuenv upload step");
-    assert_eq!(
-        upload_step.uses.as_deref(),
-        Some("actions/upload-artifact@v4")
-    );
-    assert_eq!(
-        upload_step.with_inputs.get("name"),
-        Some(&serde_yaml::Value::String(
-            "cuenv-bootstrap-ubuntu-latest".to_string()
-        ))
-    );
-    assert_eq!(
-        upload_step.with_inputs.get("path"),
-        Some(&serde_yaml::Value::String("result/bin/cuenv".to_string()))
+    assert!(
+        job.steps
+            .iter()
+            .all(|step| step.uses.as_deref() != Some("actions/upload-artifact@v4"))
     );
 }
 
@@ -324,7 +307,6 @@ fn test_build_cuenv_bootstrap_job_respects_disabled_cuenv_build() {
                 CuenvBootstrapJobOptions {
                     runs_on: RunsOn::Label("ubuntu-latest".to_string()),
                     name: "build.cuenv",
-                    artifact_name: "cuenv-bootstrap-ubuntu-latest",
                 }
             )
             .is_none()
@@ -332,7 +314,7 @@ fn test_build_cuenv_bootstrap_job_respects_disabled_cuenv_build() {
 }
 
 #[test]
-fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
+fn test_build_simple_job_nix_package_setup_skips_only_cuenv_setup() {
     let emitter = GitHubActionsEmitter::new();
 
     let mut bootstrap_task = make_phase_task(
@@ -384,11 +366,7 @@ fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
     let job = emitter.build_simple_job(
         &task,
         &ir,
-        &SimpleJobOptions::orchestrated_with_cuenv_artifact(
-            None,
-            None,
-            "cuenv-bootstrap-ubuntu-latest".to_string(),
-        ),
+        &SimpleJobOptions::orchestrated(None, None).with_cuenv_setup(CuenvSetup::RealizeNixPackage),
     );
     let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_deref()).collect();
 
@@ -398,29 +376,10 @@ fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
             "Checkout",
             "Install Nix",
             "Setup Cachix",
-            "Download cuenv",
             "Add cuenv to PATH",
             "Setup 1Password",
             "publish.github",
         ]
-    );
-
-    let download_step = job
-        .steps
-        .iter()
-        .find(|s| s.name.as_deref() == Some("Download cuenv"))
-        .expect("missing cuenv download step");
-    assert_eq!(
-        download_step.with_inputs.get("name"),
-        Some(&serde_yaml::Value::String(
-            "cuenv-bootstrap-ubuntu-latest".to_string()
-        ))
-    );
-    assert_eq!(
-        download_step.with_inputs.get("path"),
-        Some(&serde_yaml::Value::String(
-            "${{ runner.temp }}/cuenv-bootstrap".to_string()
-        ))
     );
 
     let path_step = job
@@ -430,11 +389,12 @@ fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
         .expect("missing cuenv path step");
     let script = path_step.run.as_deref().expect("missing setup script");
     assert!(script.contains("nix build .#cuenv --no-link --print-out-paths"));
-    assert!(script.contains("cmp \"$cuenv_package/bin/cuenv\""));
+    assert!(script.contains("echo \"$cuenv_package/bin\" >> \"$GITHUB_PATH\""));
+    assert!(!script.contains("cmp "));
 }
 
 #[test]
-fn bootstrap_artifact_precedes_early_cuenv_dependent() {
+fn nix_package_setup_precedes_early_cuenv_dependent() {
     let mut setup = make_phase_task("cuenv.setup", &["nix build"], BuildStage::Setup, 10);
     setup.contributor = Some("cuenv".to_string());
 
@@ -447,7 +407,7 @@ fn bootstrap_artifact_precedes_early_cuenv_dependent() {
     let job = GitHubActionsEmitter::new().build_simple_job(
         &task,
         &ir,
-        &SimpleJobOptions::orchestrated_with_cuenv_artifact(None, None, "cuenv".to_string()),
+        &SimpleJobOptions::orchestrated(None, None).with_cuenv_setup(CuenvSetup::RealizeNixPackage),
     );
     let names: Vec<_> = job
         .steps
@@ -456,33 +416,32 @@ fn bootstrap_artifact_precedes_early_cuenv_dependent() {
         .collect();
     assert_eq!(
         names,
-        [
-            "Checkout",
-            "Download cuenv",
-            "Add cuenv to PATH",
-            "Needs cuenv",
-            "test"
-        ]
+        ["Checkout", "Add cuenv to PATH", "Needs cuenv", "test"]
     );
 }
 
 #[cfg(unix)]
 #[test]
-fn bootstrap_artifact_requires_matching_realized_package() -> Result<(), Box<dyn std::error::Error>>
-{
+fn nix_cuenv_setup_accepts_byte_different_builds_of_the_store_path()
+-> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = tempfile::tempdir()?;
     let fake_bin = temp.path().join("fake tools");
     let package = temp.path().join("realized package");
     let runner_temp = temp.path().join("runner temp");
-    let artifact_dir = runner_temp.join("cuenv-bootstrap");
+    // The `.#cuenv` derivation is not bit-reproducible, so the bootstrap job's
+    // build can differ from the copy this runner realizes for the same store path.
+    let bootstrap_build = runner_temp.join("cuenv-bootstrap");
     let github_path = temp.path().join("github-path");
     std::fs::create_dir_all(&fake_bin)?;
     std::fs::create_dir_all(package.join("bin"))?;
-    std::fs::create_dir_all(&artifact_dir)?;
-    std::fs::write(package.join("bin/cuenv"), b"matching cuenv")?;
-    std::fs::write(artifact_dir.join("cuenv"), b"different cuenv")?;
+    std::fs::create_dir_all(&bootstrap_build)?;
+    std::fs::write(package.join("bin/cuenv"), b"build from the binary cache")?;
+    std::fs::write(
+        bootstrap_build.join("cuenv"),
+        b"build from the bootstrap job",
+    )?;
 
     let fake_nix = fake_bin.join("nix");
     std::fs::write(
@@ -501,14 +460,14 @@ fn bootstrap_artifact_requires_matching_realized_package() -> Result<(), Box<dyn
     let job = GitHubActionsEmitter::new().build_simple_job(
         &task,
         &ir,
-        &SimpleJobOptions::orchestrated_with_cuenv_artifact(None, None, "cuenv".to_string()),
+        &SimpleJobOptions::orchestrated(None, None).with_cuenv_setup(CuenvSetup::RealizeNixPackage),
     );
     let script = job
         .steps
         .iter()
         .find(|step| step.name.as_deref() == Some("Add cuenv to PATH"))
         .and_then(|step| step.run.as_deref())
-        .ok_or_else(|| std::io::Error::other("missing bootstrap script"))?;
+        .ok_or_else(|| std::io::Error::other("missing cuenv setup script"))?;
 
     let existing_path = std::env::var_os("PATH").unwrap_or_default();
     let path = std::env::join_paths(
@@ -526,32 +485,15 @@ fn bootstrap_artifact_requires_matching_realized_package() -> Result<(), Box<dyn
             .output()
     };
 
-    assert!(
-        !run("ok")?.status.success(),
-        "mismatched artifact must fail"
-    );
-    assert!(
-        !github_path.exists(),
-        "mismatched artifact must not be used"
-    );
-
-    std::fs::write(artifact_dir.join("cuenv"), b"matching cuenv")?;
     let success = run("ok")?;
     assert!(
         success.status.success(),
-        "matching artifact failed: {}",
+        "byte-different builds of one store path must not fail the job: {}",
         String::from_utf8_lossy(&success.stderr)
     );
     assert_eq!(
         std::fs::read_to_string(&github_path)?,
-        format!("{}\n", artifact_dir.display())
-    );
-    assert_ne!(
-        std::fs::metadata(artifact_dir.join("cuenv"))?
-            .permissions()
-            .mode()
-            & 0o111,
-        0
+        format!("{}\n", package.join("bin").display())
     );
 
     std::fs::write(&github_path, "")?;

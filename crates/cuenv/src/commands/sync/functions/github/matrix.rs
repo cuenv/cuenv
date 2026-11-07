@@ -1,11 +1,11 @@
 //! GitHub Actions matrix workflow emission.
 
 use super::{
-    PipelineContext, can_use_cuenv_bootstrap, cuenv_bootstrap_artifact_name,
-    inject_cuenv_bootstrap_jobs, sanitize_workflow_name, simple_job_execution, simple_job_options,
+    PipelineContext, consumes_cuenv_bootstrap, inject_cuenv_bootstrap_jobs, pipeline_cuenv_setup,
+    sanitize_workflow_name, simple_job_execution, simple_job_options,
 };
 use cuenv_core::Result;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 struct BuiltPipelineJobs {
     jobs: indexmap::IndexMap<String, cuenv_github::workflow::schema::Job>,
@@ -16,8 +16,7 @@ struct PipelineJobBuildContext<'a> {
     ctx: &'a PipelineContext,
     ir: &'a cuenv_ci::ir::IntermediateRepresentation,
     emitter: &'a cuenv_github::workflow::GitHubActionsEmitter,
-    use_cuenv_bootstrap: bool,
-    default_cuenv_setup: cuenv_github::workflow::CuenvSetup,
+    cuenv_setup: cuenv_github::workflow::CuenvSetup,
 }
 
 struct PipelineJobsRequest<'a> {
@@ -25,7 +24,7 @@ struct PipelineJobsRequest<'a> {
     ctx: &'a PipelineContext,
     ir: &'a cuenv_ci::ir::IntermediateRepresentation,
     emitter: &'a cuenv_github::workflow::GitHubActionsEmitter,
-    use_cuenv_bootstrap: bool,
+    cuenv_setup: cuenv_github::workflow::CuenvSetup,
 }
 
 struct TransitiveDependencyJobRequest<'a> {
@@ -50,7 +49,7 @@ pub(super) fn emit_matrix_workflow(
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    let use_cuenv_bootstrap = can_use_cuenv_bootstrap(ctx, &emitter, &ir);
+    let cuenv_setup = pipeline_cuenv_setup(ctx, &emitter, &ir);
 
     let explicit_task_names: HashSet<String> = ctx
         .pipeline_tasks
@@ -69,7 +68,7 @@ pub(super) fn emit_matrix_workflow(
         ctx,
         ir: &ir,
         emitter: &emitter,
-        use_cuenv_bootstrap,
+        cuenv_setup,
     });
     let mut jobs = built_jobs.jobs;
     inject_cuenv_bootstrap_jobs(&mut jobs, &ir, &emitter, &built_jobs.bootstrap_consumers);
@@ -105,21 +104,12 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
     let mut bootstrap_consumers = HashSet::new();
     let mut artifact_source_jobs: HashSet<String> = HashSet::new();
     let mut processed_task_names: HashSet<String> = HashSet::new();
-    let cuenv_artifacts_by_runner = if request.use_cuenv_bootstrap {
-        Some(cuenv_artifacts_by_runner(request.ctx, request.emitter))
-    } else {
-        None
-    };
-    let default_cuenv_setup = cuenv_setup_for_runner(
-        request.emitter.runner.as_str(),
-        cuenv_artifacts_by_runner.as_ref(),
-    );
+    let cuenv_setup = request.cuenv_setup;
     let build_context = PipelineJobBuildContext {
         ctx: request.ctx,
         ir: request.ir,
         emitter: request.emitter,
-        use_cuenv_bootstrap: request.use_cuenv_bootstrap,
-        default_cuenv_setup: default_cuenv_setup.clone(),
+        cuenv_setup,
     };
 
     for pipeline_task in request.expanded_tasks {
@@ -131,25 +121,17 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
             cuenv_core::ci::PipelineTask::Simple(_) | cuenv_core::ci::PipelineTask::Node(_) => {
                 if let Some(ir_task) = request.ctx.tasks.iter().find(|t| t.id == task_name) {
                     let execution = simple_job_execution(request.ctx, ir_task);
-                    let artifact_name =
-                        if execution == cuenv_github::workflow::TaskExecution::Orchestrated {
-                            default_cuenv_setup.artifact_name()
-                        } else {
-                            None
-                        };
                     let mut job = request.emitter.build_simple_job(
                         ir_task,
                         request.ir,
-                        &simple_job_options(request.ctx, ir_task, artifact_name),
+                        &simple_job_options(request.ctx, ir_task, cuenv_setup),
                     );
                     job.needs = ir_task
                         .depends_on
                         .iter()
                         .map(|dep| dep.replace(['.', ' '], "-"))
                         .collect();
-                    if request.use_cuenv_bootstrap
-                        && execution == cuenv_github::workflow::TaskExecution::Orchestrated
-                    {
+                    if consumes_cuenv_bootstrap(cuenv_setup, execution) {
                         bootstrap_consumers.insert(job_id.clone());
                     }
                     jobs.insert(job_id, job);
@@ -188,10 +170,13 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                             environment: request.ctx.environment.as_ref(),
                             previous_jobs: &combined_needs,
                             project_path: request.ctx.project_path.as_deref(),
-                            cuenv_setup: default_cuenv_setup.clone(),
+                            cuenv_setup,
                         },
                     );
-                    if request.use_cuenv_bootstrap {
+                    if consumes_cuenv_bootstrap(
+                        cuenv_setup,
+                        cuenv_github::workflow::TaskExecution::Orchestrated,
+                    ) {
                         bootstrap_consumers.insert(job_id.clone());
                     }
                     jobs.insert(job_id, job);
@@ -221,15 +206,13 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                             previous_jobs: &previous_jobs,
                             project_path: request.ctx.project_path.as_deref(),
                             execution,
-                            cuenv_artifacts_by_runner: cuenv_artifacts_by_runner.as_ref(),
+                            cuenv_setup,
                         },
                     );
 
                     for (id, job) in expanded_jobs {
                         artifact_source_jobs.insert(id.clone());
-                        if request.use_cuenv_bootstrap
-                            && execution == cuenv_github::workflow::TaskExecution::Orchestrated
-                        {
+                        if consumes_cuenv_bootstrap(cuenv_setup, execution) {
                             bootstrap_consumers.insert(id.clone());
                         }
                         jobs.insert(id, job);
@@ -265,84 +248,20 @@ fn add_transitive_dependency_jobs(request: &mut TransitiveDependencyJobRequest<'
         }
 
         let execution = simple_job_execution(build_context.ctx, ir_task);
-        let artifact_name = if execution == cuenv_github::workflow::TaskExecution::Orchestrated {
-            build_context.default_cuenv_setup.artifact_name()
-        } else {
-            None
-        };
         let mut job = build_context.emitter.build_simple_job(
             ir_task,
             build_context.ir,
-            &simple_job_options(build_context.ctx, ir_task, artifact_name),
+            &simple_job_options(build_context.ctx, ir_task, build_context.cuenv_setup),
         );
         job.needs = ir_task
             .depends_on
             .iter()
             .map(|dep| dep.replace(['.', ' '], "-"))
             .collect();
-        if build_context.use_cuenv_bootstrap
-            && execution == cuenv_github::workflow::TaskExecution::Orchestrated
-        {
+        if consumes_cuenv_bootstrap(build_context.cuenv_setup, execution) {
             request.bootstrap_consumers.insert(job_id.clone());
         }
         request.jobs.insert(job_id, job);
-    }
-}
-
-fn cuenv_artifacts_by_runner(
-    ctx: &PipelineContext,
-    emitter: &cuenv_github::workflow::GitHubActionsEmitter,
-) -> HashMap<String, String> {
-    let mut artifacts = HashMap::new();
-    artifacts.insert(
-        emitter.runner.clone(),
-        cuenv_bootstrap_artifact_name(&cuenv_github::workflow::schema::RunsOn::Label(
-            emitter.runner.clone(),
-        )),
-    );
-
-    if let Some(arch_runners) = ctx
-        .github_config
-        .runners
-        .as_ref()
-        .and_then(|runners| runners.arch.as_ref())
-    {
-        for runner in arch_runners.values() {
-            artifacts.entry(runner.clone()).or_insert_with(|| {
-                cuenv_bootstrap_artifact_name(&cuenv_github::workflow::schema::RunsOn::Label(
-                    runner.clone(),
-                ))
-            });
-        }
-    }
-
-    artifacts
-}
-
-fn cuenv_setup_for_runner(
-    runner: &str,
-    artifacts_by_runner: Option<&HashMap<String, String>>,
-) -> cuenv_github::workflow::CuenvSetup {
-    artifacts_by_runner
-        .and_then(|artifacts| artifacts.get(runner))
-        .map_or(
-            cuenv_github::workflow::CuenvSetup::BuildInJob,
-            |artifact_name| cuenv_github::workflow::CuenvSetup::DownloadArtifact {
-                artifact_name: artifact_name.clone(),
-            },
-        )
-}
-
-trait CuenvSetupExt {
-    fn artifact_name(&self) -> Option<String>;
-}
-
-impl CuenvSetupExt for cuenv_github::workflow::CuenvSetup {
-    fn artifact_name(&self) -> Option<String> {
-        match self {
-            Self::BuildInJob => None,
-            Self::DownloadArtifact { artifact_name } => Some(artifact_name.clone()),
-        }
     }
 }
 

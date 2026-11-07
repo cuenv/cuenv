@@ -51,12 +51,6 @@ jobs:
       run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Upload cuenv
-      uses: actions/upload-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
-        path: result/bin/cuenv
-        if-no-files-found: error
   build-cuenv-namespace-profile-cuenv-linux-arm64:
     permissions:
       contents: read
@@ -92,12 +86,6 @@ jobs:
       run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Upload cuenv
-      uses: actions/upload-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-arm64
-        path: result/bin/cuenv
-        if-no-files-found: error
   build-cuenv-namespace-profile-cuenv-linux-x86:
     permissions:
       contents: read
@@ -133,12 +121,6 @@ jobs:
       run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Upload cuenv
-      uses: actions/upload-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: result/bin/cuenv
-        if-no-files-found: error
   cargo-build-darwin-arm64:
     permissions:
       contents: read
@@ -173,11 +155,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -189,9 +166,7 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -247,11 +222,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-arm64
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -263,9 +233,7 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -321,11 +289,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -337,9 +300,7 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -398,11 +359,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -414,9 +370,7 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -480,11 +434,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -496,9 +445,7 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -549,11 +496,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -565,9 +507,7 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -615,11 +555,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -631,9 +566,7 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -685,11 +618,6 @@ jobs:
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
-    - name: Download cuenv
-      uses: actions/download-artifact@v4
-      with:
-        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
         set -euo pipefail
@@ -701,9 +629,7 @@ jobs:
         fi
         fi
         cuenv_package="$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)"
-        cmp "$cuenv_package/bin/cuenv" "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
-        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+        echo "$cuenv_package/bin" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:

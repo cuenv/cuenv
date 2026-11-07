@@ -327,7 +327,7 @@ impl GitHubActionsEmitter {
 
         // Bootstrap and setup phase steps
         let (phase_steps, secret_env) =
-            self.render_phase_steps(ir, TaskExecution::Orchestrated, &CuenvSetup::BuildInJob);
+            self.render_phase_steps(ir, TaskExecution::Orchestrated, CuenvSetup::BuildInJob);
         steps.extend(phase_steps);
 
         let mut main_step = Step::run(command.command).with_name(command.step_name);
