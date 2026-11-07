@@ -7,9 +7,6 @@ use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task};
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
-const CUENV_BOOTSTRAP_ARTIFACT_DIR: &str = "${{ runner.temp }}/cuenv-bootstrap";
-const CUENV_BOOTSTRAP_ARTIFACT_PATH: &str = "$RUNNER_TEMP/cuenv-bootstrap";
-
 /// How a regular GitHub Actions job should execute its main task.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TaskExecution {
@@ -21,17 +18,18 @@ pub enum TaskExecution {
 }
 
 /// How a job should satisfy its need for the `cuenv` binary.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CuenvSetup {
     /// Render the normal `cuenv.setup` phase task inside the job.
     #[default]
     BuildInJob,
-    /// Download a Nix-built `cuenv` binary produced by an earlier bootstrap job.
-    /// Its runtime closure is realized on the consuming runner before use.
-    DownloadArtifact {
-        /// Name of the GitHub Actions artifact containing the `cuenv` binary.
-        artifact_name: String,
-    },
+    /// Put the checkout's realized `.#cuenv` package on `PATH`.
+    ///
+    /// An earlier bootstrap job builds the package and publishes it, so the
+    /// consuming runner substitutes it instead of compiling it. The store path
+    /// identifies the package: the derivation is not bit-reproducible, so two
+    /// valid builds of that path can differ byte for byte and must not be compared.
+    RealizeNixPackage,
 }
 
 /// Options for building a simple GitHub Actions job.
@@ -59,19 +57,11 @@ impl<'a> SimpleJobOptions<'a> {
         }
     }
 
-    /// Build options for a simple job that should execute via a bootstrap artifact.
+    /// Set how the job obtains the `cuenv` binary.
     #[must_use]
-    pub fn orchestrated_with_cuenv_artifact(
-        environment: Option<&'a String>,
-        project_path: Option<&'a str>,
-        artifact_name: String,
-    ) -> Self {
-        Self {
-            environment,
-            project_path,
-            execution: TaskExecution::Orchestrated,
-            cuenv_setup: CuenvSetup::DownloadArtifact { artifact_name },
-        }
+    pub const fn with_cuenv_setup(mut self, cuenv_setup: CuenvSetup) -> Self {
+        self.cuenv_setup = cuenv_setup;
+        self
     }
 
     /// Build options for a simple job that should run the IR command directly.
@@ -112,8 +102,8 @@ pub struct MatrixJobOptions<'a> {
     pub project_path: Option<&'a str>,
     /// Whether to run the task through cuenv or directly.
     pub execution: TaskExecution,
-    /// Optional mapping from runner label to bootstrap artifact name.
-    pub cuenv_artifacts_by_runner: Option<&'a HashMap<String, String>>,
+    /// How orchestrated jobs should obtain the `cuenv` binary.
+    pub cuenv_setup: CuenvSetup,
 }
 
 /// Options for building a cuenv bootstrap job.
@@ -123,8 +113,6 @@ pub struct CuenvBootstrapJobOptions<'a> {
     pub runs_on: RunsOn,
     /// Display name for the bootstrap job.
     pub name: &'a str,
-    /// Artifact name used when uploading the built cuenv binary.
-    pub artifact_name: &'a str,
 }
 
 impl GitHubActionsEmitter {
@@ -173,7 +161,7 @@ impl GitHubActionsEmitter {
     fn skipped_setup_task_ids(
         ir: &IntermediateRepresentation,
         execution: TaskExecution,
-        cuenv_setup: &CuenvSetup,
+        cuenv_setup: CuenvSetup,
     ) -> HashSet<String> {
         if execution == TaskExecution::Direct {
             return Self::direct_execution_skipped_setup_task_ids(ir, execution);
@@ -181,35 +169,24 @@ impl GitHubActionsEmitter {
 
         match cuenv_setup {
             CuenvSetup::BuildInJob => HashSet::new(),
-            CuenvSetup::DownloadArtifact { .. } => Self::cuenv_setup_task_ids(ir),
+            CuenvSetup::RealizeNixPackage => Self::cuenv_setup_task_ids(ir),
         }
     }
 
-    fn cuenv_artifact_steps(artifact_name: &str) -> Vec<Step> {
-        vec![
-            Step::uses("actions/download-artifact@v4")
-                .with_name("Download cuenv")
-                .with_input("name", serde_yaml::Value::String(artifact_name.to_string()))
-                .with_input(
-                    "path",
-                    serde_yaml::Value::String(CUENV_BOOTSTRAP_ARTIFACT_DIR.to_string()),
-                ),
-            Step::run(format!(
-                "set -euo pipefail\n\
-                 if ! command -v nix >/dev/null; then\n\
-                   if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\
-                     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\
-                   else\n\
-                     . \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\
-                   fi\n\
-                 fi\n\
-                 cuenv_package=\"$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)\"\n\
-                 cmp \"$cuenv_package/bin/cuenv\" \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}/cuenv\"\n\
-                 chmod +x \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}/cuenv\"\n\
-                 echo \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}\" >> \"$GITHUB_PATH\""
-            ))
-            .with_name("Add cuenv to PATH"),
-        ]
+    fn realize_nix_cuenv_step() -> Step {
+        Step::run(
+            "set -euo pipefail\n\
+             if ! command -v nix >/dev/null; then\n\
+               if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\
+                 . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\
+               else\n\
+                 . \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\
+               fi\n\
+             fi\n\
+             cuenv_package=\"$(nix build .#cuenv --no-link --print-out-paths -L --accept-flake-config)\"\n\
+             echo \"$cuenv_package/bin\" >> \"$GITHUB_PATH\"",
+        )
+        .with_name("Add cuenv to PATH")
     }
 
     fn should_include_in_cuenv_bootstrap(
@@ -220,7 +197,7 @@ impl GitHubActionsEmitter {
         !skipped_setup_task_ids.contains(&task.id) || cuenv_setup_task_ids.contains(&task.id)
     }
 
-    /// Build a dedicated job that builds cuenv once and uploads it for reuse.
+    /// Build a dedicated job that builds cuenv once per runner.
     ///
     /// The job renders:
     /// 1. Checkout
@@ -228,9 +205,12 @@ impl GitHubActionsEmitter {
     /// 3. Setup tasks required before cuenv
     /// 4. The cuenv setup task itself
     ///
+    /// Its job dependency makes consumers wait for the binary cache to hold the
+    /// package, so they substitute it instead of each compiling it.
+    ///
     /// Setup tasks that depend on cuenv (for example 1Password setup) are
     /// intentionally excluded. They run in downstream jobs after those jobs
-    /// download the uploaded cuenv artifact.
+    /// realize the package.
     #[must_use]
     pub fn build_cuenv_bootstrap_job(
         &self,
@@ -273,22 +253,6 @@ impl GitHubActionsEmitter {
 
             steps.push(renderer.render_task(task));
         }
-
-        let mut upload_step = Step::uses("actions/upload-artifact@v4")
-            .with_name("Upload cuenv")
-            .with_input(
-                "name",
-                serde_yaml::Value::String(options.artifact_name.to_string()),
-            )
-            .with_input(
-                "path",
-                serde_yaml::Value::String("result/bin/cuenv".to_string()),
-            );
-        upload_step.with_inputs.insert(
-            "if-no-files-found".to_string(),
-            serde_yaml::Value::String("error".to_string()),
-        );
-        steps.push(upload_step);
 
         Some(Job {
             permissions: Some(Self::required_permissions(
@@ -333,7 +297,7 @@ impl GitHubActionsEmitter {
         &self,
         ir: &IntermediateRepresentation,
         execution: TaskExecution,
-        cuenv_setup: &CuenvSetup,
+        cuenv_setup: CuenvSetup,
     ) -> (Vec<Step>, IndexMap<String, String>) {
         let renderer = self.stage_renderer();
         let mut steps = Vec::new();
@@ -346,8 +310,7 @@ impl GitHubActionsEmitter {
                 }
             }
         }
-        if execution == TaskExecution::Orchestrated
-            && let CuenvSetup::DownloadArtifact { artifact_name } = cuenv_setup
+        if execution == TaskExecution::Orchestrated && cuenv_setup == CuenvSetup::RealizeNixPackage
         {
             let bootstrap_count = ir.sorted_phase_tasks(BuildStage::Bootstrap).len();
             let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
@@ -364,10 +327,7 @@ impl GitHubActionsEmitter {
                             .filter(|task| !skipped.contains(&task.id))
                             .count()
                 });
-            steps.splice(
-                insertion_index..insertion_index,
-                Self::cuenv_artifact_steps(artifact_name),
-            );
+            steps.insert(insertion_index, Self::realize_nix_cuenv_step());
         }
 
         (steps, secret_env_vars)
@@ -387,11 +347,11 @@ impl GitHubActionsEmitter {
     }
 
     /// Shared selection for rendering and permission calculation.
-    pub(super) fn emitted_phase_tasks<'a>(
-        ir: &'a IntermediateRepresentation,
+    pub(super) fn emitted_phase_tasks(
+        ir: &IntermediateRepresentation,
         execution: TaskExecution,
-        cuenv_setup: &CuenvSetup,
-    ) -> Vec<&'a Task> {
+        cuenv_setup: CuenvSetup,
+    ) -> Vec<&Task> {
         let skipped = Self::skipped_setup_task_ids(ir, execution, cuenv_setup);
         ir.sorted_phase_tasks(BuildStage::Bootstrap)
             .into_iter()
@@ -435,7 +395,7 @@ impl GitHubActionsEmitter {
         );
 
         let (phase_steps, secret_env_vars) =
-            self.render_phase_steps(ir, options.execution, &options.cuenv_setup);
+            self.render_phase_steps(ir, options.execution, options.cuenv_setup);
         steps.extend(phase_steps);
 
         for artifact in &task.artifact_downloads {
@@ -512,7 +472,7 @@ impl GitHubActionsEmitter {
         Job {
             permissions: Some(self.build_job_permissions(
                 task,
-                &Self::emitted_phase_tasks(ir, options.execution, &options.cuenv_setup),
+                &Self::emitted_phase_tasks(ir, options.execution, options.cuenv_setup),
             )),
             name: Some(task.id.clone()),
             runs_on: RunsOn::Label(self.runner.clone()),
@@ -561,7 +521,7 @@ impl GitHubActionsEmitter {
         );
 
         let (phase_steps, secret_env_vars) =
-            self.render_phase_steps(ir, TaskExecution::Orchestrated, &options.cuenv_setup);
+            self.render_phase_steps(ir, TaskExecution::Orchestrated, options.cuenv_setup);
         steps.extend(phase_steps);
 
         for artifact in &task.artifact_downloads {
@@ -620,7 +580,7 @@ impl GitHubActionsEmitter {
         Job {
             permissions: Some(self.build_job_permissions(
                 task,
-                &Self::emitted_phase_tasks(ir, TaskExecution::Orchestrated, &options.cuenv_setup),
+                &Self::emitted_phase_tasks(ir, TaskExecution::Orchestrated, options.cuenv_setup),
             )),
             name: Some(task.id.clone()),
             runs_on: RunsOn::Label(self.runner.clone()),
@@ -692,16 +652,8 @@ impl GitHubActionsEmitter {
                         ),
                 );
 
-                let cuenv_setup = options
-                    .cuenv_artifacts_by_runner
-                    .and_then(|artifacts| artifacts.get(&runner))
-                    .map_or(CuenvSetup::BuildInJob, |artifact_name| {
-                        CuenvSetup::DownloadArtifact {
-                            artifact_name: artifact_name.clone(),
-                        }
-                    });
                 let (phase_steps, secret_env_vars) =
-                    self.render_phase_steps(ir, options.execution, &cuenv_setup);
+                    self.render_phase_steps(ir, options.execution, options.cuenv_setup);
                 steps.extend(phase_steps);
 
                 let mut task_step = match options.execution {
@@ -769,7 +721,7 @@ impl GitHubActionsEmitter {
                     Job {
                         permissions: Some(self.build_job_permissions(
                             task,
-                            &Self::emitted_phase_tasks(ir, options.execution, &cuenv_setup),
+                            &Self::emitted_phase_tasks(ir, options.execution, options.cuenv_setup),
                         )),
                         name: Some(format!("{} ({arch})", task.id)),
                         runs_on: RunsOn::Label(runner),

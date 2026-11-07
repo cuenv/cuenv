@@ -456,21 +456,31 @@ fn prepend_need(job: &mut cuenv_github::workflow::schema::Job, dependency: &str)
     job.needs = needs;
 }
 
-fn cuenv_bootstrap_artifact_name(runs_on: &cuenv_github::workflow::schema::RunsOn) -> String {
-    format!("cuenv-bootstrap-{}", runner_suffix(runs_on))
-}
-
-fn can_use_cuenv_bootstrap(
+fn pipeline_cuenv_setup(
     ctx: &PipelineContext,
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
     ir: &cuenv_ci::ir::IntermediateRepresentation,
-) -> bool {
-    ctx.cuenv_source == cuenv_manifest::config::CuenvSource::Nix
+) -> cuenv_github::workflow::CuenvSetup {
+    let builds_nix_cuenv = ctx.cuenv_source == cuenv_manifest::config::CuenvSource::Nix
         && emitter.build_cuenv
         && ir
             .sorted_phase_tasks(cuenv_ci::ir::BuildStage::Setup)
             .iter()
-            .any(|task| task.contributor.as_deref() == Some("cuenv"))
+            .any(|task| task.contributor.as_deref() == Some("cuenv"));
+
+    if builds_nix_cuenv {
+        cuenv_github::workflow::CuenvSetup::RealizeNixPackage
+    } else {
+        cuenv_github::workflow::CuenvSetup::BuildInJob
+    }
+}
+
+fn consumes_cuenv_bootstrap(
+    cuenv_setup: cuenv_github::workflow::CuenvSetup,
+    execution: cuenv_github::workflow::TaskExecution,
+) -> bool {
+    cuenv_setup == cuenv_github::workflow::CuenvSetup::RealizeNixPackage
+        && execution == cuenv_github::workflow::TaskExecution::Orchestrated
 }
 
 fn inject_cuenv_bootstrap_jobs(
@@ -516,13 +526,11 @@ fn inject_cuenv_bootstrap_jobs(
             ("build-cuenv".to_string(), "build.cuenv".to_string())
         };
 
-        let artifact_name = cuenv_bootstrap_artifact_name(&runs_on);
         let Some(job) = emitter.build_cuenv_bootstrap_job(
             ir,
             cuenv_github::workflow::CuenvBootstrapJobOptions {
                 runs_on,
                 name: &display_name,
-                artifact_name: &artifact_name,
             },
         ) else {
             return;
@@ -568,21 +576,16 @@ fn simple_job_execution(
 fn simple_job_options<'a>(
     ctx: &'a PipelineContext,
     task: &cuenv_ci::ir::Task,
-    cuenv_artifact_name: Option<String>,
+    cuenv_setup: cuenv_github::workflow::CuenvSetup,
 ) -> cuenv_github::workflow::SimpleJobOptions<'a> {
     if simple_job_execution(ctx, task) == cuenv_github::workflow::TaskExecution::Direct {
         cuenv_github::workflow::SimpleJobOptions::direct(ctx.project_path.as_deref())
-    } else if let Some(artifact_name) = cuenv_artifact_name {
-        cuenv_github::workflow::SimpleJobOptions::orchestrated_with_cuenv_artifact(
-            ctx.environment.as_ref(),
-            ctx.project_path.as_deref(),
-            artifact_name,
-        )
     } else {
         cuenv_github::workflow::SimpleJobOptions::orchestrated(
             ctx.environment.as_ref(),
             ctx.project_path.as_deref(),
         )
+        .with_cuenv_setup(cuenv_setup)
     }
 }
 
@@ -601,10 +604,7 @@ fn emit_standard_workflow(
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    let use_cuenv_bootstrap = can_use_cuenv_bootstrap(ctx, &emitter, &ir);
-    let default_runner = cuenv_github::workflow::schema::RunsOn::Label(emitter.runner.clone());
-    let default_artifact_name =
-        use_cuenv_bootstrap.then(|| cuenv_bootstrap_artifact_name(&default_runner));
+    let cuenv_setup = pipeline_cuenv_setup(ctx, &emitter, &ir);
 
     // Build jobs using build_simple_job (which supports project_path for working-directory)
     // Only iterate over regular tasks (non-phase tasks) - phase tasks are handled internally
@@ -613,19 +613,14 @@ fn emit_standard_workflow(
     for task in ctx.regular_tasks() {
         let job_id = task.id.replace(['.', ' '], "-");
         let execution = simple_job_execution(ctx, task);
-        let artifact_name = if execution == cuenv_github::workflow::TaskExecution::Orchestrated {
-            default_artifact_name.clone()
-        } else {
-            None
-        };
         let mut job =
-            emitter.build_simple_job(task, &ir, &simple_job_options(ctx, task, artifact_name));
+            emitter.build_simple_job(task, &ir, &simple_job_options(ctx, task, cuenv_setup));
         job.needs = task
             .depends_on
             .iter()
             .map(|d| d.replace(['.', ' '], "-"))
             .collect();
-        if use_cuenv_bootstrap && execution == cuenv_github::workflow::TaskExecution::Orchestrated {
+        if consumes_cuenv_bootstrap(cuenv_setup, execution) {
             bootstrap_consumers.insert(job_id.clone());
         }
         jobs.insert(job_id, job);
@@ -910,7 +905,8 @@ mod tests {
     }
 
     #[test]
-    fn nix_source_standard_workflow_emits_cuenv_bootstrap_artifact() -> cuenv_core::Result<()> {
+    fn nix_source_standard_workflow_realizes_bootstrapped_cuenv_package() -> cuenv_core::Result<()>
+    {
         let mut tasks = make_bootstrap_ir().tasks;
         tasks.push(make_regular_task("build"));
         let ctx = make_pipeline_context(cuenv_manifest::config::CuenvSource::Nix, tasks);
@@ -930,11 +926,14 @@ mod tests {
             assert_eq!(job["permissions"]["contents"].as_str(), Some("read"));
         }
         assert!(workflow.contains("build.cuenv"), "{workflow}");
-        assert!(workflow.contains("result/bin/cuenv"), "{workflow}");
+        assert_eq!(document["jobs"]["build"]["needs"][0], "build-cuenv");
         assert!(
-            workflow.contains("actions/upload-artifact@v4"),
+            workflow.contains("nix build .#cuenv --no-link --print-out-paths"),
             "{workflow}"
         );
+        assert!(workflow.contains("$cuenv_package/bin"), "{workflow}");
+        assert!(!workflow.contains("cuenv-bootstrap"), "{workflow}");
+        assert!(!workflow.contains("-artifact@"), "{workflow}");
         Ok(())
     }
 
@@ -1037,15 +1036,16 @@ mod tests {
         assert!(jobs.get("build-cuenv").is_some());
         let job = &jobs["release-build-linux-x64"];
         assert_eq!(job["needs"][0].as_str(), Some("build-cuenv"));
-        assert!(
-            job["steps"]
-                .as_sequence()
-                .expect("release steps")
-                .iter()
-                .any(|step| {
-                    step["run"].as_str() == Some("cuenv task release.build --skip-dependencies")
-                })
-        );
+        let steps = job["steps"].as_sequence().expect("release steps");
+        assert!(steps.iter().any(|step| {
+            step["run"].as_str() == Some("cuenv task release.build --skip-dependencies")
+        }));
+        assert!(steps.iter().any(|step| {
+            step["run"]
+                .as_str()
+                .is_some_and(|script| script.contains("echo \"$cuenv_package/bin\""))
+        }));
+        assert!(!workflows[0].1.contains("cuenv-bootstrap"));
         Ok(())
     }
 
@@ -1080,7 +1080,7 @@ mod tests {
             bootstrap
                 .steps
                 .iter()
-                .any(|step| step.name.as_deref() == Some("Upload cuenv"))
+                .all(|step| step.uses.as_deref() != Some("actions/upload-artifact@v4"))
         );
     }
 

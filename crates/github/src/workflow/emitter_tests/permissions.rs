@@ -114,7 +114,6 @@ fn bootstrap_ignores_pipeline_map_and_artifact_upload_needs_no_write() {
             CuenvBootstrapJobOptions {
                 runs_on: RunsOn::Label("ubuntu-latest".into()),
                 name: "Build cuenv",
-                artifact_name: "cuenv",
             },
         )
         .unwrap();
@@ -140,7 +139,6 @@ fn bootstrap_preserves_requirements_of_injected_cache_steps() {
             CuenvBootstrapJobOptions {
                 runs_on: RunsOn::Label("ubuntu-latest".into()),
                 name: "Build cuenv",
-                artifact_name: "cuenv",
             },
         )
         .unwrap();
@@ -174,7 +172,7 @@ fn matrix_jobs_keep_own_task_grants_and_drop_unrelated_phase_grants() {
             previous_jobs: &[],
             project_path: None,
             execution: TaskExecution::Orchestrated,
-            cuenv_artifacts_by_runner: None,
+            cuenv_setup: CuenvSetup::BuildInJob,
         },
     );
     assert_eq!(jobs.len(), 2);

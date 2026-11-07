@@ -245,12 +245,19 @@ schema, workflow, dependency, feature, or behavior changes still need the normal
 broader release gate.
 
 The generated release workflow builds cuenv once per runner only when
-`config.ci.cuenv.source: "nix"` is active. Each `build.cuenv` job uploads the
-checked-out `result/bin/cuenv` as a runner-specific artifact, and downstream
-orchestrated jobs download that binary into the runner temp directory instead
-of rebuilding cuenv in every job. Keeping the downloaded binary outside the
-checkout preserves a clean VCS state for release steps such as
-`cue mod publish`.
+`config.ci.cuenv.source: "nix"` is active. Each `build.cuenv` job builds `.#cuenv`
+and publishes it to the configured binary cache. Downstream orchestrated jobs wait
+for that job, realize the same package with `nix build .#cuenv --no-link`, and add
+its store path to `PATH`. Without a binary cache, each of those jobs builds the
+package itself. `--no-link` leaves no `result` link, which preserves a clean VCS
+state for release steps such as `cue mod publish`.
+
+The store path identifies the package. The derivation is not bit-reproducible, so
+a runner can realize a copy that differs byte for byte from the one `build.cuenv`
+built, and the workflow does not compare them. You can tag while `cuenv-ci` is
+still running on the same commit. Waiting for it only saves a duplicate compile.
+Published release binaries come from `cargo.build`, which builds them separately
+from this package.
 Release, Homebrew, native, git, and artifact sources render their setup task
 inside each job. Configured bootstrap contributors render in dependency order:
 `namespaceCache` restores the Namespace `/nix` cache on Linux when explicitly
