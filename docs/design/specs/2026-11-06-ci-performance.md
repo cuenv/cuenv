@@ -333,6 +333,27 @@ come from `cargo.build`'s own outputs.
 Removing the transfer is a correctness change, not a measurable speedup: in the
 failed run "Download cuenv" took about a second and "Upload cuenv" two to four.
 
+### Why two builds of `.#cuenv` differ
+
+`cranelift-codegen` includes generated code from `OUT_DIR`, so the published
+binary holds seven absolute paths such as
+`/nix/var/nix/builds/nix-551-62768335/source/target/release/build/cranelift-codegen-<hash>/out/settings.rs`.
+CI builds run in a randomized directory, so each separate build of `cuenv-deps`
+embeds a different path. In the failed release, `checks.cuenv` built it in
+`nix-551-62768335` and `build.cuenv` in `nix-581-2191724202`. The lengths differ,
+which would also move later data and explain why the first difference is in
+`.rela.dyn`.
+
+Rebuilding `cuenv` locally on Cachix's `cuenv-deps` reproduced Cachix's binary bit
+for bit, even though the rebuild ran in `/build`, so `cuenv` does not embed its
+own build directory. Rebuilding `cuenv-deps` gave different output. Attempt 2
+replaced the failing artifact, so the path inside that binary could not be read
+directly. Randomized directories appear in CI logs from before #575, so #575 did
+not introduce them; the `cmp` from `bf730d14` is what turned them into a failure.
+
+Reproducibility is not changed here. Applying `--remap-path-prefix` for the build
+directory to the Rust builds is the likely fix, and would change store paths.
+
 ### Pull request scope
 
 `darwin.clippy` and `darwin.nextest` moved from the `ci` pipeline to a `darwin`
