@@ -135,6 +135,11 @@ cuenv bootstrap build. This also preserves the runner's Nix cache publication
 configuration. Release tasks and tasks requiring cuenv orchestration continue
 to use the configured cuenv setup.
 
+To keep a slower platform off pull requests, give its tasks their own pipeline
+whose `when` omits `pullRequest`. It generates a separate workflow, so
+`manual: true` can still run those tasks on a branch. cuenv's own `darwin`
+pipeline in `env.cue` does this.
+
 ## Affected-task detection
 
 `cuenv ci` runs the **same DAG locally** that CI runs — there is no separate code

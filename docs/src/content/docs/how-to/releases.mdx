@@ -244,6 +244,10 @@ locked Cargo metadata, and run `git diff --check`. Releases that include code,
 schema, workflow, dependency, feature, or behavior changes still need the normal
 broader release gate.
 
+`main` is green only when both `cuenv-ci` and `cuenv-darwin` pass for the commit.
+Pull requests do not run macOS checks, so `cuenv-darwin` is the first macOS
+result for a merged change.
+
 The generated release workflow builds cuenv once per runner only when
 `config.ci.cuenv.source: "nix"` is active. Each `build.cuenv` job builds `.#cuenv`
 and publishes it to the configured binary cache. Downstream orchestrated jobs wait
