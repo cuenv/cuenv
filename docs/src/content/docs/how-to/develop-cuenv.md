@@ -285,8 +285,12 @@ dependency ordering constraints that `cuenv release publish` handles explicitly.
 When applying a manual patch release outside the release tooling, keep the root
 `[workspace.package]` version and every internal `[workspace.dependencies]`
 version in `Cargo.toml` on the same semver value, then refresh `Cargo.lock` so
-all workspace crate package entries match. Do not edit `cue.mod/module.cue` for
-a release-only version bump unless there is a separate CUE module metadata
+all workspace crate package entries match. `apps/cuetty` is a separate Cargo
+workspace whose `Cargo.lock` pins the path dependency `cuengine`; set that
+entry's version to the same value. CI does not build the cuetty checks, so a
+stale entry only fails the local flake gate. Add release notes at
+`docs/releases/<version>.md`. Do not edit `cue.mod/module.cue` for a
+release-only version bump unless there is a separate CUE module metadata
 change.
 
 For release-only version bumps from an already-green `main`, skip local test
