@@ -63,6 +63,36 @@ fn direct_matrix_retains_cache_setup_environment_and_outputs() {
 }
 
 #[test]
+fn matrix_architecture_overrides_task_passthrough() {
+    let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
+    let mut task = make_task("cargo.build", &["nix", "develop"]);
+    task.matrix = Some(cuenv_ci::ir::MatrixConfig {
+        dimensions: BTreeMap::from([("arch".into(), vec!["linux-x64".into()])]),
+        ..Default::default()
+    });
+    task.env
+        .insert("CUENV_ARCH".into(), "cuenv:passthrough:CUENV_ARCH".into());
+    let ir = make_ir(vec![task.clone()]);
+
+    for execution in [TaskExecution::Orchestrated, TaskExecution::Direct] {
+        let jobs = emitter.build_matrix_jobs(
+            &task,
+            &ir,
+            &MatrixJobOptions {
+                execution,
+                ..Default::default()
+            },
+        );
+        let step = jobs["cargo-build-linux-x64"]
+            .steps
+            .iter()
+            .find(|step| step.name.as_deref() == Some("cargo.build (linux-x64)"))
+            .expect("task step");
+        assert_eq!(step.env["CUENV_ARCH"], "linux-x64");
+    }
+}
+
+#[test]
 fn test_build_matrix_jobs() {
     use cuenv_ci::ir::MatrixConfig;
 

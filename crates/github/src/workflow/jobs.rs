@@ -718,8 +718,6 @@ impl GitHubActionsEmitter {
                     task_step = task_step.with_working_directory(path);
                 }
 
-                task_step.env.insert("CUENV_ARCH".to_string(), arch.clone());
-
                 for (key, value) in &task.env {
                     task_step
                         .env
@@ -731,6 +729,10 @@ impl GitHubActionsEmitter {
                         .env
                         .insert(key.clone(), transform_secret_ref(value));
                 }
+
+                // Last, so a task that passes CUENV_ARCH through reads this job's
+                // architecture rather than its own passthrough reference.
+                task_step.env.insert("CUENV_ARCH".to_string(), arch.clone());
 
                 steps.push(task_step);
 
