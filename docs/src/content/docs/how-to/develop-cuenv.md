@@ -227,6 +227,11 @@ Zig linker rejects. It filters that flag, so binaries do not receive its
 Cortex-A53 erratum mitigation. The flake's `cuenv` package is built separately
 with Nix's native toolchain and runtime dependencies.
 
+`linux-arm64` artifacts are cross-compiled on x86_64 Linux, where the release
+script runs its smoke test under `qemu-aarch64` with Nix's ARM glibc. The script
+still builds natively on an ARM Linux host. To run the script's builds in CI
+without publishing, use the `cuenv-release-dry-run` workflow.
+
 Releases are managed by cuenv's native release tooling:
 
 ### Automated Workflow

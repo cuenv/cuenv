@@ -123,9 +123,12 @@ schema.#Project & {
 		provider: github: {
 			runner: "namespace-profile-cuenv-linux-x86"
 
+			// The linux-arm64 release binary is cross-compiled on x86, which is
+			// about three times faster than building on the ARM runner. The
+			// `arm` pipeline still builds natively on real ARM hardware.
 			runners: arch: {
 				"linux-x64":    "namespace-profile-cuenv-linux-x86"
-				"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
+				"linux-arm64":  "namespace-profile-cuenv-linux-x86"
 				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
 			}
 
@@ -196,6 +199,29 @@ schema.#Project & {
 						matrix: arch: ["darwin-arm64"]
 					},
 				]
+			}
+
+			// Builds and smoke-tests the flake package on real ARM hardware after
+			// merge, and publishes it for flake users. It doesn't hold up releases.
+			arm: {
+				mode: "expanded"
+				when: {
+					branch: "main"
+					manual: true
+				}
+				provider: github: runner: "namespace-profile-cuenv-linux-arm64"
+				tasks: [_t.arm.cuenv]
+			}
+
+			// Runs the release binary builds and publishes nothing:
+			//   gh workflow run cuenv-release-dry-run.yml --ref <branch>
+			"release-dry-run": {
+				mode: "expanded"
+				when: manual: true
+				tasks: [{
+					task: _t.cargo.build
+					matrix: arch: ["linux-x64", "linux-arm64", "darwin-arm64"]
+				}]
 			}
 
 			// Every pull request that touches the docs gets a Worker Preview of
@@ -414,6 +440,18 @@ schema.#Project & {
 			nextest: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.aarch64-darwin.cuenv-nextest", "-L", "--accept-flake-config"]
+				inputs: _flakeInputs
+			}
+		}
+
+		// The flake package built for aarch64-linux. It runs on the ARM runner
+		// only (see the `arm` pipeline).
+		arm: {
+			type: "group"
+
+			cuenv: schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.aarch64-linux.cuenv", "-L", "--accept-flake-config"]
 				inputs: _flakeInputs
 			}
 		}

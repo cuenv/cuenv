@@ -51,41 +51,6 @@ jobs:
       run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  build-cuenv-namespace-profile-cuenv-linux-arm64:
-    permissions:
-      contents: read
-    name: build.cuenv (namespace-profile-cuenv-linux-arm64)
-    runs-on: namespace-profile-cuenv-linux-arm64
-    timeout-minutes: 30
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 2
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi\nif [ \"$(uname -s)\" = Linux ] && [ ! -e /run/systemd/system ] && [ -d /nix ] && [ ! -w /nix ]; then\n\tsudo chown -R \"$(id -u):$(id -g)\" /nix\nfi"
-    - name: Install Nix
-      uses: cachix/install-nix-action@v31
-      with:
-        extra_nix_config: accept-flake-config = true
-        install_url: https://releases.nixos.org/nix/nix-2.31.2/install
-    - name: Prune legacy Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
-        name: cuenv
-    - name: Build cuenv (nix)
-      run: "if ! command -v nix >/dev/null 2>&1; then\n\tif [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then\n\t\t. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh\n\telse\n\t\t. \"$HOME/.nix-profile/etc/profile.d/nix.sh\"\n\tfi\nfi\nnix build .#cuenv -L --accept-flake-config\necho \"$(pwd)/result/bin\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/result/bin\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true\n./result/bin/cuenv sync ci"
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   build-cuenv-namespace-profile-cuenv-linux-x86:
     permissions:
       contents: read
@@ -193,9 +158,9 @@ jobs:
       contents: read
       packages: write
     name: cargo.build (linux-arm64)
-    runs-on: namespace-profile-cuenv-linux-arm64
+    runs-on: namespace-profile-cuenv-linux-x86
     needs:
-    - build-cuenv-namespace-profile-cuenv-linux-arm64
+    - build-cuenv-namespace-profile-cuenv-linux-x86
     timeout-minutes: 60
     steps:
     - name: Checkout

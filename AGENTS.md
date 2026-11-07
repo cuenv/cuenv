@@ -81,8 +81,9 @@ Full root flake check is required when any of these are true:
 - A focused check fails in a way that could indicate broader workspace breakage.
 
 Release-only version bumps are the exception to the release trigger when `HEAD`
-matches the already-green `origin/main` commit. `main` is green only when both
-`cuenv-ci` and `cuenv-darwin` pass, because pull requests do not run macOS checks.
+matches the already-green `origin/main` commit. `main` is green only when
+`cuenv-ci`, `cuenv-darwin`, and `cuenv-arm` all pass, because pull requests run
+neither macOS nor ARM jobs.
 For those cuts, skip local test
 execution and the full root flake check. Verify the target version is consistent
 across `Cargo.toml` and `Cargo.lock`; run locked Cargo metadata; inspect that

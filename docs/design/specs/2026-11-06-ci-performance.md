@@ -359,7 +359,7 @@ directory to the Rust builds is the likely fix, and would change store paths.
 `darwin.clippy` and `darwin.nextest` moved from the `ci` pipeline to a `darwin`
 pipeline that runs on pushes to `main` and on `workflow_dispatch`. Those two jobs
 were the only macOS or ARM jobs on pull requests, so pull requests now run only
-`x86_64-linux` jobs. ARM Linux only runs in the release workflow.
+`x86_64-linux` jobs.
 
 The cost is that a macOS regression is first reported after merge. `cuenv-darwin`
 is part of a green `main`, and `gh workflow run cuenv-darwin.yml --ref <branch>`
@@ -372,3 +372,32 @@ the two macOS jobs ran for 3m 19s and 6m 38s, but the run finished 5m 47s after
 them, on `checks.doctest`. That run's elapsed time was set by when Linux jobs
 started, not by macOS. Expect saved macOS runner time and no dependence on macOS
 capacity; a change in elapsed time needs measuring across runs, as above.
+
+### Cross-compiling linux-arm64
+
+Linux ARM was the slowest release path. In attempt 2 of the same release, with
+`cuenv` already cached, `cargo.build` compared as follows:
+
+| Phase | Linux ARM (8x16) | Linux x86 (8x16) | macOS ARM (6x14) |
+| --- | --- | --- | --- |
+| Setup and Go bridge | 4m 14s | 1m 28s | 2m 36s |
+| Dependencies | 2m 06s | 48s | 1m 01s |
+| Final crates and LTO link | 7m 32s | 2m 36s | 2m 06s |
+| Whole job | 14m 03s | 4m 58s | 5m 51s |
+
+In attempt 1, with nothing cached, `build.cuenv` also took 14m 07s on ARM before
+`cargo.build` could start, and the release binaries were ready after 29m 30s.
+The logs do not separate the ARM hardware from the toolchain as the cause. macOS
+is the fastest compile, so ARM itself is not the reason.
+
+`cargo.build` already targets glibc 2.17 through `cargo-zigbuild`, so `linux-arm64`
+now maps to the x86 runner in `runners.arch`. That also removes the ARM
+`build.cuenv` job, because no release job uses the ARM runner.
+
+The smoke test runs under `qemu-aarch64` instead of on ARM hardware, so a problem
+that only the cross-built binary hits on real hardware could go unnoticed. Two
+things limit that: the `arm` pipeline builds and smoke-tests the flake package on
+real ARM after every merge, and it also keeps publishing that package to Cachix for
+flake users, which the ARM `build.cuenv` job used to do. The manual `release-dry-run`
+pipeline runs the three binary builds on any branch, publishing nothing, though as
+a non-release pipeline it runs them directly rather than through `cuenv task`.

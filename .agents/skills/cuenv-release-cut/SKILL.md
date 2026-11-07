@@ -34,7 +34,7 @@ Read the current release rules before acting:
    - Inspect `git diff -- Cargo.lock`; expected release-only lockfile changes are workspace package version entries matching the new version.
 
 4. Validate before committing or tagging:
-   - For a release-only version bump from an already-green `main`, do not rerun local tests or the full root flake gate. Verify `HEAD` matches `origin/main`, confirm both `cuenv-ci` and `cuenv-darwin` are green for that commit (pull requests do not run macOS checks), run the lockfile and metadata checks above, inspect that `Cargo.lock` only updates workspace package versions, verify `Cargo.toml` and `Cargo.lock` agree on the target version, and run `git diff --check`.
+   - For a release-only version bump from an already-green `main`, do not rerun local tests or the full root flake gate. Verify `HEAD` matches `origin/main`, confirm `cuenv-ci`, `cuenv-darwin`, and `cuenv-arm` are all green for that commit (pull requests run neither macOS nor ARM jobs), run the lockfile and metadata checks above, inspect that `Cargo.lock` only updates workspace package versions, verify `Cargo.toml` and `Cargo.lock` agree on the target version, and run `git diff --check`.
    - For releases that include code, schema, CI/release workflow, dependency, feature, or behavior changes beyond the version bump, run `cuenv fmt --fix`, `git diff --check`, and `nix flake check -L --accept-flake-config`.
    - If docs, schema, prompts, examples, or `.agents/skills/**` changed, also run `cuenv task ci.schema-docs-check`.
    - Do not tag, create a GitHub release, publish, request review, merge, or release if a required check failed or was skipped.
