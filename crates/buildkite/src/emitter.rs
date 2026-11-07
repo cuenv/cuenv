@@ -441,6 +441,7 @@ mod tests {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_execution: None,
             provider_hints: None,
         }
     }
@@ -633,6 +634,7 @@ mod tests {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_execution: None,
             provider_hints: None,
         }
     }

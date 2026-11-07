@@ -234,6 +234,9 @@ pub struct Task {
     /// GitHub token requirements of this task or injected step.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub github_permissions: BTreeMap<String, String>,
+    /// How this task's GitHub job runs it; unset uses the pipeline's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_execution: Option<cuenv_core::ci::TaskGitHubExecution>,
     /// Unique task identifier
     pub id: String,
 
@@ -397,6 +400,7 @@ impl Task {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_execution: None,
             provider_hints: None,
         }
     }
@@ -433,6 +437,7 @@ impl Task {
             condition: None,
             github_task_filter: Vec::new(),
             github_permissions: std::collections::BTreeMap::new(),
+            github_execution: None,
             provider_hints: None,
         }
     }

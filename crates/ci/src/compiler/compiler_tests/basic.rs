@@ -146,6 +146,49 @@ fn test_compile_script_task() {
 }
 
 #[test]
+fn task_ci_direct_execution_survives_deserialization_and_compilation() {
+    let task: Task = serde_json::from_value(serde_json::json!({
+        "command": "nix",
+        "env": {
+            "CUENV_ARCH": "cuenv:passthrough:CUENV_ARCH",
+            "LITERAL": "value"
+        },
+        "ci": {"github": {"execution": "direct"}}
+    }))
+    .unwrap();
+    let mut project = Project::new("direct");
+    project
+        .tasks
+        .insert("build".into(), TaskNode::Task(Box::new(task)));
+    let ir = Compiler::new(project).compile().unwrap();
+    assert_eq!(
+        ir.tasks[0].github_execution,
+        Some(cuenv_core::ci::TaskGitHubExecution::Direct)
+    );
+}
+
+#[test]
+fn direct_execution_rejects_env_only_cuenv_can_resolve() {
+    for value in [
+        serde_json::json!({"resolver": "exec", "command": "fetch-token"}),
+        serde_json::json!("cuenv:passthrough:TOKEN"),
+    ] {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "command": "nix",
+            "env": {"TOKEN": value},
+            "ci": {"github": {"execution": "direct"}}
+        }))
+        .unwrap();
+        let mut project = Project::new("direct");
+        project
+            .tasks
+            .insert("build".into(), TaskNode::Task(Box::new(task)));
+        let error = Compiler::new(project).compile().unwrap_err().to_string();
+        assert!(error.contains("'TOKEN'"), "{error}");
+    }
+}
+
+#[test]
 fn task_ci_permissions_survive_deserialization_and_compilation() {
     let task: Task = serde_json::from_value(serde_json::json!({
         "command": "publish",

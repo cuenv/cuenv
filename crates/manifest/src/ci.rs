@@ -556,6 +556,18 @@ pub struct TaskGitHubConfig {
     /// Required token scopes and access levels.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub permissions: BTreeMap<String, String>,
+    /// Tasks only: how the task's job runs it. Unset uses the pipeline's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<TaskGitHubExecution>,
+}
+
+/// How a GitHub job runs a task.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskGitHubExecution {
+    /// Run the task's command in the job without `cuenv task`, so the job needs
+    /// no cuenv setup and the task gets no secrets or environment through cuenv.
+    Direct,
 }
 
 /// A task contributed to the DAG by a contributor (CUE-defined)

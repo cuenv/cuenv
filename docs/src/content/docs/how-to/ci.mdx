@@ -135,6 +135,22 @@ cuenv bootstrap build. This also preserves the runner's Nix cache publication
 configuration. Release tasks and tasks requiring cuenv orchestration continue
 to use the configured cuenv setup.
 
+A task that needs nothing from cuenv can opt in, including in a release pipeline
+that uses a matrix:
+
+```cue
+tasks: build: schema.#Task & {
+	ci: github: execution: "direct"
+	command: "nix"
+	args: ["build", ".#release"]
+}
+```
+
+Its job runs the command without `cuenv task` and doesn't wait for a cuenv
+bootstrap build. The task gets no secrets or environment through cuenv, so
+`cuenv sync ci` rejects one whose `env` holds a secret or a passthrough. Matrix
+jobs set `CUENV_ARCH` themselves, so that passthrough is allowed.
+
 To keep a slower platform off pull requests, give its tasks their own pipeline
 whose `when` omits `pullRequest`. It generates a separate workflow, so
 `manual: true` can still run those tasks on a branch. cuenv's own `darwin`
