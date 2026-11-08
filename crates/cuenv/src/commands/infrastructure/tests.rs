@@ -1221,6 +1221,7 @@ async fn apply_records_the_last_writer_under_its_lock() {
     harness
         .run(InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::AssumeYes,
+            expected_plan: None,
             separate_state: SeparateState::Refuse,
             identity: Identity::Detect,
         })
@@ -1234,11 +1235,61 @@ async fn apply_records_the_last_writer_under_its_lock() {
 }
 
 #[tokio::test]
+async fn apply_requires_the_reviewed_plan_digest_it_was_given() {
+    let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    harness.run(InfrastructureAction::Plan).await.unwrap();
+    let reviewed = harness.result()["reviewedPlanDigest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(reviewed.starts_with("sha256:"), "{reviewed}");
+
+    let other = format!("sha256:{}", "0".repeat(64));
+    let error = harness
+        .run(InfrastructureAction::Apply {
+            confirmation: ConfirmationPolicy::AssumeYes,
+            expected_plan: Some(other.clone()),
+            separate_state: SeparateState::Refuse,
+            identity: Identity::Detect,
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&reviewed), "{error}");
+    assert!(error.contains(&other), "{error}");
+    assert!(error.contains("nothing was applied"), "{error}");
+    assert!(harness.current_lock().await.is_none());
+
+    let error = harness
+        .run(InfrastructureAction::Apply {
+            confirmation: ConfirmationPolicy::AssumeYes,
+            expected_plan: Some("abc".to_string()),
+            separate_state: SeparateState::Refuse,
+            identity: Identity::Detect,
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("64 lowercase hexadecimal"), "{error}");
+
+    harness
+        .run(InfrastructureAction::Apply {
+            confirmation: ConfirmationPolicy::AssumeYes,
+            expected_plan: Some(reviewed),
+            separate_state: SeparateState::Refuse,
+            identity: Identity::Detect,
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn nothing_to_apply_asks_nothing() {
     let harness = Harness::new(OutputFormat::Text, Script::Line("no"));
     harness
         .run(InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::Prompt,
+            expected_plan: None,
             separate_state: SeparateState::Refuse,
             identity: Identity::Detect,
         })
@@ -1312,6 +1363,7 @@ async fn a_moved_project_keeps_its_state_and_becomes_its_last_writer() {
     for action in [
         InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::AssumeYes,
+            expected_plan: None,
             separate_state: SeparateState::Refuse,
             identity: Identity::Detect,
         },
@@ -1870,6 +1922,7 @@ async fn an_invalid_state_url_fails_before_any_secret_resolver_runs_for_every_ac
         InfrastructureAction::Plan,
         InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::AssumeYes,
+            expected_plan: None,
             separate_state: SeparateState::Refuse,
             identity: Identity::Detect,
         },
@@ -2022,6 +2075,7 @@ impl GuardCase<'_> {
 fn apply_action() -> InfrastructureAction {
     InfrastructureAction::Apply {
         confirmation: ConfirmationPolicy::AssumeYes,
+        expected_plan: None,
         separate_state: SeparateState::Refuse,
         identity: Identity::Detect,
     }
@@ -2287,6 +2341,7 @@ async fn an_environment_creating_what_the_unselected_identity_records_is_refused
     // The override is explicit.
     case.guard(&InfrastructureAction::Apply {
         confirmation: ConfirmationPolicy::AssumeYes,
+        expected_plan: None,
         separate_state: SeparateState::Allow,
         identity: Identity::Detect,
     })
@@ -2369,6 +2424,7 @@ async fn a_run_without_env_creating_what_an_environment_records_is_refused() {
     // The override is explicit.
     case.guard(&InfrastructureAction::Apply {
         confirmation: ConfirmationPolicy::AssumeYes,
+        expected_plan: None,
         separate_state: SeparateState::Allow,
         identity: Identity::Detect,
     })

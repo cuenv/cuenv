@@ -79,6 +79,7 @@ async fn seed(
 fn apply(identity: Identity) -> InfrastructureAction {
     InfrastructureAction::Apply {
         confirmation: ConfirmationPolicy::AssumeYes,
+        expected_plan: None,
         separate_state: SeparateState::Refuse,
         identity,
     }

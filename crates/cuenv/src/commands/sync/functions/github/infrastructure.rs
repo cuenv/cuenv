@@ -14,8 +14,8 @@ use cuenv_core::manifest::{
     InfrastructureApplyTrigger, InfrastructureApplyWorkflow, InfrastructureWorkflows, Project,
 };
 use cuenv_github::GitHubConfigExt;
-use cuenv_github::workflow::schema::Step;
-use cuenv_github::workflow::{CommandWorkflow, GitHubActionsEmitter};
+use cuenv_github::workflow::schema::{PermissionLevel, Permissions, Step};
+use cuenv_github::workflow::{CommandWorkflow, FollowUpJob, GitHubActionsEmitter, TokenScope};
 
 /// Pipeline names of the plan and apply workflows; the workflow files are
 /// `<project>-<pipeline>.yml`.
@@ -25,8 +25,20 @@ const APPLY_PIPELINE: &str = "infrastructure-apply";
 /// Where the plan step writes the plan for the comment step.
 const PLAN_FILE: &str = "${{ runner.temp }}/cuenv-infrastructure-plan.txt";
 
-/// The id of the plan step, read by the comment step.
+/// The id of the plan step.
 const PLAN_STEP_ID: &str = "plan";
+
+/// The artifact that carries the plan from the plan job to the comment job.
+const PLAN_ARTIFACT: &str = "cuenv-infrastructure-plan";
+
+/// A pull request from a branch of this repository, not a fork.
+const SAME_REPOSITORY: &str = "github.event.pull_request.head.repo.full_name == github.repository";
+
+/// The id of the step that finds the reviewed plan digest.
+const REVIEWED_PLAN_STEP_ID: &str = "reviewed";
+
+/// The manual input that names the reviewed plan digest.
+const PLAN_DIGEST_INPUT: &str = "plan_digest";
 
 /// The project's `infrastructure.workflows`, when it sets them.
 ///
@@ -168,11 +180,26 @@ pub(super) fn generate_workflows(
     };
     let command_path = format!("{path}{package_argument}");
     let plan_command = plan_command(&path, &command_path, &project.config.name);
-    let comment_steps: Vec<Step> = if workflows.plan.comment {
-        vec![plan_comment_step(&project.config.name)]
+    let (keep_plan, comment_job_steps) = if workflows.plan.comment {
+        (
+            vec![keep_plan_step()],
+            vec![fetch_plan_step(), plan_comment_step(&project.config.name)],
+        )
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
+    let comment_job = workflows.plan.comment.then(|| FollowUpJob {
+        id_suffix: "comment",
+        name: "Comment infrastructure plan",
+        // `!cancelled()`: a plan cancelled by a newer push must not report
+        // its partial output; a failed plan is still reported.
+        if_condition: "!cancelled() && !contains(needs.*.result, 'skipped')",
+        permissions: Permissions {
+            pull_requests: Some(PermissionLevel::Write),
+            ..Permissions::default()
+        },
+        steps: &comment_job_steps,
+    });
     let plan = generate_workflow(&WorkflowRequest {
         project,
         package,
@@ -186,14 +213,33 @@ pub(super) fn generate_workflows(
             command: &plan_command,
             concurrency_group: None,
             cancel_in_progress: true,
-            job_if: None,
-            follow_up_steps: &comment_steps,
-            job_environment: None,
+            // The plan runs configuration the pull request controls (a
+            // provider `path`, secret resolvers) with the plan's secrets:
+            // only pull requests from this repository plan, and the job's
+            // token can only read. Commenting is a separate job.
+            job_if: Some(SAME_REPOSITORY),
+            follow_up_steps: &keep_plan,
+            job_environment: workflows.plan.environment.as_deref(),
+            token_scope: TokenScope::Tasks,
+            follow_up_job: comment_job.as_ref(),
+            leading_steps: &[],
+            additional_permissions: &[],
         },
     })?;
 
+    let require_reviewed_plan = reviewed_plan_requirement(project, &workflows)?;
+    let reviewed_steps = if require_reviewed_plan {
+        vec![reviewed_plan_step(&project.config.name)]
+    } else {
+        Vec::new()
+    };
+    let expect_plan = if require_reviewed_plan {
+        " --expect-plan \"$REVIEWED_PLAN\""
+    } else {
+        ""
+    };
     let apply_command = format!(
-        "cuenv infra init --path {path} &&\ncuenv infrastructure apply --yes --path {command_path}"
+        "cuenv infra init --path {path} &&\ncuenv infrastructure apply --yes{expect_plan} --path {command_path}"
     );
     // Pushes and manual runs apply only the configured branch.
     let apply_if = (workflows.apply.on == InfrastructureApplyTrigger::Push).then(|| {
@@ -212,14 +258,24 @@ pub(super) fn generate_workflows(
             step_name: "Apply infrastructure",
             step_id: None,
             command: &apply_command,
-            // One group for every ref: a cancelled apply can leave the state
-            // lock held and resources half converged, so every apply queues
-            // behind the one in progress.
+            // One group for every ref, never cancelled: a cancelled apply can
+            // leave the state lock held and resources half converged. GitHub
+            // keeps one pending run per group and a newer one replaces it;
+            // that is safe because every apply plans afresh from its own,
+            // newer commit, which includes the replaced run's changes.
             concurrency_group: Some("${{ github.workflow }}"),
             cancel_in_progress: false,
             job_if: apply_if.as_deref(),
             follow_up_steps: &[],
             job_environment: workflows.apply.environment.as_deref(),
+            token_scope: TokenScope::Workflow,
+            follow_up_job: None,
+            leading_steps: &reviewed_steps,
+            additional_permissions: if require_reviewed_plan {
+                &[("pull-requests", "read")]
+            } else {
+                &[]
+            },
         },
     })?;
 
@@ -272,10 +328,13 @@ fn configuration_sources(project: &ProjectInfo, package: &str) -> Result<Vec<Str
         // dependency from the workflow triggers.
         sources.push("**/*.cue".to_string());
         sources.push("**/.infrastructure.cue".to_string());
-        sources.push("cuenv.lock".to_string());
-        sources.sort();
-        sources.dedup();
     }
+    // The module's lockfile pins provider releases and schema digests, and
+    // `cuenv infra init` restores generated types from it: a lock-only change
+    // changes what plan and apply run, wherever the project lives.
+    sources.push("cuenv.lock".to_string());
+    sources.sort();
+    sources.dedup();
     Ok(sources)
 }
 
@@ -303,8 +362,24 @@ fn plan_pipeline() -> Pipeline {
 }
 
 fn apply_pipeline(apply: &InfrastructureApplyWorkflow) -> Pipeline {
-    let manual = (apply.manual || apply.on == InfrastructureApplyTrigger::Manual)
-        .then_some(ManualTrigger::Enabled(true));
+    let manual = (apply.manual || apply.on == InfrastructureApplyTrigger::Manual).then(|| {
+        if apply.require_reviewed_plan {
+            ManualTrigger::WithInputs(std::collections::HashMap::from([(
+                PLAN_DIGEST_INPUT.to_string(),
+                cuenv_core::ci::WorkflowDispatchInput {
+                    description: "Reviewed plan digest (sha256:…) of the plan to apply, as \
+                                  `cuenv infrastructure plan` printed it"
+                        .to_string(),
+                    required: Some(true),
+                    default: None,
+                    input_type: Some("string".to_string()),
+                    options: None,
+                },
+            )]))
+        } else {
+            ManualTrigger::Enabled(true)
+        }
+    });
     let mut when = PipelineCondition {
         manual,
         ..PipelineCondition::default()
@@ -345,13 +420,46 @@ fn plan_command(path: &str, command_path: &str, project_name: &str) -> String {
     )
 }
 
+/// Keep the plan output for the comment job, which has no secrets.
+fn keep_plan_step() -> Step {
+    Step::uses("actions/upload-artifact@v4")
+        .with_name("Keep the plan for the comment")
+        .with_if(format!(
+            "!cancelled() && steps.{PLAN_STEP_ID}.outcome != 'skipped'"
+        ))
+        .with_input("name", serde_yaml::Value::String(PLAN_ARTIFACT.to_string()))
+        .with_input("path", serde_yaml::Value::String(PLAN_FILE.to_string()))
+        .with_input("retention-days", serde_yaml::Value::Number(1.into()))
+        .with_input(
+            "if-no-files-found",
+            serde_yaml::Value::String("ignore".to_string()),
+        )
+}
+
+/// Fetch the plan output in the comment job.
+fn fetch_plan_step() -> Step {
+    let mut step = Step::uses("actions/download-artifact@v4")
+        .with_name("Fetch the plan")
+        .with_input("name", serde_yaml::Value::String(PLAN_ARTIFACT.to_string()))
+        .with_input(
+            "path",
+            serde_yaml::Value::String("${{ runner.temp }}".to_string()),
+        );
+    // A plan that failed before writing output still gets its comment.
+    step.continue_on_error = Some(true);
+    step
+}
+
 /// Create or edit the pull request comment that shows the plan. A hidden
 /// marker per project finds the comment an earlier run posted; only comments
 /// by the workflow's own token count, so nobody else's comment is edited.
+/// A second marker records the pull request head the plan was made for, so
+/// an apply that requires the reviewed plan can tell a stale comment.
 fn plan_comment_step(project_name: &str) -> Step {
     let script = format!(
         r"const fs = require('fs');
 const marker = '<!-- cuenv-infrastructure-plan:{project_name} -->';
+const head = context.payload.pull_request.head.sha;
 const file = process.env.PLAN_FILE;
 let plan = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trimEnd() : '';
 if (plan === '') plan = 'The plan produced no output.';
@@ -361,13 +469,14 @@ const failed = process.env.PLAN_OUTCOME !== 'success';
 const run = `${{context.serverUrl}}/${{context.repo.owner}}/${{context.repo.repo}}/actions/runs/${{context.runId}}`;
 const body = [
   marker,
+  `<!-- cuenv-infrastructure-plan-head:${{head}} -->`,
   `### ${{failed ? '❌ Infrastructure plan failed' : 'Infrastructure plan'}}: \`{project_name}\``,
   '',
   '````diff',
   plan,
   '````',
   '',
-  `[Workflow run](${{run}}) · ${{context.sha.slice(0, 7)}}`,
+  `[Workflow run](${{run}}) · ${{head.slice(0, 7)}}`,
 ].join('\n');
 const {{ owner, repo }} = context.repo;
 const issue_number = context.issue.number;
@@ -380,19 +489,82 @@ if (existing) {{
   await github.rest.issues.createComment({{ owner, repo, issue_number, body }});
 }}"
     );
-    // `!cancelled()`: a plan cancelled by a newer push must not report its
-    // partial output as a failure.
     Step::uses("actions/github-script@v7")
         .with_name("Comment infrastructure plan")
-        .with_if(format!(
-            "!cancelled() && steps.{PLAN_STEP_ID}.outcome != 'skipped' && \
-             github.event.pull_request.head.repo.full_name == github.repository"
-        ))
         .with_env("PLAN_FILE", PLAN_FILE)
-        .with_env(
-            "PLAN_OUTCOME",
-            format!("${{{{ steps.{PLAN_STEP_ID}.outcome }}}}"),
-        )
+        .with_env("PLAN_OUTCOME", "${{ join(needs.*.result, '') }}")
+        .with_input("script", serde_yaml::Value::String(script))
+}
+
+/// Whether the apply must require the reviewed plan, refusing settings that
+/// cannot name one.
+fn reviewed_plan_requirement(
+    project: &ProjectInfo,
+    workflows: &InfrastructureWorkflows,
+) -> Result<bool> {
+    let apply = &workflows.apply;
+    if !apply.require_reviewed_plan {
+        return Ok(false);
+    }
+    let refuse = |reason: &str| {
+        Err(cuenv_core::Error::configuration(format!(
+            "Project '{}' sets infrastructure.workflows.apply.requireReviewedPlan, {reason}",
+            project.config.name
+        )))
+    };
+    match apply.on {
+        InfrastructureApplyTrigger::Tag | InfrastructureApplyTrigger::Release => refuse(
+            "but a tag or release has no pull request to take the reviewed plan from; use \
+             `on: \"push\"` or `\"manual\"`",
+        ),
+        InfrastructureApplyTrigger::Push if !workflows.plan.comment => refuse(
+            "but the reviewed plan is read from the plan comment; keep `plan.comment` enabled",
+        ),
+        InfrastructureApplyTrigger::Push | InfrastructureApplyTrigger::Manual => Ok(true),
+    }
+}
+
+/// Find the reviewed plan digest: a manual run's `plan_digest` input, or the
+/// digest in the plan comment of the pull request this push merged, made for
+/// that pull request's final head. Exports it as `REVIEWED_PLAN`; fails when
+/// there is none.
+fn reviewed_plan_step(project_name: &str) -> Step {
+    let script = format!(
+        r"const marker = '<!-- cuenv-infrastructure-plan:{project_name} -->';
+const pattern = /Reviewed plan digest: (sha256:[0-9a-f]{{64}})/;
+const manual = context.payload.inputs?.{PLAN_DIGEST_INPUT};
+if (context.eventName === 'workflow_dispatch') {{
+  if (!/^sha256:[0-9a-f]{{64}}$/.test(manual ?? '')) {{
+    core.setFailed('Pass the reviewed plan digest (sha256:…) as the {PLAN_DIGEST_INPUT} input.');
+    return;
+  }}
+  core.exportVariable('REVIEWED_PLAN', manual);
+  return;
+}}
+const {{ owner, repo }} = context.repo;
+const pulls = await github.rest.repos.listPullRequestsAssociatedWithCommit({{ owner, repo, commit_sha: context.sha }});
+const pull = pulls.data.find((candidate) => candidate.merged_at && candidate.merge_commit_sha === context.sha);
+if (!pull) {{
+  core.setFailed(`No merged pull request produced ${{context.sha}}, so there is no reviewed plan to apply. Merge through a pull request, or run this workflow manually with the reviewed plan digest.`);
+  return;
+}}
+const comments = await github.paginate(github.rest.issues.listComments, {{ owner, repo, issue_number: pull.number, per_page: 100 }});
+const comment = comments.find((candidate) =>
+  candidate.user?.login === 'github-actions[bot]' && candidate.body?.includes(marker));
+if (!comment?.body?.includes(`<!-- cuenv-infrastructure-plan-head:${{pull.head.sha}} -->`)) {{
+  core.setFailed(`Pull request #${{pull.number}} has no plan comment for its final commit ${{pull.head.sha}}; the reviewed plan is unknown.`);
+  return;
+}}
+const match = comment.body.match(pattern);
+if (!match) {{
+  core.setFailed(`The plan comment of pull request #${{pull.number}} names no reviewed plan digest.`);
+  return;
+}}
+core.exportVariable('REVIEWED_PLAN', match[1]);"
+    );
+    Step::uses("actions/github-script@v7")
+        .with_name("Find the reviewed plan")
+        .with_id(REVIEWED_PLAN_STEP_ID)
         .with_input("script", serde_yaml::Value::String(script))
 }
 
@@ -601,6 +773,8 @@ mod tests {
             "infrastructure/dns/**",
             "infrastructure/dns/env.cue",
             "shared/shared.cue",
+            // A lock-only change re-plans and applies an inline project too.
+            "cuenv.lock",
         ] {
             assert!(plan_paths.contains(&path), "{path} in {plan_paths:?}");
         }
@@ -615,8 +789,13 @@ mod tests {
         );
         assert!(plan["on"].get("push").is_none());
         assert_eq!(plan["concurrency"]["cancel-in-progress"], true);
+        // The plan job runs code the pull request controls: its token only
+        // reads, and only pull requests from this repository plan.
         let job = &plan["jobs"]["dns-infrastructure-plan"];
-        assert_eq!(job["permissions"]["pull-requests"], "write");
+        assert_eq!(job["permissions"]["contents"], "read");
+        assert!(job["permissions"].get("pull-requests").is_none());
+        assert!(job["permissions"].get("checks").is_none());
+        assert_eq!(job["if"], SAME_REPOSITORY);
         let plan_steps = steps(plan, "dns-infrastructure-plan");
         let plan_step = step(&plan_steps, "Plan infrastructure").ok_or("plan step")?;
         assert_eq!(plan_step["id"], "plan");
@@ -631,9 +810,25 @@ mod tests {
             "{run}"
         );
         assert!(run.contains("$GITHUB_STEP_SUMMARY"), "{run}");
-        let comment = step(&plan_steps, "Comment infrastructure plan").ok_or("comment step")?;
+        assert!(step(&plan_steps, "Comment infrastructure plan").is_none());
+        let keep = step(&plan_steps, "Keep the plan for the comment").ok_or("keep step")?;
+        assert_eq!(keep["uses"], "actions/upload-artifact@v4");
+
+        // A separate job without the plan's secrets posts the comment.
+        let comment_job = &plan["jobs"]["dns-infrastructure-plan-comment"];
+        assert_eq!(comment_job["needs"][0], "dns-infrastructure-plan");
+        assert_eq!(comment_job["permissions"]["pull-requests"], "write");
+        assert!(comment_job["permissions"].get("contents").is_none());
+        assert!(comment_job.get("environment").is_none());
+        let comment_steps = steps(plan, "dns-infrastructure-plan-comment");
+        assert_eq!(comment_steps.len(), 2);
+        assert_eq!(comment_steps[0]["uses"], "actions/download-artifact@v4");
+        let comment = step(&comment_steps, "Comment infrastructure plan").ok_or("comment step")?;
         assert_eq!(comment["uses"], "actions/github-script@v7");
-        assert_eq!(comment["env"]["PLAN_OUTCOME"], "${{ steps.plan.outcome }}");
+        assert_eq!(
+            comment["env"]["PLAN_OUTCOME"],
+            "${{ join(needs.*.result, '') }}"
+        );
         let script = comment["with"]["script"].as_str().ok_or("script")?;
         assert!(
             script.contains("<!-- cuenv-infrastructure-plan:dns -->"),
@@ -652,7 +847,100 @@ mod tests {
             "cuenv infra init --path infrastructure/dns &&\ncuenv infrastructure apply --yes --path infrastructure/dns"
         );
         assert!(step(&apply_steps, "Comment infrastructure plan").is_none());
+        assert!(step(&apply_steps, "Find the reviewed plan").is_none());
         Ok(())
+    }
+
+    #[test]
+    fn the_plan_job_can_take_its_secrets_from_a_github_environment()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let generated = workflows(&serde_json::json!({"plan": {"environment": "plan-readonly"}}))?;
+        let plan = &generated[0];
+        assert_eq!(
+            plan["jobs"]["dns-infrastructure-plan"]["environment"],
+            "plan-readonly"
+        );
+        assert!(
+            plan["jobs"]["dns-infrastructure-plan-comment"]
+                .get("environment")
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_apply_can_require_the_reviewed_plan()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let generated = workflows(&serde_json::json!({"apply": {"requireReviewedPlan": true}}))?;
+        let apply = &generated[1];
+        let job = &apply["jobs"]["dns-infrastructure-apply"];
+        assert_eq!(job["permissions"]["pull-requests"], "read");
+        let apply_steps = steps(apply, "dns-infrastructure-apply");
+        let names: Vec<&str> = apply_steps
+            .iter()
+            .filter_map(|step| step["name"].as_str())
+            .collect();
+        let find = names
+            .iter()
+            .position(|name| *name == "Find the reviewed plan")
+            .ok_or("find step")?;
+        let run = names
+            .iter()
+            .position(|name| *name == "Apply infrastructure")
+            .ok_or("apply step")?;
+        assert!(find < run, "{names:?}");
+        let script = apply_steps[find]["with"]["script"]
+            .as_str()
+            .ok_or("script")?;
+        for needle in [
+            "listPullRequestsAssociatedWithCommit",
+            "<!-- cuenv-infrastructure-plan:dns -->",
+            "cuenv-infrastructure-plan-head:${pull.head.sha}",
+            "core.exportVariable('REVIEWED_PLAN'",
+            "context.payload.inputs?.plan_digest",
+        ] {
+            assert!(script.contains(needle), "{needle} in {script}");
+        }
+        assert_eq!(
+            apply_steps[run]["run"],
+            "cuenv infra init --path infrastructure/dns &&\ncuenv infrastructure apply --yes --expect-plan \"$REVIEWED_PLAN\" --path infrastructure/dns"
+        );
+        let input = &apply["on"]["workflow_dispatch"]["inputs"]["plan_digest"];
+        assert_eq!(input["required"], true);
+
+        // The comment the apply reads names the head it was made for.
+        let comment_steps = steps(&generated[0], "dns-infrastructure-plan-comment");
+        let comment = step(&comment_steps, "Comment infrastructure plan").ok_or("comment")?;
+        let script = comment["with"]["script"].as_str().ok_or("script")?;
+        assert!(
+            script.contains("cuenv-infrastructure-plan-head:${head}"),
+            "{script}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_reviewed_plan_needs_a_pull_request_to_come_from() {
+        for workflows in [
+            serde_json::json!({"apply": {"on": "tag", "requireReviewedPlan": true}}),
+            serde_json::json!({"apply": {"on": "release", "requireReviewedPlan": true}}),
+            serde_json::json!({"plan": {"comment": false}, "apply": {"requireReviewedPlan": true}}),
+        ] {
+            let error = generate_workflows(&project(&workflows).info, "cuenv")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("requireReviewedPlan"), "{error}");
+        }
+        assert!(
+            generate_workflows(
+                &project(
+                    &serde_json::json!({"apply": {"on": "manual", "requireReviewedPlan": true}})
+                )
+                .info,
+                "cuenv"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -660,7 +948,12 @@ mod tests {
         let generated = workflows(&serde_json::json!({"plan": {"comment": false}}))?;
         let plan_steps = steps(&generated[0], "dns-infrastructure-plan");
         assert!(step(&plan_steps, "Plan infrastructure").is_some());
-        assert!(step(&plan_steps, "Comment infrastructure plan").is_none());
+        assert!(step(&plan_steps, "Keep the plan for the comment").is_none());
+        assert!(
+            generated[0]["jobs"]
+                .get("dns-infrastructure-plan-comment")
+                .is_none()
+        );
         Ok(())
     }
 
@@ -718,7 +1011,10 @@ mod tests {
             "github.ref == 'refs/heads/it''s'"
         );
         let plan = &generated[0];
-        assert!(plan["jobs"]["dns-infrastructure-plan"].get("if").is_none());
+        assert_eq!(
+            plan["jobs"]["dns-infrastructure-plan"]["if"],
+            SAME_REPOSITORY
+        );
         Ok(())
     }
 
@@ -726,15 +1022,13 @@ mod tests {
     fn comment_skips_cancelled_runs_and_foreign_comments()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let generated = workflows(&serde_json::json!({}))?;
-        let plan_steps = steps(&generated[0], "dns-infrastructure-plan");
-        let comment = step(&plan_steps, "Comment infrastructure plan").ok_or("comment step")?;
-        let condition = comment["if"].as_str().ok_or("condition")?;
+        let comment_job = &generated[0]["jobs"]["dns-infrastructure-plan-comment"];
+        let condition = comment_job["if"].as_str().ok_or("condition")?;
         assert!(condition.starts_with("!cancelled() && "), "{condition}");
-        assert!(
-            condition
-                .contains("github.event.pull_request.head.repo.full_name == github.repository"),
-            "{condition}"
-        );
+        // A fork's pull request skips the plan job, and so the comment.
+        assert!(condition.contains("'skipped'"), "{condition}");
+        let comment_steps = steps(&generated[0], "dns-infrastructure-plan-comment");
+        let comment = step(&comment_steps, "Comment infrastructure plan").ok_or("comment step")?;
         let script = comment["with"]["script"].as_str().ok_or("script")?;
         assert!(
             script.contains("comment.user?.login === 'github-actions[bot]'"),

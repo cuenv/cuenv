@@ -880,6 +880,8 @@ fn render_plan_text(plan: &Plan) {
     } else {
         emit_stdout!("No changes. Infrastructure matches the configuration.");
     }
+    // `apply --expect-plan` takes this digest; CI comments carry it.
+    emit_stdout!(format!("Reviewed plan digest: {}", plan.reviewed_digest()));
 }
 
 fn summary_json(summary: &PlanSummary) -> Value {
@@ -923,6 +925,7 @@ pub(super) fn plan_json(plan: &Plan) -> Value {
         "changes": changes,
         "dataSources": data_sources,
         "summary": summary_json(&plan.summary()),
+        "reviewedPlanDigest": plan.reviewed_digest().to_string(),
     })
 }
 

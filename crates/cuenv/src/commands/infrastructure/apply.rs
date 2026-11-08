@@ -2,7 +2,8 @@
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    ApplyContext, ApplyEvent, InfrastructureEngine, InfrastructureError, Plan, PlanMode, StateLock,
+    ApplyContext, ApplyEvent, InfrastructureEngine, InfrastructureError, Plan, PlanMode,
+    ReviewedPlanDigest, StateLock,
 };
 
 use super::action::{ConfirmationPolicy, Identity};
@@ -115,6 +116,8 @@ pub(super) struct Convergence<'run> {
     pub(super) mode: PlanMode,
     pub(super) confirmation: ConfirmationPolicy,
     pub(super) identity: Identity,
+    /// The reviewed plan digest the plan made under the lock must have.
+    pub(super) expected_plan: Option<&'run str>,
     pub(super) context: &'run CommandContext<'run>,
 }
 
@@ -130,10 +133,16 @@ pub(super) async fn converge(
         identity,
         ..
     } = *convergence;
+    let expected_plan = convergence
+        .expected_plan
+        .map(ReviewedPlanDigest::parse)
+        .transpose()
+        .map_err(|error| CliError::config(error.to_string()))?;
     note_last_writer(context).await?;
     before_change(context, &inputs, identity, RenameResponse::Refuse).await?;
     let mut engine = engine(context, inputs);
     let planning = &mut engine;
+    let expected_plan = &expected_plan;
     let result = under_lock(context, output::operation_name(mode), |lock| async move {
         let plan = planning
             .plan(mode)
@@ -144,6 +153,9 @@ pub(super) async fn converge(
             refuse_full_state(context, &plan).await?;
         }
         context.output.preview(&plan);
+        if let Some(expected) = expected_plan {
+            refuse_unreviewed(&plan, expected, context.invocation)?;
+        }
         if plan.has_work() && convergence.confirmation == ConfirmationPolicy::Prompt {
             confirm(mode, context).await?;
         }
@@ -165,6 +177,31 @@ pub(super) async fn converge(
     .await;
     engine.shutdown().await;
     result
+}
+
+/// Refuse a plan whose reviewed digest is not the one a reviewer approved:
+/// configuration, state or the real objects changed since that plan.
+fn refuse_unreviewed(
+    plan: &Plan,
+    expected: &ReviewedPlanDigest,
+    invocation: &Invocation,
+) -> Result<(), CliError> {
+    let actual = plan.reviewed_digest();
+    if actual == *expected {
+        return Ok(());
+    }
+    Err(CliError::infrastructure(
+        format!(
+            "the plan made under the lock has reviewed plan digest {actual}, not the approved \
+             {expected}; nothing was applied"
+        ),
+        Some(format!(
+            "The configuration, the recorded state or the real objects changed after the plan \
+             was reviewed. Review the new plan with `{}` and approve its digest.",
+            invocation.command("plan")
+        )),
+        crate::cli::InfrastructureFailureKind::Failed,
+    ))
 }
 
 /// A plan to apply under a held lock.

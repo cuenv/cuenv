@@ -342,6 +342,14 @@ pub enum InfrastructureCommands {
             help = "Start state for this identity even though state written from this directory exists under an undeclared identity (a probable rename)"
         )]
         new_identity: bool,
+        /// Apply only if the plan made under the lock has this reviewed plan
+        /// digest, as `plan` printed it.
+        #[arg(
+            long,
+            value_name = "DIGEST",
+            help = "Apply only if the plan made under the lock has this reviewed plan digest (`sha256:…`, as `plan` prints it)"
+        )]
+        expect_plan: Option<String>,
     },
     /// Record an existing provider resource in managed state.
     #[command(about = "Import an existing provider resource into managed state")]

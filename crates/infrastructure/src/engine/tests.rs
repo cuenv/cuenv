@@ -5215,3 +5215,48 @@ fn write_only_digest_binds_presence_and_paths_without_descriptors() {
     }
     assert_ne!(base.digest(), marked.digest());
 }
+
+#[test]
+fn the_reviewed_digest_covers_what_a_reviewer_sees_and_nothing_else() {
+    let create = |name: &str| {
+        let mut created = change(ResourceAddress::new("random_pet", "pet"), Action::Create);
+        created.after = named(name);
+        created
+    };
+    let reviewed = plan_of(vec![create("blue")]).reviewed_digest();
+    assert!(reviewed.as_str().starts_with("sha256:"));
+    assert_eq!(
+        ReviewedPlanDigest::parse(reviewed.as_str()).unwrap(),
+        reviewed
+    );
+
+    // Refresh-only work, unchanged resources and a fresh evaluator binding
+    // are not what a reviewer approves.
+    let mut again = plan_of(vec![
+        refresh_only("other"),
+        create("blue"),
+        change(ResourceAddress::new("random_pet", "idle"), Action::NoOp),
+    ]);
+    again.environment_identity = [7; 32];
+    assert_eq!(again.reviewed_digest(), reviewed);
+    assert_ne!(again.digest(), plan_of(vec![create("blue")]).digest());
+
+    // Another value, another tenant or another action is another plan.
+    assert_ne!(plan_of(vec![create("green")]).reviewed_digest(), reviewed);
+    let mut elsewhere = plan_of(vec![create("blue")]);
+    elsewhere.tenant = TenantKey::with_environment("example.com/app", "web", "dev").unwrap();
+    assert_ne!(elsewhere.reviewed_digest(), reviewed);
+    let mut deleted = create("blue");
+    deleted.action = Action::Delete;
+    assert_ne!(plan_of(vec![deleted]).reviewed_digest(), reviewed);
+
+    for invalid in [
+        "",
+        "sha256:",
+        "sha256:ABC",
+        "md5:00",
+        &format!("sha256:{}", "g".repeat(64)),
+    ] {
+        assert!(ReviewedPlanDigest::parse(invalid).is_err(), "{invalid}");
+    }
+}
