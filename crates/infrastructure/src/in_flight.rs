@@ -116,7 +116,9 @@ pub fn marker_record(
 /// Separate stored records into managed resources and in-flight changes. A
 /// marker whose content cannot be read is still reported, by its address.
 #[must_use]
-pub fn split(records: Vec<ManagedResource>) -> (Vec<ManagedResource>, Vec<InFlightChange>) {
+pub fn separate(
+    records: impl IntoIterator<Item = ManagedResource>,
+) -> (Vec<ManagedResource>, Vec<InFlightChange>) {
     let mut resources = Vec::new();
     let mut in_flight = Vec::new();
     for record in records {
@@ -214,7 +216,7 @@ mod tests {
             address: address.clone(),
             ..marker.clone()
         };
-        let (resources, in_flight) = split(vec![managed, marker]);
+        let (resources, in_flight) = separate(vec![managed, marker]);
         assert_eq!(resources.len(), 1);
         assert_eq!(in_flight.len(), 1);
         assert_eq!(in_flight[0].address, address);
@@ -227,7 +229,7 @@ mod tests {
         let address = ResourceAddress::new("random_pet", "pet");
         let mut marker = marker_record(&address, "delete", "lock-1").unwrap();
         marker.state = serde_json::json!("garbage");
-        let (_, in_flight) = split(vec![marker]);
+        let (_, in_flight) = separate(vec![marker]);
         assert_eq!(in_flight[0].address, address);
         let error = refuse("tenant", &in_flight).unwrap_err().to_string();
         assert!(error.contains("random_pet.pet"), "{error}");

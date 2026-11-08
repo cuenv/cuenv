@@ -17,6 +17,7 @@ This section captures binding decisions derived from proposals and implementatio
 - [ADR-0009: Single Internal Sync Registry](/decisions/adrs/adr-0009-single-internal-sync-registry/)
 - [ADR-0010: Direct rio-vt Integration for Cuetty](/decisions/adrs/adr-0010-cuetty-direct-rio-vt-integration/)
 - [ADR-0013: Secrets in Infrastructure Resource Arguments](/decisions/adrs/adr-0013-secrets-in-infrastructure-arguments/)
+- [ADR-0014: Fencing Uncertain Infrastructure Changes and Reviewed Plans](/decisions/adrs/adr-0014-fencing-uncertain-infrastructure-changes/)
 
 ## Proposed ADRs
 

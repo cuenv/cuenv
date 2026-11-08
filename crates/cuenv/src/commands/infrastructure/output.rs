@@ -567,7 +567,8 @@ impl Output {
         resources: &[ManagedResource],
         location: Option<&str>,
     ) {
-        let (resources, in_flight) = cuenv_infrastructure::in_flight::split(resources.to_vec());
+        let (resources, in_flight) =
+            cuenv_infrastructure::in_flight::separate(resources.iter().cloned());
         let resources = resources.as_slice();
         if self.is_json() {
             let in_flight_rows: Vec<Value> = in_flight

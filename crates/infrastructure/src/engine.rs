@@ -1410,7 +1410,7 @@ impl InfrastructureEngine {
                     .to_string(),
             });
         }
-        let (stored, in_flight) = in_flight::split(self.store.list(&self.tenant).await?);
+        let (stored, in_flight) = in_flight::separate(self.store.list(&self.tenant).await?);
         // Importing the object records the outcome of its own change in
         // flight; any other change in flight still blocks.
         let (own_marker, others): (Vec<_>, Vec<_>) = in_flight
@@ -1585,7 +1585,7 @@ impl InfrastructureEngine {
 
     async fn plan_resources(&mut self, mode: PlanMode) -> Result<Plan> {
         self.output_sensitivity.clear();
-        let (stored, in_flight) = in_flight::split(self.store.list(&self.tenant).await?);
+        let (stored, in_flight) = in_flight::separate(self.store.list(&self.tenant).await?);
         in_flight::refuse(&self.tenant.to_string(), &in_flight)?;
         let stored: BTreeMap<ResourceAddress, ManagedResource> = stored
             .into_iter()
@@ -2257,7 +2257,7 @@ impl InfrastructureEngine {
         &self,
         plan: &Plan,
     ) -> Result<BTreeMap<ResourceAddress, ManagedResource>> {
-        let (stored, in_flight) = in_flight::split(self.store.list(&self.tenant).await?);
+        let (stored, in_flight) = in_flight::separate(self.store.list(&self.tenant).await?);
         in_flight::refuse(&self.tenant.to_string(), &in_flight)?;
         let stored: BTreeMap<ResourceAddress, ManagedResource> = stored
             .into_iter()
