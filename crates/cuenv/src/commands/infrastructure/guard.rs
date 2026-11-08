@@ -113,17 +113,21 @@ pub(super) async fn guard_selection(
     }
 }
 
-/// The addresses recorded for a tenant, read without decoding the records, so
-/// a damaged record never hides the others (or the guard itself).
+/// The managed addresses recorded for a tenant, read without decoding the
+/// records, so a damaged record never hides the others (or the guard
+/// itself). In-flight markers are not managed resources: the plan refuses
+/// them on its own, and they must not count as state an identity holds.
 pub(super) async fn recorded_addresses(
     context: &CommandContext<'_>,
     tenant: &TenantKey,
 ) -> Result<Vec<ResourceAddress>, CliError> {
-    context
+    let mut addresses = context
         .interrupts
         .until_interrupted(context.store.addresses(tenant))
         .await?
-        .map_err(|error| failure(&error, context.invocation))
+        .map_err(|error| failure(&error, context.invocation))?;
+    addresses.retain(|address| !cuenv_infrastructure::in_flight::is_marker(address));
+    Ok(addresses)
 }
 
 /// State is recorded separately for runs with and without `--env`; this

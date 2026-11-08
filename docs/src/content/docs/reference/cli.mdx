@@ -602,9 +602,8 @@ resource argument secrets are never resolved by destroy, import or state command
   tenant's, not private to you) is named in the error, which says to move it
   aside. There is one file format (version 1). Without `--env`, a note lists the
   declared environments that have unrecorded changes.
-- `state adopt`: make this project's CUE instance (`<directory>:<package>`)
-  the owner of its state, under the lock, and print the previous and the new
-  owner. Use it after moving a project to another directory or package.
+- `state adopt`: deprecated; does nothing but print a deprecation warning. A
+  project's state follows it wherever its directory moves.
 - `unlock`: without an identifier, show who holds the lock and since when
   (exit `0`, also when no lock is held; without `--env` it also lists locks held
   in the project's declared environments); with one, release exactly that lock.
@@ -771,16 +770,11 @@ an undeclared `dependsOn` or provider, an invalid state URL) in any
 environment, selected or not, is a CUE evaluation error and fails every
 command that evaluates the project (`cuenv fmt` and the shell hook, `cuenv export --shell`, included), deliberately fail-closed (exit code `3`).
 
-**Ownership:** the first `apply` or `destroy` records the project's CUE
-instance as the owner of its state, under the lock. `plan`, `apply`,
-`destroy`, `state remove` and `state recover` with pending changes from any
-other instance with the same module path, project name and selected environment
-(for example a nested module declaring the same module path) are refused
-(exit code `5`); the error points at `state adopt`. `state remove` and
-`state recover` check the recorded owner after taking the lock, before changing
-state or deleting saved recovery files; `--force` does not bypass ownership.
-These commands keep unowned state unowned. `state list`, `unlock` and
-`state recover` with nothing to recover do not check the owner.
+**Last writer:** taking the lock to change state records the CUE instance
+(`<directory>:<package>`) as the state's last writer. It is information only
+and never refuses a run: `plan` notes when the last writer was another
+directory, and with S3 state rename detection uses it. There is no ownership
+check (ADR-0012).
 
 **Tables and read-only access:** every write happens under the lock, and the
 state tables are created or upgraded right before the lock is taken. A schema
@@ -827,8 +821,7 @@ Every payload below carries `tenant` (module path and project,
   `lockIdentifier`, `holder`, `acquiredAt`, `unlockCommand`).
 - `state remove`: `removed` (the address).
 - `state recover`: `recovered` (the addresses recorded).
-- `state adopt`: `previousOwner` (`instance`, `claimedAt`, or `null`)
-  and `owner` (`instance`, `claimedAt`).
+- `state adopt`: `changed` (always `false`); it is deprecated and does nothing.
 - `unlock`: `lock` (`lockIdentifier`, `holder`, `acquiredAt`, or
   `null` when unlocked) and `released`.
 

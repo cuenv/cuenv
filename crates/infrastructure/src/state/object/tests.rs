@@ -294,6 +294,65 @@ async fn a_vanished_state_object_is_never_recreated_from_empty() {
 }
 
 #[tokio::test]
+async fn restore_keeps_changes_in_flight_and_never_revives_cleared_ones() {
+    let server = FakeS3::start().await.unwrap();
+    let store = store(&server);
+    let restore_lock = StateLock::generate();
+    let restore = |serial: u64| RestoreRequest {
+        serial: Some(serial),
+        holder: "restore",
+        lock: &restore_lock,
+    };
+    let lock = take(&store, None).await;
+    store
+        .put(&tenant(), &lock, &record("pet", "a"))
+        .await
+        .unwrap();
+    store.unlock(&tenant(), &lock).await.unwrap();
+    let before_marker = store.history(&tenant()).await.unwrap()[0].serial;
+
+    let address = ResourceAddress::new("random_pet", "cat");
+    let lock = take(&store, None).await;
+    let marker =
+        crate::in_flight::marker_record(&address, "create", &lock.lock_identifier).unwrap();
+    store.put(&tenant(), &lock, &marker).await.unwrap();
+    store.unlock(&tenant(), &lock).await.unwrap();
+    let with_marker = store
+        .history(&tenant())
+        .await
+        .unwrap()
+        .last()
+        .unwrap()
+        .serial;
+
+    // Rewinding to before the change keeps it fenced.
+    store
+        .restore(&tenant(), &restore(before_marker))
+        .await
+        .unwrap();
+    let (resources, in_flight) = crate::in_flight::separate(store.list(&tenant()).await.unwrap());
+    assert_eq!(resources.len(), 1);
+    assert_eq!(in_flight.len(), 1);
+    assert_eq!(in_flight[0].address, address);
+
+    // Once cleared, a snapshot taken while it was in flight does not bring
+    // the marker back.
+    let lock = take(&store, None).await;
+    store
+        .delete(&tenant(), &lock, &marker.address)
+        .await
+        .unwrap();
+    store.unlock(&tenant(), &lock).await.unwrap();
+    store
+        .restore(&tenant(), &restore(with_marker))
+        .await
+        .unwrap();
+    let (resources, in_flight) = crate::in_flight::separate(store.list(&tenant()).await.unwrap());
+    assert_eq!(resources.len(), 1);
+    assert!(in_flight.is_empty(), "{in_flight:?}");
+}
+
+#[tokio::test]
 async fn restore_rewinds_records_with_fresh_generations_and_keeps_serials_rising() {
     let server = FakeS3::start().await.unwrap();
     let store = store(&server);
