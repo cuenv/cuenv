@@ -28,6 +28,7 @@ hex = { workspace = true }
 hmac = { workspace = true }
 hyper-util = { workspace = true }
 percent-encoding = { workspace = true }
+pgp = { workspace = true }
 prost = { workspace = true }
 quick-xml = { workspace = true }
 reqwest = { workspace = true }

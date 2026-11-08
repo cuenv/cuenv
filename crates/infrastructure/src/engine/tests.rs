@@ -110,6 +110,7 @@ async fn provider_install_source_is_validated_before_provider_launch() {
         version: Some("3.7.2".into()),
         path: Some("provider".into()),
         schema_digest: None,
+        signing_keys: Vec::new(),
         configuration: serde_json::Map::new(),
     };
     let error = engine
@@ -123,6 +124,7 @@ async fn provider_install_source_is_validated_before_provider_launch() {
         version: None,
         path: None,
         schema_digest: None,
+        signing_keys: Vec::new(),
         configuration: serde_json::Map::new(),
     };
     let error = engine
@@ -215,6 +217,7 @@ fn provider(version: Option<&str>, path: Option<&str>) -> InfrastructureProvider
         version: version.map(str::to_owned),
         path: path.map(str::to_owned),
         schema_digest: None,
+        signing_keys: Vec::new(),
         configuration: serde_json::Map::new(),
     }
 }
@@ -414,6 +417,7 @@ async fn invalid_unused_provider_fails_before_any_declared_provider_launches() {
             version: None,
             path: Some(binary.display().to_string()),
             schema_digest: None,
+            signing_keys: Vec::new(),
             configuration: serde_json::Map::new(),
         },
     );
@@ -424,6 +428,7 @@ async fn invalid_unused_provider_fails_before_any_declared_provider_launches() {
             version: None,
             path: None,
             schema_digest: None,
+            signing_keys: Vec::new(),
             configuration: serde_json::Map::new(),
         },
     );

@@ -737,6 +737,12 @@ pub struct InfrastructureProvider {
     )]
     pub schema_digest: Option<String>,
 
+    /// OpenPGP fingerprints of the keys allowed to sign the release's
+    /// `SHA256SUMS`. Empty for the default policy: HashiCorp's key for
+    /// `hashicorp/` providers, otherwise any key the registry lists.
+    #[serde(default, rename = "signingKeys", skip_serializing_if = "Vec::is_empty")]
+    pub signing_keys: Vec<String>,
+
     /// Provider configuration block.
     #[serde(default, deserialize_with = "deserialize_configuration")]
     pub configuration: serde_json::Map<String, serde_json::Value>,

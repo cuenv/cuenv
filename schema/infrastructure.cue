@@ -457,6 +457,12 @@ _s3LoopbackEndpoint:  "^(?i:http)://((?i:localhost)|\(_tursoLoopback4)|\\[::1\\]
 	// provider whose schema has a different digest.
 	schemaDigest?: string & =~"^sha256:[0-9a-f]{64}$"
 
+	// OpenPGP fingerprints (40 or 64 hex digits, spaces allowed) of the keys
+	// allowed to sign the release's SHA256SUMS. By default HashiCorp's key
+	// is required for `hashicorp/` providers and any key the registry lists
+	// is accepted for others; set this to anchor trust in a known key.
+	signingKeys?: [...string & =~"^[0-9A-Fa-f ]{40,79}$"]
+
 	// Provider configuration block, validated by the provider's schema. A
 	// generated `#Provider` types it with its `#Configuration`.
 	configuration?: {...}
