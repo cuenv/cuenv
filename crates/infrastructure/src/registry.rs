@@ -17,8 +17,11 @@
 //! `cuenv.lock` pins the provider (`cuenv infrastructure provider add`),
 //! [`ProviderInstaller::ensure_pinned`] also requires the pinned archive
 //! SHA-256, both for a download and for a cached install, so the registry
-//! cannot change the release after it was pinned. The registry's GPG
-//! signature over `SHA256SUMS` is not verified yet.
+//! cannot change the release after it was pinned. Every download also
+//! checks the release's signed `SHA256SUMS` ([`signature`]): the signature
+//! must come from a key the trust policy accepts (a provider's
+//! `signingKeys`, HashiCorp's key for `hashicorp/` providers, otherwise any
+//! key the registry lists), and `SHA256SUMS` must list the archive.
 //!
 //! On install cuenv writes a sidecar manifest (`.cuenv-provider.json`) into
 //! the install directory recording the exact provider executable name, its
@@ -28,6 +31,13 @@
 //! Directories populated by Terraform itself (for example through a shared
 //! `TF_PLUGIN_CACHE_DIR`) carry no manifest, so cuenv reinstalls them once,
 //! after which Terraform and cuenv share the result.
+//!
+//! A pinned provider's cache is anchored to the pin: the install directory
+//! keeps the verified archive, and reuse requires that archive to hash to
+//! the pin in `cuenv.lock` (committed, so trusted) and the executable to
+//! match its entry in that archive. Replacing the executable, the manifest
+//! and the archive together no longer passes. An install without the kept
+//! archive (from an earlier cuenv, or by Terraform) is reinstalled.
 //!
 //! Known limitations of the cache check for providers `cuenv.lock` does not
 //! pin:
@@ -62,11 +72,21 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::{InfrastructureError, Result};
 
+pub mod signature;
+pub use signature::SigningTrust;
+
 /// Default provider registry host.
 pub const DEFAULT_REGISTRY: &str = "registry.terraform.io";
 
 /// Name of the sidecar manifest cuenv writes into each install directory.
 const MANIFEST_FILE_NAME: &str = ".cuenv-provider.json";
+
+/// Name of the verified archive kept in each install directory, which
+/// anchors a pinned provider's executable to its pin.
+const KEPT_ARCHIVE_FILE_NAME: &str = ".cuenv-provider-archive.zip";
+
+/// Largest `SHA256SUMS` document or signature read.
+const MAXIMUM_SIGNED_SUMS_BYTES: u64 = 1024 * 1024;
 
 /// Directory under the cache root holding in-progress installs.
 const STAGING_DIRECTORY_NAME: &str = ".cuenv-staging";
@@ -382,6 +402,37 @@ struct DownloadInformation {
     download_url: String,
     shasum: String,
     filename: String,
+    #[serde(default)]
+    shasums_url: String,
+    #[serde(default)]
+    shasums_signature_url: String,
+    #[serde(default)]
+    signing_keys: SigningKeys,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SigningKeys {
+    #[serde(default)]
+    gpg_public_keys: Vec<PublishedKey>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishedKey {
+    ascii_armor: String,
+}
+
+/// A provider release to install.
+#[derive(Debug, Clone, Copy)]
+pub struct Installation<'request> {
+    /// The provider.
+    pub source: &'request ProviderSource,
+    /// Its exact version.
+    pub version: &'request str,
+    /// The hex archive SHA-256 `cuenv.lock` pins for this platform.
+    pub archive_sha256: Option<&'request str>,
+    /// Fingerprints of the keys allowed to sign the release (the provider's
+    /// `signingKeys`); empty for the default policy.
+    pub signing_keys: &'request [String],
 }
 
 /// Sidecar manifest recording what cuenv installed into a directory.
@@ -580,12 +631,31 @@ impl ProviderInstaller {
     /// version, and [`InfrastructureError::Install`] if the registry lookup,
     /// download, checksum verification or extraction fails.
     pub async fn ensure(&self, source: &ProviderSource, version: &str) -> Result<PathBuf> {
+        self.install(&Installation {
+            source,
+            version,
+            archive_sha256: None,
+            signing_keys: &[],
+        })
+        .await
+    }
+
+    /// Return the provider executable of `installation`, installing it if
+    /// not cached; see [`Self::ensure`] and [`Self::ensure_pinned`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ensure_pinned`], and [`InfrastructureError::Configuration`]
+    /// for a signing key that is not a fingerprint.
+    pub async fn install(&self, installation: &Installation<'_>) -> Result<PathBuf> {
+        let trust = SigningTrust::for_source(installation.source, installation.signing_keys)?;
         self.ensure_release(
             &ProviderRelease {
-                source: source.clone(),
-                version: version.to_string(),
+                source: installation.source.clone(),
+                version: installation.version.to_string(),
             },
-            None,
+            installation.archive_sha256,
+            &trust,
         )
         .await
     }
@@ -606,13 +676,12 @@ impl ProviderInstaller {
         version: &str,
         archive_sha256: &str,
     ) -> Result<PathBuf> {
-        self.ensure_release(
-            &ProviderRelease {
-                source: source.clone(),
-                version: version.to_string(),
-            },
-            Some(archive_sha256),
-        )
+        self.install(&Installation {
+            source,
+            version,
+            archive_sha256: Some(archive_sha256),
+            signing_keys: &[],
+        })
         .await
     }
 
@@ -621,21 +690,15 @@ impl ProviderInstaller {
         &self,
         release: &ProviderRelease,
         pinned_archive_sha256: Option<&str>,
+        trust: &SigningTrust,
     ) -> Result<PathBuf> {
         let ProviderRelease { source, version } = release;
         let directory = self.install_directory(source, version)?;
-        if let Some(installation) = self.cached_installation(&directory, release).await? {
-            match pinned_archive_sha256 {
-                Some(pin) if !installation.archive_sha256.eq_ignore_ascii_case(pin) => {
-                    tracing::info!(
-                        directory = %directory.display(),
-                        cached = %installation.archive_sha256,
-                        pinned = %pin,
-                        "cached provider came from a different archive than cuenv.lock pins; reinstalling"
-                    );
-                }
-                _ => return Ok(installation.binary),
-            }
+        if let Some(installation) = self
+            .cached_installation(&directory, release, pinned_archive_sha256)
+            .await?
+        {
+            return Ok(installation.binary);
         }
         let pin_mismatch = |actual: &str, pin: &str| {
             InfrastructureError::install(format!(
@@ -683,6 +746,8 @@ impl ProviderInstaller {
         {
             return Err(pin_mismatch(&archive_sha256, pin));
         }
+        self.verify_signed_sums(&download, &format!("{source} {version}"), trust)
+            .await?;
 
         let request = InstallationRequest {
             release: release.clone(),
@@ -738,6 +803,9 @@ impl ProviderInstaller {
                     "{source} has no version {version} in its registry"
                 ))
             })?;
+        let trust = SigningTrust::for_source(source, &[])?;
+        let release = format!("{source} {version}");
+        let mut sums: Option<Vec<u8>> = None;
         let mut checksums = BTreeMap::new();
         for platform in published.platforms {
             if !is_valid_registry_name(&platform.os) || !is_valid_registry_name(&platform.arch) {
@@ -760,6 +828,14 @@ impl ProviderInstaller {
                     platform.os, platform.arch
                 )));
             }
+            // Every platform's archive must be in the release's signed
+            // SHA256SUMS, so a pin never records an unsigned archive.
+            if sums.is_none() {
+                sums = Some(self.verify_signed_sums(&download, &release, &trust).await?);
+            }
+            if let Some(sums) = &sums {
+                signature::require_listed(sums, &download.filename, &shasum)?;
+            }
             checksums.insert(format!("{}_{}", platform.os, platform.arch), shasum);
         }
         if checksums.is_empty() {
@@ -775,15 +851,25 @@ impl ProviderInstaller {
         &self,
         directory: &Path,
         release: &ProviderRelease,
+        pinned_archive_sha256: Option<&str>,
     ) -> Result<Option<VerifiedInstallation>> {
         let cache_directory = self.cache_directory.clone();
         let directory = directory.to_path_buf();
         let release = release.clone();
+        let pin = pinned_archive_sha256.map(str::to_string);
         tokio::task::spawn_blocking(move || {
             if std::fs::symlink_metadata(&directory).is_err() {
                 return None;
             }
-            match verified_installation(&cache_directory, &directory, &release) {
+            let verified = verified_installation(&cache_directory, &directory, &release).and_then(
+                |installation| match &pin {
+                    Some(pin) => {
+                        anchor_to_pin(&directory, &installation, pin).map(|()| installation)
+                    }
+                    None => Ok(installation),
+                },
+            );
+            match verified {
                 Ok(installation) => Some(installation),
                 Err(error) => {
                     tracing::info!(
@@ -838,6 +924,58 @@ impl ProviderInstaller {
             .await
             .map_err(|error| InfrastructureError::input_output("write provider archive", error))?;
         Ok(hex::encode(hasher.finalize()))
+    }
+
+    /// Fetch the release's `SHA256SUMS` and its signature, verify the
+    /// signature under `trust`, and require it to list `download`'s archive.
+    /// Returns the verified `SHA256SUMS`.
+    async fn verify_signed_sums(
+        &self,
+        download: &DownloadInformation,
+        release: &str,
+        trust: &SigningTrust,
+    ) -> Result<Vec<u8>> {
+        for url in [&download.shasums_url, &download.shasums_signature_url] {
+            if !url.starts_with("https://") {
+                return Err(InfrastructureError::install(format!(
+                    "{release}: the registry names no HTTPS location for the signed SHA256SUMS; \
+                     refusing an unsigned release"
+                )));
+            }
+        }
+        let fetch = |url: String, description: &'static str| async move {
+            let mut response = self.get(&url).await?;
+            read_limited_body(&mut response, MAXIMUM_SIGNED_SUMS_BYTES)
+                .await
+                .map_err(|_| {
+                    InfrastructureError::install(format!(
+                        "{release}: the {description} at {url} could not be read within \
+                         {MAXIMUM_SIGNED_SUMS_BYTES} bytes"
+                    ))
+                })
+        };
+        let sums = fetch(download.shasums_url.clone(), "SHA256SUMS").await?;
+        let signed = fetch(
+            download.shasums_signature_url.clone(),
+            "SHA256SUMS signature",
+        )
+        .await?;
+        let keys: Vec<String> = download
+            .signing_keys
+            .gpg_public_keys
+            .iter()
+            .map(|key| key.ascii_armor.clone())
+            .collect();
+        let fingerprint = signature::verify(&signature::SignedSums {
+            release,
+            sums: &sums,
+            signature: &signed,
+            keys: &keys,
+            trust,
+        })?;
+        tracing::debug!(%release, %fingerprint, "verified the release's signed SHA256SUMS");
+        signature::require_listed(&sums, &download.filename, download.shasum.trim())?;
+        Ok(sums)
     }
 
     async fn providers_base_url(&self, hostname: &str) -> Result<String> {
@@ -997,7 +1135,12 @@ fn is_provider_file_name(filename: &str, type_name: &str) -> bool {
 struct VerifiedInstallation {
     /// The provider executable.
     binary: PathBuf,
-    /// Hex SHA-256 of the archive it was extracted from.
+    /// Its file name in the archive.
+    filename: String,
+    /// Hex SHA-256 of the executable, as hashed during verification.
+    sha256: String,
+    /// Hex SHA-256 of the archive it was extracted from, as the manifest
+    /// records it.
     archive_sha256: String,
 }
 
@@ -1058,8 +1201,46 @@ fn verified_installation(
     }
     Ok(VerifiedInstallation {
         binary,
+        filename: manifest.filename,
+        sha256: actual,
         archive_sha256: manifest.archive_sha256,
     })
+}
+
+/// Anchor a cached install to the pinned archive SHA-256: the kept archive
+/// must hash to the pin, and the executable must equal its entry in that
+/// archive. The manifest alone is never trusted for a pinned provider.
+fn anchor_to_pin(directory: &Path, installation: &VerifiedInstallation, pin: &str) -> Result<()> {
+    let archive_path = directory.join(KEPT_ARCHIVE_FILE_NAME);
+    let archive_sha256 = hash_open_file(open_regular_file(&archive_path)?)
+        .map_err(|error| InfrastructureError::input_output("hash kept provider archive", error))?;
+    if !archive_sha256.eq_ignore_ascii_case(pin) {
+        return Err(InfrastructureError::install(format!(
+            "the kept archive has SHA-256 {archive_sha256}, but cuenv.lock pins {pin}"
+        )));
+    }
+    let archive = open_regular_file(&archive_path)?;
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(archive))
+        .map_err(|error| InfrastructureError::install(format!("invalid kept archive: {error}")))?;
+    let mut entry = zip.by_name(&installation.filename).map_err(|_| {
+        InfrastructureError::install(format!(
+            "the kept archive holds no {}",
+            installation.filename
+        ))
+    })?;
+    let mut writer = HashingWriter::new(std::io::sink());
+    std::io::copy(&mut (&mut entry).take(MAXIMUM_EXTRACTED_BYTES), &mut writer).map_err(
+        |error| InfrastructureError::input_output("hash the kept archive's executable", error),
+    )?;
+    let (_, entry_sha256) = writer.finish();
+    if entry_sha256.eq_ignore_ascii_case(&installation.sha256) {
+        Ok(())
+    } else {
+        Err(InfrastructureError::install(format!(
+            "provider executable {} does not match its entry in the pinned archive",
+            installation.binary.display()
+        )))
+    }
 }
 
 /// Write the sidecar manifest into `directory`.
@@ -1097,6 +1278,12 @@ fn install_from_archive(request: &InstallationRequest) -> Result<VerifiedInstall
             version: request.release.version.clone(),
         },
     )?;
+    // Keep the verified archive: it anchors later reuse to the pin.
+    std::fs::rename(
+        &request.archive_path,
+        request.extraction_directory.join(KEPT_ARCHIVE_FILE_NAME),
+    )
+    .map_err(|error| InfrastructureError::input_output("keep provider archive", error))?;
 
     let install_directory = &request.install_directory;
     if std::fs::symlink_metadata(install_directory).is_ok() {
@@ -1318,37 +1505,96 @@ mod tests {
         }
     }
 
-    /// A verified install of `source` 3.7.2 from an archive with hex
-    /// SHA-256 `"00" * 32`, placed where `installer` looks for it.
-    fn cached_install(installer: &ProviderInstaller, source: &ProviderSource) -> PathBuf {
+    /// A verified install of `source` 3.7.2, placed where `installer` looks
+    /// for it, with the archive it came from kept beside it. Returns the
+    /// executable and the archive's hex SHA-256.
+    fn cached_install(installer: &ProviderInstaller, source: &ProviderSource) -> (PathBuf, String) {
         let directory = installer.install_directory(source, "3.7.2").unwrap();
         std::fs::create_dir_all(&directory).unwrap();
+        let contents: &[u8] = b"#!/bin/sh\n";
+        let archive = build_zip(&[(PROVIDER_FILE, contents)]);
+        let archive_path = directory.join(KEPT_ARCHIVE_FILE_NAME);
+        std::fs::write(&archive_path, &archive).unwrap();
+        let archive_sha256 = hash_file(&archive_path).unwrap();
         let binary = directory.join(PROVIDER_FILE);
-        std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+        std::fs::write(&binary, contents).unwrap();
         write_manifest(
             &directory,
             &InstallationManifest {
                 filename: PROVIDER_FILE.to_string(),
                 sha256: hash_file(&binary).unwrap(),
-                archive_sha256: "00".repeat(32),
+                archive_sha256: archive_sha256.clone(),
                 source: source.to_string(),
                 version: "3.7.2".to_string(),
             },
         )
         .unwrap();
-        binary
+        (binary, archive_sha256)
     }
 
     #[tokio::test]
     async fn a_cached_install_of_the_pinned_archive_is_reused() {
         let cache = tempfile::tempdir().unwrap();
         let installer = ProviderInstaller::try_new(cache.path().to_path_buf()).unwrap();
-        let binary = cached_install(&installer, &random_source());
+        let (binary, pin) = cached_install(&installer, &random_source());
         let pinned = installer
-            .ensure_pinned(&random_source(), "3.7.2", &"00".repeat(32))
+            .ensure_pinned(&random_source(), "3.7.2", &pin)
             .await
             .unwrap();
         assert_eq!(pinned, binary);
+    }
+
+    #[tokio::test]
+    async fn a_pinned_cache_is_anchored_to_the_archive_not_the_manifest() {
+        let cache = tempfile::tempdir().unwrap();
+        let installer = ProviderInstaller::try_new(cache.path().to_path_buf()).unwrap();
+        // Port 1 refuses connections: a refused cache would need the network.
+        let source = ProviderSource::parse("localhost:1/hashicorp/random").unwrap();
+        let (binary, pin) = cached_install(&installer, &source);
+        let directory = binary.parent().unwrap().to_path_buf();
+        assert_eq!(
+            installer
+                .ensure_pinned(&source, "3.7.2", &pin)
+                .await
+                .unwrap(),
+            binary
+        );
+
+        // Someone who can write the cache replaces the executable and its
+        // manifest together: the manifest agrees, the pinned archive does not.
+        std::fs::write(&binary, b"#!/bin/sh\necho replaced\n").unwrap();
+        write_manifest(
+            &directory,
+            &InstallationManifest {
+                filename: PROVIDER_FILE.to_string(),
+                sha256: hash_file(&binary).unwrap(),
+                archive_sha256: pin.clone(),
+                source: source.to_string(),
+                version: "3.7.2".to_string(),
+            },
+        )
+        .unwrap();
+        let error = installer
+            .ensure_pinned(&source, "3.7.2", &pin)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("localhost:1"),
+            "reinstall attempted: {error}"
+        );
+
+        // Replacing the kept archive too cannot match the pin.
+        let forged = build_zip(&[(PROVIDER_FILE, b"#!/bin/sh\necho replaced\n".as_slice())]);
+        std::fs::write(directory.join(KEPT_ARCHIVE_FILE_NAME), forged).unwrap();
+        assert!(
+            installer
+                .ensure_pinned(&source, "3.7.2", &pin)
+                .await
+                .is_err()
+        );
+
+        // An unpinned provider still trusts the manifest (documented).
+        assert_eq!(installer.ensure(&source, "3.7.2").await.unwrap(), binary);
     }
 
     #[tokio::test]
@@ -1357,7 +1603,7 @@ mod tests {
         let installer = ProviderInstaller::try_new(cache.path().to_path_buf()).unwrap();
         // Port 1 refuses connections: reinstalling fails without the network.
         let source = ProviderSource::parse("localhost:1/hashicorp/random").unwrap();
-        cached_install(&installer, &source);
+        let _ = cached_install(&installer, &source);
         assert!(installer.ensure(&source, "3.7.2").await.is_ok());
         let error = installer
             .ensure_pinned(&source, "3.7.2", &"11".repeat(32))

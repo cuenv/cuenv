@@ -70,7 +70,7 @@ use crate::references::{
     SourceAddress,
 };
 use crate::registry::{
-    ProviderInstaller, ProviderSource, current_platform, default_cache_directory,
+    Installation, ProviderInstaller, ProviderSource, current_platform, default_cache_directory,
 };
 use crate::schema::{Block, ProviderSchema, Schema};
 use crate::secrets::Secrets;
@@ -3529,7 +3529,14 @@ impl InfrastructureEngine {
             .unwrap_or_else(default_cache_directory);
         let installer = ProviderInstaller::try_new(cache)?;
         let Some(locked) = self.options.locked_providers.get(&source.to_string()) else {
-            return installer.ensure(source, version).await;
+            return installer
+                .install(&Installation {
+                    source,
+                    version,
+                    archive_sha256: None,
+                    signing_keys: &declaration.signing_keys,
+                })
+                .await;
         };
         if locked.version != version {
             return Err(InfrastructureError::configuration(format!(
@@ -3547,7 +3554,12 @@ impl InfrastructureEngine {
             ))
         })?;
         installer
-            .ensure_pinned(source, version, archive_sha256)
+            .install(&Installation {
+                source,
+                version,
+                archive_sha256: Some(archive_sha256),
+                signing_keys: &declaration.signing_keys,
+            })
             .await
     }
 
