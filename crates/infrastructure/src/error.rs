@@ -285,6 +285,22 @@ pub enum InfrastructureError {
         directory: String,
     },
 
+    /// Earlier runs started provider changes whose outcome was never
+    /// recorded in the shared state backend.
+    #[error(
+        "{tenant} has provider changes whose outcome was never recorded: {}; the provider may \
+         have changed these objects. Record each outcome (recover the change saved on the machine \
+         that ran it, or import the object) or, after checking the object, remove its marker \
+         record before planning",
+        changes.join(", ")
+    )]
+    ChangesInFlight {
+        /// Tenant with changes in flight.
+        tenant: String,
+        /// Each change: its address, step, start time, lock and marker.
+        changes: Vec<String>,
+    },
+
     /// The run was interrupted between resources.
     #[error(
         "interrupted after applying {completed} of {total} changes; every applied change is recorded"

@@ -3176,6 +3176,87 @@ async fn planning_refuses_while_unrecorded_changes_are_pending() {
 }
 
 #[tokio::test]
+async fn planning_and_applying_refuse_while_a_change_is_in_flight() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut engine = engine(Arc::clone(&store), directory.path());
+    let lock = store.lock(&tenant(), "other runner").await.unwrap();
+    let address = ResourceAddress::new("random_pet", "pet");
+    let marker =
+        crate::in_flight::marker_record(&address, "create", &lock.lock_identifier).unwrap();
+    store.put(&tenant(), &lock, &marker).await.unwrap();
+    assert!(store.unlock(&tenant(), &lock).await.unwrap());
+
+    for mode in [PlanMode::Apply, PlanMode::Destroy] {
+        let error = engine.plan(mode).await.unwrap_err();
+        let message = error.to_string();
+        assert!(
+            matches!(error, InfrastructureError::ChangesInFlight { .. }),
+            "{message}"
+        );
+        assert!(
+            message.contains("random_pet.pet (create started"),
+            "{message}"
+        );
+        assert!(
+            message.contains("cuenv_inflight.random_pet-pet"),
+            "{message}"
+        );
+        assert!(!message.contains("cuenv infrastructure"), "{message}");
+    }
+
+    // A plan made before the marker appeared is refused under the lock too.
+    let lock = store.lock(&tenant(), "apply").await.unwrap();
+    let error = engine
+        .apply(
+            &plan_of(Vec::new()),
+            ApplyContext { lock: &lock },
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, InfrastructureError::ChangesInFlight { .. }),
+        "{error}"
+    );
+
+    // Removing the marker record clears the way.
+    store
+        .delete(
+            &tenant(),
+            &lock,
+            &crate::in_flight::marker_address(&address),
+        )
+        .await
+        .unwrap();
+    assert!(store.unlock(&tenant(), &lock).await.unwrap());
+    assert!(
+        engine
+            .plan(PlanMode::Apply)
+            .await
+            .unwrap()
+            .changes
+            .is_empty()
+    );
+}
+
+#[test]
+fn the_in_flight_marker_type_cannot_be_declared() {
+    let mut infrastructure = infrastructure();
+    infrastructure
+        .providers
+        .insert("cuenv".to_string(), provider(Some("1.0.0"), None));
+    infrastructure
+        .resources
+        .insert("x".to_string(), declaration("cuenv_inflight", &[]));
+    let error = message(validate_configuration(&infrastructure, None).unwrap_err());
+    assert!(
+        error.contains("reserved for cuenv's in-flight change markers"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn planning_after_a_stop_request_is_interrupted() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());

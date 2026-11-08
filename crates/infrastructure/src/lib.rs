@@ -20,6 +20,7 @@ pub mod cancellation;
 pub mod cue_types;
 pub mod engine;
 pub mod error;
+pub mod in_flight;
 pub mod object_change;
 pub mod plugin;
 mod protocol;
@@ -43,6 +44,7 @@ pub use error::{
     InfrastructureError, Result, UnrecordedFileProblem, failure_category, strip_control_characters,
     strip_control_characters_except_newlines,
 };
+pub use in_flight::{IN_FLIGHT_RESOURCE_TYPE, InFlightChange};
 pub use state::{
     AddressingChoice, ConditionalPut, Credentials, D1Configuration, D1StateStore, HistoryEntry,
     LastWriter, LockDetails, LockInformation, LockRequest, MIGRATION_FENCE_PREFIX, ManagedResource,

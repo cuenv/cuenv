@@ -21,6 +21,14 @@ pub trait StateStore: Send + Sync {
         None
     }
 
+    /// The CUE package this store keys state by, for a backend whose state
+    /// identity includes the package (object storage). Local recovery files
+    /// are scoped to it, so one package never recovers another's change.
+    /// `None` for backends whose state every package shares.
+    fn recovery_scope(&self) -> Option<String> {
+        None
+    }
+
     /// Create tables and indexes if they do not exist, and bring the schema
     /// up to date.
     ///
