@@ -8,8 +8,10 @@
 //! as MessagePack against the identity schema, and upgrades data written
 //! against an older identity schema version with `UpgradeResourceIdentity`.
 //!
-//! Identity is never a secret and never shapes a plan. Data a provider returns
-//! for a type without an identity schema is ignored, as Terraform does.
+//! Identity is never a secret and never shapes a plan. Identity data for a
+//! type without an identity schema is refused as a provider defect (after an
+//! apply, the change is still recorded and a warning keeps the earlier
+//! identity).
 
 use std::collections::BTreeMap;
 
@@ -83,26 +85,32 @@ pub(super) async fn fetch(client: &ProviderClient) -> Result<IdentitySchemas> {
 }
 
 /// Identity data a provider returned, checked against `schema` and
-/// re-encoded as MessagePack for later calls. `None` when there is none, or
-/// the type has no identity schema.
+/// re-encoded as MessagePack for later calls. `None` when there is none.
 ///
 /// # Errors
 ///
 /// Returns [`InfrastructureError::Plugin`] when the data does not match the
-/// identity schema or holds unknown values.
+/// identity schema, or arrives for a type without one.
 pub(super) fn received(
     schema: Option<&IdentitySchema>,
     data: Option<&ResourceIdentityData>,
     context: &str,
 ) -> Result<Option<Vec<u8>>> {
-    let (Some(schema), Some(value)) = (schema, data.and_then(|data| data.identity_data.as_ref()))
-    else {
+    let Some(value) = data.and_then(|data| data.identity_data.as_ref()) else {
         return Ok(None);
     };
+    if value.message_pack.is_empty() && value.json.is_empty() {
+        return Ok(None);
+    }
+    // Identity data is decoded against its schema; data for a type without
+    // one is a provider defect, not something to store or drop silently.
+    let Some(schema) = schema else {
+        return Err(InfrastructureError::plugin(format!(
+            "{context}: the provider returned identity data without declaring an identity \
+             schema for the resource type"
+        )));
+    };
     let decoded = if value.message_pack.is_empty() {
-        if value.json.is_empty() {
-            return Ok(None);
-        }
         type_system::from_json_bytes(&value.json, &schema.value_type)
     } else {
         type_system::from_message_pack(&value.message_pack, &schema.value_type)
@@ -259,9 +267,16 @@ mod tests {
     }
 
     #[test]
-    fn identity_without_a_schema_is_ignored_and_mismatches_are_refused() {
+    fn identity_without_a_schema_and_mismatches_are_refused() {
         let data = identity(r#"{"id":"i-1","region":"eu-west-1"}"#);
-        assert_eq!(received(None, Some(&data), "read").unwrap(), None);
+        let error = received(None, Some(&data), "read x")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("without declaring an identity schema"),
+            "{error}"
+        );
+        assert_eq!(received(None, None, "read").unwrap(), None);
         assert_eq!(to_stored(None, Some(b"\x80")).unwrap(), None);
         let error = received(
             Some(&schema()),

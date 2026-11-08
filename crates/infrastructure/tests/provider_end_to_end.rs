@@ -2310,7 +2310,7 @@ async fn fake_import_rejects_unsupported_provider_responses_without_recording_st
         (json!({"type_name": "fake_repl"}), "different resource type"),
         (
             json!({"identity": true}),
-            "identity data that cuenv cannot preserve",
+            "without declaring an identity schema",
         ),
         (json!({"deferred": true}), "Invalid Deferred Response"),
     ] {
@@ -4161,16 +4161,16 @@ async fn fake_a_stopped_replacement_waits_only_for_its_own_prerequisites() -> Te
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
-async fn fake_a_replacement_deleted_but_unrecorded_is_reported_deleted_not_recreated() -> TestResult
-{
+async fn fake_a_lost_lock_stops_a_replacement_before_the_provider_acts() -> TestResult {
     let fake = Fake::new().await?;
     let versions = |version: &str| json!({"x": obj(&json!({"key": "X", "version": version}))});
     fake.converge(&versions("1"), PlanMode::Apply)
         .await?
         .applied?;
     fake.clear_journal()?;
-    // The lock is lost while the delete runs: the provider deletes the
-    // object, and recording that fails.
+    // The lock is lost as the delete starts. The in-flight marker is written
+    // under the lock before the provider is called, so that write fails and
+    // the provider never acts: nothing is deleted or left unrecorded.
     let mut engine = fake.engine(&versions("2"), &Cancellation::default())?;
     let lock = fake.store.lock(&fake.tenant, "fake").await?;
     let plan = engine.plan(PlanMode::Apply).await?;
@@ -4195,9 +4195,25 @@ async fn fake_a_replacement_deleted_but_unrecorded_is_reported_deleted_not_recre
         .await;
     engine.shutdown().await;
     assert!(applied.is_err(), "{applied:?}");
-    assert!(!fake.exists("X"), "the provider deleted the object");
-    assert_eq!(uncreated_addresses(&events), ["fake_obj.x"], "{events:?}");
-    // The next apply creates it again.
+    assert!(
+        fake.exists("X"),
+        "the provider must not act without the lock"
+    );
+    assert!(uncreated_addresses(&events).is_empty(), "{events:?}");
+    assert!(
+        !fake.journal().contains("ApplyResourceChange"),
+        "{}",
+        fake.journal()
+    );
+    assert!(
+        fake.store
+            .list(&fake.tenant)
+            .await?
+            .iter()
+            .all(|record| record.address.resource_type != "cuenv_inflight"),
+        "no marker was written without the lock"
+    );
+    // The next apply replaces it.
     fake.converge(&versions("2"), PlanMode::Apply)
         .await?
         .applied?;
@@ -4739,7 +4755,18 @@ async fn fake_write_only_provider_echo_never_enters_state_or_recovery() -> TestR
             };
             assert!(error.to_string().contains("write-only"), "{error}");
             assert!(!error.to_string().contains(ROOT_TOKEN));
-            assert!(fake.store.list(&fake.tenant).await?.is_empty());
+            // A refused apply response is an uncertain outcome: no record,
+            // but an in-flight marker (without values) fences other runners.
+            let records = fake.store.list(&fake.tenant).await?;
+            let markers: Vec<_> = records
+                .iter()
+                .filter(|record| record.address.resource_type == "cuenv_inflight")
+                .collect();
+            assert_eq!(markers.len(), records.len(), "{records:?}");
+            assert_eq!(markers.len(), usize::from(mode == "write-only-echo-apply"));
+            for marker in markers {
+                assert!(!marker.state.to_string().contains(ROOT_TOKEN));
+            }
             let engine = fake.engine(&write_only_resource(1), &Cancellation::default())?;
             assert!(engine.unrecorded_store()?.list(&fake.tenant)?.is_empty());
             engine.shutdown().await;

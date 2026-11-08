@@ -848,7 +848,19 @@ async fn infrastructure_init_restores_locked_types_from_cached_provider() -> Tes
     let binary = installation.join("terraform-provider-fake");
     fs::copy(&provider, &binary)?;
     let binary_digest = hex::encode(Sha256::digest(fs::read(&binary)?));
-    let archive_digest = "a".repeat(64);
+    // A pinned install is anchored to the archive it came from, kept beside
+    // it: the archive must hash to the pin and hold the same executable.
+    let archive = installation.join(".cuenv-provider-archive.zip");
+    {
+        let mut writer = zip::ZipWriter::new(fs::File::create(&archive)?);
+        writer.start_file(
+            "terraform-provider-fake",
+            zip::write::SimpleFileOptions::default().unix_permissions(0o755),
+        )?;
+        std::io::Write::write_all(&mut writer, &fs::read(&binary)?)?;
+        writer.finish()?;
+    }
+    let archive_digest = hex::encode(Sha256::digest(fs::read(&archive)?));
     fs::write(
         installation.join(".cuenv-provider.json"),
         serde_json::to_vec(&serde_json::json!({
@@ -1869,6 +1881,31 @@ infrastructure: {{
                 .contains("plain: Update committed remotely but returned malformed state")
         );
         fs::remove_file(lifecycle.directory.path().join("malformed-update-result"))?;
+        // The provider changed the object but its result was refused: the
+        // outcome is unrecorded, so an in-flight marker fences every runner
+        // until an operator who checked the object clears it.
+        let marker = "cuenv_inflight.fake_plain-consumer";
+        assert!(
+            store
+                .list(&tenant)
+                .await?
+                .iter()
+                .any(|row| row.address.to_string() == marker)
+        );
+        let refused = lifecycle.execute(&["plan"], &[])?;
+        assert!(!refused.status.success(), "a plan must refuse the marker");
+        let refusal = format!(
+            "{}{}",
+            String::from_utf8_lossy(&refused.stdout),
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert!(refusal.contains(marker), "{refusal}");
+        let cleared = lifecycle.execute(&["state", "remove", marker], &[])?;
+        assert!(
+            cleared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&cleared.stderr)
+        );
     }
     let rows = store.list(&tenant).await?;
     assert_eq!(rows.len(), 1);
