@@ -911,24 +911,42 @@ cuenv i diff --base origin/main -p infrastructure/dns
 
 It evaluates the working tree's configuration the way `plan` selects it (the top level, or `--env NAME`), checks the revision out into a temporary detached `git worktree`, evaluates the same path and package there, and removes the worktree again, also when the diff fails or is interrupted. A base where the project, its `infrastructure` block or the selected environment does not exist yet counts as empty, so everything is added. A base that declares the configuration but does not evaluate is an error.
 
-The output is Markdown: a summary line, then the providers, managed resources (by `type.name`) and data sources (by `data.type.name`) that were added, removed or changed, sorted by address. An added declaration lists its fields; a changed one lists the fields of `configuration`, `provider` (the provider the declaration uses) and `dependsOn` that differ, with the old and the new value:
+The output is Markdown: a unified diff, in a `diff` code block, of the selected providers, managed resources and data sources written out as JSON with sorted keys, one value per line. The header names the base revision and the commit it resolved to:
 
-```markdown
-Infrastructure changes compared with `origin/main` (`c36bbd8`). Resources: 1 added, 1 changed, 1 removed.
-
-#### Resources
-
-- **removed** `cloudflare_dns_record.legacy`
-- **added** `cloudflare_r2_bucket.bucket`
-  - `configuration.location`: `"weur"`
-  - `configuration.name`: `"assets"`
-  - `provider`: `"cloudflare"`
-- **changed** `cloudflare_workers_script.api`
-  - `configuration.bindings[0].bucket_name`: `"assets-old"` → `(output of cloudflare_r2_bucket.bucket: name)`
-  - `configuration.secret_text`: `(secret onepassword: ref="op://ci/api/token-2025")` → `(secret onepassword: ref="op://ci/api/token-2026")`
+```diff
+--- origin/main (c36bbd8)
++++ working tree
+@@ -10,21 +10,21 @@
+   "resources": {
+     "api": {
+       "configuration": {
+-        "bucket_name": "assets-old",
++        "bucket_name": "${cloudflare_r2_bucket.bucket.outputs.name}",
+         "script_name": "api",
+         "secret_text": {
+-          "ref": "op://ci/api/token-2025",
++          "ref": "op://ci/api/token-2026",
+           "resolver": "onepassword"
+         }
+       },
+       "type": "cloudflare_workers_script"
+     },
+-    "legacy": {
++    "bucket": {
+       "configuration": {
+-        "name": "legacy",
+-        "ttl": 300
++        "location": "weur",
++        "name": "assets"
+       },
+-      "type": "cloudflare_dns_record"
++      "type": "cloudflare_r2_bucket"
+     }
+   }
+ }
 ```
 
-A `#Secret` is shown as the reference it is — the resolver and the fields that name the secret — never a value; an [output reference](#import-and-connect-resources) as the output it reads, and a value CUE computes from outputs as `(computed from outputs of …)`. Only the outputs such a computed value reads are compared: a change to the rest of its expression (the text around an interpolated output, for example) does not show. Values longer than 200 characters are shortened, with their length and a SHA-256 prefix so a change still shows. When nothing changed it says so (`No infrastructure changes compared with …`). The command exits `0` whenever it computed the diff, changes or not, and non-zero only on errors.
+A `#Secret` is shown as the reference it is — the resolver and the fields that name the secret — never a value: nothing resolves it. An [output reference](#import-and-connect-resources) is shown as the output it reads (`"${<address>.outputs.<attribute>}"`), and a value CUE computes from outputs as `"computed from ${…}, ${…}"`. Only the outputs such a computed value reads are compared: a change to the rest of its expression (the text around an interpolated output, for example) does not show. When nothing changed it prints one line (`No infrastructure changes compared with …`). The command exits `0` whenever it computed the diff, changes or not, and non-zero only on errors.
 
 Generated provider types live in the git-ignored `cue.mod/gen`, so the checkout of the base has none: it borrows the working tree's wherever it has none of its own (run `cuenv infra init` first, as for any command that evaluates the project). The versions and schema digests of the base's pinned providers then come from the base's own `cuenv.lock`, so moving a pin shows as a provider change. A base whose configuration does not evaluate against the working tree's provider types (an argument the new provider release dropped, for example) fails the diff.
 

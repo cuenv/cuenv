@@ -543,12 +543,11 @@ resource argument secrets are never resolved by destroy, import or state command
   including records it would refresh ("N to refresh"), in the order `apply`
   would run them. Dependency cycles and changes that no order can apply are
   refused here, before anything changes. It takes no lock.
-- `diff --base <REVISION>`: print, as Markdown, how the configuration
-  (`-p`, `--package` and `--env` select it as for `plan`) differs from the
-  same project at a git revision such as `origin/main`: the providers,
-  resources and data sources added, removed or changed, by address, with
-  every changed field of `configuration`, `provider` and `dependsOn` as old →
-  new. Only CUE is evaluated: no state is read, no secret resolved, no
+- `diff --base <REVISION>`: print how the configuration (`-p`, `--package`
+  and `--env` select it as for `plan`) differs from the same project at a git
+  revision such as `origin/main`, as a unified diff of the providers,
+  resources and data sources written out as JSON, in a Markdown `diff` code
+  block. Only CUE is evaluated: no state is read, no secret resolved, no
   provider started and nothing sent over the network, so it needs no
   credentials. Secrets show as their reference, output references as the
   output they read. The revision is checked out into a temporary detached

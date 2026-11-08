@@ -306,11 +306,11 @@ pub enum InfrastructureCommands {
     #[command(
         about = "Show how the configuration differs from a git revision, without credentials",
         long_about = "Show how the infrastructure configuration differs from a git revision, as \
-                      Markdown: the providers, resources and data sources added, removed or \
-                      changed, with their changed fields. Only CUE is evaluated: no state is \
-                      read, no secret resolved and no provider started, so it needs no \
-                      credentials. The revision is checked out into a temporary git worktree, \
-                      removed afterwards."
+                      a unified diff of the providers, resources and data sources written out as \
+                      JSON, in a Markdown code block. Only CUE is evaluated: no state is read, \
+                      no secret resolved and no provider started, so it needs no credentials. \
+                      The revision is checked out into a temporary git worktree, removed \
+                      afterwards."
     )]
     Diff {
         /// Git revision to compare with, such as `origin/main`.
