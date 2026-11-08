@@ -975,17 +975,22 @@ infrastructure: workflows: {}
 `cuenv infrastructure plan` on pull requests that touch the project, and
 `<project>-infrastructure-apply.yml`, which runs `cuenv infrastructure apply
 --yes`. Both use the project's `ci` contributors to install cuenv and set up
-secret providers. Every apply run waits for the one in progress instead of
-cancelling it, whatever its ref.
+secret providers. The plan job runs only for same-repository pull requests,
+with a read-only token; a separate job posts the comment. An apply in
+progress is never cancelled; a newer pending apply replaces an older one,
+which is safe because every apply plans from its own commit. Changes to the
+module's `cuenv.lock` trigger both.
 
 | Field                 | Type                                         | Default    | Description                                                      |
 | --------------------- | -------------------------------------------- | ---------- | ---------------------------------------------------------------- |
-| `plan.comment`        | `bool`                                       | `true`     | Post the plan as a pull request comment that later runs edit     |
+| `plan.comment`        | `bool`                                       | `true`     | Post the plan as a pull request comment that later runs edit (from a separate job) |
+| `plan.environment`    | `string`                                     | none       | GitHub environment for the plan job alone, for read-only credentials |
 | `apply.on`            | `"push"` \| `"tag"` \| `"release"` \| `"manual"` | `"push"`   | What triggers an apply                                           |
 | `apply.branch`        | non-empty `string`                           | `"main"`   | The branch whose pushes apply, when `on` is `"push"`; manual runs from other branches skip the job |
 | `apply.tags`          | non-empty `[...string]`                      | `["v*"]`   | Tag patterns whose pushes apply, when `on` is `"tag"`            |
 | `apply.manual`        | `bool`                                       | `true`     | Also allow manual runs (`workflow_dispatch`)                     |
 | `apply.environment`   | `string`                                     | none       | GitHub environment for the apply job, for example to require approval |
+| `apply.requireReviewedPlan` | `bool`                                 | `false`    | Apply only the plan reviewed on the merged pull request (`--expect-plan` with the digest from its plan comment, or the manual `plan_digest` input). Needs `on: "push"` with `plan.comment`, or `"manual"` |
 
 - **Import names.** CUE resolves a name to the nearest enclosing field before
   an import. Generated provider packages are named `<type>_provider` so that
@@ -1288,6 +1293,7 @@ must be …`` and the URL itself is not repeated, because it may carry a token.
 | `version` | `string` | No*      | Exact version to install from the registry                         |
 | `path`    | `string` | No*      | Local provider binary (absolute or relative to the project); not empty |
 | `schemaDigest` | `string` | No | `sha256:<64 hex>` digest of the provider schema the project's generated types were made from; set by a generated `#Provider`. Plans refuse a provider whose schema has another digest |
+| `signingKeys` | `[...string]` | No | OpenPGP fingerprints (40 or 64 hex digits, spaces allowed) allowed to sign the release's `SHA256SUMS`. Default: HashiCorp's release key for `hashicorp/` providers on `registry.terraform.io`, any key the registry lists otherwise |
 | `configuration` | `{...}` | No | Provider block arguments, validated by the provider schema |
 
 \* Exactly one of `version` (strict semantic version) or `path` must be set;

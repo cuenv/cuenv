@@ -610,7 +610,7 @@ impl UnrecordedStore {
         if unrecorded_records.is_empty() {
             return Ok(Vec::new());
         }
-        let (stored, in_flight) = crate::in_flight::split(store.list(tenant).await?);
+        let (stored, in_flight) = crate::in_flight::separate(store.list(tenant).await?);
         let mut in_flight: BTreeMap<_, _> = in_flight
             .into_iter()
             .map(|change| (change.address, change.marker))
@@ -2504,7 +2504,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let (resources, in_flight) = crate::in_flight::split(state.list(&tenant).await.unwrap());
+        let (resources, in_flight) = crate::in_flight::separate(state.list(&tenant).await.unwrap());
         assert!(resources[0].same_content(&saved));
         assert_eq!(in_flight.len(), 1);
         assert_eq!(in_flight[0].address, other);

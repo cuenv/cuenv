@@ -500,7 +500,7 @@ covered by the stability promises of the other commands.
 ```bash
 cuenv infrastructure init    [-p <PATH>]
 cuenv infrastructure plan    [OPTIONS]
-cuenv infrastructure apply   [OPTIONS] [--yes] [--allow-separate-state] [--new-identity]
+cuenv infrastructure apply   [OPTIONS] [--yes] [--allow-separate-state] [--new-identity] [--expect-plan <DIGEST>]
 cuenv infrastructure destroy [OPTIONS] [--yes] [--new-identity]
 cuenv infrastructure import  <ADDRESS> <IDENTIFIER> [OPTIONS] [--new-identity]
 cuenv infrastructure state   [list | locks [--all] | pull | remove <ADDRESS> | recover [--force] [--accept-backend] | adopt] [OPTIONS]
@@ -541,7 +541,10 @@ resource argument secrets are never resolved by destroy, import or state command
 - `plan`: refresh recorded resources and show the changes `apply` would make,
   including records it would refresh ("N to refresh"), in the order `apply`
   would run them. Dependency cycles and changes that no order can apply are
-  refused here, before anything changes. It takes no lock.
+  refused here, before anything changes. It takes no lock. It ends with the
+  plan's reviewed plan digest (`Reviewed plan digest: sha256:…`;
+  `reviewedPlanDigest` in JSON): a hash of the redacted changes to real
+  infrastructure, stable across runs, which `apply --expect-plan` takes.
 - `apply`: converge on the configuration. Resources removed from
   `infrastructure.resources` are deleted. As in Terraform, `apply` takes the
   project's state lock, plans, shows the plan and asks for confirmation
@@ -562,7 +565,9 @@ resource argument secrets are never resolved by destroy, import or state command
 - `destroy`: the same flow, deleting every managed resource recorded for the
   project.
 - `state` or `state list`: list managed resources recorded for the project,
-  marking tainted ones.
+  marking tainted ones. A change whose outcome was never recorded (an
+  in-flight marker) is reported as a warning naming its marker
+  (`cuenv_inflight.<type>-<name>`), and as `inFlight` in JSON.
 - `state locks`: list every lock held in the state database, for every
   project, module and environment (not only the evaluated project's), oldest
   first: module, project, environment, lock identifier, holder, when it was
@@ -574,7 +579,8 @@ resource argument secrets are never resolved by destroy, import or state command
   escape hatch when its provider is gone, or when its record is damaged: it
   reads only the address columns, so a record whose content cannot be decoded
   can still be removed. An address that is not recorded is refused (exit code
-  `2`).
+  `2`). It also removes an in-flight marker by its address, once you have
+  checked the object it names.
 - `state recover`: record every change an earlier run could not record and
   saved in the user state directory
   (`$XDG_STATE_HOME/cuenv/infrastructure/unrecorded/`, by default
@@ -630,6 +636,9 @@ resource argument secrets are never resolved by destroy, import or state command
 - `-y, --yes` (`apply`, `destroy`): Skip the confirmation prompt. Required
   when standard input is not a terminal, and with `--json`. `--auto-approve`
   is accepted as an alias.
+- `--expect-plan <DIGEST>` (`apply`): apply only if the plan made under the
+  lock has this reviewed plan digest (`sha256:` and 64 hex digits, as `plan`
+  prints it). Otherwise exit `5` and apply nothing.
 - `--allow-separate-state` (`apply`): create resources whose addresses another
   state identity of the project also records (the run without `--env` when
   `--env NAME` is given, or a declared environment when it is not), as

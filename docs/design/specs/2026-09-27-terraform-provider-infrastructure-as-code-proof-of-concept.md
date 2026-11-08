@@ -840,10 +840,10 @@ experimental.
     [`2026-10-23-infrastructure-import-existing-resources.md`](2026-10-23-infrastructure-import-existing-resources.md).
 14. Parallel apply across independent resources (the dependency graph already
     says which operations are independent).
-15. Provider version constraints, lock file entries in `cuenv.lock`, and GPG
-    verification of `SHA256SUMS`. Until then the cache manifest only detects
-    accidental corruption: anyone who can write to the plugin cache can replace
-    both a binary and its manifest.
+15. Provider version constraints. (Lock file entries in `cuenv.lock` and
+    OpenPGP verification of `SHA256SUMS` are done; pinned caches are anchored
+    to the pinned archive. An unpinned cache manifest still only detects
+    accidental corruption.)
 16. Secret-typed provider arguments resolved through cuenv's secret resolvers
     instead of plaintext CUE. Resource and data source arguments take a
     `#Secret` since 0.68.0 ([#570](https://github.com/cuenv/cuenv/issues/570),

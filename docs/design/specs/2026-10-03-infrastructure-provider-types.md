@@ -302,4 +302,4 @@ it did not write.
   has about 1700 resource types).
 - Nested and collection output selection (scalar resource/data outputs and
   references are supported).
-- Verify the registry's GPG signature over `SHA256SUMS`.
+- ~~Verify the registry's GPG signature over `SHA256SUMS`.~~ Done: see `registry/signature.rs` and ADR-0014's companion how-to section.
