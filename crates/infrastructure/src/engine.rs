@@ -60,7 +60,7 @@ use crate::error::{
 use crate::in_flight;
 use crate::object_change::{PlanProblem, PlanValues, compatibility_problems, plan_problems};
 use crate::plugin::{
-    ApplyRequest, LaunchOptions, PlanRequest, ProviderClient, redact_provider_text,
+    ApplyRequest, LaunchOptions, PlanRequest, ProviderClient, ReadRequest, redact_provider_text,
 };
 use crate::protocol::{self, Diagnostic, Severity};
 #[cfg(test)]
@@ -83,6 +83,7 @@ use crate::unrecorded::UnrecordedStore;
 
 mod data_sources;
 mod evaluation;
+mod identity;
 mod schedule;
 mod sensitivity;
 mod validation;
@@ -200,6 +201,10 @@ struct ApplyStep {
     /// The planned state `planned` encodes, which the provider's result
     /// must complete; null for a delete.
     planned_value: Value,
+    /// The prior object's identity, MessagePack against the identity schema.
+    prior_identity: Option<Vec<u8>>,
+    /// The identity the plan returned, passed back verbatim on apply.
+    planned_identity: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for ApplyStep {
@@ -705,6 +710,9 @@ impl fmt::Debug for EngineSetup {
 struct LoadedProvider {
     client: ProviderClient,
     schema: ProviderSchema,
+    /// Identity schemas by resource type; empty for a provider without
+    /// resource identity.
+    identity_schemas: identity::IdentitySchemas,
     source: String,
     configured: bool,
 }
@@ -1400,11 +1408,12 @@ impl InfrastructureEngine {
                 "provider import for {address} returned a different resource type"
             )));
         }
-        if imported.identity.is_some() {
-            return Err(InfrastructureError::plugin(format!(
-                "provider import for {address} returned identity data that cuenv cannot preserve"
-            )));
-        }
+        let identity_schema = provider.identity_schemas.get(&address.resource_type);
+        let imported_identity = identity::received(
+            identity_schema,
+            imported.identity.as_ref(),
+            &format!("import {address}"),
+        )?;
         let (imported_state, imported_bytes) = sensitive_provider_value(SensitiveProviderValue {
             value: imported.state.as_ref(),
             value_type: &value_type,
@@ -1420,11 +1429,12 @@ impl InfrastructureEngine {
         self.ensure_not_stopped()?;
         let refreshed = provider
             .client
-            .read_resource(
-                &address.resource_type,
-                imported_bytes,
-                imported.private.clone(),
-            )
+            .read_resource(ReadRequest {
+                type_name: &address.resource_type,
+                current_state: imported_bytes,
+                private: imported.private.clone(),
+                current_identity: imported_identity.clone(),
+            })
             .await?;
         let (state, _) = sensitive_provider_value(SensitiveProviderValue {
             value: refreshed.new_state.as_ref(),
@@ -1443,11 +1453,12 @@ impl InfrastructureEngine {
         )?;
         reject_deferral(address, refreshed.deferred.as_ref())?;
         self.ensure_not_stopped()?;
-        if refreshed.new_identity.is_some() {
-            return Err(InfrastructureError::plugin(format!(
-                "refresh of imported {address} returned identity data that cuenv cannot preserve"
-            )));
-        }
+        let identity = identity::received(
+            identity_schema,
+            refreshed.new_identity.as_ref(),
+            &format!("refresh imported {address}"),
+        )?
+        .or(imported_identity);
         if state.is_null() {
             return Err(InfrastructureError::plugin(format!(
                 "provider import for {address} found no existing object during refresh"
@@ -1465,7 +1476,7 @@ impl InfrastructureEngine {
             dependencies,
             sensitive_attributes: sensitive,
             tainted: false,
-            identity: None,
+            identity: identity::to_stored(identity_schema, identity.as_deref())?,
             serial: 0,
             generation: write_generation(RecordVersion::Absent),
         };
@@ -2358,6 +2369,7 @@ impl InfrastructureEngine {
                     planned_state: step.planned.clone(),
                     configuration,
                     planned_private: step.planned_private.clone(),
+                    planned_identity: step.planned_identity.clone(),
                 })
                 .await?;
             // From here on the change happened: a forced exit waits for it
@@ -2473,7 +2485,14 @@ impl InfrastructureEngine {
                             has_errors && stored.is_some_and(|stored| stored.tainted)
                         }
                     },
-                    identity: None,
+                    identity: {
+                        let (identity, warning) =
+                            applied_identity(provider, &change.address, &response, stored);
+                        if let Some(warning) = warning {
+                            on_event(ApplyEvent::Warning(warning));
+                        }
+                        identity
+                    },
                     serial: 0,
                     generation: write_generation(version),
                 };
@@ -2588,6 +2607,7 @@ impl InfrastructureEngine {
                 proposed_new_state: type_system::to_message_pack(&proposed, &value_type)?,
                 configuration: configuration_bytes.clone(),
                 prior_private: step.prior_private.clone(),
+                prior_identity: step.prior_identity.clone(),
             })
             .await?;
         let mut warnings = Vec::new();
@@ -2702,6 +2722,11 @@ impl InfrastructureEngine {
             planned_private: response.planned_private,
             prior_private: step.prior_private.clone(),
             planned_value: planned,
+            prior_identity: step.prior_identity.clone(),
+            planned_identity: identity::planned(
+                provider.identity_schemas.get(&change.address.resource_type),
+                response.planned_identity.as_ref(),
+            ),
         }))
     }
 
@@ -3020,6 +3045,7 @@ impl InfrastructureEngine {
                 proposed_new_state: type_system::to_message_pack(&proposed, &value_type)?,
                 configuration: configuration_bytes.clone(),
                 prior_private: prior.private.clone(),
+                prior_identity: prior.identity.clone(),
             })
             .await?;
         let (planned, planned_bytes) = sensitive_provider_value(SensitiveProviderValue {
@@ -3071,7 +3097,13 @@ impl InfrastructureEngine {
                         Some(row),
                     ),
                     tainted: false,
-                    identity: row.identity.clone(),
+                    // The refreshed identity, so a record learns its identity
+                    // (or an upgraded one) without a change to the object.
+                    identity: identity::to_stored(
+                        provider.identity_schemas.get(&declaration.resource_type),
+                        prior.identity.as_deref(),
+                    )?
+                    .or_else(|| row.identity.clone()),
                     serial: row.serial,
                     generation: row.generation,
                 };
@@ -3093,6 +3125,11 @@ impl InfrastructureEngine {
                 planned_private: response.planned_private,
                 prior_private: prior.private,
                 planned_value: planned.clone(),
+                planned_identity: identity::planned(
+                    provider.identity_schemas.get(&declaration.resource_type),
+                    response.planned_identity.as_ref(),
+                ),
+                prior_identity: prior.identity,
             });
             change.after = planned;
             return Ok(change);
@@ -3286,12 +3323,14 @@ impl InfrastructureEngine {
                 },
                 &schema,
             )?;
+            self.ensure_not_stopped()?;
+            let identity_schemas = identity::fetch(&client).await?;
 
-            Ok::<_, InfrastructureError>(schema)
+            Ok::<_, InfrastructureError>((schema, identity_schemas))
         }
         .await;
-        let schema = match initialized {
-            Ok(schema) => schema,
+        let (schema, identity_schemas) = match initialized {
+            Ok(loaded) => loaded,
             Err(error) => {
                 client.shutdown().await;
                 return Err(error);
@@ -3304,6 +3343,7 @@ impl InfrastructureEngine {
             LoadedProvider {
                 client,
                 schema,
+                identity_schemas,
                 source: source.to_string(),
                 configured: false,
             },
@@ -3797,6 +3837,38 @@ struct Refreshed {
     /// The provider's own MessagePack for `value`, passed back verbatim.
     bytes: Vec<u8>,
     private: Vec<u8>,
+    /// The object's identity, MessagePack against the identity schema.
+    identity: Option<Vec<u8>>,
+}
+
+/// The identity to record after an apply, and a warning when the provider
+/// returned identity that cannot be kept. The change already happened, so a
+/// bad identity never fails it: the record keeps its earlier identity, as
+/// a client without identity support would.
+fn applied_identity(
+    provider: &LoadedProvider,
+    address: &ResourceAddress,
+    response: &protocol::ApplyResourceChangeResponse,
+    stored: Option<&ManagedResource>,
+) -> (Option<serde_json::Value>, Option<String>) {
+    let schema = provider.identity_schemas.get(&address.resource_type);
+    let earlier = || stored.and_then(|stored| stored.identity.clone());
+    match identity::received(
+        schema,
+        response.new_identity.as_ref(),
+        &format!("apply {address}"),
+    )
+    .and_then(|bytes| identity::to_stored(schema, bytes.as_deref()))
+    {
+        Ok(Some(identity)) => (Some(identity), None),
+        Ok(None) => (earlier(), None),
+        Err(error) => (
+            earlier(),
+            Some(format!(
+                "{error}; the earlier identity of {address} is kept"
+            )),
+        ),
+    }
 }
 
 fn delete_step(prior: &Refreshed) -> ApplyStep {
@@ -3808,6 +3880,10 @@ fn delete_step(prior: &Refreshed) -> ApplyStep {
         planned_private: prior.private.clone(),
         prior_private: prior.private.clone(),
         planned_value: Value::Null,
+        // As in Terraform, a delete carries the identity of the object it
+        // deletes.
+        prior_identity: prior.identity.clone(),
+        planned_identity: prior.identity.clone(),
     }
 }
 
@@ -3844,6 +3920,7 @@ async fn plan_destroy(input: &DestroyPlanInput<'_>, warnings: &mut Vec<String>) 
             proposed_new_state: NULL_MESSAGE_PACK.to_vec(),
             configuration: NULL_MESSAGE_PACK.to_vec(),
             prior_private: input.prior.private.clone(),
+            prior_identity: input.prior.identity.clone(),
         })
         .await?;
     let (planned, _) = sensitive_provider_value(SensitiveProviderValue {
@@ -3898,9 +3975,22 @@ async fn refresh(
     )
     .await?;
 
+    let identity_schema = provider.identity_schemas.get(type_name);
+    let current_identity = identity::from_stored(identity::StoredIdentity {
+        client: &provider.client,
+        type_name,
+        schema: identity_schema,
+        stored: row.identity.as_ref(),
+    })
+    .await?;
     let response = provider
         .client
-        .read_resource(type_name, upgraded_bytes, row.private.clone())
+        .read_resource(ReadRequest {
+            type_name,
+            current_state: upgraded_bytes,
+            private: row.private.clone(),
+            current_identity: current_identity.clone(),
+        })
         .await?;
     let (value, bytes) = sensitive_provider_value(SensitiveProviderValue {
         value: response.new_state.as_ref(),
@@ -3908,6 +3998,12 @@ async fn refresh(
         sensitive,
     })?;
     crate::write_only::check_state(&schema.block, &value, &format!("refresh {}", row.address))?;
+    let identity = identity::received(
+        identity_schema,
+        response.new_identity.as_ref(),
+        &format!("refresh {}", row.address),
+    )?
+    .or(current_identity);
     check_diagnostics(
         &format!("refresh {}", row.address),
         &response.diagnostics,
@@ -3927,6 +4023,7 @@ async fn refresh(
         value,
         bytes,
         private: response.private,
+        identity,
     }))
 }
 
@@ -4098,6 +4195,7 @@ async fn plan_create(
             proposed_new_state: type_system::to_message_pack(&proposed, &value_type)?,
             configuration: input.configuration_bytes.to_vec(),
             prior_private,
+            prior_identity: None,
         })
         .await?;
     let (planned, planned_bytes) = sensitive_provider_value(SensitiveProviderValue {
@@ -4131,6 +4229,11 @@ async fn plan_create(
             planned_private: response.planned_private,
             prior_private: prior_private_for_plan,
             planned_value: planned,
+            prior_identity: None,
+            planned_identity: identity::planned(
+                input.provider.identity_schemas.get(&address.resource_type),
+                response.planned_identity.as_ref(),
+            ),
         },
     ))
 }

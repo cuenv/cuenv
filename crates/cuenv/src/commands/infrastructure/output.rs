@@ -608,8 +608,8 @@ impl Output {
         }
         for change in &in_flight {
             emit_stderr!(format!(
-                "warning: the outcome of a {} of {} (started {} by lock {}) was never recorded; \
-                 its marker is {}",
+                "warning: the outcome of the {} of {} (started {} by lock {}) was never \
+                 recorded; its marker is {}",
                 strip_control_characters(&change.step),
                 strip_control_characters(&change.address.to_string()),
                 strip_control_characters(&change.started_at),

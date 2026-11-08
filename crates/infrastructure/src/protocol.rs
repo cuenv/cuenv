@@ -238,6 +238,8 @@ pub struct ReadResourceRequest {
     pub private: Vec<u8>,
     #[prost(message, optional, tag = "5")]
     pub client_capabilities: Option<ClientCapabilities>,
+    #[prost(message, optional, tag = "6")]
+    pub current_identity: Option<ResourceIdentityData>,
 }
 
 /// `Deferred`: the provider could not act yet and asks the client to retry
@@ -321,6 +323,8 @@ pub struct PlanResourceChangeRequest {
     pub prior_private: Vec<u8>,
     #[prost(message, optional, tag = "7")]
     pub client_capabilities: Option<ClientCapabilities>,
+    #[prost(message, optional, tag = "8")]
+    pub prior_identity: Option<ResourceIdentityData>,
 }
 
 /// `PlanResourceChange.Response`.
@@ -338,6 +342,8 @@ pub struct PlanResourceChangeResponse {
     pub legacy_type_system: bool,
     #[prost(message, optional, tag = "6")]
     pub deferred: Option<Deferred>,
+    #[prost(message, optional, tag = "7")]
+    pub planned_identity: Option<ResourceIdentityData>,
 }
 
 /// `ApplyResourceChange.Request`.
@@ -353,6 +359,8 @@ pub struct ApplyResourceChangeRequest {
     pub configuration: Option<DynamicValue>,
     #[prost(bytes = "vec", tag = "5")]
     pub planned_private: Vec<u8>,
+    #[prost(message, optional, tag = "7")]
+    pub planned_identity: Option<ResourceIdentityData>,
 }
 
 /// `ApplyResourceChange.Response`.
@@ -366,6 +374,62 @@ pub struct ApplyResourceChangeResponse {
     pub diagnostics: Vec<Diagnostic>,
     #[prost(bool, tag = "4")]
     pub legacy_type_system: bool,
+    #[prost(message, optional, tag = "5")]
+    pub new_identity: Option<ResourceIdentityData>,
+}
+
+/// `ResourceIdentitySchema.IdentityAttribute`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct IdentityAttribute {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// The attribute's cty type, as JSON.
+    #[prost(bytes = "vec", tag = "2")]
+    pub r#type: Vec<u8>,
+    #[prost(bool, tag = "3")]
+    pub required_for_import: bool,
+    #[prost(bool, tag = "4")]
+    pub optional_for_import: bool,
+    #[prost(string, tag = "5")]
+    pub description: String,
+}
+
+/// `ResourceIdentitySchema`: a resource type's versioned identity object.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ResourceIdentitySchema {
+    #[prost(int64, tag = "1")]
+    pub version: i64,
+    #[prost(message, repeated, tag = "2")]
+    pub identity_attributes: Vec<IdentityAttribute>,
+}
+
+/// `GetResourceIdentitySchemas.Response`, shared by protocols 5 and 6.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GetResourceIdentitySchemasResponse {
+    #[prost(map = "string, message", tag = "1")]
+    pub identity_schemas: HashMap<String, ResourceIdentitySchema>,
+    #[prost(message, repeated, tag = "2")]
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// `UpgradeResourceIdentity.Request`, shared by protocols 5 and 6.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UpgradeResourceIdentityRequest {
+    #[prost(string, tag = "1")]
+    pub type_name: String,
+    #[prost(int64, tag = "2")]
+    pub version: i64,
+    #[prost(message, optional, tag = "3")]
+    pub raw_identity: Option<RawState>,
+}
+
+/// `UpgradeResourceIdentity.Response`, shared by protocols 5 and 6.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct UpgradeResourceIdentityResponse {
+    #[prost(message, optional, tag = "1")]
+    pub upgraded_identity: Option<ResourceIdentityData>,
+    #[prost(message, repeated, tag = "2")]
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// Schema messages for protocol 6.
@@ -636,6 +700,54 @@ mod tests {
     fn refresh_identity_is_not_silently_discarded() -> Result<(), prost::DecodeError> {
         let response = ReadResourceResponse::decode(b"\x2a\x06\x0a\x04\x12\x02{}".as_slice())?;
         assert!(response.new_identity.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn identity_fields_use_the_upstream_tags() -> Result<(), prost::DecodeError> {
+        let identity = || {
+            Some(ResourceIdentityData {
+                identity_data: Some(DynamicValue {
+                    message_pack: vec![0x80],
+                    json: Vec::new(),
+                }),
+            })
+        };
+        // ReadResource.current_identity is 6, PlanResourceChange.prior_identity
+        // 8, ApplyResourceChange.planned_identity 7 (protocols 5.9 and 6.9).
+        let read = ReadResourceRequest {
+            current_identity: identity(),
+            ..ReadResourceRequest::default()
+        };
+        assert_eq!(read.encode_to_vec(), b"\x32\x05\x0a\x03\x0a\x01\x80");
+        let plan = PlanResourceChangeRequest {
+            prior_identity: identity(),
+            ..PlanResourceChangeRequest::default()
+        };
+        assert_eq!(plan.encode_to_vec(), b"\x42\x05\x0a\x03\x0a\x01\x80");
+        let apply = ApplyResourceChangeRequest {
+            planned_identity: identity(),
+            ..ApplyResourceChangeRequest::default()
+        };
+        assert_eq!(apply.encode_to_vec(), b"\x3a\x05\x0a\x03\x0a\x01\x80");
+        // Responses: planned_identity 7, new_identity 5.
+        let planned =
+            PlanResourceChangeResponse::decode(b"\x3a\x05\x0a\x03\x0a\x01\x80".as_slice())?;
+        assert_eq!(planned.planned_identity, identity());
+        let applied =
+            ApplyResourceChangeResponse::decode(b"\x2a\x05\x0a\x03\x0a\x01\x80".as_slice())?;
+        assert_eq!(applied.new_identity, identity());
+        // GetResourceIdentitySchemas: map entry (1) of name and schema
+        // (version 1, one attribute named "id" of type "string").
+        let schemas = GetResourceIdentitySchemasResponse::decode(
+            b"\x0a\x1b\x0a\x01t\x12\x16\x08\x01\x12\x12\x0a\x02id\x12\x08\"string\"\x18\x01 \x00"
+                .as_slice(),
+        )?;
+        let schema = &schemas.identity_schemas["t"];
+        assert_eq!(schema.version, 1);
+        assert_eq!(schema.identity_attributes[0].name, "id");
+        assert_eq!(schema.identity_attributes[0].r#type, b"\"string\"");
+        assert!(schema.identity_attributes[0].required_for_import);
         Ok(())
     }
 }
