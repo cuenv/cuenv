@@ -16,11 +16,17 @@
 //!   Files are opened with `O_NOFOLLOW`.
 //! - Files are written atomically: to a hidden temporary file, flushed to
 //!   disk, then renamed into place, so a crash never leaves half a record.
-//! - Each file names its tenant (module, project and environment), the hash
-//!   of its normalized state backend, and the version of the stored record
-//!   it replaces ([`RecordVersion`]), so [`UnrecordedStore::recover`] writes
-//!   it only to that backend while the stored record is still the one it
-//!   replaces.
+//! - Each file names its tenant (module, project and environment), the CUE
+//!   package when the backend keys state by package (object storage), the
+//!   hash of its normalized state backend, and the version of the stored
+//!   record it replaces ([`RecordVersion`]), so [`UnrecordedStore::recover`]
+//!   writes it only to that backend and package while the stored record is
+//!   still the one it replaces.
+//! - Files of every package share the tenant's directory. A file saved for
+//!   another package is not this package's: listing skips it, so it neither
+//!   blocks this package's plans nor is recovered into its state. A file
+//!   saved before files carried a package cannot be attributed, so recovering
+//!   it into a package-scoped backend needs the backend override.
 //!
 //! Recovery has two independent overrides ([`RecoverOverrides`]), each
 //! evaluated per file: overwriting a stored record that changed since the
@@ -30,6 +36,9 @@
 //!
 //! Files are grouped per tenant so one tenant's leftovers never block
 //! another. Planning refuses to run while a tenant has unrecorded changes.
+//! Recovering a change also removes its in-flight marker from the shared
+//! backend ([`crate::in_flight`]), which kept every other runner from
+//! planning while the outcome lived only in this file.
 //!
 //! The file format is JSON in camelCase throughout, with an explicit
 //! `formatVersion` (currently 1) and a `kind` marker that tells a file of a
@@ -75,6 +84,9 @@ const MAXIMUM_FILE_BYTES: u64 = 64 * 1024 * 1024;
 pub struct UnrecordedStore {
     root: PathBuf,
     backend_identity: Option<String>,
+    /// The CUE package of a backend that keys state by package; `None` for
+    /// backends whose state is shared by every package.
+    scope: Option<String>,
 }
 
 /// One saved record waiting to be written to the state store.
@@ -91,6 +103,9 @@ pub struct UnrecordedRecord {
     /// Hash of the normalized backend that could not record this change.
     /// Kept private so callers cannot bypass the store's binding check.
     backend_identity: Option<String>,
+    /// The CUE package the change was saved for, when the backend keys state
+    /// by package. Private for the same reason.
+    package: Option<String>,
 }
 
 /// What [`UnrecordedStore::recover`] does when the stored record is no
@@ -159,15 +174,28 @@ struct TenantIdentity {
     project: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     environment: Option<String>,
+    /// The CUE package, for a backend that keys state by package. Builds
+    /// that predate it refuse a file carrying it as malformed, which keeps
+    /// them from recovering it into the wrong package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    package: Option<String>,
 }
 
 impl TenantIdentity {
-    fn of(tenant: &TenantKey) -> Self {
+    fn of(tenant: &TenantKey, package: Option<&str>) -> Self {
         Self {
             module_path: tenant.module_path().to_string(),
             project: tenant.project().to_string(),
             environment: tenant.environment().map(ToString::to_string),
+            package: package.map(ToString::to_string),
         }
+    }
+
+    /// Whether both name the same module, project and environment.
+    fn same_tenant(&self, other: &Self) -> bool {
+        self.module_path == other.module_path
+            && self.project == other.project
+            && self.environment == other.environment
     }
 }
 
@@ -283,7 +311,32 @@ impl UnrecordedStore {
         Self {
             root: root.into(),
             backend_identity: None,
+            scope: None,
         }
+    }
+
+    /// Bind saved files and recovery to `store`: its backend identity, and
+    /// the CUE package when it keys state by package.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::with_backend_identity`].
+    #[must_use = "the bound store must be used to save or recover changes"]
+    pub fn bound_to(self, store: &dyn StateStore) -> Result<Self> {
+        let bound = match store.recovery_identity() {
+            Some(identity) => self.with_backend_identity(&identity)?,
+            None => self,
+        };
+        Ok(bound.with_scope(store.recovery_scope().as_deref()))
+    }
+
+    /// Scope saved files and listing to the CUE package `scope`, for a
+    /// backend that keys state by package. `None` for a backend whose state
+    /// every package shares.
+    #[must_use]
+    pub fn with_scope(mut self, scope: Option<&str>) -> Self {
+        self.scope = scope.map(ToString::to_string);
+        self
     }
 
     /// Bind saved files and ordinary recovery to a normalized state backend.
@@ -379,7 +432,7 @@ impl UnrecordedStore {
         let document = UnrecordedFile {
             kind: FILE_KIND.to_string(),
             format_version: FILE_FORMAT_VERSION,
-            tenant: TenantIdentity::of(tenant),
+            tenant: TenantIdentity::of(tenant, self.scope.as_deref()),
             backend_identity: self.backend_identity.clone(),
             saved_at: saved_at.to_rfc3339(),
             expected: put.expected,
@@ -405,15 +458,19 @@ impl UnrecordedStore {
         Ok(file)
     }
 
-    /// Whether `tenant` has any unrecorded change, without reading the
-    /// files. Cheap enough to call before taking a lock.
+    /// Whether `tenant` has any unrecorded change of this store's package.
+    /// Reads only when the tenant's directory holds files, so it stays cheap
+    /// enough to call before taking a lock.
     ///
     /// # Errors
     ///
     /// Returns [`InfrastructureError::UnrecordedFile`] when the directory
-    /// is unsafe or unreadable.
+    /// is unsafe or unreadable, or a file in it cannot be read.
     pub fn has_pending(&self, tenant: &TenantKey) -> Result<bool> {
-        Ok(!self.pending_files(tenant)?.is_empty())
+        if self.pending_files(tenant)?.is_empty() {
+            return Ok(false);
+        }
+        Ok(!self.list(tenant)?.is_empty())
     }
 
     /// The candidate files of `tenant`, oldest first, after checking both
@@ -441,7 +498,9 @@ impl UnrecordedStore {
         Ok(files)
     }
 
-    /// Every unrecorded record of `tenant`, oldest first.
+    /// Every unrecorded record of `tenant`, oldest first. Files saved for
+    /// another CUE package of a package-scoped backend are not this store's
+    /// and are skipped.
     ///
     /// # Errors
     ///
@@ -450,26 +509,35 @@ impl UnrecordedStore {
     /// another format version, belongs to another tenant, or is not private
     /// to this user.
     pub fn list(&self, tenant: &TenantKey) -> Result<Vec<UnrecordedRecord>> {
-        let identity = TenantIdentity::of(tenant);
-        self.pending_files(tenant)?
-            .into_iter()
-            .map(|file| {
-                let document = read_unrecorded_file(&file)?;
-                if document.tenant != identity {
-                    return Err(file_problem(
-                        &file,
-                        "it belongs to another tenant; move it out of this directory",
-                    ));
-                }
-                Ok(UnrecordedRecord {
-                    file,
-                    saved_at: document.saved_at,
-                    expected: document.expected,
-                    record: document.resource.into_record(),
-                    backend_identity: document.backend_identity,
-                })
-            })
-            .collect()
+        let identity = TenantIdentity::of(tenant, self.scope.as_deref());
+        let mut records = Vec::new();
+        for file in self.pending_files(tenant)? {
+            let document = read_unrecorded_file(&file)?;
+            if !document.tenant.same_tenant(&identity) {
+                return Err(file_problem(
+                    &file,
+                    "it belongs to another tenant; move it out of this directory",
+                ));
+            }
+            if let (Some(saved), Some(scope)) = (&document.tenant.package, &self.scope)
+                && saved != scope
+            {
+                tracing::debug!(
+                    file = %file.display(),
+                    "skipping an unrecorded change saved for another CUE package"
+                );
+                continue;
+            }
+            records.push(UnrecordedRecord {
+                file,
+                saved_at: document.saved_at,
+                expected: document.expected,
+                record: document.resource.into_record(),
+                backend_identity: document.backend_identity,
+                package: document.tenant.package,
+            });
+        }
+        Ok(records)
     }
 
     /// Delete a record's file once the state store holds the record.
@@ -542,9 +610,12 @@ impl UnrecordedStore {
         if unrecorded_records.is_empty() {
             return Ok(Vec::new());
         }
-        let mut retained_sensitivity: BTreeMap<_, _> = store
-            .list(tenant)
-            .await?
+        let (stored, in_flight) = crate::in_flight::split(store.list(tenant).await?);
+        let mut in_flight: BTreeMap<_, _> = in_flight
+            .into_iter()
+            .map(|change| (change.address, change.marker))
+            .collect();
+        let mut retained_sensitivity: BTreeMap<_, _> = stored
             .into_iter()
             .map(|stored| (stored.address, stored.sensitive_attributes))
             .collect();
@@ -601,6 +672,11 @@ impl UnrecordedStore {
             }
             retained_sensitivity
                 .insert(record.address.clone(), record.sensitive_attributes.clone());
+            // The saved outcome is recorded: its change is no longer in
+            // flight for other runners.
+            if let Some(marker) = in_flight.remove(&record.address) {
+                store.delete(tenant, options.lock, &marker).await?;
+            }
             self.remove(&unrecorded)?;
             tracing::info!(address = %record.address, "recovered an unrecorded change");
             recorded.push(unrecorded.record.address);
@@ -616,6 +692,21 @@ impl UnrecordedStore {
         unrecorded: &UnrecordedRecord,
         actual: Option<&str>,
     ) -> Option<&'static str> {
+        match (unrecorded.package.as_deref(), self.scope.as_deref()) {
+            (None, Some(_)) => {
+                return Some(
+                    "was saved without a CUE package, so it may belong to another package's \
+                     state in this package-scoped backend",
+                );
+            }
+            (Some(_), None) => {
+                return Some(
+                    "was saved for one CUE package of a package-scoped backend, but the store \
+                     in use is not package-scoped",
+                );
+            }
+            (Some(_), Some(_)) | (None, None) => {}
+        }
         match (
             unrecorded.backend_identity.as_deref(),
             self.backend_identity.as_deref(),
@@ -939,6 +1030,7 @@ mod tests {
     struct BoundMemoryStateStore {
         inner: MemoryStateStore,
         identity: String,
+        scope: Option<String>,
     }
 
     impl BoundMemoryStateStore {
@@ -946,6 +1038,15 @@ mod tests {
             Self {
                 inner: MemoryStateStore::new(),
                 identity: backend_identity(url),
+                scope: None,
+            }
+        }
+
+        /// A backend that keys state by the CUE package `package`.
+        fn for_package(url: &str, package: &str) -> Self {
+            Self {
+                scope: Some(package.to_string()),
+                ..Self::for_backend(url)
             }
         }
     }
@@ -954,6 +1055,10 @@ mod tests {
     impl StateStore for BoundMemoryStateStore {
         fn recovery_identity(&self) -> Option<String> {
             Some(self.identity.clone())
+        }
+
+        fn recovery_scope(&self) -> Option<String> {
+            self.scope.clone()
         }
 
         async fn migrate(&self) -> Result<()> {
@@ -2267,5 +2372,141 @@ mod tests {
                 .is_err()
         );
         assert_eq!(unrecorded.list(&web).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn package_scoped_files_are_invisible_to_and_never_recovered_by_another_package() {
+        let root = tempfile::tempdir().unwrap();
+        let url = "https://bucket.s3.example.com";
+        let state_a = BoundMemoryStateStore::for_package(url, "infra");
+        let state_b = BoundMemoryStateStore::for_package(url, "cuenv");
+        let package_a = UnrecordedStore::at(root.path()).bound_to(&state_a).unwrap();
+        let package_b = UnrecordedStore::at(root.path()).bound_to(&state_b).unwrap();
+        let tenant = tenant("web");
+        let saved = record("pet", "pending");
+        let file = save(&package_a, &tenant, &saved);
+
+        assert!(package_b.list(&tenant).unwrap().is_empty());
+        assert!(!package_b.has_pending(&tenant).unwrap());
+        let lock = state_b.lock(&tenant, "recover").await.unwrap();
+        let recovered = package_b
+            .recover(
+                &state_b,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: accept_backend(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(recovered.is_empty());
+        assert!(state_b.list(&tenant).await.unwrap().is_empty());
+        assert!(file.exists(), "another package must never remove the file");
+
+        assert!(package_a.has_pending(&tenant).unwrap());
+        let lock = state_a.lock(&tenant, "recover").await.unwrap();
+        let recovered = package_a
+            .recover(
+                &state_a,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: RecoverOverrides::default(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered, vec![saved.address.clone()]);
+        assert!(state_a.list(&tenant).await.unwrap()[0].same_content(&saved));
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn a_file_saved_without_a_package_needs_explicit_reconciliation_in_a_scoped_backend() {
+        let root = tempfile::tempdir().unwrap();
+        let url = "https://bucket.s3.example.com";
+        let legacy = bound_store(root.path(), url);
+        let state = BoundMemoryStateStore::for_package(url, "cuenv");
+        let scoped = UnrecordedStore::at(root.path()).bound_to(&state).unwrap();
+        let tenant = tenant("web");
+        let saved = record("pet", "pending");
+        let file = save(&legacy, &tenant, &saved);
+
+        assert!(scoped.has_pending(&tenant).unwrap());
+        let lock = state.lock(&tenant, "recover").await.unwrap();
+        let error = scoped
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: overwrite_changed(),
+                },
+            )
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("without a CUE package"), "{message}");
+        assert!(file.exists());
+        assert!(state.list(&tenant).await.unwrap().is_empty());
+
+        scoped
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: accept_backend(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(state.list(&tenant).await.unwrap()[0].same_content(&saved));
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn a_scoped_file_records_its_package() {
+        let root = tempfile::tempdir().unwrap();
+        let scoped =
+            bound_store(root.path(), "https://bucket.s3.example.com").with_scope(Some("infra"));
+        let file = save(&scoped, &tenant("web"), &record("pet", "pending"));
+        let document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        assert_eq!(document["tenant"]["package"], "infra");
+    }
+
+    #[tokio::test]
+    async fn recovering_a_change_clears_its_in_flight_marker_only() {
+        let root = tempfile::tempdir().unwrap();
+        let url = "libsql://state-a.turso.io";
+        let unrecorded = bound_store(root.path(), url);
+        let state = BoundMemoryStateStore::for_backend(url);
+        let tenant = tenant("web");
+        let saved = record("pet", "pending");
+        save(&unrecorded, &tenant, &saved);
+        let lock = state.lock(&tenant, "recover").await.unwrap();
+        let other = ResourceAddress::new("random_pet", "other");
+        for address in [&saved.address, &other] {
+            let marker =
+                crate::in_flight::marker_record(address, "create", &lock.lock_identifier).unwrap();
+            state.put(&tenant, &lock, &marker).await.unwrap();
+        }
+        unrecorded
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: RecoverOverrides::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let (resources, in_flight) = crate::in_flight::split(state.list(&tenant).await.unwrap());
+        assert!(resources[0].same_content(&saved));
+        assert_eq!(in_flight.len(), 1);
+        assert_eq!(in_flight[0].address, other);
     }
 }

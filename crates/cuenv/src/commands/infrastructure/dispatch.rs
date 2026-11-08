@@ -313,12 +313,9 @@ pub(super) fn unrecorded_store(
             Ok(UnrecordedStore::at(directory))
         })
         .map_err(|error| failure(&error, context.invocation))?;
-    match context.store.recovery_identity() {
-        Some(identity) => unrecorded
-            .with_backend_identity(&identity)
-            .map_err(|error| failure(&error, context.invocation)),
-        None => Ok(unrecorded),
-    }
+    unrecorded
+        .bound_to(context.store.as_ref())
+        .map_err(|error| failure(&error, context.invocation))
 }
 
 /// What a connection is for: the CUE instance whose package an object store

@@ -161,6 +161,12 @@ fn check_resources(
     let declared: BTreeSet<&String> = infrastructure.resources.keys().collect();
     for (name, declaration) in &infrastructure.resources {
         let path = format!("{resources}.{name}");
+        if declaration.resource_type == crate::in_flight::IN_FLIGHT_RESOURCE_TYPE {
+            problems.push(format!(
+                "{path}.type: '{}' is reserved for cuenv's in-flight change markers",
+                declaration.resource_type
+            ));
+        }
         let provider_name = declaration.provider_name();
         if !infrastructure.providers.contains_key(provider_name) {
             let note = scope.inheritance_note();

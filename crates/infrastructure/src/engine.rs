@@ -57,6 +57,7 @@ use crate::error::{
     ChangeFailure, IncompleteApply, InfrastructureError, Result, failure_category,
     json_error_category, strip_control_characters_except_newlines,
 };
+use crate::in_flight;
 use crate::object_change::{PlanProblem, PlanValues, compatibility_problems, plan_problems};
 use crate::plugin::{
     ApplyRequest, LaunchOptions, PlanRequest, ProviderClient, redact_provider_text,
@@ -1239,10 +1240,7 @@ impl InfrastructureEngine {
             .map_or_else(UnrecordedStore::default_location, |directory| {
                 Ok(UnrecordedStore::at(directory))
             })?;
-        match self.store.recovery_identity() {
-            Some(identity) => unrecorded.with_backend_identity(&identity),
-            None => Ok(unrecorded),
-        }
+        unrecorded.bound_to(self.store.as_ref())
     }
 
     /// Compute a plan.
@@ -1327,7 +1325,13 @@ impl InfrastructureEngine {
                     .to_string(),
             });
         }
-        let stored = self.store.list(&self.tenant).await?;
+        let (stored, in_flight) = in_flight::split(self.store.list(&self.tenant).await?);
+        // Importing the object records the outcome of its own change in
+        // flight; any other change in flight still blocks.
+        let (own_marker, others): (Vec<_>, Vec<_>) = in_flight
+            .into_iter()
+            .partition(|change| &change.address == address);
+        in_flight::refuse(&self.tenant.to_string(), &others)?;
         for record in &stored {
             register_stored_values(record, &record.sensitive_attributes);
         }
@@ -1475,6 +1479,11 @@ impl InfrastructureEngine {
             },
         )
         .await?;
+        for change in own_marker {
+            self.store
+                .delete(&self.tenant, lock, &change.marker)
+                .await?;
+        }
         Ok(warnings)
     }
 
@@ -1488,10 +1497,9 @@ impl InfrastructureEngine {
 
     async fn plan_resources(&mut self, mode: PlanMode) -> Result<Plan> {
         self.output_sensitivity.clear();
-        let stored: BTreeMap<ResourceAddress, ManagedResource> = self
-            .store
-            .list(&self.tenant)
-            .await?
+        let (stored, in_flight) = in_flight::split(self.store.list(&self.tenant).await?);
+        in_flight::refuse(&self.tenant.to_string(), &in_flight)?;
+        let stored: BTreeMap<ResourceAddress, ManagedResource> = stored
             .into_iter()
             .map(|resource| (resource.address.clone(), resource))
             .collect();
@@ -2161,10 +2169,9 @@ impl InfrastructureEngine {
         &self,
         plan: &Plan,
     ) -> Result<BTreeMap<ResourceAddress, ManagedResource>> {
-        let stored: BTreeMap<ResourceAddress, ManagedResource> = self
-            .store
-            .list(&self.tenant)
-            .await?
+        let (stored, in_flight) = in_flight::split(self.store.list(&self.tenant).await?);
+        in_flight::refuse(&self.tenant.to_string(), &in_flight)?;
+        let stored: BTreeMap<ResourceAddress, ManagedResource> = stored
             .into_iter()
             .map(|resource| (resource.address.clone(), resource))
             .collect();
@@ -2338,6 +2345,11 @@ impl InfrastructureEngine {
                 self.ensure_not_stopped()?;
                 type_system::to_message_pack(&configuration, &value_type)?
             };
+            // Fence the change in the shared backend before the provider can
+            // act on it: until its outcome is recorded, no other run plans.
+            let marker =
+                in_flight::marker_record(&change.address, step.kind.name(), &lock.lock_identifier)?;
+            self.store.put(&self.tenant, lock, &marker).await?;
             let response = provider
                 .client
                 .apply_resource_change(ApplyRequest {
@@ -2475,6 +2487,10 @@ impl InfrastructureEngine {
                 .await?;
                 rows.insert(change.address.clone(), record);
             }
+            // The outcome is recorded: the change is no longer in flight.
+            self.store
+                .delete(&self.tenant, lock, &marker.address)
+                .await?;
 
             // The change is recorded, so a failure the provider reported
             // concerns this change alone and the run can go on without it.

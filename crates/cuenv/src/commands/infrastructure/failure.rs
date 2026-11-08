@@ -185,6 +185,20 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
                 invocation.command("state recover")
             )),
         ),
+        InfrastructureError::ChangesInFlight { .. } => (
+            InfrastructureFailureKind::Failed,
+            Some(format!(
+                "Another run asked a provider to change these objects and never recorded the \
+                 outcome, so planning now could repeat the change. If that run saved the change \
+                 locally, run `{}` on the machine that ran it; recording it clears the marker. \
+                 Otherwise check each object with the provider's own tools: if it exists, \
+                 `{}` records it and clears the marker; if it does not, or state already \
+                 describes it, clear the marker with `{}`.",
+                invocation.command("state recover"),
+                invocation.command("import <address> <identifier>"),
+                invocation.command("state remove <marker>")
+            )),
+        ),
         // Codec, Plugin, RemoteProcedure, Diagnostics, ApplyIncomplete, Install,
         // InputOutput and any future variant: their messages say what to do next,
         // or carry the provider's own diagnostics.

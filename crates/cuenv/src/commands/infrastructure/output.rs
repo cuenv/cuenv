@@ -567,7 +567,21 @@ impl Output {
         resources: &[ManagedResource],
         location: Option<&str>,
     ) {
+        let (resources, in_flight) = cuenv_infrastructure::in_flight::split(resources.to_vec());
+        let resources = resources.as_slice();
         if self.is_json() {
+            let in_flight_rows: Vec<Value> = in_flight
+                .iter()
+                .map(|change| {
+                    json!({
+                        "address": strip_control_characters(&change.address.to_string()),
+                        "marker": change.marker.to_string(),
+                        "step": strip_control_characters(&change.step),
+                        "startedAt": strip_control_characters(&change.started_at),
+                        "lockIdentifier": strip_control_characters(&change.lock_identifier),
+                    })
+                })
+                .collect();
             let rows: Vec<Value> = resources
                 .iter()
                 .map(|resource| {
@@ -585,11 +599,23 @@ impl Output {
                 "environment": tenant.environment(),
                 "stateLocation": location,
                 "resources": rows,
+                "inFlight": in_flight_rows,
             }));
             return;
         }
         if let Some(location) = location {
             emit_stdout!(format!("State: {}", strip_control_characters(location)));
+        }
+        for change in &in_flight {
+            emit_stderr!(format!(
+                "warning: the outcome of a {} of {} (started {} by lock {}) was never recorded; \
+                 its marker is {}",
+                strip_control_characters(&change.step),
+                strip_control_characters(&change.address.to_string()),
+                strip_control_characters(&change.started_at),
+                strip_control_characters(&change.lock_identifier),
+                change.marker
+            ));
         }
         if resources.is_empty() {
             emit_stdout!(format!("No managed resources for {}", tenant_label(tenant)));

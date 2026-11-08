@@ -946,6 +946,10 @@ impl StateStore for ObjectStateStore {
         Some(hex::encode(digest.finalize()))
     }
 
+    fn recovery_scope(&self) -> Option<String> {
+        Some(self.package.clone())
+    }
+
     fn location(&self, tenant: &TenantKey) -> Option<String> {
         self.path(tenant)
             .ok()
