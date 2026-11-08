@@ -118,6 +118,8 @@ enum RemoteProcedure {
     ImportResourceState,
     PlanResourceChange,
     ApplyResourceChange,
+    GetResourceIdentitySchemas,
+    UpgradeResourceIdentity,
     Stop,
 }
 
@@ -149,6 +151,12 @@ impl RemoteProcedure {
             (Protocol::Version5, Self::ApplyResourceChange) => {
                 "/tfplugin5.Provider/ApplyResourceChange"
             }
+            (Protocol::Version5, Self::GetResourceIdentitySchemas) => {
+                "/tfplugin5.Provider/GetResourceIdentitySchemas"
+            }
+            (Protocol::Version5, Self::UpgradeResourceIdentity) => {
+                "/tfplugin5.Provider/UpgradeResourceIdentity"
+            }
             (Protocol::Version5, Self::Stop) => "/tfplugin5.Provider/Stop",
             (Protocol::Version6, Self::GetSchema) => "/tfplugin6.Provider/GetProviderSchema",
             (Protocol::Version6, Self::ValidateProviderConfiguration) => {
@@ -174,6 +182,12 @@ impl RemoteProcedure {
             }
             (Protocol::Version6, Self::ApplyResourceChange) => {
                 "/tfplugin6.Provider/ApplyResourceChange"
+            }
+            (Protocol::Version6, Self::GetResourceIdentitySchemas) => {
+                "/tfplugin6.Provider/GetResourceIdentitySchemas"
+            }
+            (Protocol::Version6, Self::UpgradeResourceIdentity) => {
+                "/tfplugin6.Provider/UpgradeResourceIdentity"
             }
             (Protocol::Version6, Self::Stop) => "/tfplugin6.Provider/StopProvider",
         }
@@ -1046,17 +1060,68 @@ impl ProviderClient {
     /// Returns an error if the RPC fails.
     pub async fn read_resource(
         &self,
-        type_name: &str,
-        current_state: Vec<u8>,
-        private: Vec<u8>,
+        request: ReadRequest<'_>,
     ) -> Result<protocol::ReadResourceResponse> {
         self.call(
             RemoteProcedure::ReadResource,
             protocol::ReadResourceRequest {
-                type_name: type_name.to_string(),
-                current_state: Some(message_pack_value(current_state)),
-                private,
+                type_name: request.type_name.to_string(),
+                current_state: Some(message_pack_value(request.current_state)),
+                private: request.private,
                 client_capabilities: Some(client_capabilities()),
+                current_identity: request.current_identity.map(identity_data),
+            },
+        )
+        .await
+    }
+
+    /// The identity schema of every managed resource type that has one,
+    /// keyed by type. A provider that predates resource identity (the RPC is
+    /// unimplemented) has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the RPC fails for any other reason.
+    pub async fn resource_identity_schemas(
+        &self,
+    ) -> Result<protocol::GetResourceIdentitySchemasResponse> {
+        match self
+            .call(
+                RemoteProcedure::GetResourceIdentitySchemas,
+                protocol::Empty {},
+            )
+            .await
+        {
+            Err(InfrastructureError::RemoteProcedure { status, .. })
+                if status.code() == tonic::Code::Unimplemented =>
+            {
+                Ok(protocol::GetResourceIdentitySchemasResponse::default())
+            }
+            other => other,
+        }
+    }
+
+    /// Ask the provider to upgrade stored identity data, written against
+    /// identity schema `version`, to its current identity schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the RPC fails.
+    pub async fn upgrade_resource_identity(
+        &self,
+        type_name: &str,
+        version: i64,
+        identity_json: Vec<u8>,
+    ) -> Result<protocol::UpgradeResourceIdentityResponse> {
+        self.call(
+            RemoteProcedure::UpgradeResourceIdentity,
+            protocol::UpgradeResourceIdentityRequest {
+                type_name: type_name.to_string(),
+                version,
+                raw_identity: Some(protocol::RawState {
+                    json: identity_json,
+                    flatmap: std::collections::HashMap::new(),
+                }),
             },
         )
         .await
@@ -1080,6 +1145,7 @@ impl ProviderClient {
                 configuration: Some(message_pack_value(request.configuration)),
                 prior_private: request.prior_private,
                 client_capabilities: Some(client_capabilities()),
+                prior_identity: request.prior_identity.map(identity_data),
             },
         )
         .await
@@ -1102,6 +1168,7 @@ impl ProviderClient {
                 planned_state: Some(message_pack_value(request.planned_state)),
                 configuration: Some(message_pack_value(request.configuration)),
                 planned_private: request.planned_private,
+                planned_identity: request.planned_identity.map(identity_data),
             },
         )
         .await
@@ -1168,6 +1235,8 @@ provider_responses!(
     protocol::ReadResourceResponse,
     protocol::PlanResourceChangeResponse,
     protocol::ApplyResourceChangeResponse,
+    protocol::GetResourceIdentitySchemasResponse,
+    protocol::UpgradeResourceIdentityResponse,
 );
 
 /// Issue one unary gRPC call with Terraform's message size limits.
@@ -1209,6 +1278,30 @@ pub struct PlanRequest<'request> {
     pub configuration: Vec<u8>,
     /// Provider private data from prior state.
     pub prior_private: Vec<u8>,
+    /// The prior object's identity, encoded against the identity schema.
+    pub prior_identity: Option<Vec<u8>>,
+}
+
+/// Arguments for [`ProviderClient::read_resource`].
+pub struct ReadRequest<'request> {
+    /// Resource type name.
+    pub type_name: &'request str,
+    /// Current state, MessagePack encoded against the resource schema.
+    pub current_state: Vec<u8>,
+    /// Provider private data stored with the state.
+    pub private: Vec<u8>,
+    /// The object's stored identity, MessagePack encoded against the
+    /// identity schema.
+    pub current_identity: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for ReadRequest<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReadRequest")
+            .field("type_name", &self.type_name)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Arguments for [`ProviderClient::apply_resource_change`].
@@ -1223,6 +1316,9 @@ pub struct ApplyRequest<'request> {
     pub configuration: Vec<u8>,
     /// Private data returned by `PlanResourceChange`.
     pub planned_private: Vec<u8>,
+    /// Identity returned by `PlanResourceChange`, MessagePack encoded
+    /// against the identity schema.
+    pub planned_identity: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for PlanRequest<'_> {
@@ -1247,6 +1343,13 @@ const fn message_pack_value(bytes: Vec<u8>) -> DynamicValue {
     DynamicValue {
         message_pack: bytes,
         json: Vec::new(),
+    }
+}
+
+/// Identity data as the protocol carries it.
+fn identity_data(message_pack: Vec<u8>) -> protocol::ResourceIdentityData {
+    protocol::ResourceIdentityData {
+        identity_data: Some(message_pack_value(message_pack)),
     }
 }
 
@@ -2140,5 +2243,19 @@ mod tests {
             RemoteProcedure::Stop.path(Protocol::Version6),
             "/tfplugin6.Provider/StopProvider"
         );
+        for protocol in [Protocol::Version5, Protocol::Version6] {
+            let prefix = match protocol {
+                Protocol::Version5 => "/tfplugin5.Provider/",
+                Protocol::Version6 => "/tfplugin6.Provider/",
+            };
+            assert_eq!(
+                RemoteProcedure::GetResourceIdentitySchemas.path(protocol),
+                format!("{prefix}GetResourceIdentitySchemas")
+            );
+            assert_eq!(
+                RemoteProcedure::UpgradeResourceIdentity.path(protocol),
+                format!("{prefix}UpgradeResourceIdentity")
+            );
+        }
     }
 }

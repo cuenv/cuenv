@@ -580,6 +580,8 @@ fn replacement_step(kind: StepKind) -> ApplyStep {
         planned_private: Vec::new(),
         prior_private: Vec::new(),
         planned_value: Value::Null,
+        prior_identity: None,
+        planned_identity: None,
     }
 }
 
@@ -3039,6 +3041,8 @@ fn inconsistent_create_and_update_results_are_provider_errors() {
         planned_private: Vec::new(),
         prior_private: Vec::new(),
         planned_value: named("planned"),
+        prior_identity: None,
+        planned_identity: None,
     };
     let check = |step: &ApplyStep, returned: &Value| {
         inconsistent_result(&InconsistentResultCheck {
@@ -3076,6 +3080,7 @@ fn undecodable_apply_results_report_the_provider_errors() {
         private: Vec::new(),
         diagnostics,
         legacy_type_system: false,
+        new_identity: None,
     };
     let error = applied_value(&response(vec![error_diagnostic]), &value_type, "apply x")
         .unwrap_err()
@@ -3101,6 +3106,7 @@ fn provider_message_pack_is_checked_before_reuse_but_apply_values_can_be_recorde
         private: Vec::new(),
         diagnostics: Vec::new(),
         legacy_type_system: false,
+        new_identity: None,
     };
     let returned = applied_value(&response, &Type::Number, "apply example").unwrap();
     assert!(returned.to_state_json(&Type::Number).unwrap().is_string());
@@ -4774,6 +4780,7 @@ async fn malformed_update_response(
             ..Diagnostic::default()
         }],
         legacy_type_system: false,
+        new_identity: None,
     };
     let mut change = change(stored.address.clone(), Action::Update);
     change.sensitive = vec!["payload".to_string()];
