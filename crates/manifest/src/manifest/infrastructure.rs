@@ -85,11 +85,18 @@ pub struct InfrastructurePlanWorkflow {
     /// Post the plan as a pull request comment that later runs edit.
     #[serde(default = "default_true")]
     pub comment: bool,
+    /// GitHub environment for the plan job, whose secrets (for example
+    /// read-only cloud credentials) only the plan job receives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
 }
 
 impl Default for InfrastructurePlanWorkflow {
     fn default() -> Self {
-        Self { comment: true }
+        Self {
+            comment: true,
+            environment: None,
+        }
     }
 }
 
@@ -112,6 +119,11 @@ pub struct InfrastructureApplyWorkflow {
     /// GitHub environment for the apply job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+    /// Apply only the plan reviewed on the merged pull request: the apply
+    /// passes the reviewed plan digest from its plan comment to
+    /// `--expect-plan`.
+    #[serde(default, rename = "requireReviewedPlan")]
+    pub require_reviewed_plan: bool,
 }
 
 impl Default for InfrastructureApplyWorkflow {
@@ -122,6 +134,7 @@ impl Default for InfrastructureApplyWorkflow {
             tags: default_apply_tags(),
             manual: true,
             environment: None,
+            require_reviewed_plan: false,
         }
     }
 }

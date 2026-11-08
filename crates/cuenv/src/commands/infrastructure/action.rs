@@ -186,6 +186,9 @@ pub enum InfrastructureAction {
     Apply {
         /// Whether to ask before applying.
         confirmation: ConfirmationPolicy,
+        /// The reviewed plan digest the plan made under the lock must have
+        /// (`--expect-plan`).
+        expected_plan: Option<String>,
         /// Whether to create resources the project also has recorded
         /// without `--env`.
         separate_state: SeparateState,

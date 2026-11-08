@@ -348,7 +348,84 @@ impl fmt::Display for PlanDigest {
     }
 }
 
+/// A digest of what a reviewer sees of a plan: the redacted rendering of
+/// every change to real infrastructure in its tenant, as `sha256:<hex>`.
+///
+/// Unlike [`PlanDigest`], it holds across runs: it covers no record
+/// versions, evaluator bindings or refresh-only changes, so a plan made
+/// again from the same configuration against the same infrastructure has
+/// the same reviewed digest, and an apply can require the plan a reviewer
+/// approved. It is computed from redacted text, so it never fingerprints a
+/// secret's value, and a change to a secret alone does not change it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ReviewedPlanDigest(String);
+
+impl ReviewedPlanDigest {
+    /// Parse `sha256:<64 lowercase hex>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Configuration`] for any other text.
+    pub fn parse(text: &str) -> Result<Self> {
+        let valid = text.strip_prefix("sha256:").is_some_and(|hex| {
+            hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        });
+        if valid {
+            Ok(Self(text.to_string()))
+        } else {
+            Err(InfrastructureError::configuration(
+                "a reviewed plan digest is `sha256:` followed by 64 lowercase hexadecimal digits",
+            ))
+        }
+    }
+
+    /// The digest as `sha256:<hex>`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ReviewedPlanDigest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 impl Plan {
+    /// The digest of what a reviewer sees of this plan; see
+    /// [`ReviewedPlanDigest`].
+    #[must_use]
+    pub fn reviewed_digest(&self) -> ReviewedPlanDigest {
+        let reviewed = Self {
+            changes: self
+                .changes
+                .iter()
+                .filter(|change| change.action.changes_infrastructure())
+                .cloned()
+                .collect(),
+            data_sources: Vec::new(),
+            warnings: Vec::new(),
+            ..self.clone()
+        };
+        let mut digest = DigestWriter::default();
+        digest.field(b"cuenv infrastructure reviewed plan 1");
+        digest.field(self.tenant.module_path().as_bytes());
+        digest.field(self.tenant.project().as_bytes());
+        match self.tenant.environment() {
+            Some(environment) => {
+                digest.tag(1);
+                digest.field(environment.as_bytes());
+            }
+            None => digest.tag(0),
+        }
+        digest.field(cuenv_events::redact(&render_plan(&reviewed)).as_bytes());
+        ReviewedPlanDigest(format!("sha256:{}", hex::encode(digest.hasher.finalize())))
+    }
+
     /// Count changes by action.
     #[must_use]
     pub fn summary(&self) -> PlanSummary {

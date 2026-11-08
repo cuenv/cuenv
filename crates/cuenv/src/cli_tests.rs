@@ -122,6 +122,7 @@ fn test_infrastructure_command_conversion() {
         apply_action(&["cuenv", "i", "apply", "--yes"]),
         InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::AssumeYes,
+            expected_plan: None,
             separate_state: SeparateState::Refuse,
             identity: Identity::Detect,
         }
@@ -130,10 +131,21 @@ fn test_infrastructure_command_conversion() {
         apply_action(&["cuenv", "i", "apply", "--allow-separate-state"]),
         InfrastructureAction::Apply {
             confirmation: ConfirmationPolicy::Prompt,
+            expected_plan: None,
             separate_state: SeparateState::Allow,
             identity: Identity::Detect,
         }
     );
+    assert_eq!(
+        apply_action(&["cuenv", "i", "apply", "--expect-plan", "sha256:ab"]),
+        InfrastructureAction::Apply {
+            confirmation: ConfirmationPolicy::Prompt,
+            expected_plan: Some("sha256:ab".to_string()),
+            separate_state: SeparateState::Refuse,
+            identity: Identity::Detect,
+        }
+    );
+    assert!(Cli::try_parse_from(["cuenv", "i", "destroy", "--expect-plan", "sha256:ab"]).is_err());
     // Only `apply` creates, so only it has the flag.
     assert!(Cli::try_parse_from(["cuenv", "i", "destroy", "--allow-separate-state"]).is_err());
 

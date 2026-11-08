@@ -135,8 +135,15 @@ import "strings"
 #InfrastructureWorkflows: {
 	plan: {
 		// Post the plan as a pull request comment. Each project keeps one
-		// comment, which later runs edit in place.
+		// comment, which later runs edit in place. A separate job posts it,
+		// so the plan job's token stays read-only.
 		comment: *true | bool
+
+		// GitHub environment for the plan job. The plan job runs
+		// configuration a pull request controls (provider `path`, secret
+		// resolvers), so give it read-only credentials, scoped to this
+		// environment.
+		environment?: string
 	}
 
 	apply: {
@@ -159,6 +166,13 @@ import "strings"
 		// GitHub environment for the apply job, for example to require a
 		// reviewer's approval before it runs.
 		environment?: string
+
+		// Apply only the plan reviewed on the merged pull request: the apply
+		// reads the reviewed plan digest from the pull request's plan comment
+		// and refuses a plan with another digest. Needs `on: "push"` and
+		// `plan.comment`; a manual run takes the digest as its `plan_digest`
+		// input.
+		requireReviewedPlan: *false | bool
 	}
 }
 

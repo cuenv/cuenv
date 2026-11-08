@@ -32,7 +32,9 @@ pub mod release;
 pub mod schema;
 pub mod stage_renderer;
 
-pub use emitter::{CommandWorkflow, GitHubActionsEmitter, ReleaseWorkflowBuilder};
+pub use emitter::{
+    CommandWorkflow, FollowUpJob, GitHubActionsEmitter, ReleaseWorkflowBuilder, TokenScope,
+};
 pub use hestia::{HESTIA_GC_WORKFLOW_FILENAME, build_hestia_gc_workflow};
 pub use jobs::{
     ArtifactAggregationJobOptions, CuenvBootstrapJobOptions, CuenvSetup, MatrixJobOptions,

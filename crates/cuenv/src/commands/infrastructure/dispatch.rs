@@ -184,6 +184,7 @@ pub(super) async fn dispatch(
         InfrastructureAction::Apply {
             confirmation,
             identity,
+            expected_plan,
             ..
         } => {
             converge(
@@ -191,6 +192,7 @@ pub(super) async fn dispatch(
                     mode: PlanMode::Apply,
                     confirmation: *confirmation,
                     identity: *identity,
+                    expected_plan: expected_plan.as_deref(),
                     context,
                 },
                 inputs,
@@ -206,6 +208,7 @@ pub(super) async fn dispatch(
                     mode: PlanMode::Destroy,
                     confirmation: *confirmation,
                     identity: *identity,
+                    expected_plan: None,
                     context,
                 },
                 inputs,

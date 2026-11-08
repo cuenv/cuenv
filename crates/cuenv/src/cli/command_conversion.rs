@@ -691,11 +691,13 @@ fn infrastructure_command(
             yes,
             allow_separate_state,
             new_identity,
+            expect_plan,
         } => (
             path,
             package,
             InfrastructureAction::Apply {
                 confirmation: confirmation(yes),
+                expected_plan: expect_plan,
                 separate_state: if allow_separate_state {
                     SeparateState::Allow
                 } else {

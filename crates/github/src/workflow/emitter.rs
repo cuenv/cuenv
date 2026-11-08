@@ -43,6 +43,43 @@ pub struct CommandWorkflow<'a> {
     /// GitHub environment for the job. Unlike the pipeline environment, it
     /// does not select a cuenv environment (`CUENV_ENVIRONMENT`).
     pub job_environment: Option<&'a str>,
+    /// What the main job's `GITHUB_TOKEN` may do.
+    pub token_scope: TokenScope,
+    /// A job that runs after the main job, with its own permissions and
+    /// without the main job's secrets.
+    pub follow_up_job: Option<&'a FollowUpJob<'a>>,
+    /// Steps that run after setup, right before the main step.
+    pub leading_steps: &'a [Step],
+    /// Permissions the main job needs beyond its scope, as
+    /// `(scope, "read" | "write")` pairs; configured ceilings still apply.
+    pub additional_permissions: &'a [(&'a str, &'a str)],
+}
+
+/// What the main job's `GITHUB_TOKEN` may do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TokenScope {
+    /// Everything the workflow needs: the tasks' permissions, check runs and,
+    /// on pull requests, pull request comments.
+    #[default]
+    Workflow,
+    /// Only the permissions the contributor tasks declare (reading contents
+    /// at least): for a job that runs code a pull request controls.
+    Tasks,
+}
+
+/// A job that runs after a command workflow's main job.
+#[derive(Debug, Clone)]
+pub struct FollowUpJob<'a> {
+    /// Suffix of the job id, after the main job's id and `-`.
+    pub id_suffix: &'a str,
+    /// Display name.
+    pub name: &'a str,
+    /// Condition (`jobs.<id>.if`); `needs.*.result` is the main job's.
+    pub if_condition: &'a str,
+    /// The job's own permissions.
+    pub permissions: Permissions,
+    /// Its steps.
+    pub steps: &'a [Step],
 }
 
 /// GitHub Actions workflow emitter
@@ -309,7 +346,19 @@ impl GitHubActionsEmitter {
         let workflow_name = Self::build_workflow_name(ir);
         let workflow_filename = format!("{}.yml", sanitize_filename(&workflow_name));
         let triggers = self.build_triggers(ir, &workflow_filename);
-        let permissions = self.build_permissions(ir);
+        let mut permissions = match command.token_scope {
+            TokenScope::Workflow => self.build_permissions(ir),
+            TokenScope::Tasks => self.permissions_for_tasks(ir.tasks.iter()),
+        };
+        for (key, value) in command.additional_permissions {
+            if let (Some(slot), Some(level)) = (
+                Self::permission_slot(&mut permissions, key),
+                Self::permission_level(value),
+            ) {
+                *slot = Some(slot.unwrap_or(PermissionLevel::None).max(level));
+            }
+        }
+        let permissions = self.apply_configured_permissions(permissions);
 
         let mut renderer = GitHubStageRenderer::new()
             .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
@@ -329,6 +378,7 @@ impl GitHubActionsEmitter {
         let (phase_steps, secret_env) =
             self.render_phase_steps(ir, TaskExecution::Orchestrated, CuenvSetup::BuildInJob);
         steps.extend(phase_steps);
+        steps.extend(command.leading_steps.iter().cloned());
 
         let mut main_step = Step::run(command.command).with_name(command.step_name);
         if let Some(id) = command.step_id {
@@ -385,7 +435,27 @@ impl GitHubActionsEmitter {
         };
 
         let mut jobs = IndexMap::new();
-        jobs.insert(sanitize_job_id(&workflow_name), job);
+        let main_job = sanitize_job_id(&workflow_name);
+        jobs.insert(main_job.clone(), job);
+        if let Some(follow_up) = &command.follow_up_job {
+            jobs.insert(
+                format!("{main_job}-{}", follow_up.id_suffix),
+                Job {
+                    permissions: Some(follow_up.permissions.clone()),
+                    name: Some(follow_up.name.to_string()),
+                    runs_on: self.runner_as_runs_on(),
+                    needs: vec![main_job.clone()],
+                    if_condition: Some(follow_up.if_condition.to_string()),
+                    strategy: None,
+                    environment: None,
+                    env: IndexMap::new(),
+                    concurrency: None,
+                    continue_on_error: None,
+                    timeout_minutes: None,
+                    steps: follow_up.steps.to_vec(),
+                },
+            );
+        }
 
         let workflow = Workflow {
             name: workflow_name,
@@ -755,6 +825,10 @@ impl Emitter for GitHubActionsEmitter {
                 job_if: None,
                 follow_up_steps: &[],
                 job_environment: None,
+                token_scope: TokenScope::Workflow,
+                follow_up_job: None,
+                leading_steps: &[],
+                additional_permissions: &[],
             },
         )
     }
