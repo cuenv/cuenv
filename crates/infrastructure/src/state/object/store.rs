@@ -1636,8 +1636,23 @@ impl ObjectStateFeatures for ObjectStateStore {
         };
         let snapshot = self.read_snapshot(&path, serial).await?;
         let restored_records = |document: &mut StateDocument| -> Result<()> {
+            // Changes in flight now stay in flight: a restore rewinds what is
+            // recorded, never the fence on an outcome nobody recorded. Markers
+            // in the snapshot were cleared since and are not brought back.
+            let in_flight: Vec<ManagedResource> = document
+                .resources()?
+                .into_iter()
+                .filter(|resource| crate::in_flight::is_marker(&resource.address))
+                .collect();
             document.records.clear();
-            for resource in snapshot.resources()? {
+            for marker in &in_flight {
+                document.store(marker)?;
+            }
+            for resource in snapshot
+                .resources()?
+                .into_iter()
+                .filter(|resource| !crate::in_flight::is_marker(&resource.address))
+            {
                 // A fresh generation, so a rewound record can never match a
                 // version an older unrecorded file expects.
                 document.store(&ManagedResource {

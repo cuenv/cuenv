@@ -7,8 +7,8 @@
 //! when any instance cannot be evaluated (it could hide a project with the
 //! same name) or when the module-wide evaluation does not include the target
 //! itself (the CUE loader skips some directories, and a project there would
-//! escape the check). The state store's owner record is the second fence:
-//! it names the one instance allowed to act on the state.
+//! escape the check). The state store records the last writer for
+//! information only; there is no ownership fence (ADR-0012).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -3,12 +3,14 @@
 //! Turso (libSQL over Hrana) and Cloudflare D1 both hold SQLite databases
 //! reached over HTTP. Everything that decides what is stored, and how a write
 //! is fenced, lives here once: the schema and its migrations, the lock-fenced
-//! writes, compare and swap, ownership, row decoding and retries.
+//! writes, compare and swap, last-writer recording, row decoding and retries.
 //! [`SqlTransport`] is all a backend supplies: sending statements, running
 //! them as one transaction, and the spelling of the few parameters a backend
 //! cannot bind directly.
 //!
-//! One table family holds every identity: resources, locks and owners are keyed
+//! One table family holds every identity: resources, locks and last writers
+//! (the `cuenv_infrastructure_owners` table, named for the retired ownership
+//! gate) are keyed
 //! by `(module_path, project, environment, ...)`, with the environment empty
 //! for a run without `--env`. The no-flag identity and each named environment
 //! are separate tenants; nothing falls back from one to another.
