@@ -371,28 +371,67 @@ fn task_walk_policy(policy: WalkPolicy) -> WalkPolicy {
     }
 }
 
-/// The project environment variables a CI task sees: the base `env` merged
-/// with the selected environment (`environment`, else `CUENV_ENVIRONMENT`).
-pub(super) fn project_env_vars(
-    config: &Project,
-    environment: Option<&str>,
-) -> HashMap<String, cuenv_core::environment::EnvValue> {
-    let env_name = environment
+/// The environment a CI run selects: `environment`, else `CUENV_ENVIRONMENT`.
+fn selected_environment(environment: Option<&str>) -> Option<String> {
+    environment
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .or_else(|| {
             std::env::var("CUENV_ENVIRONMENT")
                 .ok()
                 .filter(|name| !name.is_empty())
-        });
-    config
-        .env
-        .as_ref()
-        .map(|env| match env_name.as_deref() {
-            Some(name) => env.for_environment(name),
-            None => env.base.clone(),
         })
-        .unwrap_or_default()
+}
+
+/// Which CI task's project environment variables to select.
+pub(super) struct ProjectEnvRequest<'request> {
+    pub(super) config: &'request Project,
+    pub(super) environment: Option<&'request str>,
+    pub(super) task_name: &'request str,
+    pub(super) project_root: &'request Path,
+}
+
+/// The project environment variables a CI task sees: the base `env` merged
+/// with the selected environment (`environment`, else `CUENV_ENVIRONMENT`)
+/// and the contexts active for the task.
+pub(super) fn project_env_vars(
+    request: &ProjectEnvRequest<'_>,
+) -> cuenv_core::Result<HashMap<String, cuenv_core::environment::EnvValue>> {
+    let env_name = selected_environment(request.environment);
+    let Some(env) = &request.config.env else {
+        return Ok(HashMap::new());
+    };
+    cuenv_core::context::Selection {
+        env,
+        definitions: &request.config.contexts,
+        environment: env_name.as_deref(),
+        consumer: cuenv_core::context::Consumer::Task(request.task_name),
+        directory: request.project_root,
+    }
+    .variables()
+}
+
+/// Every variable a pipeline's tasks could see: the selected environment and
+/// all contexts, whichever turn out to be active. Used to log in to secret
+/// providers before any task runs.
+pub(super) fn project_env_vars_in_any_context(
+    config: &Project,
+    environment: Option<&str>,
+) -> HashMap<String, cuenv_core::environment::EnvValue> {
+    let env_name = selected_environment(environment);
+    let Some(env) = &config.env else {
+        return HashMap::new();
+    };
+    let contexts: Vec<String> = env
+        .context
+        .iter()
+        .flatten()
+        .map(|(name, _)| name.clone())
+        .collect();
+    env.select(cuenv_core::environment::EnvSelection {
+        environment: env_name.as_deref(),
+        contexts: &contexts,
+    })
 }
 
 struct IrExecutionRequest<'request> {
@@ -432,7 +471,13 @@ async fn compile_and_execute_ir(
         )));
     }
 
-    let project_env_vars = project_env_vars(config, environment);
+    let project_env_vars = project_env_vars(&ProjectEnvRequest {
+        config,
+        environment,
+        task_name,
+        project_root,
+    })
+    .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
     let (resolved_env, secrets) =
         cuenv_core::environment::Environment::resolve_for_task_with_secrets(
             task_name,

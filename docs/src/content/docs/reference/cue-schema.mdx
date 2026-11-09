@@ -198,6 +198,36 @@ tasks: publish: schema.#Task & {
 
 Task-level environment entries are resolved at execution time. Tasks that define task-local `env`
 entries are therefore excluded from task-result caching.
+### #NamedContext and #Context
+
+`contexts.<name>.when` is a constraint over `#Context`, the facts of one
+invocation. `env.context.<name>` sets variables that exist only while the
+context is active. See [Contexts](/how-to/contexts/) for the facts, the rules
+and the security model.
+
+```cue
+contexts: {
+    plan:  when: infrastructure: "plan"
+    apply: when: infrastructure: "apply" | "import" | "destroy"
+}
+
+env: context: {
+    plan: API_TOKEN:  "read-only"
+    apply: API_TOKEN: "read-write"
+}
+```
+
+| Field of `#Context` | Type                                                          |
+| ------------------- | ------------------------------------------------------------- |
+| `command`           | `"task" \| "exec" \| "infrastructure" \| "shell"`             |
+| `task`              | `string \| null`                                              |
+| `exec`              | `string \| null`                                              |
+| `infrastructure`    | `#InfrastructureAction \| null`                               |
+| `ci`                | `null \| {provider: string, event, ref, actor: string \| null}` |
+| `user`              | `{name, email: string \| null}`                               |
+| `host`              | `{os: string, arch: string, name: string \| null}`            |
+| `vcs`               | `{branch: string \| null}`                                    |
+
 ### #Environment
 
 Environment variable names must match `^[A-Z0-9_]*$` — uppercase ASCII letters,

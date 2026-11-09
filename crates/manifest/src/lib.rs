@@ -14,6 +14,7 @@
 /// CI pipeline and contributor DTOs (schema/ci.cue).
 pub mod ci;
 pub mod config;
+pub mod context;
 pub mod environment;
 /// Lockfile schema types (cuenv.lock).
 pub mod lockfile;

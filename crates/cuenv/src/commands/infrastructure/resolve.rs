@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cuenv_core::context::{Consumer, Selection};
 use cuenv_infrastructure::StateStore;
 use cuenv_infrastructure::secrets::{SecretFailure, SecretReference, SecretResolver, Secrets};
 use cuenv_manifest::environment::EnvValue;
@@ -36,17 +37,19 @@ pub(super) async fn resolve(
     action: &InfrastructureAction,
     target: &Target,
 ) -> Result<Resolved, CliError> {
-    let project_environment_variables =
-        target
-            .project_environment
-            .as_ref()
-            .map_or_else(HashMap::new, |project_environment| {
-                target.environment.as_deref().map_or_else(
-                    || project_environment.base.clone(),
-                    |name| project_environment.for_environment(name),
-                )
-            });
     let policy_name = action.policy_name();
+    let project_environment_variables = match &target.project_environment {
+        Some(project_environment) => Selection {
+            env: project_environment,
+            definitions: &target.contexts,
+            environment: target.environment.as_deref(),
+            consumer: Consumer::Infrastructure(policy_name),
+            directory: &target.project_directory,
+        }
+        .variables()
+        .map_err(|error| CliError::config(error.to_string()))?,
+        None => HashMap::new(),
+    };
     let policy_withheld: Vec<String> = if action.uses_provider_environment() {
         project_environment_variables
             .iter()

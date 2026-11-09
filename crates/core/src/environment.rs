@@ -9,7 +9,7 @@ use std::env;
 use std::path::Path;
 
 pub use cuenv_manifest::environment::{
-    Env, EnvPart, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy,
+    ContextEnv, Env, EnvPart, EnvSelection, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy,
 };
 use cuenv_manifest::manifest::InfrastructurePolicyAction;
 

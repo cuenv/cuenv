@@ -218,9 +218,11 @@ fn test_extract_static_env_vars_skips_secrets() {
     let env_cfg = Env {
         base,
         environment: None,
+        context: None,
     };
     let cfg = Project {
         config: None,
+        contexts: std::collections::HashMap::new(),
         env: Some(env_cfg),
         hooks: None,
         ci: None,
@@ -244,9 +246,11 @@ fn test_extract_static_env_vars_skips_secrets() {
 fn project_with_env(base: HashMap<String, EnvValue>) -> Project {
     Project {
         config: None,
+        contexts: std::collections::HashMap::new(),
         env: Some(Env {
             base,
             environment: None,
+            context: None,
         }),
         hooks: None,
         ci: None,
@@ -378,9 +382,11 @@ fn test_collect_all_env_vars_override() {
 
     let cfg = Project {
         config: None,
+        contexts: std::collections::HashMap::new(),
         env: Some(Env {
             base,
             environment: None,
+            context: None,
         }),
         hooks: None,
         ci: None,

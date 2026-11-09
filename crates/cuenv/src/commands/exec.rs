@@ -12,11 +12,13 @@ use super::sync::{SyncMode, SyncOptions};
 
 use super::CommandExecutor;
 use cuenv_core::Result;
+use cuenv_core::context::{Consumer, Selection};
 use cuenv_core::environment::Environment;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::{Base, Project, Runtime, ToolSpec};
 
 use cuenv_tool_runtime::ResolvedToolActivationStep;
+use std::collections::HashMap;
 use std::path::Path;
 
 use super::export;
@@ -99,6 +101,7 @@ pub struct ProjectEnvironment {
     runtime_env: Environment,
     activation_steps: Vec<ResolvedToolActivationStep>,
     environment_override: Option<String>,
+    project_directory: std::path::PathBuf,
 }
 
 /// The environment one command runs in, plus the secret values to redact.
@@ -208,6 +211,7 @@ impl ProjectEnvironment {
             runtime_env,
             activation_steps,
             environment_override: request.environment_override.map(str::to_string),
+            project_directory: target_path,
         })
     }
 
@@ -224,8 +228,11 @@ impl ProjectEnvironment {
         let mut environment = self.runtime_env.clone();
         let mut secrets_for_redaction: Vec<String> = Vec::new();
 
+        let no_contexts = HashMap::new();
+        let mut definitions = &no_contexts;
         let env_config = match &self.manifest_kind {
             ManifestKind::Project(project) => {
+                definitions = &project.contexts;
                 let base_env_vars =
                     export::extract_static_env_vars(project, StaticEnvConsumer::Exec(command));
                 tracing::debug!("Base environment variables for exec: {:?}", base_env_vars);
@@ -234,15 +241,22 @@ impl ProjectEnvironment {
                 }
                 project.env.as_ref()
             }
-            ManifestKind::Base(base) => base.env.as_ref(),
+            ManifestKind::Base(base) => {
+                definitions = &base.contexts;
+                base.env.as_ref()
+            }
             ManifestKind::None => None,
         };
 
         if let Some(env) = env_config {
-            let env_vars = self
-                .environment_override
-                .as_deref()
-                .map_or_else(|| env.base.clone(), |name| env.for_environment(name));
+            let env_vars = Selection {
+                env,
+                definitions,
+                environment: self.environment_override.as_deref(),
+                consumer: Consumer::Exec(command),
+                directory: &self.project_directory,
+            }
+            .variables()?;
 
             let (exec_env_vars, secrets) =
                 Environment::resolve_for_exec_with_secrets(command, &env_vars).await?;

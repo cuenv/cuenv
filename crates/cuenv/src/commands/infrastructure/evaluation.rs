@@ -10,7 +10,7 @@
 //! escape the check). The state store records the last writer for
 //! information only; there is no ownership fence (ADR-0012).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,6 +23,7 @@ use cuenv_core::ModuleEvaluation;
 use cuenv_core::manifest::Project;
 use cuenv_core::module::NamedProject;
 use cuenv_infrastructure::{ProjectInstance, TenantKey};
+use cuenv_manifest::context::ContextDefinition;
 use cuenv_manifest::environment::Env;
 use cuenv_manifest::manifest::{
     Infrastructure, InfrastructureSelectionError, InfrastructureState, ProviderEnvironment,
@@ -139,6 +140,8 @@ pub(super) struct Target {
     pub(super) remote_cache_credential_variables: Vec<String>,
     /// Project environment variables, including only the selected overlay.
     pub(super) project_environment: Option<Env>,
+    /// The project's named contexts, which select `env.context` variables.
+    pub(super) contexts: HashMap<String, ContextDefinition>,
     /// Canonical project directory.
     pub(super) project_directory: PathBuf,
     /// Original CUE instance and native output provenance for provider inputs.
@@ -173,6 +176,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             export_paths: vec![
                 "name".to_string(),
                 "env".to_string(),
+                CONTEXTS_PATH.to_string(),
                 CACHE_PATH.to_string(),
                 "infrastructure".to_string(),
             ],
@@ -341,6 +345,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         warnings: Vec::new(),
         remote_cache_credential_variables,
         project_environment: project.env,
+        contexts: project.contexts,
         project_directory: project_path,
         configuration_evaluator,
     })
@@ -354,10 +359,14 @@ fn exported_paths(infrastructure_path: &str) -> Vec<String> {
     vec![
         "name".to_string(),
         "env".to_string(),
+        CONTEXTS_PATH.to_string(),
         infrastructure_path.to_string(),
         CACHE_PATH.to_string(),
     ]
 }
+
+/// The field of the project that defines its named contexts.
+const CONTEXTS_PATH: &str = "contexts";
 
 /// The field of the project that configures its caches.
 const CACHE_PATH: &str = "cache";

@@ -5,6 +5,7 @@
 
 use crate::commands::CommandExecutor;
 use cuenv_core::Result;
+use cuenv_core::context::{Consumer, Selection};
 use cuenv_core::manifest::Base;
 use std::path::Path;
 use tracing::instrument;
@@ -114,12 +115,14 @@ pub async fn execute_env_print(
     })?;
 
     // Get environment variables, applying environment-specific overrides if specified
-    let env_vars = if let Some(env_name) = environment {
-        tracing::debug!("Applying environment-specific overrides for '{}'", env_name);
-        env.for_environment(env_name)
-    } else {
-        env.base.clone()
-    };
+    let env_vars = Selection {
+        env: &env,
+        definitions: &manifest.contexts,
+        environment,
+        consumer: Consumer::Shell,
+        directory: Path::new(path),
+    }
+    .variables()?;
 
     // Resolve all environment variables including secrets (parallel resolution)
     let (resolved_vars, secrets) =

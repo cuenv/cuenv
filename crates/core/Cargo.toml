@@ -38,6 +38,7 @@ globset = { workspace = true }
 ignore = { workspace = true }
 cuenv-workspaces = { workspace = true, features = ["detection", "discovery-rust", "discovery-javascript", "parsers-rust", "parsers-javascript"] }
 rustls = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -287,9 +287,10 @@ async fn prepare_secret_providers(
 ) -> Result<()> {
     let mut env_vars = HashMap::new();
     for (project_path, config, plan) in plans {
-        for (key, value) in
-            super::task_execution::project_env_vars(config, plan.environment.as_deref())
-        {
+        for (key, value) in super::task_execution::project_env_vars_in_any_context(
+            config,
+            plan.environment.as_deref(),
+        ) {
             // Keys only need to be unique; secrets are grouped by resolver.
             env_vars.insert(format!("{}:{key}", project_path.display()), value);
         }

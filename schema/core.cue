@@ -26,6 +26,9 @@ package schema
 #Base: {
 	config?: {#Config}
 	env?: {#Env}
+	// Named contexts, selected automatically from the facts of an invocation.
+	// `env.context.<name>` overrides variables while the context is active.
+	contexts?: [string]: #NamedContext
 	formatters?: {#Formatters}
 	runtime?: #Runtime
 	hooks?: {#Hooks}

@@ -662,13 +662,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	withReferences := options.WithReferences
 
 	exportInstance := func(built builtInstance) {
-		var jsonBytes []byte
-		var exportErr error
-		if len(exportPaths) > 0 {
-			jsonBytes, exportErr = buildProjectedJSON(built.value, exportPaths)
-		} else {
-			jsonBytes, exportErr = buildJSONClean(built.value)
-		}
+		jsonBytes, exportErr := exportInstanceJSON(built.value, exportPaths)
 		if exportErr != nil {
 			buildErrors = append(buildErrors, instanceFailure(built.relPath, exportErr, goModuleRoot))
 			return // Skip failed instances

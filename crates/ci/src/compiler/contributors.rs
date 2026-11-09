@@ -208,8 +208,20 @@ impl Compiler {
                 .environment
                 .as_ref()
                 .map_or_else(|| env.base.clone(), |name| env.for_environment(name));
+            // A context's variables count whichever contexts turn out to be
+            // active: the job has to be able to log in for any of them.
+            let context_values = env.context.iter().flatten().flat_map(|(_, context)| {
+                context.base.values().chain(
+                    context
+                        .environment
+                        .iter()
+                        .flatten()
+                        .flat_map(|(_, variables)| variables.values()),
+                )
+            });
             env_vars
                 .values()
+                .chain(context_values)
                 .any(|value| Self::value_has_provider(value, providers))
         });
         env_has_provider

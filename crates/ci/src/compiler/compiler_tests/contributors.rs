@@ -935,6 +935,7 @@ fn test_contributor_secrets_provider_uses_base_env_without_pipeline_environment(
     let mut project = Project::new("test");
     project.env = Some(cuenv_core::environment::Env {
         environment: None,
+        context: None,
         base: std::collections::HashMap::from([(
             "TOKEN".to_string(),
             cuenv_core::environment::EnvValue::String("op://vault/item/field".to_string()),

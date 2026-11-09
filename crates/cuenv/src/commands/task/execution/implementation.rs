@@ -11,6 +11,7 @@ use crate::commands::CommandExecutor;
 use crate::commands::export::StaticEnvConsumer;
 use crate::commands::git_hooks;
 
+use cuenv_core::context::{Consumer, Selection};
 use cuenv_core::environment::{EnvValue, Environment};
 use cuenv_core::manifest::{Project, Runtime};
 
@@ -529,11 +530,14 @@ async fn apply_task_environment(application: TaskEnvironmentApplication<'_, '_>)
             application.runtime_env.set(key.clone(), value.clone());
         }
 
-        let env_vars = if let Some(env_name) = application.input.environment {
-            env.for_environment(env_name)
-        } else {
-            env.base.clone()
-        };
+        let env_vars = Selection {
+            env,
+            definitions: &application.context.manifest.contexts,
+            environment: application.input.environment,
+            consumer: Consumer::Task(application.resolution.display_name.as_str()),
+            directory: &application.context.project_root,
+        }
+        .variables()?;
 
         let (task_env_vars, secrets) =
             cuenv_core::environment::Environment::resolve_for_task_with_secrets(

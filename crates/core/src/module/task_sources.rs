@@ -88,6 +88,11 @@ impl TaskSourceContext<'_> {
             if key.starts_with('_') {
                 continue;
             }
+            // A context constraint names the facts `task`, `exec` and
+            // `command`; it holds no tasks.
+            if field_path.is_empty() && key == "contexts" {
+                continue;
+            }
 
             let child_path = if field_path.is_empty() {
                 key.clone()

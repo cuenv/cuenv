@@ -51,6 +51,28 @@ func parseProjectionPaths(option string, texts []string) ([]projectionPath, erro
 // keeps the result (and the work to produce it) proportional to what the
 // caller asked for.
 func buildProjectedJSON(v cue.Value, paths []projectionPath) ([]byte, error) {
+	return json.Marshal(buildProjectedValue(v, paths))
+}
+
+// exportInstanceJSON exports one module instance: the listed paths, or the
+// whole instance when there are none. Named contexts are exported as matchers
+// (see attachContextMatchers).
+func exportInstanceJSON(v cue.Value, paths []projectionPath) ([]byte, error) {
+	var exported map[string]interface{}
+	if len(paths) > 0 {
+		exported = buildProjectedValue(v, paths)
+	} else if whole, ok := buildValueClean(v).(map[string]interface{}); ok {
+		exported = whole
+	} else {
+		return buildJSONClean(v)
+	}
+	if err := attachContextMatchers(v, exported); err != nil {
+		return nil, err
+	}
+	return json.Marshal(exported)
+}
+
+func buildProjectedValue(v cue.Value, paths []projectionPath) map[string]interface{} {
 	// Shorter paths first, so a path exported whole is not replaced by the
 	// partial object of a longer path below it.
 	ordered := append([]projectionPath{}, paths...)
@@ -63,7 +85,7 @@ func buildProjectedJSON(v cue.Value, paths []projectionPath) ([]byte, error) {
 		}
 		setNested(result, projection.labels, buildValueClean(field))
 	}
-	return json.Marshal(result)
+	return result
 }
 
 // setNested stores value under labels, creating intermediate objects. A

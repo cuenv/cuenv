@@ -1840,6 +1840,7 @@ dependencies = [
  "ignore",
  "miette",
  "proptest",
+ "regex",
  "rustls",
  "serde",
  "serde_json",
