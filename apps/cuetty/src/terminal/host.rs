@@ -1524,8 +1524,16 @@ sleep 5
     #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
     fn real_session_normalizes_inherited_shell_level() {
         let _serial = serial_pty_test();
+        // Cuetty hands the shell SHLVL=0; whether the fixture then sees 0 or
+        // 1 depends on the host's /bin/sh (bash increments it, dash does not).
+        let started = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf %s \"$SHLVL\""])
+            .env("SHLVL", "0")
+            .output()
+            .expect("/bin/sh should run");
+        let expected = String::from_utf8(started.stdout).expect("SHLVL should be UTF-8");
         let mut session = fixture(&["shell-level"]);
-        wait_for_text(&mut session, "M0-SHLVL:1");
+        wait_for_text(&mut session, &format!("M0-SHLVL:{expected}"));
         session.close().expect("close should succeed");
     }
 
