@@ -231,26 +231,6 @@ impl HookExecutor {
         Ok(())
     }
 
-    /// Get the current execution status for a directory and session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if stored hook state cannot be read.
-    pub async fn execution_status(
-        &self,
-        directory_path: &Path,
-        session_id: uuid::Uuid,
-    ) -> Result<Option<HookExecutionState>> {
-        // List all active states and find one matching this directory
-        let states = self.state_manager.list_active_states().await?;
-        for state in states {
-            if state.directory_path == directory_path && state.session_id == session_id {
-                return Ok(Some(state));
-            }
-        }
-        Ok(None)
-    }
-
     /// Get execution status for a specific session and configuration.
     ///
     /// # Errors

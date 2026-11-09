@@ -1548,7 +1548,6 @@ dependencies = [
 name = "cuengine"
 version = "0.71.0"
 dependencies = [
- "cc",
  "criterion",
  "cuenv-core",
  "libc",

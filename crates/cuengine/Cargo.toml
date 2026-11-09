@@ -24,9 +24,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
-[build-dependencies]
-cc = "1.2"
-
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }
@@ -39,7 +36,6 @@ harness = false
 
 [features]
 default = []
-nix-build = []
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
