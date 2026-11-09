@@ -1,7 +1,6 @@
 //! Durable workspace metadata, deliberately separate from live terminal state.
 
-use super::workspace_model;
-use super::{Node, PaneId, SavedTree, Workspace};
+use super::{Node, PaneId, SavedTree, Workspace, workspace_model};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;

@@ -5,11 +5,10 @@
 //! in a single place.
 
 use crate::integrations::cuenv::TitlebarVisibility;
-use crate::terminal::color;
 use crate::terminal::config::MinimumContrast;
 use crate::terminal::model::Rgb;
-use crate::terminal::presentation;
 use crate::terminal::presentation::TerminalTheme;
+use crate::terminal::{color, presentation};
 use gpui::{BoxShadow, Decorations, Pixels, Point, Rgba, Styled, TextSystem};
 use std::sync::OnceLock;
 

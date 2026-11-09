@@ -1,5 +1,4 @@
-use super::analysis;
-use super::{NodeKind, TaskGraph};
+use super::{NodeKind, TaskGraph, analysis};
 use crate::{Error, MutableTaskNodeData, TaskNodeData};
 use std::collections::HashMap;
 

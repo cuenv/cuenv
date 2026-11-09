@@ -44,7 +44,11 @@ pub(super) fn hover_fade(
     cx: &mut Context<TerminalView>,
 ) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
     cx.listener(move |view, hovered: &bool, _window, cx| {
-        let pointer = if *hovered { Pointer::Over } else { Pointer::Away };
+        let pointer = if *hovered {
+            Pointer::Over
+        } else {
+            Pointer::Away
+        };
         if fade_hover(view, target, pointer) {
             cx.notify();
         }
@@ -63,14 +67,13 @@ pub(super) fn hover_probe(target: HoverTarget, cx: &Context<TerminalView>) -> im
     gpui::canvas(
         |bounds, window, _cx| window.insert_hitbox(bounds, HitboxBehavior::Normal),
         move |_bounds, hitbox, window, cx| {
-            let pointer = if hitbox.is_hovered(window)
-                && window.is_window_hovered()
-                && !cx.has_active_drag()
-            {
-                Pointer::Over
-            } else {
-                Pointer::Away
-            };
+            let pointer =
+                if hitbox.is_hovered(window) && window.is_window_hovered() && !cx.has_active_drag()
+                {
+                    Pointer::Over
+                } else {
+                    Pointer::Away
+                };
             let news = view
                 .update(cx, |view, _cx| fade_hover(view, target, pointer))
                 .unwrap_or(false);

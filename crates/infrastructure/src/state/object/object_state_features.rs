@@ -3,8 +3,7 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::state::LastWriter;
-use crate::state::{StateLock, TenantLock};
+use crate::state::{LastWriter, StateLock, TenantLock};
 use crate::tenant::TenantKey;
 
 /// One tenant an object store holds under a module path, as rename
