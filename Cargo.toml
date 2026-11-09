@@ -75,7 +75,6 @@ cuenv-release = { path = "crates/release", version = "0.71.0" }
 cuenv-ignore = { path = "crates/ignore", version = "0.71.0" }
 cuenv-editorconfig = { path = "crates/editorconfig", version = "0.71.0" }
 cuenv-codeowners = { path = "crates/codeowners", version = "0.71.0" }
-cuenv-codegen = { path = "crates/codegen", version = "0.71.0" }
 cuengine = { path = "crates/cuengine", version = "0.71.0" }
 # Platform-specific provider crates
 cuenv-github = { path = "crates/github", version = "0.71.0" }
@@ -167,7 +166,6 @@ temp-env = { version = "0.3", features = ["async_closure"] }
 
 # BDD testing dependencies
 cucumber = "0.22"
-gherkin = "0.14"
 tokio-test = "0.4"
 
 # Trait helpers

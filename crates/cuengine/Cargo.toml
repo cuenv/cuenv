@@ -31,8 +31,6 @@ cc = "1.2"
 tempfile = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }
-cucumber = { workspace = true }
-tokio-test = { workspace = true }
 cuenv-core = { workspace = true }
 
 [[bench]]

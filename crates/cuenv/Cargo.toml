@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/cuenv-cli"
+documentation.workspace = true
 keywords.workspace = true
 categories = ["command-line-utilities", "config", "development-tools"]
 readme = "../../readme.md"
@@ -69,12 +69,6 @@ cuenv-infisical = { workspace = true, optional = true }
 cuenv-aws = { workspace = true, optional = true }
 cuenv-gcp = { workspace = true, optional = true }
 cuenv-hooks = { workspace = true }
-cuenv-workspaces = { workspace = true, features = [
-    "detection",
-    "discovery-javascript",
-    "discovery-rust",
-] }
-cuenv-codegen = { workspace = true }
 cuenv-ci = { workspace = true }
 cuenv-editorconfig = { workspace = true }
 cuenv-events = { workspace = true }
@@ -103,7 +97,6 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 rayon = { workspace = true }
 async-trait = { workspace = true }
-futures = { workspace = true }
 libc = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -134,12 +127,12 @@ tempfile = { workspace = true }
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
+# `test-util` enables paused-clock runtimes (`Builder::start_paused`) in tests.
+tokio = { workspace = true, features = ["test-util"] }
 temp-env = { workspace = true }
 cucumber = { workspace = true }
-tokio-test = { workspace = true }
 sha2 = { workspace = true }
 assert_cmd = "2.2.2"
-predicates = "3.1.4"
 which = "8.0.2"
 cuenv-task-graph = { workspace = true }
 cuenv-infrastructure = { workspace = true, features = ["fake-s3"] }
