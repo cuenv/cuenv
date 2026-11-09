@@ -156,7 +156,7 @@ path:
 | --- | --- |
 | GitHub | `.github/CODEOWNERS` |
 | GitLab | `CODEOWNERS` |
-| Bitbucket | `CODEOWNERS` |
+| Bitbucket | `.bitbucket/CODEOWNERS` |
 
 Generated files include a cuenv header:
 

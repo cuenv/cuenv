@@ -28,7 +28,6 @@ jobs:
       contents: read
       checks: write
       pull-requests: write
-      packages: write
     name: cuenv-docs-preview
     runs-on: namespace-profile-cuenv-linux-x86
     environment: production

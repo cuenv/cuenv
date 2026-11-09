@@ -213,7 +213,7 @@ For platform-specific CODEOWNERS management (paths, detection), use the provider
 
 - `cuenv-github` - GitHub CODEOWNERS (`.github/CODEOWNERS`, comment sections)
 - `cuenv-gitlab` - GitLab CODEOWNERS (`CODEOWNERS`, bracket sections)
-- `cuenv-bitbucket` - Bitbucket CODEOWNERS (`CODEOWNERS`, comment sections)
+- `cuenv-bitbucket` - Bitbucket CODEOWNERS (`.bitbucket/CODEOWNERS`, comment sections)
 
 ## Testing
 

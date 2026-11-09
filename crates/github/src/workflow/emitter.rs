@@ -9,7 +9,7 @@ use crate::workflow::schema::{
 };
 use crate::workflow::stage_renderer::GitHubStageRenderer;
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
-use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, TriggerCondition};
+use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, TriggerCondition};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
@@ -720,13 +720,6 @@ impl GitHubActionsEmitter {
         for task in tasks {
             if task.deployment {
                 permissions.contents = Some(PermissionLevel::Write);
-            }
-            if task
-                .outputs
-                .iter()
-                .any(|o| o.output_type == OutputType::Orchestrator)
-            {
-                permissions.packages = Some(PermissionLevel::Write);
             }
             for (key, value) in &task.github_permissions {
                 if let (Some(slot), Some(level)) = (

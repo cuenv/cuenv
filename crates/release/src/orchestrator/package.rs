@@ -106,7 +106,7 @@ impl ReleaseOrchestrator {
         let checksums = self.load_checksums_manifest()?;
 
         for target in &self.config.targets {
-            if let Some(artifact) = self.load_existing_target_artifact(*target, &checksums) {
+            if let Some(artifact) = self.load_existing_target_artifact(*target, &checksums)? {
                 artifacts.push(artifact);
             }
         }
@@ -193,7 +193,7 @@ impl ReleaseOrchestrator {
         &self,
         target: Target,
         checksums: &HashMap<String, String>,
-    ) -> Option<PackagedArtifact> {
+    ) -> Result<Option<PackagedArtifact>> {
         let archive_name = format!(
             "{}-{}-{}-{}.tar.gz",
             self.config.name,
@@ -203,24 +203,27 @@ impl ReleaseOrchestrator {
         );
         let archive_path = self.config.output_dir.join(&archive_name);
         if !archive_path.exists() {
-            return None;
+            return Ok(None);
         }
 
         let checksum_path = self
             .config
             .output_dir
             .join(format!("{archive_name}.sha256"));
-        let sha256 = checksums
-            .get(&archive_name)
-            .cloned()
-            .unwrap_or_else(|| "unknown".to_string());
+        // Publishers (e.g. the Homebrew formula) embed this digest, so hash
+        // the archive when CHECKSUMS.txt has no entry rather than publishing
+        // a placeholder.
+        let sha256 = match checksums.get(&archive_name) {
+            Some(sha256) => sha256.clone(),
+            None => ArtifactBuilder::compute_sha256(&archive_path)?,
+        };
 
-        Some(PackagedArtifact {
+        Ok(Some(PackagedArtifact {
             target,
             archive_path,
             checksum_path,
             archive_name,
             sha256,
-        })
+        }))
     }
 }

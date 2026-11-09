@@ -66,25 +66,18 @@ where
     };
 
     // Build task index for resolving nested task names
-    let Ok(index) = TaskIndex::build(&config.tasks) else {
-        tracing::trace!("Failed to build task index; falling back to direct pipeline checks");
-        // Without an index we can only do direct checks on pipeline tasks
-        for task_name in pipeline_tasks {
-            if is_task_directly_affected(task_name, config, changed_inputs) {
-                tracing::trace!(
-                    task = task_name,
-                    "Marked pipeline task affected during fallback"
-                );
-                affected.insert(task_name.clone());
-            }
+    let index = match TaskIndex::build(&config.tasks) {
+        Ok(index) => index,
+        Err(error) => {
+            // Fail closed: without an index nothing can be shown to be
+            // unaffected, and reporting "no affected tasks" would turn CI
+            // green without running anything.
+            tracing::warn!(
+                %error,
+                "Failed to build task index; treating every pipeline task as affected"
+            );
+            return pipeline_tasks.to_vec();
         }
-        let fallback_result: Vec<String> = pipeline_tasks
-            .iter()
-            .filter(|t| affected.contains(*t))
-            .cloned()
-            .collect();
-        tracing::trace!(affected_tasks = ?fallback_result, "Affected task computation complete");
-        return fallback_result;
     };
 
     // Expand pipeline tasks to the full DAG so every dependency is evaluated
@@ -237,6 +230,7 @@ pub fn matched_inputs_for_task(
 ///
 /// This function uses `TaskIndex` to resolve nested task names like "deploy.preview"
 /// which are stored in CUE as hierarchical structures (e.g., `deploy: preview: {...}`).
+#[cfg(test)]
 fn is_task_directly_affected(
     task_name: &str,
     config: &Project,

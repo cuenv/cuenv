@@ -170,7 +170,6 @@ jobs:
       contents: read
       checks: write
       pull-requests: write
-      packages: write
     name: cuenv-sync-check
     runs-on: namespace-profile-cuenv-linux-x86
     steps:
