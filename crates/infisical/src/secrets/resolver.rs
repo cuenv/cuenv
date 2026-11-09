@@ -937,7 +937,8 @@ mod tests {
 
     #[test]
     fn auth_method_precedence() {
-        use {InfisicalAuthConfigError as E, InfisicalAuthMethod as M};
+        use InfisicalAuthConfigError as E;
+        use InfisicalAuthMethod as M;
         let universal = [
             ("INFISICAL_CLIENT_ID", "id"),
             ("INFISICAL_CLIENT_SECRET", "secret"),

@@ -94,8 +94,7 @@ impl Default for TaskGraph {
 mod tests {
     use super::*;
     use crate::output_refs::OutputRefDep;
-    use crate::test_utils;
-    use crate::{TaskGroup, TaskNode};
+    use crate::{TaskGroup, TaskNode, test_utils};
     use cuenv_task_graph::TaskNodeData;
     use std::collections::HashMap;
 

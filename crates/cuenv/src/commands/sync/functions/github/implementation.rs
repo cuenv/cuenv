@@ -2,8 +2,7 @@
 
 use super::super::CiSyncOptions;
 use super::super::implementation::ProjectInfo;
-use super::infrastructure;
-use super::matrix;
+use super::{infrastructure, matrix};
 use cuenv_core::Result;
 use cuenv_github::GitHubConfigExt;
 use std::collections::{BTreeMap, HashSet};

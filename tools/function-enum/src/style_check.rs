@@ -101,10 +101,28 @@ fn iterator_adapters(expression: &Expr) -> usize {
         Expr::MethodCall(call) => {
             let adapter = matches!(
                 call.method.to_string().as_str(),
-                "chain" | "cloned" | "copied" | "cycle" | "enumerate" | "filter"
-                    | "filter_map" | "flat_map" | "flatten" | "fuse" | "inspect" | "map"
-                    | "map_while" | "peekable" | "rev" | "scan" | "skip" | "skip_while"
-                    | "step_by" | "take" | "take_while" | "zip"
+                "chain"
+                    | "cloned"
+                    | "copied"
+                    | "cycle"
+                    | "enumerate"
+                    | "filter"
+                    | "filter_map"
+                    | "flat_map"
+                    | "flatten"
+                    | "fuse"
+                    | "inspect"
+                    | "map"
+                    | "map_while"
+                    | "peekable"
+                    | "rev"
+                    | "scan"
+                    | "skip"
+                    | "skip_while"
+                    | "step_by"
+                    | "take"
+                    | "take_while"
+                    | "zip"
             );
             usize::from(adapter) + iterator_adapters(&call.receiver)
         }
@@ -220,11 +238,7 @@ pub fn run(root: &Path) -> Result<(), Box<dyn Error>> {
     for violation in &violations {
         eprintln!("{violation}");
     }
-    Err(io::Error::other(format!(
-        "{} Rust source style violations",
-        violations.len()
-    ))
-    .into())
+    Err(io::Error::other(format!("{} Rust source style violations", violations.len())).into())
 }
 
 #[cfg(test)]

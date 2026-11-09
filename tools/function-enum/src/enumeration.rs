@@ -387,11 +387,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temporary_directory() -> PathBuf {
-        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "cuenv-enumeration-{}-{suffix}",
-            std::process::id()
-        ));
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("cuenv-enumeration-{}-{suffix}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
         directory
     }
@@ -410,11 +411,7 @@ mod tests {
         fs::create_dir(directory.join("src")).unwrap();
         let source = directory.join("src/broken.rs");
         fs::write(&source, "fn incomplete(").unwrap();
-        let result = super::parse_crate_sources(
-            "broken",
-            &directory,
-            options,
-        );
+        let result = super::parse_crate_sources("broken", &directory, options);
         fs::remove_dir_all(&directory).unwrap();
         let error = result.unwrap_err().to_string();
         assert!(error.contains("cannot parse"), "{error}");
@@ -435,15 +432,20 @@ mod tests {
         ] {
             let member = directory.join(path);
             fs::create_dir_all(&member).unwrap();
-            fs::write(member.join("Cargo.toml"), format!("[package]\nname = \"{name}\"\n"))
-                .unwrap();
+            fs::write(
+                member.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\n"),
+            )
+            .unwrap();
         }
         let crates = super::discover_workspace_crates(&directory).unwrap();
         let names: Vec<_> = crates.iter().map(|member| member.name.as_str()).collect();
         assert_eq!(names, ["cuenv-github", "cuenv-tool-github"]);
 
         fs::remove_file(directory.join("crates/tools/github/Cargo.toml")).unwrap();
-        let error = super::discover_workspace_crates(&directory).unwrap_err().to_string();
+        let error = super::discover_workspace_crates(&directory)
+            .unwrap_err()
+            .to_string();
         fs::remove_dir_all(&directory).unwrap();
         assert!(error.contains("cannot read"), "{error}");
         assert!(error.contains("Cargo.toml"), "{error}");
