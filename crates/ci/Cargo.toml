@@ -33,19 +33,15 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 cuenv-events = { workspace = true }
-dirs = { workspace = true }
 glob = { workspace = true }
-regex = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 uuid = { workspace = true }
-petgraph = { workspace = true }
 
 
 [dev-dependencies]

@@ -20,9 +20,7 @@ default = ["codeowners"]
 codeowners = ["dep:cuenv-codeowners"]
 
 [dependencies]
-cuenv-core = { workspace = true }
 cuenv-codeowners = { workspace = true, optional = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

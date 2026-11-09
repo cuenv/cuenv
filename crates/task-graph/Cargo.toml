@@ -14,11 +14,9 @@ description = "Task graph DAG algorithms and dependency resolution for cuenv"
 
 [dependencies]
 petgraph = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 criterion = { workspace = true }
 proptest = { workspace = true }
 
