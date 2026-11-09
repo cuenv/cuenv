@@ -33,7 +33,7 @@ rustup update
 
 **Missing Go (required for CUE engine):**
 
-The cuengine crate requires Go for the CUE evaluation bridge. Ensure Go 1.21+ is installed:
+The cuengine crate requires Go for the CUE evaluation bridge. Ensure Go 1.26+ is installed:
 
 ```bash
 # Check Go version

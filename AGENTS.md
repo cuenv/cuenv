@@ -138,12 +138,12 @@ If a change does not match one of the required full-flake triggers, keep the che
 
 ### Contributor Loop
 
-Contributors are CUE-defined task injectors that modify the task DAG before execution. Both CLI (`cuenv task`) and CI (`cuenv ci`) use the same `ContributorEngine`.
+Contributors are CUE-defined task injectors that modify the task DAG before execution. They are applied by two separate implementations that must stay aligned: the CLI (`cuenv task`) uses `ContributorEngine` in `cuenv-core`, and the CI compiler (`cuenv ci`, `cuenv sync ci`) applies `ci.contributors` to its IR in `crates/ci/src/compiler/contributors.rs`.
 
 **Data Flow:**
 
 1. CUE evaluation produces Projects with Tasks (initial DAG).
-2. `ContributorEngine` (in `cuenv-core`) applies contributors:
+2. Contributors are applied (`ContributorEngine` for the CLI, the CI compiler for `cuenv ci`):
    - Evaluates `when` conditions (`workspaceMember`, `taskCommand`, etc.).
    - Injects contributor tasks with `cuenv:contributor:*` prefix.
    - Auto-associates user tasks with contributor setup tasks (by command).
@@ -181,7 +181,8 @@ Per-pipeline `providers` completely overrides global (no merge).
 
 **Key Files:**
 
-- `crates/core/src/contributors/engine.rs` - ContributorEngine implementation.
+- `crates/core/src/contributors/engine.rs` - ContributorEngine implementation (CLI path).
+- `crates/ci/src/compiler/contributors.rs` - CI compiler contributor application.
 - `crates/manifest/src/ci.rs` - CI configuration and provider resolution.
 - `contrib/contributors/*.cue` - CUE contributor definitions.
 - `schema/ci.cue` - CI and contributor schema types.
@@ -210,7 +211,7 @@ cuenv exec -- cargo test --test ffi_edge_cases
 cuenv task bench
 
 # BDD tests (cucumber)
-cuenv task test.bdd
+cuenv task tests.bdd
 ```
 
 ### Validation After Changes
@@ -238,7 +239,7 @@ nix flake check -L --accept-flake-config
 ## Requirements
 
 - **Rust**: MSRV 1.90.0 (Edition 2024)
-- **Go**: 1.21+ with CGO enabled (for cuengine FFI)
+- **Go**: 1.26+ with CGO enabled (for cuengine FFI; see `crates/cuengine/go.mod`)
 - **Nix**: Optional but recommended for reproducible builds
 
 ## Key Files
@@ -268,5 +269,5 @@ nix flake check -L --accept-flake-config
 
 - **Build appears frozen**: Expected, builds take 90+ seconds initially.
 - **Go FFI tests fail**: Expected without CGO environment.
-- **cargo-audit/cargo-deny not found**: CI-only tools, skip locally.
+- **cargo-audit/cargo-deny not found**: both ship in the Nix devShell (`nix develop`).
 - **Rust edition errors**: Requires Rust 1.90.0+ (Edition 2024).
