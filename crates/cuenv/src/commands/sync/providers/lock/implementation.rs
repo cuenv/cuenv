@@ -469,6 +469,13 @@ async fn execute_lock_sync(request: LockSyncRequest<'_>) -> Result<String> {
             return Ok("Lockfile is up to date.".to_string());
         }
 
+        if options.mode == SyncMode::DryRun {
+            return Ok(format!(
+                "Would update lockfile at {}",
+                lockfile_path.display()
+            ));
+        }
+
         // Write mode: save the lockfile
         lockfile.save(&lockfile_path)?;
 

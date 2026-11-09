@@ -536,6 +536,11 @@ impl CommandHandler for SyncHandler {
                     },
                 )
                 .await?;
+            // Per-project failures are reported in the output; surface them
+            // as a failing exit like `sync_selected` does.
+            if result.had_error {
+                return Err(cuenv_core::Error::configuration(result.output));
+            }
             return Ok(result.output);
         }
 

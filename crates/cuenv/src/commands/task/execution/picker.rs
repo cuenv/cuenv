@@ -72,6 +72,12 @@ fn selected_task_request<'a>(
     if input.skip_dependencies {
         request = request.with_skip_dependencies();
     }
+    if input.continue_on_error {
+        request = request.with_continue_on_error();
+    }
+    if input.dry_run.is_dry_run() {
+        request = request.with_dry_run();
+    }
 
     request
 }
