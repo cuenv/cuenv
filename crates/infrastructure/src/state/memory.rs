@@ -6,8 +6,11 @@ use std::sync::{Mutex, MutexGuard};
 use async_trait::async_trait;
 
 use super::{
-    ConditionalPut, LastWriter, LockInformation, LockRequest, ManagedResource, RecordVersion,
-    ResourceAddress, StateLock, StateStore, TenantLock,
+    ConditionalPut, LastWriter, LegacyMigrationAccess, LegacyMigrationCopy,
+    LegacyMigrationDeleteRequest, LegacyMigrationRecordRequest, LegacyMigrationSnapshot,
+    LegacyMigrationSnapshotRead, LegacyMigrationWriterRequest, LockIdentity, LockInformation,
+    LockRequest, ManagedResource, MigrationMutation, RecordVersion, ResourceAddress, StateLock,
+    StateStore, TenantLock,
 };
 use crate::error::{InfrastructureError, Result};
 use crate::tenant::TenantKey;
@@ -50,9 +53,19 @@ impl Contents {
 }
 
 /// A [`StateStore`] held in process memory.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MemoryStateStore {
     contents: Mutex<Contents>,
+    migration_identity: uuid::Uuid,
+}
+
+impl Default for MemoryStateStore {
+    fn default() -> Self {
+        Self {
+            contents: Mutex::new(Contents::default()),
+            migration_identity: uuid::Uuid::new_v4(),
+        }
+    }
 }
 
 impl MemoryStateStore {
@@ -73,19 +86,138 @@ fn require_lock(contents: &Contents, tenant: &TenantKey, lock: &StateLock) -> Re
     let held = contents
         .locks
         .get(tenant)
-        .is_some_and(|information| information.lock_identifier == lock.lock_identifier);
+        .is_some_and(|information| information.identifier() == Some(lock.lock_identifier.as_str()));
     if held {
         Ok(())
     } else {
         Err(InfrastructureError::LockLost {
             tenant: tenant.to_string(),
-            lock_identifier: lock.lock_identifier.clone(),
         })
     }
 }
 
+fn legacy_held(contents: &Contents, access: &LegacyMigrationAccess<'_>) -> bool {
+    contents
+        .locks
+        .get(access.tenant)
+        .and_then(LockInformation::identifier)
+        == Some(access.fence.lock_identifier.as_str())
+}
+
+fn validate_legacy_writer(writer: Option<&LastWriter>) -> Result<()> {
+    if writer.is_some_and(|writer| writer.recorded_at.chars().any(char::is_control)) {
+        return Err(InfrastructureError::configuration(
+            "invalid legacy migration writer metadata",
+        ));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl StateStore for MemoryStateStore {
+    fn legacy_migration_source(&self) -> Option<super::LegacyMigrationSource> {
+        use sha2::Digest;
+        let mut digest = sha2::Sha256::new();
+        digest.update(b"cuenv-legacy-memory-connection-v1\0");
+        digest.update(self.migration_identity.as_bytes());
+        Some(super::LegacyMigrationSource::Memory {
+            connection: super::BackendIdentity::from_digest(digest.finalize().into()),
+        })
+    }
+
+    async fn read_legacy_migration_snapshot(
+        &self,
+        access: &LegacyMigrationAccess<'_>,
+    ) -> Result<LegacyMigrationSnapshotRead> {
+        access.validate()?;
+        let contents = self.contents()?;
+        if !legacy_held(&contents, access) {
+            return Ok(LegacyMigrationSnapshotRead::Stale);
+        }
+        let resources: Vec<ManagedResource> = contents
+            .rows
+            .get(access.tenant)
+            .map(|rows| rows.values().cloned().collect())
+            .unwrap_or_default();
+        let writer = contents.writers.get(access.tenant).cloned();
+        LegacyMigrationCopy {
+            access: *access,
+            resources: &resources,
+            writer: writer.as_ref(),
+        }
+        .validate()?;
+        validate_legacy_writer(writer.as_ref())?;
+        Ok(LegacyMigrationSnapshotRead::Available(Box::new(
+            LegacyMigrationSnapshot { resources, writer },
+        )))
+    }
+
+    async fn check_legacy_migration_copy(
+        &self,
+        copy: &LegacyMigrationCopy<'_>,
+    ) -> Result<MigrationMutation> {
+        copy.validate()?;
+        validate_legacy_writer(copy.writer)?;
+        let contents = self.contents()?;
+        Ok(if legacy_held(&contents, &copy.access) {
+            MigrationMutation::Applied
+        } else {
+            MigrationMutation::Stale
+        })
+    }
+
+    async fn replace_legacy_migration_record(
+        &self,
+        request: &LegacyMigrationRecordRequest<'_>,
+    ) -> Result<MigrationMutation> {
+        request.validate()?;
+        let mut contents = self.contents()?;
+        if !legacy_held(&contents, &request.access) {
+            return Ok(MigrationMutation::Stale);
+        }
+        contents
+            .rows
+            .entry(request.access.tenant.clone())
+            .or_default()
+            .insert(request.resource.address.clone(), request.resource.clone());
+        Ok(MigrationMutation::Applied)
+    }
+
+    async fn delete_legacy_migration_record(
+        &self,
+        request: &LegacyMigrationDeleteRequest<'_>,
+    ) -> Result<MigrationMutation> {
+        request.access.validate()?;
+        let mut contents = self.contents()?;
+        if !legacy_held(&contents, &request.access) {
+            return Ok(MigrationMutation::Stale);
+        }
+        if let Some(rows) = contents.rows.get_mut(request.access.tenant) {
+            rows.remove(request.address);
+        }
+        Ok(MigrationMutation::Applied)
+    }
+
+    async fn set_legacy_migration_writer(
+        &self,
+        request: &LegacyMigrationWriterRequest<'_>,
+    ) -> Result<MigrationMutation> {
+        request.access.validate()?;
+        validate_legacy_writer(request.writer)?;
+        let mut contents = self.contents()?;
+        if !legacy_held(&contents, &request.access) {
+            return Ok(MigrationMutation::Stale);
+        }
+        if let Some(writer) = request.writer {
+            contents
+                .writers
+                .insert(request.access.tenant.clone(), writer.clone());
+        } else {
+            contents.writers.remove(request.access.tenant);
+        }
+        Ok(MigrationMutation::Applied)
+    }
+
     async fn migrate(&self) -> Result<()> {
         Ok(())
     }
@@ -167,20 +299,20 @@ impl StateStore for MemoryStateStore {
         request.lock.validate()?;
         let mut contents = self.contents()?;
         if let Some(existing) = contents.locks.get(tenant) {
-            if existing.lock_identifier == request.lock.lock_identifier {
+            if existing.identifier() == Some(request.lock.lock_identifier.as_str()) {
                 return Ok(request.lock.clone());
             }
             return Err(InfrastructureError::Locked {
                 tenant: tenant.to_string(),
-                lock_identifier: existing.lock_identifier.clone(),
-                holder: existing.holder.clone(),
-                acquired_at: existing.acquired_at.clone(),
+                lock: existing.clone(),
             });
         }
         contents.locks.insert(
             tenant.clone(),
             LockInformation {
-                lock_identifier: request.lock.lock_identifier.clone(),
+                identity: LockIdentity::Ordinary {
+                    identifier: request.lock.lock_identifier.clone(),
+                },
                 holder: request.holder.to_string(),
                 acquired_at: chrono::Utc::now().to_rfc3339(),
             },
@@ -229,7 +361,7 @@ impl StateStore for MemoryStateStore {
         let matches = contents
             .locks
             .get(tenant)
-            .is_some_and(|information| information.lock_identifier == lock_identifier);
+            .is_some_and(|information| information.identifier() == Some(lock_identifier));
         if matches {
             contents.locks.remove(tenant);
         }
@@ -262,6 +394,20 @@ impl StateStore for MemoryStateStore {
 mod tests {
     use super::*;
     use crate::tenant::ProjectInstance;
+
+    #[test]
+    fn migration_connection_identity_is_stable_and_instance_scoped() {
+        let first = MemoryStateStore::new();
+        let second = MemoryStateStore::new();
+        assert_eq!(
+            first.legacy_migration_source(),
+            first.legacy_migration_source()
+        );
+        assert_ne!(
+            first.legacy_migration_source(),
+            second.legacy_migration_source()
+        );
+    }
 
     fn resource(name: &str) -> ManagedResource {
         ManagedResource {
@@ -496,8 +642,8 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .lock_identifier,
-            chosen.lock_identifier
+                .identifier(),
+            Some(chosen.lock_identifier.as_str())
         );
         let invalid = StateLock {
             lock_identifier: "no spaces".into(),
@@ -643,7 +789,10 @@ mod tests {
         // A listed lock is released by its tenant alone.
         assert!(
             store
-                .force_unlock(&dev_row.tenant().unwrap(), &dev_row.lock.lock_identifier)
+                .force_unlock(
+                    &dev_row.tenant().unwrap(),
+                    dev_row.lock.identifier().unwrap()
+                )
                 .await
                 .unwrap()
         );

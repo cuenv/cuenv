@@ -3,10 +3,7 @@
 //! state; the no-install fallback path is covered by `global_fallback.rs`.
 
 use async_trait::async_trait;
-use cuenv_secrets::{
-    SecretError, SecretRegistry, SecretResolver, SecretSpec, global_registry,
-    install_registry_factory,
-};
+use cuenv_secrets::{SecretError, SecretRegistry, SecretResolver, SecretSpec};
 use std::sync::Arc;
 
 struct MarkerResolver;
@@ -24,7 +21,7 @@ impl SecretResolver for MarkerResolver {
 
 #[tokio::test]
 async fn installed_factory_builds_the_global_registry() {
-    install_registry_factory(|| {
+    cuenv_secrets::install_registry_factory(|| {
         let mut registry = SecretRegistry::with_builtins();
         registry.register(Arc::new(MarkerResolver));
         registry
@@ -33,11 +30,11 @@ async fn installed_factory_builds_the_global_registry() {
 
     // Installing twice fails, before or after realization.
     assert!(matches!(
-        install_registry_factory(SecretRegistry::with_builtins),
+        cuenv_secrets::install_registry_factory(SecretRegistry::with_builtins),
         Err(SecretError::RegistryAlreadyInstalled)
     ));
 
-    let registry = global_registry();
+    let registry = cuenv_secrets::global_registry();
     assert!(registry.has("env"));
     assert!(registry.has("exec"));
     assert!(registry.has("marker"));
@@ -50,7 +47,7 @@ async fn installed_factory_builds_the_global_registry() {
     assert_eq!(value, "marker");
 
     assert!(matches!(
-        install_registry_factory(SecretRegistry::with_builtins),
+        cuenv_secrets::install_registry_factory(SecretRegistry::with_builtins),
         Err(SecretError::RegistryAlreadyInstalled)
     ));
 }

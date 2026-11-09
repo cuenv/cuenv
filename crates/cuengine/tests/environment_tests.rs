@@ -1,6 +1,5 @@
 //! Tests for CUE evaluation and JSON parsing
 
-use cuengine::evaluate_cue_package;
 use cuenv_core::environment::{EnvValue, Environment};
 use cuenv_core::manifest::Project;
 use std::error::Error;
@@ -14,55 +13,21 @@ fn test_parse_task_basic_example() -> TestResult {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let project_root = Path::new(manifest_dir).join("../..").canonicalize()?;
 
-    // Verify cue.mod exists (required for module evaluation)
-    let cue_mod_path = project_root.join("cue.mod/module.cue");
-    if !cue_mod_path.exists() {
-        tracing::info!("Skipping test - cue.mod not found at project root: {project_root:?}");
-        return Ok(());
-    }
-
-    // Evaluate from project root - the examples package is in examples/task-basic
-    // but imports require module root resolution
-    let result = evaluate_cue_package(&project_root, "examples");
-
-    // Handle both success and failure cases gracefully (FFI may be unavailable in CI)
-    let json = match result {
-        Ok(json) => json,
-        Err(e) => {
-            tracing::info!("FFI evaluation failed (may be unavailable in test environment): {e}");
-            return Ok(());
-        }
-    };
-
-    // Try to parse as typed Project
-    let manifest: Result<Project, _> = serde_json::from_str(&json);
-    match manifest {
-        Ok(cuenv) => {
-            // Extract environment variables
-            let mut env = Environment::new();
-            if let Some(env_config) = &cuenv.env {
-                for (key, value) in &env_config.base {
-                    // Use the to_string_value method that handles all variants
-                    let value_str = value.to_string_value();
-                    if value_str == "[SECRET]" {
-                        continue; // Skip secrets
-                    }
-                    env.set(key.clone(), value_str);
-                }
-            }
-
-            // Verify we got the expected values
-            assert_eq!(env.get("NAME"), Some("Jack O'Neill"));
-            // Verify expected tasks exist
-            assert!(cuenv.tasks.contains_key("interpolate"));
-            assert!(cuenv.tasks.contains_key("propagate"));
-            assert!(cuenv.tasks.contains_key("greetAll"));
-            assert!(cuenv.tasks.contains_key("shellExample"));
-        }
-        Err(e) => {
-            tracing::info!("Failed to parse as Project: {e}");
+    let json =
+        cuengine::evaluate_cue_package(&project_root.join("examples/task-basic"), "examples")?;
+    let project: Project = serde_json::from_str(&json)?;
+    let mut env = Environment::new();
+    if let Some(env_config) = &project.env {
+        for (key, value) in &env_config.base {
+            env.set(key.clone(), value.to_string_value());
         }
     }
+
+    assert_eq!(env.get("NAME"), Some("Jack O'Neill"));
+    assert!(project.tasks.contains_key("interpolate"));
+    assert!(project.tasks.contains_key("propagate"));
+    assert!(project.tasks.contains_key("greetAll"));
+    assert!(project.tasks.contains_key("shellExample"));
 
     Ok(())
 }
@@ -101,15 +66,7 @@ tasks: {
 }"#;
     fs::write(temp_dir.path().join("env.cue"), cue_content)?;
 
-    // Evaluate the CUE file - handle FFI unavailability gracefully
-    let result = evaluate_cue_package(temp_dir.path(), "cuenv");
-    let json = match result {
-        Ok(json) => json,
-        Err(e) => {
-            tracing::info!("FFI evaluation failed (may be unavailable in test environment): {e}");
-            return Ok(());
-        }
-    };
+    let json = cuengine::evaluate_cue_package(temp_dir.path(), "cuenv")?;
 
     // Parse as typed Project
     let manifest: Project = serde_json::from_str(&json)?;

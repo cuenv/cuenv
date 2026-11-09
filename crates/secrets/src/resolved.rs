@@ -1,8 +1,6 @@
 //! Resolved secrets with fingerprinting support
 
-use crate::{
-    BatchSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec, compute_secret_fingerprint,
-};
+use crate::{BatchSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec};
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 
@@ -65,7 +63,7 @@ impl ResolvedSecrets {
                 }
 
                 // Use write_salt for computing fingerprints (current salt preferred)
-                let fingerprint = compute_secret_fingerprint(
+                let fingerprint = crate::compute_secret_fingerprint(
                     name,
                     &value,
                     salt_config.write_salt().unwrap_or(""),
@@ -156,7 +154,7 @@ impl ResolvedSecrets {
 
         // Check against current salt
         if let Some(current) = &salt_config.current {
-            let current_fp = compute_secret_fingerprint(name, value, current);
+            let current_fp = crate::compute_secret_fingerprint(name, value, current);
             if current_fp == cached_fingerprint {
                 return true;
             }
@@ -164,7 +162,7 @@ impl ResolvedSecrets {
 
         // Check against previous salt (for rotation window)
         if let Some(previous) = &salt_config.previous {
-            let previous_fp = compute_secret_fingerprint(name, value, previous);
+            let previous_fp = crate::compute_secret_fingerprint(name, value, previous);
             if previous_fp == cached_fingerprint {
                 tracing::debug!(
                     secret = %name,
@@ -194,12 +192,12 @@ impl ResolvedSecrets {
         let current_fp = salt_config
             .current
             .as_ref()
-            .map(|salt| compute_secret_fingerprint(name, value, salt));
+            .map(|salt| crate::compute_secret_fingerprint(name, value, salt));
 
         let previous_fp = salt_config
             .previous
             .as_ref()
-            .map(|salt| compute_secret_fingerprint(name, value, salt));
+            .map(|salt| crate::compute_secret_fingerprint(name, value, salt));
 
         (current_fp, previous_fp)
     }
@@ -248,7 +246,7 @@ mod tests {
             .insert("API_KEY".to_string(), "secret123".to_string());
 
         let salt_config = SaltConfig::new(Some("my-salt".to_string()));
-        let fingerprint = compute_secret_fingerprint("API_KEY", "secret123", "my-salt");
+        let fingerprint = crate::compute_secret_fingerprint("API_KEY", "secret123", "my-salt");
 
         assert!(secrets.fingerprint_matches("API_KEY", &fingerprint, &salt_config));
     }
@@ -263,7 +261,7 @@ mod tests {
         // Salt config with new salt but old fingerprint should still match
         let salt_config =
             SaltConfig::with_rotation(Some("new-salt".to_string()), Some("old-salt".to_string()));
-        let old_fingerprint = compute_secret_fingerprint("API_KEY", "secret123", "old-salt");
+        let old_fingerprint = crate::compute_secret_fingerprint("API_KEY", "secret123", "old-salt");
 
         assert!(secrets.fingerprint_matches("API_KEY", &old_fingerprint, &salt_config));
     }
@@ -276,7 +274,8 @@ mod tests {
             .insert("API_KEY".to_string(), "secret123".to_string());
 
         let salt_config = SaltConfig::new(Some("my-salt".to_string()));
-        let wrong_fingerprint = compute_secret_fingerprint("API_KEY", "wrong-secret", "my-salt");
+        let wrong_fingerprint =
+            crate::compute_secret_fingerprint("API_KEY", "wrong-secret", "my-salt");
 
         assert!(!secrets.fingerprint_matches("API_KEY", &wrong_fingerprint, &salt_config));
     }
@@ -322,8 +321,10 @@ mod tests {
         assert_ne!(current_fp, previous_fp);
 
         // Verify fingerprints are correct
-        let expected_current = compute_secret_fingerprint("DB_PASS", "password", "current-salt");
-        let expected_previous = compute_secret_fingerprint("DB_PASS", "password", "previous-salt");
+        let expected_current =
+            crate::compute_secret_fingerprint("DB_PASS", "password", "current-salt");
+        let expected_previous =
+            crate::compute_secret_fingerprint("DB_PASS", "password", "previous-salt");
         assert_eq!(current_fp.unwrap(), expected_current);
         assert_eq!(previous_fp.unwrap(), expected_previous);
     }

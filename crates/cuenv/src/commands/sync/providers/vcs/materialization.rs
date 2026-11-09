@@ -1,11 +1,8 @@
 //! VCS dependency checkout and materialization helpers.
 
-use super::git::{git_output, git_output_bytes, run_git};
-use super::paths::{
-    TempPath, ensure_managed_internal_path, temporary_backup_path, temporary_target_path,
-    validate_materialization_path, validate_overlay_child_name, validate_subdir,
-};
-use super::{
+use super::paths;
+use super::paths::TempPath;
+use super::vcs_sync_provider::{
     FETCH_HEAD_COMMIT, FETCH_HEAD_TREE, HEAD_TREE, InstallOverlayDependencyRequest, MARKER_FILE,
     PrepareDependencyRequest, PrepareSubdirDependencyRequest,
 };
@@ -23,7 +20,7 @@ pub(super) fn prune_removed_vcs_dependencies(
     dependencies: &[LockedVcsDependency],
 ) -> Result<()> {
     for dependency in dependencies {
-        let target = validate_materialization_path(git_root, &dependency.path)?;
+        let target = paths::validate_materialization_path(git_root, &dependency.path)?;
         if dependency.overlay {
             ensure_overlay_parent_target(&target)?;
             // Overlay deps never own the parent `path`; remove only the managed
@@ -47,7 +44,7 @@ pub(super) fn prune_removed_vcs_dependencies(
     Ok(())
 }
 
-pub(super) fn should_update(name: &str, update: Option<&Vec<String>>) -> bool {
+pub(super) fn should_update(name: &str, update: Option<&[String]>) -> bool {
     match update {
         None => false,
         Some(names) if names.is_empty() => true,
@@ -73,7 +70,11 @@ pub(super) fn resolve_dependency(
 ) -> Result<LockedVcsDependency> {
     validate_git_input("url", &spec.url)?;
     validate_git_input("reference", &spec.reference)?;
-    let normalized_subdir = spec.subdir.as_deref().map(validate_subdir).transpose()?;
+    let normalized_subdir = spec
+        .subdir
+        .as_deref()
+        .map(paths::validate_subdir)
+        .transpose()?;
     if spec.overlay {
         if spec.vendor {
             return Err(Error::configuration(format!(
@@ -88,10 +89,10 @@ pub(super) fn resolve_dependency(
     }
     let cache_path = cache_root.join(name);
     fs::create_dir_all(cache_root).map_err(|e| Error::configuration(e.to_string()))?;
-    ensure_managed_internal_path(cache_root, &cache_path)?;
+    paths::ensure_managed_internal_path(cache_root, &cache_path)?;
     if cache_path.exists() {
         ensure_git_dir(&cache_path)?;
-        run_git(
+        super::git::run_git(
             [
                 OsStr::new("remote"),
                 OsStr::new("set-url"),
@@ -101,7 +102,7 @@ pub(super) fn resolve_dependency(
             Some(&cache_path),
         )?;
     } else {
-        run_git(
+        super::git::run_git(
             [
                 OsStr::new("clone"),
                 OsStr::new("--no-checkout"),
@@ -111,7 +112,7 @@ pub(super) fn resolve_dependency(
             None,
         )?;
     }
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("fetch"),
             OsStr::new("--tags"),
@@ -120,18 +121,18 @@ pub(super) fn resolve_dependency(
         ],
         Some(&cache_path),
     )?;
-    let commit = git_output(
+    let commit = super::git::git_output(
         [OsStr::new("rev-parse"), OsStr::new(FETCH_HEAD_COMMIT)],
         Some(&cache_path),
     )?;
-    let tree = git_output(
+    let tree = super::git::git_output(
         [OsStr::new("rev-parse"), OsStr::new(FETCH_HEAD_TREE)],
         Some(&cache_path),
     )?;
 
     let subtree = if let Some(ref subdir) = normalized_subdir {
         let object_ref = format!("{}:{}", commit, subdir);
-        let object_type = git_output(
+        let object_type = super::git::git_output(
             [
                 OsStr::new("cat-file"),
                 OsStr::new("-t"),
@@ -151,7 +152,7 @@ pub(super) fn resolve_dependency(
                 name, subdir, object_type, spec.reference
             )));
         }
-        Some(git_output(
+        Some(super::git::git_output(
             [OsStr::new("rev-parse"), OsStr::new(&object_ref)],
             Some(&cache_path),
         )?)
@@ -215,7 +216,7 @@ fn list_subtree_children(
     tree_ref: &str,
     context: &str,
 ) -> Result<BTreeMap<String, String>> {
-    let raw = git_output_bytes(
+    let raw = super::git::git_output_bytes(
         [
             OsStr::new("ls-tree"),
             OsStr::new("-z"),
@@ -242,7 +243,7 @@ fn list_subtree_children(
         let oid = fields.next().unwrap_or_default();
         match kind {
             "tree" => {
-                validate_overlay_child_name(name, context)?;
+                paths::validate_overlay_child_name(name, context)?;
                 children.insert(name.to_string(), oid.to_string());
             }
             "blob" => {
@@ -290,10 +291,10 @@ pub(super) fn prepare_dependency(request: PrepareDependencyRequest<'_>) -> Resul
             subdir,
         });
     }
-    let temp_target = temporary_target_path(temp_root, target, "tmp")?;
+    let temp_target = paths::temporary_target_path(temp_root, target, "tmp")?;
     let temp_guard = TempPath::new(temp_target);
     let temp_target = temp_guard.path();
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("clone"),
             OsStr::new("--no-checkout"),
@@ -302,7 +303,7 @@ pub(super) fn prepare_dependency(request: PrepareDependencyRequest<'_>) -> Resul
         ],
         None,
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("fetch"),
             OsStr::new("origin"),
@@ -310,7 +311,7 @@ pub(super) fn prepare_dependency(request: PrepareDependencyRequest<'_>) -> Resul
         ],
         Some(temp_target),
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("checkout"),
             OsStr::new("--detach"),
@@ -345,10 +346,10 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
             locked.path
         ))
     })?;
-    let clone_target = temporary_target_path(temp_root, target, "clone")?;
+    let clone_target = paths::temporary_target_path(temp_root, target, "clone")?;
     let clone_guard = TempPath::new(clone_target);
     let clone_path = clone_guard.path();
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("clone"),
             OsStr::new("--no-checkout"),
@@ -358,7 +359,7 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
         ],
         None,
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("sparse-checkout"),
             OsStr::new("init"),
@@ -366,7 +367,7 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
         ],
         Some(clone_path),
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("sparse-checkout"),
             OsStr::new("set"),
@@ -375,7 +376,7 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
         ],
         Some(clone_path),
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("fetch"),
             OsStr::new("origin"),
@@ -383,7 +384,7 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
         ],
         Some(clone_path),
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("checkout"),
             OsStr::new("--detach"),
@@ -391,7 +392,7 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
         ],
         Some(clone_path),
     )?;
-    let subtree = git_output(
+    let subtree = super::git::git_output(
         [
             OsStr::new("rev-parse"),
             OsStr::new(&format!("HEAD:{}", subdir)),
@@ -418,7 +419,7 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
             locked.path, subdir
         )));
     }
-    let extracted_target = temporary_target_path(temp_root, target, "tmp")?;
+    let extracted_target = paths::temporary_target_path(temp_root, target, "tmp")?;
     let extracted_guard = TempPath::new(extracted_target);
     fs::rename(&extracted_source, extracted_guard.path())
         .map_err(|e| Error::configuration(e.to_string()))?;
@@ -476,10 +477,10 @@ pub(super) fn prepare_overlay_dependency(
     }
 
     fs::create_dir_all(temp_root).map_err(|e| Error::configuration(e.to_string()))?;
-    let clone_target = temporary_target_path(temp_root, target, "clone")?;
+    let clone_target = paths::temporary_target_path(temp_root, target, "clone")?;
     let clone_guard = TempPath::new(clone_target);
     let clone_path = clone_guard.path();
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("clone"),
             OsStr::new("--no-checkout"),
@@ -489,7 +490,7 @@ pub(super) fn prepare_overlay_dependency(
         ],
         None,
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("sparse-checkout"),
             OsStr::new("init"),
@@ -497,7 +498,7 @@ pub(super) fn prepare_overlay_dependency(
         ],
         Some(clone_path),
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("sparse-checkout"),
             OsStr::new("set"),
@@ -506,7 +507,7 @@ pub(super) fn prepare_overlay_dependency(
         ],
         Some(clone_path),
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("fetch"),
             OsStr::new("origin"),
@@ -514,7 +515,7 @@ pub(super) fn prepare_overlay_dependency(
         ],
         Some(clone_path),
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("checkout"),
             OsStr::new("--detach"),
@@ -522,7 +523,7 @@ pub(super) fn prepare_overlay_dependency(
         ],
         Some(clone_path),
     )?;
-    let subtree = git_output(
+    let subtree = super::git::git_output(
         [
             OsStr::new("rev-parse"),
             OsStr::new(&format!("HEAD:{}", subdir)),
@@ -562,7 +563,7 @@ pub(super) fn prepare_overlay_dependency(
             )));
         }
         let child_target = target.join(child);
-        let extracted_target = temporary_target_path(temp_root, &child_target, "tmp")?;
+        let extracted_target = paths::temporary_target_path(temp_root, &child_target, "tmp")?;
         let extracted_guard = TempPath::new(extracted_target);
         fs::rename(&extracted_source, extracted_guard.path())
             .map_err(|e| Error::configuration(e.to_string()))?;
@@ -659,7 +660,7 @@ pub(super) fn install_prepared_overlay_dependency(
     ensure_overlay_parent_target(target)?;
     if let Some(parent_previous) = previous_parent_materialization(previous) {
         ensure_replaceable_target(target, Some(parent_previous))?;
-        let parent_target = temporary_target_path(temp_root, target, "overlay")?;
+        let parent_target = paths::temporary_target_path(temp_root, target, "overlay")?;
         let parent_guard = TempPath::new(parent_target);
         fs::create_dir_all(parent_guard.path()).map_err(|e| Error::configuration(e.to_string()))?;
         for (child, temp) in children {
@@ -766,7 +767,7 @@ fn ensure_replaceable_target(target: &Path, previous: Option<&LockedVcsDependenc
     } else {
         ensure_git_dir(target)?;
         ensure_marker_is_excluded(target)?;
-        let status = git_output(
+        let status = super::git::git_output(
             [
                 OsStr::new("status"),
                 OsStr::new("--porcelain"),
@@ -915,7 +916,7 @@ fn replace_target_with_prepared_checkout(target: &Path, prepared: &Path) -> Resu
         Ok(_) => {}
     }
 
-    let backup = temporary_backup_path(target)?;
+    let backup = paths::temporary_backup_path(target)?;
     fs::rename(target, &backup).map_err(|e| Error::configuration(e.to_string()))?;
     if let Err(rename_error) = fs::rename(prepared, target) {
         let restore_result = fs::rename(&backup, target);
@@ -935,7 +936,8 @@ fn replace_target_with_prepared_checkout(target: &Path, prepared: &Path) -> Resu
 }
 
 fn verify_checked_out_tree(path: &Path, locked: &LockedVcsDependency) -> Result<()> {
-    let tree = git_output([OsStr::new("rev-parse"), OsStr::new(HEAD_TREE)], Some(path))?;
+    let tree =
+        super::git::git_output([OsStr::new("rev-parse"), OsStr::new(HEAD_TREE)], Some(path))?;
     if tree != locked.tree {
         return Err(Error::configuration(format!(
             "VCS dependency '{}' resolved tree {}, expected {}",
@@ -1001,7 +1003,7 @@ pub(super) fn check_materialized(path: &Path, locked: &LockedVcsDependency) -> R
         }
         return Ok(());
     }
-    let head = git_output([OsStr::new("rev-parse"), OsStr::new("HEAD")], Some(path))?;
+    let head = super::git::git_output([OsStr::new("rev-parse"), OsStr::new("HEAD")], Some(path))?;
     if head != locked.commit {
         return Err(Error::configuration(format!(
             "VCS dependency '{}' is checked out at {}, expected {}",
@@ -1009,7 +1011,7 @@ pub(super) fn check_materialized(path: &Path, locked: &LockedVcsDependency) -> R
         )));
     }
     verify_checked_out_tree(path, locked)?;
-    let status = git_output(
+    let status = super::git::git_output(
         [
             OsStr::new("status"),
             OsStr::new("--porcelain"),
@@ -1046,9 +1048,9 @@ fn vendored_tree_hash(path: &Path) -> Result<String> {
 }
 
 fn vendored_tree_hash_with_git_dir(path: &Path, temp: &Path) -> Result<String> {
-    run_git([OsStr::new("init"), OsStr::new("-q")], Some(temp))?;
+    super::git::run_git([OsStr::new("init"), OsStr::new("-q")], Some(temp))?;
     let git_dir = temp.join(".git");
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("--git-dir"),
             git_dir.as_os_str(),
@@ -1062,7 +1064,7 @@ fn vendored_tree_hash_with_git_dir(path: &Path, temp: &Path) -> Result<String> {
         ],
         None,
     )?;
-    run_git(
+    super::git::run_git(
         [
             OsStr::new("--git-dir"),
             git_dir.as_os_str(),
@@ -1076,7 +1078,7 @@ fn vendored_tree_hash_with_git_dir(path: &Path, temp: &Path) -> Result<String> {
         ],
         None,
     )?;
-    git_output(
+    super::git::git_output(
         [
             OsStr::new("--git-dir"),
             git_dir.as_os_str(),

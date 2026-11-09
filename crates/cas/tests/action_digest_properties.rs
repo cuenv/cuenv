@@ -1,4 +1,4 @@
-//! Property tests for [`digest_of::<Action>`].
+//! Property tests for [`cuenv_cas::digest_of`].
 //!
 //! These encode the behavioral contract of the action cache key:
 //!
@@ -10,7 +10,7 @@
 //! These properties replace the old `CacheKeyEnvelope` proptests from the
 //! legacy `cuenv_cache` crate.
 
-use cuenv_cas::{Action, Command, Digest, Platform, digest_of};
+use cuenv_cas::{Action, Command, Digest, Platform};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
@@ -52,8 +52,8 @@ proptest! {
     /// Same action ⇒ same digest, always.
     #[test]
     fn digest_is_deterministic(action in action_strategy()) {
-        let d1 = digest_of(&action).expect("digest_of");
-        let d2 = digest_of(&action).expect("digest_of");
+        let d1 = cuenv_cas::digest_of(&action).expect("digest_of");
+        let d2 = cuenv_cas::digest_of(&action).expect("digest_of");
         prop_assert_eq!(d1, d2);
     }
 
@@ -61,8 +61,8 @@ proptest! {
     #[test]
     fn digest_stable_across_clone(action in action_strategy()) {
         let clone = action.clone();
-        let d1 = digest_of(&action).expect("digest_of");
-        let d2 = digest_of(&clone).expect("digest_of");
+        let d1 = cuenv_cas::digest_of(&action).expect("digest_of");
+        let d2 = cuenv_cas::digest_of(&clone).expect("digest_of");
         prop_assert_eq!(d1, d2);
     }
 
@@ -70,9 +70,9 @@ proptest! {
     #[test]
     fn command_digest_sensitivity(mut action in action_strategy(), other in digest_strategy()) {
         prop_assume!(action.command_digest != other);
-        let original = digest_of(&action).expect("digest_of");
+        let original = cuenv_cas::digest_of(&action).expect("digest_of");
         action.command_digest = other;
-        let modified = digest_of(&action).expect("digest_of");
+        let modified = cuenv_cas::digest_of(&action).expect("digest_of");
         prop_assert_ne!(original, modified);
     }
 
@@ -80,9 +80,9 @@ proptest! {
     #[test]
     fn input_root_sensitivity(mut action in action_strategy(), other in digest_strategy()) {
         prop_assume!(action.input_root_digest != other);
-        let original = digest_of(&action).expect("digest_of");
+        let original = cuenv_cas::digest_of(&action).expect("digest_of");
         action.input_root_digest = other;
-        let modified = digest_of(&action).expect("digest_of");
+        let modified = cuenv_cas::digest_of(&action).expect("digest_of");
         prop_assert_ne!(original, modified);
     }
 
@@ -93,9 +93,9 @@ proptest! {
         other in 0u32..8,
     ) {
         prop_assume!(action.action_semantics_version != other);
-        let original = digest_of(&action).expect("digest_of");
+        let original = cuenv_cas::digest_of(&action).expect("digest_of");
         action.action_semantics_version = other;
-        let modified = digest_of(&action).expect("digest_of");
+        let modified = cuenv_cas::digest_of(&action).expect("digest_of");
         prop_assert_ne!(original, modified);
     }
 }
@@ -132,8 +132,8 @@ proptest! {
         b.platform = Platform { properties: reverse };
 
         prop_assert_eq!(
-            digest_of(&a).expect("digest_of"),
-            digest_of(&b).expect("digest_of"),
+            cuenv_cas::digest_of(&a).expect("digest_of"),
+            cuenv_cas::digest_of(&b).expect("digest_of"),
         );
     }
 
@@ -163,8 +163,8 @@ proptest! {
         };
 
         prop_assert_eq!(
-            digest_of(&a).expect("digest_of"),
-            digest_of(&b).expect("digest_of"),
+            cuenv_cas::digest_of(&a).expect("digest_of"),
+            cuenv_cas::digest_of(&b).expect("digest_of"),
         );
     }
 }
@@ -181,7 +181,7 @@ fn digest_hash_is_64_hex_chars() {
         platform: Platform::default(),
         action_semantics_version: 1,
     };
-    let d = digest_of(&action).expect("digest_of");
+    let d = cuenv_cas::digest_of(&action).expect("digest_of");
     assert_eq!(d.hash.len(), 64);
     assert!(d.hash.chars().all(|c| c.is_ascii_hexdigit()));
 }
@@ -194,7 +194,7 @@ fn empty_action_still_produces_valid_digest() {
         platform: Platform::default(),
         action_semantics_version: 0,
     };
-    let d = digest_of(&action).expect("digest_of");
+    let d = cuenv_cas::digest_of(&action).expect("digest_of");
     assert_eq!(d.hash.len(), 64);
 }
 
@@ -211,5 +211,8 @@ fn command_argument_order_matters() {
         arguments: vec!["--release".into(), "build".into()],
         ..a.clone()
     };
-    assert_ne!(digest_of(&a).unwrap(), digest_of(&b).unwrap());
+    assert_ne!(
+        cuenv_cas::digest_of(&a).unwrap(),
+        cuenv_cas::digest_of(&b).unwrap()
+    );
 }

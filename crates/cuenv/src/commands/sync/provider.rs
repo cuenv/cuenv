@@ -50,17 +50,17 @@ pub enum SyncScope {
 
 /// Shared input passed to a built-in sync provider.
 #[derive(Clone, Copy)]
-pub struct SyncRequest<'a> {
+pub struct SyncRequest<'request> {
     /// Path selected by the user.
-    pub path: &'a Path,
+    pub path: &'request Path,
     /// CUE package to evaluate.
-    pub package: &'a str,
+    pub package: &'request str,
     /// Provider-specific options normalized by CLI parsing.
-    pub options: &'a SyncOptions,
+    pub options: &'request SyncOptions,
     /// Whether to sync one path or the whole workspace.
     pub scope: SyncScope,
     /// Shared command executor and module cache.
-    pub executor: &'a CommandExecutor,
+    pub executor: &'request CommandExecutor,
 }
 
 /// Result of a sync operation.

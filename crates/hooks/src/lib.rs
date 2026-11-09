@@ -20,12 +20,6 @@
 //! In CI environments, hooks are auto-approved since the environment is
 //! assumed to be already secured.
 
-// TODO(hooks-docs): Add # Errors documentation to all fallible public functions
-#![expect(
-    clippy::missing_errors_doc,
-    reason = "Error documentation to be added incrementally"
-)]
-
 mod approval;
 mod error;
 mod executor;
@@ -36,13 +30,22 @@ mod types;
 pub use error::{Error, Result};
 
 // Re-export types
-pub use types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult, Hooks};
+pub use types::{
+    ExecutionStatus, Hook, HookExecutionConfig, HookResult, HookSuccess, HookTimeout, Hooks,
+};
 
 // Re-export state management
-pub use state::{HookExecutionState, StateManager, compute_execution_hash, compute_instance_hash};
+pub use state::{
+    HookChildUpdate, HookExecutionIdentity, HookExecutionState, HookRecoveryOutcome,
+    HookReservation, HookReservationPhase, HookRunIdentity, HookRunJoin, HookRunStart,
+    HookRunUpdate, HookStartMode, HookWorkerStart, StateManager, compute_execution_hash,
+    compute_instance_hash,
+};
 
 // Re-export executor
-pub use executor::{HookExecutor, capture_source_environment, execute_hooks};
+pub use executor::{
+    HookExecutor, HookRunState, HookSessionContext, capture_source_environment, execute_hooks,
+};
 
 // Re-export approval management
 pub use approval::{

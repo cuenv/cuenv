@@ -1,6 +1,6 @@
 //! Tests for the commands module
 
-use super::*;
+use super::{Command, CommandExecutor};
 
 #[tokio::test]
 async fn test_command_executor_new() {

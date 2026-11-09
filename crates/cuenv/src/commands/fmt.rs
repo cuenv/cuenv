@@ -8,13 +8,10 @@
 //! uses), so the project's declared toolchain is used rather than whatever is
 //! on cuenv's own `PATH`.
 
+use crate::commands::CommandExecutor;
 use crate::commands::exec::ProjectEnvironmentRequest;
 use crate::commands::sync::formatters::{CUE, GOFMT, RUSTFMT};
-use crate::commands::sync::{
-    FormatMode, FormatterContext, FormatterEnvironments, matches_any_pattern, run_cue_formatter,
-    run_go_formatter, run_nix_formatter, run_rust_formatter,
-};
-use crate::commands::{CommandExecutor, relative_path_from_root};
+use crate::commands::sync::{FormatMode, FormatterContext, FormatterEnvironments};
 use cuenv_core::Result;
 use cuenv_core::manifest::{Base, Formatters, NixFormatterTool};
 use ignore::WalkBuilder;
@@ -79,7 +76,7 @@ fn discover_files(
         if should_include("rust", only)
             && let Some(ref rust) = formatters.rust
             && rust.enabled
-            && matches_any_pattern(&path_str, &rust.includes)
+            && crate::commands::sync::matches_any_pattern(&path_str, &rust.includes)
         {
             rust_files.push(path.to_path_buf());
         }
@@ -88,7 +85,7 @@ fn discover_files(
         if should_include("nix", only)
             && let Some(ref nix) = formatters.nix
             && nix.enabled
-            && matches_any_pattern(&path_str, &nix.includes)
+            && crate::commands::sync::matches_any_pattern(&path_str, &nix.includes)
         {
             nix_files.push(path.to_path_buf());
         }
@@ -97,7 +94,7 @@ fn discover_files(
         if should_include("go", only)
             && let Some(ref go) = formatters.go
             && go.enabled
-            && matches_any_pattern(&path_str, &go.includes)
+            && crate::commands::sync::matches_any_pattern(&path_str, &go.includes)
         {
             go_files.push(path.to_path_buf());
         }
@@ -106,7 +103,7 @@ fn discover_files(
         if should_include("cue", only)
             && let Some(ref cue) = formatters.cue
             && cue.enabled
-            && matches_any_pattern(&path_str, &cue.includes)
+            && crate::commands::sync::matches_any_pattern(&path_str, &cue.includes)
         {
             cue_files.push(path.to_path_buf());
         }
@@ -137,8 +134,8 @@ fn load_base_config(path: &str, executor: &CommandExecutor) -> Result<Base> {
         cuenv_core::Error::io_with_path("canonicalize path", Path::new(path).to_path_buf(), e)
     })?;
 
-    let module = executor.get_module(&target_path)?;
-    let relative_path = relative_path_from_root(&module.root, &target_path);
+    let module = executor.module(&target_path)?;
+    let relative_path = crate::commands::relative_path_from_root(&module.root, &target_path);
     let instance = module.get(&relative_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
             "No CUE instance found at path: {} (relative: {})",
@@ -152,17 +149,17 @@ fn load_base_config(path: &str, executor: &CommandExecutor) -> Result<Base> {
 
 /// Request for the format command.
 #[derive(Clone, Copy, Debug)]
-pub struct FmtRequest<'a> {
+pub struct FmtRequest<'request> {
     /// Path to the CUE module directory.
-    pub path: &'a str,
+    pub path: &'request str,
     /// CUE package name to evaluate.
-    pub package: &'a str,
+    pub package: &'request str,
     /// Check (default) or fix.
     pub mode: FormatMode,
     /// Optional list of formatters to run (e.g., `["rust", "go"]`).
-    pub only: Option<&'a [String]>,
+    pub only: Option<&'request [String]>,
     /// Optional environment name whose `env` overlay formatters run with.
-    pub environment_override: Option<&'a str>,
+    pub environment_override: Option<&'request str>,
 }
 
 /// Formatter commands that have files to format.
@@ -259,7 +256,11 @@ pub async fn execute_fmt(request: FmtRequest<'_>, executor: &CommandExecutor) ->
     // Run Rust formatter
     if !files.rust.is_empty() {
         let file_refs: Vec<&Path> = files.rust.iter().map(AsRef::as_ref).collect();
-        match run_rust_formatter(&file_refs, formatters.rust.as_ref(), &context) {
+        match crate::commands::sync::run_rust_formatter(
+            &file_refs,
+            formatters.rust.as_ref(),
+            &context,
+        ) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
         }
@@ -268,7 +269,11 @@ pub async fn execute_fmt(request: FmtRequest<'_>, executor: &CommandExecutor) ->
     // Run Nix formatter
     if !files.nix.is_empty() {
         let file_refs: Vec<&Path> = files.nix.iter().map(AsRef::as_ref).collect();
-        match run_nix_formatter(&file_refs, formatters.nix.as_ref(), &context) {
+        match crate::commands::sync::run_nix_formatter(
+            &file_refs,
+            formatters.nix.as_ref(),
+            &context,
+        ) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
         }
@@ -277,7 +282,7 @@ pub async fn execute_fmt(request: FmtRequest<'_>, executor: &CommandExecutor) ->
     // Run Go formatter
     if !files.go.is_empty() {
         let file_refs: Vec<&Path> = files.go.iter().map(AsRef::as_ref).collect();
-        match run_go_formatter(&file_refs, &context) {
+        match crate::commands::sync::run_go_formatter(&file_refs, &context) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
         }
@@ -286,7 +291,7 @@ pub async fn execute_fmt(request: FmtRequest<'_>, executor: &CommandExecutor) ->
     // Run CUE formatter
     if !files.cue.is_empty() {
         let file_refs: Vec<&Path> = files.cue.iter().map(AsRef::as_ref).collect();
-        match run_cue_formatter(&file_refs, &context) {
+        match crate::commands::sync::run_cue_formatter(&file_refs, &context) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
         }
@@ -489,7 +494,6 @@ mod tests {
     #[cfg(unix)]
     mod project_environment {
         use super::*;
-        use crate::commands::sync::formatters::test_support::install_test_script;
         use tempfile::TempDir;
 
         /// A CUE module whose `env.PATH` points at a fake `rustfmt`.
@@ -514,7 +518,10 @@ mod tests {
             )
             .unwrap();
             std::fs::write(root.join("lib.rs"), "fn main() {}\n").unwrap();
-            install_test_script(&bin.join("rustfmt"), script);
+            crate::commands::sync::formatters::test_support::install_test_script(
+                &bin.join("rustfmt"),
+                script,
+            );
             dir
         }
 

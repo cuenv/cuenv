@@ -1,8 +1,8 @@
-use super::*;
+use super::{Entrypoint, HookItem, Project, Service, TaskMatcher, TaskRef, VcsDependency};
 use crate::tasks::{
     Input, Mapping, SourceLocation, Task, TaskDependency, TaskGroup, TaskNode, TaskOutput,
 };
-use crate::test_utils::create_test_hook;
+use crate::test_utils;
 use cuenv_hooks::Hooks;
 use std::collections::HashMap;
 
@@ -534,9 +534,18 @@ fn test_no_duplicate_implicit_dependencies() {
 #[test]
 fn test_on_enter_hooks_ordering() {
     let mut on_enter = HashMap::new();
-    on_enter.insert("hook_c".to_string(), create_test_hook(300, "echo c"));
-    on_enter.insert("hook_a".to_string(), create_test_hook(100, "echo a"));
-    on_enter.insert("hook_b".to_string(), create_test_hook(200, "echo b"));
+    on_enter.insert(
+        "hook_c".to_string(),
+        test_utils::create_test_hook(300, "echo c"),
+    );
+    on_enter.insert(
+        "hook_a".to_string(),
+        test_utils::create_test_hook(100, "echo a"),
+    );
+    on_enter.insert(
+        "hook_b".to_string(),
+        test_utils::create_test_hook(200, "echo b"),
+    );
 
     let mut cuenv = Project::new("test");
     cuenv.hooks = Some(Hooks {
@@ -557,8 +566,14 @@ fn test_on_enter_hooks_ordering() {
 #[test]
 fn test_on_enter_hooks_same_order_sort_by_name() {
     let mut on_enter = HashMap::new();
-    on_enter.insert("z_hook".to_string(), create_test_hook(100, "echo z"));
-    on_enter.insert("a_hook".to_string(), create_test_hook(100, "echo a"));
+    on_enter.insert(
+        "z_hook".to_string(),
+        test_utils::create_test_hook(100, "echo z"),
+    );
+    on_enter.insert(
+        "a_hook".to_string(),
+        test_utils::create_test_hook(100, "echo a"),
+    );
 
     let cuenv = Project {
         name: "test".to_string(),
@@ -668,34 +683,26 @@ fn test_project_deserialization_with_script_tasks() {
 }
 
 #[test]
-fn test_deserialize_actual_cuenv_project() {
-    // Read actual CUE output from /tmp/project.json (created by cue eval)
-    let json = match std::fs::read_to_string("/tmp/project.json") {
-        Ok(content) => content,
-        Err(_) => return, // Skip if file doesn't exist
-    };
-    let result: Result<Project, _> = serde_json::from_str(&json);
-    match result {
-        Ok(project) => {
-            eprintln!("Project name: {}", project.name);
-            eprintln!("Tasks: {:?}", project.tasks.keys().collect::<Vec<_>>());
-        }
-        Err(e) => {
-            eprintln!("Failed: {}", e);
-            eprintln!("Line: {}, Col: {}", e.line(), e.column());
-            // Read the JSON around the error line
-            let lines: Vec<&str> = json.lines().collect();
-            let line_num = e.line();
-            let start = if line_num > 3 { line_num - 3 } else { 1 };
-            let end = std::cmp::min(line_num + 3, lines.len());
-            for i in start..=end {
-                if i <= lines.len() {
-                    eprintln!("{}: {}", i, lines[i - 1]);
-                }
-            }
-            panic!("Deserialization failed");
-        }
-    }
+fn test_deserialize_cue_exported_project() {
+    // Generated with `cue export ./examples/task-basic --out json`.
+    let json = include_str!("../../testdata/task-basic-project.json");
+    let project: Project = serde_json::from_str(json).expect("CUE export must deserialize");
+
+    assert_eq!(project.name, "task-basic");
+    assert_eq!(project.tasks.len(), 5);
+    let interpolate = project.tasks["interpolate"]
+        .as_task()
+        .expect("interpolate is a task");
+    assert_eq!(interpolate.command, "echo");
+    assert_eq!(interpolate.args, ["Hello ", "Jack O'Neill", "!"]);
+    assert_eq!(
+        project.tasks["greetAll"]
+            .as_sequence()
+            .expect("greetAll is a sequence")
+            .len(),
+        2
+    );
+    assert!(project.tasks["greetIndividual"].is_group());
 }
 
 // =============================================================================

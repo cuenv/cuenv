@@ -1,5 +1,7 @@
-use super::*;
-use crate::MutableTaskNodeData;
+use super::analysis;
+use super::{NodeKind, TaskGraph};
+use crate::{Error, MutableTaskNodeData, TaskNodeData};
+use std::collections::HashMap;
 
 /// Simple test task implementation
 #[derive(Clone, Debug, Default)]
@@ -123,7 +125,7 @@ fn test_parallel_groups() {
     graph.add_task("task5", task5).unwrap();
     graph.add_dependency_edges().unwrap();
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
 
     // Should have 3 levels
     assert_eq!(groups.len(), 3);
@@ -196,7 +198,7 @@ fn test_empty_graph() {
     assert_eq!(graph.task_count(), 0);
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert!(groups.is_empty());
 }
 
@@ -224,7 +226,7 @@ fn test_diamond_dependency() {
     assert!(!graph.has_cycles());
     assert_eq!(graph.task_count(), 4);
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
 
     // Should have 3 levels: [A], [B,C], [D]
     assert_eq!(groups.len(), 3);
@@ -243,7 +245,7 @@ fn test_self_dependency_cycle() {
     graph.add_dependency_edges().unwrap();
 
     assert!(graph.has_cycles());
-    assert!(graph.get_parallel_groups().is_err());
+    assert!(graph.parallel_groups().is_err());
 }
 
 /// Test that shared dependencies appear only once in the DAG.
@@ -285,7 +287,7 @@ fn test_shared_dependency_deduplication() {
     assert!(positions["c"] < positions["b"], "C should execute before B");
 
     // Verify parallel groups: C in level 0, A and B in level 1
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert_eq!(groups.len(), 2, "Should have 2 execution levels");
     assert_eq!(groups[0].len(), 1, "Level 0 should have 1 task (C)");
     assert_eq!(groups[0][0].name, "c");
@@ -455,7 +457,7 @@ fn test_resolver_parallel_group() {
     assert!(graph.contains_task("build.backend"));
 
     // Both should be at same level (can run in parallel)
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert_eq!(groups.len(), 1); // Single level
     assert_eq!(groups[0].len(), 2); // Both tasks
 }
@@ -687,7 +689,7 @@ fn test_compute_affected_external_not_affected() {
 #[test]
 fn test_transitive_closure_empty() {
     let deps: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
-    let closure = compute_transitive_closure(std::iter::empty::<&str>(), |name| {
+    let closure = analysis::compute_transitive_closure(std::iter::empty::<&str>(), |name| {
         deps.get(name).map(|v| v.as_slice())
     });
     assert!(closure.is_empty());
@@ -697,8 +699,9 @@ fn test_transitive_closure_empty() {
 fn test_transitive_closure_single_node_no_deps() {
     let deps: std::collections::HashMap<&str, Vec<String>> =
         [("build", vec![])].into_iter().collect();
-    let closure =
-        compute_transitive_closure(["build"], |name| deps.get(name).map(|v| v.as_slice()));
+    let closure = analysis::compute_transitive_closure(["build"], |name| {
+        deps.get(name).map(|v| v.as_slice())
+    });
     assert_eq!(closure.len(), 1);
     assert!(closure.contains("build"));
 }
@@ -714,8 +717,9 @@ fn test_transitive_closure_chain() {
     .into_iter()
     .collect();
 
-    let closure =
-        compute_transitive_closure(["deploy"], |name| deps.get(name).map(|v| v.as_slice()));
+    let closure = analysis::compute_transitive_closure(["deploy"], |name| {
+        deps.get(name).map(|v| v.as_slice())
+    });
 
     assert_eq!(closure.len(), 3);
     assert!(closure.contains("deploy"));
@@ -739,7 +743,8 @@ fn test_transitive_closure_diamond() {
     .into_iter()
     .collect();
 
-    let closure = compute_transitive_closure(["A"], |name| deps.get(name).map(|v| v.as_slice()));
+    let closure =
+        analysis::compute_transitive_closure(["A"], |name| deps.get(name).map(|v| v.as_slice()));
 
     assert_eq!(closure.len(), 4);
     assert!(closure.contains("A"));
@@ -760,8 +765,9 @@ fn test_transitive_closure_multiple_initial() {
     .into_iter()
     .collect();
 
-    let closure =
-        compute_transitive_closure(["A", "C"], |name| deps.get(name).map(|v| v.as_slice()));
+    let closure = analysis::compute_transitive_closure(["A", "C"], |name| {
+        deps.get(name).map(|v| v.as_slice())
+    });
 
     assert_eq!(closure.len(), 4);
     assert!(closure.contains("A"));
@@ -776,7 +782,8 @@ fn test_transitive_closure_missing_dep() {
     let deps: std::collections::HashMap<&str, Vec<String>> =
         [("A", vec!["B".to_string()])].into_iter().collect();
 
-    let closure = compute_transitive_closure(["A"], |name| deps.get(name).map(|v| v.as_slice()));
+    let closure =
+        analysis::compute_transitive_closure(["A"], |name| deps.get(name).map(|v| v.as_slice()));
 
     // A is included, B is added to closure even though it has no entry (it's a valid node name)
     assert_eq!(closure.len(), 2);
@@ -812,7 +819,7 @@ fn test_add_task_sets_kind() {
     let mut graph = TaskGraph::new();
     graph.add_task("build", TestTask::new(&[])).unwrap();
 
-    let node = graph.get_node_by_name("build").unwrap();
+    let node = graph.node_by_name("build").unwrap();
     assert_eq!(node.kind, NodeKind::Task);
 }
 
@@ -821,7 +828,7 @@ fn test_add_service_sets_kind() {
     let mut graph = TaskGraph::new();
     graph.add_service("db", TestTask::new(&[])).unwrap();
 
-    let node = graph.get_node_by_name("db").unwrap();
+    let node = graph.node_by_name("db").unwrap();
     assert_eq!(node.kind, NodeKind::Service);
 }
 
@@ -838,10 +845,10 @@ fn test_mixed_graph_tasks_and_services() {
     assert!(!graph.has_cycles());
 
     // Verify kinds
-    let build_node = graph.get_node_by_name("build").unwrap();
+    let build_node = graph.node_by_name("build").unwrap();
     assert_eq!(build_node.kind, NodeKind::Task);
 
-    let db_node = graph.get_node_by_name("db").unwrap();
+    let db_node = graph.node_by_name("db").unwrap();
     assert_eq!(db_node.kind, NodeKind::Service);
 
     // Verify topological order

@@ -6,23 +6,25 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```
 //! use cuenv_github::workflow::GitHubActionsEmitter;
 //! use cuenv_ci::emitter::Emitter;
+//! use cuenv_ci::ir::IntermediateRepresentation;
 //!
 //! let emitter = GitHubActionsEmitter::new()
 //!     .with_runner("ubuntu-latest")
 //!     .with_nix()
 //!     .with_cachix("my-cache");
 //!
-//! // Single workflow output (implements Emitter trait)
+//! let ir = IntermediateRepresentation::new("build");
+//! // Single workflow output (implements Emitter trait).
 //! let yaml = emitter.emit(&ir)?;
+//! assert!(!yaml.is_empty());
 //!
 //! // Multi-workflow output for projects with multiple pipelines
 //! let workflows = emitter.emit_workflows(&ir)?;
-//! for (filename, content) in workflows {
-//!     std::fs::write(format!(".github/workflows/{}", filename), content)?;
-//! }
+//! assert!(workflows.keys().any(|filename| filename.ends_with(".yml")));
+//! # Ok::<(), cuenv_ci::emitter::EmitterError>(())
 //! ```
 
 pub mod emitter;

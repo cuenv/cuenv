@@ -1,6 +1,7 @@
-use super::*;
+use super::{EnvironmentDifference, StaticEnvConsumer};
 use cuenv_core::environment::{Env, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy};
 use cuenv_core::manifest::Project;
+use cuenv_core::shell::Shell;
 use cuenv_manifest::secrets::Secret;
 
 use std::collections::HashMap;
@@ -9,56 +10,62 @@ use std::path::Path;
 #[test]
 fn test_escape_shell_value() {
     // Test basic string
-    assert_eq!(escape_shell_value("simple"), "simple");
+    assert_eq!(super::escape_shell_value("simple"), "simple");
 
     // Test double quotes
-    assert_eq!(escape_shell_value("hello \"world\""), "hello \\\"world\\\"");
+    assert_eq!(
+        super::escape_shell_value("hello \"world\""),
+        "hello \\\"world\\\""
+    );
 
     // Test backslashes
-    assert_eq!(escape_shell_value("path\\to\\file"), "path\\\\to\\\\file");
+    assert_eq!(
+        super::escape_shell_value("path\\to\\file"),
+        "path\\\\to\\\\file"
+    );
 
     // Test dollar signs
-    assert_eq!(escape_shell_value("$HOME"), "\\$HOME");
-    assert_eq!(escape_shell_value("test $var"), "test \\$var");
+    assert_eq!(super::escape_shell_value("$HOME"), "\\$HOME");
+    assert_eq!(super::escape_shell_value("test $var"), "test \\$var");
 
     // Test backticks
-    assert_eq!(escape_shell_value("`command`"), "\\`command\\`");
+    assert_eq!(super::escape_shell_value("`command`"), "\\`command\\`");
 
     // Test multiple special characters
     assert_eq!(
-        escape_shell_value("$HOME/path\\with\"quotes`and`backticks"),
+        super::escape_shell_value("$HOME/path\\with\"quotes`and`backticks"),
         "\\$HOME/path\\\\with\\\"quotes\\`and\\`backticks"
     );
 
     // Test empty string
-    assert_eq!(escape_shell_value(""), "");
+    assert_eq!(super::escape_shell_value(""), "");
 
     // Test string with newlines (not escaped)
-    assert_eq!(escape_shell_value("line1\nline2"), "line1\nline2");
+    assert_eq!(super::escape_shell_value("line1\nline2"), "line1\nline2");
 
     // Test string with tabs (not escaped)
-    assert_eq!(escape_shell_value("col1\tcol2"), "col1\tcol2");
+    assert_eq!(super::escape_shell_value("col1\tcol2"), "col1\tcol2");
 }
 
 #[test]
 fn test_format_no_op_clears_state() {
-    let bash = format_no_op(Shell::Bash);
+    let bash = super::format_no_op(Shell::Bash);
     assert!(bash.contains("unset"));
     assert!(bash.contains("CUENV_PENDING_APPROVAL_DIR"));
     assert!(bash.contains("CUENV_LOADED_DIR"));
     assert!(bash.trim().ends_with(':'));
 
-    let fish = format_no_op(Shell::Fish);
+    let fish = super::format_no_op(Shell::Fish);
     assert!(fish.contains("set -e CUENV_PENDING_APPROVAL_DIR"));
     assert!(fish.contains("set -e CUENV_LOADED_DIR"));
     assert!(fish.trim().ends_with("true"));
 
-    let zsh = format_no_op(Shell::Zsh);
+    let zsh = super::format_no_op(Shell::Zsh);
     assert!(zsh.contains("unset"));
     assert!(zsh.contains("CUENV_PENDING_APPROVAL_DIR"));
     assert!(zsh.contains("CUENV_LOADED_DIR"));
 
-    let pwsh = format_no_op(Shell::PowerShell);
+    let pwsh = super::format_no_op(Shell::PowerShell);
     assert!(pwsh.contains("Remove-Item Env:CUENV_PENDING_APPROVAL_DIR"));
     assert!(pwsh.contains("Remove-Item Env:CUENV_LOADED_DIR"));
 }
@@ -66,15 +73,15 @@ fn test_format_no_op_clears_state() {
 #[test]
 fn test_format_not_allowed_emits_notice_and_clears_loaded() {
     let dir = Path::new("/tmp/project");
-    let bash_notice = format_not_allowed(dir, Shell::Bash, 1);
+    let bash_notice = super::format_not_allowed(dir, Shell::Bash, 1);
     assert!(bash_notice.contains("cuenv detected env.cue"));
     assert!(bash_notice.contains("cuenv allow'")); // Simplified command
     assert!(bash_notice.contains("contains 1 hook"));
     assert!(bash_notice.contains("export CUENV_PENDING_APPROVAL_DIR="));
     assert!(bash_notice.contains("unset CUENV_LOADED_DIR"));
 
-    let fish_notice = format_not_allowed(dir, Shell::Fish, 2);
-    assert!(fish_notice.contains("set -x CUENV_PENDING_APPROVAL_DIR"));
+    let fish_notice = super::format_not_allowed(dir, Shell::Fish, 2);
+    assert!(fish_notice.contains("set -gx CUENV_PENDING_APPROVAL_DIR"));
     assert!(fish_notice.contains("cuenv detected env.cue"));
     assert!(fish_notice.contains("contains 2 hooks"));
     assert!(fish_notice.contains("set -e CUENV_LOADED_DIR"));
@@ -87,25 +94,69 @@ fn test_format_env_diff_exports_and_loaded_message() {
     env.insert("FOO".to_string(), "bar baz".to_string());
     env.insert("NUM".to_string(), "42".to_string());
 
-    let bash = format_env_diff(dir, env.clone(), Shell::Bash);
+    let bash = super::format_env_diff(dir, env.clone(), Shell::Bash).unwrap();
     assert!(bash.contains("echo \"Project environment loaded\" >&2"));
     assert!(bash.contains("export CUENV_LOADED_DIR=\"/tmp/project\""));
     assert!(bash.contains("export FOO=\"bar baz\""));
     assert!(bash.contains("export NUM=\"42\""));
 
-    let zsh = format_env_diff(dir, env.clone(), Shell::Zsh);
+    let zsh = super::format_env_diff(dir, env.clone(), Shell::Zsh).unwrap();
     assert!(zsh.contains("echo \"Project environment loaded\" >&2"));
     assert!(zsh.contains("export FOO=\"bar baz\""));
 
-    let fish = format_env_diff(dir, env.clone(), Shell::Fish);
+    let fish = super::format_env_diff(dir, env.clone(), Shell::Fish).unwrap();
     assert!(fish.contains("echo \"Project environment loaded\" >&2"));
-    assert!(fish.contains("set -x CUENV_LOADED_DIR \"/tmp/project\""));
-    assert!(fish.contains("set -x FOO \"bar baz\""));
+    assert!(fish.contains("set -gx CUENV_LOADED_DIR '/tmp/project'"));
+    assert!(fish.contains("set -gx FOO 'bar baz'"));
 
-    let pwsh = format_env_diff(dir, env, Shell::PowerShell);
+    let pwsh = super::format_env_diff(dir, env, Shell::PowerShell).unwrap();
     assert!(pwsh.contains("Write-Host 'Project environment loaded'"));
     assert!(pwsh.contains("$env:CUENV_LOADED_DIR = '/tmp/project'"));
-    assert!(pwsh.contains("$env:FOO = \"bar baz\""));
+    assert!(pwsh.contains("$env:FOO = 'bar baz'"));
+}
+
+#[test]
+fn shell_output_rejects_invalid_and_reserved_identifiers() {
+    for name in [
+        "X;touch /tmp/pwn",
+        "9INVALID",
+        "CUENV_MANAGED_VARS",
+        "CUENV_HOOK_SESSION",
+        "fish_trace",
+        "PS4",
+        "BASH_ENV",
+        "ENV",
+        "LINENO",
+        "PROMPT_COMMAND",
+        "ZSH_DEBUG_CMD",
+        "__cuenv_backup",
+    ] {
+        let env = HashMap::from([(name.to_string(), "value".to_string())]);
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish, Shell::PowerShell] {
+            assert!(super::render_shell_assignments(&env, shell).is_err());
+        }
+    }
+}
+
+#[test]
+fn shell_output_rejects_values_containing_nul() {
+    let env = HashMap::from([("VALUE".to_string(), "before\0after".to_string())]);
+    for shell in [Shell::Bash, Shell::Zsh, Shell::Fish, Shell::PowerShell] {
+        assert!(super::render_shell_assignments(&env, shell).is_err());
+    }
+}
+
+#[test]
+fn powershell_assignments_quote_apostrophes_and_expansions_literally() {
+    let env = HashMap::from([(
+        "VALUE".to_string(),
+        "a 'quote' and $(Write-Error injected)".to_string(),
+    )]);
+    let output = super::render_shell_assignments(&env, Shell::PowerShell).unwrap();
+    assert_eq!(
+        output,
+        "$env:VALUE = 'a ''quote'' and $(Write-Error injected)'\n"
+    );
 }
 
 #[test]
@@ -120,15 +171,39 @@ fn test_format_env_diff_with_unset() {
         ("REMOVED".to_string(), "x".to_string()),
     ]);
 
-    let out_bash = format_env_diff_with_unset(dir, current.clone(), Some(&previous), Shell::Bash);
+    let out_bash = super::format_env_diff_with_unset(
+        dir,
+        EnvironmentDifference {
+            current: current.clone(),
+            previous: Some(&previous),
+        },
+        Shell::Bash,
+    )
+    .unwrap();
     assert!(out_bash.lines().any(|l| l == "unset REMOVED"));
     assert!(out_bash.contains("export A=\"1\""));
     assert!(out_bash.contains("echo \"Project environment loaded\""));
 
-    let out_fish = format_env_diff_with_unset(dir, current.clone(), Some(&previous), Shell::Fish);
+    let out_fish = super::format_env_diff_with_unset(
+        dir,
+        EnvironmentDifference {
+            current: current.clone(),
+            previous: Some(&previous),
+        },
+        Shell::Fish,
+    )
+    .unwrap();
     assert!(out_fish.lines().any(|l| l == "set -e REMOVED"));
 
-    let out_pwsh = format_env_diff_with_unset(dir, current, Some(&previous), Shell::PowerShell);
+    let out_pwsh = super::format_env_diff_with_unset(
+        dir,
+        EnvironmentDifference {
+            current,
+            previous: Some(&previous),
+        },
+        Shell::PowerShell,
+    )
+    .unwrap();
     assert!(out_pwsh.lines().any(|l| l == "Remove-Item Env:REMOVED"));
 }
 
@@ -161,7 +236,7 @@ fn test_extract_static_env_vars_skips_secrets() {
         infrastructure: None,
     };
 
-    let vars = extract_static_env_vars(&cfg, StaticEnvConsumer::Shell);
+    let vars = super::extract_static_env_vars(&cfg, StaticEnvConsumer::Shell);
     assert_eq!(vars.get("PLAIN"), Some(&"value".to_string()));
     assert!(!vars.contains_key("SECRET"));
 }
@@ -229,7 +304,7 @@ fn static_env_honours_task_policies() {
         ),
     ]));
 
-    let vars = extract_static_env_vars(&cfg, StaticEnvConsumer::Task("show"));
+    let vars = super::extract_static_env_vars(&cfg, StaticEnvConsumer::Task("show"));
     assert_eq!(vars.get("OPEN"), Some(&"a".to_string()));
     assert_eq!(vars.get("ALLOWED"), Some(&"b".to_string()));
     assert!(!vars.contains_key("DENIED"), "{vars:?}");
@@ -254,7 +329,7 @@ fn static_env_honours_exec_policies() {
         ),
     ]));
 
-    let vars = extract_static_env_vars(&cfg, StaticEnvConsumer::Exec("make"));
+    let vars = super::extract_static_env_vars(&cfg, StaticEnvConsumer::Exec("make"));
     assert_eq!(vars.get("OPEN"), Some(&"a".to_string()));
     assert_eq!(vars.get("ALLOWED"), Some(&"b".to_string()));
     assert!(!vars.contains_key("DENIED"), "{vars:?}");
@@ -282,7 +357,7 @@ fn shell_export_omits_every_value_with_a_policy_list() {
         ),
     ]));
 
-    let merged = collect_all_env_vars(&cfg, &HashMap::new());
+    let merged = super::collect_all_env_vars(&cfg, &HashMap::new());
     assert_eq!(merged.get("OPEN"), Some(&"a".to_string()));
     assert_eq!(merged.get("NO_RESTRICTION"), Some(&"b".to_string()));
     assert!(!merged.contains_key("TASKS"), "{merged:?}");
@@ -326,7 +401,7 @@ fn test_collect_all_env_vars_override() {
         ("HOOK_ONLY".to_string(), "x".to_string()),
     ]);
 
-    let merged = collect_all_env_vars(&cfg, &hook_env);
+    let merged = super::collect_all_env_vars(&cfg, &hook_env);
     assert_eq!(merged.get("OVERRIDE"), Some(&"hook".to_string()));
     assert_eq!(merged.get("BASE_ONLY"), Some(&"plain".to_string()));
     assert_eq!(merged.get("HOOK_ONLY"), Some(&"x".to_string()));

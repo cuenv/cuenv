@@ -1,10 +1,13 @@
-use super::*;
+use super::{
+    ArtifactAggregationJobOptions, BTreeMap, BuildStage, CuenvSetup, GitHubActionsEmitter,
+    MatrixJobOptions, OutputType, RunsOn, TaskExecution, TaskPhase,
+};
 use std::collections::HashMap;
 
 #[test]
 fn direct_matrix_retains_cache_setup_environment_and_outputs() {
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("check", &["nix", "build", ".#check"]);
+    let mut task = super::make_task("check", &["nix", "build", ".#check"]);
     task.matrix = Some(cuenv_ci::ir::MatrixConfig {
         dimensions: BTreeMap::from([("arch".into(), vec!["darwin-arm64".into()])]),
         ..Default::default()
@@ -12,16 +15,27 @@ fn direct_matrix_retains_cache_setup_environment_and_outputs() {
     task.env.insert("TOKEN".into(), "${CACHE_TOKEN}".into());
     task.outputs.push(cuenv_ci::ir::OutputDeclaration {
         path: "reports/check.json".into(),
-        output_type: cuenv_ci::ir::OutputType::Orchestrator,
+        output_type: OutputType::Orchestrator,
     });
-    let mut cache = make_phase_task("cache", &["configure cache"], BuildStage::Bootstrap, 9);
+    let mut cache = super::make_phase_task(
+        "cache",
+        &["configure cache"],
+        TaskPhase::new(BuildStage::Bootstrap, 9),
+    );
     cache.contributor = Some("cachix".into());
-    let mut cuenv = make_phase_task("cuenv.setup", &["build cuenv"], BuildStage::Setup, 10);
+    let mut cuenv = super::make_phase_task(
+        "cuenv.setup",
+        &["build cuenv"],
+        TaskPhase::new(BuildStage::Setup, 10),
+    );
     cuenv.contributor = Some("cuenv".into());
-    let mut secret_setup =
-        make_phase_task("secrets", &["cuenv secrets setup"], BuildStage::Setup, 20);
+    let mut secret_setup = super::make_phase_task(
+        "secrets",
+        &["cuenv secrets setup"],
+        TaskPhase::new(BuildStage::Setup, 20),
+    );
     secret_setup.depends_on = vec![cuenv.id.clone()];
-    let ir = make_ir(vec![task.clone(), cache, cuenv, secret_setup]);
+    let ir = super::make_ir(vec![task.clone(), cache, cuenv, secret_setup]);
 
     let jobs = emitter.build_matrix_jobs(
         &task,
@@ -64,14 +78,14 @@ fn direct_matrix_retains_cache_setup_environment_and_outputs() {
 #[test]
 fn matrix_architecture_overrides_task_passthrough() {
     let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
-    let mut task = make_task("cargo.build", &["nix", "develop"]);
+    let mut task = super::make_task("cargo.build", &["nix", "develop"]);
     task.matrix = Some(cuenv_ci::ir::MatrixConfig {
         dimensions: BTreeMap::from([("arch".into(), vec!["linux-x64".into()])]),
         ..Default::default()
     });
     task.env
         .insert("CUENV_ARCH".into(), "cuenv:passthrough:CUENV_ARCH".into());
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     for execution in [TaskExecution::Orchestrated, TaskExecution::Direct] {
         let jobs = emitter.build_matrix_jobs(
@@ -96,7 +110,7 @@ fn test_build_matrix_jobs() {
     use cuenv_ci::ir::MatrixConfig;
 
     let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
-    let mut task = make_task("release.build", &["cargo", "build"]);
+    let mut task = super::make_task("release.build", &["cargo", "build"]);
     task.matrix = Some(MatrixConfig {
         dimensions: [(
             "arch".to_string(),
@@ -106,7 +120,7 @@ fn test_build_matrix_jobs() {
         .collect(),
         ..Default::default()
     });
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let jobs = emitter.build_matrix_jobs(
         &task,
@@ -155,7 +169,7 @@ fn test_build_matrix_jobs_with_arch_runners() {
     use cuenv_ci::ir::MatrixConfig;
 
     let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
-    let mut task = make_task("build", &["cargo", "build"]);
+    let mut task = super::make_task("build", &["cargo", "build"]);
     task.matrix = Some(MatrixConfig {
         dimensions: [(
             "arch".to_string(),
@@ -165,7 +179,7 @@ fn test_build_matrix_jobs_with_arch_runners() {
         .collect(),
         ..Default::default()
     });
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
     let arch_runners: HashMap<String, String> = [
         ("linux-x64".to_string(), "ubuntu-24.04".to_string()),
         ("darwin-arm64".to_string(), "macos-14".to_string()),
@@ -199,7 +213,7 @@ fn test_build_artifact_aggregation_job() {
     use cuenv_ci::ir::ArtifactDownload;
 
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("release.publish", &["./publish.sh"]);
+    let mut task = super::make_task("release.publish", &["./publish.sh"]);
     task.artifact_downloads = vec![ArtifactDownload {
         name: "release-build".to_string(),
         path: "./artifacts".to_string(),
@@ -208,7 +222,7 @@ fn test_build_artifact_aggregation_job() {
     task.params = [("version".to_string(), "1.0.0".to_string())]
         .into_iter()
         .collect();
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
     let previous_jobs = vec![
         "release-build-linux-x64".to_string(),
         "release-build-darwin-arm64".to_string(),
@@ -247,7 +261,7 @@ fn test_build_artifact_aggregation_job() {
         task_step.unwrap().env.get("VERSION"),
         Some(&"1.0.0".to_string())
     );
-    assert_github_context_env(task_step.unwrap());
+    super::assert_github_context_env(task_step.unwrap());
 }
 
 #[test]
@@ -255,44 +269,40 @@ fn test_build_matrix_jobs_realize_nix_cuenv_package_per_runner() {
     use cuenv_ci::ir::MatrixConfig;
 
     let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
-    let mut bootstrap_task = make_phase_task(
+    let mut bootstrap_task = super::make_phase_task(
         "cuenv:contributor:nix.install",
         &["install nix"],
-        BuildStage::Bootstrap,
-        0,
+        TaskPhase::new(BuildStage::Bootstrap, 0),
     );
     bootstrap_task.label = Some("Install Nix".to_string());
     bootstrap_task.contributor = Some("nix".to_string());
 
-    let mut cachix_setup = make_phase_task(
+    let mut cachix_setup = super::make_phase_task(
         "cuenv:contributor:cachix.setup",
         &["setup cachix"],
-        BuildStage::Setup,
-        9,
+        TaskPhase::new(BuildStage::Setup, 9),
     );
     cachix_setup.label = Some("Setup Cachix".to_string());
     cachix_setup.contributor = Some("cachix".to_string());
 
-    let mut cuenv_setup = make_phase_task(
+    let mut cuenv_setup = super::make_phase_task(
         "cuenv:contributor:cuenv.setup",
         &["nix build .#cuenv"],
-        BuildStage::Setup,
-        10,
+        TaskPhase::new(BuildStage::Setup, 10),
     );
     cuenv_setup.label = Some("Build cuenv (nix)".to_string());
     cuenv_setup.contributor = Some("cuenv".to_string());
 
-    let mut onepassword_setup = make_phase_task(
+    let mut onepassword_setup = super::make_phase_task(
         "cuenv:contributor:1password.setup",
         &["cuenv secrets setup onepassword"],
-        BuildStage::Setup,
-        20,
+        TaskPhase::new(BuildStage::Setup, 20),
     );
     onepassword_setup.label = Some("Setup 1Password".to_string());
     onepassword_setup.contributor = Some("1password".to_string());
     onepassword_setup.depends_on = vec!["cuenv:contributor:cuenv.setup".to_string()];
 
-    let mut task = make_task("release.build", &["cargo", "build"]);
+    let mut task = super::make_task("release.build", &["cargo", "build"]);
     task.matrix = Some(MatrixConfig {
         dimensions: [(
             "arch".to_string(),
@@ -302,7 +312,7 @@ fn test_build_matrix_jobs_realize_nix_cuenv_package_per_runner() {
         .collect(),
         ..Default::default()
     });
-    let ir = make_ir(vec![
+    let ir = super::make_ir(vec![
         bootstrap_task,
         cachix_setup,
         cuenv_setup,
@@ -387,14 +397,14 @@ fn test_build_matrix_jobs_realize_nix_cuenv_package_per_runner() {
 fn test_task_has_matrix() {
     use cuenv_ci::ir::MatrixConfig;
 
-    let task_without = make_task("build", &["cargo", "build"]);
+    let task_without = super::make_task("build", &["cargo", "build"]);
     assert!(!GitHubActionsEmitter::task_has_matrix(&task_without));
 
-    let mut task_with_empty = make_task("build", &["cargo", "build"]);
+    let mut task_with_empty = super::make_task("build", &["cargo", "build"]);
     task_with_empty.matrix = Some(MatrixConfig::default());
     assert!(!GitHubActionsEmitter::task_has_matrix(&task_with_empty));
 
-    let mut task_with_matrix = make_task("build", &["cargo", "build"]);
+    let mut task_with_matrix = super::make_task("build", &["cargo", "build"]);
     task_with_matrix.matrix = Some(MatrixConfig {
         dimensions: [("arch".to_string(), vec!["x64".to_string()])]
             .into_iter()
@@ -408,12 +418,12 @@ fn test_task_has_matrix() {
 fn test_task_has_artifact_downloads() {
     use cuenv_ci::ir::ArtifactDownload;
 
-    let task_without = make_task("build", &["cargo", "build"]);
+    let task_without = super::make_task("build", &["cargo", "build"]);
     assert!(!GitHubActionsEmitter::task_has_artifact_downloads(
         &task_without
     ));
 
-    let mut task_with = make_task("publish", &["./publish.sh"]);
+    let mut task_with = super::make_task("publish", &["./publish.sh"]);
     task_with.artifact_downloads = vec![ArtifactDownload {
         name: "build".to_string(),
         path: "./out".to_string(),

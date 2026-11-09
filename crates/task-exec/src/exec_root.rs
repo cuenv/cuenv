@@ -163,15 +163,15 @@ pub fn prepare(cache_root: &Path, action_digest: &str, inputs: &[HashedInput]) -
 }
 
 /// Inputs to [`project_outputs`].
-pub struct ProjectOutputs<'a> {
+pub struct ProjectOutputs<'project> {
     /// Root containing the completed task's outputs.
-    pub exec_root: &'a Path,
+    pub exec_root: &'project Path,
     /// Live workspace directory that owns the declarations.
-    pub workdir: &'a Path,
+    pub workdir: &'project Path,
     /// Paths produced by this invocation.
-    pub resolved: &'a [PathBuf],
+    pub resolved: &'project [PathBuf],
     /// Paths currently owned by the declarations in the live workspace.
-    pub existing: &'a [PathBuf],
+    pub existing: &'project [PathBuf],
 }
 
 /// Copy the task's declared outputs out of the exec root and into `workdir`.
@@ -215,7 +215,7 @@ pub fn project_outputs(input: ProjectOutputs<'_>) -> Result<()> {
         project_entry(&source, &destination)?;
     }
 
-    commit_staged_outputs(staging.path(), workdir, resolved, existing)
+    commit_staged_outputs(staging.path(), workdir, OutputPaths { resolved, existing })
 }
 
 /// Copy one output entry, recursing into directories.
@@ -255,6 +255,12 @@ fn project_entry(source: &Path, destination: &Path) -> Result<()> {
         .map_err(|e| Error::io_with_path("project output", destination.to_path_buf(), e))
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct OutputPaths<'output> {
+    pub(crate) resolved: &'output [PathBuf],
+    pub(crate) existing: &'output [PathBuf],
+}
+
 /// Install a complete staged output set and remove stale owned paths.
 ///
 /// Existing outputs move to a same-filesystem backup before the new set is
@@ -263,9 +269,9 @@ fn project_entry(source: &Path, destination: &Path) -> Result<()> {
 pub(crate) fn commit_staged_outputs(
     staging: &Path,
     workdir: &Path,
-    resolved: &[PathBuf],
-    existing: &[PathBuf],
+    paths: OutputPaths<'_>,
 ) -> Result<()> {
+    let OutputPaths { resolved, existing } = paths;
     reject_symlink_base(workdir)?;
     reject_overlapping_paths(resolved)?;
 
@@ -521,18 +527,18 @@ fn place(input: &HashedInput, destination: &Path) -> Result<()> {
             input.relative_path.display()
         )));
     }
-    normalize_executable(destination, input.is_executable)?;
+    normalize_executable(destination, input)?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn normalize_executable(path: &Path, is_executable: bool) -> Result<()> {
+fn normalize_executable(path: &Path, input: &HashedInput) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut permissions = std::fs::metadata(path)
         .map_err(|e| Error::io_with_path("inspect staged input mode", path, e))?
         .permissions();
-    let mode = if is_executable {
+    let mode = if input.is_executable {
         permissions.mode() | 0o111
     } else {
         permissions.mode() & !0o111
@@ -543,7 +549,7 @@ fn normalize_executable(path: &Path, is_executable: bool) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn normalize_executable(_path: &Path, _is_executable: bool) -> Result<()> {
+fn normalize_executable(_path: &Path, _input: &HashedInput) -> Result<()> {
     Ok(())
 }
 

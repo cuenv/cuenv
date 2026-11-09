@@ -82,6 +82,15 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Component, Path};
 
+/// Name and version of a tool in the lockfile.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolIdentity<'tool> {
+    /// Tool name.
+    pub name: &'tool str,
+    /// Resolved tool version.
+    pub version: &'tool str,
+}
+
 /// Lockfile format version written when nothing needs a newer one.
 pub const LOCKFILE_VERSION: u32 = 4;
 
@@ -405,11 +414,11 @@ impl Lockfile {
     /// Returns an error if the platform data is invalid.
     pub fn upsert_tool_platform(
         &mut self,
-        name: &str,
-        version: &str,
+        identity: ToolIdentity<'_>,
         platform: &str,
         data: LockedToolPlatform,
     ) -> Result<(), LockfileError> {
+        let ToolIdentity { name, version } = identity;
         // Validate digest format
         if !data.digest.starts_with("sha256:") && !data.digest.starts_with("sha512:") {
             return Err(LockfileError::new(format!(

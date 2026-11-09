@@ -4,22 +4,24 @@ use std::collections::BTreeMap;
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    D1StateStore, ObjectStateStore, ResourceAddress, TenantKey, TursoStateStore, declared_resource,
-    strip_control_characters, validate_configuration,
+    D1StateStore, ObjectStateStore, ResourceAddress, TenantKey, TursoStateStore,
 };
 use cuenv_manifest::manifest::{Infrastructure, InfrastructureState, S3State};
 
-use super::action::{InfrastructureAction, InfrastructureOptions, UnlockScope};
-use super::confirm::{PromptSetting, TerminalAnswers, refuse_unconfirmable};
-use super::dispatch::{CommandContext, EngineInputs, dispatch, locked_providers};
+use super::action::{
+    InfrastructureAction, InfrastructureOptions, MigrateRequest, MigrationMaintenance, StateAction,
+    UnlockScope,
+};
+use super::confirm::{PromptSetting, TerminalAnswers};
+use super::dispatch::{CommandContext, EngineInputs};
 use super::evaluation;
 use super::evaluation::{Target, TargetRequest};
-use super::failure::failure;
-use super::guard::{GuardRequest, SelectionFacts, Siblings, guard_selection};
+
+use super::guard::{GuardRequest, SelectionFacts, Siblings};
 use super::interrupts::Interrupts;
 use super::invocation::Invocation;
 use super::output::Output;
-use super::resolve::{configuration_secrets, resolve};
+
 use crate::cli::CliError;
 
 pub(super) async fn run(
@@ -27,9 +29,12 @@ pub(super) async fn run(
     output: &Output,
     interrupts: &Interrupts,
 ) -> Result<(), CliError> {
+    if let InfrastructureAction::State(StateAction::Migrate(request)) = &options.action {
+        require_migration_maintenance(request)?;
+    }
     let answers = TerminalAnswers;
     let invocation = Invocation::of(options);
-    refuse_unconfirmable(
+    super::confirm::refuse_unconfirmable(
         &options.action,
         &PromptSetting {
             output,
@@ -39,7 +44,7 @@ pub(super) async fn run(
     )?;
     let target = evaluate_target(options, interrupts).await?;
     preflight(&options.action, &target, &invocation)?;
-    let resolved = resolve(&options.action, &target).await?;
+    let resolved = super::resolve::resolve(&options.action, &target).await?;
     let facts = SelectionFacts::of(&target, &options.action);
     let Target {
         tenant,
@@ -83,7 +88,7 @@ pub(super) async fn run(
         answers: &answers,
     };
     let locked_providers = if options.action.uses_provider_environment() {
-        locked_providers(&project_directory)?
+        super::dispatch::locked_providers(&project_directory)?
     } else {
         BTreeMap::new()
     };
@@ -99,15 +104,45 @@ pub(super) async fn run(
         withheld_environment_variables: resolved.withheld_environment_variables,
         // The user state directory (see `UnrecordedStore`).
         unrecorded_directory: None,
-        secrets: configuration_secrets(&options.action),
+        secrets: super::resolve::configuration_secrets(&options.action),
     };
     let request = GuardRequest {
         action: &options.action,
         facts: &facts,
         inputs: &inputs,
     };
-    guard_selection(&context, &request).await?;
-    dispatch(&options.action, &context, inputs).await
+    super::guard::guard_selection(&context, &request).await?;
+    super::dispatch::dispatch(&options.action, &context, inputs).await
+}
+
+/// Refuse migration before evaluating configuration or resolving credentials
+/// unless the operator has confirmed the required maintenance window.
+pub(super) fn require_migration_maintenance(request: &MigrateRequest) -> Result<(), CliError> {
+    if request.maintenance != MigrationMaintenance::Confirmed {
+        return Err(CliError::config_with_help(
+            "state migration requires a confirmed maintenance window",
+            "Stop every client of both stores, including older clients, restores, unlocks and \
+             in-flight requests. Keep them stopped through configuration cutover, then pass \
+             `--confirm-maintenance`.",
+        ));
+    }
+    let Some(identities) = request.physical_identities else {
+        return Err(CliError::config_with_help(
+            "state migration requires physical source and target identities",
+            "Pass stable UUIDs with `--source-physical-identity` and \
+             `--target-physical-identity`. All aliases of the same physical store must use the \
+             same identity.",
+        ));
+    };
+    if identities.source.is_nil()
+        || identities.target.is_nil()
+        || identities.source == identities.target
+    {
+        return Err(CliError::config(
+            "migration physical identities must be non-nil and identify different stores",
+        ));
+    }
+    Ok(())
 }
 
 /// The tenant `unlock` acts on when it names a project: the evaluated
@@ -130,7 +165,7 @@ pub(super) fn scoped_tenant(
         Some(environment) => TenantKey::with_environment(module_path, project, environment),
         None => TenantKey::try_new(module_path, project),
     }
-    .map_err(|error| failure(&error, invocation))
+    .map_err(|error| super::failure::failure(&error, invocation))
 }
 
 /// The checks that need neither a secret nor the state store, run before
@@ -149,11 +184,14 @@ pub(super) fn preflight(
     }
     validate_state_url(&target.infrastructure)?;
     if action.uses_provider_environment() {
-        validate_configuration(&target.infrastructure, target.environment.as_deref())
-            .map_err(|error| failure(&error, invocation))?;
+        cuenv_infrastructure::validate_configuration(
+            &target.infrastructure,
+            target.environment.as_deref(),
+        )
+        .map_err(|error| super::failure::failure(&error, invocation))?;
     }
     if let InfrastructureAction::Import { address, .. } = action
-        && declared_resource(
+        && cuenv_infrastructure::declared_resource(
             &target.infrastructure.resources,
             &parse_resource_address(address)?,
         )
@@ -161,7 +199,7 @@ pub(super) fn preflight(
     {
         return Err(CliError::config(format!(
             "cannot import {}: declare that resource in the selected infrastructure configuration first",
-            strip_control_characters(address)
+            cuenv_infrastructure::strip_control_characters(address)
         )));
     }
     Ok(())
@@ -172,7 +210,7 @@ pub(super) fn parse_resource_address(address: &str) -> Result<ResourceAddress, C
     ResourceAddress::parse(address).ok_or_else(|| {
         CliError::config(format!(
             "invalid resource address {}; expected type.name",
-            strip_control_characters(address)
+            cuenv_infrastructure::strip_control_characters(address)
         ))
     })
 }
@@ -189,9 +227,10 @@ pub(super) fn validate_state_url(infrastructure: &Infrastructure) -> Result<(), 
         }
         InfrastructureState::S3(s3) => validate_object_location(s3),
     }
-    .map_err(|error| failure(&error, &Invocation::default()))?;
+    .map_err(|error| super::failure::failure(&error, &Invocation::default()))?;
     if let Some(target) = &infrastructure.migrate_state_to {
-        validate_state_backend(target).map_err(|error| failure(&error, &Invocation::default()))?;
+        validate_state_backend(target)
+            .map_err(|error| super::failure::failure(&error, &Invocation::default()))?;
     }
     Ok(())
 }

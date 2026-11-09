@@ -16,10 +16,12 @@ use std::collections::HashMap;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
+/// use cuenv_secrets::SecureSecret;
 /// let secret = SecureSecret::new("my-password".to_string());
 /// // Use the secret
 /// let value = secret.expose();
+/// assert_eq!(value, "my-password");
 /// // When `secret` goes out of scope, memory is zeroed
 /// ```
 #[derive(Clone)]
@@ -92,14 +94,13 @@ impl std::fmt::Display for SecureSecret {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
+/// use cuenv_secrets::{BatchSecrets, SecureSecret};
 /// let mut batch = BatchSecrets::new();
 /// batch.insert("API_KEY".to_string(), SecureSecret::new("secret".to_string()), None);
 ///
-/// // Use during task execution
-/// if let Some(secret) = batch.get("API_KEY") {
-///     std::env::set_var("API_KEY", secret.expose());
-/// }
+/// // Access the value only for the operation that needs it.
+/// assert_eq!(batch.get("API_KEY").map(SecureSecret::expose), Some("secret"));
 ///
 /// // When batch goes out of scope, all secrets are zeroed
 /// ```
@@ -178,8 +179,8 @@ impl BatchSecrets {
     }
 
     /// Iterate over secret names.
-    pub fn names(&self) -> impl Iterator<Item = &String> {
-        self.secrets.keys()
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.secrets.keys().map(String::as_str)
     }
 
     /// Convert to environment variable map for process injection.

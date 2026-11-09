@@ -1,11 +1,15 @@
-use super::*;
+use super::{
+    DashboardFormatter, EmojiFormatter, RichFormatter, TablesFormatter, TaskListData,
+    TaskListFormatter, TaskListStats, TreeBuilder,
+};
 
+use std::collections::BTreeMap;
 use tempfile::TempDir;
 
 #[test]
 fn test_source_proximity_same_dir() {
-    assert_eq!(source_proximity("", None), 0);
-    assert_eq!(source_proximity("env.cue", Some("")), 0);
+    assert_eq!(super::source_proximity("", None), 0);
+    assert_eq!(super::source_proximity("env.cue", Some("")), 0);
 }
 
 #[test]
@@ -49,41 +53,59 @@ fn test_emoji_formatter_can_format_empty() {
 
 #[test]
 fn test_format_category_name() {
-    assert_eq!(format_category_name("build"), "Build & Compile");
-    assert_eq!(format_category_name("test"), "Testing");
-    assert_eq!(format_category_name("lint"), "Code Quality");
-    assert_eq!(format_category_name("security"), "Security");
-    assert_eq!(format_category_name("cargo"), "CARGO Tasks");
+    assert_eq!(super::format_category_name("build"), "Build & Compile");
+    assert_eq!(super::format_category_name("test"), "Testing");
+    assert_eq!(super::format_category_name("lint"), "Code Quality");
+    assert_eq!(super::format_category_name("security"), "Security");
+    assert_eq!(super::format_category_name("cargo"), "CARGO Tasks");
 }
 
 #[test]
 fn test_infer_category_from_name() {
-    assert_eq!(infer_category_from_name("build", None), "Build & Compile");
-    assert_eq!(infer_category_from_name("test.unit", None), "Testing");
-    assert_eq!(infer_category_from_name("lint", None), "Code Quality");
-    assert_eq!(infer_category_from_name("publish", None), "Release");
-    assert_eq!(infer_category_from_name("security.audit", None), "Security");
+    assert_eq!(
+        super::infer_category_from_name("build", None),
+        "Build & Compile"
+    );
+    assert_eq!(
+        super::infer_category_from_name("test.unit", None),
+        "Testing"
+    );
+    assert_eq!(
+        super::infer_category_from_name("lint", None),
+        "Code Quality"
+    );
+    assert_eq!(super::infer_category_from_name("publish", None), "Release");
+    assert_eq!(
+        super::infer_category_from_name("security.audit", None),
+        "Security"
+    );
     // docker.build should prioritize containers over build
-    assert_eq!(infer_category_from_name("docker.build", None), "Containers");
-    assert_eq!(infer_category_from_name("container", None), "Containers");
-    assert_eq!(infer_category_from_name("unknown", None), "Other");
+    assert_eq!(
+        super::infer_category_from_name("docker.build", None),
+        "Containers"
+    );
+    assert_eq!(
+        super::infer_category_from_name("container", None),
+        "Containers"
+    );
+    assert_eq!(super::infer_category_from_name("unknown", None), "Other");
 }
 
 #[test]
 fn test_get_category_emoji() {
-    assert_eq!(get_category_emoji("Build & Compile"), "🔨");
-    assert_eq!(get_category_emoji("Testing"), "🧪");
-    assert_eq!(get_category_emoji("Code Quality"), "✨");
-    assert_eq!(get_category_emoji("Release"), "🚀");
-    assert_eq!(get_category_emoji("Security"), "🔐");
-    assert_eq!(get_category_emoji("Other"), "📋");
+    assert_eq!(super::get_category_emoji("Build & Compile"), "🔨");
+    assert_eq!(super::get_category_emoji("Testing"), "🧪");
+    assert_eq!(super::get_category_emoji("Code Quality"), "✨");
+    assert_eq!(super::get_category_emoji("Release"), "🚀");
+    assert_eq!(super::get_category_emoji("Security"), "🔐");
+    assert_eq!(super::get_category_emoji("Other"), "📋");
 }
 
 #[test]
 fn test_collect_cached_tasks_empty() {
     let temp = TempDir::new().unwrap();
     let tasks = vec![];
-    let cached = collect_cached_tasks(&tasks, temp.path());
+    let cached = super::collect_cached_tasks(&tasks, temp.path());
     assert!(cached.is_empty());
 }
 
@@ -126,7 +148,7 @@ fn test_group_cache_propagation() {
         },
     );
 
-    let nodes = convert(root_builder, &mut stats);
+    let nodes = super::convert(root_builder, &mut stats);
 
     assert_eq!(nodes.len(), 1);
     let group = &nodes[0];

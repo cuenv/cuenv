@@ -2,20 +2,16 @@
 
 use super::state::{OutputMode, TaskInfo, TaskStatus, TuiState};
 use super::widgets::{OutputPanelWidget, TaskTreeWidget};
-use crossterm::{
-    event::{self, Event as CrosstermEvent, KeyCode, KeyModifiers},
-    execute,
-    terminal::{LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
+use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::LeaveAlternateScreen;
 use cuenv_events::{CuenvEvent, EventCategory, EventReceiver};
-use ratatui::{
-    Terminal, TerminalOptions, Viewport,
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
-};
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
@@ -35,6 +31,12 @@ struct TerminalGuard {
     in_alt_screen: bool,
 }
 
+#[derive(Clone, Copy)]
+struct StatusBarState<'status_bar_state> {
+    state: &'status_bar_state TuiState,
+    quit_requested: bool,
+}
+
 impl TerminalGuard {
     const fn new() -> Self {
         Self {
@@ -44,7 +46,7 @@ impl TerminalGuard {
     }
 
     fn enable_raw(&mut self) -> io::Result<()> {
-        enable_raw_mode()?;
+        crossterm::terminal::enable_raw_mode()?;
         self.raw_enabled = true;
         Ok(())
     }
@@ -61,7 +63,7 @@ impl Drop for TerminalGuard {
             tracing::warn!(error = %e, "Failed to leave alternate screen");
         }
         if self.raw_enabled
-            && let Err(e) = disable_raw_mode()
+            && let Err(e) = crossterm::terminal::disable_raw_mode()
         {
             tracing::warn!(error = %e, "Failed to disable raw mode");
         }
@@ -325,7 +327,12 @@ impl RichTui {
                                 "Command '{command}' failed - see task output for details"
                             ))
                         };
-                        self.state.complete(*success, error_msg);
+                        let outcome = if *success {
+                            super::state::CommandOutcome::Success
+                        } else {
+                            super::state::CommandOutcome::Failure
+                        };
+                        self.state.complete(outcome, error_msg);
                         self.can_quit = true;
                     }
                     CommandEvent::Started { .. } | CommandEvent::Progress { .. } => {}
@@ -384,7 +391,14 @@ impl RichTui {
             }
 
             // Render status bar
-            Self::render_status_bar_static(state, quit_requested, f, main_chunks[2]);
+            Self::render_status_bar_static(
+                StatusBarState {
+                    state,
+                    quit_requested,
+                },
+                f,
+                main_chunks[2],
+            );
         })?;
 
         Ok(())
@@ -436,15 +450,11 @@ impl RichTui {
     }
 
     /// Render status bar (static version for use in closures)
-    fn render_status_bar_static(
-        state: &TuiState,
-        quit_requested: bool,
-        f: &mut ratatui::Frame,
-        area: Rect,
-    ) {
+    fn render_status_bar_static(status: StatusBarState<'_>, f: &mut ratatui::Frame, area: Rect) {
+        let state = status.state;
         let help_text = if state.is_complete() {
             "Press 'q' to quit"
-        } else if quit_requested {
+        } else if status.quit_requested {
             "Waiting for tasks... (Ctrl+C to force)"
         } else if state.focused_task().is_some() {
             "f/Esc: Exit focus | PgUp/PgDn: Scroll | q: Quit"

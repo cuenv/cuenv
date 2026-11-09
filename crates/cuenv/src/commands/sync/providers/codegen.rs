@@ -33,11 +33,15 @@ async fn sync_path(request: SyncRequest<'_>) -> Result<SyncResult> {
         executor,
         ..
     } = request;
-    let dry_run = options.mode == SyncMode::DryRun;
+    let dry_run = if options.mode == SyncMode::DryRun {
+        cuenv_core::DryRun::Yes
+    } else {
+        cuenv_core::DryRun::No
+    };
     let check = options.mode == SyncMode::Check;
 
     let codegen_options = functions::CodegenSyncOptions {
-        dry_run: dry_run.into(),
+        dry_run,
         check,
         diff: options.show_diff,
     };
@@ -59,7 +63,11 @@ async fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
         executor,
         ..
     } = request;
-    let dry_run = options.mode == SyncMode::DryRun;
+    let dry_run = if options.mode == SyncMode::DryRun {
+        cuenv_core::DryRun::Yes
+    } else {
+        cuenv_core::DryRun::No
+    };
     let check = options.mode == SyncMode::Check;
 
     // Collect project info before any async operations
@@ -86,7 +94,7 @@ async fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
     // Iterate through projects with codegen config
     for (full_path, display_path) in project_paths {
         let codegen_options = functions::CodegenSyncOptions {
-            dry_run: dry_run.into(),
+            dry_run,
             check,
             diff: options.show_diff,
         };

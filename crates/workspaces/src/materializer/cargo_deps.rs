@@ -1,19 +1,14 @@
 //! Materializer for Cargo dependencies.
 
-use super::Materializer;
+use super::DependencyMaterializer;
 use crate::core::types::{LockfileEntry, PackageManager, Workspace};
 use crate::error::{Error, Result};
 use std::path::Path;
 
-#[cfg(unix)]
-use std::os::unix::fs::symlink;
-#[cfg(windows)]
-use std::os::windows::fs::symlink_dir as symlink;
-
 /// Materializer for Cargo projects.
 pub struct CargoMaterializer;
 
-impl Materializer for CargoMaterializer {
+impl DependencyMaterializer for CargoMaterializer {
     fn materialize(
         &self,
         workspace: &Workspace,
@@ -65,7 +60,9 @@ impl Materializer for CargoMaterializer {
         // Ideally, we should use CARGO_TARGET_DIR env var instead of symlinking,
         // but symlinking works if we want it to appear local.
 
-        if let Err(e) = symlink(&workspace_target, &env_target) {
+        if let Err(e) =
+            super::dependency_materializer::symlink_directory(&workspace_target, &env_target)
+        {
             return Err(Error::Io {
                 source: e,
                 path: Some(env_target),

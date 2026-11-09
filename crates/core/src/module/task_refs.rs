@@ -10,9 +10,9 @@ pub(super) fn enrich_task_refs(value: &mut Value, instance_path: &str, reference
     .enrich(value, "");
 }
 
-struct TaskRefContext<'a> {
-    instance_path: &'a str,
-    references: &'a ReferenceMap,
+struct TaskRefContext<'reference> {
+    instance_path: &'reference str,
+    references: &'reference ReferenceMap,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -291,8 +291,10 @@ mod tests {
         let module = ModuleEvaluation::from_raw(
             PathBuf::from("/test"),
             raw,
-            vec![".".to_string()],
-            Some(references),
+            crate::module::ModuleEvaluationOptions {
+                project_paths: vec![".".to_string()],
+                references: Some(references),
+            },
         );
 
         module

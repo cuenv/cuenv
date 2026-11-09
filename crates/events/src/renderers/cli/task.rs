@@ -1,4 +1,4 @@
-use super::{CliRenderer, stderr_line, stdout_line};
+use super::{CliRenderer, cli_renderer};
 use crate::event::{Stream, TaskEvent};
 
 impl CliRenderer {
@@ -51,19 +51,19 @@ impl CliRenderer {
                 ..
             } => {
                 let hermetic_indicator = if *hermetic { " (hermetic)" } else { "" };
-                stderr_line(format_args!("> [{name}] {command}{hermetic_indicator}"));
+                cli_renderer::stderr_line(format_args!("> [{name}] {command}{hermetic_indicator}"));
             }
             TaskEvent::CacheHit { name, .. } => {
-                stderr_line(format_args!("> [{name}] (cached)"));
+                cli_renderer::stderr_line(format_args!("> [{name}] (cached)"));
             }
             TaskEvent::CacheMiss { name, .. } => {
                 if self.config.verbose {
-                    stderr_line(format_args!("> [{name}] cache miss, executing..."));
+                    cli_renderer::stderr_line(format_args!("> [{name}] cache miss, executing..."));
                 }
             }
             TaskEvent::CacheSkipped { name, reason, .. } => {
                 if self.config.verbose {
-                    stderr_line(format_args!("> [{name}] cache skipped: {reason}"));
+                    cli_renderer::stderr_line(format_args!("> [{name}] cache skipped: {reason}"));
                 }
             }
             TaskEvent::Queued {
@@ -72,13 +72,13 @@ impl CliRenderer {
                 ..
             } => {
                 if self.config.verbose {
-                    stderr_line(format_args!(
+                    cli_renderer::stderr_line(format_args!(
                         "> [{name}] queued (position {queue_position})"
                     ));
                 }
             }
             TaskEvent::Skipped { name, reason, .. } => {
-                stderr_line(format_args!("> [{name}] skipped ({reason})"));
+                cli_renderer::stderr_line(format_args!("> [{name}] skipped ({reason})"));
             }
             TaskEvent::Retrying {
                 name,
@@ -86,7 +86,7 @@ impl CliRenderer {
                 max_attempts,
                 ..
             } => {
-                stderr_line(format_args!(
+                cli_renderer::stderr_line(format_args!(
                     "> [{name}] retrying (attempt {attempt}/{max_attempts})"
                 ));
             }
@@ -94,10 +94,10 @@ impl CliRenderer {
                 stream, content, ..
             } => match stream {
                 Stream::Stdout => {
-                    stdout_line(format_args!("{content}"));
+                    cli_renderer::stdout_line(format_args!("{content}"));
                 }
                 Stream::Stderr => {
-                    stderr_line(format_args!("{content}"));
+                    cli_renderer::stderr_line(format_args!("{content}"));
                 }
             },
             TaskEvent::Completed {
@@ -108,7 +108,9 @@ impl CliRenderer {
             } => {
                 if self.config.verbose {
                     let status = if *success { "completed" } else { "failed" };
-                    stderr_line(format_args!("> [{name}] {status} in {duration_ms}ms"));
+                    cli_renderer::stderr_line(format_args!(
+                        "> [{name}] {status} in {duration_ms}ms"
+                    ));
                 }
             }
             TaskEvent::GroupStarted {
@@ -122,7 +124,7 @@ impl CliRenderer {
                 } else {
                     "parallel"
                 };
-                stderr_line(format_args!(
+                cli_renderer::stderr_line(format_args!(
                     "> Running {mode} group: {name} ({task_count} tasks)"
                 ));
             }
@@ -137,7 +139,7 @@ impl CliRenderer {
             } => {
                 if self.config.verbose {
                     let status = if *success { "completed" } else { "failed" };
-                    stderr_line(format_args!(
+                    cli_renderer::stderr_line(format_args!(
                         "> Group {name} {status} in {duration_ms}ms ({succeeded} ok, {failed} failed, {skipped} skipped)"
                     ));
                 }

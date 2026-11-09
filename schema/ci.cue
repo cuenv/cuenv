@@ -77,7 +77,7 @@ package schema
 	queue?:     string
 	useEmojis?: bool
 	plugins?: [...{
-		name!:   string
+		name!: string
 		config?: {...}
 	}]
 }
@@ -194,7 +194,7 @@ package schema
 // Contributor activation condition
 // All specified conditions must be true (AND logic)
 #ActivationCondition: {
-	// Always active (no conditions)
+	// False disables activation; true leaves the other conditions in force.
 	always?: bool
 
 	// Workspace membership detection (active if project is member of these workspace types)
@@ -206,7 +206,7 @@ package schema
 	runtimeType?: [...string]
 
 	// Cuenv source mode detection (for cuenv installation strategy)
-	// Values: "git", "nix", "homebrew", "release"
+	// Values: "git", "nix", "homebrew", "release", "native", "artifact"
 	cuenvSource?: [...string]
 
 	// Secrets provider detection (active if environment uses any of these providers)
@@ -221,16 +221,16 @@ package schema
 	// Task command detection (active if any task uses these commands)
 	taskCommand?: [...string]
 
-	// Task label detection (active if any task has these labels)
+	// Task label detection (active if a pipeline task has any listed label)
 	taskLabels?: [...string]
 
 	// Environment name matching (active only in these environments)
 	environment?: [...string]
 
-	// Service command detection (active if any service uses these commands)
+	// Active if any service's primary command matches any listed command.
 	serviceCommand?: [...string]
 
-	// Service presence (active if project has any services defined)
+	// Require services to be present (true) or absent (false).
 	hasService?: bool
 }
 

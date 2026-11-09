@@ -5,14 +5,13 @@
 //! server, from the executable `CUENV_INFRASTRUCTURE_TEST_SQLD` names, unless
 //! `CUENV_INFRASTRUCTURE_TEST_TURSO_URL` names a database to use instead.
 
-use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{env, thread};
 
 const EXECUTABLE: &str = "CUENV_INFRASTRUCTURE_TEST_SQLD";
 const URL: &str = "CUENV_INFRASTRUCTURE_TEST_TURSO_URL";

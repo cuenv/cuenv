@@ -7,9 +7,8 @@
 //! - Typed extraction rules (bin, lib, include, pkgconfig, file)
 
 use async_trait::async_trait;
-use cuenv_core::Result;
-use cuenv_core::http::ensure_rustls_crypto_provider;
-use cuenv_secrets::http::client_builder;
+use cuenv_core::{Result, http};
+use cuenv_secrets::http as secret_http;
 use cuenv_tool_archive as archive;
 use cuenv_tool_runtime::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
@@ -49,9 +48,9 @@ impl Default for UrlToolProvider {
 
 impl UrlToolProvider {
     fn build_client() -> std::result::Result<Client, String> {
-        ensure_rustls_crypto_provider();
+        http::ensure_rustls_crypto_provider();
 
-        client_builder()
+        secret_http::client_builder()
             .build()
             .map_err(|err| format!("Failed to create URL HTTP client: {err}"))
     }
@@ -349,8 +348,15 @@ impl ToolProvider for UrlToolProvider {
 
         if extract.is_empty() {
             // Legacy behavior: single binary inferred from archive or raw file.
-            let extracted =
-                archive::extract_binary(&data, url, None, &cache_dir).map_err(archive_err)?;
+            let extracted = archive::extract_binary(
+                &data,
+                archive::ArchiveSource {
+                    name: url,
+                    binary_path: None,
+                },
+                &cache_dir,
+            )
+            .map_err(archive_err)?;
             if archive::looks_like_prefix_install(&cache_dir) {
                 let primary_path =
                     archive::find_primary_binary_in_prefix(&cache_dir, &resolved.name)
@@ -414,9 +420,15 @@ impl ToolProvider for UrlToolProvider {
         let mut produced_paths: Vec<PathBuf> = Vec::with_capacity(extract.len());
         for item in extract {
             let source_path = Self::extract_source_path(item);
-            let extracted_path =
-                archive::extract_binary(&data, url, Some(source_path), &extract_dir)
-                    .map_err(archive_err)?;
+            let extracted_path = archive::extract_binary(
+                &data,
+                archive::ArchiveSource {
+                    name: url,
+                    binary_path: Some(source_path),
+                },
+                &extract_dir,
+            )
+            .map_err(archive_err)?;
             let final_path = self.cache_target_for_extract(&cache_dir, &resolved.name, item);
             if let Some(parent) = final_path.parent() {
                 std::fs::create_dir_all(parent)?;

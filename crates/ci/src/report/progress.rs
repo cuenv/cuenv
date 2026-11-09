@@ -102,14 +102,10 @@ impl LiveTaskProgress {
         self
     }
 
-    /// Mark task as completed with duration.
+    /// Mark a task with its terminal status and duration.
     #[must_use]
-    pub fn completed(mut self, success: bool, duration: Duration) -> Self {
-        self.status = if success {
-            LiveTaskStatus::Success
-        } else {
-            LiveTaskStatus::Failed
-        };
+    pub fn completed(mut self, status: TaskStatus, duration: Duration) -> Self {
+        self.status = status.into();
         self.duration = Some(duration);
         self
     }
@@ -285,7 +281,7 @@ mod tests {
     #[test]
     fn test_live_task_progress_completed_success() {
         let progress = LiveTaskProgress::pending("build", "Build project")
-            .completed(true, Duration::from_secs(5));
+            .completed(TaskStatus::Success, Duration::from_secs(5));
         assert_eq!(progress.status, LiveTaskStatus::Success);
         assert_eq!(progress.duration, Some(Duration::from_secs(5)));
     }
@@ -293,7 +289,7 @@ mod tests {
     #[test]
     fn test_live_task_progress_completed_failure() {
         let progress = LiveTaskProgress::pending("build", "Build project")
-            .completed(false, Duration::from_secs(3));
+            .completed(TaskStatus::Failed, Duration::from_secs(3));
         assert_eq!(progress.status, LiveTaskStatus::Failed);
     }
 
@@ -366,8 +362,8 @@ mod tests {
         reporter.task_cached("t1", "Task 1").await;
         reporter.task_progress("t1", "Working...").await;
 
-        let progress =
-            LiveTaskProgress::pending("t1", "Task 1").completed(true, Duration::from_secs(1));
+        let progress = LiveTaskProgress::pending("t1", "Task 1")
+            .completed(TaskStatus::Success, Duration::from_secs(1));
         reporter.task_completed(&progress).await;
     }
 }

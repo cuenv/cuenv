@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
 
-use super::{ModuleGuard, env_file, relative_path_from_root, schema_compat};
+use super::{ModuleGuard, env_file, schema_compat};
 
 /// Executes CLI commands with centralized module evaluation.
 ///
@@ -58,7 +58,7 @@ impl CommandExecutor {
     /// - The path cannot be canonicalized
     /// - No CUE module root (cue.mod/) is found starting from the given path
     /// - CUE evaluation fails for the target directory
-    pub fn get_module(&self, path: &Path) -> Result<ModuleGuard<'_>> {
+    pub fn module(&self, path: &Path) -> Result<ModuleGuard<'_>> {
         let target_path = path.canonicalize().map_err(|e| {
             cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e)
         })?;
@@ -98,7 +98,7 @@ impl CommandExecutor {
         let workspace = self.workspace_modules.lock().ok()?;
         workspace.values().find_map(|module| {
             target_path.strip_prefix(&module.root).ok()?;
-            let rel_path = relative_path_from_root(&module.root, target_path);
+            let rel_path = super::relative_path_from_root(&module.root, target_path);
             let instance = module.get(&rel_path)?;
             Some(ModuleEvaluation {
                 direct_references: module.direct_references.clone(),
@@ -173,12 +173,12 @@ impl CommandExecutor {
     ///
     /// # Errors
     ///
-    /// Returns an error if the module has not been loaded yet (call `get_module` first).
+    /// Returns an error if the module has not been loaded yet (call `module` first).
     pub fn relative_path(&self, target: &Path) -> Result<PathBuf> {
         let root = self.module_root().ok_or_else(|| {
-            cuenv_core::Error::configuration("Module not loaded; call get_module first")
+            cuenv_core::Error::configuration("Module not loaded; call module first")
         })?;
-        Ok(relative_path_from_root(&root, target))
+        Ok(super::relative_path_from_root(&root, target))
     }
 
     /// Check if a path is a Project (vs Base) using schema unification.
@@ -193,7 +193,7 @@ impl CommandExecutor {
 
         let check = |modules: &HashMap<PathBuf, ModuleEvaluation>| -> Option<bool> {
             modules.values().find_map(|module| {
-                let rel_path = relative_path_from_root(&module.root, &target_path);
+                let rel_path = super::relative_path_from_root(&module.root, &target_path);
                 module
                     .get(&rel_path)
                     .map(|instance| instance.kind == InstanceKind::Project)

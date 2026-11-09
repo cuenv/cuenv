@@ -1,256 +1,272 @@
 use cuenv::cli::CliError;
 use cuenv_hooks::{
-    ExecutionStatus, Hook, HookExecutionConfig, HookExecutionState, StateManager, execute_hooks,
+    ExecutionStatus, HookExecutionState, HookRunIdentity, HookRunJoin, HookRunUpdate,
+    HookWorkerStart, StateManager,
 };
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 struct HookSupervisorArgs {
-    directory_path: PathBuf,
-    instance_hash: String,
-    hooks_file: PathBuf,
-    config_file: PathBuf,
+    state_dir: PathBuf,
+    identity: HookRunIdentity,
 }
 
-struct HookSupervisorFiles {
-    hooks: Vec<Hook>,
-    config: HookExecutionConfig,
+struct SupervisorFailure<'failure> {
+    manager: &'failure StateManager,
+    identity: &'failure HookRunIdentity,
+    state: &'failure mut HookExecutionState,
+    message: &'failure str,
 }
 
-struct HookSupervisorState {
-    manager: StateManager,
-    pid_file: PathBuf,
-}
-
-struct HookSupervisorRun<'a> {
-    files: HookSupervisorFiles,
-    args: &'a HookSupervisorArgs,
-    state_context: &'a HookSupervisorState,
-    state: &'a mut HookExecutionState,
-}
-
-/// Run as a hook supervisor process.
-pub async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
-    let supervisor_args = parse_hook_supervisor_args(&args);
-
-    init_hook_supervisor_logging();
-    enter_hook_supervisor_directory(&supervisor_args.directory_path)?;
-    log_hook_supervisor_start(&supervisor_args, &args);
-
-    let files = load_hook_supervisor_files(&supervisor_args)?;
-    let state_context = prepare_hook_supervisor_state(&supervisor_args, &files.config)?;
-    let mut state =
-        load_hook_supervisor_state(&state_context, &supervisor_args.instance_hash).await?;
-
-    execute_hook_supervisor_run(HookSupervisorRun {
-        files,
-        args: &supervisor_args,
-        state_context: &state_context,
-        state: &mut state,
-    })
-    .await?;
-
-    std::fs::remove_file(&state_context.pid_file).ok();
-    cuenv_events::emit_supervisor_log!("supervisor", "Completed successfully");
-    Ok(())
-}
-
-fn parse_hook_supervisor_args(args: &[String]) -> HookSupervisorArgs {
-    let mut parsed = HookSupervisorArgs {
-        directory_path: PathBuf::new(),
-        instance_hash: String::new(),
-        hooks_file: PathBuf::new(),
-        config_file: PathBuf::new(),
-    };
-
-    let mut i = 2;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--directory" => {
-                parsed.directory_path = PathBuf::from(&args[i + 1]);
-                i += 2;
-            }
-            "--instance-hash" => {
-                parsed.instance_hash.clone_from(&args[i + 1]);
-                i += 2;
-            }
-            "--config-hash" => {
-                i += 2;
-            }
-            "--hooks-file" => {
-                parsed.hooks_file = PathBuf::from(&args[i + 1]);
-                i += 2;
-            }
-            "--config-file" => {
-                parsed.config_file = PathBuf::from(&args[i + 1]);
-                i += 2;
-            }
-            _ => i += 1,
-        }
-    }
-
-    parsed
-}
-
-fn init_hook_supervisor_logging() {
+/// Join and execute one reserved hook run.
+pub async fn run_hook_supervisor(args: Vec<OsString>) -> Result<(), CliError> {
+    let args = parse_hook_supervisor_args(&args)?;
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .try_init();
-}
 
-fn enter_hook_supervisor_directory(directory_path: &PathBuf) -> Result<(), CliError> {
-    if let Err(e) = std::env::set_current_dir(directory_path) {
-        cuenv_events::emit_supervisor_log!(
-            "supervisor",
-            format!(
-                "Failed to change directory to {}: {}",
-                directory_path.display(),
-                e
-            )
-        );
-        return Err(CliError::other(format!("Failed to change directory: {e}")));
+    let manager = StateManager::new(args.state_dir);
+    let start = match manager
+        .join_supervisor_run(&args.identity)
+        .await
+        .map_err(|error| CliError::other(format!("Failed to join hook run: {error}")))?
+    {
+        HookRunJoin::Joined(start) => start,
+        HookRunJoin::CancelRequested => {
+            return acknowledge_cancellation(&manager, &args.identity).await;
+        }
+        HookRunJoin::Superseded => return Ok(()),
+    };
+
+    let HookWorkerStart {
+        mut state,
+        hooks,
+        config,
+    } = *start;
+    if let Err(error) = std::env::set_current_dir(&state.directory_path) {
+        return record_failure(SupervisorFailure {
+            manager: &manager,
+            identity: &args.identity,
+            state: &mut state,
+            message: &format!("Failed to enter hook directory: {error}"),
+        })
+        .await;
+    }
+
+    if let Err(error) = cuenv_hooks::execute_hooks(
+        hooks,
+        &config,
+        cuenv_hooks::HookRunState {
+            manager: &manager,
+            state: &mut state,
+            identity: &args.identity,
+        },
+    )
+    .await
+    {
+        return record_failure(SupervisorFailure {
+            manager: &manager,
+            identity: &args.identity,
+            state: &mut state,
+            message: &error.to_string(),
+        })
+        .await;
+    }
+
+    if state.status == ExecutionStatus::Completed {
+        return match manager.publish_and_serve(&args.identity, &state).await {
+            Ok(HookRunUpdate::Applied | HookRunUpdate::Superseded) => Ok(()),
+            Ok(HookRunUpdate::CancelRequested) => {
+                acknowledge_cancellation(&manager, &args.identity).await
+            }
+            Err(error) => {
+                record_failure(SupervisorFailure {
+                    manager: &manager,
+                    identity: &args.identity,
+                    state: &mut state,
+                    message: &error.to_string(),
+                })
+                .await
+            }
+        };
     }
 
     Ok(())
 }
 
-fn log_hook_supervisor_start(supervisor_args: &HookSupervisorArgs, raw_args: &[String]) {
-    cuenv_events::emit_supervisor_log!("supervisor", format!("Starting with args: {raw_args:?}"));
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!("Directory: {}", supervisor_args.directory_path.display())
-    );
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!("Instance hash: {}", supervisor_args.instance_hash)
-    );
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!("Hooks file: {}", supervisor_args.hooks_file.display())
-    );
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!("Config file: {}", supervisor_args.config_file.display())
-    );
-}
-
-fn load_hook_supervisor_files(
-    supervisor_args: &HookSupervisorArgs,
-) -> Result<HookSupervisorFiles, CliError> {
-    let hooks_json = std::fs::read_to_string(&supervisor_args.hooks_file)
-        .map_err(|e| CliError::other(format!("Failed to read hooks file: {e}")))?;
-    let config_json = std::fs::read_to_string(&supervisor_args.config_file)
-        .map_err(|e| CliError::other(format!("Failed to read config file: {e}")))?;
-
-    let hooks = serde_json::from_str(&hooks_json)
-        .map_err(|e| CliError::other(format!("Failed to deserialize hooks: {e}")))?;
-    let config = serde_json::from_str(&config_json)
-        .map_err(|e| CliError::other(format!("Failed to deserialize config: {e}")))?;
-
-    std::fs::remove_file(&supervisor_args.hooks_file).ok();
-    std::fs::remove_file(&supervisor_args.config_file).ok();
-
-    Ok(HookSupervisorFiles { hooks, config })
-}
-
-fn prepare_hook_supervisor_state(
-    supervisor_args: &HookSupervisorArgs,
-    config: &HookExecutionConfig,
-) -> Result<HookSupervisorState, CliError> {
-    let state_dir = match config.state_dir.clone() {
-        Some(dir) => dir,
-        None => StateManager::default_state_dir()
-            .map_err(|e| CliError::other(format!("failed to get default state dir: {e}")))?,
-    };
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!("Using state dir: {}", state_dir.display())
-    );
-
-    let manager = StateManager::new(state_dir);
-    let state_file = manager.get_state_file_path(&supervisor_args.instance_hash);
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!("Looking for state file: {}", state_file.display())
-    );
-
-    let pid_file = state_file.with_extension("pid");
-    std::fs::write(&pid_file, format!("{}", std::process::id()))
-        .map_err(|e| CliError::other(format!("Failed to write PID file: {e}")))?;
-
-    Ok(HookSupervisorState { manager, pid_file })
-}
-
-async fn load_hook_supervisor_state(
-    state_context: &HookSupervisorState,
-    instance_hash: &str,
-) -> Result<HookExecutionState, CliError> {
-    state_context
-        .manager
-        .load_state(instance_hash)
-        .await
-        .map_err(|e| CliError::other(format!("Failed to load state: {e}")))?
-        .ok_or_else(|| CliError::other("State not found for supervisor"))
-}
-
-async fn execute_hook_supervisor_run(run: HookSupervisorRun<'_>) -> Result<(), CliError> {
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!(
-            "Executing {} hooks for directory: {}",
-            run.files.hooks.len(),
-            run.args.directory_path.display()
-        )
-    );
-
-    let result = execute_hooks(
-        run.files.hooks,
-        &run.args.directory_path,
-        &run.files.config,
-        &run.state_context.manager,
-        run.state,
-    )
-    .await;
-
-    if let Err(e) = result {
-        let error = e.to_string();
-        save_hook_supervisor_failure(run.state_context, run.state, &error).await?;
-        return Err(CliError::other(format!("Hook execution failed: {error}")));
+fn parse_hook_supervisor_args(args: &[OsString]) -> Result<HookSupervisorArgs, CliError> {
+    let mut state_dir = None;
+    let mut directory_key = None;
+    let mut instance_hash = None;
+    let mut run_id = None;
+    let mut arguments = args.iter().skip(2);
+    while let Some(flag) = arguments.next() {
+        let flag = flag
+            .to_str()
+            .ok_or_else(|| CliError::other("Supervisor option is not valid UTF-8"))?;
+        let value = arguments
+            .next()
+            .ok_or_else(|| CliError::other(format!("Missing value for {flag}")))?;
+        let destination = match flag {
+            "--state-dir" => &mut state_dir,
+            "--directory-key" => &mut directory_key,
+            "--instance-hash" => &mut instance_hash,
+            "--run-id" => &mut run_id,
+            _ => {
+                return Err(CliError::other(format!(
+                    "Unknown supervisor argument: {flag}"
+                )));
+            }
+        };
+        if destination.replace(value.clone()).is_some() {
+            return Err(CliError::other(format!(
+                "Repeated supervisor argument: {flag}"
+            )));
+        }
     }
 
-    save_hook_supervisor_success(run.state_context, run.state).await
+    let state_dir = PathBuf::from(state_dir.ok_or_else(|| CliError::other("Missing --state-dir"))?);
+    let directory_key = utf8_argument(directory_key, "--directory-key")?;
+    let instance_hash = utf8_argument(instance_hash, "--instance-hash")?;
+    let run_id = utf8_argument(run_id, "--run-id")?;
+    let run_id = uuid::Uuid::parse_str(&run_id)
+        .map_err(|error| CliError::other(format!("Invalid supervisor run UUID: {error}")))?;
+    if state_dir.as_os_str().is_empty()
+        || directory_key.is_empty()
+        || instance_hash.is_empty()
+        || run_id.is_nil()
+    {
+        return Err(CliError::other("Invalid hook supervisor identity"));
+    }
+
+    Ok(HookSupervisorArgs {
+        state_dir,
+        identity: HookRunIdentity {
+            directory_key,
+            instance_hash,
+            run_id,
+        },
+    })
 }
 
-async fn save_hook_supervisor_failure(
-    state_context: &HookSupervisorState,
-    state: &mut HookExecutionState,
-    error: &str,
-) -> Result<(), CliError> {
-    cuenv_events::emit_supervisor_log!("supervisor", format!("Hook execution failed: {error}"));
-    state.status = ExecutionStatus::Failed;
-    state.error_message = Some(error.to_string());
-    state.finished_at = Some(chrono::Utc::now());
-    state_context
-        .manager
-        .save_state(state)
-        .await
-        .map_err(|e| CliError::other(format!("Failed to save error state: {e}")))
+fn utf8_argument(value: Option<OsString>, flag: &str) -> Result<String, CliError> {
+    value
+        .ok_or_else(|| CliError::other(format!("Missing {flag}")))?
+        .into_string()
+        .map_err(|_| CliError::other(format!("{flag} must be valid UTF-8")))
 }
 
-async fn save_hook_supervisor_success(
-    state_context: &HookSupervisorState,
-    state: &HookExecutionState,
+async fn acknowledge_cancellation(
+    manager: &StateManager,
+    identity: &HookRunIdentity,
 ) -> Result<(), CliError> {
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!(
-            "Saving final state with {} environment variables",
-            state.environment_vars.len()
-        )
-    );
-    state_context
-        .manager
-        .save_state(state)
+    match manager
+        .acknowledge_cancellation(identity)
         .await
-        .map_err(|e| CliError::other(format!("Failed to save final state: {e}")))
+        .map_err(|error| CliError::other(format!("Failed to acknowledge cancellation: {error}")))?
+    {
+        HookRunUpdate::Applied | HookRunUpdate::Superseded => Ok(()),
+        HookRunUpdate::CancelRequested => Err(CliError::other(
+            "Cannot acknowledge cancellation while a hook child remains active",
+        )),
+    }
+}
+
+async fn record_failure(failure: SupervisorFailure<'_>) -> Result<(), CliError> {
+    failure.state.status = ExecutionStatus::Failed;
+    failure.state.error_message = Some(failure.message.to_string());
+    failure.state.finished_at = Some(chrono::Utc::now());
+    match failure
+        .manager
+        .update_run(failure.identity, failure.state)
+        .await
+        .map_err(|error| CliError::other(format!("Failed to record hook failure: {error}")))?
+    {
+        HookRunUpdate::Applied => Err(CliError::other("Hook execution failed")),
+        HookRunUpdate::CancelRequested => {
+            acknowledge_cancellation(failure.manager, failure.identity).await
+        }
+        HookRunUpdate::Superseded => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn args(values: &[&str]) -> Vec<std::ffi::OsString> {
+        std::iter::once("cuenv")
+            .chain(std::iter::once("__hook-supervisor"))
+            .chain(values.iter().copied())
+            .map(std::ffi::OsString::from)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_accepts_a_non_utf8_state_directory() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let state_dir = std::ffi::OsString::from_vec(b"/private/state-\xff".to_vec());
+        let mut arguments = args(&[
+            "--state-dir",
+            "/private/state",
+            "--directory-key",
+            "directory",
+            "--instance-hash",
+            "instance",
+            "--run-id",
+            "43ff7692-a719-4f57-9aad-6808b062a22e",
+        ]);
+        arguments[3] = state_dir.clone();
+        let parsed = super::parse_hook_supervisor_args(&arguments).unwrap();
+        assert_eq!(parsed.state_dir, std::path::PathBuf::from(state_dir));
+    }
+
+    #[test]
+    fn supervisor_requires_a_complete_unique_run_identity() {
+        let run_id = "43ff7692-a719-4f57-9aad-6808b062a22e";
+        let parsed = super::parse_hook_supervisor_args(&args(&[
+            "--state-dir",
+            "/private/state",
+            "--directory-key",
+            "directory",
+            "--instance-hash",
+            "instance",
+            "--run-id",
+            run_id,
+        ]))
+        .unwrap();
+        assert_eq!(parsed.identity.directory_key, "directory");
+        assert_eq!(parsed.identity.instance_hash, "instance");
+        assert_eq!(parsed.identity.run_id.to_string(), run_id);
+        assert_eq!(parsed.state_dir, std::path::Path::new("/private/state"));
+    }
+
+    #[test]
+    fn supervisor_rejects_missing_repeated_and_legacy_arguments() {
+        assert!(super::parse_hook_supervisor_args(&args(&["--state-dir"])).is_err());
+        assert!(super::parse_hook_supervisor_args(&args(&["--hooks-file", "/tmp/file"])).is_err());
+        assert!(
+            super::parse_hook_supervisor_args(&args(&[
+                "--state-dir",
+                "/private/state",
+                "--state-dir",
+                "/other/state",
+            ]))
+            .is_err()
+        );
+        assert!(
+            super::parse_hook_supervisor_args(&args(&[
+                "--state-dir",
+                "/private/state",
+                "--directory-key",
+                "directory",
+                "--instance-hash",
+                "instance",
+                "--run-id",
+                "00000000-0000-0000-0000-000000000000",
+            ]))
+            .is_err()
+        );
+    }
 }

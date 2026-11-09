@@ -1,4 +1,10 @@
-{ pkgs, cue-bridge }:
+{
+  pkgs,
+  cue-bridge,
+  rustfmtOptions,
+  rustfmtProbe,
+  sourceFilter,
+}:
 let
   lib = pkgs.lib;
   rustToolchain = pkgs.rust-bin.stable."1.98.1".minimal.override {
@@ -22,19 +28,33 @@ let
   toRepoPath = relative: ../.. + "/${relative}";
   src = fs.toSource {
     root = ../..;
-    fileset = fs.unions (
-      map toRepoPath (sourceFiles.files ++ sourceFiles.trees ++ sourceFiles.cuettyFiles ++ sourceFiles.cuettyTrees)
-      ++ map (tree: fs.fileFilter (file: file.hasExt "cue") (toRepoPath tree)) sourceFiles.cueTrees
-    );
+    fileset =
+      fs.intersection
+        (fs.unions (
+          map toRepoPath (
+            sourceFiles.files ++ sourceFiles.trees ++ sourceFiles.cuettyFiles ++ sourceFiles.cuettyTrees
+          )
+          ++ map (tree: fs.fileFilter (file: file.hasExt "cue") (toRepoPath tree)) sourceFiles.cueTrees
+        ))
+        (
+          fs.fromSource (
+            lib.cleanSourceWith {
+              src = ../..;
+              filter = sourceFilter;
+            }
+          )
+        );
   };
   xcodeXcrun = pkgs.writeShellScriptBin "xcrun" ''
     unset DEVELOPER_DIR SDKROOT
     exec /usr/bin/xcrun "$@"
   '';
-  nativeBuildInputs = lib.optionals pkgs.stdenv.isDarwin [ xcodeXcrun ] ++ [ pkgs.pkg-config ];
+  nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ xcodeXcrun ] ++ [
+    pkgs.pkg-config
+  ];
   buildInputs =
-    lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ]
-    ++ lib.optionals pkgs.stdenv.isLinux [
+    lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.libiconv ]
+    ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
       pkgs.alsa-lib
       pkgs.fontconfig
       pkgs.freetype
@@ -42,10 +62,10 @@ let
       pkgs.openssl
       pkgs.vulkan-loader
       pkgs.wayland
-      pkgs.xorg.libxcb
-      pkgs.xorg.libXcursor
-      pkgs.xorg.libXi
-      pkgs.xorg.libXrandr
+      pkgs.libxcb
+      pkgs.libxcursor
+      pkgs.libxi
+      pkgs.libxrandr
     ];
   commonArgs = {
     pname = "cuetty";
@@ -70,11 +90,11 @@ let
       cargoBuildFlags = [ "--bin=cuetty" ];
       nativeBuildInputs =
         nativeBuildInputs
-        ++ lib.optionals pkgs.stdenv.isLinux [
+        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.patchelf
           pkgs.copyDesktopItems
         ];
-      desktopItems = lib.optionals pkgs.stdenv.isLinux [
+      desktopItems = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
         (pkgs.makeDesktopItem {
           name = "cuetty";
           desktopName = "Cuetty";
@@ -95,16 +115,16 @@ let
           ];
         })
       ];
-      postInstall = lib.optionalString pkgs.stdenv.isLinux ''
+      postInstall = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
         install -Dm644 ${./assets/app/cuetty.svg} "$out/share/icons/hicolor/scalable/apps/cuetty.svg"
       '';
-      postFixup = lib.optionalString pkgs.stdenv.isLinux ''
+      postFixup = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
         # GPUI loads some libraries with dlopen, so keep their paths after
         # Nix's RPATH shrinking without exporting them to terminal children.
         patchelf --add-rpath ${lib.escapeShellArg (lib.makeLibraryPath buildInputs)} "$out/bin/cuetty"
       '';
-      doInstallCheck = pkgs.stdenv.isLinux;
-      installCheckPhase = lib.optionalString pkgs.stdenv.isLinux ''
+      doInstallCheck = pkgs.stdenv.hostPlatform.isLinux;
+      installCheckPhase = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
         runHook preInstallCheck
 
         # The installed entry point must be an ELF executable, not a wrapper
@@ -159,7 +179,10 @@ let
       # only needs the test profile used by its explicit cargo test command.
       dontBuild = true;
       doCheck = true;
-      checkPhase = "CUETTY_SKIP_PTY_TEST=1 cargo test --manifest-path apps/cuetty/Cargo.toml --locked --all-targets";
+      checkPhase = ''
+        cargo test --manifest-path apps/cuetty/Cargo.toml --locked --workspace --all-targets --all-features -- --include-ignored
+        cargo test --manifest-path apps/cuetty/Cargo.toml --locked --workspace --all-features --doc
+      '';
       installPhase = "mkdir -p $out";
     }
   );
@@ -168,7 +191,14 @@ let
     // {
       pname = "cuetty-clippy";
       doCheck = false;
-      buildPhase = "cargo clippy --manifest-path apps/cuetty/Cargo.toml --locked --all-targets --all-features -- -D warnings";
+      buildPhase = ''
+        cargo tree --manifest-path apps/cuetty/Cargo.toml --locked --workspace --target all --all-features --prefix none > "$TMPDIR/cuetty-dependencies"
+        if grep -Eq '^proc-macro-error(-attr)?2? v' "$TMPDIR/cuetty-dependencies"; then
+          echo "Cuetty must not depend on unmaintained proc-macro-error crates" >&2
+          exit 1
+        fi
+        cargo clippy --manifest-path apps/cuetty/Cargo.toml --locked --workspace --all-targets --all-features -- -D warnings -D clippy::wildcard_imports -D clippy::undocumented_unsafe_blocks -D clippy::needless_for_each
+      '';
       installPhase = "mkdir -p $out";
     }
   );
@@ -177,7 +207,10 @@ let
     inherit version src;
     nativeBuildInputs = [ rustToolchain ];
     dontConfigure = true;
-    buildPhase = "cargo fmt --manifest-path apps/cuetty/Cargo.toml --all -- --check";
+    buildPhase = ''
+      ${rustfmtProbe}
+      cargo fmt --manifest-path apps/cuetty/Cargo.toml --all -- --check --config ${rustfmtOptions}
+    '';
     installPhase = "mkdir -p $out";
   };
 in

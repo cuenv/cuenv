@@ -36,7 +36,10 @@ Handles serialization/deserialization between Rust and Go data structures.
 Keeps `bridge.go` focused on exported cgo functions and evaluation
 orchestration. Source metadata/reference extraction lives in `metadata.go`, and
 clean CUE-to-JSON value rendering lives in `values.go`. Metadata is returned as
-a separate map rather than injected inline into JSON values; the build script
+a separate map rather than injected inline into JSON values. When a schema
+constraint unifies with a reference, the bridge retains the reference if the
+conjunction identifies one value; it leaves ambiguous conjunctions unresolved.
+The build script
 compiles every non-test Go file in `crates/cuengine`. Build-script failures are
 reported through ordinary `Result` errors so missing Cargo environment, stale
 prebuilt artifact copies, unsupported cross-compilation targets, and Go build
@@ -61,8 +64,8 @@ FFI diagnostics. Integration tests keep FFI-unavailable paths quiet and return
 depending on stdout diagnostics.
 Environment parsing tests keep FFI-unavailable paths quiet through tracing and
 return `Result` from filesystem/JSON setup rather than dumping JSON to stdout.
-FFI edge-case tests keep no-crash scenarios as explicit ignored results instead
-of empty match arms or local lint suppressions.
+FFI edge-case tests exercise malformed inputs and report unexpected setup or
+evaluation failures.
 Module-evaluation fixture tests return `Result` from setup/evaluation helpers
 instead of carrying file-level expect allowances.
 CUE evaluation benchmarks keep fixture setup explicit as `Result` values and
@@ -76,28 +79,39 @@ unwrap/expect allowances.
 `evaluate_module` is the primary API for evaluating CUE modules. It evaluates an entire module at once, returning all instances for efficient cross-project operations:
 
 ```rust
-use cuengine::evaluate_module;
+use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::manifest::Project;
 use std::path::Path;
 
-// Evaluate the entire module
-let raw = evaluate_module(Path::new("./my-module"), "cuenv", None)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let options = ModuleEvalOptions {
+        recursive: true,
+        with_meta: true,
+        with_references: true,
+        ..Default::default()
+    };
+    let raw = cuengine::evaluate_module(Path::new("./my-module"), "cuenv", Some(&options))?;
+    let references = raw.meta.into_iter()
+        .filter_map(|(path, meta)| meta.reference.map(|reference| (path, reference)))
+        .collect();
+    let module = ModuleEvaluation::from_raw(
+        Path::new("./my-module").to_path_buf(),
+        raw.instances,
+        cuenv_core::module::ModuleEvaluationOptions {
+            project_paths: raw.projects,
+            references: Some(references),
+        },
+    );
 
-// Parse into ModuleEvaluation for structured access
-let module = ModuleEvaluation::from_raw(
-    Path::new("./my-module").to_path_buf(),
-    raw.instances,
-    raw.projects,
-);
+    let instance = module.get(Path::new("my-project")).ok_or("project not found")?;
+    let project: Project = instance.deserialize()?;
+    println!("Loaded project: {}", project.name);
 
-// Access a specific project
-let instance = module.get(Path::new("my-project"))?;
-let project: Project = instance.deserialize()?;
-
-// Iterate all projects
-for instance in module.projects() {
-    println!("Project at: {}", instance.path.display());
+    for instance in module.projects() {
+        println!("Project at: {}", instance.path.display());
+    }
+    Ok(())
 }
 ```
 
@@ -108,6 +122,11 @@ For simpler single-directory evaluation:
 - `evaluate_cue_package(path, package)` → `Result<String>` - Returns raw JSON
 - `evaluate_cue_package_typed::<T>(path, package)` → `Result<T>` - Deserializes to type
 - `get_bridge_version()` → `Result<String>` - Bridge diagnostics
+
+The package helpers evaluate exactly the requested directory. They discover
+the nearest ancestor CUE module for imports; a directory without an ancestor
+module is evaluated as a standalone package. Invalid paths and failed
+instances return an error.
 
 ### CueEngineError
 
@@ -159,11 +178,10 @@ The CUE Engine is optimized for:
 ### Basic Usage
 
 ```rust
-use cuengine::evaluate_cue_package;
 use std::path::Path;
 
 fn main() -> cuengine::Result<()> {
-    let json = evaluate_cue_package(Path::new("./config"), "cuenv")?;
+    let json = cuengine::evaluate_cue_package(Path::new("./config"), "cuenv")?;
     println!("Config JSON: {json}");
     Ok(())
 }
@@ -172,7 +190,7 @@ fn main() -> cuengine::Result<()> {
 ### Configuration Validation
 
 ```rust
-use cuengine::{evaluate_cue_package_typed, CueEngineError, Result};
+use cuengine::{CueEngineError, Result};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -183,7 +201,7 @@ struct AppConfig {
 }
 
 fn validate_app_config(dir: &Path) -> Result<()> {
-    let config: AppConfig = evaluate_cue_package_typed(dir, "cuenv")?;
+    let config: AppConfig = cuengine::evaluate_cue_package_typed(dir, "cuenv")?;
 
     if config.env.is_none() {
         return Err(CueEngineError::configuration("env block is required"));
@@ -196,24 +214,34 @@ fn validate_app_config(dir: &Path) -> Result<()> {
 ### Module-Wide Processing
 
 ```rust
-use cuengine::evaluate_module;
+use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::manifest::Project;
 use std::path::Path;
 
-fn process_all_projects(module_root: &Path) -> cuengine::Result<Vec<Project>> {
-    let raw = evaluate_module(module_root, "cuenv", None)?;
+fn process_all_projects(module_root: &Path) -> Result<Vec<Project>, Box<dyn std::error::Error>> {
+    let options = ModuleEvalOptions {
+        recursive: true,
+        with_meta: true,
+        with_references: true,
+        ..Default::default()
+    };
+    let raw = cuengine::evaluate_module(module_root, "cuenv", Some(&options))?;
+    let references = raw.meta.into_iter()
+        .filter_map(|(path, meta)| meta.reference.map(|reference| (path, reference)))
+        .collect();
     let module = ModuleEvaluation::from_raw(
         module_root.to_path_buf(),
         raw.instances,
-        raw.projects,
+        cuenv_core::module::ModuleEvaluationOptions {
+            project_paths: raw.projects,
+            references: Some(references),
+        },
     );
 
     let mut projects = Vec::new();
     for instance in module.projects() {
-        if let Ok(project) = instance.deserialize::<Project>() {
-            projects.push(project);
-        }
+        projects.push(instance.deserialize::<Project>()?);
     }
 
     Ok(projects)

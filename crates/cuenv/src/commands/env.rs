@@ -3,7 +3,7 @@
 //! Provides commands for listing and printing environment variables
 //! from CUE configurations.
 
-use crate::commands::{CommandExecutor, relative_path_from_root};
+use crate::commands::CommandExecutor;
 use cuenv_core::Result;
 use cuenv_core::manifest::Base;
 use std::path::Path;
@@ -18,8 +18,8 @@ fn load_base_config(path: &str, executor: &CommandExecutor) -> Result<Base> {
     })?;
 
     tracing::debug!("Using cached module evaluation from executor");
-    let module = executor.get_module(&target_path)?;
-    let relative_path = relative_path_from_root(&module.root, &target_path);
+    let module = executor.module(&target_path)?;
+    let relative_path = crate::commands::relative_path_from_root(&module.root, &target_path);
 
     let instance = module.get(&relative_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
@@ -75,6 +75,15 @@ pub async fn execute_env_list(
     Ok(output)
 }
 
+/// Output and environment selection for `env print`.
+#[derive(Debug, Clone, Copy)]
+pub struct EnvPrintOptions<'options> {
+    /// Output format.
+    pub format: &'options str,
+    /// Selected environment, if any.
+    pub environment: Option<&'options str>,
+}
+
 /// Print environment variables from the CUE configuration.
 ///
 /// Resolves secrets and applies environment-specific overrides if specified.
@@ -86,10 +95,13 @@ pub async fn execute_env_list(
 #[instrument(name = "env_print", skip(executor))]
 pub async fn execute_env_print(
     path: &str,
-    format: &str,
-    environment: Option<&str>,
+    options: EnvPrintOptions<'_>,
     executor: &CommandExecutor,
 ) -> Result<String> {
+    let EnvPrintOptions {
+        format,
+        environment,
+    } = options;
     tracing::info!("Starting env print command");
 
     // Load Base configuration using module-wide evaluation

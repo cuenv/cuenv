@@ -5,10 +5,8 @@
 //!
 //! Run with: cargo test --test contributor_integration
 
-use cuengine::evaluate_cue_package_typed;
 use cuenv_core::contributors::{
     CONTRIBUTOR_TASK_PREFIX, Contributor, ContributorContext, ContributorEngine,
-    builtin_workspace_contributors,
 };
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskNode};
@@ -27,31 +25,12 @@ fn contributor_tests_dir() -> PathBuf {
 
 /// Load a Project manifest from an example directory.
 fn load_manifest(example_path: &Path) -> Result<Project, String> {
-    evaluate_cue_package_typed::<Project>(example_path, "cuenv").map_err(|e| {
+    cuengine::evaluate_cue_package_typed::<Project>(example_path, "examples").map_err(|e| {
         format!(
             "Failed to load manifest from {}: {e}",
             example_path.display()
         )
     })
-}
-
-/// Check if the FFI/module evaluation is available for these tests.
-fn ffi_available() -> bool {
-    let test_dir = contributor_tests_dir();
-    let test_path = test_dir.join("bun-workspace");
-    load_manifest(&test_path).is_ok()
-}
-
-/// Skip test with message if FFI is unavailable
-macro_rules! skip_if_ffi_unavailable {
-    () => {
-        if !ffi_available() {
-            tracing::info!(
-                "Skipping test: FFI/module evaluation unavailable (examples need cue.mod root)"
-            );
-            return Ok(());
-        }
-    };
 }
 
 fn project_path(example: &str) -> PathBuf {
@@ -67,7 +46,7 @@ fn load_example_project(example: &str) -> TestResult<(Project, PathBuf)> {
 /// Apply workspace contributors to a manifest and return the task index
 fn apply_contributors(manifest: &mut Project, project_root: &Path) -> TestResult<TaskIndex> {
     let context = ContributorContext::detect(project_root).with_task_commands(&manifest.tasks);
-    let contributors = builtin_workspace_contributors();
+    let contributors = cuenv_core::contributors::builtin_workspace_contributors();
     let engine = ContributorEngine::new(&contributors, context);
     engine
         .apply(&mut manifest.tasks)
@@ -118,8 +97,6 @@ fn build_index(manifest: &Project) -> TestResult<TaskIndex> {
 
 #[test]
 fn test_bun_contributor_injects_install_task() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let (mut project, project_path) = load_example_project("bun-workspace")?;
 
     let index = apply_contributors(&mut project, &project_path)?;
@@ -138,8 +115,6 @@ fn test_bun_contributor_injects_install_task() -> TestResult {
 
 #[test]
 fn test_bun_contributor_injects_setup_task() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let (mut project, project_path) = load_example_project("bun-workspace")?;
 
     let index = apply_contributors(&mut project, &project_path)?;
@@ -162,8 +137,6 @@ fn test_bun_contributor_injects_setup_task() -> TestResult {
 
 #[test]
 fn test_npm_contributor_injects_install_task() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let (mut project, project_path) = load_example_project("npm-workspace")?;
 
     let index = apply_contributors(&mut project, &project_path)?;
@@ -186,8 +159,6 @@ fn test_npm_contributor_injects_install_task() -> TestResult {
 
 #[test]
 fn test_auto_association_adds_depends_on_for_bun_command() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let (mut project, project_path) = load_example_project("auto-associate")?;
 
     let index = apply_contributors(&mut project, &project_path)?;
@@ -210,8 +181,6 @@ fn test_auto_association_adds_depends_on_for_bun_command() -> TestResult {
 
 #[test]
 fn test_auto_association_does_not_affect_non_bun_tasks() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let (mut project, project_path) = load_example_project("auto-associate")?;
 
     let index = apply_contributors(&mut project, &project_path)?;
@@ -237,8 +206,6 @@ fn test_auto_association_does_not_affect_non_bun_tasks() -> TestResult {
 
 #[test]
 fn test_no_lockfile_no_injection() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let (mut project, project_path) = load_example_project("no-contributors")?;
 
     let index = apply_contributors(&mut project, &project_path)?;
@@ -264,12 +231,10 @@ fn test_no_lockfile_no_injection() -> TestResult {
 
 #[test]
 fn test_idempotent_injection() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let (mut project, project_path) = load_example_project("bun-workspace")?;
 
     // Apply contributors once
-    let contributors = builtin_workspace_contributors();
+    let contributors = cuenv_core::contributors::builtin_workspace_contributors();
     apply_contributor_engine(&mut project, &project_path, &contributors)?;
     let first_index = build_index(&project)?;
     let first_tasks: Vec<_> = first_index.list().iter().map(|t| t.name.clone()).collect();
@@ -293,8 +258,6 @@ fn test_idempotent_injection() -> TestResult {
 
 #[test]
 fn test_contributor_task_naming_convention() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let (mut project, project_path) = load_example_project("bun-workspace")?;
 
     let index = apply_contributors(&mut project, &project_path)?;

@@ -1,5 +1,11 @@
-use super::*;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use chrono::Utc;
 use tempfile::TempDir;
+
+use super::{ApprovalManager, ApprovalRecord, ApprovalStatus, ConfigSummary};
+use crate::types::{Hook, Hooks};
 
 fn make_hook(command: &str, args: &[&str]) -> Hook {
     Hook {
@@ -23,7 +29,7 @@ async fn test_approval_manager_operations() {
     let config_hash = "test_hash_123".to_string();
 
     // Initially not approved
-    assert!(!manager.is_approved(directory, &config_hash).unwrap());
+    assert!(!manager.is_approved(directory, &config_hash));
 
     // Approve configuration
     manager
@@ -36,20 +42,20 @@ async fn test_approval_manager_operations() {
         .unwrap();
 
     // Should now be approved
-    assert!(manager.is_approved(directory, &config_hash).unwrap());
+    assert!(manager.is_approved(directory, &config_hash));
 
     // Different hash should not be approved
-    assert!(!manager.is_approved(directory, "different_hash").unwrap());
+    assert!(!manager.is_approved(directory, "different_hash"));
 
     // Test persistence
     let mut manager2 = ApprovalManager::new(manager.approval_file.clone());
     manager2.load_approvals().await.unwrap();
-    assert!(manager2.is_approved(directory, &config_hash).unwrap());
+    assert!(manager2.is_approved(directory, &config_hash));
 
     // Revoke approval
     let revoked = manager2.revoke_approval(directory).await.unwrap();
     assert!(revoked);
-    assert!(!manager2.is_approved(directory, &config_hash).unwrap());
+    assert!(!manager2.is_approved(directory, &config_hash));
 }
 
 #[test]
@@ -63,8 +69,8 @@ fn test_approval_hash_consistency() {
         pre_push: None,
     };
 
-    let hash1 = compute_approval_hash(Some(&hooks));
-    let hash2 = compute_approval_hash(Some(&hooks));
+    let hash1 = super::compute_approval_hash(Some(&hooks));
+    let hash2 = super::compute_approval_hash(Some(&hooks));
     assert_eq!(hash1, hash2, "Same hooks should produce same hash");
 
     // Different hooks should produce different hash
@@ -76,7 +82,7 @@ fn test_approval_hash_consistency() {
         pre_push: None,
     };
 
-    let hash3 = compute_approval_hash(Some(&hooks2));
+    let hash3 = super::compute_approval_hash(Some(&hooks2));
     assert_ne!(
         hash1, hash3,
         "Different hooks should produce different hash"
@@ -86,8 +92,8 @@ fn test_approval_hash_consistency() {
 #[test]
 fn test_approval_hash_no_hooks() {
     // Configs without hooks should produce consistent hash
-    let hash1 = compute_approval_hash(None);
-    let hash2 = compute_approval_hash(None);
+    let hash1 = super::compute_approval_hash(None);
+    let hash2 = super::compute_approval_hash(None);
     assert_eq!(hash1, hash2, "No hooks should produce consistent hash");
 
     // Empty hooks should be same as no hooks
@@ -96,7 +102,7 @@ fn test_approval_hash_no_hooks() {
         on_exit: None,
         pre_push: None,
     };
-    let hash3 = compute_approval_hash(Some(&empty_hooks));
+    let hash3 = super::compute_approval_hash(Some(&empty_hooks));
     assert_eq!(hash1, hash3, "Empty hooks should be same as no hooks");
 }
 
@@ -136,13 +142,13 @@ fn test_approval_status() {
         pre_push: None,
     };
 
-    let status = check_approval_status_core(&manager, directory, Some(&hooks)).unwrap();
+    let status = super::check_approval_status_core(&manager, directory, Some(&hooks));
     assert!(matches!(status, ApprovalStatus::NotApproved { .. }));
 
     // Add an approval with a different hash
     let different_hash = "different_hash".to_string();
     manager.approvals.insert(
-        compute_directory_key(directory),
+        super::compute_directory_key(directory),
         ApprovalRecord {
             directory_path: directory.to_path_buf(),
             config_hash: different_hash,
@@ -152,13 +158,13 @@ fn test_approval_status() {
         },
     );
 
-    let status = check_approval_status_core(&manager, directory, Some(&hooks)).unwrap();
+    let status = super::check_approval_status_core(&manager, directory, Some(&hooks));
     assert!(matches!(status, ApprovalStatus::RequiresApproval { .. }));
 
     // Add approval with correct hash
-    let correct_hash = compute_approval_hash(Some(&hooks));
+    let correct_hash = super::compute_approval_hash(Some(&hooks));
     manager.approvals.insert(
-        compute_directory_key(directory),
+        super::compute_directory_key(directory),
         ApprovalRecord {
             directory_path: directory.to_path_buf(),
             config_hash: correct_hash,
@@ -168,30 +174,30 @@ fn test_approval_status() {
         },
     );
 
-    let status = check_approval_status_core(&manager, directory, Some(&hooks)).unwrap();
+    let status = super::check_approval_status_core(&manager, directory, Some(&hooks));
     assert!(matches!(status, ApprovalStatus::Approved));
 }
 
 #[test]
 fn test_path_validation() {
     // Test valid paths
-    assert!(validate_path_structure(Path::new("/home/user/test")).is_ok());
-    assert!(validate_path_structure(Path::new("./relative/path")).is_ok());
-    assert!(validate_path_structure(Path::new("file.txt")).is_ok());
+    assert!(super::validate_path_structure(Path::new("/home/user/test")).is_ok());
+    assert!(super::validate_path_structure(Path::new("./relative/path")).is_ok());
+    assert!(super::validate_path_structure(Path::new("file.txt")).is_ok());
 
     // Test paths with null bytes (should fail)
     let path_with_null = PathBuf::from("/test\0/path");
-    assert!(validate_path_structure(&path_with_null).is_err());
+    assert!(super::validate_path_structure(&path_with_null).is_err());
 
     // Test paths with multiple parent directory traversals (should fail)
-    assert!(validate_path_structure(Path::new("../../../etc/passwd")).is_err());
-    assert!(validate_path_structure(Path::new("..\\..\\..\\windows\\system32")).is_err());
+    assert!(super::validate_path_structure(Path::new("../../../etc/passwd")).is_err());
+    assert!(super::validate_path_structure(Path::new("..\\..\\..\\windows\\system32")).is_err());
 
     // Test URL-encoded traversals (should fail)
-    assert!(validate_path_structure(Path::new("/test/%2e%2e/passwd")).is_err());
+    assert!(super::validate_path_structure(Path::new("/test/%2e%2e/passwd")).is_err());
 
     // Test semicolon injection (should fail)
-    assert!(validate_path_structure(Path::new("..;/etc/passwd")).is_err());
+    assert!(super::validate_path_structure(Path::new("..;/etc/passwd")).is_err());
 }
 
 #[test]
@@ -201,18 +207,18 @@ fn test_validate_and_canonicalize_path() {
     std::fs::write(&test_file, "test").unwrap();
 
     // Test existing file canonicalization
-    let result = validate_and_canonicalize_path(&test_file).unwrap();
+    let result = super::validate_and_canonicalize_path(&test_file).unwrap();
     assert!(result.is_absolute());
     assert!(result.exists());
 
     // Test non-existent file in existing directory
     let new_file = temp_dir.path().join("new_file.txt");
-    let result = validate_and_canonicalize_path(&new_file).unwrap();
+    let result = super::validate_and_canonicalize_path(&new_file).unwrap();
     assert!(result.ends_with("new_file.txt"));
 
     // Test validation with parent directory that exists
     let nested_new = temp_dir.path().join("subdir/newfile.txt");
-    let result = validate_and_canonicalize_path(&nested_new);
+    let result = super::validate_and_canonicalize_path(&nested_new);
     assert!(result.is_ok()); // Should succeed even though parent doesn't exist yet
 }
 
@@ -269,10 +275,10 @@ async fn test_approval_expiration() {
 
     manager
         .approvals
-        .insert(compute_directory_key(directory), expired_approval);
+        .insert(super::compute_directory_key(directory), expired_approval);
 
     // Should not be approved due to expiration
-    assert!(!manager.is_approved(directory, &config_hash).unwrap());
+    assert!(!manager.is_approved(directory, &config_hash));
 
     // Cleanup should remove expired approval
     let removed = manager.cleanup_expired().await.unwrap();
@@ -284,17 +290,17 @@ async fn test_approval_expiration() {
 fn test_is_ci_with_ci_env_var() {
     // Test with CI=true
     temp_env::with_var("CI", Some("true"), || {
-        assert!(is_ci());
+        assert!(super::is_ci());
     });
 
     // Test with CI=1
     temp_env::with_var("CI", Some("1"), || {
-        assert!(is_ci());
+        assert!(super::is_ci());
     });
 
     // Test with CI=yes (any non-empty, non-false value)
     temp_env::with_var("CI", Some("yes"), || {
-        assert!(is_ci());
+        assert!(super::is_ci());
     });
 
     // Test with CI=false (should NOT be detected as CI)
@@ -315,7 +321,7 @@ fn test_is_ci_with_ci_env_var() {
                 "TEAMCITY_VERSION",
             ],
             || {
-                assert!(!is_ci());
+                assert!(!super::is_ci());
             },
         );
     });
@@ -337,7 +343,7 @@ fn test_is_ci_with_ci_env_var() {
                 "TEAMCITY_VERSION",
             ],
             || {
-                assert!(!is_ci());
+                assert!(!super::is_ci());
             },
         );
     });
@@ -348,28 +354,28 @@ fn test_is_ci_with_provider_specific_vars() {
     // Test GitHub Actions
     temp_env::with_var_unset("CI", || {
         temp_env::with_var("GITHUB_ACTIONS", Some("true"), || {
-            assert!(is_ci());
+            assert!(super::is_ci());
         });
     });
 
     // Test GitLab CI
     temp_env::with_var_unset("CI", || {
         temp_env::with_var("GITLAB_CI", Some("true"), || {
-            assert!(is_ci());
+            assert!(super::is_ci());
         });
     });
 
     // Test Buildkite
     temp_env::with_var_unset("CI", || {
         temp_env::with_var("BUILDKITE", Some("true"), || {
-            assert!(is_ci());
+            assert!(super::is_ci());
         });
     });
 
     // Test Jenkins
     temp_env::with_var_unset("CI", || {
         temp_env::with_var("JENKINS_URL", Some("http://jenkins.example.com"), || {
-            assert!(is_ci());
+            assert!(super::is_ci());
         });
     });
 }
@@ -393,7 +399,7 @@ fn test_is_ci_not_detected() {
             "TEAMCITY_VERSION",
         ],
         || {
-            assert!(!is_ci());
+            assert!(!super::is_ci());
         },
     );
 }
@@ -415,7 +421,7 @@ fn test_approval_status_auto_approved_in_ci() {
 
     // In CI environment, should be auto-approved
     temp_env::with_var("CI", Some("true"), || {
-        let status = check_approval_status(&manager, directory, Some(&hooks)).unwrap();
+        let status = super::check_approval_status(&manager, directory, Some(&hooks));
         assert!(
             matches!(status, ApprovalStatus::Approved),
             "Hooks should be auto-approved in CI"
@@ -439,7 +445,7 @@ fn test_approval_status_auto_approved_in_ci() {
             "TEAMCITY_VERSION",
         ],
         || {
-            let status = check_approval_status(&manager, directory, Some(&hooks)).unwrap();
+            let status = super::check_approval_status(&manager, directory, Some(&hooks));
             assert!(
                 matches!(status, ApprovalStatus::NotApproved { .. }),
                 "Hooks should require approval outside CI"

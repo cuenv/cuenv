@@ -48,17 +48,17 @@ impl GitHubReleaseConfig {
         }
     }
 
-    /// Sets the draft flag.
+    /// Create the release as a draft.
     #[must_use]
-    pub const fn with_draft(mut self, draft: bool) -> Self {
-        self.draft = draft;
+    pub const fn with_draft(mut self) -> Self {
+        self.draft = true;
         self
     }
 
-    /// Sets the prerelease flag.
+    /// Mark the release as a prerelease.
     #[must_use]
-    pub const fn with_prerelease(mut self, prerelease: bool) -> Self {
-        self.prerelease = prerelease;
+    pub const fn with_prerelease(mut self) -> Self {
+        self.prerelease = true;
         self
     }
 
@@ -166,24 +166,28 @@ impl GitHubReleaseBackend {
         &self,
         client: &Octocrab,
         release_id: u64,
-        path: &Path,
-        name: &str,
+        asset: &ReleaseAsset<'_>,
     ) -> Result<String> {
-        let data = tokio::fs::read(path).await.map_err(|e| {
-            cuenv_release::error::Error::artifact(e.to_string(), Some(path.to_path_buf()))
+        let data = tokio::fs::read(asset.path).await.map_err(|e| {
+            cuenv_release::error::Error::artifact(e.to_string(), Some(asset.path.to_path_buf()))
         })?;
 
         let repos = client.repos(&self.config.owner, &self.config.repo);
         let releases = repos.releases();
 
         let asset = releases
-            .upload_asset(release_id, name, Bytes::from(data))
+            .upload_asset(release_id, asset.name, Bytes::from(data))
             .send()
             .await
             .map_err(|e| cuenv_release::error::Error::backend("github", e.to_string(), None))?;
 
         Ok(asset.browser_download_url.to_string())
     }
+}
+
+struct ReleaseAsset<'asset> {
+    path: &'asset Path,
+    name: &'asset str,
 }
 
 impl ReleaseBackend for GitHubReleaseBackend {
@@ -243,8 +247,10 @@ impl ReleaseBackend for GitHubReleaseBackend {
                     .upload_asset(
                         &client,
                         release_id,
-                        &artifact.archive_path,
-                        &artifact.archive_name,
+                        &ReleaseAsset {
+                            path: &artifact.archive_path,
+                            name: &artifact.archive_name,
+                        },
                     )
                     .await?;
 
@@ -256,8 +262,15 @@ impl ReleaseBackend for GitHubReleaseBackend {
                 let checksums_path = first.archive_path.parent().map(|p| p.join("CHECKSUMS.txt"));
                 if let Some(path) = checksums_path.filter(|p| p.exists()) {
                     debug!("Uploading CHECKSUMS.txt");
-                    self.upload_asset(&client, release_id, &path, "CHECKSUMS.txt")
-                        .await?;
+                    self.upload_asset(
+                        &client,
+                        release_id,
+                        &ReleaseAsset {
+                            path: &path,
+                            name: "CHECKSUMS.txt",
+                        },
+                    )
+                    .await?;
                 }
             }
 
@@ -284,8 +297,6 @@ impl ReleaseBackend for GitHubReleaseBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use temp_env::{with_var, with_var_unset};
-
     #[test]
     fn test_parse_github_remote_ssh() {
         let result = parse_github_remote("git@github.com:cuenv/cuenv.git");
@@ -350,8 +361,8 @@ mod tests {
     #[test]
     fn test_config_builder() {
         let config = GitHubReleaseConfig::new("owner", "repo", "token")
-            .with_draft(true)
-            .with_prerelease(true);
+            .with_draft()
+            .with_prerelease();
 
         assert_eq!(config.owner, "owner");
         assert_eq!(config.repo, "repo");
@@ -373,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_config_with_draft_only() {
-        let config = GitHubReleaseConfig::new("owner", "repo", "token").with_draft(true);
+        let config = GitHubReleaseConfig::new("owner", "repo", "token").with_draft();
 
         assert!(config.draft);
         assert!(!config.prerelease);
@@ -381,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_config_with_prerelease_only() {
-        let config = GitHubReleaseConfig::new("owner", "repo", "token").with_prerelease(true);
+        let config = GitHubReleaseConfig::new("owner", "repo", "token").with_prerelease();
 
         assert!(!config.draft);
         assert!(config.prerelease);
@@ -390,8 +401,8 @@ mod tests {
     #[test]
     fn test_config_clone() {
         let config = GitHubReleaseConfig::new("owner", "repo", "token")
-            .with_draft(true)
-            .with_prerelease(true);
+            .with_draft()
+            .with_prerelease();
 
         let cloned = config.clone();
         assert_eq!(cloned.owner, config.owner);
@@ -429,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_from_env_no_token() {
-        with_var_unset("GITHUB_TOKEN", || {
+        temp_env::with_var_unset("GITHUB_TOKEN", || {
             let result = GitHubReleaseConfig::from_env("git@github.com:owner/repo.git");
             assert!(result.is_none());
         });
@@ -437,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_from_env_invalid_url() {
-        with_var("GITHUB_TOKEN", Some("test_token"), || {
+        temp_env::with_var("GITHUB_TOKEN", Some("test_token"), || {
             let result = GitHubReleaseConfig::from_env("not a valid url");
             assert!(result.is_none());
         });
@@ -445,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_from_env_reads_token_and_remote() {
-        with_var("GITHUB_TOKEN", Some("test_token"), || {
+        temp_env::with_var("GITHUB_TOKEN", Some("test_token"), || {
             let config = GitHubReleaseConfig::from_env("git@github.com:owner/repo.git")
                 .expect("config should parse with token and GitHub remote");
 

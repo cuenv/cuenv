@@ -14,8 +14,8 @@ cuenv is built as a layered system with clear separation of concerns:
 │                      cuenv-cli                              │
 │           (Command-line interface & user interaction)       │
 ├─────────────────────────────────────────────────────────────┤
-│                      cuenv-core                             │
-│        (Tasks, environments, hooks, secrets, shell)         │
+│           cuenv-core, cuenv-hooks, cuenv-task-exec         │
+│       (Shared types, environment, hooks, task execution)    │
 ├─────────────────────────────────────────────────────────────┤
 │                       cuengine                              │
 │              (CUE evaluation via Go FFI)                    │
@@ -36,8 +36,6 @@ The CUE evaluation engine providing a safe Rust interface to the Go-based CUE ev
 - FFI bridge between Rust and Go
 - Safe memory management with RAII wrappers
 - CUE expression evaluation
-- Caching of evaluation results
-- Retry logic for transient failures
 
 **Notable features:**
 
@@ -59,10 +57,9 @@ additional Go files beside the exported C archive entrypoints, while
 `bridge_test.go` cannot be part of the c-archive build.
 
 ```rust
-use cuengine::evaluate_module;
 use std::path::Path;
 
-let raw = evaluate_module(Path::new("./project"), "cuenv", None)?;
+let raw = cuengine::evaluate_module(Path::new("./project"), "cuenv", None)?;
 // Access raw.instances and raw.projects
 ```
 
@@ -74,20 +71,18 @@ should be fixed or scoped to the module that actually owns the exceptional code.
 
 **Modules:**
 
-- `manifest` - CUE manifest parsing and the `Cuenv` type
-- `tasks` - Task definitions, execution, and dependencies
+- `manifest` - Manifest types, including `Project`
+- `tasks` - Task definitions and dependencies
 - `environment` - Environment variable handling and validation
-- `hooks` - Shell hooks for onEnter/onExit events
 - `secrets` - Secret resolution and policy enforcement
-- `shell` - Shell integration and export formatting
-- `cache` - Task caching with content-aware invalidation
-- `config` - Configuration file handling
+- `shell` - Shell types and detection
+- `contributors` - Task contributor evaluation and injection
 
-Manifest schema types stay re-exported from `crates/core/src/manifest/mod.rs`,
-while the implementation is split by schema concern: hooks, VCS dependencies,
-formatters, codegen, directory rules, runtimes, services/images, and project
-conversion each live in sibling modules under `crates/core/src/manifest/`.
-Module-wide CUE evaluation assembly lives in `crates/core/src/module.rs`;
+Manifest schema types live in the `cuenv-manifest` crate and are re-exported
+from `crates/core/src/manifest/mod.rs`. Hooks run in `cuenv-hooks`; task
+execution and caching live in `cuenv-task-exec` and the CAS crates.
+Module-wide CUE evaluation assembly lives in
+`crates/core/src/module/module_evaluation.rs`;
 task-reference/source enrichment lives in `crates/core/src/module/task_refs.rs`
 and `crates/core/src/module/task_sources.rs`; instance deserialize diagnostics
 live in `crates/core/src/module/deserialize.rs`. Deserialization error fixtures

@@ -89,7 +89,7 @@ impl OciCache {
 
     /// Get a cached binary if it exists.
     #[must_use]
-    pub fn get_binary(&self, digest: &str, binary_name: &str) -> Option<PathBuf> {
+    pub fn binary(&self, digest: &str, binary_name: &str) -> Option<PathBuf> {
         let path = self.binary_path(digest, binary_name);
         if path.exists() {
             trace!(digest, ?path, "Cache hit for binary");
@@ -190,7 +190,7 @@ mod tests {
 
         // Verify cache hit
         assert!(cache.has_binary(digest, binary_name));
-        assert_eq!(cache.get_binary(digest, binary_name), Some(cached_path));
+        assert_eq!(cache.binary(digest, binary_name), Some(cached_path));
 
         // Verify content
         let content = std::fs::read(cache.binary_path(digest, binary_name))?;
@@ -253,7 +253,7 @@ mod tests {
     fn test_get_binary_missing() {
         let temp = TempDir::new().unwrap();
         let cache = OciCache::new(temp.path().to_path_buf());
-        assert!(cache.get_binary("sha256:nonexistent", "missing").is_none());
+        assert!(cache.binary("sha256:nonexistent", "missing").is_none());
     }
 
     #[test]

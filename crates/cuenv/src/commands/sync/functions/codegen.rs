@@ -1,10 +1,10 @@
 //! Codegen sync operations.
 
+use crate::commands::CommandExecutor;
 use crate::commands::exec::ProjectEnvironmentRequest;
 use crate::commands::sync::formatters::{
     self, FormatMode, FormatterContext, FormatterEnvironments,
 };
-use crate::commands::{CommandExecutor, relative_path_from_root};
 use cuenv_core::manifest::{Formatters, Project};
 use cuenv_core::{DryRun, Result};
 use cuenv_ignore::{FileStatus, IgnoreFiles, IgnoreSection};
@@ -31,42 +31,42 @@ impl CodegenSyncOptions {
 
 /// Request for syncing codegen for a single path.
 #[derive(Debug)]
-pub struct CodegenSyncRequest<'a> {
+pub struct CodegenSyncRequest<'request> {
     /// Path to the CUE module or project directory.
-    pub path: &'a str,
+    pub path: &'request str,
     /// CUE package name to evaluate.
-    pub package: &'a str,
+    pub package: &'request str,
     /// Sync options.
     pub options: CodegenSyncOptions,
 }
 
-struct CodegenSyncContext<'a> {
-    dir_path: &'a Path,
-    path: &'a str,
-    package: &'a str,
+struct CodegenSyncContext<'context> {
+    dir_path: &'context Path,
+    path: &'context str,
+    package: &'context str,
     options: CodegenSyncOptions,
-    executor: &'a CommandExecutor,
+    executor: &'context CommandExecutor,
 }
 
-struct CodegenSyncFilesRequest<'a> {
-    project_root: &'a Path,
-    project_name: &'a str,
-    codegen_config: &'a cuenv_core::manifest::CodegenConfig,
+struct CodegenSyncFilesRequest<'request> {
+    project_root: &'request Path,
+    project_name: &'request str,
+    codegen_config: &'request cuenv_core::manifest::CodegenConfig,
     options: CodegenSyncOptions,
 }
 
-struct CodegenFileSyncRequest<'a> {
-    output_lines: &'a mut Vec<String>,
-    output_path: &'a Path,
-    file_path: &'a str,
-    content: &'a str,
+struct CodegenFileSyncRequest<'request> {
+    output_lines: &'request mut Vec<String>,
+    output_path: &'request Path,
+    file_path: &'request str,
+    content: &'request str,
 }
 
-struct CodegenWriteRequest<'a> {
-    output_path: &'a Path,
-    file_path: &'a str,
-    content: &'a str,
-    mode: &'a str,
+struct CodegenWriteRequest<'request> {
+    output_path: &'request Path,
+    file_path: &'request str,
+    content: &'request str,
+    mode: &'request str,
 }
 
 /// Load Project configuration from CUE using module-wide evaluation.
@@ -88,8 +88,8 @@ fn load_instance_at_path(
         .map_err(|e| cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e))?;
 
     tracing::debug!("Using cached module evaluation from executor");
-    let module = executor.get_module(&target_path)?;
-    let relative_path = relative_path_from_root(&module.root, &target_path);
+    let module = executor.module(&target_path)?;
+    let relative_path = crate::commands::relative_path_from_root(&module.root, &target_path);
 
     let instance = module.get(&relative_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
@@ -195,9 +195,9 @@ async fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<
     }
 }
 
-struct CodegenFormatRequest<'a> {
-    context: &'a CodegenSyncContext<'a>,
-    files: &'a [PathBuf],
+struct CodegenFormatRequest<'request> {
+    context: &'request CodegenSyncContext<'request>,
+    files: &'request [PathBuf],
 }
 
 /// Run the configured formatters on codegen files in the project environment.
@@ -304,12 +304,7 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
         }
     }
 
-    drift_paths.extend(sync_gitignore_entries(
-        &mut output_lines,
-        project_root,
-        codegen_config,
-        options,
-    )?);
+    drift_paths.extend(sync_gitignore_entries(&mut output_lines, request)?);
 
     tracing::info!(
         project = project_name,
@@ -529,10 +524,11 @@ fn validate_lint_config(file_path: &str, file: &cuenv_core::manifest::ProjectFil
 /// failures), mirroring the per-file drift semantics.
 fn sync_gitignore_entries(
     output_lines: &mut Vec<String>,
-    project_root: &Path,
-    codegen_config: &cuenv_core::manifest::CodegenConfig,
-    options: CodegenSyncOptions,
+    request: &CodegenSyncFilesRequest<'_>,
 ) -> Result<Vec<String>> {
+    let project_root = request.project_root;
+    let codegen_config = request.codegen_config;
+    let options = request.options;
     let patterns: Vec<String> = codegen_config
         .files
         .iter()
@@ -546,7 +542,11 @@ fn sync_gitignore_entries(
 
     let result = IgnoreFiles::builder()
         .directory(project_root)
-        .dry_run(options.dry_run.is_dry_run() || options.should_check())
+        .dry_run(if options.dry_run.is_dry_run() || options.should_check() {
+            cuenv_ignore::WriteMode::DryRun
+        } else {
+            cuenv_ignore::WriteMode::Write
+        })
         .section(IgnoreSection::new("cuenv codegen").patterns(patterns))
         .generate()
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
@@ -615,13 +615,14 @@ fn format_unified_diff(path: &str, current: &str, expected: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::sync::provider::SyncMode;
     use cuenv_core::manifest::{CodegenConfig, FileMode, FormatConfig, LintConfig, ProjectFile};
     use std::collections::HashMap;
 
-    fn options(check: bool) -> CodegenSyncOptions {
+    fn options(mode: &SyncMode) -> CodegenSyncOptions {
         CodegenSyncOptions {
             dry_run: DryRun::No,
-            check,
+            check: *mode == SyncMode::Check,
             diff: false,
         }
     }
@@ -655,7 +656,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(true),
+            options: options(&SyncMode::Check),
         };
 
         let result = sync_codegen_files(&request).expect("sync check");
@@ -673,7 +674,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(true),
+            options: options(&SyncMode::Check),
         };
 
         let result = sync_codegen_files(&request).expect("sync check");
@@ -692,7 +693,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(false),
+            options: options(&SyncMode::Write),
         };
 
         sync_codegen_files(&request).expect("sync write");
@@ -713,7 +714,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(false),
+            options: options(&SyncMode::Write),
         };
 
         sync_codegen_files(&request).expect("sync write");
@@ -736,7 +737,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(true),
+            options: options(&SyncMode::Check),
         };
 
         let result = sync_codegen_files(&request).expect("sync check");
@@ -759,7 +760,7 @@ mod tests {
             project_root: temp_dir.path(),
             project_name: "test",
             codegen_config: &codegen_config,
-            options: options(true),
+            options: options(&SyncMode::Check),
         };
 
         let result = sync_codegen_files(&request).expect("sync check");

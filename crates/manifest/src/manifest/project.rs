@@ -148,15 +148,6 @@ impl Project {
         hooks.into_iter().map(|(_, h)| h).collect()
     }
 
-    /// Returns self unchanged.
-    ///
-    /// Workspace detection and task injection now happens via auto-detection
-    /// from lockfiles in the task executor. This method is kept for API compatibility.
-    #[must_use]
-    pub fn with_implicit_tasks(self) -> Self {
-        self
-    }
-
     /// Expand shorthand cross-project references in inputs and implicit dependencies.
     ///
     /// Handles inputs in the format: "#project:task:path/to/file"

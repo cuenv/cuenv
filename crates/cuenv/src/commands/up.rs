@@ -15,12 +15,11 @@ use cuenv_core::environment::{Env, EnvValue, Environment};
 use cuenv_core::manifest::{ContainerImage, Project, Service};
 use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_events::emit_stdout;
-use cuenv_services::controller::{ControllerConfig, ServiceController, build_service_graph};
+use cuenv_services::controller::{ControllerConfig, ServiceController};
 use cuenv_services::session::SessionManager;
 use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph};
 
-use super::env_file::find_cue_module_root;
-use super::{CommandExecutor, relative_path_from_root};
+use super::{CommandExecutor, env_file};
 
 /// Options for the `cuenv up` command.
 pub struct UpOptions {
@@ -69,8 +68,8 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
     // The module guard holds a MutexGuard (not Send), so we must extract
     // everything we need and drop it before any .await point.
     let (filtered_services, graph, session, dependency_plan, tasks, project_env, cue_module_root) = {
-        let module = executor.get_module(&target_path)?;
-        let relative_path = relative_path_from_root(&module.root, &target_path);
+        let module = executor.module(&target_path)?;
+        let relative_path = super::relative_path_from_root(&module.root, &target_path);
 
         let instance = module.get(&relative_path).ok_or_else(|| {
             cuenv_core::Error::configuration(format!(
@@ -127,9 +126,10 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
             DependencyPlanner::new(&project.tasks, &project.images, &project.services)
                 .plan(&filtered_services)?;
 
-        let graph = build_service_graph(&filtered_services).map_err(|e| {
-            cuenv_core::Error::execution(format!("Failed to build service graph: {e}"))
-        })?;
+        let graph =
+            cuenv_services::controller::build_service_graph(&filtered_services).map_err(|e| {
+                cuenv_core::Error::execution(format!("Failed to build service graph: {e}"))
+            })?;
 
         let session = SessionManager::create(&target_path, &project.name)
             .map_err(|e| cuenv_core::Error::execution(format!("Failed to create session: {e}")))?;
@@ -141,7 +141,7 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
             dependency_plan,
             project.tasks,
             project.env,
-            find_cue_module_root(&target_path),
+            env_file::find_cue_module_root(&target_path),
         )
     };
     // ModuleGuard is now dropped — safe to .await below
@@ -231,10 +231,10 @@ struct ServiceDependencyPlan {
 /// task root (executed before startup) or an image root, recursing into image
 /// task dependencies. The task index is built once and reused for existence
 /// probes instead of re-cloning per dependency.
-struct DependencyPlanner<'a> {
-    tasks: &'a HashMap<String, TaskNode>,
-    images: &'a HashMap<String, ContainerImage>,
-    all_services: &'a HashMap<String, Service>,
+struct DependencyPlanner<'dependency_planner> {
+    tasks: &'dependency_planner HashMap<String, TaskNode>,
+    images: &'dependency_planner HashMap<String, ContainerImage>,
+    all_services: &'dependency_planner HashMap<String, Service>,
     task_index: Tasks,
     seen_tasks: HashSet<String>,
     seen_images: HashSet<String>,
@@ -242,11 +242,11 @@ struct DependencyPlanner<'a> {
     unknown: Vec<String>,
 }
 
-impl<'a> DependencyPlanner<'a> {
+impl<'dependency_planner> DependencyPlanner<'dependency_planner> {
     fn new(
-        tasks: &'a HashMap<String, TaskNode>,
-        images: &'a HashMap<String, ContainerImage>,
-        all_services: &'a HashMap<String, Service>,
+        tasks: &'dependency_planner HashMap<String, TaskNode>,
+        images: &'dependency_planner HashMap<String, ContainerImage>,
+        all_services: &'dependency_planner HashMap<String, Service>,
     ) -> Self {
         Self {
             tasks,
@@ -340,11 +340,11 @@ impl<'a> DependencyPlanner<'a> {
 }
 
 /// Shared context for executing a service's resolved dependency roots.
-struct ServiceTaskContext<'a> {
-    tasks: &'a HashMap<String, TaskNode>,
-    project_env: Option<&'a Env>,
-    environment: Option<&'a str>,
-    project_root: &'a Path,
+struct ServiceTaskContext<'context> {
+    tasks: &'context HashMap<String, TaskNode>,
+    project_env: Option<&'context Env>,
+    environment: Option<&'context str>,
+    project_root: &'context Path,
     cue_module_root: Option<PathBuf>,
 }
 

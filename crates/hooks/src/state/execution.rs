@@ -3,17 +3,24 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tracing::{error, info};
 
 /// Represents the state of hook execution for a specific directory
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HookExecutionState {
     /// Hash combining directory path and config (instance identifier)
     pub instance_hash: String,
+    /// Shell or CI invocation whose environment produced this run.
+    #[serde(default)]
+    pub session_id: uuid::Uuid,
+    /// Identifies one execution of this instance; nil denotes a legacy state.
+    #[serde(default)]
+    pub run_id: uuid::Uuid,
     /// Path to the directory being processed
     pub directory_path: PathBuf,
-    /// Hash of the configuration that was approved
+    /// Input-aware identity of the hook execution configuration.
     pub config_hash: String,
     /// Current status of execution
     pub status: ExecutionStatus,
@@ -40,22 +47,48 @@ pub struct HookExecutionState {
     pub error_message: Option<String>,
     /// Environment variables captured from source hooks
     pub environment_vars: HashMap<String, String>,
-    /// Previous environment variables (for diff/unset support)
-    pub previous_env: Option<HashMap<String, String>>,
+}
+
+impl std::fmt::Debug for HookExecutionState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HookExecutionState")
+            .field("run_id", &self.run_id)
+            .field("status", &self.status)
+            .field("total_hooks", &self.total_hooks)
+            .field("completed_hooks", &self.completed_hooks)
+            .field("current_hook_index", &self.current_hook_index)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Identity of a hook execution state.
+pub struct HookExecutionIdentity {
+    /// Directory being processed.
+    pub directory_path: PathBuf,
+    /// Hash identifying the directory and configuration.
+    pub instance_hash: String,
+    /// Shell or CI invocation whose environment will be used by the run.
+    pub session_id: uuid::Uuid,
+    /// Input-aware identity of the hook execution configuration.
+    pub config_hash: String,
 }
 
 impl HookExecutionState {
     /// Create a new execution state
     #[must_use]
-    pub fn new(
-        directory_path: PathBuf,
-        instance_hash: String,
-        config_hash: String,
-        hooks: Vec<Hook>,
-    ) -> Self {
+    pub fn new(identity: HookExecutionIdentity, hooks: Vec<Hook>) -> Self {
+        let HookExecutionIdentity {
+            directory_path,
+            instance_hash,
+            session_id,
+            config_hash,
+        } = identity;
         let total_hooks = hooks.len();
         Self {
             instance_hash,
+            session_id,
+            run_id: uuid::Uuid::new_v4(),
             directory_path,
             config_hash,
             status: ExecutionStatus::Running,
@@ -70,7 +103,6 @@ impl HookExecutionState {
             completed_display_until: None,
             error_message: None,
             environment_vars: HashMap::new(),
-            previous_env: None,
         }
     }
 
@@ -99,12 +131,7 @@ impl HookExecutionState {
                 self.total_hooks
             );
         } else {
-            error!(
-                "Hook {} of {} failed: {:?}",
-                hook_index + 1,
-                self.total_hooks,
-                result.error
-            );
+            error!("Hook {} of {} failed", hook_index + 1, self.total_hooks);
             self.status = ExecutionStatus::Failed;
             self.error_message.clone_from(&result.error);
             self.finished_at = Some(Utc::now());
@@ -157,6 +184,7 @@ impl HookExecutionState {
                     )
                 }
             }
+            ExecutionStatus::Cancelling => "Cancelling hook execution".to_string(),
             ExecutionStatus::Completed => "All hooks completed successfully".to_string(),
             ExecutionStatus::Failed => {
                 if let Some(error) = &self.error_message {
@@ -264,46 +292,93 @@ fn format_sub_minute_duration(duration: chrono::Duration) -> String {
 
 /// Compute a hash for a unique execution instance (directory + config)
 #[must_use]
-pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
+pub fn compute_instance_hash(path: &Path, config_hash: &str, session_id: uuid::Uuid) -> String {
     let mut hasher = Sha256::new();
+    hasher.update(b"cuenv-hook-instance-v2\0");
     hasher.update(path.to_string_lossy().as_bytes());
     hasher.update(b":");
     hasher.update(config_hash.as_bytes());
     hasher.update(b":");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
-    hex::encode(hasher.finalize())[..16].to_string()
+    hasher.update(session_id.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
-/// Compute a hash for hook execution that includes input file contents.
+/// Compute an execution identity from hook definitions and their input files.
 ///
-/// This is separate from the approval hash - approval only cares about the hook
-/// definition, but execution cache needs to invalidate when input files change.
-pub fn compute_execution_hash(hooks: &[Hook], base_dir: &Path) -> String {
+/// Missing inputs are part of the identity. Other input errors are returned so
+/// an unreadable file cannot be mistaken for a cache hit. Relative hook
+/// directories are resolved against the project directory.
+///
+/// # Errors
+///
+/// Returns an error if hook definitions cannot be serialized or an input
+/// cannot be read as a regular file.
+pub fn compute_execution_hash(hooks: &[Hook], base_dir: &Path) -> crate::Result<String> {
     let mut hasher = Sha256::new();
-
-    if let Ok(hooks_json) = serde_json::to_string(hooks) {
-        hasher.update(hooks_json.as_bytes());
-    }
+    hasher.update(b"cuenv-hook-execution-v1\0");
+    let definitions = serde_json::to_vec(hooks)
+        .map_err(|error| crate::Error::serialization(format!("Cannot serialize hooks: {error}")))?;
+    let length = u64::try_from(definitions.len())
+        .map_err(|_| crate::Error::configuration("Hook definitions are too large to hash"))?;
+    hasher.update(length.to_be_bytes());
+    hasher.update(definitions);
 
     for hook in hooks {
-        let hook_dir = hook
-            .dir
-            .as_ref()
-            .map_or_else(|| base_dir.to_path_buf(), PathBuf::from);
+        let hook_dir = hook.dir.as_ref().map_or_else(
+            || base_dir.to_path_buf(),
+            |directory| base_dir.join(directory),
+        );
 
         for input in &hook.inputs {
             let input_path = hook_dir.join(input);
-            if let Ok(content) = std::fs::read(&input_path) {
-                hasher.update(b"file:");
-                hasher.update(input.as_bytes());
-                hasher.update(b":");
-                hasher.update(&content);
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NONBLOCK);
             }
+            let mut file = match options.open(&input_path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    hasher.update([0]);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(crate::Error::io(error, Some(input_path), "open hook input"));
+                }
+            };
+            let metadata = file.metadata().map_err(|error| {
+                crate::Error::io(error, Some(input_path.clone()), "inspect hook input")
+            })?;
+            if !metadata.is_file() {
+                return Err(crate::Error::configuration(format!(
+                    "Hook input {} must be a regular file",
+                    input_path.display()
+                )));
+            }
+            let mut content_hash = Sha256::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = file.read(&mut buffer).map_err(|error| {
+                    crate::Error::io(error, Some(input_path.clone()), "read hook input")
+                })?;
+                if read == 0 {
+                    break;
+                }
+                content_hash.update(&buffer[..read]);
+            }
+            hasher.update([1]);
+            hasher.update(content_hash.finalize());
         }
     }
 
-    hasher.update(b":version:");
+    hasher.update(b"\0version\0");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
-
-    hex::encode(hasher.finalize())[..16].to_string()
+    Ok(hex::encode(hasher.finalize()))
 }
+
+#[cfg(test)]
+#[path = "execution_tests.rs"]
+mod tests;

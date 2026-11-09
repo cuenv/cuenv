@@ -3,17 +3,25 @@
 //! These tests focus on memory management, concurrency safety,
 //! and proper resource cleanup across the FFI boundary.
 
-use cuengine::{CStringPtr, evaluate_cue_package};
+use cuengine::CStringPtr;
 use std::error::Error;
 use std::ffi::CString;
-use std::fs;
-use std::io;
+use std::path::Path;
 use std::sync::{Arc, Barrier};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{fs, io, thread};
 use tempfile::TempDir;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+fn create_module(root: &Path) -> TestResult {
+    fs::create_dir_all(root.join("cue.mod"))?;
+    fs::write(
+        root.join("cue.mod/module.cue"),
+        "module: \"test.example/ffi@v0\"\nlanguage: version: \"v0.14.1\"\n",
+    )?;
+    Ok(())
+}
 
 /// Test that `CStringPtr` properly handles memory across FFI boundary
 #[test]
@@ -26,12 +34,9 @@ fn test_cstring_ptr_raii_memory_management() -> TestResult {
         let wrapper = c_allocated_cstring_ptr(test_str)?;
 
         // Use the string
-        if !wrapper.is_null() {
-            // SAFETY: wrapper is guaranteed to be valid and non-null, and contains
-            // a valid C string that was created from test_str
-            let converted = unsafe { wrapper.to_str()? };
-            assert_eq!(converted, test_str);
-        }
+        // SAFETY: the helper returns an owned, non-null C string copied from test_str.
+        let converted = unsafe { wrapper.to_str()? };
+        assert_eq!(converted, test_str);
 
         // wrapper automatically frees memory when dropped here
     }
@@ -59,6 +64,7 @@ fn test_concurrent_ffi_access() -> TestResult {
     const CALLS_PER_THREAD: usize = 10;
 
     let temp_dir = TempDir::new()?;
+    create_module(temp_dir.path())?;
 
     // Create a test CUE file
     let cue_content = r#"package cuenv
@@ -82,67 +88,43 @@ env: {
                 // Wait for all threads to start
                 barrier.wait();
 
-                let mut results = Vec::new();
-                let mut errors = Vec::new();
-
                 for call_id in 0..CALLS_PER_THREAD {
-                    match evaluate_cue_package(&temp_path, "cuenv") {
-                        Ok(json) => {
-                            results.push((thread_id, call_id, json));
-                        }
-                        Err(e) => {
-                            errors.push((thread_id, call_id, e.to_string()));
-                        }
-                    }
+                    let json = cuengine::evaluate_cue_package(&temp_path, "cuenv").unwrap_or_else(
+                        |error| panic!("thread {thread_id}, call {call_id}: {error}"),
+                    );
+                    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+                    assert_eq!(value["env"]["THREAD_TEST"], "concurrent_value");
+                    assert_eq!(value["env"]["THREAD_ID"], 1);
 
                     // Small delay to increase chance of race conditions
                     thread::sleep(Duration::from_millis(1));
                 }
 
-                (thread_id, results, errors)
+                CALLS_PER_THREAD
             })
         })
         .collect();
 
     // Collect results from all threads
     let mut total_successes = 0;
-    let mut total_errors = 0;
-
     for handle in handles {
-        let (_thread_id, results, errors) = handle
+        total_successes += handle
             .join()
             .map_err(|_| io::Error::other("concurrent FFI worker thread panicked"))?;
-
-        total_successes += results.len();
-        total_errors += errors.len();
-
-        // Verify successful results contain expected content
-        for (_tid, _call_id, json) in results {
-            if json.contains("THREAD_TEST") {
-                assert!(json.contains("concurrent_value"));
-            }
-        }
     }
-
-    // Either all calls should succeed (if FFI is available) or all should fail consistently
-    if total_successes > 0 {
-        // If some succeeded, most should have succeeded (allowing for some flakiness)
-        assert!(
-            total_successes > total_errors,
-            "If FFI works, most calls should succeed"
-        );
-    }
+    assert_eq!(total_successes, NUM_THREADS * CALLS_PER_THREAD);
 
     Ok(())
 }
 
-/// Test memory usage doesn't grow over time (leak detection)
+/// Repeated evaluations must return the current input after each change.
 #[test]
-fn test_ffi_memory_leak_detection() -> TestResult {
+fn test_repeated_ffi_calls_return_current_data() -> TestResult {
     let temp_dir = TempDir::new()?;
+    create_module(temp_dir.path())?;
 
-    // Create test CUE files with varying sizes
-    for i in 0..3 {
+    for iteration in 0..50 {
+        let file_index = iteration % 3;
         let cue_content = format!(
             r#"package cuenv
 
@@ -151,42 +133,19 @@ env: {{
     DATA: "{}"
 }}
 "#,
-            "x".repeat(100 * (i + 1)) // Increasing data size
+            "x".repeat(100 * (file_index + 1)),
+            i = file_index,
         );
-
-        fs::write(temp_dir.path().join(format!("test_{i}.cue")), cue_content)?;
+        fs::write(temp_dir.path().join("env.cue"), cue_content)?;
+        let json = cuengine::evaluate_cue_package(temp_dir.path(), "cuenv")?;
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        assert_eq!(value["env"]["LEAK_TEST"], format!("value_{file_index}"));
+        assert_eq!(
+            value["env"]["DATA"].as_str().unwrap().len(),
+            100 * (file_index + 1)
+        );
     }
 
-    // Make many calls with different data sizes
-    for iteration in 0..50 {
-        let file_index = iteration % 3;
-
-        // Remove the old file and create new one to force re-parsing
-        let _ = fs::remove_file(temp_dir.path().join("env.cue"));
-        fs::copy(
-            temp_dir.path().join(format!("test_{file_index}.cue")),
-            temp_dir.path().join("env.cue"),
-        )?;
-
-        match evaluate_cue_package(temp_dir.path(), "cuenv") {
-            Ok(json) => {
-                // Verify we got the right data
-                // The JSON wraps everything in an "env" object
-                assert!(
-                    json.contains(&format!("value_{file_index}")) || json.contains("env"),
-                    "Expected value_{file_index} or env in JSON: {json}"
-                );
-            }
-            Err(_) => {
-                // FFI might not be available - that's acceptable
-                if iteration > 5 {
-                    break; // Stop early if FFI consistently fails
-                }
-            }
-        }
-    }
-
-    // If we complete without crashes or OOM, memory management is working
     Ok(())
 }
 
@@ -194,47 +153,24 @@ env: {{
 #[test]
 fn test_ffi_error_handling_edge_cases() -> TestResult {
     let temp_dir = TempDir::new()?;
+    create_module(temp_dir.path())?;
+    fs::write(
+        temp_dir.path().join("env.cue"),
+        "package cuenv\nenv: {TEST: \"value\"}",
+    )?;
 
     // Test cases that should trigger different error paths
     let long_package_name = "x".repeat(1000);
-    let test_cases = vec![
-        // Empty package name
-        ("", "Empty package name should be handled"),
-        // Very long package name
-        (
-            &long_package_name,
-            "Very long package name should be handled",
-        ),
-        // Package name with special characters
-        ("package!@#$%", "Special characters should be handled"),
-        // Non-existent package
-        ("definitely_not_a_real_package", "Non-existent package"),
-    ];
-
-    for (package_name, description) in test_cases {
-        let result = evaluate_cue_package(temp_dir.path(), package_name);
-
-        match result {
-            Ok(json) => {
-                // Some edge cases may succeed depending on CUE/FFI behavior.
-                assert!(
-                    !json.is_empty(),
-                    "{description}: successful response should not be empty"
-                );
-            }
-            Err(error) => {
-                // Expected case - should get meaningful error
-                let error_str = error.to_string();
-                assert!(
-                    !error_str.is_empty(),
-                    "{description}: Error should not be empty"
-                );
-                assert!(
-                    error_str.len() > 10,
-                    "{description}: Error should be meaningful"
-                );
-            }
-        }
+    let default = cuengine::evaluate_cue_package(temp_dir.path(), "")?;
+    let value: serde_json::Value = serde_json::from_str(&default)?;
+    assert_eq!(value["env"]["TEST"], "value");
+    for package_name in [
+        &long_package_name[..],
+        "package!@#$%",
+        "definitely_not_a_real_package",
+    ] {
+        let error = cuengine::evaluate_cue_package(temp_dir.path(), package_name).unwrap_err();
+        assert!(!error.to_string().is_empty());
     }
 
     Ok(())
@@ -248,6 +184,7 @@ fn test_ffi_with_complex_directory_structure() -> TestResult {
     // Create nested directory structure
     let nested_dir = temp_dir.path().join("very").join("deeply").join("nested");
     fs::create_dir_all(&nested_dir)?;
+    create_module(&nested_dir)?;
 
     // Create CUE file in nested location
     let cue_content = r#"package cuenv
@@ -260,17 +197,15 @@ env: {
     fs::write(nested_dir.join("env.cue"), cue_content)?;
 
     // Test evaluating from nested directory
-    let result = evaluate_cue_package(&nested_dir, "cuenv");
-
-    if let Ok(json) = result {
-        // JSON wraps in "env" object
-        assert!(json.contains("NESTED_TEST") || json.contains("env"));
-        assert!(json.contains("deep_value") || json.contains("env"));
-    }
+    let json = cuengine::evaluate_cue_package(&nested_dir, "cuenv")?;
+    let value: serde_json::Value = serde_json::from_str(&json)?;
+    assert_eq!(value["env"]["NESTED_TEST"], "deep_value");
+    assert_eq!(value["env"]["DEPTH"], 3);
 
     // Test with directory containing spaces and unicode
     let unicode_dir = temp_dir.path().join("测试 directory with spaces");
     fs::create_dir_all(&unicode_dir)?;
+    create_module(&unicode_dir)?;
 
     let unicode_cue = r#"package cuenv
 
@@ -281,12 +216,10 @@ env: {
 "#;
     fs::write(unicode_dir.join("env.cue"), unicode_cue)?;
 
-    let unicode_result = evaluate_cue_package(&unicode_dir, "cuenv");
-
-    if let Ok(json) = unicode_result {
-        // JSON wraps in "env" object
-        assert!(json.contains("UNICODE_TEST") || json.contains("env"));
-    }
+    let json = cuengine::evaluate_cue_package(&unicode_dir, "cuenv")?;
+    let value: serde_json::Value = serde_json::from_str(&json)?;
+    assert_eq!(value["env"]["UNICODE_TEST"], "unicode_value");
+    assert_eq!(value["env"]["PATH_TYPE"], "unicode_with_spaces");
 
     Ok(())
 }
@@ -295,6 +228,7 @@ env: {
 #[test]
 fn test_ffi_cleanup_on_errors() -> TestResult {
     let temp_dir = TempDir::new()?;
+    create_module(temp_dir.path())?;
 
     // Create various files that might cause different types of errors
     let invalid_cue_files = vec![
@@ -304,40 +238,38 @@ fn test_ffi_cleanup_on_errors() -> TestResult {
         ),
         ("empty.cue", ""), // Empty file
         ("wrong_package.cue", "package wrong\nenv: {TEST: \"value\"}"),
-        ("circular.cue", "package cuenv\nenv: {A: env.B, B: env.A}"), // Circular reference
+        ("conflict.cue", "package cuenv\nenv: {A: 1 & 2}"),
     ];
 
     for (filename, content) in invalid_cue_files {
-        // Remove any existing env.cue and create the test file
-        let _ = fs::remove_file(temp_dir.path().join("env.cue"));
         fs::write(temp_dir.path().join(filename), content)?;
 
-        // Try to evaluate - should handle errors gracefully
-        let result = evaluate_cue_package(temp_dir.path(), "cuenv");
-
-        match result {
-            Ok(json) => {
-                // Some cases might succeed due to FFI behavior
-                assert!(!json.is_empty(), "File {filename} returned empty JSON");
-            }
-            Err(error) => {
-                // Verify error message is meaningful
-                assert!(!error.to_string().is_empty());
-            }
-        }
+        let error = cuengine::evaluate_cue_package(temp_dir.path(), "cuenv").unwrap_err();
+        assert!(
+            !error.to_string().is_empty(),
+            "File {filename} returned an empty error"
+        );
 
         // Clean up
-        let _ = fs::remove_file(temp_dir.path().join(filename));
+        fs::remove_file(temp_dir.path().join(filename))?;
     }
+
+    // This lenient evaluator exports unresolved cycles as nulls.
+    let circular = temp_dir.path().join("circular.cue");
+    fs::write(&circular, "package cuenv\nenv: {A: env.B, B: env.A}")?;
+    let json = cuengine::evaluate_cue_package(temp_dir.path(), "cuenv")?;
+    let value: serde_json::Value = serde_json::from_str(&json)?;
+    assert!(value["env"]["A"].is_null());
+    assert!(value["env"]["B"].is_null());
+    fs::remove_file(circular)?;
 
     // After all error cases, verify normal operation still works
     let valid_cue = "package cuenv\nenv: {RECOVERY_TEST: \"recovered\"}";
     fs::write(temp_dir.path().join("env.cue"), valid_cue)?;
 
-    let recovery_result = evaluate_cue_package(temp_dir.path(), "cuenv");
-    if let Ok(json) = recovery_result {
-        assert!(json.contains("RECOVERY_TEST"));
-    }
+    let json = cuengine::evaluate_cue_package(temp_dir.path(), "cuenv")?;
+    let value: serde_json::Value = serde_json::from_str(&json)?;
+    assert_eq!(value["env"]["RECOVERY_TEST"], "recovered");
 
     Ok(())
 }
@@ -346,6 +278,7 @@ fn test_ffi_cleanup_on_errors() -> TestResult {
 #[test]
 fn test_ffi_performance_characteristics() -> TestResult {
     let temp_dir = TempDir::new()?;
+    create_module(temp_dir.path())?;
 
     // Create a reasonably sized CUE file
     let cue_content = r#"package cuenv
@@ -368,44 +301,38 @@ env: {
     let mut times = Vec::new();
 
     // Measure performance over multiple calls
-    for i in 0..10 {
+    for _ in 0..10 {
         let start = Instant::now();
-
-        match evaluate_cue_package(temp_dir.path(), "cuenv") {
-            Ok(json) => {
-                let duration = start.elapsed();
-                times.push(duration);
-
-                // Verify correctness - JSON wraps in "env" object
-                assert!(json.contains("PERF_TEST") || json.contains("env"));
-                assert!(json.contains("Lorem ipsum") || json.contains("env"));
-            }
-            Err(_) => {
-                if i > 2 {
-                    break; // Stop if FFI consistently fails
-                }
-            }
-        }
-    }
-
-    if !times.is_empty() {
-        let sample_count = u32::try_from(times.len())?;
-        let avg_time = times.iter().sum::<Duration>() / sample_count;
-        let max_time = times
-            .iter()
-            .max()
-            .ok_or_else(|| io::Error::other("performance samples should include a maximum"))?;
-
-        // Basic performance expectations (these are lenient for CI)
+        let json = cuengine::evaluate_cue_package(temp_dir.path(), "cuenv")?;
+        times.push(start.elapsed());
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        assert_eq!(value["env"]["PERF_TEST"], "performance_test");
         assert!(
-            max_time < &Duration::from_secs(5),
-            "No single call should take longer than 5 seconds"
+            value["env"]["LARGE_DATA"]
+                .as_str()
+                .unwrap()
+                .contains("Lorem ipsum")
         );
-        assert!(
-            avg_time < Duration::from_secs(1),
-            "Average call time should be under 1 second"
+        assert_eq!(
+            value["env"]["NESTED"]["LEVEL1"]["LEVEL2"]["LEVEL3"],
+            "deep_value"
         );
     }
+    let sample_count = u32::try_from(times.len())?;
+    assert_eq!(sample_count, 10);
+    let avg_time = times.iter().sum::<Duration>() / sample_count;
+    let max_time = times
+        .iter()
+        .max()
+        .ok_or_else(|| io::Error::other("missing performance samples"))?;
+    assert!(
+        max_time < &Duration::from_secs(5),
+        "No single call should take longer than 5 seconds"
+    );
+    assert!(
+        avg_time < Duration::from_secs(1),
+        "Average call time should be under 1 second"
+    );
 
     Ok(())
 }

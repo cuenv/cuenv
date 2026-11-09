@@ -7,17 +7,22 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use cuenv_tools_oci::{OciClient, OciCache};
+//! ```
+//! use cuenv_tools_oci::{OciCache, Platform};
 //!
-//! let client = OciClient::new()?;
-//! let cache = OciCache::default();
+//! let temp = tempfile::tempdir()?;
+//! let cache = OciCache::new(temp.path().join("cache"));
+//! let source = temp.path().join("tool");
+//! std::fs::write(&source, b"example binary")?;
 //!
-//! // Resolve image to platform-specific digest
-//! let digest = client.resolve_digest("nginx:1.25-alpine", "linux-arm64").await?;
+//! // Cache an extracted binary under its content digest.
+//! let digest = "sha256:f401fc3ba33b996c7478b5b9a67f412970f7ebb87ab1a9a8ea4c7c027b50a5b2";
+//! let path = cache.store_binary(digest, "tool", &source)?;
+//! assert_eq!(cache.binary(digest, "tool"), Some(path));
 //!
-//! // Fetch layers
-//! let layers = client.pull_layers(&digest, &cache).await?;
+//! let platform = Platform::new("linux", "x86_64");
+//! assert_eq!(platform.to_oci_platform(), "linux/amd64");
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 #![warn(missing_docs)]

@@ -3,8 +3,7 @@ use crate::event::{
     InteractiveEvent, OutputEvent, RestartReason, ServiceEvent, SkipReason, Stream, SystemEvent,
     TaskEvent, TaskKind,
 };
-use crate::metadata::correlation_id;
-use crate::redaction::redact;
+use crate::{metadata, redaction};
 use tracing::field::{Field, Visit};
 
 /// Visitor for extracting typed fields from tracing events.
@@ -126,12 +125,12 @@ impl CuenvEventVisitor {
     pub(super) fn build(self) -> Option<CuenvEvent> {
         let event_type = self.event_type.clone()?;
         let source = EventSource::new(&self.target);
-        let correlation = correlation_id();
+        let correlation = metadata::correlation_id();
 
         let text = RedactedText {
-            content: self.content.as_deref().map(redact),
-            message: self.message.as_deref().map(redact),
-            error: self.error.as_deref().map(redact),
+            content: self.content.as_deref().map(redaction::redact),
+            message: self.message.as_deref().map(redaction::redact),
+            error: self.error.as_deref().map(redaction::redact),
         };
 
         let category = self.build_category(&event_type, text)?;

@@ -5,7 +5,7 @@ use std::fmt::Write;
 
 use cuenv_core::Result;
 use cuenv_core::tasks::{TaskNode, Tasks};
-use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
+use cuenv_task_exec::executor::TASK_FAILURE_SNIPPET_LINES;
 use cuenv_task_exec::{TaskExecutor, TaskGraph};
 
 use crate::tui::rich::RichTui;
@@ -125,10 +125,9 @@ pub(super) async fn execute_with_rich_tui(
 
     // Check for failures
     if let Some(failed) = results.iter().find(|r| !r.success) {
-        return Err(cuenv_core::Error::configuration(summarize_task_failure(
-            failed,
-            TASK_FAILURE_SNIPPET_LINES,
-        )));
+        return Err(cuenv_core::Error::configuration(
+            cuenv_task_exec::executor::summarize_task_failure(failed, TASK_FAILURE_SNIPPET_LINES),
+        ));
     }
 
     // Return success message
@@ -137,14 +136,26 @@ pub(super) async fn execute_with_rich_tui(
     ))
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct StrategyInput<'input> {
+    pub(super) executor: &'input TaskExecutor,
+    pub(super) task_name: &'input str,
+    pub(super) task_node: &'input TaskNode,
+    pub(super) task_graph: &'input TaskGraph,
+    pub(super) all_tasks: &'input Tasks,
+}
+
 /// Execute a task using the appropriate strategy based on task type and dependencies.
 pub(super) async fn execute_task_with_strategy(
-    executor: &TaskExecutor,
-    task_name: &str,
-    task_node: &TaskNode,
-    task_graph: &TaskGraph,
-    all_tasks: &Tasks,
+    input: StrategyInput<'_>,
 ) -> Result<Vec<cuenv_task_exec::TaskResult>> {
+    let StrategyInput {
+        executor,
+        task_name,
+        task_node,
+        task_graph,
+        all_tasks,
+    } = input;
     match task_node {
         TaskNode::Group(_) | TaskNode::Sequence(_) => {
             // For groups (parallel) and lists (sequential), use the original execution

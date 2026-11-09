@@ -1,4 +1,5 @@
-use super::*;
+use crate::graph::TaskGraph;
+use crate::{TaskNode, Tasks, test_utils};
 
 #[test]
 fn test_cross_project_cycle_detection() {
@@ -6,8 +7,8 @@ fn test_cross_project_cycle_detection() {
     let mut graph = TaskGraph::new();
 
     // Create a cycle: projectA::build -> projectB::build -> projectA::build
-    let a_build = create_task("projectA::build", vec!["projectB::build"], vec![]);
-    let b_build = create_task("projectB::build", vec!["projectA::build"], vec![]);
+    let a_build = test_utils::create_task("projectA::build", vec!["projectB::build"], vec![]);
+    let b_build = test_utils::create_task("projectB::build", vec!["projectA::build"], vec![]);
 
     graph.add_task("projectA::build", a_build).unwrap();
     graph.add_task("projectB::build", b_build).unwrap();
@@ -22,7 +23,7 @@ fn test_missing_cross_project_dependency() {
     // Test error when referencing a non-existent cross-project task
     let mut graph = TaskGraph::new();
 
-    let task = create_task("myTask", vec!["nonexistent-project::build"], vec![]);
+    let task = test_utils::create_task("myTask", vec!["nonexistent-project::build"], vec![]);
     graph.add_task("myTask", task).unwrap();
 
     let result = graph.add_dependency_edges();
@@ -38,7 +39,7 @@ fn test_self_referencing_hook() {
     // Test that a hook cannot depend on itself
     let mut graph = TaskGraph::new();
 
-    let hook = create_task(
+    let hook = test_utils::create_task(
         "bun.hooks.beforeInstall[0]",
         vec!["bun.hooks.beforeInstall[0]"],
         vec![],
@@ -54,9 +55,9 @@ fn test_empty_hook_list() {
     // Test workspace with no hooks still creates proper setup chain
     let mut graph = TaskGraph::new();
 
-    let install = create_task("bun.install", vec![], vec![]);
-    let setup = create_task("bun.setup", vec!["bun.install"], vec![]);
-    let user_task = create_task("dev", vec!["bun.setup"], vec!["bun"]);
+    let install = test_utils::create_task("bun.install", vec![], vec![]);
+    let setup = test_utils::create_task("bun.setup", vec!["bun.install"], vec![]);
+    let user_task = test_utils::create_task("dev", vec!["bun.setup"], vec!["bun"]);
 
     graph.add_task("bun.install", install).unwrap();
     graph.add_task("bun.setup", setup).unwrap();
@@ -80,9 +81,9 @@ fn test_tasks_with_labels() {
     // Test that tasks with labels are properly added to the graph
     let mut graph = TaskGraph::new();
 
-    let codegen1 = create_task("codegen1", vec![], vec!["projen", "codegen"]);
-    let codegen2 = create_task("codegen2", vec![], vec!["projen", "codegen"]);
-    let build = create_task("build", vec!["codegen1", "codegen2"], vec![]);
+    let codegen1 = test_utils::create_task("codegen1", vec![], vec!["projen", "codegen"]);
+    let codegen2 = test_utils::create_task("codegen2", vec![], vec!["projen", "codegen"]);
+    let build = test_utils::create_task("build", vec!["codegen1", "codegen2"], vec![]);
 
     graph.add_task("codegen1", codegen1).unwrap();
     graph.add_task("codegen2", codegen2).unwrap();
@@ -104,12 +105,12 @@ fn test_parallel_groups_with_labels() {
     let mut graph = TaskGraph::new();
 
     // Multiple codegen tasks (would be matched by TaskMatcher)
-    let gen1 = create_task("gen.project1", vec![], vec!["codegen"]);
-    let gen2 = create_task("gen.project2", vec![], vec!["codegen"]);
-    let gen3 = create_task("gen.project3", vec![], vec!["codegen"]);
+    let gen1 = test_utils::create_task("gen.project1", vec![], vec!["codegen"]);
+    let gen2 = test_utils::create_task("gen.project2", vec![], vec!["codegen"]);
+    let gen3 = test_utils::create_task("gen.project3", vec![], vec!["codegen"]);
 
     // All codegen tasks run before build
-    let build = create_task(
+    let build = test_utils::create_task(
         "build",
         vec!["gen.project1", "gen.project2", "gen.project3"],
         vec![],
@@ -121,7 +122,7 @@ fn test_parallel_groups_with_labels() {
     graph.add_task("build", build).unwrap();
     graph.add_dependency_edges().unwrap();
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].len(), 3); // All gen tasks in parallel
     assert_eq!(groups[1].len(), 1); // build
@@ -139,13 +140,17 @@ fn test_build_for_task_includes_cross_project_deps() {
     // External project task
     tasks.tasks.insert(
         "external::build".to_string(),
-        TaskNode::Task(Box::new(create_task("external::build", vec![], vec![]))),
+        TaskNode::Task(Box::new(test_utils::create_task(
+            "external::build",
+            vec![],
+            vec![],
+        ))),
     );
 
     // Local task depending on external
     tasks.tasks.insert(
         "deploy".to_string(),
-        TaskNode::Task(Box::new(create_task(
+        TaskNode::Task(Box::new(test_utils::create_task(
             "deploy",
             vec!["external::build"],
             vec![],
@@ -168,12 +173,12 @@ fn test_build_for_task_with_hook_chain() {
 
     tasks.tasks.insert(
         "bun.hooks.beforeInstall[0]".to_string(),
-        TaskNode::Task(Box::new(create_task("hook", vec![], vec![]))),
+        TaskNode::Task(Box::new(test_utils::create_task("hook", vec![], vec![]))),
     );
 
     tasks.tasks.insert(
         "bun.install".to_string(),
-        TaskNode::Task(Box::new(create_task(
+        TaskNode::Task(Box::new(test_utils::create_task(
             "install",
             vec!["bun.hooks.beforeInstall[0]"],
             vec![],
@@ -182,12 +187,20 @@ fn test_build_for_task_with_hook_chain() {
 
     tasks.tasks.insert(
         "bun.setup".to_string(),
-        TaskNode::Task(Box::new(create_task("setup", vec!["bun.install"], vec![]))),
+        TaskNode::Task(Box::new(test_utils::create_task(
+            "setup",
+            vec!["bun.install"],
+            vec![],
+        ))),
     );
 
     tasks.tasks.insert(
         "dev".to_string(),
-        TaskNode::Task(Box::new(create_task("dev", vec!["bun.setup"], vec!["bun"]))),
+        TaskNode::Task(Box::new(test_utils::create_task(
+            "dev",
+            vec!["bun.setup"],
+            vec!["bun"],
+        ))),
     );
 
     let mut graph = TaskGraph::new();

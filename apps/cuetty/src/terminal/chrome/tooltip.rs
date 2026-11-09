@@ -1,10 +1,9 @@
 use super::clamp::TextBudget;
-use super::tokens::{
-    ChromeColors, Elevation, elevated, size, space, text, tooltip_max_height, ui_font_family,
-};
+use super::tokens::{ChromeColors, Elevation, size, space, text};
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyView, App, AppContext, Context, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, prelude::FluentBuilder,
+    Window,
 };
 
 /// GPUI lays tooltips out at their min-content size, where text never wraps, so
@@ -34,23 +33,25 @@ impl Render for ChromeTooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         // The outer element keeps the margin from being absorbed by the
         // tooltip's own positioned root.
-        div().font_family(ui_font_family()).child(
-            elevated(div(), Elevation::Raised, &self.colors)
-                .m(space::MD)
-                .px(space::MD)
-                .py(space::XS)
-                .when(tooltip_needs_wrapping(&self.label), |this| {
-                    this.w(size::TOOLTIP_WRAP_WIDTH)
-                })
-                .line_height(text::LINE_HEIGHT)
-                // The label is already cut to the limit by estimate. These hold
-                // the limit when word wrapping runs over that estimate.
-                .line_clamp(text::TOOLTIP_MAX_LINES)
-                .max_h(tooltip_max_height())
-                .text_size(text::LABEL)
-                .text_color(self.colors.text)
-                .child(self.label.clone()),
-        )
+        gpui::div()
+            .font_family(super::tokens::ui_font_family())
+            .child(
+                super::tokens::elevated(gpui::div(), Elevation::Raised, &self.colors)
+                    .m(space::MD)
+                    .px(space::MD)
+                    .py(space::XS)
+                    .when(tooltip_needs_wrapping(&self.label), |this| {
+                        this.w(size::TOOLTIP_WRAP_WIDTH)
+                    })
+                    .line_height(text::LINE_HEIGHT)
+                    // The label is already cut to the limit by estimate. These hold
+                    // the limit when word wrapping runs over that estimate.
+                    .line_clamp(text::TOOLTIP_MAX_LINES)
+                    .max_h(super::tokens::tooltip_max_height())
+                    .text_size(text::LABEL)
+                    .text_color(self.colors.text)
+                    .child(self.label.clone()),
+            )
     }
 }
 

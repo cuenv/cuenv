@@ -1,9 +1,18 @@
 //! Property-based tests for cuengine
 
-use cuengine::*;
 use proptest::prelude::*;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
+
+fn create_module(root: &Path) {
+    fs::create_dir_all(root.join("cue.mod")).unwrap();
+    fs::write(
+        root.join("cue.mod/module.cue"),
+        "module: \"test.example/properties@v0\"\nlanguage: version: \"v0.14.1\"\n",
+    )
+    .unwrap();
+}
 
 // Generate random valid CUE content
 fn generate_cue_content(num_fields: usize) -> String {
@@ -19,23 +28,14 @@ proptest! {
     fn test_random_valid_cue(num_fields in 1..20usize) {
         let content = generate_cue_content(num_fields);
         let temp_dir = TempDir::new().unwrap();
+        create_module(temp_dir.path());
         fs::write(temp_dir.path().join("test.cue"), &content).unwrap();
-
-        // Should not panic with valid CUE
-        let result = evaluate_cue_package(temp_dir.path(), "testpkg");
-
-        match result {
-            Ok(json) => {
-                // Valid CUE should produce valid JSON
-                let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-                assert!(parsed.is_object());
-            }
-            Err(e) => {
-                // If it fails, error should be meaningful
-                let error_str = e.to_string();
-                assert!(!error_str.is_empty());
-                assert!(error_str.len() > 10);
-            }
+        let json = cuengine::evaluate_cue_package(temp_dir.path(), "testpkg").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let fields = value["env"].as_object().unwrap();
+        prop_assert_eq!(fields.len(), num_fields);
+        for index in 0..num_fields {
+            prop_assert_eq!(&fields[&format!("field_{index}")], &format!("value_{index}"));
         }
     }
 
@@ -51,37 +51,29 @@ proptest! {
             path = path.join(segment);
         }
         fs::create_dir_all(&path).unwrap();
+        create_module(&path);
 
         // Create a simple CUE file
         fs::write(path.join("test.cue"), "package test\nenv: {TEST: \"value\"}").unwrap();
 
-        // Should handle nested paths correctly
-        let result = evaluate_cue_package(&path, "test");
-
-        // Should either succeed or fail gracefully
-        if let Err(e) = result {
-            let error_str = e.to_string();
-            assert!(!error_str.is_empty());
-        }
+        let json = cuengine::evaluate_cue_package(&path, "test").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(&value["env"]["TEST"], "value");
     }
 
     #[test]
     fn test_package_name_fuzzing(
-        name in "[a-zA-Z][a-zA-Z0-9_]{0,50}"
+        suffix in "[a-zA-Z0-9_]{0,50}"
     ) {
+        // The fixed prefix excludes reserved CUE keywords while exercising identifiers.
+        let name = format!("pkg_{suffix}");
         let temp_dir = TempDir::new().unwrap();
+        create_module(temp_dir.path());
         let content = format!("package {name}\nenv: {{TEST: \"value\"}}");
         fs::write(temp_dir.path().join("test.cue"), content).unwrap();
 
-        // Should handle various package names
-        let result = evaluate_cue_package(temp_dir.path(), &name);
-
-        // Should not panic
-        match result {
-            Ok(_) => { /* success */ }
-            Err(e) => {
-                assert!(!e.to_string().is_empty());
-            }
-        }
+        let json = cuengine::evaluate_cue_package(temp_dir.path(), &name).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(&value["env"]["TEST"], "value");
     }
 }

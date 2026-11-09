@@ -1,6 +1,6 @@
 [formatter.rustfmt]
 command = "rustfmt"
-options = ["--edition", "2024"]
+options = ["--edition", "2024", "--config", "imports_granularity=Module,hex_literal_case=Lower,format_macro_matchers=true"]
 includes = ["*.rs"]
 
 [formatter.gofmt]

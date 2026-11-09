@@ -1,33 +1,66 @@
-use super::*;
-use crate::types::ExecutionStatus;
-use crate::types::{Hook, HookFailure, HookResult};
+use super::{HookExecutionState, StateManager};
+use crate::types::{ExecutionStatus, Hook, HookFailure, HookResult};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::TempDir;
+
+#[cfg(unix)]
+fn private_temp_dir() -> TempDir {
+    use std::os::unix::fs::PermissionsExt;
+
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("create private temporary directory")
+}
+
+#[cfg(not(unix))]
+fn private_temp_dir() -> TempDir {
+    TempDir::new().expect("create temporary directory")
+}
 
 #[test]
 fn test_compute_instance_hash() {
     let path = Path::new("/test/path");
     let config_hash = "test_config";
-    let hash = compute_instance_hash(path, config_hash);
-    assert_eq!(hash.len(), 16);
+    let hash = super::compute_instance_hash(
+        path,
+        config_hash,
+        uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+    );
+    assert_eq!(hash.len(), 64);
 
     // Same path and config should produce same hash
-    let hash2 = compute_instance_hash(path, config_hash);
+    let hash2 = super::compute_instance_hash(
+        path,
+        config_hash,
+        uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+    );
     assert_eq!(hash, hash2);
 
     // Different path should produce different hash
     let different_path = Path::new("/other/path");
-    let different_hash = compute_instance_hash(different_path, config_hash);
+    let different_hash = super::compute_instance_hash(
+        different_path,
+        config_hash,
+        uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+    );
     assert_ne!(hash, different_hash);
 
     // Same path but different config should produce different hash
-    let different_config_hash = compute_instance_hash(path, "different_config");
+    let different_config_hash = super::compute_instance_hash(
+        path,
+        "different_config",
+        uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+    );
     assert_ne!(hash, different_config_hash);
+    assert_ne!(
+        hash,
+        super::compute_instance_hash(path, config_hash, uuid::Uuid::new_v4())
+    );
 }
 
 #[test]
@@ -52,12 +85,16 @@ fn test_hook_duration_formatting() {
 
 #[tokio::test]
 async fn test_state_manager_operations() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = private_temp_dir();
     let state_manager = StateManager::new(temp_dir.path().to_path_buf());
 
     let directory_path = PathBuf::from("/test/dir");
     let config_hash = "test_config_hash".to_string();
-    let instance_hash = compute_instance_hash(&directory_path, &config_hash);
+    let instance_hash = super::compute_instance_hash(
+        &directory_path,
+        &config_hash,
+        uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+    );
 
     let hooks = vec![
         Hook {
@@ -80,11 +117,18 @@ async fn test_state_manager_operations() {
         },
     ];
 
-    let mut state =
-        HookExecutionState::new(directory_path, instance_hash.clone(), config_hash, hooks);
+    let mut state = HookExecutionState::new(
+        crate::HookExecutionIdentity {
+            session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+            directory_path,
+            instance_hash: instance_hash.clone(),
+            config_hash,
+        },
+        hooks,
+    );
 
     // Save initial state
-    state_manager.save_state(&state).await.unwrap();
+    state_manager.seed_test_state(&state).await.unwrap();
 
     // Load state back
     let loaded_state = state_manager
@@ -107,16 +151,16 @@ async fn test_state_manager_operations() {
         source: Some(false),
     };
 
-    let result = HookResult::success(
+    let result = HookResult::success(crate::HookSuccess {
         hook,
-        std::process::ExitStatus::from_raw(0),
-        "test\n".to_string(),
-        String::new(),
-        100,
-    );
+        exit_status: std::process::ExitStatus::from_raw(0),
+        stdout: "test\n".to_string(),
+        stderr: String::new(),
+        duration_ms: 100,
+    });
 
     state.record_hook_result(0, &result);
-    state_manager.save_state(&state).await.unwrap();
+    state_manager.seed_test_state(&state).await.unwrap();
 
     // Load updated state
     let updated_state = state_manager
@@ -125,9 +169,14 @@ async fn test_state_manager_operations() {
         .unwrap()
         .unwrap();
     assert_eq!(updated_state.completed_hooks, 1);
-    assert_eq!(updated_state.hook_results.len(), 1);
+    assert!(updated_state.hook_results.is_empty());
 
-    // Remove state
+    // Active state cannot be removed without a drain acknowledgement.
+    assert!(state_manager.remove_state(&instance_hash).await.is_err());
+    state.mark_cancelled(None);
+    state_manager.seed_test_state(&state).await.unwrap();
+
+    // Terminal state can be removed.
     state_manager.remove_state(&instance_hash).await.unwrap();
     let removed_state = state_manager.load_state(&instance_hash).await.unwrap();
     assert!(removed_state.is_none());
@@ -167,7 +216,15 @@ fn test_hook_execution_state() {
             source: None,
         },
     ];
-    let mut state = HookExecutionState::new(directory_path, instance_hash, config_hash, hooks);
+    let mut state = HookExecutionState::new(
+        crate::HookExecutionIdentity {
+            session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+            directory_path,
+            instance_hash,
+            config_hash,
+        },
+        hooks,
+    );
 
     // Initial state
     assert_eq!(state.status, ExecutionStatus::Running);
@@ -190,13 +247,13 @@ fn test_hook_execution_state() {
         source: Some(false),
     };
 
-    let result = HookResult::success(
-        hook.clone(),
-        std::process::ExitStatus::from_raw(0),
-        String::new(),
-        String::new(),
-        100,
-    );
+    let result = HookResult::success(crate::HookSuccess {
+        hook: hook.clone(),
+        exit_status: std::process::ExitStatus::from_raw(0),
+        stdout: String::new(),
+        stderr: String::new(),
+        duration_ms: 100,
+    });
 
     state.record_hook_result(0, &result);
     assert_eq!(state.completed_hooks, 1);
@@ -222,9 +279,12 @@ fn test_hook_execution_state() {
 
     // Test cancellation
     let mut cancelled_state = HookExecutionState::new(
-        PathBuf::from("/test"),
-        "hash".to_string(),
-        "config".to_string(),
+        crate::HookExecutionIdentity {
+            session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+            directory_path: PathBuf::from("/test"),
+            instance_hash: "hash".to_string(),
+            config_hash: "config".to_string(),
+        },
         vec![Hook {
             order: 100,
             propagate: false,
@@ -265,7 +325,15 @@ fn test_progress_display() {
             source: None,
         },
     ];
-    let mut state = HookExecutionState::new(directory_path, instance_hash, config_hash, hooks);
+    let mut state = HookExecutionState::new(
+        crate::HookExecutionIdentity {
+            session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+            directory_path,
+            instance_hash,
+            config_hash,
+        },
+        hooks,
+    );
 
     // Running state
     let display = state.progress_display();
@@ -291,12 +359,14 @@ fn test_progress_display() {
 
 #[tokio::test]
 async fn test_state_directory_cleanup() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = private_temp_dir();
     let state_manager = StateManager::new(temp_dir.path().to_path_buf());
 
     // Create multiple states with different statuses
     let completed_state = HookExecutionState {
+        session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
         instance_hash: "completed_hash".to_string(),
+        run_id: uuid::Uuid::new_v4(),
         directory_path: PathBuf::from("/completed"),
         config_hash: "config1".to_string(),
         status: ExecutionStatus::Completed,
@@ -311,11 +381,12 @@ async fn test_state_directory_cleanup() {
         current_hook_started_at: None,
         completed_display_until: None,
         error_message: None,
-        previous_env: None,
     };
 
     let running_state = HookExecutionState {
+        session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
         instance_hash: "running_hash".to_string(),
+        run_id: uuid::Uuid::new_v4(),
         directory_path: PathBuf::from("/running"),
         config_hash: "config2".to_string(),
         status: ExecutionStatus::Running,
@@ -330,11 +401,12 @@ async fn test_state_directory_cleanup() {
         current_hook_started_at: None,
         completed_display_until: None,
         error_message: None,
-        previous_env: None,
     };
 
     let failed_state = HookExecutionState {
+        session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
         instance_hash: "failed_hash".to_string(),
+        run_id: uuid::Uuid::new_v4(),
         directory_path: PathBuf::from("/failed"),
         config_hash: "config3".to_string(),
         status: ExecutionStatus::Failed,
@@ -349,13 +421,15 @@ async fn test_state_directory_cleanup() {
         current_hook_started_at: None,
         completed_display_until: None,
         error_message: Some("Test failure".to_string()),
-        previous_env: None,
     };
 
     // Save all states
-    state_manager.save_state(&completed_state).await.unwrap();
-    state_manager.save_state(&running_state).await.unwrap();
-    state_manager.save_state(&failed_state).await.unwrap();
+    state_manager
+        .seed_test_state(&completed_state)
+        .await
+        .unwrap();
+    state_manager.seed_test_state(&running_state).await.unwrap();
+    state_manager.seed_test_state(&failed_state).await.unwrap();
 
     // Verify all states exist
     let states = state_manager.list_active_states().await.unwrap();
@@ -372,13 +446,15 @@ async fn test_state_directory_cleanup() {
 }
 
 #[tokio::test]
-async fn test_cleanup_orphaned_states() {
-    let temp_dir = TempDir::new().unwrap();
+async fn test_active_orphan_requires_explicit_drain_recovery() {
+    let temp_dir = private_temp_dir();
     let state_manager = StateManager::new(temp_dir.path().to_path_buf());
 
     // Create an old running state (orphaned)
     let orphaned_state = HookExecutionState {
-        instance_hash: "orphaned_hash".to_string(),
+        session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+        instance_hash: "a".repeat(16),
+        run_id: uuid::Uuid::new_v4(),
         directory_path: PathBuf::from("/orphaned"),
         config_hash: "config".to_string(),
         status: ExecutionStatus::Running,
@@ -393,12 +469,13 @@ async fn test_cleanup_orphaned_states() {
         current_hook_started_at: None,
         completed_display_until: None,
         error_message: None,
-        previous_env: None,
     };
 
     // Create a recent running state (not orphaned)
     let recent_state = HookExecutionState {
-        instance_hash: "recent_hash".to_string(),
+        session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+        instance_hash: "b".repeat(16),
+        run_id: uuid::Uuid::new_v4(),
         directory_path: PathBuf::from("/recent"),
         config_hash: "config".to_string(),
         status: ExecutionStatus::Running,
@@ -413,29 +490,42 @@ async fn test_cleanup_orphaned_states() {
         current_hook_started_at: None,
         completed_display_until: None,
         error_message: None,
-        previous_env: None,
     };
 
     // Save both states
-    state_manager.save_state(&orphaned_state).await.unwrap();
-    state_manager.save_state(&recent_state).await.unwrap();
-
-    // Clean up orphaned states older than 1 hour
-    let cleaned = state_manager
-        .cleanup_orphaned_states(chrono::Duration::hours(1))
+    state_manager
+        .seed_test_state(&orphaned_state)
         .await
         .unwrap();
-    assert_eq!(cleaned, 1); // Should clean up only the orphaned state
+    state_manager.seed_test_state(&recent_state).await.unwrap();
 
-    // Verify only recent state remains
+    assert_eq!(state_manager.cleanup_state_directory().await.unwrap(), 0);
+    let reservations = state_manager.reservations().await.unwrap();
+    let orphan = reservations
+        .iter()
+        .find(|reservation| reservation.identity.instance_hash == orphaned_state.instance_hash)
+        .expect("old active state must be recoverable");
+    assert_eq!(orphan.phase, super::HookReservationPhase::Orphaned);
+    assert_eq!(
+        state_manager
+            .recover_drained(&orphan.identity)
+            .await
+            .unwrap(),
+        super::HookRecoveryOutcome::Recovered
+    );
+    assert_eq!(state_manager.cleanup_state_directory().await.unwrap(), 1);
+
     let remaining_states = state_manager.list_active_states().await.unwrap();
     assert_eq!(remaining_states.len(), 1);
-    assert_eq!(remaining_states[0].instance_hash, "recent_hash");
+    assert_eq!(
+        remaining_states[0].instance_hash,
+        recent_state.instance_hash
+    );
 }
 
 #[tokio::test]
 async fn test_corrupted_state_file_handling() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = private_temp_dir();
     let state_dir = temp_dir.path().join("state");
     let state_manager = StateManager::new(state_dir.clone());
 
@@ -448,101 +538,238 @@ async fn test_corrupted_state_file_handling() {
         .await
         .unwrap();
 
-    // List active states should handle the corrupted file gracefully
-    let states = state_manager.list_active_states().await.unwrap();
-    assert_eq!(states.len(), 0); // Corrupted file should be skipped
-
-    // Cleanup should remove the corrupted file
-    let cleaned = state_manager.cleanup_state_directory().await.unwrap();
-    assert_eq!(cleaned, 1);
-
-    // Verify the corrupted file is gone
-    assert!(!corrupted_file.exists());
+    // Malformed state must not be hidden or removed automatically.
+    assert!(state_manager.list_active_states().await.is_err());
+    assert!(state_manager.cleanup_state_directory().await.is_err());
+    assert_eq!(
+        std::fs::read_to_string(corrupted_file).unwrap(),
+        "{invalid json}"
+    );
 }
 
 #[tokio::test]
 async fn test_concurrent_state_modifications() {
-    use tokio::task;
+    use tokio::sync::Barrier;
 
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = private_temp_dir();
     let state_manager = Arc::new(StateManager::new(temp_dir.path().to_path_buf()));
 
     // Create initial state
     let initial_state = HookExecutionState {
+        session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
         instance_hash: "concurrent_hash".to_string(),
+        run_id: uuid::Uuid::new_v4(),
         directory_path: PathBuf::from("/concurrent"),
-        config_hash: "config".to_string(),
+        config_hash: format!("0:{}", "x".repeat(8192)),
         status: ExecutionStatus::Running,
         total_hooks: 10,
         completed_hooks: 0,
-        current_hook_index: Some(0),
+        current_hook_index: Some(1000),
         hooks: vec![],
         hook_results: HashMap::new(),
-        environment_vars: HashMap::new(),
+        environment_vars: HashMap::from([(
+            "PAYLOAD".to_string(),
+            format!("0:{}", "x".repeat(8192)),
+        )]),
         started_at: Utc::now(),
         finished_at: None,
         current_hook_started_at: None,
         completed_display_until: None,
         error_message: None,
-        previous_env: None,
     };
 
-    state_manager.save_state(&initial_state).await.unwrap();
+    state_manager.seed_test_state(&initial_state).await.unwrap();
 
-    // Spawn multiple tasks that concurrently modify the state
-    let mut handles = vec![];
-
-    for i in 0..5 {
+    // Independent writers may replace one another, but no reader may see a
+    // mixture of their snapshots.
+    let writers = 8;
+    let barrier = Arc::new(Barrier::new(writers + 1));
+    let mut handles = Vec::new();
+    for i in 1..=writers {
         let sm = state_manager.clone();
-        let path = initial_state.directory_path.clone();
+        let barrier = barrier.clone();
+        let mut state = initial_state.clone();
+        state.completed_hooks = i;
+        state.current_hook_index = Some(1000 + i);
+        state.config_hash = format!("{i}:{}", "x".repeat(8192));
+        state
+            .environment_vars
+            .insert("PAYLOAD".to_string(), format!("{i}:{}", "x".repeat(8192)));
 
-        let handle = task::spawn(async move {
-            // Load state - it might have been modified by another task
-            let instance_hash = compute_instance_hash(&path, "concurrent_config");
-
-            // Simulate some work
-            tokio::time::sleep(Duration::from_millis(10)).await;
-
-            // Load state, modify, and save (handle potential concurrent modifications)
-            if let Ok(Some(mut state)) = sm.load_state(&instance_hash).await {
-                state.completed_hooks += 1;
-                state.current_hook_index = Some(i + 1);
-
-                // Save state - ignore errors from concurrent saves
-                let _ = sm.save_state(&state).await;
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            for _ in 0..8 {
+                sm.seed_test_state(&state)
+                    .await
+                    .expect("concurrent save must succeed");
             }
-        });
-
-        handles.push(handle);
+        }));
     }
 
-    // Wait for all tasks to complete
+    barrier.wait().await;
+    for _ in 0..100 {
+        let state = state_manager
+            .load_state(&initial_state.instance_hash)
+            .await
+            .expect("concurrent read must succeed")
+            .expect("saved state must exist");
+        assert!(state.completed_hooks <= writers);
+        assert_eq!(state.current_hook_index, Some(1000 + state.completed_hooks));
+        assert_eq!(
+            state.config_hash,
+            format!("{}:{}", state.completed_hooks, "x".repeat(8192))
+        );
+        assert!(state.environment_vars.is_empty());
+        tokio::task::yield_now().await;
+    }
     for handle in handles {
-        handle.await.unwrap();
+        handle.await.expect("writer task must finish");
     }
-
-    // Verify final state - due to concurrent writes, the exact values may vary
-    // but the state should be loadable and valid
-    let final_state = state_manager
-        .load_state(&initial_state.instance_hash)
+    let state = state_manager
+        .load_state("concurrent_hash")
         .await
+        .unwrap()
         .unwrap();
+    assert!((1..=writers).contains(&state.completed_hooks));
+    assert_eq!(state.current_hook_index, Some(1000 + state.completed_hooks));
+}
 
-    // The state might exist or not depending on timing of concurrent operations
-    if let Some(state) = final_state {
-        assert_eq!(state.instance_hash, "concurrent_hash");
-        // Completed hooks will be 0 if all concurrent writes failed, or > 0 if some succeeded
+#[tokio::test]
+async fn state_identifiers_cannot_escape_the_state_directory() {
+    let temp_dir = private_temp_dir();
+    let state_manager = StateManager::new(temp_dir.path().join("state"));
+    let mut state = HookExecutionState::new(
+        super::HookExecutionIdentity {
+            session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+            directory_path: temp_dir.path().to_path_buf(),
+            instance_hash: "valid".to_string(),
+            config_hash: "config".to_string(),
+        },
+        Vec::new(),
+    );
+    let outside = temp_dir.path().join("outside.json");
+    std::fs::write(&outside, "untouched").unwrap();
+
+    for invalid in [
+        "",
+        ".",
+        "..",
+        "../outside",
+        "/outside",
+        "nested/name",
+        "CON",
+        "prn",
+        "AUX",
+        "nul",
+        "com1",
+        "lPt9",
+    ] {
+        assert!(
+            state_manager.try_state_file_path(invalid).is_err(),
+            "{invalid:?}"
+        );
+        assert!(
+            state_manager.load_state(invalid).await.is_err(),
+            "{invalid:?}"
+        );
+        assert!(
+            state_manager.load_state_sync(invalid).is_err(),
+            "{invalid:?}"
+        );
+        assert!(
+            state_manager.remove_state(invalid).await.is_err(),
+            "{invalid:?}"
+        );
+        state.instance_hash = invalid.to_string();
+        assert!(
+            state_manager.seed_test_state(&state).await.is_err(),
+            "{invalid:?}"
+        );
     }
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "untouched");
+
+    state.instance_hash = "valid".to_string();
+    state_manager.seed_test_state(&state).await.unwrap();
+    let mismatched = state_manager.try_state_file_path("other").unwrap();
+    std::fs::write(&mismatched, serde_json::to_vec(&state).unwrap()).unwrap();
+    assert!(state_manager.load_state("other").await.is_err());
+    assert!(state_manager.load_state_sync("other").is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn state_directory_and_files_are_private() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let temp_dir = private_temp_dir();
+    let state_dir = temp_dir.path().join("state");
+    let state_manager = StateManager::new(state_dir.clone());
+    let state = HookExecutionState::new(
+        super::HookExecutionIdentity {
+            session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+            directory_path: temp_dir.path().to_path_buf(),
+            instance_hash: "private".to_string(),
+            config_hash: "config".to_string(),
+        },
+        Vec::new(),
+    );
+    state_manager.seed_test_state(&state).await.unwrap();
+    let state_file = state_manager.try_state_file_path("private").unwrap();
+    assert_eq!(std::fs::metadata(&state_dir).unwrap().mode() & 0o077, 0);
+    assert_eq!(std::fs::metadata(&state_file).unwrap().mode() & 0o077, 0);
+
+    std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(state_manager.seed_test_state(&state).await.is_err());
+    assert!(state_manager.load_state("private").await.is_err());
+    assert_eq!(std::fs::metadata(&state_dir).unwrap().mode() & 0o777, 0o755);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn state_directory_rejects_symlinks() {
+    let temp_dir = private_temp_dir();
+    let linked = temp_dir.path().join("linked");
+    std::os::unix::fs::symlink(temp_dir.path(), &linked).unwrap();
+    let state_manager = StateManager::new(linked);
+    assert!(state_manager.ensure_state_dir().await.is_err());
+    assert!(state_manager.load_state("valid").await.is_err());
+}
+
+#[tokio::test]
+async fn failed_state_rename_cleans_up_temporary_file() {
+    let temp_dir = private_temp_dir();
+    let state_manager = StateManager::new(temp_dir.path().to_path_buf());
+    let state = HookExecutionState::new(
+        super::HookExecutionIdentity {
+            session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+            directory_path: temp_dir.path().to_path_buf(),
+            instance_hash: "conflict".to_string(),
+            config_hash: "config".to_string(),
+        },
+        Vec::new(),
+    );
+    let destination = state_manager.try_state_file_path("conflict").unwrap();
+    std::fs::create_dir(&destination).unwrap();
+    assert!(state_manager.seed_test_state(&state).await.is_err());
+    assert!(destination.is_dir());
+    let mut names = std::fs::read_dir(temp_dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, [".hook-state.lock", "conflict.json"]);
 }
 
 #[tokio::test]
 async fn test_state_with_unicode_and_special_chars() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = private_temp_dir();
     let state_manager = StateManager::new(temp_dir.path().to_path_buf());
 
     // Create state with unicode and special characters
     let mut unicode_state = HookExecutionState {
+        session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
         instance_hash: "unicode_hash".to_string(),
+        run_id: uuid::Uuid::new_v4(),
         directory_path: PathBuf::from("/測試/目錄/🚀"),
         config_hash: "config_ñ_é_ü".to_string(),
         status: ExecutionStatus::Failed,
@@ -557,7 +784,6 @@ async fn test_state_with_unicode_and_special_chars() {
         current_hook_started_at: None,
         completed_display_until: None,
         error_message: Some("Error: 錯誤信息 with émojis 🔥💥".to_string()),
-        previous_env: None,
     };
 
     // Add hook result with unicode output
@@ -582,7 +808,7 @@ async fn test_state_with_unicode_and_special_chars() {
     unicode_state.hook_results.insert(0, unicode_result);
 
     // Save and load the state
-    state_manager.save_state(&unicode_state).await.unwrap();
+    state_manager.seed_test_state(&unicode_state).await.unwrap();
 
     let loaded = state_manager
         .load_state(&unicode_state.instance_hash)
@@ -590,28 +816,34 @@ async fn test_state_with_unicode_and_special_chars() {
         .unwrap()
         .unwrap();
 
-    // Verify all unicode content is preserved
+    // Metadata keeps Unicode while hook output and errors remain in memory.
     assert_eq!(loaded.config_hash, "config_ñ_é_ü");
     assert_eq!(
-        loaded.error_message,
-        Some("Error: 錯誤信息 with émojis 🔥💥".to_string())
+        loaded.error_message.as_deref(),
+        Some("Hook execution failed")
     );
-
-    let hook_result = loaded.hook_results.get(&0).unwrap();
-    assert_eq!(hook_result.stdout, "輸出: Hello 世界! 🌍");
-    assert_eq!(hook_result.stderr, "錯誤: ñoño error ⚠️");
-    assert_eq!(hook_result.error, Some("失敗了 😢".to_string()));
+    assert!(loaded.hook_results.is_empty());
+    let persisted = std::fs::read_to_string(
+        state_manager
+            .try_state_file_path(&unicode_state.instance_hash)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!persisted.contains("輸出: Hello 世界! 🌍"));
+    assert!(!persisted.contains("錯誤信息"));
 }
 
 #[tokio::test]
 async fn test_state_directory_with_many_states() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = private_temp_dir();
     let state_manager = StateManager::new(temp_dir.path().to_path_buf());
 
     // Create many states to test scalability
     for i in 0..50 {
         let state = HookExecutionState {
+            session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
             instance_hash: format!("hash_{}", i),
+            run_id: uuid::Uuid::new_v4(),
             directory_path: PathBuf::from(format!("/dir/{}", i)),
             config_hash: format!("config_{}", i),
             status: if i % 3 == 0 {
@@ -640,21 +872,21 @@ async fn test_state_directory_with_many_states() {
             } else {
                 None
             },
-            previous_env: None,
         };
-        state_manager.save_state(&state).await.unwrap();
+        state_manager.seed_test_state(&state).await.unwrap();
     }
 
     // List all states
     let listed = state_manager.list_active_states().await.unwrap();
     assert_eq!(listed.len(), 50);
 
-    // Clean up old completed states (older than 24 hours)
-    let cleaned = state_manager
-        .cleanup_orphaned_states(chrono::Duration::hours(24))
-        .await
-        .unwrap();
-
-    // Should clean up states older than 24 hours
-    assert!(cleaned > 0);
+    // Cleanup removes terminal states and retains every running state.
+    assert_eq!(state_manager.cleanup_state_directory().await.unwrap(), 33);
+    let remaining = state_manager.list_active_states().await.unwrap();
+    assert_eq!(remaining.len(), 17);
+    assert!(
+        remaining
+            .iter()
+            .all(|state| state.status == ExecutionStatus::Running)
+    );
 }

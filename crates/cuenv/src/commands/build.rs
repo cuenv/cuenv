@@ -10,7 +10,7 @@ use std::process::Command;
 use cuenv_core::manifest::{ContainerImage, Project};
 use cuenv_events::emit_stdout;
 
-use super::{CommandExecutor, relative_path_from_root};
+use super::CommandExecutor;
 
 /// Options for the `cuenv build` command.
 pub struct BuildOptions {
@@ -41,8 +41,8 @@ pub fn execute_build(options: &BuildOptions, executor: &CommandExecutor) -> cuen
         )
     })?;
 
-    let module = executor.get_module(&target_path)?;
-    let relative_path = relative_path_from_root(&module.root, &target_path);
+    let module = executor.module(&target_path)?;
+    let relative_path = super::relative_path_from_root(&module.root, &target_path);
 
     let instance = module.get(&relative_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
@@ -81,9 +81,9 @@ pub fn execute_build(options: &BuildOptions, executor: &CommandExecutor) -> cuen
     build_images(&target_path, &selected)
 }
 
-struct ImageFilters<'a> {
-    names: &'a [String],
-    labels: &'a [String],
+struct ImageFilters<'image_filters> {
+    names: &'image_filters [String],
+    labels: &'image_filters [String],
 }
 
 impl ImageFilters<'_> {
@@ -181,10 +181,15 @@ fn build_one_image(
     }
 
     if let Some(installable) = &image.installable {
-        let invocation = NixBuildInvocation::new(name, image, installable, project_dir)?;
+        let invocation = NixBuildInvocation::try_new(NixBuildInput {
+            name,
+            image,
+            installable,
+            project_dir,
+        })?;
         invocation.run()
     } else {
-        let invocation = DockerBuildInvocation::new(project_dir, name, image)?;
+        let invocation = DockerBuildInvocation::try_new(project_dir, name, image)?;
         emit_stdout!(format!("cuenv build: running {}", invocation.display()));
         invocation.run()
     }
@@ -197,7 +202,7 @@ struct DockerBuildInvocation {
 }
 
 impl DockerBuildInvocation {
-    fn new(project_dir: &Path, name: &str, image: &ContainerImage) -> cuenv_core::Result<Self> {
+    fn try_new(project_dir: &Path, name: &str, image: &ContainerImage) -> cuenv_core::Result<Self> {
         if image.registry.is_none() && image.platform.len() > 1 {
             return Err(cuenv_core::Error::configuration(format!(
                 "cuenv build: image '{name}' targets multiple platforms but has no registry; \
@@ -300,13 +305,22 @@ struct NixBuildInvocation {
     current_dir: PathBuf,
 }
 
+#[derive(Clone, Copy)]
+struct NixBuildInput<'input> {
+    name: &'input str,
+    image: &'input ContainerImage,
+    installable: &'input str,
+    project_dir: &'input Path,
+}
+
 impl NixBuildInvocation {
-    fn new(
-        name: &str,
-        image: &ContainerImage,
-        installable: &str,
-        project_dir: &Path,
-    ) -> cuenv_core::Result<Self> {
+    fn try_new(input: NixBuildInput<'_>) -> cuenv_core::Result<Self> {
+        let NixBuildInput {
+            name,
+            image,
+            installable,
+            project_dir,
+        } = input;
         let push = image.registry.is_some();
         if push && image.tags.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(
@@ -531,7 +545,7 @@ mod tests {
     #[test]
     fn test_docker_invocation_for_local_image() {
         let image = test_image(vec!["latest"], vec![]);
-        let result = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image);
+        let result = DockerBuildInvocation::try_new(Path::new("/workspace/app"), "api", &image);
         assert!(result.is_ok());
         let invocation = result.unwrap_or_else(|_| unreachable!("result was checked above"));
 
@@ -552,7 +566,7 @@ mod tests {
         image.repository = Some("services/api".to_string());
         image.platform = vec!["linux/amd64".to_string(), "linux/arm64".to_string()];
 
-        let result = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image);
+        let result = DockerBuildInvocation::try_new(Path::new("/workspace/app"), "api", &image);
         assert!(result.is_ok());
         let invocation = result.unwrap_or_else(|_| unreachable!("result was checked above"));
 
@@ -578,7 +592,7 @@ mod tests {
         let mut image = test_image(vec!["latest"], vec![]);
         image.platform = vec!["linux/amd64".to_string(), "linux/arm64".to_string()];
 
-        let result = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image);
+        let result = DockerBuildInvocation::try_new(Path::new("/workspace/app"), "api", &image);
         assert!(result.is_err());
         let message = result
             .err()
@@ -593,7 +607,7 @@ mod tests {
         let mut image = test_image(vec![], vec![]);
         image.registry = Some("ghcr.io/acme".to_string());
 
-        let result = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image);
+        let result = DockerBuildInvocation::try_new(Path::new("/workspace/app"), "api", &image);
         assert!(result.is_err());
         let message = result
             .err()
@@ -678,9 +692,13 @@ mod tests {
         image.context = String::new();
         image.installable = Some(".#images.api".to_string());
 
-        let invocation =
-            NixBuildInvocation::new("api", &image, ".#images.api", Path::new("/workspace/app"))
-                .unwrap_or_else(|_| unreachable!("local nix image is valid"));
+        let invocation = NixBuildInvocation::try_new(NixBuildInput {
+            name: "api",
+            image: &image,
+            installable: ".#images.api",
+            project_dir: Path::new("/workspace/app"),
+        })
+        .unwrap_or_else(|_| unreachable!("local nix image is valid"));
 
         assert!(!invocation.push);
         assert_eq!(invocation.refs, vec!["api:latest"]);
@@ -695,9 +713,13 @@ mod tests {
         image.registry = Some("ghcr.io/acme".to_string());
         image.repository = Some("services/api".to_string());
 
-        let invocation =
-            NixBuildInvocation::new("api", &image, ".#images.api", Path::new("/workspace/app"))
-                .unwrap_or_else(|_| unreachable!("registry nix image is valid"));
+        let invocation = NixBuildInvocation::try_new(NixBuildInput {
+            name: "api",
+            image: &image,
+            installable: ".#images.api",
+            project_dir: Path::new("/workspace/app"),
+        })
+        .unwrap_or_else(|_| unreachable!("registry nix image is valid"));
 
         assert!(invocation.push);
         assert_eq!(
@@ -716,8 +738,12 @@ mod tests {
         image.installable = Some(".#images.api".to_string());
         image.registry = Some("ghcr.io/acme".to_string());
 
-        let result =
-            NixBuildInvocation::new("api", &image, ".#images.api", Path::new("/workspace/app"));
+        let result = NixBuildInvocation::try_new(NixBuildInput {
+            name: "api",
+            image: &image,
+            installable: ".#images.api",
+            project_dir: Path::new("/workspace/app"),
+        });
         assert!(result.is_err());
     }
 

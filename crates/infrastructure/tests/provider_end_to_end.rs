@@ -800,8 +800,8 @@ async fn turso_store_round_trips_records() -> TestResult {
             .current_lock(&tenant)
             .await?
             .ok_or("no lock")?
-            .lock_identifier,
-        chosen.lock_identifier
+            .identifier(),
+        Some(chosen.lock_identifier.as_str())
     );
     store.put(&tenant, &lock, &record).await?;
     let mut updated = record.clone();
@@ -4184,8 +4184,10 @@ async fn fake_a_lost_lock_stops_a_replacement_before_the_provider_acts() -> Test
                 let tenant = tenant.clone();
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async move {
-                        if let Ok(Some(current)) = store.current_lock(&tenant).await {
-                            let _ = store.force_unlock(&tenant, &current.lock_identifier).await;
+                        if let Ok(Some(current)) = store.current_lock(&tenant).await
+                            && let Some(identifier) = current.identifier()
+                        {
+                            let _ = store.force_unlock(&tenant, identifier).await;
                         }
                     });
                 });

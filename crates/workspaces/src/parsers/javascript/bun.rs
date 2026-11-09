@@ -269,7 +269,15 @@ fn parse_array_package(lockfile_path: &Path, name: &str, items: &[Value]) -> Res
         .or_else(|| metadata.checksum.clone())
         .or(checksum_override);
 
-    build_package_entry(lockfile_path, name, locator, checksum, &metadata)
+    build_package_entry(
+        lockfile_path,
+        PackageInput {
+            name,
+            locator,
+            checksum,
+            metadata: &metadata,
+        },
+    )
 }
 
 fn parse_object_package(
@@ -311,29 +319,38 @@ fn parse_object_package(
         checksum: raw_checksum,
     };
 
-    build_package_entry(lockfile_path, name, &locator, checksum, &metadata)
+    build_package_entry(
+        lockfile_path,
+        PackageInput {
+            name,
+            locator: &locator,
+            checksum,
+            metadata: &metadata,
+        },
+    )
 }
 
-fn build_package_entry(
-    lockfile_path: &Path,
-    package_name: &str,
-    locator: &str,
+struct PackageInput<'input> {
+    name: &'input str,
+    locator: &'input str,
     checksum: Option<String>,
-    metadata: &BunPackageMetadata,
-) -> Result<LockfileEntry> {
-    let locator_info = parse_locator(lockfile_path, locator, package_name)?;
+    metadata: &'input BunPackageMetadata,
+}
+
+fn build_package_entry(lockfile_path: &Path, package: PackageInput<'_>) -> Result<LockfileEntry> {
+    let locator_info = parse_locator(lockfile_path, package.locator, package.name)?;
 
     let mut dependencies = Vec::new();
-    push_dependencies(&mut dependencies, &metadata.dependencies);
-    push_dependencies(&mut dependencies, &metadata.dev_dependencies);
-    push_dependencies(&mut dependencies, &metadata.optional_dependencies);
-    push_dependencies(&mut dependencies, &metadata.peer_dependencies);
+    push_dependencies(&mut dependencies, &package.metadata.dependencies);
+    push_dependencies(&mut dependencies, &package.metadata.dev_dependencies);
+    push_dependencies(&mut dependencies, &package.metadata.optional_dependencies);
+    push_dependencies(&mut dependencies, &package.metadata.peer_dependencies);
 
     Ok(LockfileEntry {
-        name: package_name.to_string(),
+        name: package.name.to_string(),
         version: locator_info.version.into(),
         source: locator_info.source,
-        checksum,
+        checksum: package.checksum,
         dependencies,
         is_workspace_member: false,
     })

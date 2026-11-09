@@ -1,7 +1,8 @@
-use super::{TaskExecutionContext, TaskExecutionInput};
+use super::context::{TaskExecutionContext, TaskExecutionInput};
+use crate::commands::task_list;
 use crate::commands::task_list::{
     DashboardFormatter, EmojiFormatter, RichFormatter, TablesFormatter, TaskListFormatter,
-    TextFormatter, build_task_list,
+    TextFormatter,
 };
 use cuenv_core::Result;
 use std::io::IsTerminal;
@@ -35,7 +36,8 @@ pub(super) fn maybe_render_task_list(
             .ok()
             .map(|path| path.to_string_lossy().to_string())
     });
-    let task_data = build_task_list(&tasks, cwd_relative.as_deref(), &context.project_root);
+    let task_data =
+        task_list::build_task_list(&tasks, cwd_relative.as_deref(), &context.project_root);
     let effective_format = if input.format.is_empty() {
         context
             .manifest

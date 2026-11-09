@@ -1,11 +1,10 @@
-use super::*;
-
+use super::{BuildStage, Emitter, GitHubActionsEmitter, ResourceRequirements, TaskPhase};
 #[test]
 fn test_simple_workflow() {
     let emitter = GitHubActionsEmitter::new()
         .without_nix()
         .without_cuenv_build();
-    let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    let ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
 
     let yaml = emitter.emit(&ir).unwrap();
 
@@ -30,22 +29,28 @@ fn test_workflow_with_nix() {
     });
 
     // Create phase tasks that would be contributed by NixContributor
-    let mut bootstrap_task =
-        make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
+    let mut bootstrap_task = super::make_phase_task(
+        "install-nix",
+        &["curl ... | sh"],
+        TaskPhase::new(BuildStage::Bootstrap, 0),
+    );
     bootstrap_task.label = Some("Install Nix".to_string());
     bootstrap_task.contributor = Some("nix".to_string());
     bootstrap_task.provider_hints = Some(provider_hints);
 
-    let mut setup_task =
-        make_phase_task("setup-cuenv", &["nix build .#cuenv"], BuildStage::Setup, 10);
+    let mut setup_task = super::make_phase_task(
+        "setup-cuenv",
+        &["nix build .#cuenv"],
+        TaskPhase::new(BuildStage::Setup, 10),
+    );
     setup_task.label = Some("Setup cuenv".to_string());
     setup_task.contributor = Some("cuenv".to_string());
     setup_task.depends_on = vec!["install-nix".to_string()];
 
-    let ir = make_ir(vec![
+    let ir = super::make_ir(vec![
         bootstrap_task,
         setup_task,
-        make_task("build", &["cargo", "build"]),
+        super::make_task("build", &["cargo", "build"]),
     ]);
 
     let yaml = emitter.emit(&ir).unwrap();
@@ -71,13 +76,17 @@ fn test_workflow_with_cachix() {
     });
 
     // Create phase tasks for Cachix
-    let mut bootstrap_task =
-        make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
+    let mut bootstrap_task = super::make_phase_task(
+        "install-nix",
+        &["curl ... | sh"],
+        TaskPhase::new(BuildStage::Bootstrap, 0),
+    );
     bootstrap_task.label = Some("Install Nix".to_string());
     bootstrap_task.contributor = Some("nix".to_string());
     bootstrap_task.provider_hints = Some(nix_provider_hints);
 
-    let mut cachix_task = make_phase_task("setup-cachix", &[], BuildStage::Setup, 5);
+    let mut cachix_task =
+        super::make_phase_task("setup-cachix", &[], TaskPhase::new(BuildStage::Setup, 5));
     cachix_task.label = Some("Setup Cachix (my-cache)".to_string());
     cachix_task.contributor = Some("cachix".to_string());
     cachix_task.depends_on = vec!["install-nix".to_string()];
@@ -91,10 +100,10 @@ fn test_workflow_with_cachix() {
         }
     }));
 
-    let ir = make_ir(vec![
+    let ir = super::make_ir(vec![
         bootstrap_task,
         cachix_task,
-        make_task("build", &["cargo", "build"]),
+        super::make_task("build", &["cargo", "build"]),
     ]);
 
     let yaml = emitter.emit(&ir).unwrap();
@@ -110,10 +119,13 @@ fn test_workflow_with_dependencies() {
     let emitter = GitHubActionsEmitter::new()
         .without_nix()
         .without_cuenv_build();
-    let mut test_task = make_task("test", &["cargo", "test"]);
+    let mut test_task = super::make_task("test", &["cargo", "test"]);
     test_task.depends_on = vec!["build".to_string()];
 
-    let ir = make_ir(vec![make_task("build", &["cargo", "build"]), test_task]);
+    let ir = super::make_ir(vec![
+        super::make_task("build", &["cargo", "build"]),
+        test_task,
+    ]);
 
     let yaml = emitter.emit(&ir).unwrap();
 
@@ -127,10 +139,10 @@ fn test_workflow_with_manual_approval() {
         .without_nix()
         .without_cuenv_build()
         .with_approval_environment("staging");
-    let mut deploy_task = make_task("deploy", &["./deploy.sh"]);
+    let mut deploy_task = super::make_task("deploy", &["./deploy.sh"]);
     deploy_task.manual_approval = true;
 
-    let ir = make_ir(vec![deploy_task]);
+    let ir = super::make_ir(vec![deploy_task]);
 
     let yaml = emitter.emit(&ir).unwrap();
 
@@ -142,10 +154,10 @@ fn test_workflow_with_concurrency_group() {
     let emitter = GitHubActionsEmitter::new()
         .without_nix()
         .without_cuenv_build();
-    let mut deploy_task = make_task("deploy", &["./deploy.sh"]);
+    let mut deploy_task = super::make_task("deploy", &["./deploy.sh"]);
     deploy_task.concurrency_group = Some("production".to_string());
 
-    let ir = make_ir(vec![deploy_task]);
+    let ir = super::make_ir(vec![deploy_task]);
 
     let yaml = emitter.emit(&ir).unwrap();
 
@@ -159,7 +171,7 @@ fn test_workflow_with_custom_runner() {
         .without_nix()
         .without_cuenv_build()
         .with_runner("self-hosted");
-    let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    let ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
 
     let yaml = emitter.emit(&ir).unwrap();
 
@@ -171,14 +183,14 @@ fn test_workflow_with_resource_tags() {
     let emitter = GitHubActionsEmitter::new()
         .without_nix()
         .without_cuenv_build();
-    let mut task = make_task("build", &["cargo", "build"]);
+    let mut task = super::make_task("build", &["cargo", "build"]);
     task.resources = Some(ResourceRequirements {
         cpu: None,
         memory: None,
         tags: vec!["blacksmith-8vcpu-ubuntu-2404".to_string()],
     });
 
-    let ir = make_ir(vec![task]);
+    let ir = super::make_ir(vec![task]);
 
     let yaml = emitter.emit(&ir).unwrap();
 
@@ -190,7 +202,7 @@ fn test_emit_workflows() {
     let emitter = GitHubActionsEmitter::new()
         .without_nix()
         .without_cuenv_build();
-    let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    let ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
 
     let workflows = emitter.emit_workflows(&ir).unwrap();
 
@@ -200,21 +212,27 @@ fn test_emit_workflows() {
 
 #[test]
 fn test_sanitize_filename() {
-    assert_eq!(sanitize_filename("CI Pipeline"), "ci-pipeline");
-    assert_eq!(sanitize_filename("release/v1"), "releasev1");
-    assert_eq!(sanitize_filename("test_workflow"), "test_workflow");
+    assert_eq!(
+        super::super::sanitize_filename("CI Pipeline"),
+        "ci-pipeline"
+    );
+    assert_eq!(super::super::sanitize_filename("release/v1"), "releasev1");
+    assert_eq!(
+        super::super::sanitize_filename("test_workflow"),
+        "test_workflow"
+    );
 }
 
 #[test]
 fn test_sanitize_job_id() {
-    assert_eq!(sanitize_job_id("build.test"), "build-test");
-    assert_eq!(sanitize_job_id("deploy prod"), "deploy-prod");
+    assert_eq!(super::super::sanitize_job_id("build.test"), "build-test");
+    assert_eq!(super::super::sanitize_job_id("deploy prod"), "deploy-prod");
 }
 
 #[test]
 fn test_validation_invalid_id() {
     let emitter = GitHubActionsEmitter::new();
-    let ir = make_ir(vec![make_task("invalid task", &["echo"])]);
+    let ir = super::make_ir(vec![super::make_task("invalid task", &["echo"])]);
 
     let result = emitter.validate(&ir);
     assert!(result.is_err());
@@ -223,10 +241,10 @@ fn test_validation_invalid_id() {
 #[test]
 fn test_validation_missing_dependency() {
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("test", &["cargo", "test"]);
+    let mut task = super::make_task("test", &["cargo", "test"]);
     task.depends_on = vec!["nonexistent".to_string()];
 
-    let ir = make_ir(vec![task]);
+    let ir = super::make_ir(vec![task]);
 
     let result = emitter.validate(&ir);
     assert!(result.is_err());
@@ -244,7 +262,7 @@ fn test_generation_header() {
     let emitter = GitHubActionsEmitter::new()
         .without_nix()
         .without_cuenv_build();
-    let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    let ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
 
     let yaml = emitter.emit(&ir).unwrap();
 
@@ -263,9 +281,9 @@ fn permissions_are_scoped_to_jobs_in_both_modes() {
     emitter
         .configured_permissions
         .insert("checks".into(), "none".into());
-    let mut deploy = make_task("deploy", &["deploy"]);
+    let mut deploy = super::make_task("deploy", &["deploy"]);
     deploy.deployment = true;
-    let ir = make_ir(vec![make_task("check", &["cargo", "check"]), deploy]);
+    let ir = super::make_ir(vec![super::make_task("check", &["cargo", "check"]), deploy]);
     for (yaml, expected_checks) in [
         (emitter.emit_expanded(&ir).unwrap(), None),
         (emitter.emit_thin(&ir).unwrap(), Some("none")),

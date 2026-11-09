@@ -90,12 +90,12 @@ let content = file.generate();
 Entry point and builder for generating multiple files:
 
 ```rust
-use cuenv_ignore::{IgnoreFile, IgnoreFiles};
+use cuenv_ignore::{GitRequirement, IgnoreFile, IgnoreFiles, WriteMode};
 
 let result = IgnoreFiles::builder()
     .directory(".")
-    .require_git_repo(true)
-    .dry_run(false)
+    .require_git_repo(GitRequirement::Required)
+    .dry_run(WriteMode::Write)
     .file(IgnoreFile::new("git")
         .pattern("node_modules/")
         .pattern(".env"))
@@ -115,8 +115,8 @@ for file in &result.files {
 | `files(iter)`            | Add multiple ignore file configs            |
 | `section(IgnoreSection)` | Add a managed section config                |
 | `sections(iter)`         | Add multiple managed section configs        |
-| `require_git_repo(bool)` | Require directory to be in a Git repo       |
-| `dry_run(bool)`          | Preview changes without writing             |
+| `require_git_repo(GitRequirement)` | Require directory to be in a Git repo       |
+| `dry_run(WriteMode)`          | Preview changes without writing             |
 | `generate()`             | Generate all ignore files                   |
 
 ### FileStatus
@@ -215,11 +215,11 @@ let result = IgnoreFiles::builder()
 Preview what would happen without writing files:
 
 ```rust
-use cuenv_ignore::{IgnoreFile, IgnoreFiles, FileStatus};
+use cuenv_ignore::{FileStatus, IgnoreFile, IgnoreFiles, WriteMode};
 
 let result = IgnoreFiles::builder()
     .directory(".")
-    .dry_run(true)  // Don't write files
+    .dry_run(WriteMode::DryRun)
     .file(IgnoreFile::new("git").pattern("*.log"))
     .generate()?;
 
@@ -249,11 +249,11 @@ assert_eq!(file.output_filename(), ".my-custom-ignore");
 ### Git Repository Validation
 
 ```rust
-use cuenv_ignore::{IgnoreFile, IgnoreFiles, Error};
+use cuenv_ignore::{Error, GitRequirement, IgnoreFile, IgnoreFiles};
 
 let result = IgnoreFiles::builder()
     .directory("/some/path")
-    .require_git_repo(true)  // Validate Git repo
+    .require_git_repo(GitRequirement::Required)  // Validate Git repo
     .file(IgnoreFile::new("git").pattern("*.log"))
     .generate();
 

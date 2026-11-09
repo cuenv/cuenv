@@ -14,8 +14,6 @@
 mod extraction;
 mod model;
 
-#[cfg(test)]
-use extraction::try_extract_output_ref;
 pub use extraction::{
     has_output_refs, parse_passthrough, process_output_refs, try_extract_passthrough,
 };
@@ -120,14 +118,14 @@ mod tests {
             "cuenvTask": "tmpdir",
             "cuenvOutput": "stdout"
         });
-        let result = try_extract_output_ref(&val).unwrap();
+        let result = extraction::try_extract_output_ref(&val).unwrap();
         assert_eq!(result, "cuenv:ref:tmpdir:stdout");
     }
 
     #[test]
     fn extract_non_ref_object() {
         let val = serde_json::json!({ "command": "echo" });
-        assert!(try_extract_output_ref(&val).is_none());
+        assert!(extraction::try_extract_output_ref(&val).is_none());
     }
 
     #[test]
@@ -137,13 +135,13 @@ mod tests {
             "cuenvTask": "tmpdir",
             "cuenvOutput": "stdout"
         });
-        assert!(try_extract_output_ref(&val).is_none());
+        assert!(extraction::try_extract_output_ref(&val).is_none());
     }
 
     #[test]
     fn extract_string_value() {
         let val = serde_json::json!("just a string");
-        assert!(try_extract_output_ref(&val).is_none());
+        assert!(extraction::try_extract_output_ref(&val).is_none());
     }
 
     // =========================================================================
@@ -170,7 +168,7 @@ mod tests {
             }
         });
 
-        let deps = process_output_refs(&mut value);
+        let deps = extraction::process_output_refs(&mut value);
 
         // Args should be replaced with placeholder strings
         let work_args = value["tasks"]["work"]["args"].as_array().unwrap();
@@ -203,7 +201,7 @@ mod tests {
             }
         });
 
-        let deps = process_output_refs(&mut value);
+        let deps = extraction::process_output_refs(&mut value);
 
         let env_val = value["tasks"]["work"]["env"]["TEMP_DIR"].as_str().unwrap();
         assert_eq!(env_val, "cuenv:ref:tmpdir:stdout");
@@ -227,7 +225,7 @@ mod tests {
             }
         });
 
-        let deps = process_output_refs(&mut value);
+        let deps = extraction::process_output_refs(&mut value);
 
         let step1_args = value["tasks"]["pipeline"][1]["args"].as_array().unwrap();
         assert_eq!(
@@ -256,7 +254,7 @@ mod tests {
             }
         });
 
-        let deps = process_output_refs(&mut value);
+        let deps = extraction::process_output_refs(&mut value);
         assert!(deps.is_empty());
         // Verify stdout was stripped from group children
         assert!(value["tasks"]["check"]["lint"].get("stdout").is_none());
@@ -278,7 +276,7 @@ mod tests {
             }
         });
 
-        let deps = process_output_refs(&mut value);
+        let deps = extraction::process_output_refs(&mut value);
         assert_eq!(deps.len(), 2);
         assert!(deps.contains(&OutputRefDep::new("c", "a")));
         assert!(deps.contains(&OutputRefDep::new("c", "b")));
@@ -301,7 +299,7 @@ mod tests {
             }
         });
 
-        let deps = process_output_refs(&mut value);
+        let deps = extraction::process_output_refs(&mut value);
         // Both references should produce deps (deduplication is caller's concern)
         assert_eq!(deps.len(), 2);
     }

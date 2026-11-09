@@ -7,7 +7,7 @@
 
 use super::model::{CellOccupancy, TerminalFrame};
 use super::search::SearchMatch;
-use super::selection::{LogicalPosition, Selection};
+use super::selection::Selection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayKind {
@@ -40,26 +40,19 @@ impl TerminalOverlays {
     pub fn spans(&self, frame: &TerminalFrame) -> Vec<CellOverlaySpan> {
         let mut spans = Vec::new();
         if let Some(selection) = self.selection {
-            spans.extend(range_spans(
-                frame,
-                selection.anchor,
-                selection.active,
-                OverlayKind::Selection,
-            ));
+            spans.extend(range_spans(frame, selection, OverlayKind::Selection));
         }
         spans.extend(self.search_matches.iter().flat_map(|search_match| {
             range_spans(
                 frame,
-                search_match.start,
-                search_match.end,
+                Selection::new(search_match.start, search_match.end),
                 OverlayKind::SearchMatch,
             )
         }));
         if let Some(search_match) = self.current_search_match {
             spans.extend(range_spans(
                 frame,
-                search_match.start,
-                search_match.end,
+                Selection::new(search_match.start, search_match.end),
                 OverlayKind::CurrentSearchMatch,
             ));
         }
@@ -69,15 +62,10 @@ impl TerminalOverlays {
 
 fn range_spans(
     frame: &TerminalFrame,
-    first: LogicalPosition,
-    second: LogicalPosition,
+    selection: Selection,
     kind: OverlayKind,
 ) -> Vec<CellOverlaySpan> {
-    let (start, end) = if first <= second {
-        (first, second)
-    } else {
-        (second, first)
-    };
+    let (start, end) = selection.bounds();
     let row_count = frame.rows.len().min(frame.dimensions.rows as usize);
     if row_count == 0 || start.line >= row_count {
         return Vec::new();
@@ -123,18 +111,19 @@ fn range_spans(
 mod tests {
     use super::*;
     use crate::terminal::model::{
-        CursorState, Known, SamplingToken, TerminalCell, TerminalDimensions, TerminalRow,
+        CursorState, Known, RowWrap, SamplingToken, TerminalCell, TerminalDimensions, TerminalRow,
     };
+    use crate::terminal::selection::LogicalPosition;
 
-    fn frame(rows: Vec<(Vec<TerminalCell>, bool)>) -> TerminalFrame {
+    fn frame(rows: Vec<(Vec<TerminalCell>, RowWrap)>) -> TerminalFrame {
         let columns = rows.first().map_or(0, |row| row.0.len()) as u16;
         TerminalFrame {
             dimensions: TerminalDimensions::new(rows.len() as u16, columns),
             rows: rows
                 .into_iter()
-                .map(|(cells, soft_wrapped)| TerminalRow {
+                .map(|(cells, wrap)| TerminalRow {
                     cells,
-                    soft_wrapped,
+                    soft_wrapped: wrap.is_soft(),
                     dirty: false,
                 })
                 .collect(),
@@ -160,7 +149,7 @@ mod tests {
                 TerminalCell::trailing_spacer(),
                 TerminalCell::narrow('b'),
             ],
-            false,
+            RowWrap::None,
         )]);
         assert_eq!(
             TerminalOverlays {
@@ -185,11 +174,11 @@ mod tests {
         let frame = frame(vec![
             (
                 vec![TerminalCell::narrow('a'), TerminalCell::narrow('b')],
-                true,
+                RowWrap::Soft,
             ),
             (
                 vec![TerminalCell::leading_spacer(), TerminalCell::narrow('c')],
-                false,
+                RowWrap::None,
             ),
         ]);
         assert_eq!(
@@ -230,7 +219,7 @@ mod tests {
 
     #[test]
     fn spans_ignore_ranges_starting_outside_the_visible_frame() {
-        let frame = frame(vec![(vec![TerminalCell::narrow('a')], false)]);
+        let frame = frame(vec![(vec![TerminalCell::narrow('a')], RowWrap::None)]);
         assert!(
             TerminalOverlays {
                 selection: Some(Selection::new(
@@ -251,7 +240,7 @@ mod tests {
                 .chars()
                 .map(TerminalCell::narrow)
                 .collect::<Vec<_>>(),
-            false,
+            RowWrap::None,
         )]);
         let word_at = |column| SearchMatch {
             start: LogicalPosition { line: 0, column },
@@ -286,8 +275,14 @@ mod tests {
     #[test]
     fn a_match_wrapping_onto_the_next_row_is_highlighted_on_both() {
         let frame = frame(vec![
-            ("hel".chars().map(TerminalCell::narrow).collect(), true),
-            ("lo!".chars().map(TerminalCell::narrow).collect(), false),
+            (
+                "hel".chars().map(TerminalCell::narrow).collect(),
+                RowWrap::Soft,
+            ),
+            (
+                "lo!".chars().map(TerminalCell::narrow).collect(),
+                RowWrap::None,
+            ),
         ]);
         let spans = TerminalOverlays {
             search_matches: vec![SearchMatch {

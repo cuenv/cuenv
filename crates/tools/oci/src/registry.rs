@@ -339,7 +339,6 @@ async fn compute_file_digest(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use temp_env::with_vars;
     use tempfile::TempDir;
 
     // ==========================================================================
@@ -501,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_oci_client_get_auth_ghcr_no_token() {
-        with_vars(
+        temp_env::with_vars(
             [("GITHUB_TOKEN", None::<&str>), ("GH_TOKEN", None::<&str>)],
             || {
                 let client = OciClient::new();

@@ -41,7 +41,7 @@ use super::sql::{
     Attempted, Dialect, Disclosure, ExecuteResult, Failure, FailureKind, SqlStateStore,
     SqlTransport, SqlValue, Statement, StatementError, TransactionResult, sql_state_store,
 };
-use crate::error::{InfrastructureError, Result, describe_json_error, strip_control_characters};
+use crate::error::{InfrastructureError, Result};
 
 /// The backend's name in messages.
 const BACKEND: &str = "D1";
@@ -70,9 +70,9 @@ const TRANSIENT_MESSAGES: [&str; 6] = [
     "client disconnected",
 ];
 
-/// The largest integer a D1 response carries exactly: its numbers are
-/// JavaScript numbers, so integers beyond 2^53 may have lost precision.
-const LARGEST_EXACT_INTEGER: u64 = 1 << 53;
+/// D1 numbers use JavaScript numbers. At 2^53, a rounded larger integer can
+/// have the same representation, so the boundary is ambiguous too.
+const AMBIGUOUS_INTEGER_BOUNDARY: u64 = 1 << 53;
 
 /// Connection settings for a D1 database.
 #[derive(Clone)]
@@ -190,6 +190,45 @@ impl D1StateStore {
         digest.update(transport.database_id.as_bytes());
         hex::encode(digest.finalize())
     }
+
+    /// Bind migration evidence only to a known, non-secret D1 route.
+    fn legacy_source(&self) -> Option<crate::state::LegacyMigrationSource> {
+        use sha2::Digest;
+        let transport = &self.inner.transport;
+        let endpoint = &transport.endpoint;
+        if !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return None;
+        }
+        let suffix = format!(
+            "/accounts/{}/d1/database/{}/raw",
+            transport.account_id, transport.database_id
+        );
+        let cloudflare = endpoint.scheme() == "https"
+            && endpoint.host_str() == Some("api.cloudflare.com")
+            && endpoint.port_or_known_default() == Some(443)
+            && endpoint.path() == format!("/client/v4{suffix}");
+        let relay = endpoint.scheme() == "http"
+            && endpoint.host_str() == Some("127.0.0.1")
+            && endpoint.port().is_some_and(|port| port != 0)
+            && endpoint.path() == suffix;
+        if !cloudflare && !relay {
+            return None;
+        }
+        let mut digest = sha2::Sha256::new();
+        digest.update(b"cuenv-legacy-d1-connection-v1\0");
+        digest.update(endpoint.origin().ascii_serialization().as_bytes());
+        digest.update(b"\0");
+        digest.update(transport.account_id.as_bytes());
+        digest.update(b"\0");
+        digest.update(transport.database_id.as_bytes());
+        Some(crate::state::LegacyMigrationSource::D1 {
+            connection: crate::state::BackendIdentity::from_digest(digest.finalize().into()),
+        })
+    }
 }
 
 sql_state_store!(D1StateStore);
@@ -291,7 +330,10 @@ impl D1 {
                 error: envelope
                     .as_ref()
                     .and_then(|envelope| envelope.errors.first()),
-                body: strip_control_characters(&http::describe_error_body(&prefix, total_bytes)),
+                body: crate::error::strip_control_characters(&http::describe_error_body(
+                    &prefix,
+                    total_bytes,
+                )),
                 disclosure,
                 retry_after,
             }));
@@ -302,7 +344,7 @@ impl D1 {
         let envelope: Envelope = serde_json::from_slice(&bytes).map_err(|error| {
             Rejection::Other(Failure::permanent(format!(
                 "invalid D1 response ({})",
-                describe_json_error(&error)
+                crate::error::describe_json_error(&error)
             )))
         })?;
         if !envelope.success || envelope.result.iter().any(|result| !result.success) {
@@ -365,7 +407,7 @@ impl SqlTransport for D1 {
         let message = match disclosure {
             Disclosure::Full => format!(
                 "D1 statement failed: {}",
-                strip_control_characters(&error.message)
+                crate::error::strip_control_characters(&error.message)
             ),
             Disclosure::CodeOnly => "D1 statement failed (message withheld: the statement \
                                      carried resource state)"
@@ -446,7 +488,10 @@ fn rejection(rejected: &Rejected<'_>) -> Rejection {
         .unwrap_or_default();
     let detail = match (rejected.disclosure, rejected.error) {
         (Disclosure::Full, Some(error)) => {
-            format!(": {}", strip_control_characters(&error.message))
+            format!(
+                ": {}",
+                crate::error::strip_control_characters(&error.message)
+            )
         }
         (Disclosure::Full, None) if rejected.body.is_empty() => String::new(),
         (Disclosure::Full, None) => format!(": {}", rejected.body),
@@ -614,7 +659,7 @@ fn value(cell: &serde_json::Value) -> SqlValue {
         serde_json::Value::Null => SqlValue::Null,
         serde_json::Value::String(text) => SqlValue::Text(text.clone()),
         serde_json::Value::Number(number) => match number.as_i64() {
-            Some(integer) if integer.unsigned_abs() <= LARGEST_EXACT_INTEGER => {
+            Some(integer) if integer.unsigned_abs() < AMBIGUOUS_INTEGER_BOUNDARY => {
                 SqlValue::Integer(integer)
             }
             _ => number

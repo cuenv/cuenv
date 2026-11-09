@@ -145,12 +145,10 @@ tasks: {{
 }
 
 #[given(expr = "a project with a parallel group {string} containing {string} and {string}")]
-async fn given_project_with_parallel_group(
-    world: &mut TestWorld,
-    group: String,
-    task1: String,
-    task2: String,
-) -> StepResult {
+async fn given_project_with_parallel_group(world: &mut TestWorld, names: &[String]) -> StepResult {
+    let [group, task1, task2] = names else {
+        return Err(anyhow!("expected a group name and two task names"));
+    };
     // Schema-free for test isolation
     let cue_content = format!(
         r#"package test
@@ -213,35 +211,20 @@ async fn when_i_run_command(world: &mut TestWorld, command: String) -> StepResul
 }
 
 #[then(expr = "the task {string} should complete before {string}")]
-fn then_task_completes_before(world: &mut TestWorld, first: String, second: String) {
-    // Check the output for task execution order
-    // The output should show first task completing before second starts
+fn then_task_completes_before(world: &mut TestWorld, first: String, second: String) -> StepResult {
     let output = &world.last_output;
-
-    // Find positions of task names in output
-    let first_pos = output.find(&format!("{first} executed"));
-    let second_pos = output.find(&format!("{second} executed"));
-
-    match (first_pos, second_pos) {
-        (Some(f), Some(s)) => {
-            assert!(
-                f < s,
-                "Task '{first}' should complete before '{second}'. Output: {output}"
-            );
-        }
-        (None, _) => {
-            // If we can't find "executed" markers, check for task names in order
-            let first_mention = output.find(&first);
-            let second_mention = output.find(&second);
-            if let (Some(f), Some(s)) = (first_mention, second_mention) {
-                assert!(
-                    f < s,
-                    "Task '{first}' should appear before '{second}' in output. Output: {output}"
-                );
-            }
-        }
-        _ => {}
+    let first_pos = output
+        .find(&format!("{first} executed"))
+        .ok_or_else(|| anyhow!("Missing output from task '{first}': {output}"))?;
+    let second_pos = output
+        .find(&format!("{second} executed"))
+        .ok_or_else(|| anyhow!("Missing output from task '{second}': {output}"))?;
+    if first_pos >= second_pos {
+        return Err(anyhow!(
+            "Task '{first}' did not complete before '{second}': {output}"
+        ));
     }
+    Ok(())
 }
 
 #[then(expr = "the task {string} should fail")]
@@ -270,11 +253,11 @@ fn then_task_should_not_execute(world: &mut TestWorld, task: String) {
 fn then_both_tasks_execute(world: &mut TestWorld, task1: String, task2: String) {
     let output = &world.last_output;
     assert!(
-        output.contains(&format!("{task1} executed")) || output.contains(&task1),
+        output.contains(&format!("{task1} executed")),
         "Task '{task1}' should have executed. Output: {output}"
     );
     assert!(
-        output.contains(&format!("{task2} executed")) || output.contains(&task2),
+        output.contains(&format!("{task2} executed")),
         "Task '{task2}' should have executed. Output: {output}"
     );
 }
@@ -283,7 +266,7 @@ fn then_both_tasks_execute(world: &mut TestWorld, task1: String, task2: String) 
 fn then_task_should_execute(world: &mut TestWorld, task: String) {
     let output = &world.last_output;
     assert!(
-        output.contains(&format!("{task} executed")) || output.contains(&task),
+        output.contains(&format!("{task} executed")),
         "Task '{task}' should have executed. Output: {output}"
     );
 }

@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    ArtifactAggregationJobOptions, BuildStage, CuenvBootstrapJobOptions, CuenvSetup, Emitter,
+    GitHubActionsEmitter, HashMap, IntermediateRepresentation, Job, MatrixJobOptions, OutputType,
+    RunsOn, SimpleJobOptions, Step, TaskExecution,
+};
 use cuenv_ci::ir::{CachePolicy, PipelineMetadata, ResourceRequirements, Task, TriggerCondition};
 use cuenv_core::ci::PipelineMode;
 use std::collections::BTreeMap;
@@ -24,8 +28,20 @@ fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TaskPhase {
+    stage: BuildStage,
+    priority: i32,
+}
+
+impl TaskPhase {
+    fn new(stage: BuildStage, priority: i32) -> Self {
+        Self { stage, priority }
+    }
+}
+
 /// Helper to create a phase task for testing
-fn make_phase_task(id: &str, command: &[&str], phase: BuildStage, priority: i32) -> Task {
+fn make_phase_task(id: &str, command: &[&str], phase: TaskPhase) -> Task {
     Task {
         id: id.to_string(),
         runtime: None,
@@ -44,9 +60,9 @@ fn make_phase_task(id: &str, command: &[&str], phase: BuildStage, priority: i32)
         matrix: None,
         artifact_downloads: vec![],
         params: BTreeMap::new(),
-        phase: Some(phase),
+        phase: Some(phase.stage),
         label: None,
-        priority: Some(priority),
+        priority: Some(phase.priority),
         contributor: None,
         condition: None,
         github_task_filter: Vec::new(),

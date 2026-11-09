@@ -1,8 +1,9 @@
 //! Google Cloud Secret Manager resolver.
 
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use cuenv_secrets::http::{build_client, env_var, normalize_api_url};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
@@ -64,7 +65,7 @@ impl GcpSecretConfig {
     }
 
     fn api_url(&self) -> String {
-        normalize_api_url(
+        cuenv_secrets::http::normalize_api_url(
             self.api_url
                 .as_deref()
                 .unwrap_or(DEFAULT_SECRET_MANAGER_URL),
@@ -98,7 +99,7 @@ impl GcpSecretManagerResolver {
     /// Returns an error if the HTTP client cannot be initialized.
     pub fn try_new() -> Result<Self, SecretError> {
         Ok(Self {
-            client: build_client("gcp")?,
+            client: cuenv_secrets::http::build_client("gcp")?,
         })
     }
 
@@ -114,14 +115,14 @@ impl GcpSecretManagerResolver {
     }
 
     async fn access_token(name: &str) -> Result<String, SecretError> {
-        if let Some(token) = env_var("GOOGLE_OAUTH_ACCESS_TOKEN") {
+        if let Some(token) = cuenv_secrets::http::env_var("GOOGLE_OAUTH_ACCESS_TOKEN") {
             return Ok(token);
         }
 
         let mut command = Command::new("gcloud");
         command.args(["auth", "application-default", "print-access-token"]);
 
-        if let Some(credentials) = env_var("GOOGLE_APPLICATION_CREDENTIALS") {
+        if let Some(credentials) = cuenv_secrets::http::env_var("GOOGLE_APPLICATION_CREDENTIALS") {
             command.env("GOOGLE_APPLICATION_CREDENTIALS", &credentials);
             command.env("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", credentials);
         }

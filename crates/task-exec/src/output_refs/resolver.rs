@@ -4,14 +4,14 @@ use cuenv_core::{Error, Result};
 use std::collections::HashMap;
 
 /// Context for resolving task output reference placeholders at runtime.
-pub struct OutputRefResolver<'a> {
+pub struct OutputRefResolver<'resolver> {
     /// Name of the task being resolved (for error messages)
-    pub task_name: &'a str,
+    pub task_name: &'resolver str,
     /// Completed upstream task results to resolve references against
-    pub results: &'a HashMap<String, TaskResult>,
+    pub results: &'resolver HashMap<String, TaskResult>,
 }
 
-impl<'a> OutputRefResolver<'a> {
+impl<'resolver> OutputRefResolver<'resolver> {
     /// Resolve all output ref placeholder strings in a task's args and env.
     ///
     /// Called just before task execution. Replaces placeholder strings with
@@ -78,8 +78,10 @@ fn resolve_single_ref(
         return Err(Error::task_failed(
             &output_ref.task,
             result.exit_code.unwrap_or(-1),
-            &result.stdout,
-            &result.stderr,
+            cuenv_core::tasks::TaskFailureOutput {
+                stdout: &result.stdout,
+                stderr: &result.stderr,
+            },
         ));
     }
 
@@ -97,11 +99,17 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    fn make_result(name: &str, stdout: &str, stderr: &str, exit_code: i32) -> TaskResult {
+    #[derive(Clone, Copy)]
+    struct OutputText<'output> {
+        stdout: &'output str,
+        stderr: &'output str,
+    }
+
+    fn make_result(name: &str, output: OutputText<'_>, exit_code: i32) -> TaskResult {
         TaskResult {
             name: name.to_string(),
-            stdout: stdout.to_string(),
-            stderr: stderr.to_string(),
+            stdout: output.stdout.to_string(),
+            stderr: output.stderr.to_string(),
             exit_code: Some(exit_code),
             success: exit_code == 0,
         }
@@ -121,7 +129,14 @@ mod tests {
         let mut results = HashMap::new();
         results.insert(
             "tmpdir".to_string(),
-            make_result("tmpdir", "/tmp/abc\n", "", 0),
+            make_result(
+                "tmpdir",
+                OutputText {
+                    stdout: "/tmp/abc\n",
+                    stderr: "",
+                },
+                0,
+            ),
         );
 
         resolver(&results).resolve(&mut args, &mut env).unwrap();
@@ -139,7 +154,14 @@ mod tests {
         let mut results = HashMap::new();
         results.insert(
             "check".to_string(),
-            make_result("check", "", "  warning  \n", 0),
+            make_result(
+                "check",
+                OutputText {
+                    stdout: "",
+                    stderr: "  warning  \n",
+                },
+                0,
+            ),
         );
 
         resolver(&results).resolve(&mut args, &mut env).unwrap();
@@ -180,7 +202,14 @@ mod tests {
         let mut results = HashMap::new();
         results.insert(
             "failing".to_string(),
-            make_result("failing", "", "error!", 1),
+            make_result(
+                "failing",
+                OutputText {
+                    stdout: "",
+                    stderr: "error!",
+                },
+                1,
+            ),
         );
 
         let err = resolver(&results).resolve(&mut args, &mut env).unwrap_err();
@@ -193,7 +222,17 @@ mod tests {
         let mut args = vec!["cuenv:ref:check:exitCode".to_string()];
         let mut env = HashMap::new();
         let mut results = HashMap::new();
-        results.insert("check".to_string(), make_result("check", "", "", 0));
+        results.insert(
+            "check".to_string(),
+            make_result(
+                "check",
+                OutputText {
+                    stdout: "",
+                    stderr: "",
+                },
+                0,
+            ),
+        );
 
         let err = resolver(&results).resolve(&mut args, &mut env).unwrap_err();
         let msg = err.to_string();
@@ -206,7 +245,17 @@ mod tests {
         let mut args = vec!["cuenv:ref:quiet:stdout".to_string()];
         let mut env = HashMap::new();
         let mut results = HashMap::new();
-        results.insert("quiet".to_string(), make_result("quiet", "", "", 0));
+        results.insert(
+            "quiet".to_string(),
+            make_result(
+                "quiet",
+                OutputText {
+                    stdout: "",
+                    stderr: "",
+                },
+                0,
+            ),
+        );
 
         resolver(&results).resolve(&mut args, &mut env).unwrap();
         assert_eq!(args[0], ""); // empty after trim
@@ -219,7 +268,14 @@ mod tests {
         let mut results = HashMap::new();
         results.insert(
             "padded".to_string(),
-            make_result("padded", "  hello world  \n\n", "", 0),
+            make_result(
+                "padded",
+                OutputText {
+                    stdout: "  hello world  \n\n",
+                    stderr: "",
+                },
+                0,
+            ),
         );
 
         resolver(&results).resolve(&mut args, &mut env).unwrap();

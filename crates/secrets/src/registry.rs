@@ -14,14 +14,18 @@ use std::sync::Arc;
 ///
 /// # Example
 ///
-/// ```ignore
-/// use cuenv_secrets::{SecretRegistry, EnvSecretResolver};
+/// ```
+/// use cuenv_secrets::{SecretRegistry, EnvSecretResolver, SecretSpec};
+/// use std::sync::Arc;
 ///
 /// let mut registry = SecretRegistry::new();
 /// registry.register(Arc::new(EnvSecretResolver::new()));
 ///
 /// let resolver = registry.get("env").unwrap();
-/// let secret = resolver.resolve("API_KEY", &spec).await?;
+/// let spec = SecretSpec::new("PATH");
+/// let secret = tokio_test::block_on(resolver.resolve("tool-path", &spec))?;
+/// assert!(!secret.is_empty());
+/// # Ok::<(), cuenv_secrets::SecretError>(())
 /// ```
 #[derive(Default)]
 pub struct SecretRegistry {

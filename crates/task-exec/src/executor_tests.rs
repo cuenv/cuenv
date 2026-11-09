@@ -1,11 +1,16 @@
-use super::*;
+use super::{
+    Arc, Environment, ExecutorConfig, OutputCapture, PackageManager, Path, PathBuf,
+    TASK_FAILURE_SNIPPET_LINES, Task, TaskDirectory, TaskDirectoryBase, TaskExecutor, TaskGraph,
+    TaskGroup, TaskNode, TaskResult, Tasks,
+};
 use crate::cache::TaskCacheConfig;
 use crate::{RetryConfig, SourceLocation, TaskDependency};
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_events::{EventBus, EventCategory, TaskEvent};
 use cuenv_manifest::tasks::{Hermetic, HermeticOptions, Sandbox};
 use cuenv_vcs::WalkHasher;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::time::Duration;
 use tempfile::TempDir;
 
 fn executor_for(root: &Path) -> TaskExecutor {
@@ -112,6 +117,47 @@ async fn test_execute_with_environment() {
     let result = executor.execute_task("test", &task).await.unwrap();
     assert!(result.success);
     assert!(result.stdout.contains("test_value"));
+}
+
+#[tokio::test]
+async fn hook_session_is_not_inherited_by_exec_or_task_children()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut environment = host_path_environment();
+    environment.set(
+        "CUENV_HOOK_SESSION".to_string(),
+        "session-from-caller".to_string(),
+    );
+    let args = vec![
+        "-c".to_string(),
+        "test -z \"${CUENV_HOOK_SESSION+x}\"".to_string(),
+    ];
+    assert_eq!(
+        crate::command::execute_command("sh", &args, &environment).await?,
+        0
+    );
+
+    let executor = TaskExecutor::new(ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        environment,
+        ..Default::default()
+    });
+    let task = Task {
+        command: "sh".to_string(),
+        args,
+        hermetic: Hermetic::Enabled(false),
+        env: HashMap::from([(
+            "CUENV_HOOK_SESSION".to_string(),
+            serde_json::json!("session-from-task-config"),
+        )]),
+        ..Default::default()
+    };
+    let result = executor.execute_task("session", &task).await?;
+    assert!(
+        result.success,
+        "task observed a hook session: {}",
+        result.stderr
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -436,7 +482,7 @@ async fn test_timeout_kills_process_tree() {
             alive = false;
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(
         !alive,
@@ -458,6 +504,8 @@ async fn test_timeout_kills_process_tree() {
 /// do reap orphans, so `kill(pid, 0)` is accurate there.
 #[cfg(unix)]
 fn process_is_running(pid: i32) -> bool {
+    // SAFETY: kill takes integer arguments and touches no Rust memory;
+    // signal 0 probes the PID without sending a signal.
     #[expect(unsafe_code, reason = "probing process liveness via kill(pid, 0)")]
     let exists = unsafe { libc::kill(pid, 0) } == 0;
     if !exists {
@@ -855,9 +903,9 @@ async fn execute_graph_task_continue_on_error_skips_dependents() {
     assert!(outcome.is_err(), "fail task should surface as error");
 
     let mut saw_skip = false;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+        match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
             Ok(Some(event)) => {
                 if let EventCategory::Task(TaskEvent::Skipped { name, .. }) = event.category
                     && name == "dependent"
@@ -933,12 +981,12 @@ async fn test_cache_hit_replays_task_output_events() {
         vcs_hasher: Arc::new(WalkHasher::new(workspace.path())),
         vcs_hasher_root: workspace.path().to_path_buf(),
         action_semantics_version: 1,
-        runtime_identity_properties: std::collections::BTreeMap::new(),
+        runtime_identity_properties: BTreeMap::new(),
         cache_disabled_reason: None,
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
         cache_root: cache_root.path().to_path_buf(),
-        project_roots: std::collections::BTreeMap::new(),
+        project_roots: BTreeMap::new(),
     };
     let executor = TaskExecutor::new(ExecutorConfig {
         environment: host_path_environment(),
@@ -980,9 +1028,9 @@ async fn test_cache_hit_replays_task_output_events() {
     // short deadline rather than try_recv-looping so we don't race the
     // forwarder.
     let mut saw_output = false;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+        match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
             Ok(Some(event)) => {
                 if let EventCategory::Task(TaskEvent::Output { name, content, .. }) = event.category
                     && name == "cached"
@@ -1013,7 +1061,7 @@ fn test_summarize_task_failure_with_exit_code() {
         stderr: "command not found".to_string(),
         success: false,
     };
-    let summary = summarize_task_failure(&result, 10);
+    let summary = super::summarize_task_failure(&result, 10);
     assert!(summary.contains("build"));
     assert!(summary.contains("127"));
     assert!(summary.contains("command not found"));
@@ -1028,7 +1076,7 @@ fn test_summarize_task_failure_no_exit_code() {
         stderr: String::new(),
         success: false,
     };
-    let summary = summarize_task_failure(&result, 10);
+    let summary = super::summarize_task_failure(&result, 10);
     assert!(summary.contains("killed"));
     assert!(summary.contains("unknown"));
 }
@@ -1042,7 +1090,7 @@ fn test_summarize_task_failure_no_output() {
         stderr: String::new(),
         success: false,
     };
-    let summary = summarize_task_failure(&result, 10);
+    let summary = super::summarize_task_failure(&result, 10);
     assert!(summary.contains("No stdout/stderr"));
     assert!(summary.contains("RUST_LOG=debug"));
 }
@@ -1059,7 +1107,7 @@ fn test_summarize_task_failure_truncates_long_output() {
         stderr: String::new(),
         success: false,
     };
-    let summary = summarize_task_failure(&result, 10);
+    let summary = super::summarize_task_failure(&result, 10);
     assert!(summary.contains("last 10 of 50 lines"));
     assert!(summary.contains("line 50"));
     assert!(!summary.contains("line 1\n")); // First line should be truncated
@@ -1067,14 +1115,14 @@ fn test_summarize_task_failure_truncates_long_output() {
 
 #[test]
 fn test_summarize_stream_empty() {
-    assert!(summarize_stream("test", "", 10).is_none());
-    assert!(summarize_stream("test", "   ", 10).is_none());
-    assert!(summarize_stream("test", "\n\n", 10).is_none());
+    assert!(super::summarize_stream("test", "", 10).is_none());
+    assert!(super::summarize_stream("test", "   ", 10).is_none());
+    assert!(super::summarize_stream("test", "\n\n", 10).is_none());
 }
 
 #[test]
 fn test_summarize_stream_short() {
-    let result = summarize_stream("stdout", "line 1\nline 2", 10).unwrap();
+    let result = super::summarize_stream("stdout", "line 1\nline 2", 10).unwrap();
     assert!(result.contains("stdout:"));
     assert!(result.contains("line 1"));
     assert!(result.contains("line 2"));
@@ -1090,7 +1138,7 @@ fn test_format_failure_streams_both() {
         stderr: "stderr content".to_string(),
         success: false,
     };
-    let formatted = format_failure_streams(&result, 10);
+    let formatted = super::format_failure_streams(&result, 10);
     assert!(formatted.contains("stdout:"));
     assert!(formatted.contains("stderr:"));
     assert!(formatted.contains("stdout content"));
@@ -1109,7 +1157,7 @@ fn test_find_workspace_root_with_npm() {
     let subdir = tmp.path().join("packages").join("subpkg");
     std::fs::create_dir_all(&subdir).unwrap();
 
-    let root = find_workspace_root(PackageManager::Npm, &subdir);
+    let root = crate::workspace::find_workspace_root(PackageManager::Npm, &subdir);
     assert_eq!(root, tmp.path().canonicalize().unwrap());
 }
 
@@ -1240,7 +1288,7 @@ fn test_find_workspace_root_with_pnpm() {
     let subdir = tmp.path().join("packages").join("app");
     std::fs::create_dir_all(&subdir).unwrap();
 
-    let root = find_workspace_root(PackageManager::Pnpm, &subdir);
+    let root = crate::workspace::find_workspace_root(PackageManager::Pnpm, &subdir);
     assert_eq!(root, tmp.path().canonicalize().unwrap());
 }
 
@@ -1255,14 +1303,14 @@ fn test_find_workspace_root_with_cargo() {
     let subdir = tmp.path().join("crates").join("core");
     std::fs::create_dir_all(&subdir).unwrap();
 
-    let root = find_workspace_root(PackageManager::Cargo, &subdir);
+    let root = crate::workspace::find_workspace_root(PackageManager::Cargo, &subdir);
     assert_eq!(root, tmp.path().canonicalize().unwrap());
 }
 
 #[test]
 fn test_find_workspace_root_no_workspace() {
     let tmp = TempDir::new().unwrap();
-    let root = find_workspace_root(PackageManager::Npm, tmp.path());
+    let root = crate::workspace::find_workspace_root(PackageManager::Npm, tmp.path());
     // Should return the start path when no workspace is found
     assert_eq!(root, tmp.path().to_path_buf());
 }
@@ -1275,7 +1323,7 @@ fn test_package_json_has_workspaces_array() {
         r#"{"workspaces": ["packages/*"]}"#,
     )
     .unwrap();
-    assert!(package_json_has_workspaces(tmp.path()));
+    assert!(crate::workspace::package_json_has_workspaces(tmp.path()));
 }
 
 #[test]
@@ -1286,27 +1334,27 @@ fn test_package_json_has_workspaces_object() {
         r#"{"workspaces": {"packages": ["packages/*"]}}"#,
     )
     .unwrap();
-    assert!(package_json_has_workspaces(tmp.path()));
+    assert!(crate::workspace::package_json_has_workspaces(tmp.path()));
 }
 
 #[test]
 fn test_package_json_no_workspaces() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("package.json"), r#"{"name": "test"}"#).unwrap();
-    assert!(!package_json_has_workspaces(tmp.path()));
+    assert!(!crate::workspace::package_json_has_workspaces(tmp.path()));
 }
 
 #[test]
 fn test_package_json_empty_workspaces() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("package.json"), r#"{"workspaces": []}"#).unwrap();
-    assert!(!package_json_has_workspaces(tmp.path()));
+    assert!(!crate::workspace::package_json_has_workspaces(tmp.path()));
 }
 
 #[test]
 fn test_package_json_missing() {
     let tmp = TempDir::new().unwrap();
-    assert!(!package_json_has_workspaces(tmp.path()));
+    assert!(!crate::workspace::package_json_has_workspaces(tmp.path()));
 }
 
 #[test]
@@ -1317,20 +1365,20 @@ fn test_cargo_toml_has_workspace() {
         "[workspace]\nmembers = [\"crates/*\"]",
     )
     .unwrap();
-    assert!(cargo_toml_has_workspace(tmp.path()));
+    assert!(crate::workspace::cargo_toml_has_workspace(tmp.path()));
 }
 
 #[test]
 fn test_cargo_toml_no_workspace() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
-    assert!(!cargo_toml_has_workspace(tmp.path()));
+    assert!(!crate::workspace::cargo_toml_has_workspace(tmp.path()));
 }
 
 #[test]
 fn test_cargo_toml_missing() {
     let tmp = TempDir::new().unwrap();
-    assert!(!cargo_toml_has_workspace(tmp.path()));
+    assert!(!crate::workspace::cargo_toml_has_workspace(tmp.path()));
 }
 
 #[test]
@@ -1341,7 +1389,7 @@ fn test_deno_json_has_workspace_array() {
         r#"{"workspace": ["./packages/*"]}"#,
     )
     .unwrap();
-    assert!(deno_json_has_workspace(tmp.path()));
+    assert!(crate::workspace::deno_json_has_workspace(tmp.path()));
 }
 
 #[test]
@@ -1352,20 +1400,20 @@ fn test_deno_json_has_workspace_object() {
         r#"{"workspace": {"members": ["./packages/*"]}}"#,
     )
     .unwrap();
-    assert!(deno_json_has_workspace(tmp.path()));
+    assert!(crate::workspace::deno_json_has_workspace(tmp.path()));
 }
 
 #[test]
 fn test_deno_json_no_workspace() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("deno.json"), r#"{"name": "test"}"#).unwrap();
-    assert!(!deno_json_has_workspace(tmp.path()));
+    assert!(!crate::workspace::deno_json_has_workspace(tmp.path()));
 }
 
 #[test]
 fn test_deno_json_missing() {
     let tmp = TempDir::new().unwrap();
-    assert!(!deno_json_has_workspace(tmp.path()));
+    assert!(!crate::workspace::deno_json_has_workspace(tmp.path()));
 }
 
 #[test]

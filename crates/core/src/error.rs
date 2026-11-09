@@ -21,6 +21,17 @@ use miette::{Diagnostic, SourceSpan};
 use std::path::Path;
 use thiserror::Error as ThisError;
 
+/// Source context for a CUE parse diagnostic.
+#[derive(Debug, Clone)]
+pub struct CueParseSource {
+    /// CUE source text.
+    pub text: String,
+    /// Highlighted location, if known.
+    pub span: Option<SourceSpan>,
+    /// Suggested remedies, if available.
+    pub suggestions: Option<Vec<String>>,
+}
+
 /// Configuration-domain error.
 ///
 /// Deliberately still the catch-all shape used by ~10 core domains;
@@ -227,16 +238,14 @@ impl Error {
     pub fn cue_parse_with_source(
         path: &Path,
         message: impl Into<String>,
-        src: impl Into<String>,
-        span: Option<SourceSpan>,
-        suggestions: Option<Vec<String>>,
+        source: CueParseSource,
     ) -> Self {
         EvalError::CueParse {
             path: path.into(),
-            src: Some(src.into()),
-            span,
+            src: Some(source.text),
+            span: source.span,
             message: message.into(),
-            suggestions,
+            suggestions: source.suggestions,
         }
         .into()
     }
@@ -296,21 +305,18 @@ impl Error {
     pub fn task_failed(
         task_name: impl Into<String>,
         exit_code: i32,
-        stdout: impl Into<String>,
-        stderr: impl Into<String>,
+        output: crate::tasks::TaskFailureOutput<'_>,
     ) -> Self {
-        TaskError::task_failed(task_name, exit_code, stdout, stderr).into()
+        TaskError::task_failed(task_name, exit_code, output).into()
     }
 
     #[must_use]
     pub fn task_failed_with_help(
         task_name: impl Into<String>,
         exit_code: i32,
-        stdout: impl Into<String>,
-        stderr: impl Into<String>,
-        help: impl Into<String>,
+        details: crate::tasks::TaskFailureWithHelp<'_>,
     ) -> Self {
-        TaskError::task_failed_with_help(task_name, exit_code, stdout, stderr, help).into()
+        TaskError::task_failed_with_help(task_name, exit_code, details).into()
     }
 
     #[must_use]

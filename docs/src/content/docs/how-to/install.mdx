@@ -142,6 +142,37 @@ cuenv shell init fish | source
 
 Supported shells are `bash`, `zsh`, and `fish`. For the full command surface, tab-completion setup, and `cuenv env export`, see the [CLI reference](/reference/cli/).
 
+Bash and Zsh apply the first environment at the next prompt. Run `cuenv shell
+refresh` directly after initialization if you need it sooner.
+
+Each initialized shell uses a separate hook session. When you leave a project,
+the integration restores variables to their prior shell values, unless you have
+changed them yourself. If a nested shell inherits a cuenv environment without
+its shell-local restoration data, it cannot safely switch projects. Start a
+fresh shell or explicitly clear the inherited environment before switching.
+Original values remain local to the shell and are not included in its exported
+tracking metadata. A failed or pending refresh in the same project leaves the
+last successfully applied environment in place.
+
+The shell renderer rejects interpreter control and dynamic variable names,
+including `PS1`–`PS4`, `PROMPT_COMMAND`, `ENV`, `PWD`, and names beginning
+with `BASH_`, `ZSH_`, `FISH_`, or `__CUENV_`. `PATH` remains supported.
+This prevents a project environment from changing shell execution or tracing
+while it is being applied.
+In Zsh, a tied variable other than `PATH` is refused. `PATH` is also refused
+when its backing `path` array is empty or contains an element with a colon,
+because those forms cannot be restored from the exported scalar without loss.
+The integration runs in, and therefore trusts, the user's own shell code.
+
+Run `cuenv shell refresh` at the shell prompt to apply an available result
+without waiting for the next prompt. The command refuses to modify a different
+subshell or an unrelated caller function. For a standalone
+manual sequence, use the explicit session handoff in the
+[CLI reference](/reference/cli/#cuenv-shell-session).
+
+The standalone PowerShell export format requires PowerShell 7.5 or newer when
+an environment value is empty. Earlier versions would remove that variable.
+
 ## Editor setup
 
 For CUE syntax highlighting and language-server support in your editor, see [Editor Setup](/how-to/editor-setup/).

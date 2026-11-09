@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cuenv_manifest::manifest::{Infrastructure, ManagedResourceDeclaration};
 
-use super::{data_sources, declared_resource};
+use super::data_sources;
 use crate::error::{InfrastructureError, Result};
 use crate::references::{ConfigurationReferences, SourceAddress};
-use crate::registry::{ProviderSource, validate_version};
+use crate::registry::ProviderSource;
 
 /// Where in the `infrastructure` block a configuration lives: the top level,
 /// or one named environment, which does not inherit anything from the top
@@ -142,7 +142,7 @@ fn check_providers(
                  exactly one"
             )),
             (Some(version), None) => {
-                if let Err(error) = validate_version(version) {
+                if let Err(error) = crate::registry::validate_version(version) {
                     problems.push(format!("{path}.version: {}", detail(error)));
                 }
             }
@@ -193,8 +193,10 @@ fn check_resources(
         }
     }
     check_cycles(
-        &infrastructure.resources,
-        &BTreeMap::new(),
+        &CycleInputs {
+            resources: &infrastructure.resources,
+            references: &BTreeMap::new(),
+        },
         &resources,
         problems,
     );
@@ -228,17 +230,19 @@ fn check_data_sources(
     }
 }
 
+struct CycleInputs<'cycle> {
+    resources: &'cycle BTreeMap<String, ManagedResourceDeclaration>,
+    references: &'cycle BTreeMap<String, ConfigurationReferences>,
+}
+
 /// Report every dependency cycle among the declared resources: a resource
 /// that depends on itself, and each group of resources that depend on each
 /// other, with only its own members and the `dependsOn` entries that form it.
 /// Dependencies on resources that are not declared are reported elsewhere
 /// and ignored here.
-fn check_cycles(
-    resources: &BTreeMap<String, ManagedResourceDeclaration>,
-    references: &BTreeMap<String, ConfigurationReferences>,
-    path: &str,
-    problems: &mut Vec<String>,
-) {
+fn check_cycles(inputs: &CycleInputs<'_>, path: &str, problems: &mut Vec<String>) {
+    let resources = inputs.resources;
+    let references = inputs.references;
     let names: Vec<&str> = resources.keys().map(String::as_str).collect();
     let position: BTreeMap<&str, usize> = names
         .iter()
@@ -309,7 +313,7 @@ fn check_cycles(
                     .flat_map(ConfigurationReferences::references)
                     .filter(|reference| {
                         matches!(&reference.source, SourceAddress::Resource(source) if members.contains(&source.name.as_str())
-                            && declared_resource(resources, source).is_some())
+                            && super::declared_resource(resources, source).is_some())
                     })
                     .map(move |reference| {
                         format!(

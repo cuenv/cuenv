@@ -8,11 +8,7 @@ use crate::schema::Schema;
 use crate::state::{ConditionalPut, ManagedResource, RecordVersion, StateLock};
 use crate::type_system::{Type, Value};
 
-use super::{
-    InfrastructureEngine, ResourceAddress, ResourceChange, SourceAddress, applied_value,
-    data_source_schema, data_sources, decode_provider_value, masked_attributes, provider_value,
-    register_attributes, register_value_strings, resource_schema,
-};
+use super::{InfrastructureEngine, ResourceAddress, ResourceChange, SourceAddress, data_sources};
 
 pub(super) struct ImportSensitivity<'input> {
     pub(super) address: &'input ResourceAddress,
@@ -42,7 +38,7 @@ impl InfrastructureEngine {
     ) -> Result<Value> {
         let sensitive = &retained.change.sensitive;
         let decoded = if sensitive.is_empty() {
-            applied_value(
+            super::applied_value(
                 input.response,
                 input.value_type,
                 &format!("apply {}", retained.change.address),
@@ -116,14 +112,14 @@ impl InfrastructureEngine {
             let provider = self.loaded(&provider_name)?;
             let schema = match source {
                 SourceAddress::Resource(address) => {
-                    resource_schema(provider, &provider_name, &address.resource_type)?
+                    super::resource_schema(provider, &provider_name, &address.resource_type)?
                 }
                 SourceAddress::DataSource(address) => {
-                    data_source_schema(provider, &address.resource_type)?
+                    super::data_source_schema(provider, &address.resource_type)?
                 }
             };
             let references = graph.references.get(source).cloned().unwrap_or_default();
-            let mut sensitive = masked_attributes(
+            let mut sensitive = super::masked_attributes(
                 &schema.block,
                 self.validate_output_references(source.address(), &references, &schema.block)?,
             );
@@ -207,7 +203,11 @@ pub(super) fn register_stored_values(row: &ManagedResource, names: &[String]) {
 fn register_json_strings(value: &serde_json::Value) {
     match value {
         serde_json::Value::String(text) => cuenv_events::register_secret(text.clone()),
-        serde_json::Value::Array(values) => values.iter().for_each(register_json_strings),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                register_json_strings(value);
+            }
+        }
         serde_json::Value::Object(values) => {
             for (name, value) in values {
                 cuenv_events::register_secret(name.clone());
@@ -223,14 +223,14 @@ fn register_json_strings(value: &serde_json::Value) {
 /// Historical and malformed values keep the conservative, untyped registration.
 pub(super) fn register_typed_attributes(value: &Value, sensitive: &[String], value_type: &Type) {
     let Type::Object(attributes) = value_type else {
-        register_attributes(value, sensitive);
+        super::register_attributes(value, sensitive);
         return;
     };
     for name in sensitive {
         if let Some(value) = value.attribute(name) {
             match attributes.get(name) {
                 Some(value_type) => register_typed_strings(value, value_type),
-                None => register_value_strings(value),
+                None => super::register_value_strings(value),
             }
         }
     }
@@ -244,7 +244,7 @@ fn register_typed_strings(value: &Value, value_type: &Type) {
                     register_typed_strings(value, value_type);
                 } else {
                     cuenv_events::register_secret(name.clone());
-                    register_value_strings(value);
+                    super::register_value_strings(value);
                 }
             }
         }
@@ -263,13 +263,13 @@ fn register_typed_strings(value: &Value, value_type: &Type) {
             for (index, value) in values.iter().enumerate() {
                 match elements.get(index) {
                     Some(value_type) => register_typed_strings(value, value_type),
-                    None => register_value_strings(value),
+                    None => super::register_value_strings(value),
                 }
             }
         }
         // In particular, a Typed(Object) inside Dynamic is runtime data, not
         // static schema metadata. Do not use its labels to bypass registration.
-        _ => register_value_strings(value),
+        _ => super::register_value_strings(value),
     }
 }
 
@@ -286,8 +286,8 @@ pub(super) struct SensitiveProviderValue<'value> {
 pub(super) fn sensitive_provider_value(
     input: SensitiveProviderValue<'_>,
 ) -> Result<(Value, Vec<u8>)> {
-    let decoded =
-        provider_value(input.value, input.value_type).map_err(|_| sensitive_decode_error(input))?;
+    let decoded = super::provider_value(input.value, input.value_type)
+        .map_err(|_| sensitive_decode_error(input))?;
     register_typed_attributes(&decoded.0, input.sensitive, input.value_type);
     Ok(decoded)
 }
@@ -295,7 +295,7 @@ pub(super) fn sensitive_provider_value(
 /// A completed mutation needs only decoding and redaction before recording;
 /// a later attempt to send this state may independently fail closed.
 fn sensitive_applied_value(input: SensitiveProviderValue<'_>) -> Result<Value> {
-    let decoded = decode_provider_value(input.value, input.value_type)
+    let decoded = super::decode_provider_value(input.value, input.value_type)
         .map_err(|_| sensitive_decode_error(input))?;
     register_typed_attributes(&decoded, input.sensitive, input.value_type);
     Ok(decoded)
@@ -342,7 +342,11 @@ fn register_message_pack_strings(value: &rmpv::Value) {
                 cuenv_events::register_secret(text.to_string());
             }
         }
-        rmpv::Value::Array(values) => values.iter().for_each(register_message_pack_strings),
+        rmpv::Value::Array(values) => {
+            for value in values {
+                register_message_pack_strings(value);
+            }
+        }
         rmpv::Value::Map(values) => {
             for (name, value) in values {
                 register_message_pack_strings(name);

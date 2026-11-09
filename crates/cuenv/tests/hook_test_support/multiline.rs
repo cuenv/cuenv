@@ -1,12 +1,12 @@
 //! Integration test for hooks with multiline exports
 
-use super::{ApprovalOutcome, TestResult, approve_config, create_test_dir, load_hook_exports};
+use super::TestResult;
 use assert_cmd::Command;
 use std::fs;
 
 #[test]
 fn test_hook_multiline_export() -> TestResult {
-    let temp_dir = create_test_dir("test.example/multiline")?;
+    let temp_dir = super::create_test_dir("test.example/multiline")?;
     let path = temp_dir.path();
 
     // Create env.cue with a hook that exports a multiline variable
@@ -30,12 +30,9 @@ hooks: {
 
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
 
-    match approve_config(path, cuenv_bin)? {
-        ApprovalOutcome::Approved => {}
-        ApprovalOutcome::SandboxError => return Ok(()),
-    }
+    super::approve_config(path, cuenv_bin)?;
 
-    let export = load_hook_exports(path, cuenv_bin)?;
+    let export = super::load_hook_exports(path, cuenv_bin)?;
     let exports = String::from_utf8(export.stdout)?;
     let check_script = format!(
         "{exports}\nif [ \"$SINGLE\" = \"success\" ]; then echo FOUND_SINGLE; else echo MISSING_SINGLE; fi; if [ \"$MULTI\" = \"line1\nline2\" ]; then echo FOUND_MULTI; else echo MISSING_MULTI; fi"

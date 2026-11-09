@@ -8,6 +8,16 @@ use thiserror::Error;
 #[derive(Error, Debug, Diagnostic)]
 #[non_exhaustive]
 pub enum Error {
+    /// Another session currently owns the directory's hook reservation.
+    #[error("Hook directory is reserved by another run")]
+    #[diagnostic(code(cuenv_hooks::state::busy))]
+    Busy,
+
+    /// A hook process could not be started.
+    #[error("Failed to execute command")]
+    #[diagnostic(code(cuenv_hooks::process::start))]
+    ProcessStart,
+
     /// Configuration error
     #[error("Configuration error: {message}")]
     #[diagnostic(code(cuenv_hooks::config::invalid))]

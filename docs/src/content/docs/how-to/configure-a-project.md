@@ -434,31 +434,24 @@ config: {
 cuenv automatically validates configuration against schemas when tasks are run.
 
 ```bash
-# Check environment validity
-cuenv env check
+# Evaluate and print the environment
+cuenv env print
 ```
 
-### Custom Validators
+`env print` resolves secrets and redacts registered secret values in its
+output. Treat the remaining environment values as sensitive too.
 
-Extend validation with custom rules:
+### CUE Constraints
+
+Express value checks as CUE constraints:
 
 ```cue
-#Validators: {
-    // Port availability check
-    portAvailable: {
-        field: "port"
-        check: "network.portAvailable"
-        message: "Port {value} is not available"
-    }
-
-    // Database connectivity
-    databaseReachable: {
-        field: "database.host"
-        check: "network.tcpConnect"
-        message: "Cannot connect to database at {value}"
-    }
-}
+#ServerPort: int & >=1 & <=65535
+env: PORT: #ServerPort & 8080
 ```
+
+These constraints validate configuration values. To check network
+availability, define and run a task that performs the check.
 
 ## Best Practices
 

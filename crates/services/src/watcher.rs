@@ -23,22 +23,35 @@ pub struct ServiceWatcher {
     _watcher: RecommendedWatcher,
 }
 
+/// Paths and debounce behavior for a service file watcher.
+pub struct WatchOptions<'options> {
+    /// Glob patterns relative to the service's project root.
+    pub watch_paths: &'options [String],
+    /// Patterns excluded from change events.
+    pub ignore_patterns: &'options [String],
+    /// Time to collect changes before notifying the supervisor.
+    pub debounce: Duration,
+}
+
 impl ServiceWatcher {
     /// Start watching the given paths, sending events to the provided channel.
     ///
-    /// Glob patterns in `watch_paths` are expanded relative to `project_root`.
-    /// Changes are debounced by `debounce` duration.
+    /// Glob patterns in `options.watch_paths` are expanded relative to
+    /// `project_root`. Changes are debounced by `options.debounce`.
     ///
     /// # Errors
     ///
     /// Returns an error if the watcher cannot be initialized.
     pub fn start(
         project_root: &Path,
-        watch_paths: &[String],
-        ignore_patterns: &[String],
-        debounce: Duration,
+        options: WatchOptions<'_>,
         event_tx: mpsc::Sender<WatchEvent>,
     ) -> crate::Result<Self> {
+        let WatchOptions {
+            watch_paths,
+            ignore_patterns,
+            debounce,
+        } = options;
         let (notify_tx, notify_rx) = std_mpsc::channel();
 
         let mut watcher = RecommendedWatcher::new(notify_tx, Config::default())

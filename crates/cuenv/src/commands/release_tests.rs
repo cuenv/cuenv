@@ -1,6 +1,7 @@
-use super::*;
-use cuenv_release::TagType;
+use super::{ChangesetDescription, OutputFormat};
+use cuenv_release::{CargoManifest, TagType};
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -60,7 +61,14 @@ fn test_changeset_add() {
 
     let packages = vec![("my-pkg".to_string(), "minor".to_string())];
 
-    let result = execute_changeset_add(path, &packages, Some("Add feature"), Some("Details here"));
+    let result = super::execute_changeset_add(
+        path,
+        &packages,
+        ChangesetDescription {
+            summary: Some("Add feature"),
+            description: Some("Details here"),
+        },
+    );
 
     assert!(result.is_ok());
     let output = result.unwrap();
@@ -75,7 +83,14 @@ fn test_changeset_add_invalid_bump() {
 
     let packages = vec![("my-pkg".to_string(), "invalid".to_string())];
 
-    let result = execute_changeset_add(path, &packages, Some("Test"), None);
+    let result = super::execute_changeset_add(
+        path,
+        &packages,
+        ChangesetDescription {
+            summary: Some("Test"),
+            description: None,
+        },
+    );
     assert!(result.is_err());
 }
 
@@ -86,7 +101,14 @@ fn test_changeset_add_no_packages() {
 
     let packages: Vec<(String, String)> = vec![];
 
-    let result = execute_changeset_add(path, &packages, Some("Test"), None);
+    let result = super::execute_changeset_add(
+        path,
+        &packages,
+        ChangesetDescription {
+            summary: Some("Test"),
+            description: None,
+        },
+    );
     assert!(result.is_err());
 }
 
@@ -95,7 +117,7 @@ fn test_changeset_status_empty() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().to_str().unwrap();
 
-    let result = execute_changeset_status(path);
+    let result = super::execute_changeset_status(path);
     assert!(result.is_ok());
     assert!(result.unwrap().contains("No pending changesets"));
 }
@@ -107,10 +129,18 @@ fn test_changeset_status_with_changesets() {
 
     // First add a changeset
     let packages = vec![("pkg-a".to_string(), "minor".to_string())];
-    execute_changeset_add(path, &packages, Some("Add feature"), None).unwrap();
+    super::execute_changeset_add(
+        path,
+        &packages,
+        ChangesetDescription {
+            summary: Some("Add feature"),
+            description: None,
+        },
+    )
+    .unwrap();
 
     // Then check status
-    let result = execute_changeset_status(path);
+    let result = super::execute_changeset_status(path);
     assert!(result.is_ok());
     let output = result.unwrap();
     assert!(output.contains("1 pending changeset"));
@@ -123,7 +153,7 @@ fn test_release_version_no_changesets() {
     let temp = TempDir::new().unwrap();
     let path = create_test_workspace(&temp);
 
-    let result = execute_release_version(&path, true.into());
+    let result = super::execute_release_version(&path, cuenv_core::DryRun::Yes);
     assert!(result.is_err());
 }
 
@@ -134,9 +164,17 @@ fn test_release_version_dry_run() {
 
     // Add a changeset first
     let packages = vec![("foo".to_string(), "minor".to_string())];
-    execute_changeset_add(&path, &packages, Some("Feature"), None).unwrap();
+    super::execute_changeset_add(
+        &path,
+        &packages,
+        ChangesetDescription {
+            summary: Some("Feature"),
+            description: None,
+        },
+    )
+    .unwrap();
 
-    let result = execute_release_version(&path, true.into());
+    let result = super::execute_release_version(&path, cuenv_core::DryRun::Yes);
     assert!(result.is_ok());
     let output = result.unwrap();
     assert!(output.contains("Dry run"));
@@ -186,7 +224,7 @@ fn test_release_config_from_evaluated_env_cue_value() {
         }
     });
 
-    let config = release_config_from_value(&value).unwrap();
+    let config = super::release_config_from_value(&value).unwrap();
 
     assert_eq!(config.binary.as_deref(), Some("demo-cli"));
     assert_eq!(config.targets, vec!["linux-x64"]);
@@ -213,10 +251,18 @@ fn test_release_version_apply() {
 
     // Add a changeset
     let packages = vec![("foo".to_string(), "minor".to_string())];
-    execute_changeset_add(&path, &packages, Some("Feature"), None).unwrap();
+    super::execute_changeset_add(
+        &path,
+        &packages,
+        ChangesetDescription {
+            summary: Some("Feature"),
+            description: None,
+        },
+    )
+    .unwrap();
 
     // Apply version changes
-    let result = execute_release_version(&path, false.into());
+    let result = super::execute_release_version(&path, cuenv_core::DryRun::No);
     assert!(result.is_ok());
     let output = result.unwrap();
     assert!(output.contains("Manifest files updated"));
@@ -233,7 +279,8 @@ fn test_release_publish_dry_run_human() {
     let temp = TempDir::new().unwrap();
     let path = create_test_workspace(&temp);
 
-    let result = execute_release_publish(&path, true.into(), OutputFormat::Human);
+    let result =
+        super::execute_release_publish(&path, cuenv_core::DryRun::Yes, OutputFormat::Human);
     assert!(result.is_ok());
     let output = result.unwrap();
     assert!(output.contains("Dry run"));
@@ -245,7 +292,7 @@ fn test_release_publish_json() {
     let temp = TempDir::new().unwrap();
     let path = create_test_workspace(&temp);
 
-    let result = execute_release_publish(&path, true.into(), OutputFormat::Json);
+    let result = super::execute_release_publish(&path, cuenv_core::DryRun::Yes, OutputFormat::Json);
     assert!(result.is_ok());
     let output = result.unwrap();
     assert!(output.contains("\"packages\""));
@@ -334,7 +381,7 @@ fn test_changeset_from_commits_no_git_repo() {
     let path = temp.path().to_str().unwrap();
 
     // Should fail because there's no git repository
-    let result = execute_changeset_from_commits(path, None);
+    let result = super::execute_changeset_from_commits(path, None);
     assert!(result.is_err());
 }
 
@@ -347,7 +394,7 @@ fn test_changeset_from_commits_with_workspace() {
     create_git_commit(&path, "feat: add new feature");
 
     // Now test the function
-    let result = execute_changeset_from_commits(&path, None);
+    let result = super::execute_changeset_from_commits(&path, None);
     assert!(result.is_ok(), "Expected Ok, got error: {:?}", result.err());
     let output = result.unwrap();
     assert!(output.contains("Created changeset"));
@@ -363,7 +410,7 @@ fn test_changeset_from_commits_no_version_bumps() {
     create_git_commit(&path, "chore: update deps");
 
     // Should return message about no version-bumping commits
-    let result = execute_changeset_from_commits(&path, None);
+    let result = super::execute_changeset_from_commits(&path, None);
     assert!(result.is_ok(), "Expected Ok, got error: {:?}", result.err());
     let output = result.unwrap();
     assert!(output.contains("No version-bumping commits"));
@@ -409,7 +456,7 @@ fn test_changeset_from_commits_with_since_tag() {
     create_git_commit(&path, "feat: new feature after tag");
 
     // Test with since_tag - should only process commits after the tag
-    let result = execute_changeset_from_commits(&path, Some("v0.1.0"));
+    let result = super::execute_changeset_from_commits(&path, Some("v0.1.0"));
     assert!(result.is_ok(), "Expected Ok, got error: {:?}", result.err());
     let output = result.unwrap();
     assert!(output.contains("Created changeset"));
@@ -429,7 +476,7 @@ fn test_changeset_from_commits_with_nonexistent_tag() {
     create_git_commit(&path, "feat: new feature");
 
     // Test with non-existent tag - should return error
-    let result = execute_changeset_from_commits(&path, Some("v0.1.0"));
+    let result = super::execute_changeset_from_commits(&path, Some("v0.1.0"));
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.to_string().contains("Tag 'v0.1.0' not found"));

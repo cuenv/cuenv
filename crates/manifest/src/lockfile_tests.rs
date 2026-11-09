@@ -1,4 +1,12 @@
-use super::*;
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use super::{
+    ArtifactKind, INFRASTRUCTURE_PROVIDERS_LOCKFILE_VERSION, LOCKFILE_NAME, LOCKFILE_VERSION,
+    LockedArtifact, LockedInfrastructureProvider, LockedNixRuntime, LockedOciExtract,
+    LockedRuntime, LockedTool, LockedToolPlatform, LockedVcsDependency, Lockfile, PlatformData,
+    ToolIdentity,
+};
 
 #[test]
 fn test_lockfile_serialization() {
@@ -216,7 +224,7 @@ fn test_upsert_artifact() {
 
 #[test]
 fn test_current_platform() {
-    let platform = current_platform();
+    let platform = super::current_platform();
     // Should contain OS and arch
     assert!(platform.contains('-'));
     let parts: Vec<&str> = platform.split('-').collect();
@@ -225,9 +233,9 @@ fn test_current_platform() {
 
 #[test]
 fn test_normalize_platform() {
-    assert_eq!(normalize_platform("macos-amd64"), "darwin-x86_64");
-    assert_eq!(normalize_platform("linux-aarch64"), "linux-arm64");
-    assert_eq!(normalize_platform("Darwin-ARM64"), "darwin-arm64");
+    assert_eq!(super::normalize_platform("macos-amd64"), "darwin-x86_64");
+    assert_eq!(super::normalize_platform("linux-aarch64"), "linux-arm64");
+    assert_eq!(super::normalize_platform("Darwin-ARM64"), "darwin-arm64");
 }
 
 #[test]
@@ -314,8 +322,7 @@ fn test_tools_serialization() {
 
     lockfile
             .upsert_tool_platform(
-                "jq",
-                "1.7.1",
+                ToolIdentity { name: "jq", version: "1.7.1" },
                 "darwin-arm64",
                 LockedToolPlatform {
                     provider: "github".to_string(),
@@ -329,8 +336,7 @@ fn test_tools_serialization() {
 
     lockfile
             .upsert_tool_platform(
-                "jq",
-                "1.7.1",
+                ToolIdentity { name: "jq", version: "1.7.1" },
                 "linux-x86_64",
                 LockedToolPlatform {
                     provider: "github".to_string(),
@@ -550,42 +556,42 @@ path = "vendor/legacy"
 #[test]
 fn test_lockfile_parent_for_sync_handles_relative_path() {
     assert_eq!(
-        lockfile_parent_for_sync(Path::new("cuenv.lock")),
+        super::lockfile_parent_for_sync(Path::new("cuenv.lock")),
         Path::new(".")
     );
     assert_eq!(
-        lockfile_parent_for_sync(Path::new("nested/cuenv.lock")),
+        super::lockfile_parent_for_sync(Path::new("nested/cuenv.lock")),
         Path::new("nested")
     );
 }
 
 #[test]
 fn test_vcs_path_rejects_internal_paths() {
-    assert!(validate_locked_vcs_path(".git/hooks").is_err());
-    assert!(validate_locked_vcs_path("vendor/.git/hooks").is_err());
-    assert!(validate_locked_vcs_path(".cuenv/vcs/cache/lib").is_err());
-    assert!(validate_locked_vcs_path(".cuenv/vcs/tmp/lib").is_err());
-    assert!(validate_locked_vcs_path("vendor/lib").is_ok());
+    assert!(super::validate_locked_vcs_path(".git/hooks").is_err());
+    assert!(super::validate_locked_vcs_path("vendor/.git/hooks").is_err());
+    assert!(super::validate_locked_vcs_path(".cuenv/vcs/cache/lib").is_err());
+    assert!(super::validate_locked_vcs_path(".cuenv/vcs/tmp/lib").is_err());
+    assert!(super::validate_locked_vcs_path("vendor/lib").is_ok());
 }
 
 #[test]
 fn test_vcs_subdir_allows_dotcuenv_paths_but_rejects_dotgit() {
     // subdir is a path *inside the remote repo*, so .cuenv/... is allowed —
     // only local-disk materialization paths reserve those prefixes.
-    assert!(validate_locked_vcs_subdir(".cuenv/vcs/cache").is_ok());
-    assert!(validate_locked_vcs_subdir(".cuenv/some/skill").is_ok());
-    assert!(validate_locked_vcs_subdir(".agents/skills").is_ok());
+    assert!(super::validate_locked_vcs_subdir(".cuenv/vcs/cache").is_ok());
+    assert!(super::validate_locked_vcs_subdir(".cuenv/some/skill").is_ok());
+    assert!(super::validate_locked_vcs_subdir(".agents/skills").is_ok());
 
     // .git inside a tree is still impossible under git's own rules.
-    assert!(validate_locked_vcs_subdir(".git").is_err());
-    assert!(validate_locked_vcs_subdir("nested/.git").is_err());
+    assert!(super::validate_locked_vcs_subdir(".git").is_err());
+    assert!(super::validate_locked_vcs_subdir("nested/.git").is_err());
 
     // Component-safety rules still apply.
-    assert!(validate_locked_vcs_subdir("--stdin").is_err());
-    assert!(validate_locked_vcs_subdir("nested/-evil").is_err());
-    assert!(validate_locked_vcs_subdir("a\\b").is_err());
-    assert!(validate_locked_vcs_subdir("..").is_err());
-    assert!(validate_locked_vcs_subdir("").is_err());
+    assert!(super::validate_locked_vcs_subdir("--stdin").is_err());
+    assert!(super::validate_locked_vcs_subdir("nested/-evil").is_err());
+    assert!(super::validate_locked_vcs_subdir("a\\b").is_err());
+    assert!(super::validate_locked_vcs_subdir("..").is_err());
+    assert!(super::validate_locked_vcs_subdir("").is_err());
 }
 
 #[test]
@@ -616,8 +622,7 @@ fn test_find_tool() {
     let mut lockfile = Lockfile::new();
     lockfile
             .upsert_tool_platform(
-                "jq",
-                "1.7.1",
+                ToolIdentity { name: "jq", version: "1.7.1" },
                 "darwin-arm64",
                 LockedToolPlatform {
                     provider: "github".to_string(),
@@ -640,8 +645,10 @@ fn test_upsert_tool_platform() {
     // Add first platform
     lockfile
         .upsert_tool_platform(
-            "bun",
-            "1.3.5",
+            ToolIdentity {
+                name: "bun",
+                version: "1.3.5",
+            },
             "darwin-arm64",
             LockedToolPlatform {
                 provider: "github".to_string(),
@@ -659,8 +666,10 @@ fn test_upsert_tool_platform() {
     // Add second platform
     lockfile
         .upsert_tool_platform(
-            "bun",
-            "1.3.5",
+            ToolIdentity {
+                name: "bun",
+                version: "1.3.5",
+            },
             "linux-x86_64",
             LockedToolPlatform {
                 provider: "oci".to_string(),
@@ -689,8 +698,10 @@ fn test_upsert_tool_platform_invalid_digest() {
     let mut lockfile = Lockfile::new();
 
     let result = lockfile.upsert_tool_platform(
-        "jq",
-        "1.7.1",
+        ToolIdentity {
+            name: "jq",
+            version: "1.7.1",
+        },
         "darwin-arm64",
         LockedToolPlatform {
             provider: "github".to_string(),
@@ -735,8 +746,10 @@ fn test_tool_names() {
 
     lockfile
         .upsert_tool_platform(
-            "jq",
-            "1.7.1",
+            ToolIdentity {
+                name: "jq",
+                version: "1.7.1",
+            },
             "darwin-arm64",
             LockedToolPlatform {
                 provider: "github".to_string(),
@@ -750,8 +763,10 @@ fn test_tool_names() {
 
     lockfile
         .upsert_tool_platform(
-            "yq",
-            "4.44.6",
+            ToolIdentity {
+                name: "yq",
+                version: "4.44.6",
+            },
             "darwin-arm64",
             LockedToolPlatform {
                 provider: "github".to_string(),

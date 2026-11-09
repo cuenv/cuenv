@@ -1,16 +1,16 @@
 //! The overlay scrollbar: a thin thumb in the terminal's gutter, there while the view
 //! moves or the pointer comes looking for it in the gutter, and draggable.
 
-use super::tokens::{ChromeColors, faded, radius, size};
-use super::{hover_fade, hover_probe};
-use crate::terminal::engine::{TerminalView, redraw_after_this_frame, store_if_changed};
+use super::tokens::{ChromeColors, radius, size};
+use super::{hover, tokens};
+use crate::terminal::engine;
+use crate::terminal::engine::TerminalView;
 use crate::terminal::motion::HoverTarget;
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::scrollbar::{ScrollExtent, Track};
-use gpui::StatefulInteractiveElement;
 use gpui::{
     Context, DispatchPhase, Div, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Styled, canvas, div, px,
+    MouseUpEvent, ParentElement, Pixels, StatefulInteractiveElement, Styled,
 };
 
 /// The track for a height the surface has measured.
@@ -22,7 +22,7 @@ pub(in crate::terminal) fn track_of(height: f32) -> Track {
 }
 
 /// What a scrollbar is drawn from.
-pub(in crate::terminal) struct ScrollbarRequest<'a> {
+pub(in crate::terminal) struct ScrollbarRequest<'view> {
     /// `None` where there is nothing to scroll.
     pub(in crate::terminal) extent: Option<ScrollExtent>,
     /// Its room above and below, which are the terminal's own insets so that its ends line
@@ -31,7 +31,7 @@ pub(in crate::terminal) struct ScrollbarRequest<'a> {
     pub(in crate::terminal) bottom: Pixels,
     /// The room beside the grid, which padding may leave at nothing.
     pub(in crate::terminal) gutter: Pixels,
-    pub(in crate::terminal) theme: &'a TerminalTheme,
+    pub(in crate::terminal) theme: &'view TerminalTheme,
 }
 
 /// Whether the part of the thumb beyond the gutter takes a press or leaves it to the grid.
@@ -106,7 +106,7 @@ impl TerminalView {
     /// is enough to bring it back from having faded, and that part takes nothing from what
     /// is beneath it. The command palette covers it while it is open.
     pub(in crate::terminal) fn render_scrollbar(
-        &self,
+        &mut self,
         request: ScrollbarRequest<'_>,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
@@ -119,12 +119,15 @@ impl TerminalView {
         } = request;
         let colors = ChromeColors::from_theme(theme);
         let extent = extent.filter(|_| !self.palette_open)?;
-        let (track_top, track_height) = self.scrollbar_track();
+        let Some((track_top, track_height)) = self.scrollbar_track() else {
+            self.scrollbar_grab = None;
+            return None;
+        };
         let thumb = extent.thumb(track_of(track_height));
         let now = std::time::Instant::now();
         let dragging = self.scrollbar_grab.is_some();
         // With no gutter there is nowhere to hover, whatever padding last left behind.
-        let hover = if gutter > px(0.0) {
+        let hover = if gutter > gpui::px(0.0) {
             self.hover_level(HoverTarget::Scrollbar)
         } else {
             0.0
@@ -148,7 +151,7 @@ impl TerminalView {
         } else {
             resting + (1.0 - resting) * hover
         };
-        let fill = faded(colors.scrollbar_active, level * strength);
+        let fill = tokens::faded(colors.scrollbar_active, level * strength);
         let track = self.scrollbar_track_handle();
         let entity = cx.weak_entity();
         let measured_by = cx.weak_entity();
@@ -172,11 +175,18 @@ impl TerminalView {
                 .on_scroll_wheel(cx.listener(Self::scroll_wheel))
         };
         let widths = press_widths(gutter, press);
-        let gutter_area = (widths.gutter > 0.0)
-            .then(|| press_area(div().top_0().bottom_0().w(px(widths.gutter)), cx));
+        let gutter_area = (widths.gutter > 0.0).then(|| {
+            press_area(
+                gpui::div().top_0().bottom_0().w(gpui::px(widths.gutter)),
+                cx,
+            )
+        });
         let thumb_area = widths.thumb.map(|width| {
             press_area(
-                div().top(px(thumb.top)).h(px(thumb.height)).w(px(width)),
+                gpui::div()
+                    .top(gpui::px(thumb.top))
+                    .h(gpui::px(thumb.height))
+                    .w(gpui::px(width)),
                 cx,
             )
         });
@@ -184,18 +194,18 @@ impl TerminalView {
         // the press areas so that a pointer over them still reaches it: it blocks nothing, and
         // the areas block only what is beneath the scrollbar.
         let hover_area = (widths.gutter > 0.0).then(|| {
-            div()
+            gpui::div()
                 .id("cuetty-scrollbar")
                 .absolute()
                 .top_0()
                 .bottom_0()
                 .right_0()
-                .w(px(widths.gutter))
-                .on_hover(hover_fade(HoverTarget::Scrollbar, cx))
-                .child(hover_probe(HoverTarget::Scrollbar, cx))
+                .w(gpui::px(widths.gutter))
+                .on_hover(hover::hover_fade(HoverTarget::Scrollbar, cx))
+                .child(hover::hover_probe(HoverTarget::Scrollbar, cx))
         });
         Some(
-            div()
+            gpui::div()
                 .absolute()
                 .top(top)
                 .bottom(bottom)
@@ -205,18 +215,18 @@ impl TerminalView {
                 .children(thumb_area)
                 .children(hover_area)
                 .child(
-                    div()
+                    gpui::div()
                         .absolute()
                         .inset_0()
                         .child(
-                            canvas(
+                            gpui::canvas(
                                 move |bounds, _window, app| {
                                     let next = (
                                         f32::from(bounds.origin.y),
                                         f32::from(bounds.size.height).max(1.0),
                                     );
-                                    if store_if_changed(&track, next) {
-                                        redraw_after_this_frame(measured_by, app);
+                                    if engine::store_if_changed(&track, next).unwrap_or(true) {
+                                        engine::redraw_after_this_frame(measured_by, app);
                                     }
                                 },
                                 // A drag belongs to the whole window once it has started: the pointer
@@ -259,10 +269,10 @@ impl TerminalView {
                             .inset_0(),
                         )
                         .child(
-                            div()
+                            gpui::div()
                                 .absolute()
-                                .top(px(thumb.top))
-                                .h(px(thumb.height))
+                                .top(gpui::px(thumb.top))
+                                .h(gpui::px(thumb.height))
                                 .right(size::SCROLLBAR_INSET)
                                 .w(size::SCROLLBAR_THUMB_WIDTH)
                                 .rounded(radius::CONTROL)
@@ -281,7 +291,7 @@ mod tests {
     #[test]
     fn with_no_gutter_a_thumb_left_to_the_terminal_takes_no_press_from_the_last_column() {
         assert_eq!(
-            press_widths(px(0.0), ThumbPress::LeftToTerminal),
+            press_widths(gpui::px(0.0), ThumbPress::LeftToTerminal),
             PressWidths {
                 gutter: 0.0,
                 thumb: None
@@ -291,7 +301,7 @@ mod tests {
 
     #[test]
     fn with_no_gutter_only_a_thumb_open_to_a_press_takes_one() {
-        let widths = press_widths(px(0.0), ThumbPress::Taken);
+        let widths = press_widths(gpui::px(0.0), ThumbPress::Taken);
         assert_eq!(widths.gutter, 0.0);
         assert_eq!(
             widths.thumb,
@@ -303,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_narrow_gutter_is_taken_whole_and_no_more_until_the_thumb_is_open_to_a_press() {
-        let narrow = px(4.0);
+        let narrow = gpui::px(4.0);
         let left = press_widths(narrow, ThumbPress::LeftToTerminal);
         assert_eq!(left.gutter, 4.0);
         assert_eq!(left.thumb, None);
@@ -312,7 +322,7 @@ mod tests {
 
     #[test]
     fn a_wide_gutter_holds_the_whole_strip_and_the_thumb_with_it() {
-        let widths = press_widths(px(64.0), ThumbPress::Taken);
+        let widths = press_widths(gpui::px(64.0), ThumbPress::Taken);
         assert_eq!(widths.gutter, f32::from(size::SCROLLBAR_HIT_WIDTH));
         assert_eq!(widths.thumb, None);
     }
@@ -322,7 +332,7 @@ mod tests {
         let reveal = thumb_reveal(0.0, 1.0, PointerGesture::Idle);
         assert_eq!(reveal.level, 1.0);
         assert_eq!(reveal.press, ThumbPress::LeftToTerminal);
-        assert_eq!(press_widths(px(0.0), reveal.press).thumb, None);
+        assert_eq!(press_widths(gpui::px(0.0), reveal.press).thumb, None);
     }
 
     #[test]

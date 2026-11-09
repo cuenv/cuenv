@@ -64,7 +64,7 @@ impl PerformanceRegistry {
     /// like [`Self::record_operation`], which stops recording into it, the
     /// summary is then empty rather than built from a half-updated list.
     #[must_use]
-    pub fn get_summary(&self) -> PerformanceSummary {
+    pub fn summary(&self) -> PerformanceSummary {
         self.operations
             .lock()
             .map_or_else(|_| summarize(&[]), |ops| summarize(&ops))
@@ -130,6 +130,16 @@ pub struct PerformanceGuard {
     start_time: Instant,
     start_system_time: std::time::SystemTime,
     metadata: HashMap<String, String>,
+    finished: bool,
+}
+
+/// The result recorded when a timed operation finishes explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerformanceOutcome {
+    /// The operation completed successfully.
+    Success,
+    /// The operation failed.
+    Failure,
 }
 
 impl PerformanceGuard {
@@ -153,6 +163,7 @@ impl PerformanceGuard {
             start_time: Instant::now(),
             start_system_time: std::time::SystemTime::now(),
             metadata: HashMap::new(),
+            finished: false,
         }
     }
 
@@ -164,8 +175,10 @@ impl PerformanceGuard {
     /// Explicitly finishes the operation and records metrics with the given success status.
     ///
     /// This consumes the guard, preventing the `Drop` implementation from recording again.
-    pub fn finish(self, success: bool) {
+    pub fn finish(mut self, outcome: PerformanceOutcome) {
+        self.finished = true;
         let duration = self.start_time.elapsed();
+        let success = outcome == PerformanceOutcome::Success;
 
         let metrics = OperationMetrics {
             operation_id: self.operation_id,
@@ -190,6 +203,9 @@ impl PerformanceGuard {
 
 impl Drop for PerformanceGuard {
     fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
         // If not explicitly finished, assume success
         let duration = self.start_time.elapsed();
 
@@ -244,7 +260,7 @@ macro_rules! measure_perf_async {
     ($operation:expr, $code:expr) => {{
         let guard = $crate::performance::PerformanceGuard::new($operation);
         let result = $code.await;
-        guard.finish(true);
+        guard.finish($crate::performance::PerformanceOutcome::Success);
         result
     }};
 }
@@ -266,7 +282,7 @@ where
 {
     let guard = PerformanceGuard::new(operation_name);
     let result = f().await;
-    guard.finish(true);
+    guard.finish(PerformanceOutcome::Success);
     result
 }
 
@@ -294,7 +310,7 @@ mod tests {
 
         assert_eq!(result, 42);
 
-        let summary = registry().get_summary();
+        let summary = registry().summary();
         assert!(summary.total_operations > 0);
     }
 
@@ -314,7 +330,7 @@ mod tests {
 
         registry.record_operation(metrics);
 
-        let summary = registry.get_summary();
+        let summary = registry.summary();
         assert_eq!(summary.total_operations, 1);
         assert_eq!(summary.successful_operations, 1);
         assert_eq!(summary.failed_operations, 0);
@@ -324,7 +340,7 @@ mod tests {
     // Helper to find operations containing a token in their name
     fn find_ops(token: &str) -> Vec<OperationMetrics> {
         registry()
-            .get_summary()
+            .summary()
             .operations
             .into_iter()
             .filter(|op| op.operation_name.contains(token))
@@ -334,7 +350,7 @@ mod tests {
     #[test]
     fn test_registry_record_and_summary() {
         let reg = PerformanceRegistry::new();
-        let before = reg.get_summary();
+        let before = reg.summary();
         assert_eq!(before.total_operations, 0);
 
         let mut meta = HashMap::new();
@@ -349,7 +365,7 @@ mod tests {
             metadata: meta,
         });
 
-        let after = reg.get_summary();
+        let after = reg.summary();
         assert_eq!(after.total_operations, 1);
         assert_eq!(after.successful_operations, 1);
         assert_eq!(after.failed_operations, 0);
@@ -377,15 +393,25 @@ mod tests {
         let token = format!("finish-{}", Uuid::new_v4());
         let mut guard = PerformanceGuard::new(token.clone());
         guard.add_metadata("case", "finish");
-        guard.finish(true);
+        guard.finish(PerformanceOutcome::Success);
 
         let ops = find_ops(&token);
-        assert!(!ops.is_empty());
-        assert!(ops.iter().any(|o| o.success));
-        assert!(
-            ops.iter()
-                .any(|o| { o.metadata.get("case").is_some_and(|v| v == "finish") })
+        assert_eq!(ops.len(), 1);
+        assert!(ops[0].success);
+        assert_eq!(
+            ops[0].metadata.get("case").map(String::as_str),
+            Some("finish")
         );
+    }
+
+    #[test]
+    fn test_guard_finish_records_failure_once() {
+        let token = format!("finish-failure-{}", Uuid::new_v4());
+        PerformanceGuard::new(token.clone()).finish(PerformanceOutcome::Failure);
+
+        let ops = find_ops(&token);
+        assert_eq!(ops.len(), 1);
+        assert!(!ops[0].success);
     }
 
     #[test]
@@ -438,7 +464,7 @@ mod tests {
             memory_usage_bytes: None,
             metadata: HashMap::new(),
         });
-        let summary = reg.get_summary();
+        let summary = reg.summary();
         let json = serde_json::to_string(&summary).unwrap();
         let de: PerformanceSummary = serde_json::from_str(&json).unwrap();
         assert!(de.total_operations >= 1);

@@ -12,19 +12,20 @@
 //!
 //! # Usage
 //!
-//! ```ignore
-//! use cuenv_core::tasks::process_registry::global_registry;
+//! ```
+//! use cuenv_task_exec::process_registry;
+//! use std::time::Duration;
 //!
-//! // Register a process after spawning
-//! if let Some(pid) = child.id() {
-//!     global_registry().register(pid, "task_name".to_string()).await;
-//! }
-//!
-//! // Unregister when process completes
-//! global_registry().unregister(pid).await;
-//!
-//! // Terminate all on shutdown
-//! global_registry().terminate_all(Duration::from_secs(5)).await;
+//! tokio_test::block_on(async {
+//!     let registry = process_registry::global_registry();
+//!     let pid = 123;
+//!     registry.register(pid, "task_name".to_string()).await;
+//!     assert_eq!(registry.count().await, 1);
+//!     registry.unregister(pid).await;
+//!     assert_eq!(registry.count().await, 0);
+//!     // Terminate remaining registered processes during shutdown.
+//!     registry.terminate_all(Duration::from_secs(5)).await;
+//! });
 //! ```
 
 use std::collections::HashMap;

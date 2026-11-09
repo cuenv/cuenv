@@ -289,12 +289,18 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-    fn make_task(id: &str, command: &[&str], shell: bool) -> IRTask {
+    #[derive(Clone, Copy)]
+    enum CommandMode {
+        Direct,
+        Shell,
+    }
+
+    fn make_task(id: &str, command: &[&str], mode: CommandMode) -> IRTask {
         IRTask {
             id: id.to_string(),
             runtime: None,
             command: command.iter().map(|s| (*s).to_string()).collect(),
-            shell,
+            shell: matches!(mode, CommandMode::Shell),
             env: BTreeMap::new(),
             secrets: BTreeMap::new(),
             resources: None,
@@ -329,7 +335,7 @@ mod tests {
         } else {
             "echo"
         };
-        let task = make_task("test", &[echo_path, "hello"], false);
+        let task = make_task("test", &[echo_path, "hello"], CommandMode::Direct);
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
 
@@ -343,7 +349,11 @@ mod tests {
     async fn test_shell_mode() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
-        let task = make_task("test", &["echo", "hello", "&&", "echo", "world"], true);
+        let task = make_task(
+            "test",
+            &["echo", "hello", "&&", "echo", "world"],
+            CommandMode::Shell,
+        );
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
 
@@ -385,7 +395,7 @@ mod tests {
     async fn test_env_injection() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
-        let task = make_task("test", &["printenv", "MY_VAR"], false);
+        let task = make_task("test", &["printenv", "MY_VAR"], CommandMode::Direct);
 
         let env = BTreeMap::from([("MY_VAR".to_string(), "test_value".to_string())]);
         let result = runner.execute(&task, env).await.unwrap();
@@ -398,7 +408,7 @@ mod tests {
     async fn test_failing_command() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
-        let task = make_task("test", &["false"], false);
+        let task = make_task("test", &["false"], CommandMode::Direct);
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
 
@@ -410,7 +420,7 @@ mod tests {
     async fn test_empty_command_error() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
-        let task = make_task("test", &[], false);
+        let task = make_task("test", &[], CommandMode::Direct);
 
         let result = runner.execute(&task, BTreeMap::new()).await;
         assert!(matches!(result, Err(RunnerError::EmptyCommand { .. })));
@@ -433,17 +443,19 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires /bin/bash which may not exist in sandboxed builds"]
     async fn test_custom_shell() {
         let tmp = TempDir::new().unwrap();
-        // Use /bin/bash (available on most Unix systems)
-        let runner = IRTaskRunner::with_shell(tmp.path().to_path_buf(), true.into(), "/bin/bash");
-        let task = make_task("test", &["echo", "$BASH_VERSION"], true);
+        // The Nix test environment provides bash on PATH, including in sandboxes.
+        let runner = IRTaskRunner::with_shell(tmp.path().to_path_buf(), true.into(), "bash");
+        let task = make_task("test", &["echo", "$BASH_VERSION"], CommandMode::Shell);
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
 
-        // On systems with bash, this should succeed and output something
-        assert!(result.success);
+        assert!(result.success, "{}", result.stderr);
+        assert!(
+            !result.stdout.trim().is_empty(),
+            "bash version was not expanded"
+        );
     }
 
     #[test]

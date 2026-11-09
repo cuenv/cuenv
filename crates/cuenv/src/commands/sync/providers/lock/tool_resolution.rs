@@ -1,5 +1,5 @@
 use cuenv_core::Result;
-use cuenv_core::lockfile::{LockedTool, LockedToolPlatform, Lockfile};
+use cuenv_core::lockfile::{LockedTool, LockedToolPlatform, Lockfile, ToolIdentity};
 use cuenv_core::manifest::{GitHubExtract, SourceConfig, SourceOverride};
 use cuenv_tool_runtime::{
     Platform as ToolPlatform, ResolvedTool, ToolExtract, ToolRegistry, ToolResolveRequest,
@@ -24,13 +24,13 @@ pub(super) struct CollectedTool {
     pub(super) platforms: Vec<String>,
 }
 
-pub(super) struct ToolLockResolutionRequest<'a> {
-    pub(super) tools: &'a [CollectedTool],
-    pub(super) platforms: &'a [String],
+pub(super) struct ToolLockResolutionRequest<'request> {
+    pub(super) tools: &'request [CollectedTool],
+    pub(super) platforms: &'request [String],
     pub(super) flakes: HashMap<String, String>,
-    pub(super) existing_lockfile: Option<&'a Lockfile>,
-    pub(super) options: &'a SyncOptions,
-    pub(super) github_token: Option<&'a str>,
+    pub(super) existing_lockfile: Option<&'request Lockfile>,
+    pub(super) options: &'request SyncOptions,
+    pub(super) github_token: Option<&'request str>,
 }
 
 /// Key type for tool deduplication: (name, version, source_hash).
@@ -53,7 +53,7 @@ fn create_registry(flakes: HashMap<String, String>) -> ToolRegistry {
 ///
 /// Returns true if the tool should be re-resolved from the provider,
 /// false if it should use the cached lockfile resolution.
-fn should_update_tool(tool_name: &str, update_tools: Option<&Vec<String>>) -> bool {
+fn should_update_tool(tool_name: &str, update_tools: Option<&[String]>) -> bool {
     match update_tools {
         None => false,                                       // No -u flag: use cache
         Some(tools) if tools.is_empty() => true,             // -u alone: update all
@@ -69,12 +69,22 @@ fn should_update_tool(tool_name: &str, update_tools: Option<&Vec<String>>) -> bo
 /// 3. The locked source configuration matches the resolved manifest source
 ///
 /// Returns `None` if the cache is stale and the tool needs to be re-resolved.
+#[derive(Clone, Copy)]
+struct CachedResolutionQuery<'cached_resolution_query> {
+    manifest_version: &'cached_resolution_query str,
+    platform_str: &'cached_resolution_query str,
+    resolved_source_config: &'cached_resolution_query serde_json::Value,
+}
+
 fn get_valid_cached_resolution<'a>(
     locked_tool: &'a LockedTool,
-    manifest_version: &str,
-    platform_str: &str,
-    resolved_source_config: &serde_json::Value,
+    query: CachedResolutionQuery<'_>,
 ) -> Option<&'a LockedToolPlatform> {
+    let CachedResolutionQuery {
+        manifest_version,
+        platform_str,
+        resolved_source_config,
+    } = query;
     if locked_tool.version != manifest_version {
         debug!(
             locked_version = %locked_tool.version,
@@ -162,7 +172,7 @@ pub(super) async fn resolve_tool_locks(
             let (provider_name, _tool_source, config) =
                 source_config_to_tool_source(&tool.version, &source_config, &platform);
 
-            let force_update = should_update_tool(&tool.name, options.update_tools.as_ref());
+            let force_update = should_update_tool(&tool.name, options.update_tools.as_deref());
 
             debug!(
                 tool = %tool.name,
@@ -180,7 +190,14 @@ pub(super) async fn resolve_tool_locks(
                 None
             } else if let Some(existing) = existing_lockfile {
                 if let Some(locked_tool) = existing.find_tool(&tool.name) {
-                    get_valid_cached_resolution(locked_tool, &tool.version, platform_str, &config)
+                    get_valid_cached_resolution(
+                        locked_tool,
+                        CachedResolutionQuery {
+                            manifest_version: &tool.version,
+                            platform_str,
+                            resolved_source_config: &config,
+                        },
+                    )
                 } else {
                     debug!(tool = %tool.name, "Cache miss: tool not in lockfile");
                     None
@@ -199,8 +216,10 @@ pub(super) async fn resolve_tool_locks(
 
                 lockfile
                     .upsert_tool_platform(
-                        &tool.name,
-                        &tool.version,
+                        ToolIdentity {
+                            name: &tool.name,
+                            version: &tool.version,
+                        },
                         platform_str,
                         locked_platform.clone(),
                     )
@@ -265,7 +284,14 @@ pub(super) async fn resolve_tool_locks(
             };
 
             lockfile
-                .upsert_tool_platform(&tool.name, &resolved.version, platform_str, locked_platform)
+                .upsert_tool_platform(
+                    ToolIdentity {
+                        name: &tool.name,
+                        version: &resolved.version,
+                    },
+                    platform_str,
+                    locked_platform,
+                )
                 .map_err(|e| {
                     cuenv_core::Error::configuration(format!(
                         "Failed to add tool '{}' to lockfile: {}",
@@ -437,10 +463,10 @@ pub(super) fn source_config_to_tool_source(
     }
 }
 
-struct ExtractResolveContext<'a> {
-    version: &'a str,
-    platform: &'a ToolPlatform,
-    legacy_path: Option<&'a str>,
+struct ExtractResolveContext<'context> {
+    version: &'context str,
+    platform: &'context ToolPlatform,
+    legacy_path: Option<&'context str>,
 }
 
 fn resolve_extract_templates(

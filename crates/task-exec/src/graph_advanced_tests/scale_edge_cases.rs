@@ -1,4 +1,5 @@
-use super::*;
+use crate::graph::TaskGraph;
+use crate::{Task, TaskDependency, test_utils};
 
 #[test]
 fn test_large_dag_with_many_hooks() {
@@ -15,20 +16,20 @@ fn test_large_dag_with_many_hooks() {
         } else {
             vec![prev_hook.as_str()]
         };
-        let hook = create_task(&hook_name, deps, vec![]);
+        let hook = test_utils::create_task(&hook_name, deps, vec![]);
         graph.add_task(&hook_name, hook).unwrap();
         prev_hook = hook_name;
     }
 
     // Install depends on last hook
-    let install = create_task("bun.install", vec![&prev_hook], vec![]);
+    let install = test_utils::create_task("bun.install", vec![&prev_hook], vec![]);
     graph.add_task("bun.install", install).unwrap();
     graph.add_dependency_edges().unwrap();
 
     assert_eq!(graph.task_count(), num_hooks + 1);
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     // All sequential (chain of 20 hooks + install)
     assert_eq!(groups.len(), num_hooks + 1);
 }
@@ -42,7 +43,7 @@ fn test_dag_with_many_parallel_projects() {
 
     for i in 0..num_projects {
         let project_name = format!("project{}::build", i);
-        let task = create_task(&project_name, vec![], vec![]);
+        let task = test_utils::create_task(&project_name, vec![], vec![]);
         graph.add_task(&project_name, task).unwrap();
     }
 
@@ -62,7 +63,7 @@ fn test_dag_with_many_parallel_projects() {
     assert_eq!(graph.task_count(), num_projects + 1);
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].len(), num_projects); // All projects in parallel
     assert_eq!(groups[1].len(), 1); // integration
@@ -78,7 +79,7 @@ fn test_task_with_very_long_name() {
     let mut graph = TaskGraph::new();
 
     let long_name = "a".repeat(500);
-    let task = create_task(&long_name, vec![], vec![]);
+    let task = test_utils::create_task(&long_name, vec![], vec![]);
     graph.add_task(&long_name, task).unwrap();
 
     assert_eq!(graph.task_count(), 1);
@@ -91,7 +92,7 @@ fn test_task_with_unicode_name() {
     let mut graph = TaskGraph::new();
 
     let unicode_name = "任务_测试_日本語_émoji🚀";
-    let task = create_task(unicode_name, vec![], vec![]);
+    let task = test_utils::create_task(unicode_name, vec![], vec![]);
     graph.add_task(unicode_name, task).unwrap();
 
     assert_eq!(graph.task_count(), 1);
@@ -106,8 +107,8 @@ fn test_cross_project_with_unicode_names() {
     let proj_a = "项目A::构建";
     let proj_b = "プロジェクトB::ビルド";
 
-    let task_a = create_task(proj_a, vec![], vec![]);
-    let task_b = create_task(proj_b, vec![proj_a], vec![]);
+    let task_a = test_utils::create_task(proj_a, vec![], vec![]);
+    let task_b = test_utils::create_task(proj_b, vec![proj_a], vec![]);
 
     graph.add_task(proj_a, task_a).unwrap();
     graph.add_task(proj_b, task_b).unwrap();
@@ -127,7 +128,7 @@ fn test_task_with_special_characters() {
     let mut graph = TaskGraph::new();
 
     let special_name = "task-with.dots_and-dashes";
-    let task = create_task(special_name, vec![], vec![]);
+    let task = test_utils::create_task(special_name, vec![], vec![]);
     graph.add_task(special_name, task).unwrap();
 
     assert_eq!(graph.task_count(), 1);
@@ -148,7 +149,7 @@ fn test_synthetic_hook_with_special_index() {
     ];
 
     for pattern in &patterns {
-        let task = create_task(pattern, vec![], vec![]);
+        let task = test_utils::create_task(pattern, vec![], vec![]);
         graph.add_task(pattern, task).unwrap();
     }
 
@@ -183,7 +184,7 @@ fn test_empty_depends_on_list() {
     assert!(!graph.has_cycles());
 
     // Both should be in the same parallel group (no dependencies between them)
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].len(), 2);
 }
@@ -204,7 +205,7 @@ fn test_project_separator_variations() {
 
     for (i, name) in formats.iter().enumerate() {
         let deps: Vec<&str> = if i > 0 { vec![formats[i - 1]] } else { vec![] };
-        let task = create_task(name, deps, vec![]);
+        let task = test_utils::create_task(name, deps, vec![]);
         graph.add_task(name, task).unwrap();
     }
 
@@ -214,7 +215,7 @@ fn test_project_separator_variations() {
     assert!(!graph.has_cycles());
 
     // Should be sequential
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert_eq!(groups.len(), formats.len());
 }
 
@@ -234,7 +235,7 @@ fn test_multiple_tasks_same_project() {
     ];
 
     for (name, deps) in &tasks {
-        let task = create_task(name, deps.to_vec(), vec![]);
+        let task = test_utils::create_task(name, deps.to_vec(), vec![]);
         graph.add_task(name, task).unwrap();
     }
 
@@ -243,7 +244,7 @@ fn test_multiple_tasks_same_project() {
     assert_eq!(graph.task_count(), 4);
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     // build -> (test, lint) in parallel -> deploy
     assert_eq!(groups.len(), 3);
     assert_eq!(groups[0].len(), 1); // build
@@ -257,14 +258,14 @@ fn test_deeply_nested_task_groups() {
     let mut graph = TaskGraph::new();
 
     // Create a chain: a -> (b1, b2) -> c -> (d1, d2, d3) -> e
-    let task_a = create_task("a", vec![], vec![]);
-    let task_b1 = create_task("b1", vec!["a"], vec![]);
-    let task_b2 = create_task("b2", vec!["a"], vec![]);
-    let task_c = create_task("c", vec!["b1", "b2"], vec![]);
-    let task_d1 = create_task("d1", vec!["c"], vec![]);
-    let task_d2 = create_task("d2", vec!["c"], vec![]);
-    let task_d3 = create_task("d3", vec!["c"], vec![]);
-    let task_e = create_task("e", vec!["d1", "d2", "d3"], vec![]);
+    let task_a = test_utils::create_task("a", vec![], vec![]);
+    let task_b1 = test_utils::create_task("b1", vec!["a"], vec![]);
+    let task_b2 = test_utils::create_task("b2", vec!["a"], vec![]);
+    let task_c = test_utils::create_task("c", vec!["b1", "b2"], vec![]);
+    let task_d1 = test_utils::create_task("d1", vec!["c"], vec![]);
+    let task_d2 = test_utils::create_task("d2", vec!["c"], vec![]);
+    let task_d3 = test_utils::create_task("d3", vec!["c"], vec![]);
+    let task_e = test_utils::create_task("e", vec!["d1", "d2", "d3"], vec![]);
 
     graph.add_task("a", task_a).unwrap();
     graph.add_task("b1", task_b1).unwrap();
@@ -279,7 +280,7 @@ fn test_deeply_nested_task_groups() {
     assert_eq!(graph.task_count(), 8);
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert_eq!(groups.len(), 5);
     assert_eq!(groups[0].len(), 1); // a
     assert_eq!(groups[1].len(), 2); // b1, b2

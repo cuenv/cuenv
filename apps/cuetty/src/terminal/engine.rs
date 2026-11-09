@@ -1,16 +1,12 @@
 use super::chrome::{
-    ChromeAssets, ScrollbarRequest, SessionProblem, ShellPanels, UNFOCUSED_TERMINAL_FADE,
-    exit_notice_height, render_exit_notice, resolve_ui_font, sidebar_width, track_of,
-    traffic_light_position,
+    self, ChromeAssets, ScrollbarRequest, SessionProblem, ShellPanels, UNFOCUSED_TERMINAL_FADE,
 };
-use super::color::{blend, dimmed, with_minimum_contrast};
+use super::color;
 use super::config::{SystemAppearance, TerminalConfig, ThemeColors};
-use super::cursor::{
-    CursorAnimator, CursorFocus, CursorFrame, CursorObservation, TrailSpan, blink_wanted,
-};
+use super::cursor::{CursorAnimator, CursorFocus, CursorFrame, CursorObservation, TrailSpan};
 use super::events::ControlEvent;
 use super::git_branch::BranchProbe;
-use super::glyphs::{GlyphShape, drawn_glyph, is_drawn, is_graphic};
+use super::glyphs::GlyphShape;
 use super::host::{
     RioTerminalFactory, SessionRequest, SessionStart, TerminalScroll, TerminalSession,
     TerminalSessionFactory, TerminalWheel,
@@ -27,11 +23,11 @@ use super::motion::{
 };
 use super::overlay::{CellOverlaySpan, OverlayKind, TerminalOverlays};
 use super::palette::{self, Command as PaletteCommand, Item as PaletteItem, Mode as PaletteMode};
-use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme, gpui_rgb};
+use super::presentation::{DeviceGrid, ScaleFactor, TerminalMetrics, TerminalTheme};
 use super::scrollbar::ScrollExtent;
 use super::sizing::CellSize;
-use super::tab_label::{PaneActivity, TabLabelSources, resolve_tab_label};
-use super::tab_rename::{RenameKey, TabRename, rename_key};
+use super::tab_label::{PaneActivity, TabLabelSources};
+use super::tab_rename::{RenameKey, TabRename};
 use super::tab_status::{SessionExit, StatusEvent, TabPresence, TabStatus, WindowPresence};
 use super::workspace_shell::{
     ShellAction, ShellError, TabDirection, TabNumber, WorkspaceShell, WorkspaceShortcut,
@@ -39,7 +35,7 @@ use super::workspace_shell::{
 use crate::integrations::cuenv::{
     ChordModifiers, ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher,
     Evaluation, EvaluationStage, KeyChord, Keybindings, NativeCuenvProvider, SidebarMode,
-    StagedEvaluation, WindowSidebar, evaluate_within,
+    StagedEvaluation, WindowSidebar,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, Tab, TabId};
 use gpui::{
@@ -49,18 +45,17 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, Pixels,
     Render, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Size, StrikethroughStyle,
     Styled, SystemMenuType, TextRun, Timer, UnderlineStyle as GpuiUnderlineStyle, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, canvas, div, point, px, quad,
-    size,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, actions,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 actions!([Quit]);
 
-struct RenderRequest<'a> {
-    frame: &'a TerminalFrame,
-    metrics: &'a TerminalMetrics,
-    theme: &'a TerminalTheme,
+struct RenderRequest<'frame> {
+    frame: &'frame TerminalFrame,
+    metrics: &'frame TerminalMetrics,
+    theme: &'frame TerminalTheme,
     focus: CursorFocus,
     window: WindowPresence,
     cursor: CursorFrame,
@@ -114,7 +109,11 @@ impl TerminalGrid {
     /// GPUI applies that to each primitive on its own, so a drawn glyph's overlapping
     /// strokes would blend twice and bead every box-drawing rule.
     fn ink(&self, color: Rgb) -> gpui::Rgba {
-        gpui::rgb(gpui_rgb(window_ink(color, self.theme.surface, self.window)))
+        gpui::rgb(super::presentation::gpui_rgb(window_ink(
+            color,
+            self.theme.surface,
+            self.window,
+        )))
     }
 
     fn overlay_color(&self, kind: OverlayKind) -> Rgb {
@@ -127,9 +126,9 @@ impl TerminalGrid {
 
     fn paint_row_overlays(&self, row: &RowPaint<'_>, window: &mut Window) {
         for span in row.overlays.iter().filter(|span| span.row == row.row) {
-            window.paint_quad(quad(
+            window.paint_quad(gpui::quad(
                 self.cell_bounds(row.origin, span.row, span.start_column..span.end_column),
-                px(0.0),
+                gpui::px(0.0),
                 self.ink(self.overlay_color(span.kind)),
                 Edges::default(),
                 Hsla::transparent_black(),
@@ -159,7 +158,7 @@ impl TerminalGrid {
         }
         // A block cursor fading out hands its glyph back to what is underneath it.
         let beneath = cell_layer(None, row.overlays, position);
-        blend(
+        super::color::blend(
             readable_foreground(
                 PaintedCell {
                     cell,
@@ -273,8 +272,8 @@ impl TerminalGrid {
             for run in &shaped.runs {
                 for glyph in &run.glyphs {
                     let placed = placer.place(glyph.index, f32::from(glyph.position.x));
-                    let x = grid.glyph_x(columns.start + placed.cluster, px(placed.offset));
-                    let origin = point(x, baseline);
+                    let x = grid.glyph_x(columns.start + placed.cluster, gpui::px(placed.offset));
+                    let origin = gpui::point(x, baseline);
                     // A glyph that cannot be rasterized leaves its cell empty.
                     let _ = if glyph.is_emoji {
                         window.paint_emoji(origin, run.font_id, glyph.id, font_size)
@@ -333,10 +332,10 @@ impl TerminalGrid {
         }));
         for (columns, (style, color)) in underlines {
             window.paint_underline(
-                point(x(columns.start), top + baseline + descent * 0.618),
+                gpui::point(x(columns.start), top + baseline + descent * 0.618),
                 grid_cell.width * columns.len() as f32,
                 &GpuiUnderlineStyle {
-                    thickness: px(if matches!(style, UnderlineStyle::Double) {
+                    thickness: gpui::px(if matches!(style, UnderlineStyle::Double) {
                         2.0
                     } else {
                         1.0
@@ -352,10 +351,10 @@ impl TerminalGrid {
         }));
         for (columns, color) in strikethroughs {
             window.paint_strikethrough(
-                point(x(columns.start), top + (ascent * 0.5 + baseline) * 0.5),
+                gpui::point(x(columns.start), top + (ascent * 0.5 + baseline) * 0.5),
                 grid_cell.width * columns.len() as f32,
                 &StrikethroughStyle {
-                    thickness: px(1.0),
+                    thickness: gpui::px(1.0),
                     color: Some(self.ink(color).into()),
                 },
             );
@@ -370,7 +369,7 @@ impl TerminalGrid {
     ) -> Bounds<Pixels> {
         let grid_cell = self.metrics.render_cell();
         Bounds {
-            origin: point(
+            origin: gpui::point(
                 origin.x + grid_cell.width * columns.start as f32,
                 origin.y + grid_cell.height * row as f32,
             ),
@@ -390,16 +389,17 @@ impl TerminalGrid {
         glyph: DrawnGlyph,
         window: &mut Window,
     ) {
-        let Some(shapes) = drawn_glyph(glyph.character, self.metrics.device_cell()) else {
+        let Some(shapes) = super::glyphs::drawn_glyph(glyph.character, self.metrics.device_cell())
+        else {
             return;
         };
         let cell = self.cell_bounds(origin, glyph.row, glyph.column..glyph.column + 1);
         let scale = self.metrics.scale;
         let solid = self.ink(glyph.color);
         let fill = |bounds, color: gpui::Rgba| {
-            quad(
+            gpui::quad(
                 bounds,
-                px(0.0),
+                gpui::px(0.0),
                 color,
                 Edges::default(),
                 Hsla::transparent_black(),
@@ -410,11 +410,11 @@ impl TerminalGrid {
             match shape {
                 GlyphShape::Rect(rect) => window.paint_quad(fill(
                     Bounds {
-                        origin: point(
+                        origin: gpui::point(
                             cell.origin.x + scale.logical(rect.x),
                             cell.origin.y + scale.logical(rect.y),
                         ),
-                        size: size(scale.logical(rect.width), scale.logical(rect.height)),
+                        size: gpui::size(scale.logical(rect.width), scale.logical(rect.height)),
                     },
                     solid,
                 )),
@@ -427,7 +427,7 @@ impl TerminalGrid {
                 )),
                 GlyphShape::Polygon(outline) => {
                     let mut corners = outline.into_iter().map(|(x, y)| {
-                        point(
+                        gpui::point(
                             cell.origin.x + scale.logical_position(x),
                             cell.origin.y + scale.logical_position(y),
                         )
@@ -437,7 +437,9 @@ impl TerminalGrid {
                     };
                     let mut path = PathBuilder::fill();
                     path.move_to(first);
-                    corners.for_each(|corner| path.line_to(corner));
+                    for corner in corners {
+                        path.line_to(corner);
+                    }
                     path.close();
                     // A degenerate outline has nothing to fill.
                     if let Ok(path) = path.build() {
@@ -455,15 +457,15 @@ impl TerminalGrid {
             return;
         };
         let cell = self.metrics.render_cell();
-        window.paint_quad(quad(
+        window.paint_quad(gpui::quad(
             Bounds {
-                origin: point(
+                origin: gpui::point(
                     origin.x + cell.width * trail.start,
                     origin.y + cell.height * f32::from(trail.row),
                 ),
-                size: size(cell.width * (trail.end - trail.start), cell.height),
+                size: gpui::size(cell.width * (trail.end - trail.start), cell.height),
             },
-            px(0.0),
+            gpui::px(0.0),
             gpui::Rgba {
                 a: trail.opacity,
                 ..self.ink(self.theme.cursor)
@@ -498,11 +500,11 @@ impl TerminalGrid {
             a: self.cursor_opacity,
             ..self.ink(self.theme.cursor)
         };
-        let line = scale.logical(scale.whole_device_pixels(px(2.0)));
+        let line = scale.logical(scale.whole_device_pixels(gpui::px(2.0)));
         let fill = |bounds| {
-            quad(
+            gpui::quad(
                 bounds,
-                px(0.0),
+                gpui::px(0.0),
                 color,
                 Edges::default(),
                 Hsla::transparent_black(),
@@ -512,17 +514,17 @@ impl TerminalGrid {
         match style {
             HostCursorStyle::Block => window.paint_quad(fill(bounds)),
             HostCursorStyle::Underline => window.paint_quad(fill(Bounds {
-                origin: point(bounds.origin.x, bounds.bottom() - line),
-                size: size(bounds.size.width, line),
+                origin: gpui::point(bounds.origin.x, bounds.bottom() - line),
+                size: gpui::size(bounds.size.width, line),
             })),
             HostCursorStyle::Bar => window.paint_quad(fill(Bounds {
                 origin: bounds.origin,
-                size: size(line, bounds.size.height),
+                size: gpui::size(line, bounds.size.height),
             })),
             // A device pixel of outline stays crisp and lets the glyph keep its colours.
-            HostCursorStyle::Hollow => window.paint_quad(quad(
+            HostCursorStyle::Hollow => window.paint_quad(gpui::quad(
                 bounds,
-                px(0.0),
+                gpui::px(0.0),
                 Hsla::transparent_black(),
                 Edges::all(scale.logical(1)),
                 color,
@@ -633,9 +635,9 @@ impl Element for TerminalGrid {
                 // compounds alpha until wallpaper passthrough disappears.
                 // Explicit TUI backgrounds stay opaque for contrast.
                 if !uses_default_background {
-                    window.paint_quad(quad(
+                    window.paint_quad(gpui::quad(
                         self.cell_bounds(bounds.origin, row, start..end),
-                        px(0.0),
+                        gpui::px(0.0),
                         self.ink(background),
                         Edges::default(),
                         Hsla::transparent_black(),
@@ -660,11 +662,11 @@ impl Element for TerminalGrid {
 }
 
 /// One row of the grid while it is being painted.
-struct RowPaint<'a> {
+struct RowPaint<'row> {
     origin: gpui::Point<Pixels>,
     row: usize,
-    cells: &'a [TerminalCell],
-    overlays: &'a [CellOverlaySpan],
+    cells: &'row [TerminalCell],
+    overlays: &'row [CellOverlaySpan],
 }
 
 /// The font a cell's text is shaped in.
@@ -705,13 +707,13 @@ struct PlacedGlyph {
 /// first glyph starts exactly on it, and any further glyphs in that cell, such as
 /// combining marks, keep their distance from the first. A font's own advances never
 /// move a cell, and a glyph that replaced several cells leaves the next one alone.
-struct GlyphPlacer<'a> {
-    cluster_starts: &'a [usize],
+struct GlyphPlacer<'layout> {
+    cluster_starts: &'layout [usize],
     current: Option<(usize, f32)>,
 }
 
-impl<'a> GlyphPlacer<'a> {
-    fn new(cluster_starts: &'a [usize]) -> Self {
+impl<'layout> GlyphPlacer<'layout> {
+    fn new(cluster_starts: &'layout [usize]) -> Self {
         Self {
             cluster_starts,
             current: None,
@@ -772,7 +774,7 @@ fn drawn_character(cell: &TerminalCell) -> Option<char> {
         .then_some(cell.text.as_deref())
         .flatten()
         .and_then(single_character)
-        .filter(|character| is_drawn(*character))
+        .filter(|character| super::glyphs::is_drawn(*character))
 }
 
 /// Whether a cell holds a piece of a picture rather than text.
@@ -780,7 +782,7 @@ fn draws_a_graphic(cell: &TerminalCell) -> bool {
     cell.text
         .as_deref()
         .and_then(single_character)
-        .is_some_and(is_graphic)
+        .is_some_and(super::glyphs::is_graphic)
 }
 
 fn frame_row(frame: &TerminalFrame, row: usize) -> &[TerminalCell] {
@@ -922,7 +924,7 @@ fn styled_foreground(cell: &TerminalCell, foreground: Rgb, drawn_on: Rgb) -> Rgb
     if cell.style.hidden {
         drawn_on
     } else if cell.style.dim {
-        dimmed(foreground, drawn_on)
+        color::dimmed(foreground, drawn_on)
     } else {
         foreground
     }
@@ -951,8 +953,8 @@ fn quiet_tint_at(
 
 /// A cell, and what its glyph is being painted over.
 #[derive(Debug, Clone, Copy)]
-struct PaintedCell<'a> {
-    cell: &'a TerminalCell,
+struct PaintedCell<'cell> {
+    cell: &'cell TerminalCell,
     layer: CellLayer,
     tint: Option<Rgb>,
 }
@@ -983,7 +985,7 @@ fn readable_foreground(painted: PaintedCell<'_>, theme: &TerminalTheme) -> Rgb {
     {
         return foreground;
     }
-    with_minimum_contrast(foreground, drawn_on, theme.minimum_contrast)
+    super::color::with_minimum_contrast(foreground, drawn_on, theme.minimum_contrast)
 }
 
 fn shell_notice(error: ShellError) -> String {
@@ -1121,15 +1123,12 @@ impl PaneState {
 
     /// The surface a new tab opened from this one will get: what this one measured,
     /// with back the room for a failed shell's exit notice, which only this tab has.
-    fn surface_for_sibling(&self) -> Size<Pixels> {
-        let measured = *self
-            .measured_bounds
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        size(
+    fn surface_for_sibling(&self) -> Option<Size<Pixels>> {
+        let measured = read_measurement(&self.measured_bounds)?;
+        Some(gpui::size(
             measured.width,
-            measured.height + exit_notice_height(self.status.failure()),
-        )
+            measured.height + super::chrome::exit_notice_height(self.status.failure()),
+        ))
     }
 
     /// Sends a key the user pressed to the terminal.
@@ -1251,7 +1250,7 @@ fn window_presence(window: &Window) -> WindowPresence {
 fn window_ink(color: Rgb, background: Rgb, window: WindowPresence) -> Rgb {
     match window {
         WindowPresence::Active => color,
-        WindowPresence::Inactive => blend(color, background, UNFOCUSED_TERMINAL_FADE),
+        WindowPresence::Inactive => super::color::blend(color, background, UNFOCUSED_TERMINAL_FADE),
     }
 }
 
@@ -1407,7 +1406,7 @@ impl SessionRegistry {
                 },
             )
             .map_err(RegistryError::Session)?;
-        let workspace = WorkspaceShell::new()
+        let workspace = WorkspaceShell::try_new()
             .map_err(ShellError::from)
             .map_err(RegistryError::Workspace)?;
         let pane =
@@ -1656,9 +1655,9 @@ impl SessionRegistry {
     }
 
     fn sample_foreground(&mut self, now: std::time::Instant) {
-        self.sessions
-            .values_mut()
-            .for_each(|state| state.sample_foreground(now));
+        for state in self.sessions.values_mut() {
+            state.sample_foreground(now);
+        }
     }
 
     /// Keeps each tab's branch current. This is a file read at most every few seconds,
@@ -1703,7 +1702,7 @@ impl SessionRegistry {
     /// What `tab` is called right now.
     pub(super) fn tab_label(&self, tab: &Tab) -> String {
         let state = self.sessions.get(&tab.focused);
-        resolve_tab_label(TabLabelSources {
+        super::tab_label::resolve_tab_label(TabLabelSources {
             custom_name: tab.custom_name.as_deref(),
             running_task: state.and_then(|state| state.activity.task_name()),
             foreground_program: state.and_then(|state| state.activity.program()),
@@ -1791,6 +1790,27 @@ struct SelectionGesture {
     moved: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ViewportHit {
+    grid: CellHitTest,
+    cell: super::selection::LogicalPosition,
+    relative_y: f32,
+}
+
+fn viewport_hit(
+    origin: &Mutex<(f32, f32)>,
+    grid: CellHitTest,
+    position: gpui::Point<Pixels>,
+) -> Option<ViewportHit> {
+    let (x, y) = read_measurement(origin)?;
+    let relative_y = f32::from(position.y) - y;
+    Some(ViewportHit {
+        grid,
+        cell: grid.hit(f32::from(position.x) - x, relative_y),
+        relative_y,
+    })
+}
+
 const SELECTION_SCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// The first and last grid rows are the drag-to-scroll zones.
@@ -1862,7 +1882,10 @@ const RENAME_TAB_KEY: &str = "r";
 const UNMEASURED_SURFACE: (f32, f32) = (720.0, 432.0);
 
 fn unmeasured_surface() -> Size<Pixels> {
-    size(px(UNMEASURED_SURFACE.0), px(UNMEASURED_SURFACE.1))
+    gpui::size(
+        gpui::px(UNMEASURED_SURFACE.0),
+        gpui::px(UNMEASURED_SURFACE.1),
+    )
 }
 
 /// A session that has just started, and how it says it has something new to show.
@@ -1874,9 +1897,9 @@ struct StartedSession {
 
 /// What a session starts from, apart from its grid.
 #[derive(Debug, Clone, Copy)]
-struct SessionSeed<'a> {
-    working_directory: Option<&'a std::path::Path>,
-    palette: &'a ThemeColors,
+struct SessionSeed<'session> {
+    working_directory: Option<&'session std::path::Path>,
+    palette: &'session ThemeColors,
 }
 
 /// The grid a session starts on.
@@ -2063,10 +2086,10 @@ enum ChordRoute {
 }
 
 /// What a key press could select.
-struct ChordTargets<'a> {
+struct ChordTargets<'chord> {
     /// The active tab's configured palette chord.
-    palette: Option<&'a KeyChord>,
-    tabs: &'a WorkspaceShell,
+    palette: Option<&'chord KeyChord>,
+    tabs: &'chord WorkspaceShell,
 }
 
 /// Routes a key press. The palette's chord comes first because the user chose it. A
@@ -2114,15 +2137,73 @@ fn single_character(text: &str) -> Option<char> {
     characters.next().is_none().then_some(character)
 }
 
-/// Records a measurement, returning whether it differs from the last one. A panic
-/// elsewhere cannot leave one half-written, so a poisoned lock is still good.
-pub(super) fn store_if_changed<T: PartialEq>(slot: &Mutex<T>, next: T) -> bool {
-    let mut current = slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+/// Reads a measurement only while its lock is healthy.
+fn read_measurement<T: Copy>(slot: &Mutex<T>) -> Option<T> {
+    slot.lock().ok().map(|current| *current)
+}
+
+fn geometry_problem(
+    workspace_bounds: &Mutex<(f32, f32)>,
+    pane: Option<&PaneState>,
+) -> Option<SessionProblem<'static>> {
+    if read_measurement(workspace_bounds).is_none() {
+        return Some(SessionProblem::WorkspaceGeometry);
+    }
+    if pane.is_some_and(|pane| {
+        read_measurement(&pane.measured_bounds).is_none()
+            || read_measurement(&pane.viewport_origin).is_none()
+    }) {
+        return Some(SessionProblem::PaneGeometry);
+    }
+    None
+}
+
+fn terminal_interaction_allowed(
+    workspace_bounds: &Mutex<(f32, f32)>,
+    pane: Option<&PaneState>,
+) -> bool {
+    pane.is_some_and(|pane| {
+        pane.error.is_none() && geometry_problem(workspace_bounds, Some(pane)).is_none()
+    })
+}
+
+fn pane_allows_palette(pane: Option<&PaneState>) -> bool {
+    pane.is_none_or(|pane| pane.error.is_none())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GeometryKeyAction {
+    Block,
+    CloseTab,
+}
+
+fn geometry_key_action(
+    workspace_bounds: &Mutex<(f32, f32)>,
+    pane: Option<&PaneState>,
+    event: &gpui::KeyDownEvent,
+) -> Option<GeometryKeyAction> {
+    geometry_problem(workspace_bounds, pane)?;
+    Some(
+        if matches!(
+            TerminalView::workspace_shortcut(
+                event.keystroke.key.as_str(),
+                event.keystroke.modifiers
+            ),
+            Some(WorkspaceShortcut::CloseTab)
+        ) {
+            GeometryKeyAction::CloseTab
+        } else {
+            GeometryKeyAction::Block
+        },
+    )
+}
+
+/// Records a measurement, or reports that the previous measurement is unavailable.
+pub(super) fn store_if_changed<T: PartialEq>(slot: &Mutex<T>, next: T) -> Option<bool> {
+    let mut current = slot.lock().ok()?;
     let changed = *current != next;
     *current = next;
-    changed
+    Some(changed)
 }
 
 /// Asks for another frame from inside prepaint, where a notify marks nothing dirty and
@@ -2202,7 +2283,11 @@ impl TerminalView {
             .ok()
             .flatten()
             .and_then(|source| {
-                evaluate_within(Arc::clone(&cuenv), source, FIRST_FRAME_CONFIG_WAIT)
+                crate::integrations::cuenv::evaluate_within(
+                    Arc::clone(&cuenv),
+                    source,
+                    FIRST_FRAME_CONFIG_WAIT,
+                )
             });
         let palette = global.as_ref().map_or_else(ThemeColors::default, |global| {
             global.palette_for(system_appearance)
@@ -2681,7 +2766,7 @@ impl TerminalView {
             return false;
         };
         let keystroke = &event.keystroke;
-        match rename_key(
+        match super::tab_rename::rename_key(
             &keystroke.key,
             keystroke.key_char.as_deref(),
             keystroke.modifiers,
@@ -2720,12 +2805,20 @@ impl TerminalView {
         }
     }
     pub(super) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if geometry_problem(&self.workspace_bounds, self.active_state()).is_some() {
+            cx.notify();
+            return;
+        }
         self.commit_tab_rename();
         // A tab shares the surface its siblings measured, so its shell starts on the
         // right grid rather than getting a resize right after its first prompt.
-        let surface = self
-            .active_state()
-            .map_or_else(unmeasured_surface, PaneState::surface_for_sibling);
+        let Some(surface) = self.active_state().map_or_else(
+            || Some(unmeasured_surface()),
+            PaneState::surface_for_sibling,
+        ) else {
+            cx.notify();
+            return;
+        };
         match self.registry.start_tab(
             SessionGeometry {
                 surface,
@@ -2763,12 +2856,20 @@ impl TerminalView {
     /// Starts a fresh shell in the active tab, in place of one that stopped working. If
     /// none will start the tab stays as it is, saying why.
     pub(super) fn restart_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if geometry_problem(&self.workspace_bounds, self.active_state()).is_some() {
+            cx.notify();
+            return;
+        }
         let Some(pane) = self.active_pane() else {
             return;
         };
-        let surface = self
-            .active_state()
-            .map_or_else(unmeasured_surface, PaneState::surface_for_sibling);
+        let Some(surface) = self.active_state().map_or_else(
+            || Some(unmeasured_surface()),
+            PaneState::surface_for_sibling,
+        ) else {
+            cx.notify();
+            return;
+        };
         match self.registry.restart_pane(
             pane,
             SessionGeometry {
@@ -2808,25 +2909,11 @@ impl TerminalView {
             .on_modifiers_changed(cx.listener(Self::modifiers_changed))
     }
 
-    fn hit_test(
-        &self,
-        position: gpui::Point<Pixels>,
-    ) -> (CellHitTest, super::selection::LogicalPosition) {
-        let Some(state) = self.active_state() else {
-            return (
-                CellHitTest {
-                    cell_width: 1.0,
-                    cell_height: 1.0,
-                    rows: 1,
-                    columns: 1,
-                },
-                super::selection::LogicalPosition { line: 0, column: 0 },
-            );
-        };
-        let (x, y) = *state
-            .viewport_origin
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    fn hit_test(&self, position: gpui::Point<Pixels>) -> Option<ViewportHit> {
+        let state = self.active_state()?;
+        if !terminal_interaction_allowed(&self.workspace_bounds, Some(state)) {
+            return None;
+        }
         let cell = self.metrics.render_cell();
         let hit_test = CellHitTest {
             cell_width: f32::from(cell.width),
@@ -2834,10 +2921,7 @@ impl TerminalView {
             rows: state.frame.dimensions.rows as usize,
             columns: state.frame.dimensions.columns as usize,
         };
-        (
-            hit_test,
-            hit_test.hit(f32::from(position.x) - x, f32::from(position.y) - y),
-        )
+        viewport_hit(&state.viewport_origin, hit_test, position)
     }
 
     pub(super) fn search_key(&mut self, key: SearchKey) {
@@ -2850,6 +2934,9 @@ impl TerminalView {
     }
 
     fn scroll_active(&mut self, action: TerminalScroll) {
+        if !terminal_interaction_allowed(&self.workspace_bounds, self.active_state()) {
+            return;
+        }
         if let Some(state) = self.active_state_mut() {
             match state.session.scroll(action) {
                 Ok(()) => {
@@ -2867,11 +2954,8 @@ impl TerminalView {
     }
 
     /// Where the scrollbar's track is in the window and how tall.
-    pub(super) fn scrollbar_track(&self) -> (f32, f32) {
-        *self
-            .scrollbar_track
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    pub(super) fn scrollbar_track(&self) -> Option<(f32, f32)> {
+        read_measurement(&self.scrollbar_track)
     }
 
     /// Where a draw records the scrollbar's track.
@@ -2880,6 +2964,11 @@ impl TerminalView {
     }
 
     pub(super) fn begin_scrollbar_drag(&mut self, grab: f32, cx: &mut Context<Self>) {
+        if !terminal_interaction_allowed(&self.workspace_bounds, self.active_state()) {
+            self.scrollbar_grab = None;
+            cx.notify();
+            return;
+        }
         self.scrollbar_grab = Some(grab);
         cx.notify();
     }
@@ -2887,11 +2976,20 @@ impl TerminalView {
     /// Brings the viewport to where a drag has the thumb, with the pointer this far down
     /// the track.
     pub(super) fn drag_scrollbar_to(&mut self, pointer: f32, cx: &mut Context<Self>) {
+        if !terminal_interaction_allowed(&self.workspace_bounds, self.active_state()) {
+            self.scrollbar_grab = None;
+            cx.notify();
+            return;
+        }
         let Some(grab) = self.scrollbar_grab else {
             return;
         };
-        let (_, height) = self.scrollbar_track();
-        let track = track_of(height);
+        let Some((_, height)) = self.scrollbar_track() else {
+            self.scrollbar_grab = None;
+            cx.notify();
+            return;
+        };
+        let track = super::chrome::track_of(height);
         let target = self
             .active_state()
             .and_then(|state| ScrollExtent::of_frame(&state.frame))
@@ -2919,7 +3017,11 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         let line_height = f32::from(self.metrics.render_cell().height);
-        let (_, position) = self.hit_test(event.position);
+        let Some(ViewportHit { cell: position, .. }) = self.hit_test(event.position) else {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        };
         let mut bits = 0;
         if event.modifiers.control {
             bits |= InputModifiers::CONTROL.bits();
@@ -3019,6 +3121,9 @@ impl TerminalView {
     }
 
     pub(super) fn launch_task(&mut self, task: CuenvTask, cx: &mut Context<Self>) {
+        if !terminal_interaction_allowed(&self.workspace_bounds, self.active_state()) {
+            return;
+        }
         let Some(cwd) = self
             .active_state()
             .and_then(|state| state.cuenv.cwd.clone())
@@ -3184,7 +3289,7 @@ impl TerminalView {
     fn animate_chrome(&mut self, cx: &mut Context<Self>) -> SidebarFrame {
         let now = std::time::Instant::now();
         let pace = self.motion_pace();
-        let width = sidebar_width(self.sidebar_mode());
+        let width = super::chrome::sidebar_width(self.sidebar_mode());
         let sidebar = self.motion.sidebar_frame(width, pace, now);
         let tabs: Vec<TabId> = self
             .registry
@@ -3217,9 +3322,12 @@ impl TerminalView {
 
     /// What is on screen to be hovered, besides the tabs.
     fn live_hover_targets(&self) -> LiveHoverTargets {
-        let has_tasks = self
-            .active_state()
-            .is_some_and(|state| !state.task_catalogue().is_empty());
+        let geometry_failed =
+            geometry_problem(&self.workspace_bounds, self.active_state()).is_some();
+        let has_tasks = !geometry_failed
+            && self
+                .active_state()
+                .is_some_and(|state| !state.task_catalogue().is_empty());
         LiveHoverTargets {
             tab_close_buttons: self.sidebar_mode() == SidebarMode::Expanded,
             notice: self.registry.notice.is_some()
@@ -3233,13 +3341,15 @@ impl TerminalView {
             } else {
                 0
             },
-            session_actions: self
-                .active_state()
-                .is_none_or(|state| state.error.is_some()),
+            session_actions: geometry_failed
+                || self
+                    .active_state()
+                    .is_none_or(|state| state.error.is_some()),
             search: self
                 .active_state()
                 .is_some_and(|state| state.interaction.search().is_some()),
-            scrollbar: !self.palette_open
+            scrollbar: !geometry_failed
+                && !self.palette_open
                 && self
                     .active_state()
                     .is_some_and(|state| ScrollExtent::of_frame(&state.frame).is_some()),
@@ -3278,6 +3388,21 @@ impl TerminalView {
     }
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(action) =
+            geometry_key_action(&self.workspace_bounds, self.active_state(), event)
+        {
+            if action == GeometryKeyAction::CloseTab {
+                self.close_active_tab(window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        let palette_allowed = pane_allows_palette(self.active_state());
+        if !palette_allowed {
+            self.palette_open = false;
+            self.palette_query.clear();
+            self.palette_selection = 0;
+        }
         if self.handle_rename_key(event, cx) {
             return;
         }
@@ -3293,12 +3418,12 @@ impl TerminalView {
                 tabs: &self.registry.workspace,
             },
         );
-        if route == ChordRoute::OpenPalette {
+        if palette_allowed && route == ChordRoute::OpenPalette {
             self.hide_tab_hints(cx);
             self.toggle_command_palette(cx);
             return;
         }
-        if self.handle_command_palette_key(event, window, cx) {
+        if palette_allowed && self.handle_command_palette_key(event, window, cx) {
             return;
         }
         // The hints stay up, so another number can follow without letting go.
@@ -3465,7 +3590,15 @@ impl TerminalView {
             self.apply_workspace_action(ShellAction::FocusPane(pane));
         }
         self.focus.focus(window);
-        let (hit_test, position) = self.hit_test(event.position);
+        let Some(ViewportHit {
+            grid: hit_test,
+            cell: position,
+            ..
+        }) = self.hit_test(event.position)
+        else {
+            cx.notify();
+            return;
+        };
         let Some(pane) = self.active_pane() else {
             return;
         };
@@ -3508,7 +3641,15 @@ impl TerminalView {
             let _ = self.finish_selection();
             return;
         }
-        let (hit_test, cell) = self.hit_test(position);
+        let Some(ViewportHit {
+            grid: hit_test,
+            cell,
+            ..
+        }) = self.hit_test(position)
+        else {
+            let _ = self.finish_selection();
+            return;
+        };
         if let Some(state) = self.active_state_mut() {
             state.interaction.extend_selection(hit_test, cell);
             if !state.session.extend_selection(cell) {
@@ -3521,6 +3662,11 @@ impl TerminalView {
         let Some(gesture) = self.selection_gesture.filter(|gesture| gesture.id == id) else {
             return false;
         };
+        if !terminal_interaction_allowed(&self.workspace_bounds, self.active_state()) {
+            let _ = self.finish_selection();
+            cx.notify();
+            return false;
+        }
         if self.active_pane() != Some(gesture.pane)
             || !self
                 .registry
@@ -3538,15 +3684,15 @@ impl TerminalView {
         if !gesture.moved {
             return true;
         }
-        let (hit, _) = self.hit_test(gesture.position);
+        let Some(hit) = self.hit_test(gesture.position) else {
+            let _ = self.finish_selection();
+            cx.notify();
+            return false;
+        };
         let Some(state) = self.active_state() else {
             return false;
         };
-        let (_, top) = *state
-            .viewport_origin
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let direction = selection_scroll_direction(f32::from(gesture.position.y) - top, hit);
+        let direction = selection_scroll_direction(hit.relative_y, hit.grid);
         let Some((offset, history)) = state.frame.viewport_offset.zip(state.frame.scrollback_rows)
         else {
             return true;
@@ -3579,6 +3725,11 @@ impl TerminalView {
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !terminal_interaction_allowed(&self.workspace_bounds, self.active_state()) {
+            let _ = self.finish_selection();
+            cx.notify();
+            return;
+        }
         if event.dragging() {
             self.update_selection_position(event.position);
             cx.notify();
@@ -3593,6 +3744,11 @@ impl TerminalView {
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !terminal_interaction_allowed(&self.workspace_bounds, self.active_state()) {
+            let _ = self.finish_selection();
+            cx.notify();
+            return;
+        }
         if event.button == MouseButton::Left {
             self.update_selection_position(event.position);
             if let Some(text) = self.finish_selection() {
@@ -3606,20 +3762,22 @@ impl TerminalView {
 impl TerminalView {
     /// The padding configured above the terminal.
     pub(super) fn top_padding(&self) -> Pixels {
-        px(f32::from(self.config.terminal_padding.top))
+        gpui::px(f32::from(self.config.terminal_padding.top))
     }
 
     /// A draw of the active tab in place of a terminal that stopped working.
-    fn render_pane_failure(
+    fn render_pane_problem(
         &mut self,
         panels: ShellPanels,
-        error: &str,
+        problem: SessionProblem<'_>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        // The panels it would have shown over have gone, and must not go on taking keys.
-        self.reconcile_task_ui();
+        // A hidden palette must not continue handling the problem's keys.
+        self.palette_open = false;
+        self.palette_query.clear();
+        self.palette_selection = 0;
         let theme = self.theme.clone();
-        let problem = self.render_session_problem(SessionProblem::Failed { error }, &theme, cx);
+        let problem = self.render_session_problem(problem, &theme, cx);
         self.render_shell_layout(panels, problem, &theme)
     }
 }
@@ -3661,6 +3819,9 @@ impl Render for TerminalView {
             sidebar,
             sidebar_frame,
         };
+        if let Some(problem) = geometry_problem(&self.workspace_bounds, self.active_state()) {
+            return self.render_pane_problem(panels, problem, cx);
+        }
         let Some(active_pane) = self.active_pane() else {
             let notice = self.registry.notice.clone();
             let problem = self.render_session_problem(
@@ -3689,24 +3850,29 @@ impl Render for TerminalView {
             CursorFocus::Unfocused
         };
         if let Some(error) = &pane_error {
-            return self.render_pane_failure(panels, error, cx);
+            return self.render_pane_problem(panels, SessionProblem::Failed { error }, cx);
         }
         let workspace_bounds = Arc::clone(&self.workspace_bounds);
         let workspace_entity = cx.weak_entity();
-        let (workspace_width, workspace_height) = *self
-            .workspace_bounds
-            .lock()
-            .expect("workspace bounds mutex poisoned");
+        let Some((workspace_width, workspace_height)) = read_measurement(&workspace_bounds) else {
+            return self.render_pane_problem(panels, SessionProblem::WorkspaceGeometry, cx);
+        };
+        let Some(surface) = read_measurement(&measured) else {
+            return self.render_pane_problem(panels, SessionProblem::PaneGeometry, cx);
+        };
+        if read_measurement(&viewport_origin).is_none() {
+            return self.render_pane_problem(panels, SessionProblem::PaneGeometry, cx);
+        }
         let layouts = self
             .registry
             .workspace
             .project(
-                LayoutRect::new(
-                    0.0,
-                    0.0,
-                    workspace_width.max(1.0),
-                    workspace_height.max(1.0),
-                ),
+                LayoutRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: workspace_width.max(1.0),
+                    height: workspace_height.max(1.0),
+                },
                 MinSizePolicy::new(1.0, 1.0),
             )
             .unwrap_or_default();
@@ -3714,10 +3880,6 @@ impl Render for TerminalView {
             // The canvas is inside the actual content panel, so this includes
             // the title strip, terminal inset, and the sidebar at its current
             // width without trying to reconstruct GPUI's layout arithmetic.
-            let surface = *state
-                .measured_bounds
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (width, height) = self.metrics.scale.whole_device_size(surface);
             state.fit_grid(width, height, self.metrics.device_cell());
             // Sampled after the resize, so the draw that resizes the grid also shows it.
@@ -3736,7 +3898,7 @@ impl Render for TerminalView {
             .get(&active_pane)
             .and_then(|state| state.error.clone());
         if let Some(error) = &fit_error {
-            return self.render_pane_failure(panels, error, cx);
+            return self.render_pane_problem(panels, SessionProblem::Failed { error }, cx);
         }
         let overlays = self
             .registry
@@ -3759,7 +3921,7 @@ impl Render for TerminalView {
                     .position
                     .filter(|_| frame.cursor.visible != Known::Known(false)),
                 focus,
-                blink: blink_wanted(self.config.cursor_blink, frame.cursor.blinking),
+                blink: super::cursor::blink_wanted(self.config.cursor_blink, frame.cursor.blinking),
                 trail: self.config.cursor_trail && self.motion_pace() == MotionPace::Full,
                 now: std::time::Instant::now(),
             },
@@ -3774,14 +3936,14 @@ impl Render for TerminalView {
             cursor,
             overlays,
         }));
-        let mut terminal_surface = div().relative().overflow_hidden().child(
-            canvas(
+        let mut terminal_surface = gpui::div().relative().overflow_hidden().child(
+            gpui::canvas(
                 move |bounds, _, app| {
                     let next = (
                         f32::from(bounds.size.width).max(1.0),
                         f32::from(bounds.size.height).max(1.0),
                     );
-                    if store_if_changed(&workspace_bounds, next) {
+                    if store_if_changed(&workspace_bounds, next).unwrap_or(true) {
                         redraw_after_this_frame(workspace_entity, app);
                     }
                 },
@@ -3793,13 +3955,13 @@ impl Render for TerminalView {
         for pane in layouts {
             let bounds = pane.bounds;
             let pane_id = pane.pane_id;
-            let pane_shell = div()
+            let pane_shell = gpui::div()
                 .id(("cuetty-pane", pane_id.get()))
                 .absolute()
-                .left(px(bounds.x))
-                .top(px(bounds.y))
-                .w(px(bounds.width.max(1.0)))
-                .h(px(bounds.height.max(1.0)))
+                .left(gpui::px(bounds.x))
+                .top(gpui::px(bounds.y))
+                .w(gpui::px(bounds.width.max(1.0)))
+                .h(gpui::px(bounds.height.max(1.0)))
                 .overflow_hidden();
             if pane_id == active_pane {
                 let pane_measured = Arc::clone(&measured);
@@ -3814,7 +3976,7 @@ impl Render for TerminalView {
                 // full-size relative child; calling `relative()` on the outer
                 // element would override its projected positioning.
                 let viewport = pane_shell.child(
-                    div()
+                    gpui::div()
                         .relative()
                         .size_full()
                         .track_focus(&self.focus)
@@ -3823,15 +3985,16 @@ impl Render for TerminalView {
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                         .on_scroll_wheel(cx.listener(Self::scroll_wheel))
                         .child(
-                            canvas(
+                            gpui::canvas(
                                 move |bounds, _, app| {
-                                    if store_if_changed(&pane_measured, bounds.size) {
-                                        redraw_after_this_frame(pane_entity, app);
-                                    }
-                                    store_if_changed(
+                                    let changed = store_if_changed(&pane_measured, bounds.size);
+                                    let origin = store_if_changed(
                                         &pane_viewport_origin,
                                         (f32::from(bounds.origin.x), f32::from(bounds.origin.y)),
                                     );
+                                    if changed.unwrap_or(true) || origin.is_none() {
+                                        redraw_after_this_frame(pane_entity, app);
+                                    }
                                 },
                                 move |_, _, window, _| {
                                     let moved = selection_entity.clone();
@@ -3875,7 +4038,7 @@ impl Render for TerminalView {
             terminal_surface = terminal_surface.child(command_palette);
         }
         let top_padding = self.top_padding();
-        let surface = div()
+        let surface = gpui::div()
             .relative()
             .size_full()
             .overflow_hidden()
@@ -3883,21 +4046,23 @@ impl Render for TerminalView {
                 terminal_surface
                     .absolute()
                     .top(self.top_inset(top_padding))
-                    .right(px(f32::from(padding.right)))
-                    .bottom(self.bottom_inset(px(f32::from(padding.bottom))))
-                    .left(px(f32::from(padding.left))),
+                    .right(gpui::px(f32::from(padding.right)))
+                    .bottom(self.bottom_inset(gpui::px(f32::from(padding.bottom))))
+                    .left(gpui::px(f32::from(padding.left))),
             )
             .children(self.render_scrollbar(
                 ScrollbarRequest {
                     extent: ScrollExtent::of_frame(&frame),
                     top: self.top_inset(top_padding),
-                    bottom: self.bottom_inset(px(f32::from(padding.bottom))),
-                    gutter: px(f32::from(padding.right)),
+                    bottom: self.bottom_inset(gpui::px(f32::from(padding.bottom))),
+                    gutter: gpui::px(f32::from(padding.right)),
                     theme: &theme,
                 },
                 cx,
             ))
-            .children(exit_failure.map(|failure| render_exit_notice(failure, &theme)))
+            .children(
+                exit_failure.map(|failure| super::chrome::render_exit_notice(failure, &theme)),
+            )
             .children(self.window_controls_band(top_padding));
         self.render_shell_layout(panels, surface.into_any_element(), &theme)
     }
@@ -3908,7 +4073,7 @@ pub fn run() {
         .with_assets(ChromeAssets)
         .run(|cx: &mut App| {
             gpui_component::init(cx);
-            resolve_ui_font(cx.text_system());
+            super::chrome::resolve_ui_font(cx.text_system());
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
             cx.set_menus(vec![Menu {
@@ -3919,8 +4084,8 @@ pub fn run() {
                     MenuItem::action("Quit Cuetty", Quit),
                 ],
             }]);
-            let window_size = size(px(960.), px(640.));
-            let window_min_size = size(px(640.), px(400.));
+            let window_size = gpui::size(gpui::px(960.), gpui::px(640.));
+            let window_min_size = gpui::size(gpui::px(640.), gpui::px(400.));
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -3939,7 +4104,7 @@ pub fn run() {
                         titlebar: Some(gpui::TitlebarOptions {
                             title: Some(APP_TITLE.into()),
                             appears_transparent: true,
-                            traffic_light_position: Some(traffic_light_position()),
+                            traffic_light_position: Some(chrome::traffic_light_position()),
                         }),
                         window_background: TerminalTheme::default().window_background(),
                         // Matches the installed `cuetty.desktop` so Linux
@@ -3971,15 +4136,167 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::color::contrast_ratio;
+
     use crate::terminal::config::{ThemeChoice, ThemeName};
     use crate::terminal::foreground::ForegroundProcess;
     use crate::terminal::model::Color;
-    use crate::terminal::rio_input::{encode_key, encode_paste};
+    use crate::terminal::rio_input;
     use crate::terminal::selection::LogicalPosition;
     use crate::terminal::tab_status::TabIndicator;
     use rio_vt::crosswords::Mode;
     use std::collections::VecDeque;
+
+    fn poison_measurement<T: Send + 'static>(slot: &Arc<Mutex<T>>) {
+        let slot = Arc::clone(slot);
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = slot.lock().expect("measurement lock should start healthy");
+                panic!("poison measurement");
+            })
+            .join()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn viewport_hit_requires_a_healthy_origin() {
+        let origin = Arc::new(Mutex::new((10.0, 20.0)));
+        let grid = CellHitTest {
+            cell_width: 8.0,
+            cell_height: 20.0,
+            rows: 4,
+            columns: 10,
+        };
+        let position = gpui::point(gpui::px(26.0), gpui::px(65.0));
+        let hit = viewport_hit(&origin, grid, position).expect("healthy origin");
+        assert_eq!(hit.cell, LogicalPosition { line: 2, column: 2 });
+        assert_eq!(hit.relative_y, 45.0);
+
+        poison_measurement(&origin);
+        assert!(viewport_hit(&origin, grid, position).is_none());
+    }
+
+    #[test]
+    fn geometry_failure_blocks_terminal_keys_and_prioritizes_the_workspace() {
+        let workspace = Arc::new(Mutex::new((800.0, 600.0)));
+        let (mut pane, _) = bracketed_pane("zsh");
+        let plain = gpui::Modifiers::default();
+        let enter = key_press("enter", plain);
+        assert_eq!(geometry_key_action(&workspace, Some(&pane), &enter), None);
+
+        poison_measurement(&pane.viewport_origin);
+        assert_eq!(
+            geometry_problem(&workspace, Some(&pane)),
+            Some(SessionProblem::PaneGeometry)
+        );
+        for key in ["enter", "x", "backspace"] {
+            assert_eq!(
+                geometry_key_action(&workspace, Some(&pane), &key_press(key, plain)),
+                Some(GeometryKeyAction::Block)
+            );
+        }
+        let app_modifiers = gpui::Modifiers {
+            control: !cfg!(target_os = "macos"),
+            shift: !cfg!(target_os = "macos"),
+            platform: cfg!(target_os = "macos"),
+            ..plain
+        };
+        assert_eq!(
+            geometry_key_action(&workspace, Some(&pane), &key_press("v", app_modifiers)),
+            Some(GeometryKeyAction::Block),
+            "paste must not reach a hidden shell"
+        );
+        assert_eq!(
+            geometry_key_action(&workspace, Some(&pane), &key_press("w", app_modifiers)),
+            Some(GeometryKeyAction::CloseTab)
+        );
+
+        pane.error = Some("shell error".into());
+        poison_measurement(&workspace);
+        assert_eq!(
+            geometry_problem(&workspace, Some(&pane)),
+            Some(SessionProblem::WorkspaceGeometry)
+        );
+        assert_eq!(
+            geometry_problem(&workspace, None),
+            Some(SessionProblem::WorkspaceGeometry),
+            "a new tab cannot repair a poisoned workspace"
+        );
+        assert_eq!(
+            geometry_key_action(&workspace, Some(&pane), &enter),
+            Some(GeometryKeyAction::Block)
+        );
+    }
+
+    #[test]
+    fn stale_pointer_and_task_actions_require_a_healthy_visible_pane() {
+        let workspace = Arc::new(Mutex::new((800.0, 600.0)));
+        let (mut pane, _) = bracketed_pane("zsh");
+        assert!(!terminal_interaction_allowed(&workspace, None));
+        assert!(terminal_interaction_allowed(&workspace, Some(&pane)));
+
+        pane.error = Some("terminal size unavailable".into());
+        assert!(!terminal_interaction_allowed(&workspace, Some(&pane)));
+        pane.error = None;
+        pane.status.apply(StatusEvent::SessionFailed(
+            crate::terminal::tab_status::ExitFailure::Code(1),
+        ));
+        assert!(
+            terminal_interaction_allowed(&workspace, Some(&pane)),
+            "an exited pane's final output remains scrollable"
+        );
+        poison_measurement(&pane.measured_bounds);
+        assert!(!terminal_interaction_allowed(&workspace, Some(&pane)));
+
+        let (pane, _) = bracketed_pane("zsh");
+        poison_measurement(&pane.viewport_origin);
+        assert!(!terminal_interaction_allowed(&workspace, Some(&pane)));
+
+        let (pane, _) = bracketed_pane("zsh");
+        poison_measurement(&workspace);
+        assert!(!terminal_interaction_allowed(&workspace, Some(&pane)));
+    }
+
+    #[test]
+    fn a_failed_pane_does_not_route_recovery_keys_to_a_hidden_palette() {
+        let (mut pane, _) = bracketed_pane("zsh");
+        let enter = key_press("enter", gpui::Modifiers::default());
+        assert!(pane_allows_palette(None));
+        assert!(pane_allows_palette(Some(&pane)));
+
+        pane.error = Some("terminal size unavailable".into());
+        assert!(!pane_allows_palette(Some(&pane)));
+        assert!(takes_offered_action(&enter), "Enter offers shell recovery");
+
+        pane.error = None;
+        assert!(pane_allows_palette(Some(&pane)));
+    }
+
+    #[test]
+    fn closing_a_tab_with_poisoned_geometry_keeps_other_tabs_usable() {
+        let workspace = Mutex::new((800.0, 600.0));
+        let (initial, _) = fake_start('a', Vec::new(), None);
+        let (replacement, _) = fake_start('b', Vec::new(), None);
+        let factory = fake_factory(vec![Ok(initial), Ok(replacement)]);
+        let (mut registry, _) = start_test_registry(factory).unwrap();
+        let healthy = registry.active_pane().unwrap();
+        let (broken, _, _) = registry
+            .start_tab(test_geometry(), SystemAppearance::Dark)
+            .unwrap();
+        poison_measurement(&registry.sessions[&broken].measured_bounds);
+        assert_eq!(
+            geometry_problem(&workspace, registry.sessions.get(&broken)),
+            Some(SessionProblem::PaneGeometry)
+        );
+
+        registry.close_pane(broken).expect("broken tab closes");
+        assert_eq!(registry.active_pane(), Some(healthy));
+        assert_eq!(
+            geometry_problem(&workspace, registry.sessions.get(&healthy)),
+            None
+        );
+        assert!(!registry.close_window_requested);
+    }
 
     #[test]
     fn selection_scroll_zones_follow_grid_metrics_and_outside_edges() {
@@ -4030,13 +4347,14 @@ mod tests {
         }
 
         fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
-            let bytes = encode_key(event, Mode::BRACKETED_PASTE, None).unwrap_or_default();
+            let bytes =
+                rio_input::encode_key(event, Mode::BRACKETED_PASTE, None).unwrap_or_default();
             self.sent.lock().unwrap().extend(bytes);
             Ok(true)
         }
 
         fn paste(&mut self, text: &str) -> Result<(), String> {
-            let bytes = encode_paste(text, Mode::BRACKETED_PASTE);
+            let bytes = rio_input::encode_paste(text, Mode::BRACKETED_PASTE);
             self.sent.lock().unwrap().extend(bytes);
             Ok(())
         }
@@ -4239,9 +4557,15 @@ mod tests {
 
     #[test]
     fn a_font_line_is_centred_in_its_cell_whichever_way_descent_is_signed() {
-        for descent in [px(4.0), px(-4.0)] {
-            assert_eq!(baseline_in_cell(px(19.0), px(15.0), descent), px(15.0));
-            assert_eq!(baseline_in_cell(px(25.0), px(15.0), descent), px(18.0));
+        for descent in [gpui::px(4.0), gpui::px(-4.0)] {
+            assert_eq!(
+                baseline_in_cell(gpui::px(19.0), gpui::px(15.0), descent),
+                gpui::px(15.0)
+            );
+            assert_eq!(
+                baseline_in_cell(gpui::px(25.0), gpui::px(15.0), descent),
+                gpui::px(18.0)
+            );
         }
     }
 
@@ -4526,7 +4850,7 @@ mod tests {
 
     fn test_geometry() -> SessionGeometry {
         SessionGeometry {
-            surface: size(px(80.0), px(40.0)),
+            surface: gpui::size(gpui::px(80.0), gpui::px(40.0)),
             scale: ScaleFactor::new(1.0),
             cell: test_cell(),
         }
@@ -4537,7 +4861,7 @@ mod tests {
         let mut remainder = 0.0;
         assert_eq!(
             wheel_scroll_lines(
-                ScrollDelta::Pixels(point(px(0.0), px(9.0))),
+                ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(9.0))),
                 20.0,
                 &mut remainder
             ),
@@ -4545,7 +4869,7 @@ mod tests {
         );
         assert_eq!(
             wheel_scroll_lines(
-                ScrollDelta::Pixels(point(px(0.0), px(12.0))),
+                ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(12.0))),
                 20.0,
                 &mut remainder
             ),
@@ -4553,7 +4877,11 @@ mod tests {
         );
         assert!(remainder > 0.0);
         assert_eq!(
-            wheel_scroll_lines(ScrollDelta::Lines(point(0.0, -2.0)), 20.0, &mut remainder),
+            wheel_scroll_lines(
+                ScrollDelta::Lines(gpui::point(0.0, -2.0)),
+                20.0,
+                &mut remainder
+            ),
             -1
         );
     }
@@ -4652,10 +4980,10 @@ mod tests {
     }
 
     fn shell_with_tabs(count: usize) -> WorkspaceShell {
-        let mut shell = WorkspaceShell::new().unwrap();
-        (1..count).for_each(|_| {
+        let mut shell = WorkspaceShell::try_new().unwrap();
+        for _ in 1..count {
             shell.create_tab("Terminal").unwrap();
-        });
+        }
         shell
     }
 
@@ -4780,10 +5108,19 @@ mod tests {
     #[test]
     fn a_measurement_reports_a_change_only_when_it_differs() {
         let slot = Mutex::new((1, 2));
-        assert!(!store_if_changed(&slot, (1, 2)));
-        assert!(store_if_changed(&slot, (3, 2)));
+        assert_eq!(store_if_changed(&slot, (1, 2)), Some(false));
+        assert_eq!(store_if_changed(&slot, (3, 2)), Some(true));
         assert_eq!(*slot.lock().unwrap(), (3, 2));
-        assert!(!store_if_changed(&slot, (3, 2)));
+        assert_eq!(store_if_changed(&slot, (3, 2)), Some(false));
+    }
+
+    #[test]
+    fn poisoned_measurements_are_neither_read_nor_updated() {
+        let slot = Arc::new(Mutex::new((1, 2)));
+        assert_eq!(read_measurement(&slot), Some((1, 2)));
+        poison_measurement(&slot);
+        assert_eq!(read_measurement(&slot), None);
+        assert_eq!(store_if_changed(&slot, (3, 2)), None);
     }
 
     #[test]
@@ -5010,11 +5347,12 @@ mod tests {
         let mut cell = TerminalCell::narrow('x');
         cell.style.dim = true;
         let selected = readable_foreground(cell_painted(&cell, Some(theme.selection)), &theme);
-        assert_eq!(selected, dimmed(theme.text, theme.selection));
+        assert_eq!(selected, color::dimmed(theme.text, theme.selection));
         let unselected = readable_foreground(cell_painted(&cell, None), &theme);
-        assert_eq!(unselected, dimmed(theme.text, theme.surface));
+        assert_eq!(unselected, color::dimmed(theme.text, theme.surface));
         assert!(
-            contrast_ratio(selected, theme.selection) > contrast_ratio(unselected, theme.selection),
+            color::contrast_ratio(selected, theme.selection)
+                > color::contrast_ratio(unselected, theme.selection),
             "selecting dim text must not make it harder to read"
         );
     }
@@ -5038,7 +5376,7 @@ mod tests {
         // ANSI black sits close to the default surface.
         palette.foreground = Color::Indexed(0);
         let lifted = readable(&palette, None);
-        assert!(contrast_ratio(lifted, surface) >= 4.5);
+        assert!(color::contrast_ratio(lifted, surface) >= 4.5);
 
         let mut explicit = palette.clone();
         explicit.foreground = Color::Rgb(Rgb(40, 40, 50));
@@ -5061,7 +5399,7 @@ mod tests {
         let selected = Rgb(170, 170, 180);
         let on_selection = readable_foreground(cell_painted(&cell, Some(selected)), &theme);
         assert_ne!(plain, on_selection);
-        assert!(contrast_ratio(on_selection, selected) >= 4.5);
+        assert!(color::contrast_ratio(on_selection, selected) >= 4.5);
     }
 
     #[test]
@@ -5089,9 +5427,9 @@ mod tests {
         config.font.bold_weight = 800;
         let metrics = TerminalMetrics {
             font: gpui::font("Test"),
-            font_size: px(16.0),
+            font_size: gpui::px(16.0),
             bold_weight: FontWeight(f32::from(config.font.bold_weight)),
-            cell: size(px(9.0), px(19.0)),
+            cell: gpui::size(gpui::px(9.0), gpui::px(19.0)),
             scale: ScaleFactor::new(1.0),
         };
         let mut cell = TerminalCell::narrow('x');
@@ -6410,7 +6748,9 @@ mod tests {
         assert_eq!(window_ink(text, dark, WindowPresence::Active), text);
         for background in [dark, light] {
             let faded = window_ink(text, background, WindowPresence::Inactive);
-            assert!(contrast_ratio(faded, background) < contrast_ratio(text, background));
+            assert!(
+                color::contrast_ratio(faded, background) < color::contrast_ratio(text, background)
+            );
         }
         assert_eq!(window_ink(dark, dark, WindowPresence::Inactive), dark);
     }
@@ -6436,15 +6776,22 @@ mod tests {
     #[test]
     fn a_new_tab_is_measured_without_the_exit_notice_its_sibling_gives_up_room_to() {
         let (mut state, _) = bracketed_pane("zsh");
-        let measured = size(px(800.0), px(600.0));
+        let measured = gpui::size(gpui::px(800.0), gpui::px(600.0));
         *state.measured_bounds.lock().unwrap() = measured;
-        assert_eq!(state.surface_for_sibling(), measured);
+        assert_eq!(state.surface_for_sibling(), Some(measured));
         state.status.apply(StatusEvent::SessionFailed(
             crate::terminal::tab_status::ExitFailure::Code(1),
         ));
-        let surface = state.surface_for_sibling();
+        let surface = state.surface_for_sibling().expect("healthy measurement");
         assert_eq!(surface.width, measured.width);
         assert!(surface.height > measured.height);
+    }
+
+    #[test]
+    fn a_new_tab_cannot_use_a_poisoned_sibling_measurement() {
+        let (state, _) = bracketed_pane("zsh");
+        poison_measurement(&state.measured_bounds);
+        assert!(state.surface_for_sibling().is_none());
     }
 
     #[test]

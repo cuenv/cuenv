@@ -57,7 +57,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::error::{ChangeFailure, InfrastructureError, Result};
 use crate::state::{RecordVersion, ResourceAddress};
 
-use super::{Action, ApplyEvent, ApplyStep, ResourceChange, StepKind, topological_order};
+use super::{Action, ApplyEvent, ApplyStep, ResourceChange, StepKind};
 
 /// What a node does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,7 +552,7 @@ impl<'plan> Graph<'plan> {
                 (self.changes[*index].address.name.clone(), dependencies)
             })
             .collect();
-        let order = topological_order(&graph)?;
+        let order = super::topological_order(&graph)?;
         let by_name: BTreeMap<&str, usize> = order
             .iter()
             .enumerate()

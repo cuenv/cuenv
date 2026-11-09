@@ -4,10 +4,10 @@ use crate::backends::{BackendContext, PublishResult, ReleaseBackend};
 use crate::error::Result;
 use tracing::{info, warn};
 
-struct BackendPublishRequest<'a> {
-    backend: &'a dyn ReleaseBackend,
-    context: &'a BackendContext,
-    artifacts: &'a [PackagedArtifact],
+struct BackendPublishRequest<'request> {
+    backend: &'request dyn ReleaseBackend,
+    context: &'request BackendContext,
+    artifacts: &'request [PackagedArtifact],
 }
 
 impl ReleaseOrchestrator {

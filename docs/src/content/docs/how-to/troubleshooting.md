@@ -185,10 +185,13 @@ cuenv allow --note "Reviewed on 2025-01-15"
    cuenv env print --package cuenv
    ```
 
-3. **Check for evaluation errors:**
+3. **Check hook execution after initializing shell integration:**
    ```bash
-   cuenv env check
+   cuenv env status --wait
    ```
+
+   Outside shell integration, create a session as shown in the
+   [CLI reference](/reference/cli/#cuenv-shell-session) before querying hook status.
 
 ## Task Execution Issues
 

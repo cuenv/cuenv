@@ -114,6 +114,13 @@ cuenv env print [OPTIONS]
 
 Load environment and execute hooks in the background.
 
+On Unix, hook state is stored in a private directory owned by the current
+user. Cuenv makes its existing default directory private when it is owned by
+that user and is not writable by others. A custom `CUENV_STATE_DIR` must
+already be private and have a trusted parent directory.
+Hook arguments remain visible in operating-system process listings while the
+hook runs, so do not put credentials in command arguments.
+
 ```bash
 cuenv env load [OPTIONS]
 ```
@@ -138,6 +145,40 @@ cuenv env status [OPTIONS]
 - `--wait`: Wait for hooks to complete before returning.
 - `--timeout <SECONDS>`: Timeout in seconds for waiting. Default: `300`
 - `-o, --output <FORMAT>`: Output format (text, short, starship). Default: `text`
+
+#### `cuenv env recover`
+
+List durable hook reservations, including reservations for project directories
+that no longer exist:
+
+```bash
+cuenv env recover --list
+```
+
+If a worker crashes or a reservation cannot be resolved automatically, stop
+the worker, its direct child, and any descendants using your operating system's
+process tools. Then recover the exact identity shown by the listing:
+
+```bash
+cuenv env recover \
+  --directory-key <DIRECTORY_KEY> \
+  --instance-hash <INSTANCE_HASH> \
+  --run-id <RUN_UUID> \
+  --drained
+```
+
+`--drained` is your attestation that the run and its descendants have stopped.
+PIDs in the listing are diagnostic only; a missing marker, PID, or project
+directory does not prove that a process has stopped. A stale identity is refused.
+Normal cancellation and timeouts stop and reap the hook's direct child; a
+descendant that the hook starts may continue after the reservation is released.
+Before upgrading to the coordinated hook-state protocol, stop supervisors from
+older cuenv versions, which do not participate in its lock.
+Unattributed legacy `*_hooks.json` and `*_config.json` files require manual
+cleanup after all old supervisors have stopped; `recover --drained` cannot
+associate an orphan with an exact run. Historical `/tmp/cuenv_supervisor*.log`
+files are also operator-managed. Inspect paths and file types before removing
+them rather than following symlinks automatically.
 
 #### `cuenv env inspect`
 
@@ -708,8 +749,17 @@ command named in an error or hint carries the run's `--env`, `-p` and
   `infrastructure.migrateStateTo` names (S3 only), leaving a `migrated-<id>`
   fence lock on the source. `--all` migrates every environment the source
   holds state for; `--upgrade-source` upgrades an older SQL source schema
-  first; `--rollback` releases the fences and tombstones the copies, refusing
-  when a copy changed, unless `--copy-back` copies those changes back first.
+  first; `--rollback` releases the fences and tombstones the copies. It
+  refuses detected changes unless `--copy-back` copies them first. Stop all
+  other clients, restores, unlocks and in-flight operations through migration,
+  rollback and configuration cutover, and pass `--confirm-maintenance` and
+  stable, distinct `--source-physical-identity` and `--target-physical-identity`
+  UUIDs. These are operator attestations; aliases of one physical store must
+  share an identity.
+  Older migration records lack the required atomic receipt and must be
+  reconciled manually. Interrupted rollback or uncertain lock release can
+  also require manual reconciliation. See
+  [migration precautions](/how-to/infrastructure/#migrate-between-backends).
 - `state adopt` is deprecated and does nothing.
 - `unlock <id>` prints the holder, its age and, with S3 state, the cuenv
   version and last change before releasing. It refuses a migration fence
@@ -902,6 +952,48 @@ cuenv shell init <SHELL>
 
 - `<SHELL>`: Shell type (fish, bash, zsh).
 
+#### `cuenv shell session`
+
+Generate a fresh hook execution session ID without loading a project. Shell
+integration creates an independent session for each initialized shell and keeps
+the ID local to that shell. For a manual sequence of hook commands outside the
+integration, pass the same ID to each command:
+
+```bash
+export CUENV_HOOK_SESSION="$(cuenv shell session)"
+cuenv env load
+cuenv env status --wait
+cuenv env check
+unset CUENV_HOOK_SESSION
+```
+
+An explicitly exported ID is inherited by child processes. Use a new ID for
+each independent shell or invocation rather than sharing cached hook results.
+Hook input files must remain unchanged throughout a run; cuenv checks them
+again before publishing its result.
+
+In an initialized Bash shell, command substitution runs in a subshell. To
+deliberately use the current session there, use `--current` as an explicit
+handoff. Disable shell tracing before evaluating generated environment code:
+
+```bash
+set +x
+eval "$(CUENV_HOOK_SESSION="$(cuenv shell session --current)" cuenv env check)"
+```
+
+In Zsh, use `cuenv shell refresh` to apply changes in the parent shell.
+
+#### `cuenv shell refresh`
+
+Apply the latest available environment to the current initialized shell. This
+uses the same checked update and restoration path as the prompt hook and keeps
+shell tracing disabled while processing values. Run it directly in the shell;
+it refuses execution from another subshell or an unrelated shell function.
+It also refuses ambiguous sourced-file or script call frames, so run it at the
+interactive prompt rather than from a startup file.
+`command cuenv` bypasses the integration's `cuenv` function and does not
+automatically receive its session.
+
 ### `cuenv allow`
 
 Approve configuration for hook execution.
@@ -1000,7 +1092,7 @@ recorded in `cue.mod/module.cue`.
 - `ci`: Sync CI workflow files from CUE configuration. Adds `--provider <github|buildkite>` to filter.
 - `vcs`: Sync cuenv-managed Git dependencies. Supports `-u/--update [NAMES...]` to refresh locked refs.
 - `rules`: Sync ignore files, `.editorconfig` and `CODEOWNERS` from `.rules.cue` files. Supports `--dry-run`, `--check` and `-A/--all`.
-- `git-hooks`: Sync the pre-push hook from project configuration. Supports `--dry-run`, `--check` and `-A/--all`.
+- `git-hooks`: Sync the pre-push hook from project configuration. Supports `--dry-run`, `--check` and `-A/--all`. On Unix, `--check` uses Git's execute-access test for a matching hook. If access fails, syncing adds the owner execute bit without changing the contents or other permissions and checks access again; it reports an error if access remains unavailable.
 - `infrastructure`: Regenerate the CUE types of every infrastructure provider `cuenv.lock` pins (see `cuenv infrastructure provider add`), and their `.gitignore` section; like managed codegen files they are not committed, so run it after a clone. Reads only `cuenv.lock`, not your CUE, installs each pinned release (requiring the pinned archive), and refuses one whose schema no longer has the pinned digest. Supports `--dry-run` and `--check`.
 
 **Example:**

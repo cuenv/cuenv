@@ -4,7 +4,7 @@
 //! to receive events concurrently.
 
 use crate::event::{CuenvEvent, EventCategory, EventSource, SystemEvent};
-use crate::metadata::correlation_id;
+use crate::metadata;
 use std::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
@@ -57,7 +57,7 @@ pub fn clear_global_sender() {
 /// Publish an [`EventCategory`] to the global event bus.
 ///
 /// Constructs a [`CuenvEvent`] with a fresh id, the active session's
-/// [`correlation_id`], and the given `source` and `category`, then sends
+/// [`metadata::correlation_id`], and the given `source` and `category`, then sends
 /// it through the process-wide [`EventSender`] (see [`set_global_sender`]).
 ///
 /// Returns `Ok(())` on success, `Err(SendError::Closed)` if the bus has
@@ -74,7 +74,7 @@ pub fn emit_with_source(source: EventSource, category: EventCategory) -> Result<
     let sender = global_sender().ok_or(SendError::Closed)?;
     let event = CuenvEvent {
         id: Uuid::new_v4(),
-        correlation_id: correlation_id(),
+        correlation_id: metadata::correlation_id(),
         timestamp: chrono::Utc::now(),
         source,
         category,

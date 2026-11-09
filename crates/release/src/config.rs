@@ -142,29 +142,31 @@ impl ReleasePackagesConfig {
     /// Check if a package is in a fixed group.
     #[must_use]
     pub fn is_in_fixed_group(&self, package: &str) -> bool {
-        self.get_fixed_group(package).is_some()
+        self.fixed_group(package).is_some()
     }
 
     /// Get the fixed group containing a package, if any.
     #[must_use]
-    pub fn get_fixed_group(&self, package: &str) -> Option<&Vec<String>> {
+    pub fn fixed_group(&self, package: &str) -> Option<&[String]> {
         self.fixed
             .iter()
             .find(|group| group.iter().any(|member| member == package))
+            .map(Vec::as_slice)
     }
 
     /// Check if a package is in a linked group.
     #[must_use]
     pub fn is_in_linked_group(&self, package: &str) -> bool {
-        self.get_linked_group(package).is_some()
+        self.linked_group(package).is_some()
     }
 
     /// Get the linked group containing a package, if any.
     #[must_use]
-    pub fn get_linked_group(&self, package: &str) -> Option<&Vec<String>> {
+    pub fn linked_group(&self, package: &str) -> Option<&[String]> {
         self.linked
             .iter()
             .find(|group| group.iter().any(|member| member == package))
+            .map(Vec::as_slice)
     }
 }
 
@@ -357,7 +359,7 @@ mod tests {
         assert!(config.is_in_fixed_group("pkg-c"));
         assert!(!config.is_in_fixed_group("pkg-d"));
 
-        let group = config.get_fixed_group("pkg-a").unwrap();
+        let group = config.fixed_group("pkg-a").unwrap();
         assert!(group.contains(&"pkg-a".to_string()));
         assert!(group.contains(&"pkg-b".to_string()));
     }

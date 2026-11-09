@@ -13,7 +13,6 @@
 
 use crate::core::traits::WorkspaceDiscovery;
 use crate::core::types::{PackageManager, Workspace, WorkspaceMember};
-use crate::discovery::{read_toml_file, resolve_glob_patterns};
 use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -42,7 +41,7 @@ impl WorkspaceDiscovery for CargoTomlDiscovery {
             });
         }
 
-        let cargo_toml: CargoToml = read_toml_file(&cargo_toml_path)?;
+        let cargo_toml: CargoToml = crate::discovery::read_toml_file(&cargo_toml_path)?;
 
         if cargo_toml.workspace.is_none() {
             // No [workspace] section: treat as a valid empty workspace (single-package repository).
@@ -72,7 +71,7 @@ impl WorkspaceDiscovery for CargoTomlDiscovery {
 
     fn find_members(&self, root: &Path) -> Result<Vec<WorkspaceMember>> {
         let cargo_toml_path = root.join("Cargo.toml");
-        let cargo_toml: CargoToml = read_toml_file(&cargo_toml_path)?;
+        let cargo_toml: CargoToml = crate::discovery::read_toml_file(&cargo_toml_path)?;
 
         // If [workspace] is missing, return an empty list (single-package repository).
         // This is consistent with discover() treating missing [workspace] as a valid
@@ -82,13 +81,14 @@ impl WorkspaceDiscovery for CargoTomlDiscovery {
         };
 
         let exclusions = workspace.exclude.unwrap_or_default();
-        let matched_paths = resolve_glob_patterns(root, &workspace.members, &exclusions)?;
+        let matched_paths =
+            crate::discovery::resolve_glob_patterns(root, &workspace.members, &exclusions)?;
         let mut members = Vec::new();
 
         for path in matched_paths {
             if self.validate_member(&path)? {
                 let manifest_path = path.join("Cargo.toml");
-                let member_pkg: CargoToml = read_toml_file(&manifest_path)?;
+                let member_pkg: CargoToml = crate::discovery::read_toml_file(&manifest_path)?;
 
                 if let Some(package) = member_pkg.package {
                     let mut dependencies = Vec::new();
@@ -132,7 +132,7 @@ impl WorkspaceDiscovery for CargoTomlDiscovery {
         }
 
         // Try parsing to ensure it has a [package] section with a name
-        match read_toml_file::<CargoToml>(&manifest_path) {
+        match crate::discovery::read_toml_file::<CargoToml>(&manifest_path) {
             Ok(pkg) => {
                 if pkg.package.is_some_and(|p| !p.name.is_empty()) {
                     Ok(true)

@@ -4,23 +4,19 @@
 //! - Parallel and sequential execution
 //! - Host process execution, with directory isolation and result caching
 
-use super::TaskCommandExt;
 use super::cache::{BuildActionInput, RecordInput, TaskCacheConfig};
-pub use super::command::{execute_command, execute_command_with_redaction};
-use super::process::TaskAttempt;
+pub use super::command::{CommandExecution, execute_command, execute_command_with_redaction};
+use super::process::{ProcessOptions, TaskAttempt};
 pub use super::result::{TASK_FAILURE_SNIPPET_LINES, TaskResult, summarize_task_failure};
 #[cfg(test)]
 use super::result::{format_failure_streams, summarize_stream};
-#[cfg(test)]
-use super::workspace::{
-    cargo_toml_has_workspace, deno_json_has_workspace, package_json_has_workspaces,
+
+use super::{
+    Task, TaskCommandExt, TaskDirectory, TaskDirectoryBase, TaskGraph, TaskGroup, TaskNode, Tasks,
 };
-use super::workspace::{find_workspace_root, normalize_join};
-use super::{Task, TaskDirectory, TaskDirectoryBase, TaskGraph, TaskGroup, TaskNode, Tasks};
 use async_recursion::async_recursion;
-use cuenv_core::OutputCapture;
 use cuenv_core::environment::Environment;
-use cuenv_core::{Error, Result};
+use cuenv_core::{Error, OutputCapture, Result};
 #[cfg(test)]
 use cuenv_workspaces::PackageManager;
 use std::collections::BTreeMap;
@@ -31,17 +27,26 @@ use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::instrument;
 
+#[derive(Clone, Copy)]
+struct GroupCompletion<'completion> {
+    prefix: &'completion str,
+    started: std::time::Instant,
+    outcome: &'completion Result<Vec<TaskResult>>,
+    total_children: usize,
+}
+
 /// Emit a `task.group_completed` event with succeeded/failed/skipped counts
 /// derived from the inner result.
 ///
 /// On `Err` the group is reported as failed with all children counted as
 /// failed (we lack per-child results once a sequence/parallel aborts).
-fn emit_group_completion(
-    prefix: &str,
-    started: std::time::Instant,
-    outcome: &Result<Vec<TaskResult>>,
-    total_children: usize,
-) {
+fn emit_group_completion(completion: GroupCompletion<'_>) {
+    let GroupCompletion {
+        prefix,
+        started,
+        outcome,
+        total_children,
+    } = completion;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let (success, succeeded, failed, skipped) = match outcome {
         Ok(results) => {
@@ -383,8 +388,13 @@ impl TaskExecutor {
         // sandboxed task runs in its exec root; everything else runs where it
         // always did.
         let start = std::time::Instant::now();
+        let context = TaskExecutionContext {
+            name,
+            task,
+            environment: &task_environment,
+        };
         let result = self
-            .execute_task_with_retries(name, task, cache_handle.as_mut(), &task_environment)
+            .execute_task_with_retries(context, cache_handle.as_mut())
             .await?;
         let duration_ms = start.elapsed().as_millis();
 
@@ -511,11 +521,10 @@ impl TaskExecutor {
 
     async fn execute_task_with_retries(
         &self,
-        name: &str,
-        task: &Task,
+        context: TaskExecutionContext<'_>,
         mut cache_handle: Option<&mut CacheHandle>,
-        environment: &Environment,
     ) -> Result<TaskResult> {
+        let TaskExecutionContext { name, task, .. } = context;
         let retry_attempts = task.retry.as_ref().map_or(0, |retry| retry.attempts);
         let max_attempts = retry_attempts.saturating_add(1);
         let retry_delay = task
@@ -533,10 +542,7 @@ impl TaskExecutor {
             // A timeout is a hard policy violation, not a transient failure:
             // retrying would re-incur the full timeout each attempt, so a
             // timed-out attempt ends the task immediately.
-            let result = match self
-                .execute_task_non_hermetic(name, task, workdir, environment)
-                .await?
-            {
+            let result = match self.execute_task_non_hermetic(context, workdir).await? {
                 TaskAttempt::TimedOut(result) => return Ok(result),
                 TaskAttempt::Completed(result) => result,
             };
@@ -569,8 +575,15 @@ impl TaskExecutor {
             cached,
         } = input;
 
-        let (stdout, stderr, exit_code) =
-            super::cache::materialize_hit(cache, workdir, task, cached).await?;
+        let (stdout, stderr, exit_code) = super::cache::materialize_hit(
+            cache,
+            super::cache::MaterializeOutputs {
+                workdir,
+                task,
+                result: cached,
+            },
+        )
+        .await?;
         if let Err(error) = cache
             .action_cache
             .commit_verified(action_digest, cached)
@@ -639,7 +652,10 @@ impl TaskExecutor {
             }
         } else if !task.is_hermetic() {
             if let Some(manager) = cuenv_workspaces::detect_from_command(&task.command) {
-                Ok(find_workspace_root(manager, &self.config.project_root))
+                Ok(super::workspace::find_workspace_root(
+                    manager,
+                    &self.config.project_root,
+                ))
             } else {
                 Ok(self.config.project_root.clone())
             }
@@ -694,7 +710,7 @@ impl TaskExecutor {
         base: &Path,
         path: &str,
     ) -> Result<PathBuf> {
-        let resolved = normalize_join(base, path);
+        let resolved = super::workspace::normalize_join(base, path);
         if resolved.starts_with(module_root) {
             Ok(resolved)
         } else {
@@ -717,11 +733,14 @@ impl TaskExecutor {
     /// Used for tasks like `bun install` that need to write to the real filesystem.
     async fn execute_task_non_hermetic(
         &self,
-        name: &str,
-        task: &Task,
+        context: TaskExecutionContext<'_>,
         workdir_override: Option<&Path>,
-        environment: &Environment,
     ) -> Result<TaskAttempt> {
+        let TaskExecutionContext {
+            name,
+            task,
+            environment,
+        } = context;
         // Check if this is an unresolved TaskRef (should have been resolved before execution)
         if task.is_task_ref() && task.project_root.is_none() {
             return Err(Error::configuration(format!(
@@ -794,6 +813,7 @@ impl TaskExecutor {
         for (key, value) in task_env {
             cmd.env(key, value);
         }
+        cmd.env_remove("CUENV_HOOK_SESSION");
 
         // Force color output even when stdout is piped (for capture mode)
         // These are widely supported: FORCE_COLOR by Node.js/chalk, CLICOLOR_FORCE by BSD/macOS
@@ -809,7 +829,15 @@ impl TaskExecutor {
             .as_deref()
             .map(|timeout| parse_task_duration("timeout", timeout))
             .transpose()?;
-        super::process::run_task_process(name, cmd, self.config.capture_output, timeout).await
+        super::process::run_task_process(
+            name,
+            cmd,
+            ProcessOptions {
+                capture_output: self.config.capture_output,
+                timeout,
+            },
+        )
+        .await
     }
 
     /// Execute a task node (single task, group, or list)
@@ -830,17 +858,6 @@ impl TaskExecutor {
         }
     }
 
-    /// Execute a task definition (legacy alias for execute_node)
-    #[async_recursion]
-    pub async fn execute_definition(
-        &self,
-        name: &str,
-        node: &TaskNode,
-        all_tasks: &Tasks,
-    ) -> Result<Vec<TaskResult>> {
-        self.execute_node(name, node, all_tasks).await
-    }
-
     async fn execute_sequential(
         &self,
         prefix: &str,
@@ -856,7 +873,12 @@ impl TaskExecutor {
             .execute_sequential_inner(prefix, sequence, all_tasks)
             .await;
         if emit_lifecycle {
-            emit_group_completion(prefix, started, &outcome, sequence.len());
+            emit_group_completion(GroupCompletion {
+                prefix,
+                started,
+                outcome: &outcome,
+                total_children: sequence.len(),
+            });
         }
         outcome
     }
@@ -899,8 +921,10 @@ impl TaskExecutor {
                     return Err(Error::task_failed(
                         &result.name,
                         result.exit_code.unwrap_or(-1),
-                        &result.stdout,
-                        &result.stderr,
+                        cuenv_core::tasks::TaskFailureOutput {
+                            stdout: &result.stdout,
+                            stderr: &result.stderr,
+                        },
                     ));
                 }
                 seq_results.insert(result.name.clone(), result.clone());
@@ -928,7 +952,12 @@ impl TaskExecutor {
             let task_name = format!("{}.default", prefix);
             let outcome = self.execute_node(&task_name, default_task, all_tasks).await;
             if emit_lifecycle {
-                emit_group_completion(prefix, started, &outcome, 1);
+                emit_group_completion(GroupCompletion {
+                    prefix,
+                    started,
+                    outcome: &outcome,
+                    total_children: 1,
+                });
             }
             return outcome;
         }
@@ -946,7 +975,12 @@ impl TaskExecutor {
         let total_children = group.children.len();
         let outcome = self.execute_parallel_inner(prefix, group, all_tasks).await;
         if emit_lifecycle {
-            emit_group_completion(prefix, started, &outcome, total_children);
+            emit_group_completion(GroupCompletion {
+                prefix,
+                started,
+                outcome: &outcome,
+                total_children,
+            });
         }
         outcome
     }
@@ -967,8 +1001,10 @@ impl TaskExecutor {
                 return Err(Error::task_failed(
                     &failed.name,
                     failed.exit_code.unwrap_or(-1),
-                    &failed.stdout,
-                    &failed.stderr,
+                    cuenv_core::tasks::TaskFailureOutput {
+                        stdout: &failed.stdout,
+                        stderr: &failed.stderr,
+                    },
                 ));
             }
             all_results.extend(results);
@@ -1017,54 +1053,65 @@ impl TaskExecutor {
     /// `continue_on_error` is disabled.
     #[instrument(name = "execute_graph", skip(self, graph), fields(task_count = graph.task_count()))]
     pub async fn execute_graph(&self, graph: &TaskGraph) -> Result<Vec<TaskResult>> {
-        use super::graph_walk::{WalkPolicy, walk_parallel_graph};
+        use super::graph_walk;
+        use super::graph_walk::{WalkCallbacks, WalkPolicy};
 
         let policy = WalkPolicy {
             max_parallel: self.config.max_parallel,
             continue_on_error: self.config.continue_on_error,
         };
 
-        let summary = walk_parallel_graph(
+        let summary = graph_walk::walk_parallel_graph(
             graph.inner(),
             policy,
-            // Resolve output-ref placeholders in args/env against tasks
-            // completed in prior parallel groups. Intra-group siblings
-            // are independent by definition so they don't appear here.
-            |mut node, outcomes_so_far| -> Result<_> {
-                // The walker tracks `TaskWalkOutcome` (result + continue_on_error),
-                // but the resolver only needs the prior `TaskResult`s. Project to
-                // them — and only when this node actually references an output, so
-                // ref-free nodes don't pay for the copy.
-                if super::output_refs::has_output_refs(&node.task.args, &node.task.env) {
-                    let results: std::collections::HashMap<String, TaskResult> = outcomes_so_far
-                        .iter()
-                        .map(|(name, outcome)| (name.clone(), outcome.result.clone()))
-                        .collect();
-                    let resolver = super::output_refs::OutputRefResolver {
-                        task_name: &node.name,
-                        results: &results,
-                    };
-                    resolver.resolve(&mut node.task.args, &mut node.task.env)?;
-                }
-                Ok(node)
-            },
-            {
-                let executor = Arc::new(self.clone_with_config());
-                move |node| {
-                    let executor = Arc::clone(&executor);
-                    async move {
-                        let continue_on_error = node.task.continue_on_error;
-                        executor
-                            .execute_task(&node.name, &node.task)
-                            .await
-                            .map(|result| TaskWalkOutcome {
-                                result,
-                                continue_on_error,
-                            })
+            WalkCallbacks {
+                // Resolve output-ref placeholders in args/env against tasks
+                // completed in prior parallel groups. Intra-group siblings
+                // are independent by definition so they don't appear here.
+                prepare_node: |mut node: cuenv_task_graph::GraphNode<Task>,
+                               outcomes_so_far: &std::collections::HashMap<
+                    String,
+                    TaskWalkOutcome,
+                >|
+                 -> Result<_> {
+                    // The walker tracks `TaskWalkOutcome` (result + continue_on_error),
+                    // but the resolver only needs the prior `TaskResult`s. Project to
+                    // them — and only when this node actually references an output, so
+                    // ref-free nodes don't pay for the copy.
+                    if super::output_refs::has_output_refs(&node.task.args, &node.task.env) {
+                        let results: std::collections::HashMap<String, TaskResult> =
+                            outcomes_so_far
+                                .iter()
+                                .map(|(name, outcome)| (name.clone(), outcome.result.clone()))
+                                .collect();
+                        let resolver = super::output_refs::OutputRefResolver {
+                            task_name: &node.name,
+                            results: &results,
+                        };
+                        resolver.resolve(&mut node.task.args, &mut node.task.env)?;
                     }
-                }
+                    Ok(node)
+                },
+                run_node: {
+                    let executor = Arc::new(self.clone_with_config());
+                    move |node: cuenv_task_graph::GraphNode<Task>| {
+                        let executor = Arc::clone(&executor);
+                        async move {
+                            let continue_on_error = node.task.continue_on_error;
+                            executor
+                                .execute_task(&node.name, &node.task)
+                                .await
+                                .map(|result| TaskWalkOutcome {
+                                    result,
+                                    continue_on_error,
+                                })
+                        }
+                    }
+                },
+                from_join_error: |join_err| {
+                    Error::execution(format!("Task execution panicked: {join_err}"))
+                },
             },
-            |join_err| Error::execution(format!("Task execution panicked: {join_err}")),
         )
         .await?;
 
@@ -1085,8 +1132,10 @@ impl TaskExecutor {
             return Err(Error::task_failed(
                 &failed.name,
                 failed.exit_code.unwrap_or(-1),
-                &failed.stdout,
-                &failed.stderr,
+                cuenv_core::tasks::TaskFailureOutput {
+                    stdout: &failed.stdout,
+                    stderr: &failed.stderr,
+                },
             ));
         }
         if self.config.continue_on_error
@@ -1099,8 +1148,10 @@ impl TaskExecutor {
             let err = Error::task_failed(
                 &failed.name,
                 failed.exit_code.unwrap_or(-1),
-                &failed.stdout,
-                &failed.stderr,
+                cuenv_core::tasks::TaskFailureOutput {
+                    stdout: &failed.stdout,
+                    stderr: &failed.stderr,
+                },
             );
             all_results.clear();
             return Err(err);
@@ -1134,6 +1185,13 @@ impl super::graph_walk::WalkOutcome for TaskWalkOutcome {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TaskExecutionContext<'execution> {
+    name: &'execution str,
+    task: &'execution Task,
+    environment: &'execution Environment,
+}
+
 /// What `execute_task` carries from the cache lookup to the record step.
 ///
 /// The exec root is held here so it lives exactly as long as the run: the
@@ -1157,22 +1215,22 @@ struct CacheHandle {
     working_directory: PathBuf,
 }
 
-struct PrepareExecRootInput<'a> {
-    name: &'a str,
-    task: &'a Task,
-    cache: &'a TaskCacheConfig,
-    root_key: &'a str,
-    inputs: &'a [cuenv_vcs::HashedInput],
+struct PrepareExecRootInput<'input> {
+    name: &'input str,
+    task: &'input Task,
+    cache: &'input TaskCacheConfig,
+    root_key: &'input str,
+    inputs: &'input [cuenv_vcs::HashedInput],
 }
 
 #[derive(Clone, Copy)]
-struct CacheHitInput<'a> {
-    name: &'a str,
-    task: &'a Task,
-    cache: &'a TaskCacheConfig,
-    action_digest: &'a cuenv_cas::Digest,
-    workdir: &'a Path,
-    cached: &'a cuenv_cas::ActionResult,
+struct CacheHitInput<'cache> {
+    name: &'cache str,
+    task: &'cache Task,
+    cache: &'cache TaskCacheConfig,
+    action_digest: &'cache cuenv_cas::Digest,
+    workdir: &'cache Path,
+    cached: &'cache cuenv_cas::ActionResult,
 }
 
 fn emit_cached_output_events(name: &str, stream: &'static str, content: &str) {

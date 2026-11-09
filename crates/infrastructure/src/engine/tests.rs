@@ -1,6 +1,20 @@
-use super::*;
+use super::{
+    Action, ApplyContext, ApplyEvent, ApplyOperation, ApplyResult, ApplyStep, Arc, BTreeMap,
+    BTreeSet, Block, Cancellation, ConditionalPut, ConfigurationEvaluator, ConfigurationInput,
+    ConfigurationPhase, ConfigurationReferences, ConfigurationSpecialization, Convergence,
+    DataSourcePlan, DataSourceReadContext, DeclarationGraph, Diagnostic, EngineOptions,
+    EngineSetup, IncompleteApply, InconsistentResultCheck, Infrastructure, InfrastructureEngine,
+    InfrastructureError, InfrastructureOutputType, InfrastructureProvider, InterruptedOperation,
+    ManagedResource, ManagedResourceDeclaration, NULL_MESSAGE_PACK, OperationFailure,
+    OperationKind, OperationRunContext, OperationRunner, OutputReferenceCheck, Path, PathStep,
+    Plan, PlanMode, PlanSummary, PlanValidity, Progress, ProviderSource, RecordVersion,
+    ReplacementCheck, ResourceAddress, ResourceChange, ResourceOutputReference, Result, Schedule,
+    Schema, SecretUse, SensitiveProviderValue, Severity, SourceAddress, StateLock, StateStore,
+    StepKind, TenantKey, Type, Value, data_sources, protocol, sensitivity, type_system,
+};
 use crate::references::{ConfigurationSelector, NativeReference};
 use crate::state::MemoryStateStore;
+use crate::{ReviewedPlanDigest, validate_configuration};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -21,7 +35,7 @@ fn graph(edges: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
 
 #[test]
 fn topological_order_puts_dependencies_first() {
-    let order = topological_order(&graph(&[
+    let order = super::topological_order(&graph(&[
         ("network", &["subnet"]),
         ("subnet", &["account"]),
         ("account", &[]),
@@ -94,8 +108,11 @@ fn bare_stored_dependencies_resolve_against_the_stored_records() {
 
 #[test]
 fn topological_order_rejects_cycles_and_unknown_dependencies() {
-    assert!(topological_order(&graph(&[("first", &["second"]), ("second", &["first"])])).is_err());
-    assert!(topological_order(&graph(&[("first", &["missing"])])).is_err());
+    assert!(
+        super::topological_order(&graph(&[("first", &["second"]), ("second", &["first"])]))
+            .is_err()
+    );
+    assert!(super::topological_order(&graph(&[("first", &["missing"])])).is_err());
 }
 
 #[tokio::test]
@@ -159,7 +176,11 @@ fn classified_scalar_reference(native: &NativeReference) -> ConfigurationReferen
         panic!("scalar reference fixture requires one field");
     };
     let configuration = serde_json::Map::from_iter([(destination.clone(), json!(null))]);
-    let block = string_block(destination, crate::schema::Presence::Required, false);
+    let block = string_block(
+        destination,
+        crate::schema::Presence::Required,
+        TestSensitivity::Ordinary,
+    );
     ConfigurationReferences::extract_with_schema(
         &configuration,
         &block,
@@ -235,7 +256,8 @@ fn configuration_preflight_checks_unused_providers_and_resource_references() {
     configuration
         .providers
         .insert("unused".into(), provider(None, None));
-    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    let error =
+        message(super::validation::validate_configuration(&configuration, None).unwrap_err());
     assert!(
         error.contains(
             "infrastructure.providers.unused: provider 'unused' needs an exact `version`"
@@ -246,7 +268,8 @@ fn configuration_preflight_checks_unused_providers_and_resource_references() {
     configuration
         .providers
         .insert("unused".into(), provider(Some("~> 3.7"), None));
-    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    let error =
+        message(super::validation::validate_configuration(&configuration, None).unwrap_err());
     assert!(
         error.contains("infrastructure.providers.unused.version: invalid provider version"),
         "{error}"
@@ -257,7 +280,8 @@ fn configuration_preflight_checks_unused_providers_and_resource_references() {
         .resources
         .insert("pet".into(), declaration("random_pet", &[]));
     configuration.resources.get_mut("pet").unwrap().provider = Some("missing".into());
-    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    let error =
+        message(super::validation::validate_configuration(&configuration, None).unwrap_err());
     assert!(
         error.contains(
             "infrastructure.resources.pet.provider: no provider named 'missing' in infrastructure.providers"
@@ -283,7 +307,9 @@ fn configuration_preflight_reports_every_problem_with_its_full_field_path() {
         "pet".into(),
         declaration("undeclared_pet", &["ghost", "pet"]),
     );
-    let error = message(validate_configuration(&configuration, Some("dev")).unwrap_err());
+    let error = message(
+        super::validation::validate_configuration(&configuration, Some("dev")).unwrap_err(),
+    );
     for expected in [
         "infrastructure.environments.dev.providers.both: provider 'both' sets both `path` and `version`",
         "infrastructure.environments.dev.providers.neither: provider 'neither' needs an exact `version`",
@@ -317,7 +343,8 @@ fn an_empty_provider_path_is_rejected_even_without_the_schema() {
     configuration
         .providers
         .insert("local".into(), provider(None, Some("")));
-    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    let error =
+        message(super::validation::validate_configuration(&configuration, None).unwrap_err());
     assert_eq!(
         error,
         "infrastructure.providers.local.path: must not be empty; set a path to the provider \
@@ -337,7 +364,8 @@ fn dependency_cycles_are_reported_with_the_resources_path() {
     configuration
         .resources
         .insert("b".into(), declaration("random_pet", &["a"]));
-    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    let error =
+        message(super::validation::validate_configuration(&configuration, None).unwrap_err());
     assert_eq!(
         error,
         "infrastructure.resources: dependency cycle between resources a, b: \
@@ -366,7 +394,8 @@ fn each_dependency_cycle_is_reported_alone_even_beside_unknown_dependencies() {
             .resources
             .insert(name.into(), declaration("random_pet", depends_on));
     }
-    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    let error =
+        message(super::validation::validate_configuration(&configuration, None).unwrap_err());
     assert!(error.starts_with("3 problems:"), "{error}");
     assert!(
         error.contains(
@@ -476,7 +505,7 @@ fn diagnostics_redact_secrets_containing_control_characters_before_stripping() {
         detail: "server echoed pass\tword back".into(),
         attribute: None,
     };
-    let rendered = render_diagnostic_with(&diagnostic, mask_tab_secret);
+    let rendered = super::render_diagnostic_with(&diagnostic, mask_tab_secret);
     assert_eq!(rendered, "login with *_* failed: server echoed *_* back");
 }
 
@@ -492,7 +521,7 @@ fn provider_diagnostic_paths_hide_untrusted_names_and_short_map_keys() {
             protocol::Selector::ElementKeyInt(2),
         ])),
     };
-    let rendered = render_diagnostic_with(&diagnostic, str::to_owned);
+    let rendered = super::render_diagnostic_with(&diagnostic, str::to_owned);
     assert!(
         rendered.contains("<hidden field>[<hidden key>][2]"),
         "{rendered}"
@@ -510,7 +539,7 @@ fn diagnostics_split_errors_from_warnings() {
         detail: String::new(),
         attribute: None,
     };
-    check_diagnostics("context", std::slice::from_ref(&warning), &mut warnings).unwrap();
+    super::check_diagnostics("context", std::slice::from_ref(&warning), &mut warnings).unwrap();
     assert_eq!(warnings, vec!["context: deprecated".to_string()]);
 
     let error = Diagnostic {
@@ -522,7 +551,8 @@ fn diagnostics_split_errors_from_warnings() {
             protocol::Selector::ElementKeyInt(0),
         ])),
     };
-    let failure = check_diagnostics("context", &[warning, error], &mut warnings).unwrap_err();
+    let failure =
+        super::check_diagnostics("context", &[warning, error], &mut warnings).unwrap_err();
     assert!(
         failure
             .to_string()
@@ -571,7 +601,7 @@ fn plan_of(changes: Vec<ResourceChange>) -> Plan {
         tenant: tenant(),
         changes,
         warnings: Vec::new(),
-        environment_identity: environment_identity(&BTreeMap::new()),
+        environment_identity: super::environment_identity(&BTreeMap::new()),
         configuration_evaluation: None,
     }
 }
@@ -1284,7 +1314,7 @@ fn a_plan_lists_its_changes_in_the_order_apply_runs_them() {
         pet("replaced", Action::Replace, wired(&[], &["new"])),
         pet("same", Action::NoOp, wired(&[], &[])),
     ];
-    let ordered = in_schedule_order(changes).unwrap().changes;
+    let ordered = super::in_schedule_order(changes).unwrap().changes;
     let schedule = Schedule::build(&ordered).unwrap();
     let mut first_runs: Vec<String> = Vec::new();
     for scheduled in &schedule.operations {
@@ -1506,7 +1536,7 @@ async fn run_scripted(
     changes: Vec<ResourceChange>,
     runner: &(impl OperationRunner + Sync),
 ) -> Scripted {
-    let plan = plan_of(in_schedule_order(changes).unwrap().changes);
+    let plan = plan_of(super::in_schedule_order(changes).unwrap().changes);
     run_scripted_plan(plan, runner).await
 }
 
@@ -1715,7 +1745,7 @@ async fn a_replacement_whose_new_prerequisite_fails_to_create_is_left_deleted_an
         lock_identifier: "scripted".into(),
     };
     let plan = plan_of(
-        in_schedule_order(vec![
+        super::in_schedule_order(vec![
             pet("r", Action::Replace, wired(&[], &["fresh"])),
             pet("fresh", Action::Create, wired(&[], &[])),
         ])
@@ -1946,7 +1976,7 @@ async fn a_fatal_failure_ends_the_run_and_keeps_earlier_failures_visible() {
         lock_identifier: "scripted".into(),
     };
     let plan = plan_of(
-        in_schedule_order(vec![
+        super::in_schedule_order(vec![
             pet("a", Action::Create, wired(&[], &[])),
             pet("b", Action::Create, wired(&[], &[])),
             pet("c", Action::Create, wired(&[], &[])),
@@ -2016,7 +2046,7 @@ async fn recreate_over_an_existing_row_recovers_after_a_lost_write_response() {
     // its retained row, so its payload must identify that same insertion.
     let recreated = ManagedResource {
         state: json!({"id": "recreated"}),
-        generation: write_generation(expected),
+        generation: super::write_generation(expected),
         ..prior.clone()
     };
     let put = ConditionalPut {
@@ -2122,7 +2152,7 @@ fn render_plan_masks_sensitive_values() {
     );
     create.after = Value::Object(after);
     create.sensitive = vec!["secret".into()];
-    let text = render_plan(&plan_of(vec![create]));
+    let text = super::render_plan(&plan_of(vec![create]));
     assert!(
         text.contains("+ random_password.database (create)"),
         "{text}"
@@ -2136,7 +2166,11 @@ fn render_plan_masks_sensitive_values() {
 #[test]
 fn nested_sensitive_annotations_hide_map_keys_for_resources_and_data() {
     let map_key = format!("private-map-key-{}", uuid::Uuid::new_v4());
-    let mut block = string_block("config", crate::schema::Presence::Required, false);
+    let mut block = string_block(
+        "config",
+        crate::schema::Presence::Required,
+        TestSensitivity::Ordinary,
+    );
     block.attributes.get_mut("config").unwrap().value_type = Type::Object(BTreeMap::from([
         ("token".into(), Type::String),
         ("credentials".into(), Type::Map(Box::new(Type::String))),
@@ -2200,7 +2234,7 @@ fn nested_sensitive_annotations_hide_map_keys_for_resources_and_data() {
         .unwrap();
     create.sensitive = vec!["config".into()];
     create.references = references.clone();
-    register_typed_sensitive_values(&create, &block.implied_type());
+    super::register_typed_sensitive_values(&create, &block.implied_type());
     assert!(!cuenv_events::redact(&map_key).contains(&map_key));
     let mut read = deferred_data_source("lookup", Vec::new());
     let data_native: Vec<_> = native
@@ -2219,7 +2253,7 @@ fn nested_sensitive_annotations_hide_map_keys_for_resources_and_data() {
     read.sensitive = create.sensitive.clone();
     let mut plan = plan_of(vec![create]);
     plan.data_sources.push(read);
-    let text = render_plan(&plan);
+    let text = super::render_plan(&plan);
     assert!(text.contains("+ config = (sensitive)"), "{text}");
     assert_eq!(
         text.matches("# config.token = (sensitive)").count(),
@@ -2240,7 +2274,7 @@ fn nested_sensitive_annotations_hide_map_keys_for_resources_and_data() {
     );
     assert!(!text.contains(&map_key), "{text}");
     assert!(!text.contains("[\"x\"]"), "{text}");
-    assert!(sensitive_reference_paths(&plan.changes[0].references, &[]).is_empty());
+    assert!(super::sensitive_reference_paths(&plan.changes[0].references, &[]).is_empty());
 }
 
 #[test]
@@ -2276,7 +2310,7 @@ fn typed_sensitive_registration_preserves_schema_labels_but_masks_runtime_keys()
         ])),
     )]));
     let value_type = Type::Object(BTreeMap::from([("config".into(), nested_type)]));
-    register_typed_attributes(&value, &["config".into()], &value_type);
+    super::sensitivity::register_typed_attributes(&value, &["config".into()], &value_type);
     let annotation = format!("config.{field} = (sensitive)");
     assert_eq!(cuenv_events::redact(&annotation), annotation);
     for hidden in [&secret, &map_key, &dynamic_key, &unexpected] {
@@ -2288,8 +2322,8 @@ fn typed_sensitive_registration_preserves_schema_labels_but_masks_runtime_keys()
     let mut stored = record("example_consumer", "consumer", &[]);
     stored.state = json!({"config": {&field: "old-value"}});
     stored.sensitive_attributes = vec!["config".into()];
-    register_stored_values(&stored, &[]);
-    register_typed_attributes(&value, &["config".into()], &value_type);
+    super::sensitivity::register_stored_values(&stored, &[]);
+    super::sensitivity::register_typed_attributes(&value, &["config".into()], &value_type);
     assert!(!cuenv_events::redact(&annotation).contains(&field));
 }
 
@@ -2304,7 +2338,7 @@ fn typed_sensitive_registration_keeps_unknown_shapes_conservative() {
         };
         let value = Value::Object(BTreeMap::from([("config".into(), value)]));
         let value_type = Type::Object(BTreeMap::from([("config".into(), schema)]));
-        register_typed_attributes(&value, &["config".into()], &value_type);
+        super::sensitivity::register_typed_attributes(&value, &["config".into()], &value_type);
         assert!(!cuenv_events::redact(&key).contains(&key));
     }
 }
@@ -2331,7 +2365,7 @@ fn refresh_only_records_count_as_work_but_not_as_changes() {
     assert!(!plan.has_changes());
     assert!(plan.has_work());
     assert!(plan.changes[0].refreshes_state());
-    let text = render_plan(&plan);
+    let text = super::render_plan(&plan);
     assert!(
         text.contains("random_pet.pet (refresh stored state"),
         "{text}"
@@ -2384,7 +2418,7 @@ fn digest_covers_values_replacement_paths_and_stored_records() {
 
     let mut different_environment = base();
     different_environment.environment_identity =
-        environment_identity(&BTreeMap::from([("CREDENTIAL".into(), "changed".into())]));
+        super::environment_identity(&BTreeMap::from([("CREDENTIAL".into(), "changed".into())]));
     assert_ne!(base().digest(), different_environment.digest());
 
     let mut development = base();
@@ -2404,7 +2438,7 @@ fn apply_results_are_checked_like_terraform() {
     )]));
     let with_unknown = Value::Object(BTreeMap::from([("id".to_string(), Value::Unknown)]));
     let problem = |kind, returned: &Value, failed| {
-        apply_result_problem(&ApplyResult {
+        super::apply_result_problem(&ApplyResult {
             address: &address,
             kind,
             returned,
@@ -2445,7 +2479,7 @@ fn replacement_paths_compare_with_schema_types() {
         protocol_path(&[protocol::Selector::AttributeName("length".into())]),
         protocol_path(&[protocol::Selector::AttributeName("name".into())]),
     ];
-    let changed = replacement_paths(&ReplacementCheck {
+    let changed = super::replacement_paths(&ReplacementCheck {
         address: &address,
         paths: &paths,
         prior: &prior,
@@ -2460,7 +2494,7 @@ fn replacement_paths_compare_with_schema_types() {
     if let Value::Object(attributes) = &mut unknown {
         attributes.insert("length".into(), Value::Unknown);
     }
-    let changed = replacement_paths(&ReplacementCheck {
+    let changed = super::replacement_paths(&ReplacementCheck {
         address: &address,
         paths: &paths[1..2],
         prior: &prior,
@@ -2476,7 +2510,7 @@ fn replacement_paths_compare_with_schema_types() {
 fn replacement_paths_that_exist_nowhere_are_provider_errors() {
     let address = ResourceAddress::new("example_thing", "one");
     let prior = value(&json!({"name": "x"}));
-    let error = replacement_paths(&ReplacementCheck {
+    let error = super::replacement_paths(&ReplacementCheck {
         address: &address,
         paths: &[protocol_path(&[protocol::Selector::AttributeName(
             "missing".into(),
@@ -2514,7 +2548,7 @@ fn masked_replacement_paths_keep_distinct_plan_identities() {
             protocol::Selector::ElementKeyString(key.into()),
         ])
     });
-    let changed = replacement_paths(&ReplacementCheck {
+    let changed = super::replacement_paths(&ReplacementCheck {
         address: &address,
         paths: &paths,
         prior: &prior,
@@ -2534,7 +2568,7 @@ fn masked_replacement_paths_keep_distinct_plan_identities() {
     let mut second = first.clone();
     second.changes[0].replacement_path_identities = vec![changed.identities[1]];
     assert_ne!(first.digest(), second.digest());
-    let text = render_plan(&first);
+    let text = super::render_plan(&first);
     assert!(text.contains("config[<hidden key>]"), "{text}");
     assert!(!text.contains("private-first"), "{text}");
 }
@@ -2547,11 +2581,11 @@ fn replacement_diagnostics_hide_dynamic_and_unknown_fields() {
         PathStep::Attribute("private-dynamic-field".into()),
         PathStep::Key("x".into()),
     ];
-    let rendered = render_schema_path(&steps, &value_type);
+    let rendered = super::render_schema_path(&steps, &value_type);
     assert_eq!(rendered, "config[<hidden key>][<hidden key>]");
     assert!(!rendered.contains("private-dynamic-field"));
     assert_eq!(
-        render_schema_path(
+        super::render_schema_path(
             &[PathStep::Attribute("private-unknown".into())],
             &value_type
         ),
@@ -2564,7 +2598,7 @@ fn provider_values_keep_message_pack_verbatim_and_convert_json() {
     let value_type = Type::from_json(&json!(["object", {"id": "string"}])).unwrap();
     // An unknown value carrying refinement bytes cuenv does not interpret.
     let refined: Vec<u8> = [&[0x81, 0xa2][..], b"id", &[0xd4, 0x00, 0x2a]].concat();
-    let (decoded, bytes) = provider_value(
+    let (decoded, bytes) = super::provider_value(
         Some(&protocol::DynamicValue {
             message_pack: refined.clone(),
             json: Vec::new(),
@@ -2575,7 +2609,7 @@ fn provider_values_keep_message_pack_verbatim_and_convert_json() {
     assert_eq!(bytes, refined);
     assert_eq!(decoded.attribute("id"), Some(&Value::Unknown));
 
-    let (decoded, bytes) = provider_value(
+    let (decoded, bytes) = super::provider_value(
         Some(&protocol::DynamicValue {
             message_pack: Vec::new(),
             json: br#"{"id": "from-json"}"#.to_vec(),
@@ -2592,7 +2626,7 @@ fn provider_values_keep_message_pack_verbatim_and_convert_json() {
         decoded
     );
 
-    let (decoded, bytes) = provider_value(None, &value_type).unwrap();
+    let (decoded, bytes) = super::provider_value(None, &value_type).unwrap();
     assert!(decoded.is_null());
     assert_eq!(bytes, NULL_MESSAGE_PACK.to_vec());
 }
@@ -3050,7 +3084,7 @@ fn inconsistent_create_and_update_results_are_provider_errors() {
         planned_identity: None,
     };
     let check = |step: &ApplyStep, returned: &Value| {
-        inconsistent_result(&InconsistentResultCheck {
+        super::inconsistent_result(&InconsistentResultCheck {
             address: &address,
             block: &block,
             step,
@@ -3087,11 +3121,11 @@ fn undecodable_apply_results_report_the_provider_errors() {
         legacy_type_system: false,
         new_identity: None,
     };
-    let error = applied_value(&response(vec![error_diagnostic]), &value_type, "apply x")
+    let error = super::applied_value(&response(vec![error_diagnostic]), &value_type, "apply x")
         .unwrap_err()
         .to_string();
     assert!(error.contains("quota exceeded"), "{error}");
-    let error = applied_value(&response(Vec::new()), &value_type, "apply x")
+    let error = super::applied_value(&response(Vec::new()), &value_type, "apply x")
         .unwrap_err()
         .to_string();
     assert!(error.contains("does not match type"), "{error}");
@@ -3105,7 +3139,7 @@ fn provider_message_pack_is_checked_before_reuse_but_apply_values_can_be_recorde
         message_pack,
         json: Vec::new(),
     };
-    assert!(provider_value(Some(&dynamic), &Type::Number).is_err());
+    assert!(super::provider_value(Some(&dynamic), &Type::Number).is_err());
     let response = protocol::ApplyResourceChangeResponse {
         new_state: Some(dynamic),
         private: Vec::new(),
@@ -3113,17 +3147,17 @@ fn provider_message_pack_is_checked_before_reuse_but_apply_values_can_be_recorde
         legacy_type_system: false,
         new_identity: None,
     };
-    let returned = applied_value(&response, &Type::Number, "apply example").unwrap();
+    let returned = super::applied_value(&response, &Type::Number, "apply example").unwrap();
     assert!(returned.to_state_json(&Type::Number).unwrap().is_string());
 }
 
 #[test]
 fn historical_state_rejects_unsafe_numeric_tokens_before_provider_upgrade() {
     let safe = json!({"literal": "not-a-number", "count": "123", "nested": [2, "0.125"]});
-    assert!(validate_historical_state_numbers(&safe, 0).is_ok());
+    assert!(super::validate_historical_state_numbers(&safe, 0).is_ok());
     for token in ["1e-1000000000", "1e1000000000"] {
         let state = json!({"nested": [{"value": token}]});
-        let error = validate_historical_state_numbers(&state, 0)
+        let error = super::validate_historical_state_numbers(&state, 0)
             .unwrap_err()
             .to_string();
         assert!(error.contains("precision limits"), "{error}");
@@ -3134,10 +3168,12 @@ fn historical_state_rejects_unsafe_numeric_tokens_before_provider_upgrade() {
 #[test]
 fn upgraded_states_must_exist_and_be_known() {
     let address = ResourceAddress::new("example_thing", "one");
-    assert!(check_upgraded(&address, &named("x")).is_ok());
-    assert!(check_upgraded(&address, &Value::Null).is_err());
+    assert!(super::check_upgraded(&address, &named("x")).is_ok());
+    assert!(super::check_upgraded(&address, &Value::Null).is_err());
     let unknown = Value::Object(BTreeMap::from([("name".to_string(), Value::Unknown)]));
-    let error = check_upgraded(&address, &unknown).unwrap_err().to_string();
+    let error = super::check_upgraded(&address, &unknown)
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("unknown values while upgrading"), "{error}");
     assert!(error.contains("example_thing.one"), "{error}");
 }
@@ -3368,7 +3404,17 @@ fn engine_setup_debug_omits_the_store_and_configuration_values() {
     );
 }
 
-fn string_block(name: &str, presence: crate::schema::Presence, sensitive: bool) -> Block {
+#[derive(Clone, Copy)]
+enum TestSensitivity {
+    Ordinary,
+    Sensitive,
+}
+
+fn string_block(
+    name: &str,
+    presence: crate::schema::Presence,
+    sensitivity: TestSensitivity,
+) -> Block {
     Block {
         documentation: crate::schema::Documentation::default(),
         attributes: BTreeMap::from([(
@@ -3379,7 +3425,7 @@ fn string_block(name: &str, presence: crate::schema::Presence, sensitive: bool) 
                 value_type: Type::String,
                 nested: None,
                 presence,
-                sensitive,
+                sensitive: matches!(sensitivity, TestSensitivity::Sensitive),
             },
         )]),
         blocks: BTreeMap::new(),
@@ -3390,7 +3436,8 @@ fn string_block(name: &str, presence: crate::schema::Presence, sensitive: bool) 
 fn nested_output_type_mismatch_reports_the_destination_path() {
     use crate::schema::Presence;
 
-    let mut destination_block = string_block("config", Presence::Optional, false);
+    let mut destination_block =
+        string_block("config", Presence::Optional, TestSensitivity::Ordinary);
     destination_block
         .attributes
         .get_mut("config")
@@ -3399,7 +3446,7 @@ fn nested_output_type_mismatch_reports_the_destination_path() {
         "inner".into(),
         Type::Object(BTreeMap::from([("token".into(), Type::String)])),
     )]));
-    let mut source_block = string_block("value", Presence::Computed, false);
+    let mut source_block = string_block("value", Presence::Computed, TestSensitivity::Ordinary);
     source_block.attributes.get_mut("value").unwrap().value_type = Type::Number;
     let configuration = json!({"config": {"inner": {"token": null}}});
     let native = NativeReference {
@@ -3443,7 +3490,11 @@ fn nested_output_type_mismatch_reports_the_destination_path() {
 #[test]
 fn reference_type_errors_hide_unregistered_map_keys() -> Result<()> {
     let key = format!("unregistered-map-key-{}", uuid::Uuid::new_v4());
-    let mut destination_block = string_block("config", crate::schema::Presence::Required, false);
+    let mut destination_block = string_block(
+        "config",
+        crate::schema::Presence::Required,
+        TestSensitivity::Ordinary,
+    );
     destination_block
         .attributes
         .get_mut("config")
@@ -3466,7 +3517,11 @@ fn reference_type_errors_hide_unregistered_map_keys() -> Result<()> {
         &destination_block,
         &[native],
     )?;
-    let mut source_block = string_block("value", crate::schema::Presence::Computed, true);
+    let mut source_block = string_block(
+        "value",
+        crate::schema::Presence::Computed,
+        TestSensitivity::Sensitive,
+    );
     source_block.attributes.get_mut("value").unwrap().value_type = Type::Number;
     let error = OutputReferenceCheck {
         destination: &destination,
@@ -3581,7 +3636,11 @@ mod native_configuration {
         declaration
             .configuration
             .insert("argument".into(), json!(null));
-        let block = string_block("argument", crate::schema::Presence::Required, false);
+        let block = string_block(
+            "argument",
+            crate::schema::Presence::Required,
+            TestSensitivity::Ordinary,
+        );
         let references = ConfigurationReferences::extract_with_schema(
             &declaration.configuration,
             &block,
@@ -3652,7 +3711,11 @@ mod native_configuration {
         declaration
             .configuration
             .insert("argument".into(), json!(null));
-        let block = string_block("argument", crate::schema::Presence::Required, false);
+        let block = string_block(
+            "argument",
+            crate::schema::Presence::Required,
+            TestSensitivity::Ordinary,
+        );
         let references = ConfigurationReferences::extract_with_schema(
             &declaration.configuration,
             &block,
@@ -3741,7 +3804,11 @@ mod native_configuration {
 fn sensitive_source_outputs_can_be_referenced_and_are_reported_sensitive() {
     let destination = ResourceAddress::new("example_secret", "token");
     let reference = token_reference();
-    let destination_block = string_block("value", crate::schema::Presence::Required, false);
+    let destination_block = string_block(
+        "value",
+        crate::schema::Presence::Required,
+        TestSensitivity::Ordinary,
+    );
     let check = |sensitive| {
         OutputReferenceCheck {
             destination: &destination,
@@ -3754,17 +3821,28 @@ fn sensitive_source_outputs_can_be_referenced_and_are_reported_sensitive() {
         .unwrap()
         .sensitive
     };
-    assert!(check(true));
-    assert!(!check(false));
+    assert!(check(TestSensitivity::Sensitive));
+    assert!(!check(TestSensitivity::Ordinary));
 }
 
 #[test]
 fn arguments_set_from_sensitive_outputs_are_masked_in_plans() {
-    let block = string_block("value", crate::schema::Presence::Required, false);
-    let masked = masked_attributes(&block, vec!["value".into()]);
+    let block = string_block(
+        "value",
+        crate::schema::Presence::Required,
+        TestSensitivity::Ordinary,
+    );
+    let masked = super::masked_attributes(&block, vec!["value".into()]);
     assert_eq!(masked, ["value"]);
-    let own = string_block("value", crate::schema::Presence::Required, true);
-    assert_eq!(masked_attributes(&own, vec!["value".into()]), ["value"]);
+    let own = string_block(
+        "value",
+        crate::schema::Presence::Required,
+        TestSensitivity::Sensitive,
+    );
+    assert_eq!(
+        super::masked_attributes(&own, vec!["value".into()]),
+        ["value"]
+    );
 
     let mut update = change(
         ResourceAddress::new("example_secret", "token"),
@@ -3779,7 +3857,7 @@ fn arguments_set_from_sensitive_outputs_are_masked_in_plans() {
         Value::String("new-copied-token".into()),
     )]));
     update.sensitive = masked;
-    let text = render_plan(&plan_of(vec![update]));
+    let text = super::render_plan(&plan_of(vec![update]));
     assert!(
         text.contains("~ value: (sensitive) -> (sensitive)"),
         "{text}"
@@ -3805,7 +3883,7 @@ fn sensitive_values_are_registered_for_redaction_before_and_after() {
         Value::List(vec![Value::String("planned-token-6b1d0f".into())]),
     )]));
     replace.sensitive = vec!["value".into()];
-    register_sensitive_values(&replace);
+    super::register_sensitive_values(&replace);
     let redacted = cuenv_events::redact("prior-token-6b1d0f planned-token-6b1d0f public-id-6b1d0f");
     assert!(!redacted.contains("prior-token-6b1d0f"), "{redacted}");
     assert!(!redacted.contains("planned-token-6b1d0f"), "{redacted}");
@@ -3978,7 +4056,7 @@ async fn deferred_reads_run_after_producer_once_and_before_every_consumer() {
         Action::Update,
     );
     let mut plan = plan_of(
-        in_schedule_order(vec![
+        super::in_schedule_order(vec![
             producer,
             consuming_data_source("consumer_one", "second"),
             consuming_data_source("consumer_two", "second"),
@@ -4018,7 +4096,7 @@ async fn deferred_reads_run_after_producer_once_and_before_every_consumer() {
 async fn failed_data_read_blocks_chained_reads_and_consumers_but_not_unrelated_work() {
     let runner = ScriptedRunner::new().failing(&["read data.example_lookup.first"]);
     let mut plan = plan_of(
-        in_schedule_order(vec![
+        super::in_schedule_order(vec![
             change(
                 ResourceAddress::new("random_pet", "producer"),
                 Action::Create,
@@ -4071,7 +4149,7 @@ async fn failed_data_read_blocks_chained_reads_and_consumers_but_not_unrelated_w
 async fn failed_managed_prerequisite_skips_its_data_read() {
     let runner = ScriptedRunner::new().failing(&["apply random_pet.producer"]);
     let mut plan = plan_of(
-        in_schedule_order(vec![
+        super::in_schedule_order(vec![
             change(
                 ResourceAddress::new("random_pet", "producer"),
                 Action::Create,
@@ -4110,7 +4188,7 @@ async fn data_and_managed_failures_retain_their_own_identities_in_execution_orde
         "apply random_pet.unrelated",
     ]);
     let mut plan = plan_of(
-        in_schedule_order(vec![
+        super::in_schedule_order(vec![
             pet("producer", Action::Create, wired(&[], &[])),
             consuming_data_source("consumer", "lookup"),
             pet("unrelated", Action::Create, wired(&[], &[])),
@@ -4157,7 +4235,7 @@ async fn data_read_failure_preserves_an_unstarted_replacement_and_reports_a_star
         let mut replacement = pet("consumer", Action::Replace, wired(&[], &["producer"]));
         replacement.references = consuming_data_source("consumer", "lookup").references;
         let mut plan = plan_of(
-            in_schedule_order(vec![
+            super::in_schedule_order(vec![
                 replacement,
                 pet("producer", Action::Create, wired(&[], &[])),
                 pet("unrelated", Action::Create, wired(&[], &[])),
@@ -4323,7 +4401,7 @@ fn data_results_are_digested_and_sensitive_response_diagnostics_are_redacted() -
     let before = plan.digest();
     plan.data_sources[0].after = Value::Unknown;
     assert_ne!(before, plan.digest());
-    assert!(!render_plan(&plan).contains(secret));
+    assert!(!super::render_plan(&plan).contains(secret));
     Ok(())
 }
 
@@ -4566,24 +4644,28 @@ fn schema_upgrades_protect_raw_historical_values_and_every_returned_attribute() 
     row.state = json!({"old_secret": {"nested": [old_secret]}});
     let schema = Schema {
         version: 2,
-        block: string_block("renamed_secret", crate::schema::Presence::Computed, false),
+        block: string_block(
+            "renamed_secret",
+            crate::schema::Presence::Computed,
+            TestSensitivity::Ordinary,
+        ),
     };
-    let sensitive = resource_sensitivity(&row, &schema);
+    let sensitive = super::sensitivity::resource_sensitivity(&row, &schema);
     assert_eq!(sensitive, ["old_secret", "renamed_secret"]);
-    register_stored_values(&row, &sensitive);
+    super::sensitivity::register_stored_values(&row, &sensitive);
     let new_secret = "upgraded-response-secret-d8dc01c0";
     let response = protocol::DynamicValue {
         message_pack: Vec::new(),
         json: serde_json::to_vec(&json!({"renamed_secret": new_secret})).unwrap(),
     };
-    sensitive_provider_value(SensitiveProviderValue {
+    super::sensitivity::sensitive_provider_value(SensitiveProviderValue {
         value: Some(&response),
         value_type: &schema.block.implied_type(),
         sensitive: &sensitive,
     })
     .unwrap();
     let mut warnings = Vec::new();
-    check_diagnostics(
+    super::check_diagnostics(
         "upgrade",
         &[Diagnostic {
             severity: Severity::Warning as i32,
@@ -4600,13 +4682,13 @@ fn schema_upgrades_protect_raw_historical_values_and_every_returned_attribute() 
     // The renamed mark survives a later invocation with the current schema
     // and no reference declaration from which to reconstruct provenance.
     row.schema_version = schema.version;
-    row.sensitive_attributes = remembered_sensitive_attributes(&sensitive, Some(&row));
+    row.sensitive_attributes = super::remembered_sensitive_attributes(&sensitive, Some(&row));
     assert_eq!(
-        resource_sensitivity(&row, &schema),
+        super::sensitivity::resource_sensitivity(&row, &schema),
         ["old_secret", "renamed_secret"]
     );
     assert_eq!(
-        remembered_sensitive_attributes(&[], Some(&row)),
+        super::remembered_sensitive_attributes(&[], Some(&row)),
         row.sensitive_attributes
     );
 }
@@ -4632,9 +4714,13 @@ fn unmapped_stored_sensitivity_masks_current_attributes_without_a_version_change
     row.sensitive_attributes = vec!["old_secret".to_string()];
     let schema = Schema {
         version: row.schema_version,
-        block: string_block("renamed_secret", crate::schema::Presence::Computed, false),
+        block: string_block(
+            "renamed_secret",
+            crate::schema::Presence::Computed,
+            TestSensitivity::Ordinary,
+        ),
     };
-    let sensitive = resource_sensitivity(&row, &schema);
+    let sensitive = super::sensitivity::resource_sensitivity(&row, &schema);
     assert_eq!(sensitive, ["old_secret", "renamed_secret"]);
     let mut deletion = change(row.address.clone(), Action::Delete);
     deletion.before = Value::Object(BTreeMap::from([(
@@ -4642,7 +4728,7 @@ fn unmapped_stored_sensitivity_masks_current_attributes_without_a_version_change
         Value::String("renamed-stored-secret-f451b28c".to_string()),
     )]));
     deletion.sensitive = sensitive;
-    let rendered = render_plan(&plan_of(vec![deletion]));
+    let rendered = super::render_plan(&plan_of(vec![deletion]));
     assert!(rendered.contains("(sensitive)"), "{rendered}");
     assert!(!rendered.contains("renamed-stored-secret-f451b28c"));
 }
@@ -4689,14 +4775,14 @@ fn sensitive_map_keys_are_redacted_in_data_diagnostics_configuration_and_stored_
         &value_type,
     )
     .unwrap();
-    register_attributes(&configuration, &sensitive);
+    super::data_sources::register_attributes(&configuration, &sensitive);
     assert!(!cuenv_events::redact(&configuration_key).contains(&configuration_key));
 
     let stored_key = format!("stored-map-key-{}", uuid::Uuid::new_v4());
     let mut row = record("example_object", "stored", &[]);
     row.state = json!({"credentials": [{"nested": {&stored_key: "ordinary"}}]});
     row.sensitive_attributes = sensitive;
-    register_stored_values(&row, &[]);
+    super::sensitivity::register_stored_values(&row, &[]);
     assert!(!cuenv_events::redact(&stored_key).contains(&stored_key));
 
     let planned_key = format!("planned-map-key-{}", uuid::Uuid::new_v4());
@@ -4707,7 +4793,7 @@ fn sensitive_map_keys_are_redacted_in_data_diagnostics_configuration_and_stored_
         &value_type,
     )
     .unwrap();
-    register_sensitive_values(&planned);
+    super::register_sensitive_values(&planned);
     assert!(!cuenv_events::redact(&planned_key).contains(&planned_key));
 }
 
@@ -4951,7 +5037,11 @@ mod secret_arguments {
     }
 
     fn block() -> Block {
-        string_block("argument", crate::schema::Presence::Required, false)
+        string_block(
+            "argument",
+            crate::schema::Presence::Required,
+            TestSensitivity::Ordinary,
+        )
     }
 
     async fn prepare(
@@ -5052,7 +5142,10 @@ mod secret_arguments {
         let sensitive =
             engine.validate_output_references(consumer().address(), &references, &block)?;
         assert_eq!(sensitive, ["argument"]);
-        assert_eq!(masked_attributes(&block, sensitive), ["argument"]);
+        assert_eq!(
+            super::super::masked_attributes(&block, sensitive),
+            ["argument"]
+        );
         Ok(())
     }
 
@@ -5120,9 +5213,14 @@ mod secret_arguments {
             .configuration
             .insert("source_id".into(), json!(null));
         let mut block = block();
-        block
-            .attributes
-            .extend(string_block("source_id", crate::schema::Presence::Required, false).attributes);
+        block.attributes.extend(
+            string_block(
+                "source_id",
+                crate::schema::Presence::Required,
+                TestSensitivity::Ordinary,
+            )
+            .attributes,
+        );
         let references = ConfigurationReferences::extract_with_schema(
             &declaration.configuration,
             &block,
@@ -5154,7 +5252,11 @@ mod secret_arguments {
 
 #[test]
 fn write_only_parent_replacement_paths_survive_equal_null_state() {
-    let mut leaf = string_block("token", crate::schema::Presence::Optional, false);
+    let mut leaf = string_block(
+        "token",
+        crate::schema::Presence::Optional,
+        TestSensitivity::Ordinary,
+    );
     leaf.attributes.get_mut("token").unwrap().write_only = true;
     let block = Block {
         attributes: BTreeMap::from([(
@@ -5179,7 +5281,7 @@ fn write_only_parent_replacement_paths_survive_equal_null_state() {
     let paths = [protocol_path(&[protocol::Selector::AttributeName(
         "credentials".into(),
     )])];
-    let changed = replacement_paths(&ReplacementCheck {
+    let changed = super::replacement_paths(&ReplacementCheck {
         address: &ResourceAddress::new("example", "one"),
         paths: &paths,
         prior: &state,
@@ -5193,7 +5295,11 @@ fn write_only_parent_replacement_paths_survive_equal_null_state() {
 
 #[test]
 fn write_only_digest_binds_presence_and_paths_without_descriptors() {
-    let mut block = string_block("value", crate::schema::Presence::Optional, false);
+    let mut block = string_block(
+        "value",
+        crate::schema::Presence::Optional,
+        TestSensitivity::Ordinary,
+    );
     let mut write_only = block.attributes["value"].clone();
     write_only.write_only = true;
     block.attributes.insert("value_wo".into(), write_only);

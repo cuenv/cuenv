@@ -13,9 +13,9 @@ use cuenv_manifest::manifest::{
 use cuenv_manifest::secrets::Secret;
 
 use super::action::InfrastructureAction;
-use super::dispatch::{StoreScope, connect};
+use super::dispatch::StoreScope;
 use super::evaluation::Target;
-use super::failure::failure;
+
 use super::invocation::Invocation;
 use super::provider_environment;
 use super::provider_environment::ProviderEnvironmentInputs;
@@ -67,7 +67,7 @@ pub(super) async fn resolve(
     // The state backend's credentials are resolved first and on their own:
     // the store is connected before any other project secret is resolved.
     let credential = resolve_state_token(policy_name, state).await?;
-    let store = connect(
+    let store = super::dispatch::connect(
         state,
         credential,
         &StoreScope {
@@ -75,7 +75,7 @@ pub(super) async fn resolve(
             tenant: &target.tenant,
         },
     )
-    .map_err(|error| failure(&error, &Invocation::default()))?;
+    .map_err(|error| super::failure::failure(&error, &Invocation::default()))?;
     let (resolved_variables, secrets) = resolve_environment_variables(
         policy_name,
         &environment_variables_for_action(action, &project_environment_variables),

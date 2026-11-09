@@ -13,8 +13,9 @@ use rio_vt::crosswords::style::{Style, StyleFlags};
 use rio_vt::event::EventListener;
 
 use super::model::{
-    CellOccupancy, CellWidth, Color, CursorShape, CursorState, Known, Rgb, SamplingToken,
-    StyleFlags as TerminalStyleFlags, TerminalCell, TerminalDimensions, TerminalFrame, TerminalRow,
+    CellOccupancy, CellWidth, Color, CursorBlinkMode, CursorShape, CursorState, Known, Rgb,
+    SamplingToken, StyleFlags as TerminalStyleFlags, TerminalCell, TerminalDimensions,
+    TerminalFrame, TerminalRow,
 };
 
 /// Samples Rio while the caller holds its terminal lock.
@@ -65,7 +66,11 @@ pub(crate) fn cursor_state<U: EventListener>(terminal: &Crosswords<U>) -> Cursor
             .zip(u16::try_from(cursor.pos.col.0).ok()),
         shape,
         visible: Known::Known(cursor.content != RioCursorShape::Hidden),
-        blinking: Known::Known(terminal.blinking_cursor),
+        blinking: Known::Known(if terminal.blinking_cursor {
+            CursorBlinkMode::Blinking
+        } else {
+            CursorBlinkMode::Steady
+        }),
     }
 }
 
@@ -317,13 +322,13 @@ mod tests {
         let blinking = |terminal: &Crosswords<VoidListener>| {
             snapshot(terminal, SamplingToken(1)).cursor.blinking
         };
-        assert_eq!(blinking(&terminal), Known::Known(false));
+        assert_eq!(blinking(&terminal), Known::Known(CursorBlinkMode::Steady));
         parser.advance(&mut terminal, b"\x1b[5 q");
-        assert_eq!(blinking(&terminal), Known::Known(true));
+        assert_eq!(blinking(&terminal), Known::Known(CursorBlinkMode::Blinking));
         parser.advance(&mut terminal, b"\x1b[6 q");
-        assert_eq!(blinking(&terminal), Known::Known(false));
+        assert_eq!(blinking(&terminal), Known::Known(CursorBlinkMode::Steady));
         parser.advance(&mut terminal, b"\x1b[?12h");
-        assert_eq!(blinking(&terminal), Known::Known(true));
+        assert_eq!(blinking(&terminal), Known::Known(CursorBlinkMode::Blinking));
     }
 
     #[test]

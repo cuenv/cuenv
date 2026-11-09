@@ -14,11 +14,10 @@ use crate::{Sandbox, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{
     Action, ActionCache, ActionResult, CanonicalMessage, Cas, Command, Digest, Directory,
     DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform,
-    build_output_tree, canonical_bytes, digest_of, materialize_output_tree,
 };
 use cuenv_core::Result;
 use cuenv_core::environment::{ActionEnvironment, Environment};
-use cuenv_core::tasks::{Input, MappedInput, Mapping, ProjectReference};
+use cuenv_core::tasks::{Input, MappedInput, ProjectReference};
 use cuenv_events::CacheSkipReason;
 use cuenv_vcs::{HashedInput, VcsHasher};
 use globset::{Glob, GlobSetBuilder};
@@ -156,19 +155,19 @@ pub fn effective_policy(cache: &TaskCacheConfig, task: &Task) -> TaskCachePolicy
 }
 
 /// Inputs to [`build_action`].
-pub struct BuildActionInput<'a> {
+pub struct BuildActionInput<'input> {
     /// Task definition being hashed.
-    pub task: &'a Task,
+    pub task: &'input Task,
     /// Human-readable task name for diagnostics.
-    pub task_name: &'a str,
+    pub task_name: &'input str,
     /// Environment resolver used by the executor.
-    pub environment: &'a Environment,
+    pub environment: &'input Environment,
     /// Cache infrastructure.
-    pub cache: &'a TaskCacheConfig,
+    pub cache: &'input TaskCacheConfig,
     /// Working directory the executor will actually use.
-    pub workdir: &'a Path,
+    pub workdir: &'input Path,
     /// Project root used for resolving task inputs.
-    pub project_root: &'a Path,
+    pub project_root: &'input Path,
 }
 
 /// Build the [`Action`] envelope for a task and compute its digest.
@@ -243,17 +242,22 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         }
     }
 
+    let input_context = InputResolutionContext {
+        cache,
+        project_root,
+        task_name,
+    };
     let mut hashed = if patterns.is_empty() {
         Vec::new()
     } else {
-        match resolve_hashed_inputs(cache, &patterns, project_root, task_name).await? {
+        match resolve_hashed_inputs(input_context, &patterns).await? {
             ResolveOutcome::Resolved(h) => h,
             ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
         }
     };
 
     for reference in project_references {
-        match resolve_project_reference(cache, reference, project_root, task_name).await? {
+        match resolve_project_reference(input_context, reference).await? {
             ResolveOutcome::Resolved(external) => hashed.extend(external),
             ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
         }
@@ -345,7 +349,8 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         output_directories: Vec::new(),
         working_directory: working_directory.clone(),
     };
-    let Some(command_digest) = store_message(cache, &command, "command", task_name).await else {
+    let cache_writer = TaskCacheWriter { cache, task_name };
+    let Some(command_digest) = cache_writer.store_message(&command, "command").await else {
         return Ok(store_unwritable(execution));
     };
 
@@ -379,7 +384,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         },
         action_semantics_version: cache.action_semantics_version,
     };
-    let Some(digest) = store_message(cache, &action, "action", task_name).await else {
+    let Some(digest) = cache_writer.store_message(&action, "action").await else {
         return Ok(store_unwritable(execution));
     };
 
@@ -402,24 +407,26 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
 /// A store that cannot be written — read-only, full, wrong permissions —
 /// disables caching for the task rather than failing it. Cache eligibility
 /// must never decide whether a user's command runs.
-async fn store_message(
-    cache: &TaskCacheConfig,
-    message: &impl CanonicalMessage,
-    kind: &str,
-    task_name: &str,
-) -> Option<Digest> {
-    let bytes = match canonical_bytes(message) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            tracing::warn!(task = %task_name, kind, %error, "skipping cache: canonical encode failed");
-            return None;
-        }
-    };
-    match cache.cas.put_bytes(&bytes).await {
-        Ok(digest) => Some(digest),
-        Err(error) => {
-            tracing::warn!(task = %task_name, kind, %error, "skipping cache: cannot write to the blob store");
-            None
+struct TaskCacheWriter<'cache> {
+    cache: &'cache TaskCacheConfig,
+    task_name: &'cache str,
+}
+
+impl TaskCacheWriter<'_> {
+    async fn store_message(&self, message: &impl CanonicalMessage, kind: &str) -> Option<Digest> {
+        let bytes = match cuenv_cas::canonical_bytes(message) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(task = %self.task_name, kind, %error, "skipping cache: canonical encode failed");
+                return None;
+            }
+        };
+        match self.cache.cas.put_bytes(&bytes).await {
+            Ok(digest) => Some(digest),
+            Err(error) => {
+                tracing::warn!(task = %self.task_name, kind, %error, "skipping cache: cannot write to the blob store");
+                None
+            }
         }
     }
 }
@@ -444,12 +451,22 @@ enum ResolveOutcome {
     Skipped(CacheSkipReason),
 }
 
+#[derive(Clone, Copy)]
+struct InputResolutionContext<'input> {
+    cache: &'input TaskCacheConfig,
+    project_root: &'input Path,
+    task_name: &'input str,
+}
+
 async fn resolve_hashed_inputs(
-    cache: &TaskCacheConfig,
+    context: InputResolutionContext<'_>,
     patterns: &[String],
-    project_root: &Path,
-    task_name: &str,
 ) -> Result<ResolveOutcome> {
+    let InputResolutionContext {
+        cache,
+        project_root,
+        task_name,
+    } = context;
     let prefixed_patterns =
         match prefix_patterns_for_hasher_root(patterns, project_root, &cache.vcs_hasher_root) {
             Ok(prefixed_patterns) => prefixed_patterns,
@@ -510,11 +527,14 @@ async fn resolve_hashed_inputs(
 /// action actually executes against. Two different sources mapped to one
 /// destination therefore collide, and [`build_input_root_digest`] rejects it.
 async fn resolve_project_reference(
-    cache: &TaskCacheConfig,
+    context: InputResolutionContext<'_>,
     reference: &ProjectReference,
-    project_root: &Path,
-    task_name: &str,
 ) -> Result<ResolveOutcome> {
+    let InputResolutionContext {
+        cache,
+        project_root,
+        task_name,
+    } = context;
     let external_root = cache
         .project_roots
         .get(&reference.project)
@@ -533,7 +553,13 @@ async fn resolve_project_reference(
 
     let mut resolved = Vec::new();
     for mapping in &reference.map {
-        match resolve_mapping(cache, mapping, &external_root, task_name).await? {
+        let input = PathMappingInput {
+            source: &mapping.from,
+            destination: &mapping.to,
+            source_root: &external_root,
+            task_name,
+        };
+        match resolve_path_mapping(cache, input).await? {
             ResolveOutcome::Resolved(mapped) => resolved.extend(mapped),
             ResolveOutcome::Skipped(reason) => return Ok(ResolveOutcome::Skipped(reason)),
         }
@@ -575,24 +601,6 @@ fn resolve_project_path(
     project.starts_with(&workspace_root).then_some(project)
 }
 
-async fn resolve_mapping(
-    cache: &TaskCacheConfig,
-    mapping: &Mapping,
-    source_root: &Path,
-    task_name: &str,
-) -> Result<ResolveOutcome> {
-    resolve_path_mapping(
-        cache,
-        PathMappingInput {
-            source: &mapping.from,
-            destination: &mapping.to,
-            source_root,
-            task_name,
-        },
-    )
-    .await
-}
-
 async fn resolve_mapped_input(
     cache: &TaskCacheConfig,
     mapping: &MappedInput,
@@ -610,11 +618,11 @@ async fn resolve_mapped_input(
     .await
 }
 
-struct PathMappingInput<'a> {
-    source: &'a str,
-    destination: &'a str,
-    source_root: &'a Path,
-    task_name: &'a str,
+struct PathMappingInput<'mapping> {
+    source: &'mapping str,
+    destination: &'mapping str,
+    source_root: &'mapping Path,
+    task_name: &'mapping str,
 }
 
 async fn resolve_path_mapping(
@@ -628,7 +636,12 @@ async fn resolve_path_mapping(
         task_name,
     } = input;
     let patterns = [source.to_string()];
-    let hashed = match resolve_hashed_inputs(cache, &patterns, source_root, task_name).await? {
+    let context = InputResolutionContext {
+        cache,
+        project_root: source_root,
+        task_name,
+    };
+    let hashed = match resolve_hashed_inputs(context, &patterns).await? {
         ResolveOutcome::Resolved(hashed) => hashed,
         ResolveOutcome::Skipped(reason) => return Ok(ResolveOutcome::Skipped(reason)),
     };
@@ -736,7 +749,7 @@ pub async fn lookup(
 
 fn validate_cached_result(task: &Task, result: &ActionResult) -> Result<()> {
     let mut paths = BTreeSet::new();
-    for path in result
+    let output_paths = result
         .output_files
         .iter()
         .map(|output| output.path.as_str())
@@ -745,8 +758,8 @@ fn validate_cached_result(task: &Task, result: &ActionResult) -> Result<()> {
                 .output_directories
                 .iter()
                 .map(|output| output.path.as_str()),
-        )
-    {
+        );
+    for path in output_paths {
         let relative = safe_output_path(path)?;
         if paths.iter().any(|existing: &PathBuf| {
             existing.starts_with(&relative) || relative.starts_with(existing)
@@ -796,10 +809,9 @@ fn output_declaration_matches(declaration: &str, relative: &Path) -> bool {
 /// output permissions.
 pub async fn materialize_hit(
     cache: &TaskCacheConfig,
-    workdir: &Path,
-    task: &Task,
-    result: &ActionResult,
+    input: MaterializeOutputs<'_>,
 ) -> Result<(String, String, i32)> {
+    let result = input.result;
     let stdout = if let Some(digest) = &result.stdout_digest {
         let bytes = cache
             .cas
@@ -824,9 +836,20 @@ pub async fn materialize_hit(
 
     // No workspace path is touched until every stream and output blob has
     // been fetched and verified into staging.
-    materialize_outputs(cache, workdir, task, result).await?;
+    materialize_outputs(cache, input).await?;
 
     Ok((stdout, stderr, result.exit_code))
+}
+
+/// Cache output data and its destination workspace.
+#[derive(Clone, Copy)]
+pub struct MaterializeOutputs<'output> {
+    /// Workspace into which cached files are restored.
+    pub workdir: &'output Path,
+    /// Task whose declared outputs constrain restoration.
+    pub task: &'output Task,
+    /// Verified result to materialize.
+    pub result: &'output ActionResult,
 }
 
 /// Restore a cache hit's output files, staging them first.
@@ -841,12 +864,12 @@ pub async fn materialize_hit(
 /// guarantee is that the fallible work — fetching, verifying, setting modes —
 /// happens entirely in staging, and the commit phase is renames within one
 /// filesystem.
-async fn materialize_outputs(
-    cache: &TaskCacheConfig,
-    workdir: &Path,
-    task: &Task,
-    result: &ActionResult,
-) -> Result<()> {
+async fn materialize_outputs(cache: &TaskCacheConfig, input: MaterializeOutputs<'_>) -> Result<()> {
+    let MaterializeOutputs {
+        workdir,
+        task,
+        result,
+    } = input;
     if result.output_files.is_empty()
         && result.output_directories.is_empty()
         && task.outputs.is_empty()
@@ -868,7 +891,7 @@ async fn materialize_outputs(
             .get_to_file(&output_file.digest, &staged_path)
             .await
             .map_err(|e| cuenv_core::Error::configuration(format!("cas get output: {e}")))?;
-        set_executable_if_needed(&staged_path, output_file.is_executable)?;
+        set_executable_if_needed(&staged_path, output_file)?;
         secure_workspace_destination(workdir, &relative)?;
         resolved.push(relative);
     }
@@ -877,7 +900,7 @@ async fn materialize_outputs(
         let relative = safe_output_path(&output_directory.path)?;
         let staged_path = staging.path().join(&relative);
         create_parent_dir(&staged_path)?;
-        materialize_output_tree(
+        cuenv_cas::materialize_output_tree(
             cache.cas.as_ref(),
             &output_directory.tree_digest,
             &staged_path,
@@ -888,7 +911,14 @@ async fn materialize_outputs(
         resolved.push(relative);
     }
 
-    super::exec_root::commit_staged_outputs(staging.path(), workdir, &resolved, &existing)
+    super::exec_root::commit_staged_outputs(
+        staging.path(),
+        workdir,
+        super::exec_root::OutputPaths {
+            resolved: &resolved,
+            existing: &existing,
+        },
+    )
 }
 
 /// Reject a cached output path that would escape the working directory.
@@ -1022,7 +1052,7 @@ pub async fn record_resolved(input: RecordInput<'_>, resolved_outputs: &[PathBuf
             ))
         })?;
         if metadata.is_dir() {
-            let tree_digest = build_output_tree(&absolute_path, cache.cas.as_ref())
+            let tree_digest = cuenv_cas::build_output_tree(&absolute_path, cache.cas.as_ref())
                 .await
                 .map_err(|e| {
                     cuenv_core::Error::configuration(format!(
@@ -1164,12 +1194,8 @@ enum InputRootError {
 }
 
 impl InputDirectoryBuilder {
-    fn insert(
-        &mut self,
-        relative_path: &Path,
-        digest: &Digest,
-        is_executable: bool,
-    ) -> std::result::Result<(), InputRootError> {
+    fn insert(&mut self, input: &HashedInput) -> std::result::Result<(), InputRootError> {
+        let relative_path = &input.relative_path;
         let mut components = relative_path.components().peekable();
         let mut current = self;
 
@@ -1206,8 +1232,11 @@ impl InputDirectoryBuilder {
                     name.to_string(),
                     FileNode {
                         name: name.to_string(),
-                        digest: digest.clone(),
-                        is_executable,
+                        digest: Digest {
+                            hash: input.sha256.clone(),
+                            size_bytes: input.size,
+                        },
+                        is_executable: input.is_executable,
                     },
                 );
             }
@@ -1231,7 +1260,7 @@ impl InputDirectoryBuilder {
             directories,
             symlinks: Vec::new(),
         };
-        let digest = digest_of(&directory).map_err(|e| {
+        let digest = cuenv_cas::digest_of(&directory).map_err(|e| {
             InputRootError::Failed(cuenv_core::Error::configuration(format!(
                 "input root digest: {e}"
             )))
@@ -1243,11 +1272,7 @@ impl InputDirectoryBuilder {
 fn build_input_root_digest(hashed: &[HashedInput]) -> std::result::Result<Digest, InputRootError> {
     let mut builder = InputDirectoryBuilder::default();
     for input in hashed {
-        let digest = Digest {
-            hash: input.sha256.clone(),
-            size_bytes: input.size,
-        };
-        builder.insert(&input.relative_path, &digest, input.is_executable)?;
+        builder.insert(input)?;
     }
     let (_, digest) = builder.into_directory()?;
     Ok(digest)
@@ -1324,14 +1349,14 @@ fn rebase_hashed_inputs_for_project_root(
 /// It is the hasher's workspace root when the project lies inside it, and
 /// the project root otherwise. In the latter case a task with inputs cannot
 /// be hashed anyway, so the frame only has to place its working directory.
-struct ActionFrame<'a> {
-    root: &'a Path,
+struct ActionFrame<'action> {
+    root: &'action Path,
     /// Where the project sits inside `root`; empty when they coincide.
-    project_prefix: &'a Path,
+    project_prefix: &'action Path,
 }
 
-impl<'a> ActionFrame<'a> {
-    fn new(project_root: &'a Path, hasher_root: &'a Path) -> Self {
+impl<'action> ActionFrame<'action> {
+    fn new(project_root: &'action Path, hasher_root: &'action Path) -> Self {
         match project_root.strip_prefix(hasher_root) {
             Ok(project_prefix) => Self {
                 root: hasher_root,
@@ -1641,10 +1666,10 @@ fn is_executable(_path: &Path) -> Result<bool> {
 }
 
 #[cfg(unix)]
-fn set_executable_if_needed(path: &Path, is_executable: bool) -> Result<()> {
+fn set_executable_if_needed(path: &Path, output: &OutputFile) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    if !is_executable {
+    if !output.is_executable {
         return Ok(());
     }
 
@@ -1659,25 +1684,25 @@ fn set_executable_if_needed(path: &Path, is_executable: bool) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn set_executable_if_needed(_path: &Path, _is_executable: bool) -> Result<()> {
+fn set_executable_if_needed(_path: &Path, _output: &OutputFile) -> Result<()> {
     Ok(())
 }
 
 /// Inputs to [`record`] grouped to keep call sites self-documenting.
 #[derive(Clone, Copy)]
-pub struct RecordInput<'a> {
+pub struct RecordInput<'record> {
     /// Cache configuration.
-    pub cache: &'a TaskCacheConfig,
+    pub cache: &'record TaskCacheConfig,
     /// Action digest the result is keyed under.
-    pub action_digest: &'a Digest,
+    pub action_digest: &'record Digest,
     /// Working directory the task ran in.
-    pub workdir: &'a Path,
+    pub workdir: &'record Path,
     /// The task definition.
-    pub task: &'a Task,
+    pub task: &'record Task,
     /// Captured stdout.
-    pub stdout: &'a str,
+    pub stdout: &'record str,
     /// Captured stderr.
-    pub stderr: &'a str,
+    pub stderr: &'record str,
     /// Process exit code.
     pub exit_code: i32,
     /// Wall-clock duration in milliseconds.

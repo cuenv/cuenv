@@ -1,18 +1,20 @@
 use super::config::{Rgb, ThemeColors};
 use super::events::{ControlEvent, EventBridge};
-use super::foreground::ForegroundProcess;
 #[cfg(unix)]
-use super::foreground::leader_arguments;
+use super::foreground;
+use super::foreground::ForegroundProcess;
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::model::{CursorState, SamplingToken, TerminalFrame};
-use super::presentation::extended_palette;
-use super::rio_adapter::{cursor_state, snapshot};
-use super::rio_input::{encode_key, encode_paste};
-use super::rio_selection::{SelectionDrag, selection_text, visible_selection};
+use super::presentation;
+
+use super::rio_adapter;
+
+use super::rio_input;
+use super::rio_selection::{self, SelectionDrag};
 use super::selection::{LogicalPosition, Selection};
-use super::sizing::{CellSize, TerminalSize, terminal_size};
+use super::sizing::{self, CellSize, TerminalSize};
 #[cfg(unix)]
-use super::tab_label::is_shell;
+use super::tab_label;
 use rio_vt::ansi::CursorShape;
 use rio_vt::config::colors::{ColorRgb, NamedColor};
 use rio_vt::corcovado::channel::Sender;
@@ -24,7 +26,7 @@ use rio_vt::performer::{Machine, State};
 use rio_vt::teletypewriter::{self, Pty};
 use std::borrow::Cow;
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 pub struct SessionStart {
@@ -34,15 +36,15 @@ pub struct SessionStart {
 
 /// The session a factory is asked for.
 #[derive(Clone, Copy, Debug)]
-pub struct SessionRequest<'a> {
+pub struct SessionRequest<'session> {
     pub width: u32,
     pub height: u32,
     pub cell: CellSize,
     /// Where its shell starts. `None` leaves that to the default.
-    pub working_directory: Option<&'a Path>,
+    pub working_directory: Option<&'session Path>,
     /// The palette its pane paints in. A shell's startup files can ask about colours before
     /// anything else has had a chance to say, so it has to be known before the shell runs.
-    pub palette: &'a ThemeColors,
+    pub palette: &'session ThemeColors,
 }
 
 pub trait TerminalSessionFactory: Send + Sync {
@@ -67,7 +69,7 @@ fn working_directory_for(requested: Option<&Path>) -> Option<String> {
 pub struct RioTerminalFactory;
 impl TerminalSessionFactory for RioTerminalFactory {
     fn start(&self, request: SessionRequest<'_>) -> Result<SessionStart, String> {
-        RioTerminalSession::new(request).map(|(session, wake_rx)| SessionStart {
+        RioTerminalSession::try_new(request).map(|(session, wake_rx)| SessionStart {
             session: Box::new(session),
             wake_rx,
         })
@@ -192,7 +194,7 @@ fn wheel_action(wheel: TerminalWheel, mode: Mode) -> WheelAction {
             modifiers: InputModifiers::default(),
             repeat: false,
         };
-        return match encode_key(event, mode, None) {
+        return match rio_input::encode_key(event, mode, None) {
             Some(sequence) => WheelAction::Input(sequence.repeat(count)),
             None => WheelAction::Ignore,
         };
@@ -268,7 +270,7 @@ fn queried_color(palette: &ThemeColors, index: usize) -> Option<ColorRgb> {
     let Rgb(r, g, b) = match index {
         0..16 => palette.ansi[index],
         16..=255 => {
-            let color = extended_palette(u8::try_from(index).ok()?);
+            let color = presentation::extended_palette(u8::try_from(index).ok()?);
             Rgb(color.0, color.1, color.2)
         }
         _ if index == NamedColor::Foreground as usize => palette.text,
@@ -301,14 +303,20 @@ impl Listener {
             RioEvent::ClipboardLoad(_, _, format) => self.reply(format("")),
             RioEvent::PtyWrite(_, text) => self.reply(text),
             RioEvent::TextAreaSizeRequest(_, format) => {
-                let size = *self.size.lock().expect("PTY size poisoned");
-                self.reply(format(size));
+                let size = self.size.lock().ok().map(|size| *size);
+                if let Some(size) = size {
+                    self.reply(format(size));
+                }
             }
             // This lock is the palette's own, and whoever updates the palette holds it
             // for nothing else, so taking it under the terminal lock cannot deadlock.
             RioEvent::ColorRequest(_, index, format) => {
-                let palette = self.palette.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(color) = queried_color(&palette, index) {
+                let color = self
+                    .palette
+                    .lock()
+                    .ok()
+                    .and_then(|palette| queried_color(&palette, index));
+                if let Some(color) = color {
                     self.reply(format(color));
                 }
             }
@@ -374,9 +382,11 @@ pub struct RioTerminalSession {
 }
 
 impl RioTerminalSession {
-    pub fn new(request: SessionRequest<'_>) -> Result<(Self, async_channel::Receiver<()>), String> {
+    pub fn try_new(
+        request: SessionRequest<'_>,
+    ) -> Result<(Self, async_channel::Receiver<()>), String> {
         Self::with_options(
-            terminal_size(request.width, request.height, request.cell),
+            sizing::terminal_size(request.width, request.height, request.cell),
             SessionOptions {
                 working_directory: working_directory_for(request.working_directory),
                 palette: request.palette.clone(),
@@ -413,6 +423,11 @@ impl RioTerminalSession {
         let environment = Some(vec![
             ("TERM".into(), "xterm-256color".into()),
             ("COLORTERM".into(), "truecolor".into()),
+            ("TERM_PROGRAM".into(), "cuetty".into()),
+            (
+                "TERM_PROGRAM_VERSION".into(),
+                env!("CARGO_PKG_VERSION").into(),
+            ),
             // A terminal window is a new top-level shell session, regardless
             // of the shell depth of the process which launched Cuetty. Shells
             // increment this inherited value as they initialize.
@@ -504,24 +519,24 @@ impl RioTerminalSession {
         Ok(())
     }
 
-    /// Resizes the grid, returning whether that changed anything. The size lock is not
-    /// held across the grid's, which the PTY thread answers size requests under.
-    fn resize_grid(&self, size: WindowSize) -> bool {
-        let unchanged = *self
-            .listener
-            .size
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            == size;
-        if !unchanged {
-            self.terminal.lock().resize(grid_size(size));
-            *self
+    /// Resizes the grid, returning whether that changed anything. Rio answers size
+    /// requests under the terminal lock, so take that lock before the size lock.
+    /// Release the size lock before resizing: Rio may emit listener callbacks.
+    fn resize_grid(&self, size: WindowSize) -> Result<bool, String> {
+        let mut terminal = self.terminal.lock();
+        {
+            let mut current = self
                 .listener
                 .size
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) = size;
+                .map_err(|_| "terminal size state is unavailable".to_string())?;
+            if *current == size {
+                return Ok(false);
+            }
+            *current = size;
         }
-        !unchanged
+        terminal.resize(grid_size(size));
+        Ok(true)
     }
 }
 
@@ -559,7 +574,7 @@ impl TerminalSession for RioTerminalSession {
         {
             return None;
         }
-        visible_selection(&self.terminal.lock())
+        rio_selection::visible_selection(&self.terminal.lock())
     }
 
     fn selection_text(&self) -> Option<String> {
@@ -570,21 +585,19 @@ impl TerminalSession for RioTerminalSession {
         {
             return None;
         }
-        selection_text(&self.terminal.lock()).filter(|text| !text.is_empty())
+        rio_selection::selection_text(&self.terminal.lock()).filter(|text| !text.is_empty())
     }
 
     fn set_palette(&mut self, palette: ThemeColors) {
-        *self
-            .listener
-            .palette
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = palette;
+        if let Ok(mut current) = self.listener.palette.lock() {
+            *current = palette;
+        }
     }
 
     fn resize(&mut self, width: u32, height: u32, cell: CellSize) -> Result<(), String> {
         self.ensure_open()?;
-        let size = window_size(terminal_size(width, height, cell));
-        if self.resize_grid(size) {
+        let size = window_size(sizing::terminal_size(width, height, cell));
+        if self.resize_grid(size)? {
             self.send(Msg::Resize(size))?;
             self.listener.bridge.wake();
         }
@@ -592,14 +605,14 @@ impl TerminalSession for RioTerminalSession {
     }
 
     fn reflow_output(&mut self, width: u32, height: u32, cell: CellSize) {
-        self.resize_grid(window_size(terminal_size(width, height, cell)));
+        let _ = self.resize_grid(window_size(sizing::terminal_size(width, height, cell)));
     }
 
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
         self.ensure_open()?;
         let bytes = {
             let terminal = self.terminal.lock();
-            encode_key(event, terminal.mode(), terminal.modify_other_keys())
+            rio_input::encode_key(event, terminal.mode(), terminal.modify_other_keys())
         };
         match bytes {
             Some(bytes) => self.write(bytes).map(|()| true),
@@ -612,7 +625,7 @@ impl TerminalSession for RioTerminalSession {
         if text.is_empty() {
             return Ok(());
         }
-        let bytes = encode_paste(text, self.terminal.lock().mode());
+        let bytes = rio_input::encode_paste(text, self.terminal.lock().mode());
         self.write(bytes)
     }
 
@@ -647,14 +660,14 @@ impl TerminalSession for RioTerminalSession {
     fn frame(&mut self) -> TerminalFrame {
         let token = next_sampling_token(&mut self.next_sampling_token);
         let mut terminal = self.terminal.lock();
-        let frame = snapshot(&terminal, token);
+        let frame = rio_adapter::snapshot(&terminal, token);
         terminal.reset_damage();
         terminal.damage_event_in_flight = false;
         frame
     }
 
     fn cursor(&self) -> CursorState {
-        cursor_state(&self.terminal.lock())
+        rio_adapter::cursor_state(&self.terminal.lock())
     }
 
     fn working_directory(&self) -> Option<String> {
@@ -702,8 +715,8 @@ impl TerminalSession for RioTerminalSession {
             .is_some_and(|thread| !thread.is_finished())
         {
             let name = teletypewriter::foreground_process_name(self.main_fd, self.shell_pid);
-            let arguments = is_shell(name.trim())
-                .then(|| leader_arguments(self.main_fd, self.shell_pid))
+            let arguments = tab_label::is_shell(name.trim())
+                .then(|| foreground::leader_arguments(self.main_fd, self.shell_pid))
                 .flatten();
             return Some(ForegroundProcess { name, arguments });
         }
@@ -763,17 +776,60 @@ mod tests {
         assert_eq!(working_directory_for(None), default_working_directory());
     }
 
-    // Rio's process-wide Unix child notifications must not overlap between
-    // these host integration probes. Recover poison so one failed regression
-    // does not turn every later probe into an unrelated mutex failure.
+    // Both the guard and a poison error keep the unit lock held, so a
+    // panicking probe cannot let another PTY probe overlap it.
     #[cfg(unix)]
     static REAL_PTY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[cfg(unix)]
-    fn serial_pty_test() -> std::sync::MutexGuard<'static, ()> {
-        REAL_PTY_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn serial_pty_test() -> std::sync::LockResult<std::sync::MutexGuard<'static, ()>> {
+        REAL_PTY_TEST_LOCK.lock()
+    }
+
+    fn poison<T: Send + 'static>(lock: &Arc<Mutex<T>>) {
+        let lock = Arc::clone(lock);
+        let thread = std::thread::spawn(move || {
+            let _guard = lock.lock().expect("lock test fixture");
+            panic!("poison test fixture");
+        });
+        assert!(thread.join().is_err(), "test fixture was poisoned");
+    }
+
+    fn session_without_pty() -> RioTerminalSession {
+        let size = window_size(sizing::terminal_size(
+            800,
+            320,
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+        ));
+        let (bridge, _) = EventBridge::new();
+        let listener = Listener {
+            bridge,
+            writer: Arc::new(Mutex::new(None)),
+            size: Arc::new(Mutex::new(size)),
+            palette: Arc::new(Mutex::new(ThemeColors::default())),
+        };
+        let terminal = Arc::new(FairMutex::new(Crosswords::new(
+            grid_size(size),
+            CursorShape::Block,
+            listener.clone(),
+            WindowId::from(0),
+            0,
+            10_000,
+        )));
+        RioTerminalSession {
+            terminal,
+            listener,
+            io_thread: None,
+            next_sampling_token: 0,
+            selection_drag: None,
+            #[cfg(unix)]
+            shell_pid: 0,
+            #[cfg(unix)]
+            main_fd: -1,
+        }
     }
 
     #[test]
@@ -862,6 +918,141 @@ mod tests {
         };
         let Rgb(r, g, b) = ThemeColors::paper().surface;
         assert_eq!(reply.as_ref(), format!("{r:02x}{g:02x}{b:02x}").as_bytes());
+    }
+
+    #[test]
+    fn a_poisoned_palette_never_produces_a_colour_reply() {
+        let mut session = session_without_pty();
+        let (sender, receiver) = rio_vt::corcovado::channel::channel();
+        *session.listener.writer.lock().unwrap() = Some(sender);
+        poison(&session.listener.palette);
+
+        session.set_palette(ThemeColors::paper());
+        session.listener.dispatch(RioEvent::ColorRequest(
+            0,
+            NamedColor::Background as usize,
+            Arc::new(|color| format!("{:02x}{:02x}{:02x}", color.r, color.g, color.b)),
+        ));
+
+        assert!(receiver.try_recv().is_err(), "no colour should be invented");
+    }
+
+    #[test]
+    fn a_poisoned_size_refuses_resize_and_reflow_without_replying() {
+        let mut session = session_without_pty();
+        let initial_dimensions = session.frame().dimensions;
+        let (sender, receiver) = rio_vt::corcovado::channel::channel();
+        *session.listener.writer.lock().unwrap() = Some(sender);
+        let (stop, gate) = std::sync::mpsc::channel::<()>();
+        session.io_thread = Some(std::thread::spawn(
+            move || -> (Machine<Pty, Listener>, State) {
+                let _ = gate.recv();
+                panic!("stop the test-only PTY thread");
+            },
+        ));
+        poison(&session.listener.size);
+
+        session.listener.dispatch(RioEvent::TextAreaSizeRequest(
+            0,
+            Arc::new(|_| "size reply".to_string()),
+        ));
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let error = session
+            .resize(400, 160, cell)
+            .expect_err("poisoned size must reject a live resize");
+        assert!(error.contains("size state"), "{error}");
+        session.reflow_output(400, 160, cell);
+
+        assert_eq!(session.frame().dimensions, initial_dimensions);
+        assert!(
+            receiver.try_recv().is_err(),
+            "no size reply or resize was sent"
+        );
+        let thread = session.io_thread.take().expect("test PTY thread");
+        drop(stop);
+        assert!(thread.join().is_err());
+    }
+
+    #[test]
+    fn a_size_poisoned_while_resize_waits_leaves_the_grid_unchanged() {
+        let mut session = session_without_pty();
+        let initial_dimensions = session.frame().dimensions;
+        let terminal = Arc::clone(&session.terminal);
+        let size = Arc::clone(&session.listener.size);
+        let (locked, ready) = std::sync::mpsc::channel();
+        let (release, poison_now) = std::sync::mpsc::channel();
+        let poisoner = std::thread::spawn(move || {
+            let _guard = size.lock().expect("hold size state");
+            locked.send(()).expect("announce held size lock");
+            poison_now.recv().expect("release size lock");
+            panic!("poison size state during resize");
+        });
+        ready
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("size lock is held");
+
+        let (completed, result) = std::sync::mpsc::channel();
+        let resizer = std::thread::spawn(move || {
+            let target = window_size(sizing::terminal_size(
+                400,
+                160,
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+            ));
+            let outcome = session.resize_grid(target);
+            let dimensions = session.frame().dimensions;
+            completed
+                .send((outcome, dimensions))
+                .expect("report resize");
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if terminal.try_lock_unfair().is_none() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "resize did not acquire the terminal before waiting on size"
+            );
+            std::thread::yield_now();
+        }
+        release.send(()).expect("poison the held size lock");
+        assert!(poisoner.join().is_err());
+        let (outcome, dimensions) = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("resize completed after the poisoned lock was released");
+        assert!(outcome.is_err(), "poisoned size must reject the resize");
+        assert_eq!(dimensions, initial_dimensions);
+        resizer.join().expect("resize thread finished");
+    }
+
+    #[test]
+    fn healthy_size_updates_resize_and_reflow_the_grid() {
+        let mut session = session_without_pty();
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let original = window_size(sizing::terminal_size(800, 320, cell));
+        let smaller = window_size(sizing::terminal_size(400, 160, cell));
+        assert!(!session.resize_grid(original).unwrap());
+        assert!(session.resize_grid(smaller).unwrap());
+        assert!(!session.resize_grid(smaller).unwrap());
+        assert_eq!(session.frame().dimensions.columns, 50);
+        assert_eq!(session.frame().dimensions.rows, 10);
+
+        session.reflow_output(240, 80, cell);
+        assert_eq!(session.frame().dimensions.columns, 30);
+        assert_eq!(session.frame().dimensions.rows, 5);
+        assert_eq!(
+            *session.listener.size.lock().unwrap(),
+            window_size(sizing::terminal_size(240, 80, cell))
+        );
     }
 
     #[test]
@@ -1341,6 +1532,68 @@ sleep 5
     #[test]
     #[cfg(unix)]
     #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_overrides_inherited_terminal_identity() {
+        const CHILD_MARKER: &str = "CUETTY_PTY_IDENTITY_TEST_CHILD";
+        let _serial = serial_pty_test();
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let output =
+                std::process::Command::new(std::env::current_exe().expect("test executable path"))
+                    .args([
+                        "--exact",
+                        "terminal::host::tests::real_session_overrides_inherited_terminal_identity",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env(CHILD_MARKER, "1")
+                    .env("TERM_PROGRAM", "parent-terminal")
+                    .env("TERM_PROGRAM_VERSION", "parent-version")
+                    .output()
+                    .expect("identity test subprocess should start");
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "identity test subprocess failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        assert_eq!(
+            std::env::var("TERM_PROGRAM").as_deref(),
+            Ok("parent-terminal")
+        );
+        assert_eq!(
+            std::env::var("TERM_PROGRAM_VERSION").as_deref(),
+            Ok("parent-version")
+        );
+        let script = "printf 'CUETTY-TERM:%s\\nCUETTY-VERSION:%s\\n' \"$TERM_PROGRAM\" \"$TERM_PROGRAM_VERSION\"; IFS= read -r input";
+        let (mut session, _) = RioTerminalSession::with_options(
+            TerminalSize {
+                cols: 100,
+                rows: 20,
+                pixels_width: 800,
+                pixels_height: 320,
+            },
+            SessionOptions {
+                shell: Some("/bin/sh".into()),
+                args: vec!["-c".into(), script.into()],
+                working_directory: None,
+                palette: ThemeColors::default(),
+            },
+        )
+        .expect("identity fixture should spawn");
+        wait_for_text(&mut session, "CUETTY-TERM:cuetty");
+        wait_for_text(
+            &mut session,
+            &format!("CUETTY-VERSION:{}", env!("CARGO_PKG_VERSION")),
+        );
+        session.close().expect("close should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
     fn real_session_resize_updates_both_grid_and_child() {
         let _serial = serial_pty_test();
         let mut session = fixture(&["resize"]);
@@ -1517,6 +1770,8 @@ sleep 5
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
+            // SAFETY: kill takes integer arguments and touches no Rust memory;
+            // signal 0 probes the child PID without sending a signal.
             let result = unsafe { libc::kill(pid, 0) };
             if result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
                 break;

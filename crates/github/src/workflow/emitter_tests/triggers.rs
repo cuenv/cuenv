@@ -1,12 +1,11 @@
-use super::*;
-
+use super::{Emitter, GitHubActionsEmitter, TriggerCondition};
 #[test]
 fn test_workflow_includes_own_path_in_triggers() {
     let emitter = GitHubActionsEmitter::new()
         .without_nix()
         .without_cuenv_build();
 
-    let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    let mut ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
     ir.pipeline.trigger = Some(TriggerCondition {
         branches: vec!["main".to_string()],
         paths: vec!["src/**".to_string(), "Cargo.toml".to_string()],
@@ -29,7 +28,7 @@ fn test_workflow_path_not_added_when_paths_empty() {
         .without_nix()
         .without_cuenv_build();
 
-    let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    let mut ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
     ir.pipeline.trigger = Some(TriggerCondition {
         branches: vec!["main".to_string()],
         paths: vec![], // Empty paths = no path filtering
@@ -51,7 +50,7 @@ fn test_workflow_path_added_to_both_push_and_pr_triggers() {
         .without_nix()
         .without_cuenv_build();
 
-    let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    let mut ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
     ir.pipeline.trigger = Some(TriggerCondition {
         branches: vec!["main".to_string()],
         paths: vec!["src/**".to_string()],
@@ -75,7 +74,7 @@ fn test_workflow_never_emits_paths_ignore() {
         .without_nix()
         .without_cuenv_build();
 
-    let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    let mut ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
     ir.pipeline.trigger = Some(TriggerCondition {
         branches: vec!["main".to_string()],
         paths: vec!["src/**".to_string()],
@@ -140,7 +139,7 @@ fn test_build_trigger_paths_sorted() {
 #[test]
 fn push_trigger_includes_tags_without_branches() {
     let emitter = GitHubActionsEmitter::new();
-    let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+    let mut ir = super::make_ir(vec![super::make_task("build", &["cargo", "build"])]);
     ir.pipeline.trigger = Some(TriggerCondition {
         tags: vec!["v*".to_string()],
         ..Default::default()

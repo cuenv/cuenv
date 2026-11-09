@@ -37,8 +37,6 @@ ignore = [
     # rsa timing side-channel (Marvin Attack) - transitive dep from octocrab->jsonwebtoken
     # Used only for GitHub API JWT auth, not for cryptographic operations we control
     "RUSTSEC-2023-0071",
-    # proc-macro-error unmaintained - transitive dep from clap/derive_more
-    "RUSTSEC-2025-0057",
     # wasmtime advisories - transitive dep from extism 1.21.0
     # extism currently requires wasmtime/wasi-common/wiggle ^41; patched versions are outside this range.
     # A local lift to wasmtime 44 is not source-compatible with extism 1.21.0.

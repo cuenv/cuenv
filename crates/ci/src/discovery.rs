@@ -8,11 +8,8 @@
 //! can hang when directories contain mixed packages.
 
 use cuengine::ModuleEvalOptions;
-use cuenv_core::ModuleEvaluation;
-use cuenv_core::Result;
-use cuenv_core::cue::discovery::{
-    adjust_meta_key_path, compute_relative_path, discover_env_cue_directories, format_eval_errors,
-};
+
+use cuenv_core::{ModuleEvaluation, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -39,15 +36,24 @@ pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 /// - Two projects share a name (compared case-insensitively)
 ///
 /// # Example
-/// ```ignore
-/// use cuenv_ci::discovery::evaluate_module_from_cwd;
-/// use cuenv_core::manifest::Project;
+/// ```
+/// use cuenv_ci::discovery;
 ///
-/// let module = evaluate_module_from_cwd()?;
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let project = tempfile::tempdir()?;
+/// # std::fs::create_dir(project.path().join("cue.mod"))?;
+/// # std::fs::write(project.path().join("cue.mod/module.cue"), "module: \"example.com/example@v0\"\nlanguage: version: \"v0.14.1\"\n")?;
+/// # std::fs::write(project.path().join("env.cue"), "package cuenv\nname: \"example\"\n")?;
+/// # std::env::set_current_dir(project.path())?;
+/// let module = discovery::evaluate_module_from_cwd()?;
+/// let mut project_names = Vec::new();
 /// for instance in module.projects() {
 ///     let project = instance.to_project()?;
-///     println!("Found project: {}", project.name);
+///     project_names.push(project.name);
 /// }
+/// assert_eq!(project_names, ["example"]);
+/// # Ok(())
+/// # }
 /// ```
 pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     const PACKAGE: &str = "cuenv";
@@ -62,7 +68,8 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     })?;
 
     // Discover all directories with env.cue files matching our package
-    let env_cue_dirs = discover_env_cue_directories(&module_root, PACKAGE);
+    let env_cue_dirs =
+        cuenv_core::cue::discovery::discover_env_cue_directories(&module_root, PACKAGE);
 
     if env_cue_dirs.is_empty() {
         return Err(cuenv_core::Error::configuration(format!(
@@ -78,7 +85,7 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     let mut eval_errors = Vec::new();
 
     for dir in env_cue_dirs {
-        let dir_rel_path = compute_relative_path(&dir, &module_root);
+        let dir_rel_path = cuenv_core::cue::discovery::compute_relative_path(&dir, &module_root);
         let options = ModuleEvalOptions {
             recursive: false,
             with_references: true,
@@ -111,7 +118,8 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
 
                 // Merge meta with adjusted paths
                 for (meta_key, meta_value) in raw.meta {
-                    let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
+                    let adjusted_key =
+                        cuenv_core::cue::discovery::adjust_meta_key_path(&meta_key, &dir_rel_path);
                     all_meta.insert(adjusted_key, meta_value);
                 }
             }
@@ -127,7 +135,7 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     }
 
     if all_instances.is_empty() {
-        let error_summary = format_eval_errors(&eval_errors);
+        let error_summary = cuenv_core::cue::discovery::format_eval_errors(&eval_errors);
         return Err(cuenv_core::Error::configuration(format!(
             "No instances could be evaluated. All directories failed:\n{error_summary}"
         )));
@@ -135,7 +143,7 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     // Fail closed: a directory that does not evaluate could declare a
     // project with a name another project uses.
     if !eval_errors.is_empty() {
-        let error_summary = format_eval_errors(&eval_errors);
+        let error_summary = cuenv_core::cue::discovery::format_eval_errors(&eval_errors);
         return Err(cuenv_core::Error::configuration(format!(
             "cannot confirm that project names are unique in this module; these directories \
              fail to evaluate:\n{error_summary}"
@@ -154,7 +162,14 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
         )
     };
 
-    let module = ModuleEvaluation::from_raw(module_root, all_instances, all_projects, references);
+    let module = ModuleEvaluation::from_raw(
+        module_root,
+        all_instances,
+        cuenv_core::module::ModuleEvaluationOptions {
+            project_paths: all_projects,
+            references,
+        },
+    );
     module.require_unique_project_names()?;
     Ok(module)
 }

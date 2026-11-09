@@ -10,26 +10,6 @@
 pub mod cargo_deps;
 pub mod node_modules;
 
-use crate::core::types::{LockfileEntry, Workspace};
-use crate::error::Result;
-use std::path::Path;
+mod dependency_materializer;
 
-/// Trait for materializing dependencies.
-pub trait Materializer {
-    /// Materialize dependencies into the target directory.
-    ///
-    /// This should populate `target_dir` (e.g., with a `node_modules` folder
-    /// or `target` directory) containing the necessary dependencies.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if dependencies cannot be linked or copied into the
-    /// target directory (for example, due to missing files or filesystem
-    /// permission issues).
-    fn materialize(
-        &self,
-        workspace: &Workspace,
-        entries: &[LockfileEntry],
-        target_dir: &Path,
-    ) -> Result<()>;
-}
+pub use dependency_materializer::DependencyMaterializer;

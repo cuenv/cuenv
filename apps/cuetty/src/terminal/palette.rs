@@ -74,8 +74,8 @@ pub(super) enum Item {
 
 /// The active tab determines which actions can actually be performed.
 #[derive(Clone, Copy)]
-pub(super) struct Available<'a> {
-    pub(super) tasks: &'a [CuenvTask],
+pub(super) struct Available<'selection> {
+    pub(super) tasks: &'selection [CuenvTask],
     pub(super) tab: bool,
     pub(super) screen: bool,
 }

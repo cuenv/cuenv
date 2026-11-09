@@ -4,8 +4,7 @@ import "github.com/cuenv/cuenv/schema"
 
 // #Nix installs upstream Nix.
 //
-// Active when:
-// - Project uses Nix runtime (detected via runtimeType condition)
+// Active whenever it is included in ci.contributors, regardless of runtime.
 //
 // Injects tasks:
 // - cuenv:contributor:nix.install: Installs upstream Nix
@@ -25,7 +24,7 @@ import "github.com/cuenv/cuenv/schema"
 		provider: github: {
 			uses: "cachix/install-nix-action@v31"
 			with: {
-				install_url: "https://releases.nixos.org/nix/nix-2.31.2/install"
+				install_url:      "https://releases.nixos.org/nix/nix-2.31.2/install"
 				extra_nix_config: "accept-flake-config = true"
 			}
 		}

@@ -3,7 +3,7 @@
 use crate::ir::CachePolicy;
 use crate::provider::CIProvider;
 use crate::report::PipelineReport;
-use crate::report::json::write_report;
+
 use cuenv_core::ci::AnnotationValue;
 use std::collections::HashMap;
 use std::path::Path;
@@ -36,7 +36,7 @@ pub(super) fn write_pipeline_report(
     let project_filename = project_path.display().to_string().replace(['/', '\\'], "-") + ".json";
     let report_path = sha_dir.join(project_filename);
 
-    if let Err(e) = write_report(report, &report_path) {
+    if let Err(e) = crate::report::json::write_report(report, &report_path) {
         tracing::warn!(error = %e, "Failed to write report");
     } else {
         cuenv_events::emit_ci_report!(report_path.display());

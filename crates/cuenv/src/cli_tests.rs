@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ChangesetCommands, Cli, CliError, Commands, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL,
+    EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED, EXIT_LOCKED, EXIT_OK, EnvCommands, ErrorEnvelope,
+    InfrastructureFailureKind, LockStatus, OkEnvelope, OutputFormat, ReleaseCommands, StatusFormat,
+    SyncCommands,
+};
 use crate::commands::Command;
 use crate::tracing::LogLevel;
 use clap::Parser;
@@ -505,15 +510,15 @@ fn test_invalid_output_format() {
 fn test_cli_error_types() {
     let config_err = CliError::config("test config error");
     assert!(matches!(config_err, CliError::Config { .. }));
-    assert_eq!(exit_code_for(&config_err), EXIT_CLI);
+    assert_eq!(super::exit_code_for(&config_err), EXIT_CLI);
 
     let eval_err = CliError::eval("test eval error");
     assert!(matches!(eval_err, CliError::Eval { .. }));
-    assert_eq!(exit_code_for(&eval_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&eval_err), EXIT_EVAL);
 
     let other_err = CliError::other("test other error");
     assert!(matches!(other_err, CliError::Other { .. }));
-    assert_eq!(exit_code_for(&other_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&other_err), EXIT_EVAL);
 }
 
 #[test]
@@ -543,13 +548,13 @@ fn test_exit_codes() {
 
     // Test exit code mapping
     let config_err = CliError::config("test");
-    assert_eq!(exit_code_for(&config_err), 2);
+    assert_eq!(super::exit_code_for(&config_err), 2);
 
     let eval_err = CliError::eval("test");
-    assert_eq!(exit_code_for(&eval_err), 3);
+    assert_eq!(super::exit_code_for(&eval_err), 3);
 
     let other_err = CliError::other("test");
-    assert_eq!(exit_code_for(&other_err), 3);
+    assert_eq!(super::exit_code_for(&other_err), 3);
 }
 
 #[test]
@@ -558,8 +563,8 @@ fn test_infrastructure_error_exit_codes_and_json_codes() {
     assert_eq!(EXIT_INFRASTRUCTURE, 5);
 
     let locked = CliError::infrastructure("held", None, InfrastructureFailureKind::Locked);
-    assert_eq!(exit_code_for(&locked), EXIT_LOCKED);
-    assert_eq!(error_code_for(&locked), "infrastructure_locked");
+    assert_eq!(super::exit_code_for(&locked), EXIT_LOCKED);
+    assert_eq!(super::error_code_for(&locked), "infrastructure_locked");
 
     let cancelled = CliError::infrastructure(
         "apply cancelled",
@@ -567,22 +572,28 @@ fn test_infrastructure_error_exit_codes_and_json_codes() {
         InfrastructureFailureKind::Cancelled,
     );
     assert_eq!(EXIT_CANCELLED, 1);
-    assert_eq!(exit_code_for(&cancelled), EXIT_CANCELLED);
-    assert_eq!(error_code_for(&cancelled), "infrastructure_cancelled");
+    assert_eq!(super::exit_code_for(&cancelled), EXIT_CANCELLED);
+    assert_eq!(
+        super::error_code_for(&cancelled),
+        "infrastructure_cancelled"
+    );
 
     let interrupted =
         CliError::infrastructure("interrupted", None, InfrastructureFailureKind::Interrupted);
     assert_eq!(EXIT_INTERRUPTED, 130);
-    assert_eq!(exit_code_for(&interrupted), EXIT_INTERRUPTED);
-    assert_eq!(error_code_for(&interrupted), "infrastructure_interrupted");
+    assert_eq!(super::exit_code_for(&interrupted), EXIT_INTERRUPTED);
+    assert_eq!(
+        super::error_code_for(&interrupted),
+        "infrastructure_interrupted"
+    );
 
     let failed = CliError::infrastructure("provider", None, InfrastructureFailureKind::Failed);
-    assert_eq!(exit_code_for(&failed), EXIT_INFRASTRUCTURE);
-    assert_eq!(error_code_for(&failed), "infrastructure");
+    assert_eq!(super::exit_code_for(&failed), EXIT_INFRASTRUCTURE);
+    assert_eq!(super::error_code_for(&failed), "infrastructure");
 
-    assert_eq!(error_code_for(&CliError::config("c")), "config");
-    assert_eq!(error_code_for(&CliError::eval("e")), "eval");
-    assert_eq!(error_code_for(&CliError::other("o")), "other");
+    assert_eq!(super::error_code_for(&CliError::config("c")), "config");
+    assert_eq!(super::error_code_for(&CliError::eval("e")), "eval");
+    assert_eq!(super::error_code_for(&CliError::other("o")), "other");
 }
 
 #[test]
@@ -603,7 +614,7 @@ fn test_infrastructure_error_with_help_keeps_its_kind() {
     assert_eq!(help.as_deref(), Some("wait for the other run"));
     assert_eq!(*kind, InfrastructureFailureKind::Locked);
     assert!(lock.is_none());
-    assert_eq!(exit_code_for(&error), EXIT_LOCKED);
+    assert_eq!(super::exit_code_for(&error), EXIT_LOCKED);
     assert!(format!("{error}").contains("Infrastructure error: held"));
 }
 
@@ -619,7 +630,7 @@ fn test_error_envelope_carries_help_and_lock() {
         released: false,
     })
     .with_help("release it with `cuenv infrastructure unlock abc`");
-    let envelope = serde_json::to_value(error_envelope(&error)).unwrap();
+    let envelope = serde_json::to_value(super::error_envelope(&error)).unwrap();
     assert_eq!(envelope["status"], "error");
     assert_eq!(envelope["error"]["code"], "infrastructure_interrupted");
     assert_eq!(
@@ -629,7 +640,7 @@ fn test_error_envelope_carries_help_and_lock() {
     assert_eq!(envelope["error"]["lockIdentifier"], "abc");
     assert_eq!(envelope["error"]["lockReleased"], false);
 
-    let plain = serde_json::to_value(error_envelope(&CliError::config("bad"))).unwrap();
+    let plain = serde_json::to_value(super::error_envelope(&CliError::config("bad"))).unwrap();
     assert_eq!(plain["error"]["code"], "config");
     assert!(plain["error"].get("help").is_none());
     assert!(plain["error"].get("lockIdentifier").is_none());
@@ -701,9 +712,9 @@ fn a_secret_registered_after_the_error_was_built_is_still_redacted_when_shown() 
         InfrastructureFailureKind::Failed,
     );
     cuenv_events::register_secret("late-secret-VALUE-zzzz");
-    let text = error_report_text(&error);
+    let text = super::error_report_text(&error);
     assert!(!text.contains("late-secret"), "{text}");
-    let envelope = serde_json::to_string(&error_envelope(&error)).unwrap();
+    let envelope = serde_json::to_string(&super::error_envelope(&error)).unwrap();
     assert!(!envelope.contains("late-secret"), "{envelope}");
 }
 
@@ -717,7 +728,7 @@ fn json_error_envelopes_redact_secrets_that_json_escapes() {
         InfrastructureFailureKind::Failed,
     );
     cuenv_events::register_secret("quo\"te\\back-QQQQ-escaped");
-    let envelope = serde_json::to_string(&error_envelope(&error)).unwrap();
+    let envelope = serde_json::to_string(&super::error_envelope(&error)).unwrap();
     assert!(!envelope.contains("QQQQ"), "{envelope}");
     let value: serde_json::Value = serde_json::from_str(&envelope).unwrap();
     assert!(
@@ -742,7 +753,7 @@ fn deleted_not_recreated_replacements_reach_the_text_help_and_the_json_envelope(
         help.contains("Deleted but NOT recreated: local_file.a, random_pet.b"),
         "{help}"
     );
-    let envelope = serde_json::to_value(error_envelope(&error)).unwrap();
+    let envelope = serde_json::to_value(super::error_envelope(&error)).unwrap();
     assert_eq!(
         envelope["error"]["deletedNotRecreated"],
         serde_json::json!(["local_file.a", "random_pet.b"])
@@ -750,7 +761,7 @@ fn deleted_not_recreated_replacements_reach_the_text_help_and_the_json_envelope(
     // Nothing to report, nothing added; and only infrastructure errors carry it.
     let none = CliError::infrastructure("x", None, InfrastructureFailureKind::Failed)
         .with_deleted_not_recreated(Vec::new());
-    let envelope = serde_json::to_value(error_envelope(&none)).unwrap();
+    let envelope = serde_json::to_value(super::error_envelope(&none)).unwrap();
     assert!(envelope["error"].get("deletedNotRecreated").is_none());
     let config = CliError::config("x").with_deleted_not_recreated(vec!["a.b".to_string()]);
     assert!(matches!(config, CliError::Config { .. }));
@@ -776,7 +787,7 @@ fn test_cuenv_core_error_conversion() {
     let config_err = cuenv_core::Error::configuration("Task 'foo' not found");
     let cli_err: CliError = config_err.into();
     assert!(matches!(cli_err, CliError::Config { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_CLI);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_CLI);
     // Verify we don't have redundant prefix
     let display = format!("{cli_err}");
     assert!(!display.contains("Configuration error: Configuration error"));
@@ -786,19 +797,19 @@ fn test_cuenv_core_error_conversion() {
     let ffi_err = cuenv_core::Error::ffi("evaluate", "FFI bridge failed");
     let cli_err: CliError = ffi_err.into();
     assert!(matches!(cli_err, CliError::Eval { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_EVAL);
 
     // CUE parse errors should map to Eval (exit code 3)
     let cue_err = cuenv_core::Error::cue_parse(std::path::Path::new("/test"), "parse failed");
     let cli_err: CliError = cue_err.into();
     assert!(matches!(cli_err, CliError::Eval { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_EVAL);
 
     // Validation errors should map to Eval (exit code 3)
     let validation_err = cuenv_core::Error::validation("schema validation failed");
     let cli_err: CliError = validation_err.into();
     assert!(matches!(cli_err, CliError::Eval { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_EVAL);
 
     // I/O errors should map to Other (exit code 3)
     let io_err = cuenv_core::Error::io(
@@ -807,19 +818,19 @@ fn test_cuenv_core_error_conversion() {
     );
     let cli_err: CliError = io_err.into();
     assert!(matches!(cli_err, CliError::Other { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_EVAL);
 
     // Timeout errors should map to Other (exit code 3)
     let timeout_err = cuenv_core::Error::timeout(30);
     let cli_err: CliError = timeout_err.into();
     assert!(matches!(cli_err, CliError::Other { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_EVAL);
 
     // Execution errors should map to Eval (exit code 3)
     let exec_err = cuenv_core::Error::execution("Process execution failed");
     let cli_err: CliError = exec_err.into();
     assert!(matches!(cli_err, CliError::Eval { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_EVAL);
     // Verify message extraction
     let display = format!("{cli_err}");
     assert!(display.contains("Process execution failed"));
@@ -829,13 +840,20 @@ fn test_cuenv_core_error_conversion() {
     let graph_err = cuenv_core::Error::task_graph("cycle detected");
     let cli_err: CliError = graph_err.into();
     assert!(matches!(cli_err, CliError::Config { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_CLI);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_CLI);
 
     // Task failures should map to Eval (exit code 3)
-    let failed_err = cuenv_core::Error::task_failed("build", 1, "", "boom");
+    let failed_err = cuenv_core::Error::task_failed(
+        "build",
+        1,
+        cuenv_core::tasks::TaskFailureOutput {
+            stdout: "",
+            stderr: "boom",
+        },
+    );
     let cli_err: CliError = failed_err.into();
     assert!(matches!(cli_err, CliError::Eval { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_EVAL);
     let display = format!("{cli_err}");
     assert!(display.contains("Task 'build' failed with exit code 1"));
     assert!(display.contains("boom"));
@@ -844,7 +862,7 @@ fn test_cuenv_core_error_conversion() {
     let secret_err = cuenv_core::Error::secret_resolution("provider unavailable");
     let cli_err: CliError = secret_err.into();
     assert!(matches!(cli_err, CliError::Eval { .. }));
-    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+    assert_eq!(super::exit_code_for(&cli_err), EXIT_EVAL);
 }
 
 #[test]

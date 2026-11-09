@@ -19,25 +19,29 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
-//! use cuenv_events::{EventBus, CuenvEventLayer, emit_task_started};
-//! use tracing_subscriber::layer::SubscriberExt;
-//! use tracing_subscriber::util::SubscriberInitExt;
+//! ```rust
+//! use cuenv_events::bus;
+//! use cuenv_events::{EventBus, EventCategory, TaskEvent, emit_task_started};
 //!
-//! // Create event bus and layer
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() {
+//! // Install a sender and subscribe before emitting events.
 //! let bus = EventBus::new();
-//! let layer = CuenvEventLayer::new(bus.sender().inner);
+//! let mut receiver = bus.subscribe();
+//! bus::set_global_sender(bus.sender().expect("bus is open"));
 //!
-//! // Initialize tracing with the layer
-//! tracing_subscriber::registry()
-//!     .with(layer)
-//!     .init();
-//!
-//! // Emit events using macros
 //! emit_task_started!("build", "cargo build", false);
+//! let event = receiver.recv().await.expect("event was emitted");
+//! assert!(matches!(event.category, EventCategory::Task(TaskEvent::Started { .. })));
+//! bus::clear_global_sender();
+//! # }
 //! ```
 
+#[doc(hidden)]
+#[path = "macro_helpers.rs"]
+pub mod __macro_helpers;
 pub mod bus;
+mod console;
 pub mod event;
 mod event_redaction;
 pub mod layer;
@@ -52,6 +56,7 @@ pub use bus::{
     EventBus, EventReceiver, EventSender, SendError, clear_global_sender, emit, emit_with_source,
     global_sender, set_global_sender,
 };
+pub use console::{eprint_redacted, eprintln_redacted, print_redacted, println_redacted};
 pub use event::{
     CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
     InteractiveEvent, OutputEvent, RestartReason, ServiceEvent, SkipReason, Stream, SystemEvent,
@@ -67,100 +72,6 @@ pub use redaction::{
 #[cfg(feature = "spinner")]
 pub use renderers::SpinnerRenderer;
 pub use renderers::{CliRenderer, JsonRenderer};
-
-use std::io::{self, Write};
-
-/// Internal helpers used by the `emit_*!` macros.
-///
-/// Not part of the stable public API — exposed only because exported macros
-/// must reference it via `$crate`.
-#[doc(hidden)]
-pub mod __macro_helpers {
-    use crate::event::{RestartReason, Stream, TaskKind};
-
-    /// Map the string `task_kind` discriminator the old tracing macros
-    /// accepted to the typed [`TaskKind`] used by the direct emit path.
-    /// Unknown values default to [`TaskKind::Task`].
-    #[must_use]
-    pub fn parse_task_kind(kind: &str) -> TaskKind {
-        match kind {
-            "group" => TaskKind::Group,
-            "sequence" => TaskKind::Sequence,
-            _ => TaskKind::Task,
-        }
-    }
-
-    /// Map the string `stream` discriminator to the typed [`Stream`] enum.
-    /// Unknown values fall back to [`Stream::Stdout`].
-    #[must_use]
-    pub fn parse_stream(stream: &str) -> Stream {
-        match stream {
-            "stderr" => Stream::Stderr,
-            _ => Stream::Stdout,
-        }
-    }
-
-    /// Map a free-form `restart_reason` string to a typed
-    /// [`RestartReason`]. Unknown values default to `Manual`.
-    #[must_use]
-    pub fn parse_restart_reason(reason: &(impl ::std::fmt::Display + ?Sized)) -> RestartReason {
-        match reason.to_string().as_str() {
-            "crashed" | "Crashed" => RestartReason::Crashed,
-            "watch_triggered" | "WatchTriggered" => RestartReason::WatchTriggered,
-            _ => RestartReason::Manual,
-        }
-    }
-}
-
-/// Print to stdout with automatic secret redaction (with newline).
-///
-/// Use this instead of `println!` when output might contain secrets.
-/// This function applies `redact()` to the input before printing,
-/// ensuring any registered secrets are replaced with `*_*`.
-pub fn println_redacted(content: &str) {
-    let stdout = io::stdout();
-    writeln_redacted_to(stdout.lock(), content);
-}
-
-/// Print to stdout with automatic secret redaction (no newline).
-///
-/// Use this instead of `print!` when output might contain secrets.
-pub fn print_redacted(content: &str) {
-    let stdout = io::stdout();
-    write_redacted_to(stdout.lock(), content);
-}
-
-/// Print to stderr with automatic secret redaction (with newline).
-///
-/// Use this instead of `eprintln!` when output might contain secrets.
-pub fn eprintln_redacted(content: &str) {
-    let stderr = io::stderr();
-    writeln_redacted_to(stderr.lock(), content);
-}
-
-/// Print to stderr with automatic secret redaction (no newline).
-///
-/// Use this instead of `eprint!` when output might contain secrets.
-pub fn eprint_redacted(content: &str) {
-    let stderr = io::stderr();
-    write_redacted_to(stderr.lock(), content);
-}
-
-fn writeln_redacted_to(mut writer: impl Write, content: &str) {
-    if let Err(error) = writeln!(writer, "{}", redact(content)) {
-        log_redacted_write_error(&error);
-    }
-}
-
-fn write_redacted_to(mut writer: impl Write, content: &str) {
-    if let Err(error) = write!(writer, "{}", redact(content)) {
-        log_redacted_write_error(&error);
-    }
-}
-
-fn log_redacted_write_error(error: &io::Error) {
-    tracing::debug!(%error, "failed to write redacted output");
-}
 
 #[cfg(test)]
 mod tests {
@@ -272,21 +183,6 @@ mod tests {
             emit_service_stopping!("db");
             emit_service_stopped!("db", Some(0));
             emit_service_failed!("api", "readiness timeout");
-        });
-    }
-
-    #[test]
-    fn redacted_writers_apply_redaction() {
-        redaction::test_support::with_clean_registry(|| {
-            register_secret("writer-secret-token");
-
-            let mut line_output = Vec::new();
-            writeln_redacted_to(&mut line_output, "value=writer-secret-token");
-            assert_eq!(line_output, b"value=*_*\n");
-
-            let mut output = Vec::new();
-            write_redacted_to(&mut output, "value=writer-secret-token");
-            assert_eq!(output, b"value=*_*");
         });
     }
 }

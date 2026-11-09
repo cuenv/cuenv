@@ -1,23 +1,21 @@
 //! Output panel widget showing task output with filtering support
 
 use crate::tui::state::{OutputMode, TuiState};
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget, Wrap},
-};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
 
 /// Widget for displaying task output
-pub struct OutputPanelWidget<'a> {
-    state: &'a TuiState,
+pub struct OutputPanelWidget<'output_panel_widget> {
+    state: &'output_panel_widget TuiState,
 }
 
-impl<'a> OutputPanelWidget<'a> {
+impl<'output_panel_widget> OutputPanelWidget<'output_panel_widget> {
     /// Create a new output panel widget
     #[must_use]
-    pub const fn new(state: &'a TuiState) -> Self {
+    pub const fn new(state: &'output_panel_widget TuiState) -> Self {
         Self { state }
     }
 

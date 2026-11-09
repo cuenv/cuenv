@@ -6,9 +6,9 @@
 //! - Clear rejection for unsupported local runner flags
 
 use super::args::CiArgs;
-use crate::providers::detect_ci_provider;
-use cuenv_ci::discovery::find_cue_module_root;
-use cuenv_ci::executor::{RunCiRequest, TaskSelection, run_ci};
+use crate::providers;
+use cuenv_ci::executor::{RunCiRequest, TaskSelection};
+use cuenv_ci::{discovery, executor};
 use cuenv_core::Result;
 
 /// Execute runner mode - run the pipeline.
@@ -20,12 +20,16 @@ use cuenv_core::Result;
 ///
 /// Returns error if pipeline execution fails.
 pub async fn execute_runner(args: &CiArgs) -> Result<()> {
-    let provider = detect_ci_provider(args.from.clone());
+    let provider = providers::detect_ci_provider(args.from.clone());
     let effective_path = resolve_path_filter(&args.path)?;
 
-    run_ci(RunCiRequest {
+    executor::run_ci(RunCiRequest {
         provider,
-        dry_run: args.dry_run.into(),
+        dry_run: if args.dry_run {
+            cuenv_core::DryRun::Yes
+        } else {
+            cuenv_core::DryRun::No
+        },
         task_selection: if args.all {
             TaskSelection::All
         } else {
@@ -47,7 +51,7 @@ fn resolve_path_filter(path: &str) -> Result<Option<String>> {
     let cwd =
         std::env::current_dir().map_err(|e| cuenv_core::Error::io("get current directory", e))?;
 
-    let Some(module_root) = find_cue_module_root(&cwd) else {
+    let Some(module_root) = discovery::find_cue_module_root(&cwd) else {
         // If we can't find the module root, let run_ci handle it (will fail with proper error)
         return Ok(Some(path.to_string()));
     };

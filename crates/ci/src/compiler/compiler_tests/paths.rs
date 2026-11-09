@@ -1,5 +1,7 @@
-use super::*;
-
+use super::{
+    BTreeMap, CI, Compiler, CompilerOptions, HashMap, Input, Pipeline, PipelineCondition,
+    PipelineTask, Project, StringOrVec, Task, TaskGroup, TaskNode, TaskRef,
+};
 #[test]
 fn test_derive_paths_from_task_group() {
     // Create a task group (like "check" with nested tasks "lint", "test", etc.)
@@ -226,7 +228,7 @@ fn test_derive_paths_subproject_has_prefix() {
 
 #[test]
 fn test_derive_paths_nested_project_normalizes_parent_inputs() {
-    let paths = trigger_paths_for_project(
+    let paths = super::trigger_paths_for_project(
         "server",
         &[
             "../flake.nix",
@@ -260,7 +262,8 @@ fn test_derive_paths_nested_project_normalizes_parent_inputs() {
 
 #[test]
 fn test_derive_paths_deep_nested_project_normalizes_parent_inputs() {
-    let paths = trigger_paths_for_project("apps/server", &["../../flake.nix", "../shared/**"]);
+    let paths =
+        super::trigger_paths_for_project("apps/server", &["../../flake.nix", "../shared/**"]);
 
     assert!(paths.contains(&"flake.nix".to_string()), "Paths: {paths:?}");
     assert!(
@@ -279,7 +282,7 @@ fn test_derive_paths_deep_nested_project_normalizes_parent_inputs() {
 
 #[test]
 fn test_derive_paths_skips_inputs_that_escape_repo_root() {
-    let paths = trigger_paths_for_project("server", &["../../outside/**"]);
+    let paths = super::trigger_paths_for_project("server", &["../../outside/**"]);
 
     assert!(
         !paths.iter().any(|path| path.contains("outside")),
@@ -303,7 +306,7 @@ fn test_derive_paths_emits_recursive_glob_for_simple_directory_inputs() {
     // literal path. This keeps derived filters aligned with
     // `cuenv_core::affected::matches_pattern`, which treats non-glob
     // patterns as prefixes.
-    let paths = trigger_paths_for_project("server", &["src", "../flake.nix"]);
+    let paths = super::trigger_paths_for_project("server", &["src", "../flake.nix"]);
 
     assert!(
         paths.contains(&"server/src".to_string()),
@@ -328,7 +331,7 @@ fn test_derive_paths_emits_recursive_glob_for_simple_directory_inputs() {
 fn test_derive_paths_does_not_expand_existing_globs() {
     // Inputs that already contain glob metacharacters must not get a
     // duplicate `/**` appended; their meaning is left to GitHub Actions.
-    let paths = trigger_paths_for_project("server", &["src/**/*.rs", "data/?.json"]);
+    let paths = super::trigger_paths_for_project("server", &["src/**/*.rs", "data/?.json"]);
 
     assert!(
         paths.contains(&"server/src/**/*.rs".to_string()),

@@ -172,10 +172,10 @@ impl SecretRegistry {
 /// # Example
 ///
 /// ```rust
-/// use cuenv_events::redaction::register_secret;
+/// use cuenv_events::redaction;
 ///
 /// // Register a secret for redaction
-/// register_secret("my-secret-token-12345");
+/// redaction::register_secret("my-secret-token-12345");
 /// ```
 pub fn register_secret(secret: impl Into<String>) {
     SECRET_REGISTRY.register([secret.into()]);
@@ -285,9 +285,9 @@ fn strip_quotes(quoted: &str) -> String {
 /// # Example
 ///
 /// ```rust
-/// use cuenv_events::redaction::register_secrets;
+/// use cuenv_events::redaction;
 ///
-/// register_secrets(["secret1", "secret2", "secret3"]);
+/// redaction::register_secrets(["secret1", "secret2", "secret3"]);
 /// ```
 pub fn register_secrets(secrets: impl IntoIterator<Item = impl Into<String>>) {
     SECRET_REGISTRY.register(secrets);
@@ -301,10 +301,10 @@ pub fn register_secrets(secrets: impl IntoIterator<Item = impl Into<String>>) {
 /// # Example
 ///
 /// ```rust
-/// use cuenv_events::redaction::{register_secret, redact};
+/// use cuenv_events::redaction;
 ///
-/// register_secret("password123");
-/// let redacted = redact("The password is password123");
+/// redaction::register_secret("password123");
+/// let redacted = redaction::redact("The password is password123");
 /// assert!(redacted.contains("*_*"));
 /// ```
 #[must_use]
@@ -477,7 +477,6 @@ pub fn clear_secrets() {
 /// Serializes the tests that share the process-wide registry.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::clear_secrets;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
 
@@ -491,19 +490,18 @@ pub(crate) mod test_support {
     where
         F: FnOnce() -> R,
     {
-        let _guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        clear_secrets();
+        // Both the successful guard and a poison error keep the unit lock held.
+        let _guard = TEST_LOCK.lock();
+        super::clear_secrets();
         let result = f();
-        clear_secrets();
+        super::clear_secrets();
         result
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{COMPILATIONS, with_clean_registry};
+    use super::test_support::{self, COMPILATIONS};
     use super::*;
     use std::sync::atomic::Ordering;
 
@@ -575,7 +573,7 @@ mod tests {
 
     #[test]
     fn the_matcher_is_compiled_once_per_registry_change_not_once_per_call() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secrets(["first-secret-AAAA", "second-secret-BBBB"]);
             let before = COMPILATIONS.load(Ordering::Relaxed);
             for _ in 0..50 {
@@ -599,7 +597,7 @@ mod tests {
 
     #[test]
     fn many_long_secrets_do_not_slow_each_redaction_down() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             // 200 secrets of 100 lines of 64 characters, as a large plan with
             // many multi-line secrets registers them.
             let secrets: Vec<String> = (0..200)
@@ -635,7 +633,7 @@ mod tests {
 
     #[test]
     fn a_multi_line_secret_is_registered_whole_only_when_a_line_is_too_short_to_be() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             // Every line long enough: the lines cover the whole, and plain
             // text has no quoted forms, so three patterns suffice.
             register_secret("first-line-AAAA\nsecond-line-BBBB\nthird-line-CCCC");
@@ -646,7 +644,7 @@ mod tests {
                 "the whole text is still hidden"
             );
         });
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             // A short line is never registered alone, so the whole is.
             register_secret("first-line-AAAA\nxy\nthird-line-CCCC");
             assert!(redact("first-line-AAAA\nxy\nthird-line-CCCC").contains("*_*"));
@@ -657,7 +655,7 @@ mod tests {
 
     #[test]
     fn overlapping_secrets_are_replaced_as_one_stretch() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secrets(["abcdXXXX", "XXXXefgh"]);
             // Each secret overlaps the other: no part of either may show.
             assert_eq!(redact("<abcdXXXXefgh>"), "<*_*>");
@@ -668,7 +666,7 @@ mod tests {
 
     #[test]
     fn go_escaped_json_forms_of_a_secret_are_redacted() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("p&ss<w>rd-GGGG");
             // Go's encoding/json writes &, < and > as \u0026, \u003c and \u003e.
             assert_eq!(
@@ -682,7 +680,7 @@ mod tests {
 
     #[test]
     fn json_object_keys_are_kept_unless_asked_for() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("data");
             let mut value = serde_json::json!({"data": {"content": "data", "other": ["data"]}});
             redact_json_value(&mut value);
@@ -706,7 +704,7 @@ mod tests {
 
     #[test]
     fn text_without_a_secret_is_not_copied() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("needle-NNNN");
             assert!(matches!(redact_cow("haystack"), Cow::Borrowed(_)));
             assert!(matches!(redact_cow("a needle-NNNN"), Cow::Owned(_)));
@@ -715,7 +713,7 @@ mod tests {
 
     #[test]
     fn each_line_of_a_multi_line_secret_is_redacted_on_its_own() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("line-one-MMMM\nline-two-MMMM\r\nxy");
             // Output is read line by line: no line holds the whole secret.
             assert_eq!(redact("log: line-two-MMMM"), "log: *_*");
@@ -727,7 +725,7 @@ mod tests {
 
     #[test]
     fn a_secret_is_also_redacted_as_quoted_text_prints_it() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("quo\"te\\back-QQQQ");
             register_secret("tab\there-UUUU");
             // How a plan or a diagnostic prints the values (debug quoting).
@@ -746,7 +744,7 @@ mod tests {
 
     #[test]
     fn json_strings_are_redacted_in_their_unescaped_form() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("quo\"te\\back-QQQQ");
             let mut value = serde_json::json!({
                 "message": "open /x/quo\"te\\back-QQQQ/y",
@@ -763,7 +761,7 @@ mod tests {
 
     #[test]
     fn json_text_is_redacted_per_string_and_other_text_as_plain_text() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("quo\"te-QQQQ");
             let line = serde_json::json!({"m": "a quo\"te-QQQQ b"}).to_string();
             assert!(line.contains("quo\\\"te-QQQQ"), "escaped form: {line}");
@@ -777,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_simple_redaction() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("secret123");
             let result = redact("The password is secret123, don't share it");
             assert_eq!(result, "The password is *_*, don't share it");
@@ -786,7 +784,7 @@ mod tests {
 
     #[test]
     fn test_multiple_secrets() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secrets(["password123", "api_key_xyz"]);
             let result = redact("password123 and api_key_xyz are both secrets");
             assert_eq!(result, "*_* and *_* are both secrets");
@@ -795,7 +793,7 @@ mod tests {
 
     #[test]
     fn test_repeated_secret() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("secret");
             let result = redact("secret appears twice: secret");
             assert_eq!(result, "*_* appears twice: *_*");
@@ -804,7 +802,7 @@ mod tests {
 
     #[test]
     fn test_short_secret_ignored() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("ab"); // Too short (< 4 chars)
             register_secret("abc"); // Too short
             register_secret("abcd"); // Just right (= 4 chars)
@@ -818,7 +816,7 @@ mod tests {
 
     #[test]
     fn test_empty_input() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("secret");
             let result = redact("");
             assert_eq!(result, "");
@@ -827,7 +825,7 @@ mod tests {
 
     #[test]
     fn test_no_secrets_registered() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             assert!(!has_secrets());
             let result = redact("nothing to redact here");
             assert_eq!(result, "nothing to redact here");
@@ -836,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_greedy_matching() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             // Longer secret should be matched first
             register_secrets(["pass", "password"]);
             let result = redact("the password is set");
@@ -847,7 +845,7 @@ mod tests {
 
     #[test]
     fn test_secret_at_boundaries() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("secret");
 
             // Secret at start
@@ -862,7 +860,7 @@ mod tests {
 
     #[test]
     fn test_special_characters() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("pass$word!@#");
             let result = redact("the pass$word!@# is special");
             assert_eq!(result, "the *_* is special");
@@ -871,7 +869,7 @@ mod tests {
 
     #[test]
     fn test_multiline_content() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             register_secret("secretkey");
             let input = "line1\nsecretkey\nline3";
             let result = redact(input);
@@ -881,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_has_secrets() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             assert!(!has_secrets());
             register_secret("test_secret");
             assert!(has_secrets());
@@ -890,7 +888,7 @@ mod tests {
 
     #[test]
     fn test_secret_count() {
-        with_clean_registry(|| {
+        test_support::with_clean_registry(|| {
             assert_eq!(secret_count(), 0);
             register_secret("secret1");
             assert_eq!(secret_count(), 1);

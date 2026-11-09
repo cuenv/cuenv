@@ -24,11 +24,15 @@ impl SyncProvider for CiSyncProvider {
             scope,
             executor,
         } = request;
-        let dry_run = options.mode == SyncMode::DryRun;
+        let dry_run = if options.mode == SyncMode::DryRun {
+            cuenv_core::DryRun::Yes
+        } else {
+            cuenv_core::DryRun::No
+        };
         let check = options.mode == SyncMode::Check;
 
         let ci_options = functions::CiSyncOptions {
-            dry_run: dry_run.into(),
+            dry_run,
             check,
             provider: options.ci_provider.as_deref(),
         };

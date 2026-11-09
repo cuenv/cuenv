@@ -7,7 +7,7 @@
 use crate::{CodegenError, Result};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
-use cuenv_core::cue::discovery::find_cue_module_root;
+use cuenv_core::cue::discovery;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -173,7 +173,7 @@ impl Codegen {
             .canonicalize()
             .map_err(|e| CodegenError::Codegen(format!("Failed to canonicalize path: {e}")))?;
 
-        let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
+        let module_root = discovery::find_cue_module_root(&target_path).ok_or_else(|| {
             CodegenError::Codegen(format!(
                 "No CUE module found (looking for cue.mod/) starting from: {}",
                 target_path.display()
@@ -201,8 +201,10 @@ impl Codegen {
         Ok(ModuleEvaluation::from_raw(
             target.module_root.clone(),
             raw_result.instances,
-            raw_result.projects,
-            None,
+            cuenv_core::module::ModuleEvaluationOptions {
+                project_paths: raw_result.projects,
+                references: None,
+            },
         ))
     }
 

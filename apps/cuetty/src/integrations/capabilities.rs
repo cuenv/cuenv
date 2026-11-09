@@ -134,16 +134,26 @@ pub struct CapabilityGrant {
     pub scope: ResourceScope,
 }
 
-impl CapabilityGrant {
-    pub fn new(
-        grant_id: impl Into<String>,
-        principal: impl Into<String>,
-        capability: CapabilityKind,
-        scope: ResourceScope,
-    ) -> Self {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GrantIdentity {
+    pub grant_id: String,
+    pub principal: String,
+}
+
+impl GrantIdentity {
+    pub fn new(grant_id: impl Into<String>, principal: impl Into<String>) -> Self {
         Self {
             grant_id: grant_id.into(),
             principal: principal.into(),
+        }
+    }
+}
+
+impl CapabilityGrant {
+    pub fn new(identity: GrantIdentity, capability: CapabilityKind, scope: ResourceScope) -> Self {
+        Self {
+            grant_id: identity.grant_id,
+            principal: identity.principal,
             capability,
             scope,
         }
@@ -425,8 +435,7 @@ mod tests {
         let mut grants = GrantSet::default();
         grants
             .grant(CapabilityGrant::new(
-                "g1",
-                "plugin.alpha",
+                GrantIdentity::new("g1", "plugin.alpha"),
                 CapabilityKind::FilesystemRead,
                 named("a"),
             ))
@@ -456,8 +465,7 @@ mod tests {
         let mut grants = GrantSet::default();
         grants
             .grant(CapabilityGrant::new(
-                "g1",
-                "plugin.alpha",
+                GrantIdentity::new("g1", "plugin.alpha"),
                 CapabilityKind::FilesystemRead,
                 ResourceScope::Prefix {
                     namespace: "fs".into(),
@@ -490,8 +498,7 @@ mod tests {
         let mut grants = GrantSet::default();
         grants
             .grant(CapabilityGrant::new(
-                "g1",
-                "plugin.alpha",
+                GrantIdentity::new("g1", "plugin.alpha"),
                 CapabilityKind::FilesystemRead,
                 ResourceScope::Prefix {
                     namespace: "fs".into(),
@@ -524,8 +531,7 @@ mod tests {
         let mut grants = GrantSet::default();
         let error = grants
             .grant(CapabilityGrant::new(
-                "g1",
-                "plugin.alpha",
+                GrantIdentity::new("g1", "plugin.alpha"),
                 CapabilityKind::FilesystemRead,
                 ResourceScope::Prefix {
                     namespace: "fs".into(),
@@ -554,8 +560,7 @@ mod tests {
         let mut grants = GrantSet::default();
         grants
             .grant(CapabilityGrant::new(
-                "g1",
-                "plugin.alpha",
+                GrantIdentity::new("g1", "plugin.alpha"),
                 CapabilityKind::FilesystemRead,
                 ResourceScope::Named {
                     namespace: "fs".into(),
@@ -598,8 +603,7 @@ mod tests {
         let mut grants = GrantSet::default();
         grants
             .grant(CapabilityGrant::new(
-                "g1",
-                "plugin.alpha",
+                GrantIdentity::new("g1", "plugin.alpha"),
                 CapabilityKind::FilesystemRead,
                 ResourceScope::Prefix {
                     namespace: "fs".into(),
@@ -625,8 +629,7 @@ mod tests {
         let mut grants = GrantSet::default();
         grants
             .grant(CapabilityGrant::new(
-                "g1",
-                "plugin.alpha",
+                GrantIdentity::new("g1", "plugin.alpha"),
                 CapabilityKind::NetworkConnect,
                 ResourceScope::Prefix {
                     namespace: "endpoint".into(),
@@ -653,8 +656,7 @@ mod tests {
         let mut grants = GrantSet::default();
         grants
             .grant(CapabilityGrant::new(
-                "g1",
-                "plugin.alpha",
+                GrantIdentity::new("g1", "plugin.alpha"),
                 CapabilityKind::ClipboardRead,
                 ResourceScope::Global,
             ))
@@ -719,8 +721,7 @@ mod tests {
         let mut grants = GrantSet::default();
         grants
             .grant(CapabilityGrant::new(
-                "g1",
-                "plugin.alpha",
+                GrantIdentity::new("g1", "plugin.alpha"),
                 CapabilityKind::FilesystemRead,
                 named("a"),
             ))

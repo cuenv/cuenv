@@ -1,7 +1,7 @@
 //! 1Password secret resolver with auto-negotiating dual-mode (HTTP via WASM SDK + CLI)
 
 use super::cli::CliResolver;
-use super::core::SharedCore;
+use super::core::{InvokeRequest, SharedCore};
 use super::wasm;
 use async_trait::async_trait;
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec, SecureSecret};
@@ -164,7 +164,12 @@ impl OnePasswordResolver {
             serde_json::Value::String(config.reference.clone()),
         );
 
-        let result = core.invoke(client_id, "SecretsResolve", &params, &config.reference)?;
+        let result = core.invoke(InvokeRequest {
+            client_id,
+            method: "SecretsResolve",
+            params: &params,
+            context: &config.reference,
+        })?;
 
         // Parse the response - the Go SDK returns a JSON-encoded string
         // The invoke response is the raw string from WASM, which is a JSON-quoted secret value
@@ -258,7 +263,12 @@ impl OnePasswordResolver {
 
         // Use first reference as context for top-level errors
         let context = references.first().map_or("batch", String::as_str);
-        let result = core.invoke(client_id, "SecretsResolveAll", &params, context)?;
+        let result = core.invoke(InvokeRequest {
+            client_id,
+            method: "SecretsResolveAll",
+            params: &params,
+            context,
+        })?;
 
         // Parse the response
         let response: serde_json::Value =
@@ -323,8 +333,6 @@ impl OnePasswordResolver {
         &self,
         secrets: &HashMap<String, SecretSpec>,
     ) -> Result<HashMap<String, SecureSecret>, SecretError> {
-        use futures::future::try_join_all;
-
         let futures: Vec<_> = secrets
             .iter()
             .map(|(name, spec)| {
@@ -337,7 +345,9 @@ impl OnePasswordResolver {
             })
             .collect();
 
-        try_join_all(futures).await.map(|v| v.into_iter().collect())
+        futures::future::try_join_all(futures)
+            .await
+            .map(|v| v.into_iter().collect())
     }
 }
 
@@ -397,9 +407,10 @@ impl SecretResolver for OnePasswordResolver {
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
+    use std::fs;
     #[cfg(unix)]
-    use std::{fs, path::Path};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     #[cfg(unix)]
     fn write_fake_op_shim(dir: &Path) -> std::path::PathBuf {

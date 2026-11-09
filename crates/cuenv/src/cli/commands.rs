@@ -553,6 +553,7 @@ impl Commands {
 
             // Nested env subcommands with --package
             Self::Env { subcommand } => match subcommand {
+                EnvCommands::Recover { .. } => "cuenv",
                 EnvCommands::Print { package, .. }
                 | EnvCommands::Load { package, .. }
                 | EnvCommands::Status { package, .. }

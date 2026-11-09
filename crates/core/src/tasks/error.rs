@@ -7,6 +7,24 @@
 use miette::Diagnostic;
 use thiserror::Error as ThisError;
 
+/// Captured streams from a failed task.
+#[derive(Debug, Clone, Copy)]
+pub struct TaskFailureOutput<'output> {
+    /// Standard output from the task.
+    pub stdout: &'output str,
+    /// Standard error from the task.
+    pub stderr: &'output str,
+}
+
+/// Captured streams and help text for a failed task.
+#[derive(Debug, Clone, Copy)]
+pub struct TaskFailureWithHelp<'failure> {
+    /// Captured task output.
+    pub output: TaskFailureOutput<'failure>,
+    /// Help to include with the diagnostic.
+    pub help: &'failure str,
+}
+
 /// Errors raised while building the task graph or executing tasks.
 #[derive(ThisError, Debug, Diagnostic)]
 // Intentionally exhaustive: `cuenv`'s `From<cuenv_core::Error> for CliError` matches every variant so a new one forces an explicit exit-code decision.
@@ -67,14 +85,13 @@ impl TaskError {
     pub fn task_failed(
         task_name: impl Into<String>,
         exit_code: i32,
-        stdout: impl Into<String>,
-        stderr: impl Into<String>,
+        output: TaskFailureOutput<'_>,
     ) -> Self {
         TaskError::TaskFailed {
             task_name: task_name.into(),
             exit_code,
-            stdout: stdout.into(),
-            stderr: stderr.into(),
+            stdout: output.stdout.to_string(),
+            stderr: output.stderr.to_string(),
             help: None,
         }
     }
@@ -83,16 +100,14 @@ impl TaskError {
     pub fn task_failed_with_help(
         task_name: impl Into<String>,
         exit_code: i32,
-        stdout: impl Into<String>,
-        stderr: impl Into<String>,
-        help: impl Into<String>,
+        details: TaskFailureWithHelp<'_>,
     ) -> Self {
         TaskError::TaskFailed {
             task_name: task_name.into(),
             exit_code,
-            stdout: stdout.into(),
-            stderr: stderr.into(),
-            help: Some(help.into()),
+            stdout: details.output.stdout.to_string(),
+            stderr: details.output.stderr.to_string(),
+            help: Some(details.help.to_string()),
         }
     }
 

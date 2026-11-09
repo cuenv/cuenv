@@ -33,6 +33,17 @@ pub struct BuildkiteEmitter {
     pub default_queue: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum LabelKind {
+    Standard,
+    Deployment,
+}
+
+struct StepDependencies<'step_dependencies> {
+    approval_keys: &'step_dependencies HashMap<String, String>,
+    setup_keys: &'step_dependencies [String],
+}
+
 impl BuildkiteEmitter {
     /// Create a new Buildkite emitter
     #[must_use]
@@ -82,6 +93,10 @@ impl BuildkiteEmitter {
             .filter(|task| task.manual_approval)
             .map(|task| (task.id.clone(), format!("{}-approval", task.id)))
             .collect();
+        let dependencies = StepDependencies {
+            approval_keys: &approval_keys,
+            setup_keys: &setup_keys,
+        };
 
         // Build task steps: block steps for approvals, then command steps
         for task in ir.regular_tasks() {
@@ -94,8 +109,7 @@ impl BuildkiteEmitter {
             steps.push(Step::Command(Box::new(self.build_command_step(
                 task,
                 ir,
-                &approval_keys,
-                &setup_keys,
+                &dependencies,
             ))));
         }
 
@@ -107,7 +121,10 @@ impl BuildkiteEmitter {
 
     /// Convert a phase task (bootstrap/setup/success/failure) to a Buildkite command step
     fn phase_task_to_step(&self, task: &Task) -> CommandStep {
-        let label = task.label.as_ref().map(|l| self.format_label(l, false));
+        let label = task
+            .label
+            .as_ref()
+            .map(|label| self.format_label(label, LabelKind::Standard));
 
         // Build command - use shell wrapper if needed
         let command = if task.shell {
@@ -148,10 +165,14 @@ impl BuildkiteEmitter {
         &self,
         task: &Task,
         ir: &IntermediateRepresentation,
-        approval_keys: &HashMap<String, String>,
-        setup_keys: &[String],
+        dependencies: &StepDependencies<'_>,
     ) -> CommandStep {
-        let label = self.format_label(&task.id, task.deployment);
+        let kind = if task.deployment {
+            LabelKind::Deployment
+        } else {
+            LabelKind::Standard
+        };
+        let label = self.format_label(&task.id, kind);
 
         // Build the command - Nix setup is handled by stage tasks
         let base_command = ir.pipeline.environment.as_ref().map_or_else(
@@ -202,14 +223,14 @@ impl BuildkiteEmitter {
 
         // Add setup stage dependencies if task has a runtime or needs 1Password
         if task.runtime.is_some() || ir.pipeline.requires_onepassword {
-            for setup_key in setup_keys {
+            for setup_key in dependencies.setup_keys {
                 depends_on.push(DependsOn::Key(setup_key.clone()));
             }
         }
 
         // Add explicit task dependencies
         for dep in &task.depends_on {
-            if let Some(approval_key) = approval_keys.get(dep) {
+            if let Some(approval_key) = dependencies.approval_keys.get(dep) {
                 depends_on.push(DependsOn::Key(approval_key.clone()));
             } else {
                 depends_on.push(DependsOn::Key(dep.clone()));
@@ -217,7 +238,7 @@ impl BuildkiteEmitter {
         }
 
         // If this task has manual approval, depend on its own approval step
-        if let Some(approval_key) = approval_keys.get(&task.id) {
+        if let Some(approval_key) = dependencies.approval_keys.get(&task.id) {
             depends_on.push(DependsOn::Key(approval_key.clone()));
         }
 
@@ -272,9 +293,12 @@ impl BuildkiteEmitter {
     }
 
     /// Format a step label with optional emoji
-    fn format_label(&self, task_id: &str, is_deployment: bool) -> String {
+    fn format_label(&self, task_id: &str, kind: LabelKind) -> String {
         if self.use_emojis {
-            let emoji = if is_deployment { ":rocket:" } else { ":gear:" };
+            let emoji = match kind {
+                LabelKind::Standard => ":gear:",
+                LabelKind::Deployment => ":rocket:",
+            };
             format!("{emoji} {task_id}")
         } else {
             task_id.to_string()
@@ -308,7 +332,10 @@ impl Emitter for BuildkiteEmitter {
         // Main execution step: cuenv ci --pipeline <name>
         let cuenv_command = format!("cuenv ci --pipeline {pipeline_name}");
         let main_step = CommandStep {
-            label: Some(self.format_label(&format!("Run pipeline: {pipeline_name}"), false)),
+            label: Some(self.format_label(
+                &format!("Run pipeline: {pipeline_name}"),
+                LabelKind::Standard,
+            )),
             key: Some("cuenv-ci".to_string()),
             command: Some(CommandValue::Single(cuenv_command)),
             env: HashMap::new(),
@@ -572,11 +599,15 @@ mod tests {
     #[test]
     fn test_emojis() {
         let emitter = BuildkiteEmitter::new().with_emojis();
-        let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        let mut deployment = make_task("deploy", &["deploy"]);
+        deployment.deployment = true;
+        deployment.cache_policy = CachePolicy::Disabled;
+        let ir = make_ir(vec![make_task("build", &["cargo", "build"]), deployment]);
 
         let yaml = emitter.emit(&ir).unwrap();
 
-        assert!(yaml.contains(":gear:"));
+        assert!(yaml.contains(":gear: build"));
+        assert!(yaml.contains(":rocket: deploy"));
     }
 
     #[test]
@@ -608,7 +639,7 @@ mod tests {
     }
 
     /// Helper to create a phase task for testing
-    fn make_phase_task(id: &str, command: &[&str], phase: BuildStage, priority: i32) -> Task {
+    fn make_phase_task(id: &str, command: &[&str], phase: BuildStage) -> Task {
         Task {
             id: id.to_string(),
             runtime: None,
@@ -629,7 +660,7 @@ mod tests {
             params: BTreeMap::new(),
             phase: Some(phase),
             label: None,
-            priority: Some(priority),
+            priority: None,
             contributor: None,
             condition: None,
             github_task_filter: Vec::new(),
@@ -654,8 +685,8 @@ mod tests {
                 "curl --proto '=https' --tlsv1.2 -sSf -L https://releases.nixos.org/nix/nix-2.31.2/install | sh -s -- --no-daemon --no-channel-add",
             ],
             BuildStage::Bootstrap,
-            0,
         );
+        bootstrap_task.priority = Some(0);
         bootstrap_task.label = Some("Install Nix".to_string());
         bootstrap_task.contributor = Some("nix".to_string());
 
@@ -665,8 +696,8 @@ mod tests {
                 ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config",
             ],
             BuildStage::Setup,
-            10,
         );
+        setup_task.priority = Some(10);
         setup_task.label = Some("Setup cuenv".to_string());
         setup_task.contributor = Some("cuenv".to_string());
         setup_task.depends_on = vec!["install-nix".to_string()];

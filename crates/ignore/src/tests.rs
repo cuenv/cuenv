@@ -1,5 +1,7 @@
-use super::*;
-use tempfile::tempdir;
+use super::{
+    Error, FileResult, FileStatus, GitRequirement, IgnoreFile, IgnoreFiles, IgnoreSection,
+    SyncResult, WriteMode, validate_filename, validate_tool_name,
+};
 
 #[test]
 fn test_ignore_file_new() {
@@ -238,7 +240,7 @@ fn test_ignore_files_builder_files() {
 
 #[test]
 fn test_managed_section_create_update_and_remove() {
-    let temp = tempdir().expect("tempdir");
+    let temp = tempfile::tempdir().expect("tempdir");
 
     let result = IgnoreFiles::builder()
         .directory(temp.path())
@@ -277,12 +279,40 @@ fn test_managed_section_create_update_and_remove() {
 }
 
 #[test]
+fn test_full_file_dry_run_reports_changes_without_writing() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let path = temp.path().join(".gitignore");
+    let file = IgnoreFile::new("git").pattern("target/");
+    let dry_run = || {
+        IgnoreFiles::builder()
+            .directory(temp.path())
+            .file(file.clone())
+            .dry_run(WriteMode::DryRun)
+            .generate()
+            .expect("dry run")
+    };
+
+    assert_eq!(dry_run().files[0].status, FileStatus::WouldCreate);
+    assert!(!path.exists());
+
+    std::fs::write(&path, "old/\n").expect("existing ignore file");
+    assert_eq!(dry_run().files[0].status, FileStatus::WouldUpdate);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("ignore file"),
+        "old/\n"
+    );
+
+    std::fs::write(&path, file.generate()).expect("matching ignore file");
+    assert_eq!(dry_run().files[0].status, FileStatus::Unchanged);
+}
+
+#[test]
 fn test_managed_section_dry_run_and_empty_absent_file() {
-    let temp = tempdir().expect("tempdir");
+    let temp = tempfile::tempdir().expect("tempdir");
 
     let result = IgnoreFiles::builder()
         .directory(temp.path())
-        .dry_run(true)
+        .dry_run(WriteMode::DryRun)
         .section(IgnoreSection::new("cuenv vcs").pattern(".cuenv/vcs/cache/"))
         .generate()
         .expect("dry run");
@@ -300,7 +330,7 @@ fn test_managed_section_dry_run_and_empty_absent_file() {
 
 #[test]
 fn test_managed_section_dangling_ignore_file_errors() {
-    let temp = tempdir().expect("tempdir");
+    let temp = tempfile::tempdir().expect("tempdir");
     #[cfg(unix)]
     std::os::unix::fs::symlink("missing-target", temp.path().join(".gitignore"))
         .expect("dangling symlink");
@@ -318,7 +348,7 @@ fn test_managed_section_dangling_ignore_file_errors() {
 
 #[test]
 fn test_full_file_generation_preserves_managed_sections() {
-    let temp = tempdir().expect("tempdir");
+    let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         temp.path().join(".gitignore"),
         "target/\n\n# BEGIN cuenv vcs\n.cuenv/vcs/cache/\n# END cuenv vcs\n",
@@ -339,7 +369,7 @@ fn test_full_file_generation_preserves_managed_sections() {
 
 #[test]
 fn test_managed_sections_reject_malformed_blocks() {
-    let temp = tempdir().expect("tempdir");
+    let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         temp.path().join(".gitignore"),
         "# BEGIN cuenv vcs\n.cuenv/vcs/cache/\n",
@@ -356,13 +386,13 @@ fn test_managed_sections_reject_malformed_blocks() {
 
 #[test]
 fn test_alternating_managed_sections_are_stable() {
-    let temp = tempdir().expect("tempdir");
+    let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join(".gitignore");
     std::fs::write(&path, "target/\n").expect("seed gitignore");
     let sync = |name: &str, pattern: &str| {
         IgnoreFiles::builder()
             .directory(temp.path())
-            .require_git_repo(false)
+            .require_git_repo(GitRequirement::Optional)
             .section(IgnoreSection::new(name).pattern(pattern))
             .generate()
             .expect("generate section");
@@ -394,7 +424,7 @@ fn test_alternating_managed_sections_are_stable() {
 
 #[test]
 fn test_removing_a_managed_section_removes_its_separator() {
-    let temp = tempdir().expect("tempdir");
+    let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join(".gitignore");
     std::fs::write(
         &path,
@@ -405,7 +435,7 @@ fn test_removing_a_managed_section_removes_its_separator() {
 
     IgnoreFiles::builder()
         .directory(temp.path())
-        .require_git_repo(false)
+        .require_git_repo(GitRequirement::Optional)
         .section(IgnoreSection::new("cuenv vcs"))
         .generate()
         .expect("remove section");

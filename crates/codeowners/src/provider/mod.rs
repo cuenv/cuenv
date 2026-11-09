@@ -10,20 +10,35 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use cuenv_codeowners::provider::{CodeOwnersProvider, ProjectOwners};
-//! use cuenv_github::GitHubCodeOwnersProvider;
+//! ```rust
+//! use cuenv_codeowners::provider::{CodeOwnersProvider, ProjectOwners, WriteMode};
+//! use cuenv_codeowners::{Rule, SectionStyle};
 //! use std::path::Path;
 //!
-//! let provider = GitHubCodeOwnersProvider;
-//! let projects = vec![/* ... */];
-//! let result = provider.sync(Path::new("."), &projects, false)?;
+//! struct GitHubProvider;
+//! impl CodeOwnersProvider for GitHubProvider {
+//!     fn output_path(&self) -> &str { ".github/CODEOWNERS" }
+//!     fn section_style(&self) -> SectionStyle { SectionStyle::Comment }
+//! }
+//!
+//! let projects = vec![ProjectOwners::new(".", "demo", vec![Rule::new("*.rs", ["@team"])])];
+//! let result = GitHubProvider.sync(Path::new("."), &projects, WriteMode::DryRun)?;
+//! assert!(result.content.contains("@team"));
+//! # Ok::<(), cuenv_codeowners::provider::ProviderError>(())
 //! ```
 
 use crate::{CodeOwnersBuilder, Rule, SectionStyle};
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
+
+/// Whether synchronization writes the generated file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteMode {
+    /// Write generated content.
+    Write,
+    /// Report changes without writing.
+    DryRun,
+}
 
 /// Error type for provider operations.
 #[derive(Debug)]
@@ -164,7 +179,7 @@ pub trait CodeOwnersProvider: Send + Sync {
     ///
     /// * `repo_root` - Root directory of the repository
     /// * `projects` - List of projects with their ownership configurations
-    /// * `dry_run` - If true, don't write files, just report what would happen
+    /// * `mode` - Whether to write files or report what would happen
     ///
     /// # Errors
     ///
@@ -173,7 +188,7 @@ pub trait CodeOwnersProvider: Send + Sync {
         &self,
         repo_root: &Path,
         projects: &[ProjectOwners],
-        dry_run: bool,
+        mode: WriteMode,
     ) -> Result<SyncResult> {
         if projects.is_empty() {
             return Err(ProviderError::Configuration(
@@ -183,7 +198,7 @@ pub trait CodeOwnersProvider: Send + Sync {
 
         let content = generate_aggregated_content(self.section_style(), projects, None);
         let output_path = repo_root.join(self.output_path());
-        let status = write_codeowners_file(&output_path, &content, dry_run)?;
+        let status = write_codeowners_file(&output_path, &content, mode)?;
 
         Ok(SyncResult {
             path: output_path,
@@ -251,14 +266,14 @@ fn normalize_content(s: &str) -> String {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// // Root project - patterns are normalized to start with /
-/// prefix_pattern("", "*.rs") -> "/*.rs"
-/// prefix_pattern(".", "/docs/**") -> "/docs/**"
+/// ```rust
+/// use cuenv_codeowners::provider;
+/// use std::path::Path;
 ///
-/// // Nested project - patterns are prefixed with project path
-/// prefix_pattern("services/api", "*.rs") -> "/services/api/*.rs"
-/// prefix_pattern("services/api", "/src/**") -> "/services/api/src/**"
+/// assert_eq!(provider::prefix_pattern(Path::new(""), "*.rs"), "/*.rs");
+/// assert_eq!(provider::prefix_pattern(Path::new("."), "/docs/**"), "/docs/**");
+/// assert_eq!(provider::prefix_pattern(Path::new("services/api"), "*.rs"), "/services/api/*.rs");
+/// assert_eq!(provider::prefix_pattern(Path::new("services/api"), "/src/**"), "/services/api/src/**");
 /// ```
 pub fn prefix_pattern(project_path: &Path, pattern: &str) -> String {
     let prefix = project_path.to_string_lossy();
@@ -325,7 +340,7 @@ pub fn generate_aggregated_content(
 /// Write content to a file, creating parent directories as needed.
 ///
 /// Returns the sync status based on whether the file was created, updated, or unchanged.
-pub fn write_codeowners_file(path: &Path, content: &str, dry_run: bool) -> Result<SyncStatus> {
+pub fn write_codeowners_file(path: &Path, content: &str, mode: WriteMode) -> Result<SyncStatus> {
     let exists = path.exists();
     let current_content = if exists {
         Some(fs::read_to_string(path)?)
@@ -341,7 +356,7 @@ pub fn write_codeowners_file(path: &Path, content: &str, dry_run: bool) -> Resul
         return Ok(SyncStatus::Unchanged);
     }
 
-    if dry_run {
+    if mode == WriteMode::DryRun {
         return Ok(if exists {
             SyncStatus::WouldUpdate
         } else {

@@ -5,7 +5,7 @@
 //! which is what lets an idle window stop drawing entirely.
 
 use super::config::CursorBlink;
-use super::model::Known;
+use super::model::{CursorBlinkMode, Known};
 use crate::workspace::PaneId;
 use std::time::{Duration, Instant};
 
@@ -35,11 +35,11 @@ const TRAIL_DURATION: Duration = Duration::from_millis(140);
 const TRAIL_STRENGTH: f32 = 0.35;
 
 /// Whether the cursor blinks: as the terminal's application asked, unless overridden.
-pub(super) fn blink_wanted(policy: CursorBlink, terminal: Known<bool>) -> bool {
+pub(super) fn blink_wanted(policy: CursorBlink, terminal: Known<CursorBlinkMode>) -> bool {
     match policy {
         CursorBlink::On => true,
         CursorBlink::Off => false,
-        CursorBlink::Terminal => terminal == Known::Known(true),
+        CursorBlink::Terminal => terminal == Known::Known(CursorBlinkMode::Blinking),
     }
 }
 
@@ -253,11 +253,23 @@ mod tests {
     #[test]
     fn the_terminal_decides_unless_the_setting_overrides_it() {
         let wants = |policy, terminal| blink_wanted(policy, terminal);
-        assert!(wants(CursorBlink::Terminal, Known::Known(true)));
-        assert!(!wants(CursorBlink::Terminal, Known::Known(false)));
+        assert!(wants(
+            CursorBlink::Terminal,
+            Known::Known(CursorBlinkMode::Blinking)
+        ));
+        assert!(!wants(
+            CursorBlink::Terminal,
+            Known::Known(CursorBlinkMode::Steady)
+        ));
         assert!(!wants(CursorBlink::Terminal, Known::Unknown));
-        assert!(wants(CursorBlink::On, Known::Known(false)));
-        assert!(!wants(CursorBlink::Off, Known::Known(true)));
+        assert!(wants(
+            CursorBlink::On,
+            Known::Known(CursorBlinkMode::Steady)
+        ));
+        assert!(!wants(
+            CursorBlink::Off,
+            Known::Known(CursorBlinkMode::Blinking)
+        ));
     }
 
     #[test]

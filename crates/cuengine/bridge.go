@@ -711,6 +711,9 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 
 			// Merge reference paths into meta entries.
 			for k, refPath := range refs {
+				if refPath == "" {
+					continue
+				}
 				if existing, ok := allMeta[k]; ok {
 					existing.Reference = refPath
 					allMeta[k] = existing

@@ -9,7 +9,7 @@ pub const CONTRIBUTOR_TASK_PREFIX: &str = "cuenv:contributor:";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ContributorActivation {
-    /// Always active (no conditions)
+    /// A false value disables the contributor; true leaves other conditions in effect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub always: Option<bool>,
 

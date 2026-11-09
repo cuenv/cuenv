@@ -2,7 +2,7 @@
 
 use crate::workflow::emitter::GitHubActionsEmitter;
 use crate::workflow::schema::{Job, RunsOn, Step};
-use crate::workflow::stage_renderer::transform_secret_ref;
+
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task};
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
@@ -34,21 +34,21 @@ pub enum CuenvSetup {
 
 /// Options for building a simple GitHub Actions job.
 #[derive(Debug, Clone, Default)]
-pub struct SimpleJobOptions<'a> {
+pub struct SimpleJobOptions<'job> {
     /// Optional environment name for orchestrated execution.
-    pub environment: Option<&'a String>,
+    pub environment: Option<&'job str>,
     /// Optional working directory for monorepo jobs.
-    pub project_path: Option<&'a str>,
+    pub project_path: Option<&'job str>,
     /// Whether to run the task through cuenv or directly.
     pub execution: TaskExecution,
     /// How the job should obtain the `cuenv` binary for orchestrated execution.
     pub cuenv_setup: CuenvSetup,
 }
 
-impl<'a> SimpleJobOptions<'a> {
+impl<'job> SimpleJobOptions<'job> {
     /// Build options for a simple job that should execute via `cuenv task`.
     #[must_use]
-    pub fn orchestrated(environment: Option<&'a String>, project_path: Option<&'a str>) -> Self {
+    pub fn orchestrated(environment: Option<&'job str>, project_path: Option<&'job str>) -> Self {
         Self {
             environment,
             project_path,
@@ -66,7 +66,7 @@ impl<'a> SimpleJobOptions<'a> {
 
     /// Build options for a simple job that should run the IR command directly.
     #[must_use]
-    pub fn direct(project_path: Option<&'a str>) -> Self {
+    pub fn direct(project_path: Option<&'job str>) -> Self {
         Self {
             environment: None,
             project_path,
@@ -78,28 +78,28 @@ impl<'a> SimpleJobOptions<'a> {
 
 /// Options for building an artifact aggregation job.
 #[derive(Debug, Clone, Default)]
-pub struct ArtifactAggregationJobOptions<'a> {
+pub struct ArtifactAggregationJobOptions<'job> {
     /// Optional environment name for orchestrated execution.
-    pub environment: Option<&'a String>,
+    pub environment: Option<&'job str>,
     /// Jobs whose artifacts should be downloaded before the task runs.
-    pub previous_jobs: &'a [String],
+    pub previous_jobs: &'job [String],
     /// Optional working directory for monorepo jobs.
-    pub project_path: Option<&'a str>,
+    pub project_path: Option<&'job str>,
     /// How the job should obtain the `cuenv` binary.
     pub cuenv_setup: CuenvSetup,
 }
 
 /// Options for building matrix-expanded jobs.
 #[derive(Debug, Clone, Default)]
-pub struct MatrixJobOptions<'a> {
+pub struct MatrixJobOptions<'job> {
     /// Optional environment name for orchestrated execution.
-    pub environment: Option<&'a String>,
+    pub environment: Option<&'job str>,
     /// Optional per-architecture runner labels.
-    pub arch_runners: Option<&'a HashMap<String, String>>,
+    pub arch_runners: Option<&'job HashMap<String, String>>,
     /// Jobs that must complete before each matrix job.
-    pub previous_jobs: &'a [String],
+    pub previous_jobs: &'job [String],
     /// Optional working directory for monorepo jobs.
-    pub project_path: Option<&'a str>,
+    pub project_path: Option<&'job str>,
     /// Whether to run the task through cuenv or directly.
     pub execution: TaskExecution,
     /// How orchestrated jobs should obtain the `cuenv` binary.
@@ -108,11 +108,11 @@ pub struct MatrixJobOptions<'a> {
 
 /// Options for building a cuenv bootstrap job.
 #[derive(Debug, Clone)]
-pub struct CuenvBootstrapJobOptions<'a> {
+pub struct CuenvBootstrapJobOptions<'job> {
     /// Runner for the bootstrap job.
     pub runs_on: RunsOn,
     /// Display name for the bootstrap job.
-    pub name: &'a str,
+    pub name: &'job str,
 }
 
 impl GitHubActionsEmitter {
@@ -416,7 +416,10 @@ impl GitHubActionsEmitter {
                 Self::add_github_context_env(&mut step);
 
                 for (key, value) in &task.env {
-                    step.env.insert(key.clone(), transform_secret_ref(value));
+                    step.env.insert(
+                        key.clone(),
+                        crate::workflow::stage_renderer::transform_secret_ref(value),
+                    );
                 }
 
                 step
@@ -435,7 +438,10 @@ impl GitHubActionsEmitter {
         }
 
         for (key, value) in secret_env_vars {
-            task_step.env.insert(key, transform_secret_ref(&value));
+            task_step.env.insert(
+                key,
+                crate::workflow::stage_renderer::transform_secret_ref(&value),
+            );
         }
 
         steps.push(task_step);
@@ -566,13 +572,17 @@ impl GitHubActionsEmitter {
         }
 
         for (key, value) in &task.env {
-            task_step
-                .env
-                .insert(key.clone(), transform_secret_ref(value));
+            task_step.env.insert(
+                key.clone(),
+                crate::workflow::stage_renderer::transform_secret_ref(value),
+            );
         }
 
         for (key, value) in secret_env_vars {
-            task_step.env.insert(key, transform_secret_ref(&value));
+            task_step.env.insert(
+                key,
+                crate::workflow::stage_renderer::transform_secret_ref(&value),
+            );
         }
 
         steps.push(task_step);
@@ -671,15 +681,17 @@ impl GitHubActionsEmitter {
                 }
 
                 for (key, value) in &task.env {
-                    task_step
-                        .env
-                        .insert(key.clone(), transform_secret_ref(value));
+                    task_step.env.insert(
+                        key.clone(),
+                        crate::workflow::stage_renderer::transform_secret_ref(value),
+                    );
                 }
 
                 for (key, value) in &secret_env_vars {
-                    task_step
-                        .env
-                        .insert(key.clone(), transform_secret_ref(value));
+                    task_step.env.insert(
+                        key.clone(),
+                        crate::workflow::stage_renderer::transform_secret_ref(value),
+                    );
                 }
 
                 // Last, so a task that passes CUENV_ARCH through reads this job's

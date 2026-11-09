@@ -1,5 +1,4 @@
-use super::tool_resolution::source_config_to_tool_source;
-use super::*;
+use super::{LockfileSeedMode, tool_resolution};
 use cuenv_core::lockfile::{
     ArtifactKind, LOCKFILE_VERSION, LockedArtifact, LockedTool, LockedToolPlatform,
     LockedVcsDependency, Lockfile, PlatformData,
@@ -66,7 +65,7 @@ fn test_seed_lockfile_preserves_tools_activation_and_resets_generated_sections()
         },
     );
 
-    let seeded = seed_lockfile(Some(&existing), LockfileSeedMode::ResetGeneratedSections);
+    let seeded = super::seed_lockfile(Some(&existing), LockfileSeedMode::ResetGeneratedSections);
 
     assert_eq!(seeded.version, LOCKFILE_VERSION);
     assert_eq!(seeded.tools_activation, existing.tools_activation);
@@ -114,7 +113,8 @@ fn test_seeded_lockfile_remains_equal_when_generated_sections_are_rebuilt() {
         )]),
     });
 
-    let mut rebuilt = seed_lockfile(Some(&existing), LockfileSeedMode::ResetGeneratedSections);
+    let mut rebuilt =
+        super::seed_lockfile(Some(&existing), LockfileSeedMode::ResetGeneratedSections);
     rebuilt.tools = existing.tools.clone();
     rebuilt.artifacts = existing.artifacts.clone();
 
@@ -130,7 +130,8 @@ fn test_source_config_to_tool_source_expands_url_templates_for_cache_comparison(
     };
     let platform = ToolPlatform::new(Os::Linux, Arch::Arm64);
 
-    let (_, tool_source, source_json) = source_config_to_tool_source("1.2.3", &source, &platform);
+    let (_, tool_source, source_json) =
+        tool_resolution::source_config_to_tool_source("1.2.3", &source, &platform);
 
     match tool_source {
         ToolSource::Url { url, extract } => {

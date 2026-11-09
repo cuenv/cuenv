@@ -6,10 +6,9 @@
 
 use crate::commands::CommandExecutor;
 use crate::commands::exec::{ProjectEnvironment, ProjectEnvironmentRequest};
-use cuenv_core::DryRun;
-use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::{Formatters, NixFormatter, NixFormatterTool, RustFormatter};
+use cuenv_core::{DryRun, Result};
 use glob::Pattern;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -109,15 +108,15 @@ impl FormatterEnvironments {
 
 /// Where and how formatters run.
 #[derive(Clone, Copy, Debug)]
-pub struct FormatterContext<'a> {
+pub struct FormatterContext<'context> {
     /// Project root; formatters run with this working directory.
-    pub project_root: &'a Path,
+    pub project_root: &'context Path,
     /// When set, only report what would be formatted.
     pub dry_run: DryRun,
     /// Check or fix.
     pub mode: FormatMode,
     /// Environments formatter commands run in.
-    pub environments: &'a FormatterEnvironments,
+    pub environments: &'context FormatterEnvironments,
 }
 
 /// Command names of the enabled formatters.
@@ -283,13 +282,13 @@ pub fn matches_any_pattern(path: &str, patterns: &[String]) -> bool {
 }
 
 /// One formatter process invocation.
-struct FormatterInvocation<'a> {
+struct FormatterInvocation<'formatter_invocation> {
     /// Command name, resolved against the formatter environment's `PATH`.
-    program: &'a str,
+    program: &'formatter_invocation str,
     /// Arguments placed before the file paths.
     args: Vec<OsString>,
     /// Files to format.
-    files: &'a [&'a Path],
+    files: &'formatter_invocation [&'formatter_invocation Path],
 }
 
 /// Run a formatter in its environment and return its output.

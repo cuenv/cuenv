@@ -1,14 +1,12 @@
 //! Build script for compiling the Go CUE bridge
 
 use std::collections::hash_map::DefaultHasher;
-use std::env;
 use std::error::Error;
-use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
+use std::{env, fs, io};
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
@@ -265,12 +263,12 @@ fn go_build_source_paths(bridge_dir: &Path) -> io::Result<Vec<PathBuf>> {
         .collect())
 }
 
-struct PrebuiltBridgeRequest<'a> {
-    lib_filename: &'a str,
-    bridge_dir: &'a Path,
-    workspace_root: &'a Path,
-    output_path: &'a Path,
-    header_path: &'a Path,
+struct PrebuiltBridgeRequest<'request> {
+    lib_filename: &'request str,
+    bridge_dir: &'request Path,
+    workspace_root: &'request Path,
+    output_path: &'request Path,
+    header_path: &'request Path,
 }
 
 fn try_use_prebuilt(request: &PrebuiltBridgeRequest<'_>) -> BuildResult<bool> {

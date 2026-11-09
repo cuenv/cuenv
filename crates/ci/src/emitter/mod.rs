@@ -35,19 +35,19 @@ pub use crate::error::{EmitterError, EmitterResult};
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use cuenv_ci::emitter::{Emitter, EmitterResult};
 /// use cuenv_ci::ir::IntermediateRepresentation;
 ///
 /// struct MyEmitter;
 ///
 /// impl Emitter for MyEmitter {
-///     fn emit_thin(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+///     fn emit_thin(&self, _ir: &IntermediateRepresentation) -> EmitterResult<String> {
 ///         // Generate single-job workflow
 ///         Ok("# Thin mode config".to_string())
 ///     }
 ///
-///     fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+///     fn emit_expanded(&self, _ir: &IntermediateRepresentation) -> EmitterResult<String> {
 ///         // Generate multi-job workflow
 ///         Ok("# Expanded mode config".to_string())
 ///     }
@@ -60,6 +60,10 @@ pub use crate::error::{EmitterError, EmitterResult};
 ///         "yml"
 ///     }
 /// }
+///
+/// let ir = IntermediateRepresentation::new("build");
+/// assert_eq!(MyEmitter.emit(&ir)?, "# Thin mode config");
+/// # Ok::<(), cuenv_ci::emitter::EmitterError>(())
 /// ```
 pub trait Emitter: Send + Sync {
     /// Emit a thin mode CI configuration.

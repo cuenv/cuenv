@@ -146,12 +146,6 @@ impl Hermetic {
     }
 }
 
-impl From<bool> for Hermetic {
-    fn from(enabled: bool) -> Self {
-        Self::Enabled(enabled)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

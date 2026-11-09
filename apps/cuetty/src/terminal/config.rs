@@ -741,13 +741,20 @@ mod tests {
         }
     }
 
-    fn assert_legible(name: ThemeName, what: &str, ink: Rgb, fills: &[Rgb]) {
+    struct TextSample {
+        label: &'static str,
+        ink: Rgb,
+    }
+
+    fn assert_legible(name: ThemeName, text: TextSample, fills: &[Rgb]) {
         for fill in fills {
-            let ratio = contrast(ink, *fill);
+            let ratio = contrast(text.ink, *fill);
             assert!(
                 ratio >= 4.5,
-                "{}: {what} {ink:?} on {fill:?} is only {ratio:.2}:1",
-                name.id()
+                "{}: {} {:?} on {fill:?} is only {ratio:.2}:1",
+                name.id(),
+                text.label,
+                text.ink
             );
         }
     }
@@ -757,8 +764,10 @@ mod tests {
         for_every_theme(|name, theme| {
             assert_legible(
                 name,
-                "text",
-                theme.text,
+                TextSample {
+                    label: "text",
+                    ink: theme.text,
+                },
                 &[
                     theme.surface,
                     theme.title_surface,
@@ -776,8 +785,10 @@ mod tests {
         for_every_theme(|name, theme| {
             assert_legible(
                 name,
-                "title text",
-                theme.title_text,
+                TextSample {
+                    label: "title text",
+                    ink: theme.title_text,
+                },
                 &[
                     theme.surface,
                     theme.title_surface,
@@ -794,8 +805,10 @@ mod tests {
         for_every_theme(|name, theme| {
             assert_legible(
                 name,
-                "muted text",
-                theme.muted_text,
+                TextSample {
+                    label: "muted text",
+                    ink: theme.muted_text,
+                },
                 &[
                     theme.title_surface,
                     theme.surface,
@@ -809,11 +822,20 @@ mod tests {
     #[test]
     fn text_on_a_solid_fill_of_its_own_stays_legible() {
         for_every_theme(|name, theme| {
-            assert_legible(name, "cursor text", theme.cursor_text, &[theme.cursor]);
             assert_legible(
                 name,
-                "current match text",
-                theme.current_search_match_text,
+                TextSample {
+                    label: "cursor text",
+                    ink: theme.cursor_text,
+                },
+                &[theme.cursor],
+            );
+            assert_legible(
+                name,
+                TextSample {
+                    label: "current match text",
+                    ink: theme.current_search_match_text,
+                },
                 &[theme.current_search_match],
             );
         });
@@ -837,8 +859,22 @@ mod tests {
                         assert!(on_tint >= 1.1, "{}: {index} {on_tint:.2}:1", name.id());
                     }
                 } else {
-                    assert_legible(name, "ANSI colour", *color, &[theme.surface]);
-                    assert_legible(name, "ANSI colour", *color, &tints);
+                    assert_legible(
+                        name,
+                        TextSample {
+                            label: "ANSI colour",
+                            ink: *color,
+                        },
+                        &[theme.surface],
+                    );
+                    assert_legible(
+                        name,
+                        TextSample {
+                            label: "ANSI colour",
+                            ink: *color,
+                        },
+                        &tints,
+                    );
                 }
             }
         });
@@ -849,8 +885,10 @@ mod tests {
         for_every_theme(|name, theme| {
             assert_legible(
                 name,
-                "danger",
-                theme.ansi[1],
+                TextSample {
+                    label: "danger",
+                    ink: theme.ansi[1],
+                },
                 &[theme.title_surface, theme.raised_surface],
             );
         });

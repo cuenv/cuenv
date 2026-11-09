@@ -50,9 +50,9 @@ pub(super) fn drawn_glyph(character: char, cell: CellSize) -> Option<Vec<GlyphSh
         height: cell.height.max(1),
     };
     match u32::from(character) {
-        0x2500..=0x257F => Some(box_drawing(character, cell)),
-        0x2580..=0x259F => Some(block_element(character, cell)),
-        0xE0B0..=0xE0B3 => Some(powerline(character, cell)),
+        0x2500..=0x257f => Some(box_drawing(character, cell)),
+        0x2580..=0x259f => Some(block_element(character, cell)),
+        0xe0b0..=0xe0b3 => Some(powerline(character, cell)),
         _ => None,
     }
 }
@@ -647,7 +647,7 @@ fn block_element(character: char, cell: CellSize) -> Vec<GlyphShape> {
         0x2581..=0x2588 => rect_from(whole_x, bottom(code - 0x2580))
             .into_iter()
             .collect(),
-        0x2589..=0x258F => rect_from(left(0x2590 - code), whole_y)
+        0x2589..=0x258f => rect_from(left(0x2590 - code), whole_y)
             .into_iter()
             .collect(),
         0x2590 => rect_from(right(4), whole_y).into_iter().collect(),
@@ -660,12 +660,12 @@ fn block_element(character: char, cell: CellSize) -> Vec<GlyphShape> {
         0x2597 => quadrants(&[LowerRight]),
         0x2598 => quadrants(&[UpperLeft]),
         0x2599 => quadrants(&[UpperLeft, LowerLeft, LowerRight]),
-        0x259A => quadrants(&[UpperLeft, LowerRight]),
-        0x259B => quadrants(&[UpperLeft, UpperRight, LowerLeft]),
-        0x259C => quadrants(&[UpperLeft, UpperRight, LowerRight]),
-        0x259D => quadrants(&[UpperRight]),
-        0x259E => quadrants(&[UpperRight, LowerLeft]),
-        0x259F => quadrants(&[UpperRight, LowerLeft, LowerRight]),
+        0x259a => quadrants(&[UpperLeft, LowerRight]),
+        0x259b => quadrants(&[UpperLeft, UpperRight, LowerLeft]),
+        0x259c => quadrants(&[UpperLeft, UpperRight, LowerRight]),
+        0x259d => quadrants(&[UpperRight]),
+        0x259e => quadrants(&[UpperRight, LowerLeft]),
+        0x259f => quadrants(&[UpperRight, LowerLeft, LowerRight]),
         _ => Vec::new(),
     }
 }
@@ -759,7 +759,7 @@ mod tests {
     }
 
     fn all_arm_characters() -> impl Iterator<Item = (char, Arms)> {
-        (0x2500..=0x257F_u32).filter_map(|code| {
+        (0x2500..=0x257f_u32).filter_map(|code| {
             let character = char::from_u32(code)?;
             box_arms(character).map(|arms| (character, arms))
         })
@@ -1146,7 +1146,7 @@ mod tests {
             })
             .collect();
         assert_eq!(heights, [4, 8, 12, 16, 20, 24, 28, 32]);
-        let widths: Vec<_> = (0x2589..=0x258F_u32)
+        let widths: Vec<_> = (0x2589..=0x258f_u32)
             .map(|code| {
                 let character = char::from_u32(code).expect("block element");
                 covered(character, cell)[0].iter().filter(|on| **on).count()
@@ -1213,7 +1213,7 @@ mod tests {
             width: 1,
             height: 1,
         };
-        for code in (0x2500..=0x259F_u32).chain(0xE0B0..=0xE0B3) {
+        for code in (0x2500..=0x259f_u32).chain(0xe0b0..=0xe0b3) {
             let character = char::from_u32(code).expect("valid");
             assert!(is_drawn(character));
             let roomy = CellSize {

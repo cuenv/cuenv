@@ -1,5 +1,9 @@
-use super::*;
+use super::{
+    Input, Mapping, ParamDef, ParamType, ProjectReference, ResolvedArgs, ScriptShell,
+    ShellOptionToggle, ShellOptions, Task, TaskCacheMode, TaskGroup, TaskNode, TaskParams, Tasks,
+};
 use std::collections::HashMap;
+use std::path::Path;
 
 #[test]
 fn test_task_default_values() {
@@ -415,7 +419,7 @@ fn test_task_input_helpers_collect() {
         ..Default::default()
     };
 
-    let path_inputs: Vec<String> = task.iter_path_inputs().cloned().collect();
+    let path_inputs: Vec<String> = task.iter_path_inputs().map(str::to_owned).collect();
     assert_eq!(path_inputs, vec!["src".to_string()]);
 
     let project_refs: Vec<&ProjectReference> = task.iter_project_refs().collect();

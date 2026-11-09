@@ -7,10 +7,8 @@ use async_trait::async_trait;
 use std::sync::RwLock;
 use std::time::Duration;
 
-use super::{
-    PipelineReport,
-    progress::{LivePipelineProgress, LiveTaskProgress, LiveTaskStatus, ProgressReporter},
-};
+use super::PipelineReport;
+use super::progress::{LivePipelineProgress, LiveTaskProgress, LiveTaskStatus, ProgressReporter};
 
 /// Terminal-based progress reporter.
 ///
@@ -180,6 +178,7 @@ impl ProgressReporter for TerminalReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::TaskStatus;
     use std::time::Duration;
 
     fn current_progress(reporter: &TerminalReporter) -> LivePipelineProgress {
@@ -215,7 +214,7 @@ mod tests {
     #[test]
     fn test_format_task_line_success() {
         let progress = LiveTaskProgress::pending("build", "Build project")
-            .completed(true, Duration::from_secs(5));
+            .completed(TaskStatus::Success, Duration::from_secs(5));
         let line = TerminalReporter::format_task_line(&progress);
         assert!(line.contains("Build project"));
         assert!(line.contains("5.00s"));
@@ -249,8 +248,8 @@ mod tests {
             assert_eq!(progress.tasks[0].status, LiveTaskStatus::Running);
         }
 
-        let task =
-            LiveTaskProgress::pending("t1", "Task 1").completed(true, Duration::from_secs(1));
+        let task = LiveTaskProgress::pending("t1", "Task 1")
+            .completed(TaskStatus::Success, Duration::from_secs(1));
         reporter.task_completed(&task).await;
 
         {

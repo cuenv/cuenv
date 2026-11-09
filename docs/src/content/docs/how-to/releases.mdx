@@ -458,19 +458,18 @@ for the cuenv Rust derivations, Cuetty adds its app-specific entries, and
 includes its source and assets without including its local `target` directory.
 To change what the flake builds from, update that file.
 
-Two details keep the set exact. The fileset names files and trees, never a
-predicate over whatever happens to be in the directory. And crane receives
-the filtered tree as a plain store path, because for a filtered source it
+Two details keep the set exact. The fileset names files and trees, then removes
+Cargo `target` directories from those entries. Crane receives the filtered tree
+as a plain store path, because for a filtered source it
 looks for manifests and lockfiles in the unfiltered directory, which would
 pull in any other Cargo project in the checkout.
 
 `ci.flake-source-check` runs in the `sync-check` pipeline and proves the
 contract: it evaluates the derivation path of every package and check in an
 exec root (`ci.flake-drv-paths`) and in the checkout, and fails if any
-differ. Locally the check also fails when a listed tree holds untracked or
-ignored files, such as a `target/` directory under `crates/`, because task
-input globs do not consult `.gitignore`; those files reach the exec root and
-change the hashes there too.
+differ. Task input globs do not consult `.gitignore`: Cargo `target` directories
+are filtered out of the Nix sources, but other untracked or ignored files in a
+listed tree can still reach the exec root and change its derivation paths.
 
 ## A realistic workflow
 

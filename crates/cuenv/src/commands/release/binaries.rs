@@ -1,8 +1,8 @@
 //! Binary release command orchestration.
 
 use cuenv_release::{
-    CargoManifest, GitHubBackendConfig, HomebrewBackendConfig, OrchestratorConfig, ReleaseBackend,
-    ReleaseConfig, ReleaseOrchestrator, ReleasePhase, ReleaseReport, Target,
+    CargoManifest, OrchestratorConfig, ReleaseBackend, ReleaseConfig, ReleaseOrchestrator,
+    ReleasePhase, ReleaseReport, Target,
 };
 use std::fmt::Write;
 use std::path::Path;
@@ -103,7 +103,7 @@ pub async fn execute_release_binaries(opts: ReleaseBinariesOptions) -> cuenv_cor
 
     let root = Path::new(&path);
     let manifest = CargoManifest::new(root);
-    let release_config = super::load_release_config(root)?;
+    let release_config = super::implementation::load_release_config(root)?;
     let release_version = release_binary_version(version, &manifest)?;
     let binary_name = release_binary_name(&manifest, release_config.binary.as_deref())?;
     let release_targets = release_binary_targets(targets.as_deref(), &release_config.targets)?;
@@ -112,8 +112,12 @@ pub async fn execute_release_binaries(opts: ReleaseBinariesOptions) -> cuenv_cor
         .with_output_dir("target/release-artifacts")
         .with_dry_run(dry_run);
     let phase = release_binary_phase(phase);
-    let backends =
-        release_binary_backends(root, &binary_name, backends.as_deref(), &release_config);
+    let backends = release_binary_backends(BinaryBackendsInput {
+        root,
+        binary_name: &binary_name,
+        filter: backends.as_deref(),
+        config: &release_config,
+    });
     let report = run_release_binaries(config, backends, phase).await?;
 
     Ok(format_release_binaries_output(&ReleaseBinariesOutput {
@@ -147,7 +151,7 @@ fn release_binary_name(
     }
 
     manifest
-        .get_package_names()
+        .package_names()
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to read packages: {e}")))?
         .into_iter()
         .next()
@@ -186,36 +190,34 @@ const fn release_binary_phase(phase: ReleaseBinariesPhase) -> ReleasePhase {
     }
 }
 
-fn release_binary_backends(
-    root: &Path,
-    binary_name: &str,
-    filter: Option<&[String]>,
-    config: &ReleaseConfig,
-) -> Vec<Box<dyn ReleaseBackend>> {
+#[derive(Clone, Copy)]
+struct BinaryBackendsInput<'input> {
+    root: &'input Path,
+    binary_name: &'input str,
+    filter: Option<&'input [String]>,
+    config: &'input ReleaseConfig,
+}
+
+fn release_binary_backends(input: BinaryBackendsInput<'_>) -> Vec<Box<dyn ReleaseBackend>> {
+    let BinaryBackendsInput {
+        root,
+        binary_name,
+        filter,
+        config,
+    } = input;
     let mut backends: Vec<Box<dyn ReleaseBackend>> = Vec::new();
-    let configured_backends = config.backends.is_some();
 
     #[cfg(feature = "github")]
-    add_github_release_backend(
-        &mut backends,
-        root,
-        configured_backends,
-        config.backends.as_ref().and_then(|b| b.github.as_ref()),
-        &config.git.tag_prefix,
-    );
+    add_github_release_backend(&mut backends, root, config);
     #[cfg(not(feature = "github"))]
     let _ = root;
 
     #[cfg(feature = "homebrew")]
-    add_homebrew_release_backend(
-        &mut backends,
-        binary_name,
-        configured_backends,
-        config.backends.as_ref().and_then(|b| b.homebrew.as_ref()),
-        &config.git.tag_prefix,
-    );
+    add_homebrew_release_backend(&mut backends, binary_name, config);
     #[cfg(not(feature = "homebrew"))]
     let _ = binary_name;
+    #[cfg(not(any(feature = "github", feature = "homebrew")))]
+    let _ = config;
 
     if let Some(filter) = filter {
         let filter_lower: Vec<String> = filter.iter().map(|s| s.to_lowercase()).collect();
@@ -229,11 +231,10 @@ fn release_binary_backends(
 fn add_github_release_backend(
     backends: &mut Vec<Box<dyn ReleaseBackend>>,
     root: &Path,
-    configured_backends: bool,
-    config: Option<&GitHubBackendConfig>,
-    tag_prefix: &str,
+    release: &ReleaseConfig,
 ) {
-    if configured_backends && config.is_none() {
+    let config = release.backends.as_ref().and_then(|b| b.github.as_ref());
+    if release.backends.is_some() && config.is_none() {
         return;
     }
     if config.is_some_and(|cfg| !cfg.assets) {
@@ -248,9 +249,9 @@ fn add_github_release_backend(
 
         if let Some((owner, repo)) = repo {
             let draft = config.is_some_and(|cfg| cfg.draft);
-            let config = cuenv_github::GitHubReleaseConfig::new(&owner, &repo, token)
-                .with_draft(draft)
-                .with_tag_prefix(tag_prefix);
+            let mut config = cuenv_github::GitHubReleaseConfig::new(&owner, &repo, token)
+                .with_tag_prefix(&release.git.tag_prefix);
+            config.draft = draft;
             backends.push(Box::new(cuenv_github::GitHubReleaseBackend::new(config)));
         }
     }
@@ -260,11 +261,10 @@ fn add_github_release_backend(
 fn add_homebrew_release_backend(
     backends: &mut Vec<Box<dyn ReleaseBackend>>,
     binary_name: &str,
-    configured_backends: bool,
-    config: Option<&HomebrewBackendConfig>,
-    tag_prefix: &str,
+    release: &ReleaseConfig,
 ) {
-    if configured_backends && config.is_none() {
+    let config = release.backends.as_ref().and_then(|b| b.homebrew.as_ref());
+    if release.backends.is_some() && config.is_none() {
         return;
     }
     let token_env = config.map_or("HOMEBREW_TAP_TOKEN", |cfg| cfg.token_env.as_str());
@@ -286,7 +286,7 @@ fn add_homebrew_release_backend(
         .with_license("AGPL-3.0-or-later")
         .with_homepage(format!("https://github.com/{binary_name}"))
         .with_token_env(token_env)
-        .with_tag_prefix(tag_prefix);
+        .with_tag_prefix(&release.git.tag_prefix);
     backends.push(Box::new(cuenv_homebrew::HomebrewBackend::new(config)));
 }
 
@@ -302,11 +302,11 @@ async fn run_release_binaries(
         .map_err(|e| cuenv_core::Error::configuration(format!("Release failed: {e}")))
 }
 
-struct ReleaseBinariesOutput<'a> {
+struct ReleaseBinariesOutput<'output> {
     dry_run: cuenv_core::DryRun,
-    binary_name: &'a str,
-    release_version: &'a str,
-    report: &'a ReleaseReport,
+    binary_name: &'output str,
+    release_version: &'output str,
+    report: &'output ReleaseReport,
 }
 
 fn format_release_binaries_output(summary: &ReleaseBinariesOutput<'_>) -> String {

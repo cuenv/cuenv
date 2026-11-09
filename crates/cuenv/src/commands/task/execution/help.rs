@@ -1,5 +1,6 @@
-use super::{TaskExecutionContext, TaskExecutionInput};
-use crate::commands::task::rendering::{format_task_detail, render_task_tree};
+use super::context::{TaskExecutionContext, TaskExecutionInput};
+
+use crate::commands::task::rendering;
 use cuenv_core::Result;
 
 pub(super) fn maybe_render_task_help(
@@ -29,8 +30,8 @@ pub(super) fn maybe_render_task_help(
     }
 
     if subtasks.len() == 1 && subtasks[0].name == requested_task {
-        return Ok(Some(format_task_detail(subtasks[0])));
+        return Ok(Some(rendering::format_task_detail(subtasks[0])));
     }
 
-    Ok(Some(render_task_tree(subtasks, None)))
+    Ok(Some(rendering::render_task_tree(subtasks, None)))
 }

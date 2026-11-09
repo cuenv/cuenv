@@ -1,5 +1,6 @@
 use cuenv_secrets::SecretError;
-use tokio::{process::Command, sync::Mutex};
+use tokio::process::Command;
+use tokio::sync::Mutex;
 
 #[derive(Debug)]
 pub(super) struct CliResolver {

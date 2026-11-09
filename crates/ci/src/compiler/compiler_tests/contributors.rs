@@ -1,13 +1,15 @@
-use super::*;
-
+use super::{
+    ActivationCondition, BuildStage, Compiler, CompilerOptions, ContributorTask, CueTaskCondition,
+    HashMap, Pipeline, PipelineTask, Project, SecretRef, Task, TaskCondition, TaskNode, TaskRef,
+};
 #[test]
 fn test_contributor_no_condition_always_active() {
     let project = Project::new("test");
     let compiler = Compiler::new(project);
-    let ir = test_ir();
+    let ir = super::test_ir();
 
     // No `when` condition = always active
-    let contributor = test_contributor("test", None);
+    let contributor = super::test_contributor("test", None);
     assert!(compiler.cue_contributor_is_active(&contributor, &ir));
 }
 
@@ -15,9 +17,9 @@ fn test_contributor_no_condition_always_active() {
 fn test_contributor_always_true_active() {
     let project = Project::new("test");
     let compiler = Compiler::new(project);
-    let ir = test_ir();
+    let ir = super::test_ir();
 
-    let contributor = test_contributor(
+    let contributor = super::test_contributor(
         "test",
         Some(ActivationCondition {
             always: Some(true),
@@ -29,19 +31,126 @@ fn test_contributor_always_true_active() {
 
 #[test]
 fn test_contributor_always_false_inactive() {
-    let project = Project::new("test");
+    use cuenv_core::manifest::{NixRuntime, Runtime};
+
+    let mut project = Project::new("test");
+    project.runtime = Some(Runtime::Nix(NixRuntime::default()));
     let compiler = Compiler::new(project);
-    let ir = test_ir();
+    let ir = super::test_ir();
 
     // always: false explicitly disables the contributor
-    let contributor = test_contributor(
+    let contributor = super::test_contributor(
         "test",
         Some(ActivationCondition {
             always: Some(false),
+            runtime_type: vec!["nix".to_string()],
             ..Default::default()
         }),
     );
     assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
+}
+
+#[test]
+fn always_true_still_requires_other_conditions() {
+    use cuenv_core::manifest::{NixRuntime, Runtime};
+
+    let contributor = super::test_contributor(
+        "nix",
+        Some(ActivationCondition {
+            always: Some(true),
+            runtime_type: vec!["nix".to_string()],
+            ..Default::default()
+        }),
+    );
+    let ir = super::test_ir();
+    assert!(
+        !Compiler::new(Project::new("without-nix")).cue_contributor_is_active(&contributor, &ir)
+    );
+
+    let mut project = Project::new("with-nix");
+    project.runtime = Some(Runtime::Nix(NixRuntime::default()));
+    assert!(Compiler::new(project).cue_contributor_is_active(&contributor, &ir));
+}
+
+#[test]
+fn service_conditions_check_presence_and_primary_commands() {
+    use cuenv_core::manifest::{Command, Entrypoint, Script, Service};
+
+    let ir = super::test_ir();
+    let empty = Compiler::new(Project::new("empty"));
+    for (presence, expected) in [(Some(true), false), (Some(false), true), (None, true)] {
+        let contributor = super::test_contributor(
+            "service",
+            Some(ActivationCondition {
+                has_service: presence,
+                ..Default::default()
+            }),
+        );
+        assert_eq!(empty.cue_contributor_is_active(&contributor, &ir), expected);
+    }
+
+    let mut project = Project::new("with-service");
+    project.services.insert(
+        "database".to_string(),
+        Service {
+            entrypoint: Entrypoint::Command(Command {
+                command: "env MODE=dev redis-server --port 1234".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    project.services.insert(
+        "script".to_string(),
+        Service {
+            entrypoint: Entrypoint::Script(Script {
+                script: "redis-server".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let compiler = Compiler::new(project);
+    for (presence, commands, expected) in [
+        (Some(true), vec!["redis-server"], true),
+        (Some(true), vec!["postgres", "redis-server"], true),
+        (Some(true), vec!["postgres"], false),
+        (Some(false), vec![], false),
+    ] {
+        let contributor = super::test_contributor(
+            "service",
+            Some(ActivationCondition {
+                has_service: presence,
+                service_command: commands.into_iter().map(str::to_string).collect(),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            compiler.cue_contributor_is_active(&contributor, &ir),
+            expected
+        );
+    }
+
+    let mut script_only = Project::new("script-only");
+    script_only.services.insert(
+        "script".to_string(),
+        Service {
+            entrypoint: Entrypoint::Script(Script {
+                script: "redis-server".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let contributor = super::test_contributor(
+        "service",
+        Some(ActivationCondition {
+            has_service: Some(true),
+            service_command: vec!["redis-server".to_string()],
+            ..Default::default()
+        }),
+    );
+    assert!(!Compiler::new(script_only).cue_contributor_is_active(&contributor, &ir));
 }
 
 #[test]
@@ -52,9 +161,9 @@ fn test_contributor_runtime_type_matches_nix() {
     project.runtime = Some(Runtime::Nix(NixRuntime::default()));
 
     let compiler = Compiler::new(project);
-    let ir = test_ir();
+    let ir = super::test_ir();
 
-    let contributor = test_contributor(
+    let contributor = super::test_contributor(
         "nix",
         Some(ActivationCondition {
             runtime_type: vec!["nix".to_string()],
@@ -72,10 +181,10 @@ fn test_contributor_runtime_type_no_match() {
     project.runtime = Some(Runtime::Nix(NixRuntime::default()));
 
     let compiler = Compiler::new(project);
-    let ir = test_ir();
+    let ir = super::test_ir();
 
     // Project has Nix runtime, but condition requires "devenv"
-    let contributor = test_contributor(
+    let contributor = super::test_contributor(
         "devenv-only",
         Some(ActivationCondition {
             runtime_type: vec!["devenv".to_string()],
@@ -89,10 +198,10 @@ fn test_contributor_runtime_type_no_match() {
 fn test_contributor_runtime_type_no_runtime_set() {
     let project = Project::new("test");
     let compiler = Compiler::new(project);
-    let ir = test_ir();
+    let ir = super::test_ir();
 
     // No runtime set but condition requires runtime type
-    let contributor = test_contributor(
+    let contributor = super::test_contributor(
         "needs-nix",
         Some(ActivationCondition {
             runtime_type: vec!["nix".to_string()],
@@ -100,6 +209,144 @@ fn test_contributor_runtime_type_no_runtime_set() {
         }),
     );
     assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
+}
+
+#[test]
+fn task_labels_match_any_label_on_a_selected_pipeline_task() {
+    for (labels, expected) in [
+        (vec!["test"], true),
+        (vec!["coverage"], true),
+        (vec!["lint"], false),
+        (vec![], false),
+    ] {
+        let mut project = Project::new("test");
+        project.tasks.insert(
+            "selected".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "echo".to_string(),
+                labels: labels.into_iter().map(str::to_string).collect(),
+                ..Default::default()
+            })),
+        );
+        project.tasks.insert(
+            "unselected".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "echo".to_string(),
+                labels: vec!["coverage".to_string()],
+                ..Default::default()
+            })),
+        );
+        let pipeline = Pipeline {
+            tasks: vec![PipelineTask::Simple(TaskRef::from_name("selected"))],
+            ..Default::default()
+        };
+        let compiler = Compiler::with_options(
+            project,
+            CompilerOptions {
+                pipeline: Some(pipeline),
+                ..Default::default()
+            },
+        );
+        let contributor = super::test_contributor(
+            "coverage",
+            Some(ActivationCondition {
+                task_labels: vec!["test".to_string(), "coverage".to_string()],
+                ..Default::default()
+            }),
+        );
+        let ir = compiler.compile().unwrap();
+        assert_eq!(
+            compiler.cue_contributor_is_active(&contributor, &ir),
+            expected
+        );
+    }
+}
+
+#[test]
+fn task_conditions_follow_selected_groups_sequences_and_dependencies() {
+    use cuenv_core::tasks::{TaskDependency, TaskGroup};
+
+    let task = |command: &str, args: &[&str], labels: &[&str]| {
+        TaskNode::Task(Box::new(Task {
+            command: command.to_string(),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            labels: labels.iter().map(|label| (*label).to_string()).collect(),
+            ..Default::default()
+        }))
+    };
+    let group = |children: HashMap<String, TaskNode>| {
+        TaskNode::Group(TaskGroup {
+            type_: "group".to_string(),
+            depends_on: vec![],
+            max_concurrency: None,
+            description: None,
+            children,
+        })
+    };
+    let mut selected = Task {
+        command: "cargo".to_string(),
+        args: vec!["test".to_string()],
+        labels: vec!["test".to_string()],
+        ..Default::default()
+    };
+    selected
+        .depends_on
+        .push(TaskDependency::from_name("prepare"));
+    let mut project = Project::new("test");
+    project.tasks.insert(
+        "group".to_string(),
+        group(HashMap::from([(
+            "nested".to_string(),
+            group(HashMap::from([(
+                "check".to_string(),
+                TaskNode::Task(Box::new(selected)),
+            )])),
+        )])),
+    );
+    project.tasks.insert(
+        "sequence".to_string(),
+        TaskNode::Sequence(vec![task("gh", &["models"], &["integration"])]),
+    );
+    project.tasks.insert(
+        "prepare".to_string(),
+        task("coverage-tool", &[], &["coverage"]),
+    );
+    project.tasks.insert(
+        "unrelated".to_string(),
+        task("unrelated-tool", &[], &["unrelated"]),
+    );
+
+    for (entry, commands, labels, expected) in [
+        ("group", vec!["cargo", "test"], vec!["test"], true),
+        ("group", vec!["coverage-tool"], vec!["coverage"], true),
+        ("sequence", vec!["gh", "models"], vec!["integration"], true),
+        ("group", vec!["unrelated-tool"], vec![], false),
+        ("group", vec![], vec!["unrelated"], false),
+    ] {
+        let compiler = Compiler::with_options(
+            project.clone(),
+            CompilerOptions {
+                pipeline: Some(Pipeline {
+                    tasks: vec![PipelineTask::Simple(TaskRef::from_name(entry))],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let ir = compiler.compile().unwrap();
+        let contributor = super::test_contributor(
+            "conditional",
+            Some(ActivationCondition {
+                task_command: commands.into_iter().map(str::to_string).collect(),
+                task_labels: labels.into_iter().map(str::to_string).collect(),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            compiler.cue_contributor_is_active(&contributor, &ir),
+            expected
+        );
+    }
 }
 
 #[test]
@@ -125,9 +372,9 @@ fn test_contributor_cuenv_source_matches() {
     }
 
     let compiler = Compiler::new(project);
-    let ir = test_ir();
+    let ir = super::test_ir();
 
-    let contributor = test_contributor(
+    let contributor = super::test_contributor(
         "cuenv-git",
         Some(ActivationCondition {
             cuenv_source: vec!["git".to_string()],
@@ -218,10 +465,10 @@ fn test_contributor_multiple_conditions_and_logic() {
     project.runtime = Some(Runtime::Nix(NixRuntime::default()));
 
     let compiler = Compiler::new(project);
-    let ir = test_ir();
+    let ir = super::test_ir();
 
     // Condition requires nix runtime AND devenv source (which doesn't match)
-    let contributor = test_contributor(
+    let contributor = super::test_contributor(
         "multi-condition",
         Some(ActivationCondition {
             runtime_type: vec!["nix".to_string()],
@@ -259,7 +506,7 @@ fn test_contributor_task_to_ir_command() {
         provider: None,
     };
 
-    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "github");
+    let ir_task = super::test_compiler().contributor_task_to_ir(&contributor_task, "github");
 
     assert_eq!(ir_task.id, "cuenv:contributor:test-task");
     // Commands are wrapped with cuenv exec for tool activation
@@ -294,7 +541,7 @@ fn test_contributor_task_to_ir_script() {
         provider: None,
     };
 
-    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "github");
+    let ir_task = super::test_compiler().contributor_task_to_ir(&contributor_task, "github");
 
     assert_eq!(ir_task.id, "cuenv:contributor:script-task");
     assert_eq!(ir_task.command, vec!["echo line1\necho line2"]);
@@ -345,7 +592,7 @@ fn test_contributor_task_to_ir_github_action() {
         }),
     };
 
-    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "nix");
+    let ir_task = super::test_compiler().contributor_task_to_ir(&contributor_task, "nix");
 
     assert_eq!(
         ir_task
@@ -410,7 +657,7 @@ fn test_contributor_task_to_ir_secrets() {
         provider: None,
     };
 
-    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "github");
+    let ir_task = super::test_compiler().contributor_task_to_ir(&contributor_task, "github");
 
     assert_eq!(ir_task.secrets.len(), 2);
     assert_eq!(ir_task.phase, Some(BuildStage::Setup));
@@ -452,7 +699,7 @@ fn test_contributor_task_to_ir_env_vars() {
         provider: None,
     };
 
-    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "github");
+    let ir_task = super::test_compiler().contributor_task_to_ir(&contributor_task, "github");
 
     assert_eq!(ir_task.env.len(), 2);
     assert_eq!(ir_task.env.get("VAR1"), Some(&"value1".to_string()));
@@ -482,7 +729,7 @@ fn test_contributor_task_to_ir_command_with_args() {
         provider: None,
     };
 
-    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "bun.workspace");
+    let ir_task = super::test_compiler().contributor_task_to_ir(&contributor_task, "bun.workspace");
 
     assert_eq!(ir_task.id, "cuenv:contributor:bun.workspace.install");
     // Commands are wrapped with cuenv exec for tool activation
@@ -519,7 +766,7 @@ fn test_contributor_task_to_ir_cuenv_contributor_not_wrapped() {
         provider: None,
     };
 
-    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "cuenv");
+    let ir_task = super::test_compiler().contributor_task_to_ir(&contributor_task, "cuenv");
 
     assert_eq!(ir_task.id, "cuenv:contributor:cuenv.setup");
     // Should NOT be wrapped - cuenv contributor tasks set up cuenv itself
@@ -555,7 +802,7 @@ fn test_contributor_task_to_ir_cuenv_command_with_args_not_wrapped() {
         provider: None,
     };
 
-    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "1password");
+    let ir_task = super::test_compiler().contributor_task_to_ir(&contributor_task, "1password");
 
     assert_eq!(ir_task.id, "cuenv:contributor:1password.setup");
     assert_eq!(
@@ -589,7 +836,7 @@ fn test_contributor_task_to_ir_bootstrap_not_wrapped() {
         provider: None,
     };
 
-    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "rust");
+    let ir_task = super::test_compiler().contributor_task_to_ir(&contributor_task, "rust");
 
     assert_eq!(ir_task.id, "cuenv:contributor:setup.rust");
     // Should NOT be wrapped - bootstrap tasks run before cuenv.setup
@@ -694,8 +941,8 @@ fn test_contributor_secrets_provider_uses_base_env_without_pipeline_environment(
         )]),
     });
     let compiler = Compiler::new(project);
-    let contributor = test_contributor("1password", Some(secrets_provider_condition()));
-    assert!(compiler.cue_contributor_is_active(&contributor, &test_ir()));
+    let contributor = super::test_contributor("1password", Some(secrets_provider_condition()));
+    assert!(compiler.cue_contributor_is_active(&contributor, &super::test_ir()));
 }
 
 #[test]
@@ -705,15 +952,15 @@ fn test_contributor_secrets_provider_uses_infrastructure_secrets() {
         "state": {"d1": {"token": {"resolver": "onepassword", "ref": "op://vault/item/field"}}},
     }));
     let compiler = Compiler::new(project);
-    let contributor = test_contributor("1password", Some(secrets_provider_condition()));
-    assert!(compiler.cue_contributor_is_active(&contributor, &test_ir()));
+    let contributor = super::test_contributor("1password", Some(secrets_provider_condition()));
+    assert!(compiler.cue_contributor_is_active(&contributor, &super::test_ir()));
 
     let mut project = Project::new("test");
     project.infrastructure = Some(serde_json::json!({
         "state": {"turso": {"url": "http://127.0.0.1:8080", "token": "plain"}},
     }));
     let compiler = Compiler::new(project);
-    assert!(!compiler.cue_contributor_is_active(&contributor, &test_ir()));
+    assert!(!compiler.cue_contributor_is_active(&contributor, &super::test_ir()));
 }
 
 #[test]
@@ -730,6 +977,6 @@ fn test_contributor_secrets_provider_uses_resource_argument_secrets() {
         }},
     }));
     let compiler = Compiler::new(project);
-    let contributor = test_contributor("1password", Some(secrets_provider_condition()));
-    assert!(compiler.cue_contributor_is_active(&contributor, &test_ir()));
+    let contributor = super::test_contributor("1password", Some(secrets_provider_condition()));
+    assert!(compiler.cue_contributor_is_active(&contributor, &super::test_ir()));
 }

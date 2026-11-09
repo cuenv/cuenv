@@ -28,8 +28,6 @@ pub fn evaluate_rules_file(file_path: &Path) -> Result<DirectoryRules> {
 
 #[cfg(test)]
 mod tests {
-    use super::evaluate_rules_file;
-
     #[test]
     fn evaluates_imports_and_schema_without_loading_the_project()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -53,7 +51,7 @@ mod tests {
             &file,
             "package cuenv\nimport \"example.org/rules/rules\"\nrules.#DirectoryRules\n",
         )?;
-        let result = evaluate_rules_file(&file)?;
+        let result = super::evaluate_rules_file(&file)?;
         assert_eq!(
             result
                 .ignore
@@ -66,7 +64,7 @@ mod tests {
             &file,
             "package cuenv\nimport \"example.org/rules/rules\"\nrules.#DirectoryRules & {ignore: git: [\"wrong/\"]}\n",
         )?;
-        let failure = evaluate_rules_file(&file).expect_err("schema mismatch must fail");
+        let failure = super::evaluate_rules_file(&file).expect_err("schema mismatch must fail");
         assert!(failure.to_string().contains(".rules.cue"));
         Ok(())
     }

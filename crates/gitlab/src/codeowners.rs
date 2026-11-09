@@ -37,7 +37,6 @@ mod tests {
     use cuenv_codeowners::Rule;
     use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
     use std::fs;
-    use tempfile::tempdir;
 
     #[test]
     fn test_gitlab_provider_output_path() {
@@ -53,7 +52,7 @@ mod tests {
 
     #[test]
     fn test_gitlab_sync_creates_file() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitLabCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -62,7 +61,13 @@ mod tests {
             vec![Rule::new("*.rs", ["@backend-team"])],
         )];
 
-        let result = provider.sync(temp.path(), &projects, false).unwrap();
+        let result = provider
+            .sync(
+                temp.path(),
+                &projects,
+                cuenv_codeowners::provider::WriteMode::Write,
+            )
+            .unwrap();
 
         assert_eq!(result.status, SyncStatus::Created);
         // GitLab uses CODEOWNERS at repo root
@@ -77,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_gitlab_uses_section_syntax() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitLabCodeOwnersProvider;
 
         let projects = vec![
@@ -93,7 +98,13 @@ mod tests {
             ),
         ];
 
-        let result = provider.sync(temp.path(), &projects, false).unwrap();
+        let result = provider
+            .sync(
+                temp.path(),
+                &projects,
+                cuenv_codeowners::provider::WriteMode::Write,
+            )
+            .unwrap();
 
         // GitLab uses [Section] syntax, not # Section
         assert!(
@@ -109,7 +120,7 @@ mod tests {
 
     #[test]
     fn test_gitlab_sync_dry_run() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitLabCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -118,7 +129,13 @@ mod tests {
             vec![Rule::new("*.rs", ["@backend-team"])],
         )];
 
-        let result = provider.sync(temp.path(), &projects, true).unwrap();
+        let result = provider
+            .sync(
+                temp.path(),
+                &projects,
+                cuenv_codeowners::provider::WriteMode::DryRun,
+            )
+            .unwrap();
 
         assert_eq!(result.status, SyncStatus::WouldCreate);
         assert!(!result.path.exists());
@@ -126,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_gitlab_check_in_sync() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitLabCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -136,7 +153,13 @@ mod tests {
         )];
 
         // Sync first
-        provider.sync(temp.path(), &projects, false).unwrap();
+        provider
+            .sync(
+                temp.path(),
+                &projects,
+                cuenv_codeowners::provider::WriteMode::Write,
+            )
+            .unwrap();
 
         // Check should report in sync
         let result = provider.check(temp.path(), &projects).unwrap();
@@ -145,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_gitlab_check_out_of_sync() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitLabCodeOwnersProvider;
 
         // Create file with different content
@@ -163,10 +186,14 @@ mod tests {
 
     #[test]
     fn test_gitlab_empty_projects_error() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitLabCodeOwnersProvider;
 
-        let result = provider.sync(temp.path(), &[], false);
+        let result = provider.sync(
+            temp.path(),
+            &[],
+            cuenv_codeowners::provider::WriteMode::Write,
+        );
         assert!(result.is_err());
     }
 }

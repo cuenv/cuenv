@@ -8,14 +8,20 @@ use std::collections::{HashMap, HashSet};
 pub use crate::error::ValidationError;
 
 /// Validator for IR documents
-pub struct IrValidator<'a> {
-    ir: &'a IntermediateRepresentation,
+pub struct IrValidator<'ir> {
+    ir: &'ir IntermediateRepresentation,
 }
 
-impl<'a> IrValidator<'a> {
+#[derive(Default)]
+struct CycleSearch {
+    visited: HashSet<String>,
+    stack: HashSet<String>,
+}
+
+impl<'ir> IrValidator<'ir> {
     /// Create a new validator for the given IR
     #[must_use]
-    pub const fn new(ir: &'a IntermediateRepresentation) -> Self {
+    pub const fn new(ir: &'ir IntermediateRepresentation) -> Self {
         Self { ir }
     }
 
@@ -111,13 +117,11 @@ impl<'a> IrValidator<'a> {
 
     /// Validate task graph has no cycles using DFS
     fn validate_no_cycles(&self, task_index: &HashMap<&str, &Task>) -> Result<(), ValidationError> {
-        let mut visited = HashSet::new();
-        let mut rec_stack = HashSet::new();
+        let mut search = CycleSearch::default();
 
         for task in &self.ir.tasks {
-            if !visited.contains(task.id.as_str())
-                && let Some(cycle) =
-                    Self::detect_cycle(task.id.as_str(), task_index, &mut visited, &mut rec_stack)
+            if !search.visited.contains(task.id.as_str())
+                && let Some(cycle) = Self::detect_cycle(task.id.as_str(), task_index, &mut search)
             {
                 return Err(ValidationError::CyclicDependency(cycle));
             }
@@ -130,26 +134,25 @@ impl<'a> IrValidator<'a> {
     fn detect_cycle(
         task_id: &str,
         task_index: &HashMap<&str, &Task>,
-        visited: &mut HashSet<String>,
-        rec_stack: &mut HashSet<String>,
+        search: &mut CycleSearch,
     ) -> Option<String> {
-        visited.insert(task_id.to_string());
-        rec_stack.insert(task_id.to_string());
+        search.visited.insert(task_id.to_string());
+        search.stack.insert(task_id.to_string());
 
         if let Some(task) = task_index.get(task_id) {
             for dep in &task.depends_on {
-                if !visited.contains(dep.as_str()) {
-                    if let Some(cycle) = Self::detect_cycle(dep, task_index, visited, rec_stack) {
+                if !search.visited.contains(dep.as_str()) {
+                    if let Some(cycle) = Self::detect_cycle(dep, task_index, search) {
                         return Some(format!("{task_id} -> {cycle}"));
                     }
-                } else if rec_stack.contains(dep.as_str()) {
+                } else if search.stack.contains(dep.as_str()) {
                     // Found a cycle
                     return Some(format!("{task_id} -> {dep}"));
                 }
             }
         }
 
-        rec_stack.remove(task_id);
+        search.stack.remove(task_id);
         None
     }
 

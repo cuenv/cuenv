@@ -116,7 +116,7 @@ impl TaskGraph {
             // Apply group-level dependencies to each subtask
             if !group.depends_on.is_empty() {
                 for node_idx in &task_nodes {
-                    if let Some(node) = self.inner.get_node_mut(*node_idx) {
+                    if let Some(node) = self.inner.node_mut(*node_idx) {
                         for dep in &group.depends_on {
                             node.task.add_dependency(dep.task_name().to_string());
                         }

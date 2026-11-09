@@ -136,7 +136,11 @@ impl Commands {
                 help,
                 skip_dependencies,
                 continue_on_error,
-                dry_run: dry_run.into(),
+                dry_run: if dry_run {
+                    cuenv_core::DryRun::Yes
+                } else {
+                    cuenv_core::DryRun::No
+                },
                 task_args,
             },
             _ => unreachable!("task command conversion called for another command family"),
@@ -148,6 +152,8 @@ impl Commands {
             Self::Env { subcommand } => env_command(subcommand, environment),
             Self::Shell { subcommand } => match subcommand {
                 ShellCommands::Init { shell } => Command::ShellInit { shell },
+                ShellCommands::Session { current } => Command::ShellSession { current },
+                ShellCommands::Refresh => Command::ShellRefresh,
             },
             Self::Changeset { subcommand } => changeset_command(subcommand),
             Self::Release { subcommand } => release_command(subcommand),
@@ -248,6 +254,19 @@ impl Commands {
 
 fn env_command(subcommand: EnvCommands, environment: Option<String>) -> Command {
     match subcommand {
+        EnvCommands::Recover {
+            list,
+            directory_key,
+            instance_hash,
+            run_id,
+            drained,
+        } => Command::EnvRecover {
+            list,
+            directory_key,
+            instance_hash,
+            run_id,
+            drained,
+        },
         EnvCommands::Print {
             path,
             package,
@@ -333,17 +352,29 @@ fn release_command(subcommand: ReleaseCommands) -> Command {
         } => Command::ReleasePrepare {
             path,
             since,
-            dry_run: dry_run.into(),
+            dry_run: if dry_run {
+                cuenv_core::DryRun::Yes
+            } else {
+                cuenv_core::DryRun::No
+            },
             branch,
             no_pr,
         },
         ReleaseCommands::Version { path, dry_run } => Command::ReleaseVersion {
             path,
-            dry_run: dry_run.into(),
+            dry_run: if dry_run {
+                cuenv_core::DryRun::Yes
+            } else {
+                cuenv_core::DryRun::No
+            },
         },
         ReleaseCommands::Publish { path, dry_run } => Command::ReleasePublish {
             path,
-            dry_run: dry_run.into(),
+            dry_run: if dry_run {
+                cuenv_core::DryRun::Yes
+            } else {
+                cuenv_core::DryRun::No
+            },
         },
         ReleaseCommands::Binaries {
             path,
@@ -356,7 +387,11 @@ fn release_command(subcommand: ReleaseCommands) -> Command {
             version,
         } => Command::ReleaseBinaries {
             path,
-            dry_run: dry_run.into(),
+            dry_run: if dry_run {
+                cuenv_core::DryRun::Yes
+            } else {
+                cuenv_core::DryRun::No
+            },
             backends: backend,
             build_only,
             package_only,
@@ -638,8 +673,9 @@ fn infrastructure_command(
     use super::{InfrastructureProviderCommands, InfrastructureStateCommands};
     use crate::commands::infrastructure::{
         ConfirmationPolicy, FenceRelease, Identity, InfrastructureAction, LockListing,
-        MigrateRequest, MigrationDirection, MigrationScope, ProviderAction, RenameSource,
-        SeparateState, SourceEnvironment, SourceUpgrade, StateAction, UnlockScope,
+        MigrateRequest, MigrationDirection, MigrationMaintenance, MigrationPhysicalIdentities,
+        MigrationScope, ProviderAction, RenameSource, SeparateState, SourceEnvironment,
+        SourceUpgrade, StateAction, UnlockScope,
     };
     use cuenv_infrastructure::{BackendMismatch, ChangedRecord, RecoverOverrides};
     let identity = |new_identity: bool| {
@@ -756,11 +792,22 @@ fn infrastructure_command(
                     }
                 }
                 Some(InfrastructureStateCommands::Migrate {
+                    confirm_maintenance,
+                    source_physical_identity,
+                    target_physical_identity,
                     all,
                     upgrade_source,
                     rollback,
                     copy_back,
                 }) => StateAction::Migrate(MigrateRequest {
+                    maintenance: if confirm_maintenance {
+                        MigrationMaintenance::Confirmed
+                    } else {
+                        MigrationMaintenance::Unconfirmed
+                    },
+                    physical_identities: source_physical_identity
+                        .zip(target_physical_identity)
+                        .map(|(source, target)| MigrationPhysicalIdentities { source, target }),
                     scope: if all {
                         MigrationScope::All
                     } else {

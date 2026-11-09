@@ -1,21 +1,21 @@
-use super::{run_oci_activate, warn_for_schema_cli_mismatch};
+use crate::{app, oci_activate};
 use cuenv::cli::{self, CliError, OkEnvelope, OutputFormat};
 use cuenv::commands::{self, Command, CommandExecutor};
 use tracing::instrument;
 
 #[derive(Clone, Copy)]
-struct InfoAsyncRequest<'a> {
-    path: Option<&'a str>,
-    package: &'a str,
+struct InfoAsyncRequest<'request> {
+    path: Option<&'request str>,
+    package: &'request str,
     meta: bool,
 }
 
 #[derive(Clone, Copy)]
-struct ChangesetAddRequest<'a> {
-    path: &'a str,
-    summary: Option<&'a str>,
-    description: Option<&'a str>,
-    packages: &'a [(String, String)],
+struct ChangesetAddRequest<'request> {
+    path: &'request str,
+    summary: Option<&'request str>,
+    description: Option<&'request str>,
+    packages: &'request [(String, String)],
 }
 
 #[derive(Clone, Copy)]
@@ -25,13 +25,13 @@ enum EnvelopeField {
 }
 
 /// Execute a command using the event-driven async path.
-#[instrument(name = "cuenv_execute_command_safe", skip(executor))]
+#[instrument(name = "cuenv_execute_command_safe", skip(command, executor))]
 pub async fn execute_command_safe(
     command: Command,
     json_format: OutputFormat,
     executor: &CommandExecutor,
 ) -> Result<(), CliError> {
-    warn_for_schema_cli_mismatch(&command)?;
+    app::warn_for_schema_cli_mismatch(&command)?;
 
     if let Some(result) = execute_direct_command(&command).await {
         return result;
@@ -77,7 +77,7 @@ async fn execute_direct_command(command: &Command) -> Option<Result<(), CliError
         Command::SecretsSetup { provider, wasm_url } => Some(
             commands::secrets::execute_secrets_setup(*provider, wasm_url.as_deref()),
         ),
-        Command::RuntimeOciActivate => Some(run_oci_activate().await),
+        Command::RuntimeOciActivate => Some(oci_activate::run_oci_activate().await),
         Command::ToolsDownload => Some(commands::tools::execute_tools_download().await),
         Command::ToolsActivate => Some(commands::tools::execute_tools_activate()),
         Command::ToolsList => Some(commands::tools::execute_tools_list()),
@@ -271,7 +271,11 @@ fn execute_changeset_command(command: &Command, json_format: OutputFormat) -> Re
             execute_changeset_add(request, json_format)
         }
         Command::ChangesetStatus { path, json } => {
-            let merged_format = OutputFormat::from_json_flag(*json || json_format.is_json());
+            let merged_format = if *json || json_format.is_json() {
+                OutputFormat::Json
+            } else {
+                OutputFormat::Text
+            };
             execute_changeset_status(path, merged_format)
         }
         Command::ChangesetFromCommits { path, since } => {
@@ -348,8 +352,10 @@ fn execute_changeset_add(
     match commands::release::execute_changeset_add(
         request.path,
         request.packages,
-        request.summary,
-        request.description,
+        commands::release::ChangesetDescription {
+            summary: request.summary,
+            description: request.description,
+        },
     ) {
         Ok(output) => print_enveloped_output(&output, json_format, EnvelopeField::Message),
         Err(e) => Err(CliError::eval_with_help(

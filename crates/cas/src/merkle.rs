@@ -6,7 +6,7 @@
 //! [`Action`](crate::message::Action) references as its `input_root_digest`.
 
 use crate::cas::Cas;
-use crate::digest::{Digest, digest_of};
+use crate::digest::Digest;
 use crate::error::{Error, Result};
 use crate::message::{Directory, DirectoryNode, FileNode, Tree};
 use crate::reapi::CanonicalMessage;
@@ -84,7 +84,11 @@ pub async fn materialize_output_tree(
         children.insert(directory_digest(&child)?, child);
     }
     fs::create_dir_all(destination).map_err(|e| Error::io(e, destination, "create_dir_all"))?;
-    materialize_tree_directory(cas, &tree.root, &children, destination).await
+    let tree_data = TreeMaterializer {
+        cas,
+        children: &children,
+    };
+    materialize_tree_directory(&tree_data, &tree.root, destination).await
 }
 
 #[async_recursion]
@@ -222,11 +226,15 @@ async fn materialize_directory(cas: &dyn Cas, dir: &Directory, destination: &Pat
     Ok(())
 }
 
+struct TreeMaterializer<'tree_materializer> {
+    cas: &'tree_materializer dyn Cas,
+    children: &'tree_materializer HashMap<Digest, Directory>,
+}
+
 #[async_recursion]
 async fn materialize_tree_directory(
-    cas: &dyn Cas,
+    tree: &TreeMaterializer<'_>,
     directory: &Directory,
-    children: &HashMap<Digest, Directory>,
     destination: &Path,
 ) -> Result<()> {
     if !directory.symlinks.is_empty() {
@@ -238,7 +246,7 @@ async fn materialize_tree_directory(
     for file in &directory.files {
         let name = safe_node_name(&file.name)?;
         let destination = destination.join(name);
-        cas.get_to_file(&file.digest, &destination).await?;
+        tree.cas.get_to_file(&file.digest, &destination).await?;
         #[cfg(unix)]
         if file.is_executable {
             use std::os::unix::fs::PermissionsExt;
@@ -252,7 +260,7 @@ async fn materialize_tree_directory(
     }
     for child in &directory.directories {
         let name = safe_node_name(&child.name)?;
-        let child_directory = children.get(&child.digest).ok_or_else(|| {
+        let child_directory = tree.children.get(&child.digest).ok_or_else(|| {
             Error::serialization(format!(
                 "output Tree is missing child directory {} ({})",
                 child.name, child.digest
@@ -261,7 +269,7 @@ async fn materialize_tree_directory(
         let destination = destination.join(name);
         fs::create_dir_all(&destination)
             .map_err(|e| Error::io(e, &destination, "create_dir_all"))?;
-        materialize_tree_directory(cas, child_directory, children, &destination).await?;
+        materialize_tree_directory(tree, child_directory, &destination).await?;
     }
     Ok(())
 }
@@ -350,7 +358,7 @@ fn is_executable(_path: &Path) -> Result<bool> {
 ///
 /// Returns an error if the [`Directory`] cannot be canonically encoded.
 pub fn directory_digest(dir: &Directory) -> Result<Digest> {
-    digest_of(dir)
+    crate::digest::digest_of(dir)
 }
 
 #[cfg(test)]

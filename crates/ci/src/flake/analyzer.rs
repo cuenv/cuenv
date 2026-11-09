@@ -73,6 +73,13 @@ pub struct FlakeLockAnalyzer {
     lock: FlakeLock,
 }
 
+#[derive(Default)]
+struct AnalysisState {
+    unlocked: Vec<UnlockedInput>,
+    hashes: Vec<String>,
+    checked: HashSet<String>,
+}
+
 impl FlakeLockAnalyzer {
     /// Create analyzer from parsed `FlakeLock`
     #[must_use]
@@ -111,54 +118,39 @@ impl FlakeLockAnalyzer {
     /// - Deterministic digest computed from all locked `narHash` values
     #[must_use]
     pub fn analyze(&self) -> PurityAnalysis {
-        let mut unlocked_inputs = Vec::new();
-        let mut locked_hashes = Vec::new();
-        let mut checked_nodes: HashSet<String> = HashSet::new();
+        let mut state = AnalysisState::default();
 
         // Get root node and check all its inputs
         if let Some(root) = self.lock.nodes.get(&self.lock.root) {
             for (input_name, input_ref) in &root.inputs {
-                self.check_input(
-                    input_name,
-                    input_ref,
-                    &mut unlocked_inputs,
-                    &mut locked_hashes,
-                    &mut checked_nodes,
-                );
+                self.check_input(input_name, input_ref, &mut state);
             }
         }
 
         // Compute deterministic digest from all locked hashes
-        let locked_digest = Self::compute_locked_digest(&locked_hashes);
+        let locked_digest = Self::compute_locked_digest(&state.hashes);
 
         PurityAnalysis {
-            is_pure: unlocked_inputs.is_empty(),
-            unlocked_inputs,
+            is_pure: state.unlocked.is_empty(),
+            unlocked_inputs: state.unlocked,
             locked_digest,
         }
     }
 
     /// Check an input reference recursively
-    fn check_input(
-        &self,
-        name: &str,
-        input_ref: &InputRef,
-        unlocked: &mut Vec<UnlockedInput>,
-        hashes: &mut Vec<String>,
-        checked: &mut HashSet<String>,
-    ) {
+    fn check_input(&self, name: &str, input_ref: &InputRef, state: &mut AnalysisState) {
         match input_ref {
             InputRef::Direct(node_name) => {
                 // Skip if already checked (handles cycles)
-                if checked.contains(node_name) {
+                if state.checked.contains(node_name) {
                     return;
                 }
-                checked.insert(node_name.clone());
+                state.checked.insert(node_name.clone());
 
                 if let Some(input) = self.lock.nodes.get(node_name) {
                     // Only check input nodes (not root)
                     if input.is_input() {
-                        self.check_input_node(name, input, unlocked, hashes, checked);
+                        self.check_input_node(name, input, state);
                     }
                 }
             }
@@ -170,7 +162,7 @@ impl FlakeLockAnalyzer {
                 {
                     // Check if the target is unlocked (has no locked section)
                     if target.is_input() && target.locked.is_none() {
-                        unlocked.push(UnlockedInput {
+                        state.unlocked.push(UnlockedInput {
                             name: name.to_string(),
                             reason: UnlockReason::FollowsUnlocked {
                                 target: target_name.clone(),
@@ -183,17 +175,10 @@ impl FlakeLockAnalyzer {
     }
 
     /// Check an input node for purity
-    fn check_input_node(
-        &self,
-        input_name: &str,
-        input: &FlakeNode,
-        unlocked: &mut Vec<UnlockedInput>,
-        hashes: &mut Vec<String>,
-        checked: &mut HashSet<String>,
-    ) {
+    fn check_input_node(&self, input_name: &str, input: &FlakeNode, state: &mut AnalysisState) {
         // Check 1: Missing locked section
         let Some(locked) = &input.locked else {
-            unlocked.push(UnlockedInput {
+            state.unlocked.push(UnlockedInput {
                 name: input_name.to_string(),
                 reason: UnlockReason::MissingLockedSection,
             });
@@ -202,7 +187,7 @@ impl FlakeLockAnalyzer {
 
         // Check 2: Missing narHash (critical for reproducibility)
         let Some(nar_hash) = &locked.nar_hash else {
-            unlocked.push(UnlockedInput {
+            state.unlocked.push(UnlockedInput {
                 name: input_name.to_string(),
                 reason: UnlockReason::MissingNarHash,
             });
@@ -221,12 +206,12 @@ impl FlakeLockAnalyzer {
         }
 
         // Input is properly locked - add hash to list
-        hashes.push(nar_hash.clone());
+        state.hashes.push(nar_hash.clone());
 
         // Recursively check transitive inputs
         for (sub_name, sub_ref) in &input.inputs {
             let full_name = format!("{input_name}/{sub_name}");
-            self.check_input(&full_name, sub_ref, unlocked, hashes, checked);
+            self.check_input(&full_name, sub_ref, state);
         }
     }
 

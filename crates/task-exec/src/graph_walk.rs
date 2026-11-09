@@ -78,6 +78,16 @@ pub struct WalkSummary<O> {
     pub failed: usize,
 }
 
+/// Operations used to prepare and execute nodes and translate join errors.
+pub struct WalkCallbacks<P, F, J> {
+    /// Prepare a node using outcomes from earlier dependency levels.
+    pub prepare_node: P,
+    /// Run a prepared node.
+    pub run_node: F,
+    /// Convert a task join error into the caller's error type.
+    pub from_join_error: J,
+}
+
 /// Walk `graph` by parallel groups, preparing each node via
 /// `prepare_node` and running it via `run_node`, respecting the
 /// supplied [`WalkPolicy`].
@@ -97,12 +107,10 @@ pub struct WalkSummary<O> {
 ///
 /// Propagates the first `E` returned by `prepare_node` or `run_node`,
 /// or a `JoinError` wrapped via the user-supplied `from_join_error`.
-pub async fn walk_parallel_graph<T, O, E, P, F, Fut>(
+pub async fn walk_parallel_graph<T, O, E, P, F, Fut, J>(
     graph: &TaskGraph<T>,
     policy: WalkPolicy,
-    mut prepare_node: P,
-    run_node: F,
-    from_join_error: impl Fn(tokio::task::JoinError) -> E + Send + Sync,
+    callbacks: WalkCallbacks<P, F, J>,
 ) -> Result<WalkSummary<O>, E>
 where
     T: TaskNodeData + Clone + Send + Sync + 'static,
@@ -111,8 +119,14 @@ where
     F: Fn(GraphNode<T>) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<O, E>> + Send + 'static,
     E: Send + 'static,
+    J: Fn(tokio::task::JoinError) -> E + Send + Sync,
 {
-    let Ok(parallel_groups) = graph.get_parallel_groups() else {
+    let WalkCallbacks {
+        mut prepare_node,
+        run_node,
+        from_join_error,
+    } = callbacks;
+    let Ok(parallel_groups) = graph.parallel_groups() else {
         tracing::error!("parallel group computation failed");
         return Ok(WalkSummary {
             outcomes: Vec::new(),
@@ -154,7 +168,8 @@ where
 
         // Emit one Queued event per node that has to wait past the cap.
         if policy.max_parallel > 0 {
-            for (position, node) in queue.iter().enumerate().skip(policy.max_parallel) {
+            let waiting_nodes = queue.iter().enumerate().skip(policy.max_parallel);
+            for (position, node) in waiting_nodes {
                 cuenv_events::emit_task_queued!(&node.name, position - policy.max_parallel);
             }
         }

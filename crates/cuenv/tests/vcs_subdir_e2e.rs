@@ -27,7 +27,13 @@ fn repo_root() -> TestResult<PathBuf> {
         .canonicalize()?)
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path, only_cue_files: bool) -> TestResult {
+#[derive(Clone, Copy)]
+enum CopyFiles {
+    All,
+    CueOnly,
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path, files: CopyFiles) -> TestResult {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -35,8 +41,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path, only_cue_files: bool) -> TestResul
         let dst_path = dst.join(entry.file_name());
 
         if path.is_dir() {
-            copy_dir_recursive(&path, &dst_path, only_cue_files)?;
-        } else if !only_cue_files || path.extension().and_then(|s| s.to_str()) == Some("cue") {
+            copy_dir_recursive(&path, &dst_path, files)?;
+        } else if matches!(files, CopyFiles::All)
+            || path.extension().and_then(|s| s.to_str()) == Some("cue")
+        {
             fs::copy(&path, &dst_path)?;
         }
     }
@@ -68,7 +76,7 @@ fn create_agent_skills_source_repo() -> TestResult<TempDir> {
     copy_dir_recursive(
         &repo_root()?.join(".agents/skills"),
         &source.path().join(".agents/skills"),
-        false,
+        CopyFiles::All,
     )?;
     run_git(&["add", ".agents/skills"], source.path())?;
     run_git(&["commit", "-m", "seed agent skills"], source.path())?;
@@ -82,7 +90,11 @@ fn write_local_cuenv_module(root: &Path) -> TestResult {
         "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n",
     )?;
 
-    copy_dir_recursive(&repo_root()?.join("schema"), &root.join("schema"), true)
+    copy_dir_recursive(
+        &repo_root()?.join("schema"),
+        &root.join("schema"),
+        CopyFiles::CueOnly,
+    )
 }
 
 fn cue_string(value: &str) -> String {

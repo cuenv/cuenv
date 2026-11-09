@@ -111,9 +111,9 @@ impl TaskNode {
 
     /// Get as sequence if it is one
     #[must_use]
-    pub fn as_sequence(&self) -> Option<&Vec<Self>> {
+    pub fn as_sequence(&self) -> Option<&[Self]> {
         match self {
-            Self::Sequence(seq) => Some(seq),
+            Self::Sequence(seq) => Some(seq.as_slice()),
             _ => None,
         }
     }

@@ -1,14 +1,14 @@
-//! Integration test for NixFlake onEnter hook behavior
+//! Integration test for NixFlake onEnter hook behavior.
+//!
+//! Run with a host Nix daemon and `CUENV_TEST_NIXPKGS` set to a locally
+//! available nixpkgs flake source.
 
 use std::error::Error;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::Duration;
 use tempfile::TempDir;
 
-const MAX_ATTEMPTS: usize = 5;
 const NIX_CONFIG: &str = "experimental-features = nix-command flakes";
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -18,6 +18,7 @@ struct NixFlakeHookFixture {
     state_root: PathBuf,
     cache_root: PathBuf,
     runtime_root: PathBuf,
+    session: uuid::Uuid,
 }
 
 impl NixFlakeHookFixture {
@@ -34,6 +35,11 @@ impl NixFlakeHookFixture {
         let cache_root = path.join(".cuenv-cache");
         let runtime_root = path.join(".cuenv-runtime");
         fs::create_dir_all(&state_root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700))?;
+        }
         fs::create_dir_all(&cache_root)?;
         fs::create_dir_all(&runtime_root)?;
 
@@ -42,6 +48,7 @@ impl NixFlakeHookFixture {
             state_root,
             cache_root,
             runtime_root,
+            session: uuid::Uuid::new_v4(),
         })
     }
 
@@ -50,25 +57,36 @@ impl NixFlakeHookFixture {
     }
 
     fn write_nix_hook_project(&self) -> TestResult {
+        let nixpkgs = std::env::var("CUENV_TEST_NIXPKGS")?;
         let flake = r#"
 {
   description = "cuenv nix flake hook test";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+  inputs.nixpkgs.url = "path:NIXPKGS_SOURCE";
 
-  outputs = { self, nixpkgs }: let
-    system = builtins.currentSystem;
-    pkgs = import nixpkgs { inherit system; };
-  in {
-    devShells.${system}.default = pkgs.mkShell {
-      shellHook = ''
-        export NIX_SHELL_HOOK_VAR=from_nix_shell_hook
-      '';
-    };
+  outputs = { self, nixpkgs }: {
+    devShells = builtins.listToAttrs (map (system: {
+      name = system;
+      value.default = (import nixpkgs { inherit system; }).mkShell {
+        shellHook = ''
+          export NIX_SHELL_HOOK_VAR=from_nix_shell_hook
+        '';
+      };
+    }) [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ]);
   };
 }
 "#;
-        fs::write(self.path().join("flake.nix"), flake)?;
+        fs::write(
+            self.path().join("flake.nix"),
+            flake.replace("NIXPKGS_SOURCE", &nixpkgs),
+        )?;
+        let lock = Command::new("nix")
+            .current_dir(self.path())
+            .env("HOME", self.path())
+            .env("NIX_CONFIG", NIX_CONFIG)
+            .args(["flake", "lock", "--offline"])
+            .output()?;
+        assert_success(&lock, "nix flake lock --offline");
 
         let cue_content = r#"
 package cuenv
@@ -95,8 +113,10 @@ hooks: {
     fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_cuenv"));
         cmd.current_dir(self.path())
+            .env("HOME", self.path())
+            .env("XDG_STATE_HOME", self.state_root.as_os_str())
             .env("CUENV_EXECUTABLE", env!("CARGO_BIN_EXE_cuenv"))
-            .env("CUENV_FOREGROUND_HOOKS", "1")
+            .env("CUENV_HOOK_SESSION", self.session.to_string())
             .env("CUENV_STATE_DIR", self.state_root.as_os_str())
             .env("CUENV_CACHE_DIR", self.cache_root.as_os_str())
             .env("CUENV_RUNTIME_DIR", self.runtime_root.as_os_str())
@@ -113,92 +133,65 @@ hooks: {
     }
 }
 
-fn nix_available() -> bool {
-    Command::new("nix").arg("--version").output().is_ok()
-}
-
-fn should_skip_nix_hook_test() -> bool {
-    !nix_available() || std::env::var_os("NEXTEST").is_some()
-}
-
 #[test]
+#[ignore = "requires a host Nix daemon and CUENV_TEST_NIXPKGS"]
 fn test_nix_flake_hook_runs_shell_hook() -> TestResult {
-    if should_skip_nix_hook_test() {
-        return Ok(());
-    }
-
     let fixture = NixFlakeHookFixture::new()?;
     fixture.write_nix_hook_project()?;
 
     let allow_output = fixture.run(&["allow", "--yes"])?;
 
-    if allow_output.status.code() == Some(3) {
-        let stderr = String::from_utf8_lossy(&allow_output.stderr);
-        assert!(
-            stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
-            "Expected FFI or Unexpected error in sandbox during allow, got: {stderr}"
-        );
-        return Ok(());
-    }
     assert!(
         allow_output.status.success(),
         "cuenv allow failed: {}",
         String::from_utf8_lossy(&allow_output.stderr)
     );
 
-    let mut last_output: Option<Output> = None;
-    let mut last_inspect_output: Option<Output> = None;
-    for attempt in 1..=MAX_ATTEMPTS {
-        let output = fixture.run(&[
-            "exec",
-            "--",
-            "sh",
-            "-c",
-            "if [ \"$NIX_SHELL_HOOK_VAR\" = \"from_nix_shell_hook\" ]; then echo FOUND; else echo MISSING; exit 1; fi",
-        ])?;
-
-        if output.status.code() == Some(3) {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
-                "Expected FFI or Unexpected error in sandbox, got: {stderr}"
-            );
-            return Ok(());
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if output.status.success() && stdout.contains("FOUND") {
-            return Ok(());
-        }
-
-        let inspect_output = fixture.run(&["env", "inspect"])?;
-
-        last_output = Some(output);
-        last_inspect_output = Some(inspect_output);
-
-        if attempt < MAX_ATTEMPTS {
-            std::thread::sleep(Duration::from_millis(200));
-        }
-    }
-
-    let output = last_output.ok_or_else(|| io::Error::other("expected a failed exec attempt"))?;
-    let inspect_output =
-        last_inspect_output.ok_or_else(|| io::Error::other("expected inspect output"))?;
-
-    assert!(
-        output.status.success(),
-        "cuenv exec failed after {MAX_ATTEMPTS} attempts (code {:?})\nstdout:\n{}\nstderr:\n{}\ninspect stdout:\n{}\ninspect stderr:\n{}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&inspect_output.stdout),
-        String::from_utf8_lossy(&inspect_output.stderr)
+    let load = fixture.run(&["env", "load"])?;
+    assert_success(&load, "cuenv env load");
+    let status = fixture.run(&[
+        "env",
+        "status",
+        "--wait",
+        "--timeout",
+        "120",
+        "--output",
+        "short",
+    ])?;
+    assert_success(&status, "cuenv env status --wait");
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout).trim(),
+        "[OK]",
+        "hook execution did not complete successfully; stderr: {}",
+        String::from_utf8_lossy(&status.stderr)
     );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("FOUND"),
-        "Expected FOUND in stdout after {MAX_ATTEMPTS} attempts, got: {stdout}"
+    let exports = fixture.run(&["export", "--shell", "bash"])?;
+    assert_success(&exports, "cuenv export");
+    let script = format!(
+        "{}\nprintf '%s' \"${{NIX_SHELL_HOOK_VAR-}}\"",
+        String::from_utf8(exports.stdout)?
+    );
+    let output = Command::new("bash")
+        .current_dir(fixture.path())
+        .env_remove("NIX_SHELL_HOOK_VAR")
+        .arg("-c")
+        .arg(script)
+        .output()?;
+    assert_success(&output, "applying cuenv's shell exports");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "from_nix_shell_hook",
+        "Nix shellHook was not applied to the exported environment"
     );
     Ok(())
+}
+
+fn assert_success(output: &Output, operation: &str) {
+    assert!(
+        output.status.success(),
+        "{operation} failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

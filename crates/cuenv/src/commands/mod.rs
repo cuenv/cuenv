@@ -63,8 +63,7 @@ pub mod version;
 
 pub use self::command::Command;
 pub use self::executor::CommandExecutor;
-pub use module_utils::convert_engine_error;
-pub use module_utils::{ModuleGuard, relative_path_from_root};
+pub use module_utils::{ModuleGuard, convert_engine_error, relative_path_from_root};
 
 #[cfg(test)]
 mod tests;

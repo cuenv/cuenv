@@ -5,7 +5,7 @@
 
 use crate::ir::Task;
 use cuenv_core::ci::{MatrixTask, PipelineTask, TaskRef};
-use cuenv_task_graph::compute_transitive_closure;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Filter IR tasks to only those needed by the pipeline.
@@ -23,6 +23,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// Filtered list of IR tasks that are needed for the pipeline
 #[must_use]
 pub fn filter_tasks(pipeline_tasks: &[String], ir_tasks: Vec<Task>) -> Vec<Task> {
+    let needed = selected_task_ids(pipeline_tasks, &ir_tasks);
+    ir_tasks
+        .into_iter()
+        .filter(|t| needed.contains(t.id.as_str()))
+        .collect()
+}
+
+/// Select pipeline tasks and their transitive dependencies, expanding groups.
+pub(crate) fn selected_task_ids(pipeline_tasks: &[String], ir_tasks: &[Task]) -> HashSet<String> {
     // Expand task group references: exact match or prefix expansion
     let expanded: HashSet<String> = pipeline_tasks
         .iter()
@@ -53,14 +62,9 @@ pub fn filter_tasks(pipeline_tasks: &[String], ir_tasks: Vec<Task>) -> Vec<Task>
         .map(|t| (t.id.as_str(), t.depends_on.clone()))
         .collect();
 
-    let needed = compute_transitive_closure(expanded.iter().map(String::as_str), |name| {
+    cuenv_task_graph::compute_transitive_closure(expanded.iter().map(String::as_str), |name| {
         deps.get(name).map(|v| v.as_slice())
-    });
-
-    ir_tasks
-        .into_iter()
-        .filter(|t| needed.contains(t.id.as_str()))
-        .collect()
+    })
 }
 
 /// Expand pipeline tasks that reference task groups into individual tasks.
@@ -198,6 +202,18 @@ mod tests {
         assert!(ids.contains("b"));
         assert!(ids.contains("c"));
         assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn dependency_selection_terminates_on_cycles() {
+        let tasks = vec![
+            make_task("a", &["b"]),
+            make_task("b", &["a"]),
+            make_task("unrelated", &[]),
+        ];
+        let result = filter_tasks(&["a".to_string()], tasks);
+        let ids: HashSet<_> = result.iter().map(|task| task.id.as_str()).collect();
+        assert_eq!(ids, HashSet::from(["a", "b"]));
     }
 
     #[test]

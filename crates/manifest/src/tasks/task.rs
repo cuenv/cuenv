@@ -403,7 +403,7 @@ impl Task {
     }
 
     /// Returns an iterator over local path/glob inputs.
-    pub fn iter_path_inputs(&self) -> impl Iterator<Item = &String> {
+    pub fn iter_path_inputs(&self) -> impl Iterator<Item = &str> {
         self.inputs.iter().filter_map(Input::as_path)
     }
 

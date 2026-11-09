@@ -6,17 +6,20 @@ use crate::commands::{Command, CommandExecutor, task};
 use super::CommandHandler;
 
 /// Handler for `task` command.
-pub struct TaskHandler<'a> {
-    request: task::TaskExecutionRequest<'a>,
+pub struct TaskHandler<'task_handler> {
+    request: task::TaskExecutionRequest<'task_handler>,
 }
 
-impl<'a> TaskHandler<'a> {
+impl<'task_handler> TaskHandler<'task_handler> {
     /// Build a task handler from the parsed task command.
     ///
     /// # Errors
     ///
     /// Returns a configuration error when task selection options conflict.
-    pub fn from_command(command: Command, executor: &'a CommandExecutor) -> Result<Self> {
+    pub fn from_command(
+        command: Command,
+        executor: &'task_handler CommandExecutor,
+    ) -> Result<Self> {
         let Command::Task {
             path,
             package,
@@ -48,11 +51,17 @@ impl<'a> TaskHandler<'a> {
         }
 
         let mut request = match (name, labels, interactive) {
-            (Some(name), _, _) => task::TaskExecutionRequest::named(path, package, name, executor)
-                .with_args(task_args),
-            (None, labels, _) if !labels.is_empty() => {
-                task::TaskExecutionRequest::labels(path, package, labels, executor)
-            }
+            (Some(name), _, _) => task::TaskExecutionRequest::named(
+                task::TaskLocation::new(path, package),
+                name,
+                executor,
+            )
+            .with_args(task_args),
+            (None, labels, _) if !labels.is_empty() => task::TaskExecutionRequest::labels(
+                task::TaskLocation::new(path, package),
+                labels,
+                executor,
+            ),
             (None, _, true) => task::TaskExecutionRequest::interactive(path, package, executor),
             (None, _, _) => task::TaskExecutionRequest::list(path, package, executor),
         };

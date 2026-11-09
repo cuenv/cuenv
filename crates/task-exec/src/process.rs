@@ -1,7 +1,6 @@
 //! Host process execution support for tasks.
 
-use super::TaskResult;
-use super::process_registry::global_registry;
+use super::{TaskResult, process_registry};
 use cuenv_core::{Error, OutputCapture, Result};
 use std::process::Stdio;
 use std::time::Duration;
@@ -20,17 +19,21 @@ pub enum TaskAttempt {
     TimedOut(TaskResult),
 }
 
+pub(super) struct ProcessOptions {
+    pub(super) capture_output: OutputCapture,
+    pub(super) timeout: Option<Duration>,
+}
+
 /// Run a host task process in captured or inherited-output mode.
-pub async fn run_task_process(
+pub(super) async fn run_task_process(
     name: &str,
     command: Command,
-    capture_output: OutputCapture,
-    timeout: Option<Duration>,
+    options: ProcessOptions,
 ) -> Result<TaskAttempt> {
-    if capture_output.should_capture() {
-        run_captured_process(name, command, timeout).await
+    if options.capture_output.should_capture() {
+        run_captured_process(name, command, options.timeout).await
     } else {
-        run_inherited_process(name, command, timeout).await
+        run_inherited_process(name, command, options.timeout).await
     }
 }
 
@@ -54,7 +57,9 @@ async fn run_captured_process(
 
     let child_pid = child.id();
     if let Some(pid) = child_pid {
-        global_registry().register(pid, name.to_string()).await;
+        process_registry::global_registry()
+            .register(pid, name.to_string())
+            .await;
     }
 
     let stdout_handle = child.stdout.take();
@@ -90,7 +95,7 @@ async fn run_captured_process(
         WaitOutcome::Exited(status) => status,
         WaitOutcome::TimedOut(timeout) => {
             if let Some(pid) = child_pid {
-                global_registry().unregister(pid).await;
+                process_registry::global_registry().unregister(pid).await;
             }
             let stdout = stdout_task.await.unwrap_or_default().join("\n");
             let stderr = stderr_task.await.unwrap_or_default().join("\n");
@@ -105,7 +110,7 @@ async fn run_captured_process(
     };
 
     if let Some(pid) = child_pid {
-        global_registry().unregister(pid).await;
+        process_registry::global_registry().unregister(pid).await;
     }
 
     let stdout_lines = stdout_task.await.unwrap_or_default();
@@ -150,7 +155,9 @@ async fn run_inherited_process(
 
     let child_pid = child.id();
     if let Some(pid) = child_pid {
-        global_registry().register(pid, name.to_string()).await;
+        process_registry::global_registry()
+            .register(pid, name.to_string())
+            .await;
     }
 
     let start_time = std::time::Instant::now();
@@ -158,7 +165,7 @@ async fn run_inherited_process(
         WaitOutcome::Exited(status) => status,
         WaitOutcome::TimedOut(timeout) => {
             if let Some(pid) = child_pid {
-                global_registry().unregister(pid).await;
+                process_registry::global_registry().unregister(pid).await;
             }
             return Ok(TaskAttempt::TimedOut(timeout_result(TimedOutTask {
                 name,
@@ -171,7 +178,7 @@ async fn run_inherited_process(
     };
 
     if let Some(pid) = child_pid {
-        global_registry().unregister(pid).await;
+        process_registry::global_registry().unregister(pid).await;
     }
 
     let exit_code = status.code().unwrap_or(-1);
@@ -226,8 +233,8 @@ async fn wait_or_terminate(
 }
 
 /// Inputs for building a timed-out [`TaskResult`].
-struct TimedOutTask<'a> {
-    name: &'a str,
+struct TimedOutTask<'task> {
+    name: &'task str,
     timeout: Duration,
     start_time: std::time::Instant,
     stdout: String,
@@ -304,9 +311,9 @@ async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u3
 /// allowing us to send signals to all descendants when terminating.
 #[cfg(unix)]
 fn setup_process_group(cmd: &mut Command) {
-    // SAFETY: setpgid(0, 0) creates a new process group with this process as leader.
-    // This is safe to call in the pre-spawn hook as it only affects the child process.
-    // It allows us to send signals to the entire process group when terminating.
+    // SAFETY: the child-side pre-exec closure only calls async-signal-safe
+    // setpgid and returns; it does not allocate or acquire inherited locks.
+    // setpgid(0, 0) makes the child the leader of its own process group.
     #[expect(unsafe_code, reason = "Required for POSIX process group management")]
     unsafe {
         cmd.pre_exec(|| {

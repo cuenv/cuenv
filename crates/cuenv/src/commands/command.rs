@@ -26,6 +26,19 @@ pub enum Command {
         /// Whether to show extended metadata.
         meta: bool,
     },
+    /// List or recover abandoned hook reservations.
+    EnvRecover {
+        /// List reservations without recovering one.
+        list: bool,
+        /// Directory identity from the reservation listing.
+        directory_key: Option<String>,
+        /// Instance identity from the reservation listing.
+        instance_hash: Option<String>,
+        /// Run UUID from the reservation listing.
+        run_id: Option<String>,
+        /// The operator attests the run and descendants have stopped.
+        drained: bool,
+    },
     /// Print resolved environment variables.
     EnvPrint {
         /// Path to the CUE module or project directory.
@@ -142,6 +155,13 @@ pub enum Command {
         /// Target shell type for initialization.
         shell: crate::cli::ShellType,
     },
+    /// Create an independent hook session ID or inspect the supplied one.
+    ShellSession {
+        /// Show the current session instead of creating a new one.
+        current: bool,
+    },
+    /// Refresh the current interactive shell environment.
+    ShellRefresh,
     /// Allow a project's hooks to run.
     Allow {
         /// Path to the CUE module or project directory.

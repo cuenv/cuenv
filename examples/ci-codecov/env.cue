@@ -1,8 +1,10 @@
 package examples
 
-import "github.com/cuenv/cuenv/schema"
-
-import xCodecov "github.com/cuenv/cuenv/contrib/codecov"
+import (
+	"github.com/cuenv/cuenv/schema"
+	xCodecov "github.com/cuenv/cuenv/contrib/codecov"
+	c "github.com/cuenv/cuenv/contrib/contributors"
+)
 
 schema.#Project
 
@@ -11,7 +13,8 @@ let _t = tasks
 name: "ci-codecov"
 
 ci: {
-	contributors: [xCodecov.#Codecov]
+	providers: ["github"]
+	contributors: [c.#Cuenv, xCodecov.#Codecov]
 	pipelines: {
 		test: {
 			tasks: [_t.test]

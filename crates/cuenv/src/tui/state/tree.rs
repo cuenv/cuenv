@@ -90,8 +90,8 @@ impl TuiState {
             has_children: has_tasks,
         });
 
-        if all_expanded && let Some((root_groups, root_tasks)) = tree.get("") {
-            self.push_expanded_tree_nodes(&tree, root_groups, root_tasks, &mut flattened);
+        if all_expanded {
+            self.push_expanded_tree_nodes(&tree, &mut flattened);
         }
 
         self.ui.flattened_tree = flattened;
@@ -104,10 +104,11 @@ impl TuiState {
     fn push_expanded_tree_nodes(
         &self,
         tree: &HashMap<String, (Vec<String>, Vec<String>)>,
-        root_groups: &[String],
-        root_tasks: &[String],
         flattened: &mut Vec<TreeViewItem>,
     ) {
+        let Some((root_groups, root_tasks)) = tree.get("") else {
+            return;
+        };
         let mut stack: Vec<TreeStackItem> = Vec::new();
 
         for task_name in root_tasks.iter().rev() {
@@ -120,7 +121,7 @@ impl TuiState {
 
         while let Some(item) = stack.pop() {
             if item.is_group {
-                self.push_group_node(tree, item, flattened, &mut stack);
+                flattened.push(self.push_group_node(tree, item, &mut stack));
             } else {
                 flattened.push(TreeViewItem {
                     node_type: TreeNodeType::Task(item.path),
@@ -137,9 +138,8 @@ impl TuiState {
         &self,
         tree: &HashMap<String, (Vec<String>, Vec<String>)>,
         item: TreeStackItem,
-        flattened: &mut Vec<TreeViewItem>,
         stack: &mut Vec<TreeStackItem>,
-    ) {
+    ) -> TreeViewItem {
         let group_key = format!("::group::{}", item.path);
         let is_expanded = self.ui.expanded_nodes.contains(&group_key);
         let empty_vec: Vec<String> = Vec::new();
@@ -148,13 +148,13 @@ impl TuiState {
             .map_or((&empty_vec, &empty_vec), |(g, t)| (g, t));
         let has_children = !child_groups.is_empty() || !child_tasks.is_empty();
 
-        flattened.push(TreeViewItem {
+        let node = TreeViewItem {
             node_type: TreeNodeType::Group(item.path.clone()),
             display_name: item.display_name,
             depth: item.depth,
             is_expanded,
             has_children,
-        });
+        };
 
         if is_expanded {
             for task_name in child_tasks.iter().rev() {
@@ -173,6 +173,7 @@ impl TuiState {
                 ));
             }
         }
+        node
     }
 
     /// Toggle expansion state of a tree node.

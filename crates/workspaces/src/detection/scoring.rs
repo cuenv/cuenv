@@ -6,15 +6,17 @@ pub(super) struct Detection {
     pub(super) confidence: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DetectionSignals {
+    pub(super) has_lockfile: bool,
+    pub(super) has_valid_config: bool,
+}
+
 impl Detection {
-    pub(super) const fn from_signals(
-        manager: PackageManager,
-        has_lockfile: bool,
-        has_valid_config: bool,
-    ) -> Self {
+    pub(super) const fn from_signals(manager: PackageManager, signals: DetectionSignals) -> Self {
         Self {
             manager,
-            confidence: calculate_confidence(has_lockfile, has_valid_config),
+            confidence: calculate_confidence(signals),
         }
     }
 
@@ -54,8 +56,8 @@ pub(super) fn prioritize_managers(detections: Vec<Detection>) -> Vec<PackageMana
 /// - Lockfile only: 75
 /// - Valid config only: 50
 /// - Neither: 0
-pub(super) const fn calculate_confidence(has_lockfile: bool, has_valid_config: bool) -> u8 {
-    match (has_lockfile, has_valid_config) {
+pub(super) const fn calculate_confidence(signals: DetectionSignals) -> u8 {
+    match (signals.has_lockfile, signals.has_valid_config) {
         (true, true) => 100,
         (true, false) => 75,
         (false, true) => 50,

@@ -1,7 +1,7 @@
 use super::{CommandExecutor, convert_engine_error, env_file, schema_compat};
 use crate::commands::module_utils::EvaluationMetadataBuilder;
 use cuengine::{InstanceFailures, ModuleEvalOptions};
-use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
+
 use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, ModuleEvaluationInput, Result};
 use rayon::prelude::*;
@@ -44,7 +44,8 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
     })?;
     schema_compat::warn_for_module(&module_root)?;
 
-    let target_rel_path = compute_relative_path(target_path, &module_root);
+    let target_rel_path =
+        cuenv_core::cue::discovery::compute_relative_path(target_path, &module_root);
     let options = ModuleEvalOptions {
         recursive: false,
         with_meta: true,
@@ -96,7 +97,8 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
     }
 
     for (meta_key, meta_value) in raw.meta {
-        let adjusted_key = adjust_meta_key_path(&meta_key, &target_rel_path);
+        let adjusted_key =
+            cuenv_core::cue::discovery::adjust_meta_key_path(&meta_key, &target_rel_path);
         metadata.insert(adjusted_key, meta_value);
     }
 
@@ -211,7 +213,8 @@ impl CommandExecutor {
                     task_field: Some(TASK_FIELD.to_string()),
                     ..Default::default()
                 };
-                let dir_rel_path = compute_relative_path(dir, module_root);
+                let dir_rel_path =
+                    cuenv_core::cue::discovery::compute_relative_path(dir, module_root);
 
                 match cuengine::evaluate_module(module_root, package, Some(&options)) {
                     Ok(raw) => Ok((dir_rel_path, raw)),
@@ -256,7 +259,10 @@ impl CommandExecutor {
                     }
 
                     for (meta_key, meta_value) in raw.meta {
-                        let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
+                        let adjusted_key = cuenv_core::cue::discovery::adjust_meta_key_path(
+                            &meta_key,
+                            &dir_rel_path,
+                        );
                         metadata.insert(adjusted_key, meta_value);
                     }
                 }
@@ -265,7 +271,7 @@ impl CommandExecutor {
         }
 
         if all_instances.is_empty() {
-            let error_summary = format_eval_errors(&eval_errors);
+            let error_summary = cuenv_core::cue::discovery::format_eval_errors(&eval_errors);
             return Err(cuenv_core::Error::configuration(format!(
                 "No instances could be evaluated. All directories failed:\n{error_summary}"
             )));
@@ -273,7 +279,7 @@ impl CommandExecutor {
         // Fail closed: a directory that does not evaluate could declare a
         // project with a name another project uses.
         if !eval_errors.is_empty() {
-            let error_summary = format_eval_errors(&eval_errors);
+            let error_summary = cuenv_core::cue::discovery::format_eval_errors(&eval_errors);
             return Err(cuenv_core::Error::configuration(format!(
                 "cannot confirm that project names are unique in this module; these \
                  directories fail to evaluate:\n{error_summary}"

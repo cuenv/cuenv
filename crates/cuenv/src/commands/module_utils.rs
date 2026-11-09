@@ -129,7 +129,15 @@ fn annotate_cue_parse_error(path: &std::path::Path, message: String) -> cuenv_co
     };
 
     let Some((line, _col)) = parse_line_col_from_message(&message) else {
-        return cuenv_core::Error::cue_parse_with_source(path, message, src, None, None);
+        return cuenv_core::Error::cue_parse_with_source(
+            path,
+            message,
+            cuenv_core::error::CueParseSource {
+                text: src,
+                span: None,
+                suggestions: None,
+            },
+        );
     };
 
     let span = byte_offset_of_line(&src, line).map(|offset| {
@@ -138,7 +146,15 @@ fn annotate_cue_parse_error(path: &std::path::Path, message: String) -> cuenv_co
         miette::SourceSpan::from((offset, line_len))
     });
 
-    cuenv_core::Error::cue_parse_with_source(path, message, src, span, None)
+    cuenv_core::Error::cue_parse_with_source(
+        path,
+        message,
+        cuenv_core::error::CueParseSource {
+            text: src,
+            span,
+            suggestions: None,
+        },
+    )
 }
 
 /// Extract the first `LINE:COL` pair from a CUE error message.
@@ -185,8 +201,8 @@ pub fn relative_path_from_root(module_root: &Path, target: &Path) -> PathBuf {
 /// This wrapper around `MutexGuard` holds a `HashMap<PathBuf, ModuleEvaluation>`
 /// and a lookup key. The keyed entry is guaranteed to exist in the map while
 /// the guard is held.
-pub struct ModuleGuard<'a> {
-    pub(super) guard: MutexGuard<'a, HashMap<PathBuf, ModuleEvaluation>>,
+pub struct ModuleGuard<'guard> {
+    pub(super) guard: MutexGuard<'guard, HashMap<PathBuf, ModuleEvaluation>>,
     pub(super) key: PathBuf,
 }
 

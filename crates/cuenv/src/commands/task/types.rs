@@ -14,7 +14,7 @@ use cuenv_core::{DryRun, OutputCapture};
 /// replacing the 16-parameter `execute_task` signature with a
 /// single, structured request.
 #[derive(Clone)]
-pub struct TaskExecutionRequest<'a> {
+pub struct TaskExecutionRequest<'request> {
     /// Path to the directory containing the CUE configuration
     pub path: String,
 
@@ -46,7 +46,7 @@ pub struct TaskExecutionRequest<'a> {
     pub dry_run: DryRun,
 
     /// Executor for cached module evaluation (required - single CUE eval per process)
-    pub executor: &'a CommandExecutor,
+    pub executor: &'request CommandExecutor,
 }
 
 impl fmt::Debug for TaskExecutionRequest<'_> {
@@ -125,13 +125,33 @@ pub enum ExecutionMode {
     Tui,
 }
 
-impl<'a> TaskExecutionRequest<'a> {
+/// Project location and CUE package for a task request.
+#[derive(Debug, Clone)]
+pub struct TaskLocation {
+    /// Project directory.
+    pub path: String,
+    /// CUE package name.
+    pub package: String,
+}
+
+impl TaskLocation {
+    /// Construct a task location from a directory and package name.
+    #[must_use]
+    pub fn new(path: impl Into<String>, package: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            package: package.into(),
+        }
+    }
+}
+
+impl<'request> TaskExecutionRequest<'request> {
     /// Create a new request for listing tasks.
     #[must_use]
     pub fn list(
         path: impl Into<String>,
         package: impl Into<String>,
-        executor: &'a CommandExecutor,
+        executor: &'request CommandExecutor,
     ) -> Self {
         Self {
             path: path.into(),
@@ -150,14 +170,13 @@ impl<'a> TaskExecutionRequest<'a> {
     /// Create a new request for executing a named task.
     #[must_use]
     pub fn named(
-        path: impl Into<String>,
-        package: impl Into<String>,
+        location: TaskLocation,
         task_name: impl Into<String>,
-        executor: &'a CommandExecutor,
+        executor: &'request CommandExecutor,
     ) -> Self {
         Self {
-            path: path.into(),
-            package: package.into(),
+            path: location.path,
+            package: location.package,
             selection: TaskSelection::Named {
                 name: task_name.into(),
                 args: Vec::new(),
@@ -175,14 +194,13 @@ impl<'a> TaskExecutionRequest<'a> {
     /// Create a new request for executing tasks matching labels.
     #[must_use]
     pub fn labels(
-        path: impl Into<String>,
-        package: impl Into<String>,
+        location: TaskLocation,
         labels: Vec<String>,
-        executor: &'a CommandExecutor,
+        executor: &'request CommandExecutor,
     ) -> Self {
         Self {
-            path: path.into(),
-            package: package.into(),
+            path: location.path,
+            package: location.package,
             selection: TaskSelection::Labels(labels),
             environment: None,
             output: OutputConfig::default(),
@@ -199,7 +217,7 @@ impl<'a> TaskExecutionRequest<'a> {
     pub fn interactive(
         path: impl Into<String>,
         package: impl Into<String>,
-        executor: &'a CommandExecutor,
+        executor: &'request CommandExecutor,
     ) -> Self {
         Self {
             path: path.into(),
@@ -303,7 +321,7 @@ mod tests {
     #[test]
     fn test_request_named() {
         let executor = create_test_executor();
-        let req = TaskExecutionRequest::named("./", "cuenv", "build", &executor);
+        let req = TaskExecutionRequest::named(TaskLocation::new("./", "cuenv"), "build", &executor);
         assert!(matches!(
             req.selection,
             TaskSelection::Named { ref name, .. } if name == "build"
@@ -313,7 +331,7 @@ mod tests {
     #[test]
     fn test_request_builder_methods() {
         let executor = create_test_executor();
-        let req = TaskExecutionRequest::named("./", "cuenv", "test", &executor)
+        let req = TaskExecutionRequest::named(TaskLocation::new("./", "cuenv"), "test", &executor)
             .with_args(vec!["--verbose".to_string()])
             .with_environment("dev")
             .with_format("json")
@@ -335,7 +353,7 @@ mod tests {
     #[test]
     fn test_named_task_with_args() {
         let executor = create_test_executor();
-        let req = TaskExecutionRequest::named("./", "cuenv", "build", &executor)
+        let req = TaskExecutionRequest::named(TaskLocation::new("./", "cuenv"), "build", &executor)
             .with_args(vec!["--release".to_string()])
             .with_environment("prod")
             .with_format("json")
@@ -353,7 +371,8 @@ mod tests {
     #[test]
     fn test_tui_mode() {
         let executor = create_test_executor();
-        let req = TaskExecutionRequest::named("./", "cuenv", "build", &executor).with_tui();
+        let req = TaskExecutionRequest::named(TaskLocation::new("./", "cuenv"), "build", &executor)
+            .with_tui();
 
         assert_eq!(req.execution_mode, ExecutionMode::Tui);
     }
@@ -361,8 +380,8 @@ mod tests {
     #[test]
     fn test_skip_dependencies() {
         let executor = create_test_executor();
-        let req =
-            TaskExecutionRequest::named("./", "cuenv", "build", &executor).with_skip_dependencies();
+        let req = TaskExecutionRequest::named(TaskLocation::new("./", "cuenv"), "build", &executor)
+            .with_skip_dependencies();
 
         assert!(req.skip_dependencies);
     }
@@ -371,8 +390,7 @@ mod tests {
     fn test_request_labels() {
         let executor = create_test_executor();
         let req = TaskExecutionRequest::labels(
-            "./",
-            "cuenv",
+            TaskLocation::new("./", "cuenv"),
             vec!["ci".to_string(), "fast".to_string()],
             &executor,
         );
@@ -392,7 +410,8 @@ mod tests {
     #[test]
     fn test_with_help() {
         let executor = create_test_executor();
-        let req = TaskExecutionRequest::named("./", "cuenv", "build", &executor).with_help();
+        let req = TaskExecutionRequest::named(TaskLocation::new("./", "cuenv"), "build", &executor)
+            .with_help();
         assert!(req.output.help);
     }
 
@@ -429,7 +448,7 @@ mod tests {
     #[test]
     fn test_request_clone() {
         let executor = create_test_executor();
-        let req = TaskExecutionRequest::named("./", "cuenv", "build", &executor)
+        let req = TaskExecutionRequest::named(TaskLocation::new("./", "cuenv"), "build", &executor)
             .with_environment("dev")
             .with_format("json");
         let cloned = req.clone();

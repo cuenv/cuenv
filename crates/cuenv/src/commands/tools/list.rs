@@ -1,7 +1,6 @@
 use cuenv_core::lockfile::Lockfile;
 use cuenv_tool_runtime::{
     Platform, ResolvedToolActivationStep, ToolActivationOperation, ToolActivationResolveOptions,
-    resolve_tool_activation,
 };
 use std::path::{Path, PathBuf};
 
@@ -104,7 +103,7 @@ fn activation_section_lines_with_cache_dir(
         options = options.with_cache_dir(cache_dir);
     }
 
-    match resolve_tool_activation(&options) {
+    match cuenv_tool_runtime::resolve_tool_activation(&options) {
         Ok(steps) => {
             let rendered = render_activation_steps(&steps);
             if rendered.is_empty() {

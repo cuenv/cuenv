@@ -1,4 +1,12 @@
-use super::*;
+use std::collections::HashMap;
+use std::env;
+
+use cuenv_manifest::environment::{
+    Env, EnvPart, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy,
+};
+use cuenv_manifest::manifest::InfrastructurePolicyAction;
+
+use super::{ActionEnvironment, EnvValueExt, Environment};
 
 #[test]
 fn test_environment_basics() {
@@ -784,10 +792,7 @@ fn action_environment_omits_undeclared_ambient_vars() {
 
 #[test]
 fn action_environment_includes_declared_passthrough() {
-    // PATH is set in every environment this test can run in.
-    let Ok(host_path) = env::var("PATH") else {
-        return;
-    };
+    let host_path = env::var("PATH").expect("PATH must be set for the passthrough test");
     let env = Environment::new();
 
     let action = ready(&env, &["PATH".to_string()], None);
@@ -817,9 +822,7 @@ fn action_environment_skips_passthrough_names_unset_on_the_host() {
 
 #[test]
 fn declared_cue_vars_win_over_passthrough_of_the_same_name() {
-    if env::var("PATH").is_err() {
-        return;
-    }
+    env::var("PATH").expect("PATH must be set to test overriding a passthrough value");
     let mut env = Environment::new();
     env.set("PATH".to_string(), "/nix/store/declared/bin".to_string());
 
@@ -969,9 +972,7 @@ fn a_declared_path_is_never_replaced_by_the_hermetic_default() {
 
 #[test]
 fn a_passthrough_path_is_never_replaced_by_the_hermetic_default() {
-    let Ok(host_path) = env::var("PATH") else {
-        return;
-    };
+    let host_path = env::var("PATH").expect("PATH must be set for the passthrough test");
     let env = Environment::new();
 
     let execution = env.execution_environment(&["PATH".to_string()]);

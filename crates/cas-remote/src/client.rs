@@ -167,7 +167,7 @@ impl RemoteClient {
 /// Horizontal tab is permitted by the HTTP grammar but has no business in a
 /// credential, so it is excluded too.
 fn is_valid_header_value(value: &str) -> bool {
-    !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7E).contains(&byte))
+    !value.is_empty() && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
 }
 
 #[cfg(test)]

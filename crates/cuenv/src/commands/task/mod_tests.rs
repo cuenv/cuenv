@@ -1,5 +1,4 @@
-use super::runner::format_task_results;
-use super::*;
+use super::{TaskExecutionRequest, runner};
 use crate::commands::CommandExecutor;
 use cuenv_core::tasks::{Task, TaskNode};
 
@@ -14,22 +13,23 @@ fn create_test_executor() -> CommandExecutor {
 #[tokio::test]
 async fn test_list_tasks_empty() {
     let temp_dir = TempDir::new().expect("write to string");
-    let cue_content = r#"package test
+    fs::create_dir_all(temp_dir.path().join("cue.mod")).unwrap();
+    fs::write(
+        temp_dir.path().join("cue.mod/module.cue"),
+        "module: \"test.example/tasks@v0\"\nlanguage: version: \"v0.14.1\"\n",
+    )
+    .unwrap();
+    let cue_content = r#"package cuenv
+name: "test"
 env: {
     FOO: "bar"
 }"#;
     fs::write(temp_dir.path().join("env.cue"), cue_content).expect("write to string");
 
     let executor = create_test_executor();
-    let request = TaskExecutionRequest::list(temp_dir.path().to_str().unwrap(), "test", &executor);
-    let result = execute(request).await;
-
-    // The result depends on FFI availability
-    if let Ok(output) = result {
-        assert!(output.contains("No tasks") || output.contains("Available tasks"));
-    } else {
-        // FFI not available in test environment
-    }
+    let request = TaskExecutionRequest::list(temp_dir.path().to_str().unwrap(), "cuenv", &executor);
+    let output = super::execute(request).await.unwrap();
+    assert!(output.contains("No tasks"));
 }
 
 #[test]
@@ -50,25 +50,29 @@ fn test_format_task_results_variants() {
     };
 
     // capture on: show status and fields
-    let s = format_task_results(vec![r_ok.clone(), r_fail.clone()], true.into(), "t");
+    let s = runner::format_task_results(
+        vec![r_ok.clone(), r_fail.clone()],
+        cuenv_core::OutputCapture::Capture,
+        "t",
+    );
     assert!(s.contains("succeeded"));
     assert!(s.contains("Output:"));
     assert!(s.contains("failed with exit code"));
     assert!(s.contains("Error:"));
 
     // capture off: logs passed through + completion line
-    let s2 = format_task_results(vec![r_ok], false.into(), "t");
+    let s2 = runner::format_task_results(vec![r_ok], cuenv_core::OutputCapture::Stream, "t");
     assert!(!s2.contains("hello")); // Output handled by executor now
     assert!(s2.contains("Task 't' completed"));
 
     // capture on with empty output -> default completion
-    let s3 = format_task_results(vec![], true.into(), "abc");
+    let s3 = runner::format_task_results(vec![], cuenv_core::OutputCapture::Capture, "abc");
     assert_eq!(s3, "Task 'abc' completed");
 }
 
 #[test]
 fn test_render_task_tree() {
-    use super::rendering::render_task_tree;
+    use super::rendering;
     use cuenv_task_exec::IndexedTask;
     // Helper to create a dummy task
     let make_task = |desc: Option<&str>| Task {
@@ -101,7 +105,7 @@ fn test_render_task_tree() {
 
     // Provide them in mixed order to verify sorting
     let tasks = vec![&t_fmt_fix, &t_build, &t_fmt_check];
-    let output = render_task_tree(tasks, None);
+    let output = rendering::render_task_tree(tasks, None);
 
     // We can't match exact lines easily because of dot padding calculation,
     // but we can check structure and presence of content.

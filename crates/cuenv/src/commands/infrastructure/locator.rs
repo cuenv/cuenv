@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::cli::CliError;
-use crate::commands::env_file::find_cue_module_root;
 
 /// A resolved infrastructure package associated with one project directory.
 #[derive(Debug, Clone)]
@@ -63,8 +62,8 @@ pub fn load(project: &Path) -> Result<Option<Locator>, CliError> {
             directory.display()
         )));
     }
-    let project_module = find_cue_module_root(project);
-    let infrastructure_module = find_cue_module_root(&directory);
+    let project_module = crate::commands::env_file::find_cue_module_root(project);
+    let infrastructure_module = crate::commands::env_file::find_cue_module_root(&directory);
     if project_module.is_none() || project_module != infrastructure_module {
         return Err(CliError::config(format!(
             "infrastructure directory {} must be in the same CUE module as {}",

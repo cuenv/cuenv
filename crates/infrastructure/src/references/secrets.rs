@@ -101,6 +101,12 @@ struct Walk<'found> {
     found: &'found mut Vec<SecretArgument>,
 }
 
+struct Collection<'schema> {
+    nesting: Nesting,
+    value: &'schema Json,
+    at: &'schema Position,
+}
+
 impl Walk<'_> {
     fn block(&mut self, block: &Block, value: &Map<String, Json>, at: &Position) -> Result<()> {
         for (name, attribute) in &block.attributes {
@@ -158,9 +164,14 @@ impl Walk<'_> {
                 .problem("a write-only argument requires #WriteOnly and a secret descriptor"));
         }
         match &attribute.nested {
-            Some(nested) => self.collection(nested.nesting, value, &at, |walk, element, here| {
-                walk.attributes(&nested.attributes, element, here)
-            }),
+            Some(nested) => self.collection(
+                &Collection {
+                    nesting: nested.nesting,
+                    value,
+                    at: &at,
+                },
+                |walk, element, here| walk.attributes(&nested.attributes, element, here),
+            ),
             None => self.typed(&attribute.value_type, value, &at),
         }
     }
@@ -195,9 +206,11 @@ impl Walk<'_> {
 
     fn nested_block(&mut self, nested: &NestedBlock, value: &Json, at: &Position) -> Result<()> {
         self.collection(
-            nested.nesting,
-            value,
-            at,
+            &Collection {
+                nesting: nested.nesting,
+                value,
+                at,
+            },
             |walk, element, here| match element {
                 Json::Object(object) => walk.block(&nested.block, object, here),
                 _ => Ok(()),
@@ -208,11 +221,12 @@ impl Walk<'_> {
     /// Visit each object of a nested attribute or block collection.
     fn collection(
         &mut self,
-        nesting: Nesting,
-        value: &Json,
-        at: &Position,
+        collection: &Collection<'_>,
         mut visit: impl FnMut(&mut Self, &Json, &Position) -> Result<()>,
     ) -> Result<()> {
+        let nesting = collection.nesting;
+        let value = collection.value;
+        let at = collection.at;
         match (nesting, value) {
             (Nesting::Single | Nesting::Group, _) => visit(self, value, at),
             (Nesting::List, Json::Array(elements)) => {
@@ -268,7 +282,8 @@ impl Walk<'_> {
                 Ok(())
             }
             (Type::Tuple(elements), Json::Array(items)) => {
-                for (index, (element, item)) in elements.iter().zip(items).enumerate() {
+                let indexed_items = elements.iter().zip(items).enumerate();
+                for (index, (element, item)) in indexed_items {
                     self.typed(element, item, &at.step(index_step(index)?))?;
                 }
                 Ok(())

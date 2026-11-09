@@ -1,12 +1,13 @@
-use super::*;
+use crate::graph::TaskGraph;
+use crate::{Mapping, ProjectReference, test_utils};
 
 #[test]
 fn test_dag_with_task_ref_placeholder() {
     // Test that a task with a TaskRef can be added to the graph
     let mut graph = TaskGraph::new();
 
-    let task1 = create_task("task1", vec![], vec![]);
-    let task2 = create_task_ref("#other-project:build", vec!["task1"]);
+    let task1 = test_utils::create_task("task1", vec![], vec![]);
+    let task2 = test_utils::create_task_ref("#other-project:build", vec!["task1"]);
 
     graph.add_task("task1", task1).unwrap();
     graph.add_task("task2", task2).unwrap();
@@ -25,13 +26,18 @@ fn test_dag_with_project_reference_input() {
     // Test that a task with project reference input is properly added
     let mut graph = TaskGraph::new();
 
-    let build_task = create_task("build", vec![], vec![]);
-    let deploy_task = create_task_with_project_ref(
+    let build_task = test_utils::create_task("build", vec![], vec![]);
+    let deploy_task = test_utils::create_task_with_project_ref(
         "deploy",
         vec!["build"],
-        "../other-project",
-        "compile",
-        vec![("dist/app.js", "vendor/app.js")],
+        ProjectReference {
+            project: "../other-project".to_string(),
+            task: "compile".to_string(),
+            map: vec![Mapping {
+                from: "dist/app.js".to_string(),
+                to: "vendor/app.js".to_string(),
+            }],
+        },
     );
 
     graph.add_task("build", build_task).unwrap();
@@ -52,15 +58,15 @@ fn test_dag_with_multiple_project_references() {
     let mut graph = TaskGraph::new();
 
     // Project A tasks
-    let task_a1 = create_task("projectA.build", vec![], vec![]);
-    let task_a2 = create_task("projectA.test", vec!["projectA.build"], vec![]);
+    let task_a1 = test_utils::create_task("projectA.build", vec![], vec![]);
+    let task_a2 = test_utils::create_task("projectA.test", vec!["projectA.build"], vec![]);
 
     // Project B tasks
-    let task_b1 = create_task("projectB.build", vec![], vec![]);
-    let task_b2 = create_task("projectB.test", vec!["projectB.build"], vec![]);
+    let task_b1 = test_utils::create_task("projectB.build", vec![], vec![]);
+    let task_b2 = test_utils::create_task("projectB.test", vec!["projectB.build"], vec![]);
 
     // Cross-project integration task
-    let integration = create_task(
+    let integration = test_utils::create_task(
         "integration",
         vec!["projectA.test", "projectB.test"],
         vec![],
@@ -76,7 +82,7 @@ fn test_dag_with_multiple_project_references() {
     assert_eq!(graph.task_count(), 5);
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     // Level 0: projectA.build, projectB.build (parallel)
     // Level 1: projectA.test, projectB.test (parallel)
     // Level 2: integration

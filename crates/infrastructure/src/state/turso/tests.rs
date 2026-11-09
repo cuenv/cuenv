@@ -9,16 +9,20 @@ use tokio::net::TcpListener;
 mod sqld;
 use sqld::Database;
 
-use super::*;
-use crate::state::fake_server::{FakeServer, fake_server, fake_server_with_headers};
-use crate::state::http::{
-    BodyPrefix, MAXIMUM_ERROR_BODY_BYTES, describe_error_body, status_is_transient,
+#[path = "legacy_copy_tests.rs"]
+mod legacy_copy_tests;
+use super::{
+    Batch, BatchResult, Disclosure, Duration, FailureKind, Hrana, HranaError, HranaStatement,
+    HttpError, InfrastructureError, PipelineBody, PipelineRequest, PipelineResponse,
+    PipelineResult, Result, SqlTransport, SqlValue, Statement, StatementError, StreamResponse,
+    TransactionResult, TursoConfiguration, TursoStateStore,
 };
+use crate::state::fake_server::FakeServer;
+use crate::state::http::{BodyPrefix, MAXIMUM_ERROR_BODY_BYTES};
 use crate::state::sql::{
     CREATE_SCHEMA_TABLE, INITIAL_SCHEMA_VERSION, LATEST_SCHEMA_VERSION, Layout, MIGRATIONS,
     Migration, MigrationOutcome, MigrationTransaction, MigrationWait, RetryPolicy, SCHEMA_TABLE,
-    SELECT_ADDRESSES, SELECT_ALL_LOCKS, SELECT_RESOURCES, SELECT_SCHEMA_VERSION, classify_layout,
-    migration_outcome, row_to_resource, tenant_arguments,
+    SELECT_ADDRESSES, SELECT_ALL_LOCKS, SELECT_RESOURCES, SELECT_SCHEMA_VERSION,
 };
 use crate::state::{
     ConditionalPut, ManagedResource, RecordVersion, ResourceAddress, StateLock, StateStore,
@@ -39,8 +43,27 @@ fn configuration(url: &str) -> TursoConfiguration {
     }
 }
 
+#[test]
+fn migration_connection_identity_excludes_credentials_and_non_root_routes() {
+    let first = TursoStateStore::try_new(configuration("https://example.com")).unwrap();
+    let mut different_token = configuration("https://example.com");
+    different_token.authentication_token = Some("another-secret".into());
+    let same = TursoStateStore::try_new(different_token).unwrap();
+    let other = TursoStateStore::try_new(configuration("https://example.org")).unwrap();
+    let path = TursoStateStore::try_new(configuration("https://example.com/secret")).unwrap();
+    assert_eq!(
+        first.legacy_migration_source(),
+        same.legacy_migration_source()
+    );
+    assert_ne!(
+        first.legacy_migration_source(),
+        other.legacy_migration_source()
+    );
+    assert!(path.legacy_migration_source().is_none());
+}
+
 fn configuration_error(url: &str) -> String {
-    match pipeline_url(url) {
+    match super::pipeline_url(url) {
         Err(InfrastructureError::Configuration(message)) => message,
         other => panic!("expected a configuration error for {url}, got {other:?}"),
     }
@@ -151,7 +174,10 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
         panic!("{refused:?}");
     };
     assert_eq!(locks.len(), 1, "{locks:?}");
-    assert_eq!(locks[0].lock.lock_identifier, lock.lock_identifier);
+    assert_eq!(
+        locks[0].lock.identifier(),
+        Some(lock.lock_identifier.as_str())
+    );
     assert_eq!(locks[0].project, "web");
     assert_eq!(locks[0].environment, None);
     assert!(
@@ -219,7 +245,7 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     assert_eq!(stale.len(), 1);
     assert!(
         store
-            .force_unlock(&stale[0].tenant()?, &stale[0].lock.lock_identifier)
+            .force_unlock(&stale[0].tenant()?, stale[0].lock.identifier().unwrap())
             .await?
     );
     assert!(store.locks().await?.is_empty());
@@ -276,6 +302,7 @@ async fn a_migration_refuses_while_any_lock_is_held() {
     let outcome = scenario.await;
     drop_state_tables(&store).await;
     outcome.unwrap().unwrap();
+    legacy_copy_tests::exact_copy_against_sqld().await.unwrap();
 }
 
 #[test]
@@ -301,7 +328,11 @@ fn pipeline_url_normalizes_schemes() {
         ),
     ];
     for (input, expected) in cases {
-        assert_eq!(pipeline_url(input).unwrap().as_str(), expected, "{input}");
+        assert_eq!(
+            super::pipeline_url(input).unwrap().as_str(),
+            expected,
+            "{input}"
+        );
     }
     assert!(configuration_error("postgres://nope").contains("unsupported"));
     assert!(configuration_error("db.turso.io").contains("expected libsql://"));
@@ -396,7 +427,7 @@ fn urls_follow_the_schema_contract() {
         "https://[12345::1]",
     ];
     for url in accepted {
-        assert!(pipeline_url(url).is_ok(), "{url:?} must be accepted");
+        assert!(super::pipeline_url(url).is_ok(), "{url:?} must be accepted");
     }
     for url in rejected {
         configuration_error(url);
@@ -431,10 +462,10 @@ fn host_spellings_beyond_the_contract_are_rejected() {
         "http://[::FFFF:127.0.0.1]",
         "http://LocalHost:1",
     ] {
-        assert_eq!(pipeline_url(url).unwrap().scheme(), "http", "{url}");
+        assert_eq!(super::pipeline_url(url).unwrap().scheme(), "http", "{url}");
     }
     assert_eq!(
-        pipeline_url("https://db.turso.io/a%20b;c=d@e")
+        super::pipeline_url("https://db.turso.io/a%20b;c=d@e")
             .unwrap()
             .path(),
         "/a%20b;c=d@e/v2/pipeline"
@@ -452,7 +483,7 @@ fn plaintext_urls_are_allowed_only_for_loopback_hosts() {
         "http://[::ffff:127.0.0.1]:8080",
         "ws://127.0.0.1:8080",
     ] {
-        assert_eq!(pipeline_url(url).unwrap().scheme(), "http", "{url}");
+        assert_eq!(super::pipeline_url(url).unwrap().scheme(), "http", "{url}");
     }
     for url in [
         "http://db.turso.io",
@@ -542,11 +573,11 @@ fn retry_policy_backs_off_exponentially() {
 fn classifies_http_statuses() {
     for status in [408, 429, 500, 502, 503, 504] {
         let status = reqwest::StatusCode::from_u16(status).unwrap();
-        assert!(status_is_transient(status), "{status}");
+        assert!(crate::state::http::status_is_transient(status), "{status}");
     }
     for status in [400, 401, 403, 404, 409] {
         let status = reqwest::StatusCode::from_u16(status).unwrap();
-        assert!(!status_is_transient(status), "{status}");
+        assert!(!crate::state::http::status_is_transient(status), "{status}");
     }
 }
 
@@ -557,7 +588,7 @@ fn classifies_statement_errors() {
         code: Some("SQLITE_BUSY".into()),
     };
     assert_eq!(
-        statement_failure(&busy, Disclosure::Full).kind,
+        super::statement_failure(&busy, Disclosure::Full).kind,
         FailureKind::Busy
     );
     let snapshot = HranaError {
@@ -565,14 +596,14 @@ fn classifies_statement_errors() {
         code: Some("SQLITE_BUSY_SNAPSHOT".into()),
     };
     assert_eq!(
-        statement_failure(&snapshot, Disclosure::Full).kind,
+        super::statement_failure(&snapshot, Disclosure::Full).kind,
         FailureKind::Busy
     );
     let syntax = HranaError {
         message: "near \"SELEC\": syntax error".into(),
         code: Some("SQLITE_ERROR".into()),
     };
-    let failure = statement_failure(&syntax, Disclosure::Full);
+    let failure = super::statement_failure(&syntax, Disclosure::Full);
     assert_eq!(failure.kind, FailureKind::Statement);
     assert!(failure.message.contains("syntax error (SQLITE_ERROR)"));
 }
@@ -583,10 +614,10 @@ fn errors_about_statements_carrying_state_quote_only_codes() {
         message: "invalid argument \"hunter2\"\u{1b}[2J".into(),
         code: Some("SQLITE_TOOBIG".into()),
     };
-    let withheld = statement_failure(&echo, Disclosure::CodeOnly).message;
+    let withheld = super::statement_failure(&echo, Disclosure::CodeOnly).message;
     assert!(withheld.contains("SQLITE_TOOBIG"), "{withheld}");
     assert!(!withheld.contains("hunter2"), "{withheld}");
-    let quoted = statement_failure(&echo, Disclosure::Full).message;
+    let quoted = super::statement_failure(&echo, Disclosure::Full).message;
     assert!(quoted.contains("hunter2"), "{quoted}");
     assert!(!quoted.contains('\u{1b}'), "{quoted}");
 
@@ -595,7 +626,7 @@ fn errors_about_statements_carrying_state_quote_only_codes() {
             .to_vec(),
         truncated: false,
     };
-    let described = describe_http_error(&HttpError {
+    let described = super::describe_http_error(&HttpError {
         status: reqwest::StatusCode::BAD_REQUEST,
         body: &body,
         total_bytes: None,
@@ -623,7 +654,7 @@ fn corrupt_rows_are_reported_without_their_content() {
         SqlValue::text(&uuid::Uuid::from_u128(7).to_string()),
         SqlValue::text("[]"),
     ];
-    let error = row_to_resource(&row).unwrap_err();
+    let error = crate::state::sql::row_to_resource(&row).unwrap_err();
     assert!(
         matches!(&error, InfrastructureError::UndecodableRecord { address, .. } if address == "random_pet.pet"),
         "{error:?}"
@@ -634,14 +665,17 @@ fn corrupt_rows_are_reported_without_their_content() {
     assert!(!message.contains("hunter2"), "{message}");
     row[5] = SqlValue::text("{}");
     row[6] = SqlValue::Unreadable;
-    let message = row_to_resource(&row).unwrap_err().to_string();
+    let message = crate::state::sql::row_to_resource(&row)
+        .unwrap_err()
+        .to_string();
     assert!(message.contains("random_pet.pet"), "{message}");
     assert!(!message.contains('!'), "{message}");
 }
 
 #[test]
 fn a_row_without_a_readable_address_still_gets_the_undecodable_error() {
-    let error = row_to_resource(&[SqlValue::Null, SqlValue::text("pet")]).unwrap_err();
+    let error =
+        crate::state::sql::row_to_resource(&[SqlValue::Null, SqlValue::text("pet")]).unwrap_err();
     assert!(
         matches!(&error, InfrastructureError::UndecodableRecord { .. }),
         "{error:?}"
@@ -665,7 +699,7 @@ fn sensitivity_metadata_must_be_a_present_json_string_array() {
         SqlValue::integer(1),
         SqlValue::text(&uuid::Uuid::from_u128(7).to_string()),
     ];
-    let missing = row_to_resource(&row).unwrap_err();
+    let missing = crate::state::sql::row_to_resource(&row).unwrap_err();
     assert!(missing.to_string().contains("sensitive_attributes"));
     for invalid in [
         SqlValue::Null,
@@ -678,14 +712,19 @@ fn sensitivity_metadata_must_be_a_present_json_string_array() {
     ] {
         row.truncate(12);
         row.push(invalid);
-        let error = row_to_resource(&row).unwrap_err();
+        let error = crate::state::sql::row_to_resource(&row).unwrap_err();
         assert!(
             matches!(&error, InfrastructureError::UndecodableRecord { problem, .. } if problem.contains("sensitive_attributes"))
         );
         assert!(!error.to_string().contains("secret"));
     }
     row[12] = SqlValue::text("[\"id\"]");
-    assert_eq!(row_to_resource(&row).unwrap().sensitive_attributes, ["id"]);
+    assert_eq!(
+        crate::state::sql::row_to_resource(&row)
+            .unwrap()
+            .sensitive_attributes,
+        ["id"]
+    );
 }
 
 #[test]
@@ -694,7 +733,10 @@ fn describes_error_body_prefixes() {
         bytes: b"short".to_vec(),
         truncated: false,
     };
-    assert_eq!(describe_error_body(&complete, Some(5)), "short");
+    assert_eq!(
+        crate::state::http::describe_error_body(&complete, Some(5)),
+        "short"
+    );
     // A two-byte character cut in half at the limit is dropped.
     let mut bytes = "é".repeat(2048).into_bytes();
     bytes.truncate(MAXIMUM_ERROR_BODY_BYTES - 1);
@@ -702,11 +744,11 @@ fn describes_error_body_prefixes() {
         bytes,
         truncated: true,
     };
-    let described = describe_error_body(&cut, Some(6000));
+    let described = crate::state::http::describe_error_body(&cut, Some(6000));
     let kept = described.split('…').next().unwrap();
     assert_eq!(kept, "é".repeat(2047));
     assert!(described.ends_with("(truncated, 6000 bytes in total)"));
-    assert!(describe_error_body(&cut, None).ends_with("… (truncated)"));
+    assert!(crate::state::http::describe_error_body(&cut, None).ends_with("… (truncated)"));
 }
 
 #[test]
@@ -760,7 +802,7 @@ fn transaction_batch_matches_hrana_wire_format() {
         baton: None,
         requests: vec![PipelineRequest::Batch {
             batch: Batch {
-                steps: transaction_steps(&statements.iter().collect::<Vec<_>>(), 2),
+                steps: super::transaction_steps(&statements.iter().collect::<Vec<_>>(), 2),
             },
         }],
     };
@@ -791,7 +833,7 @@ fn interprets_migration_batch_results() {
         "step_errors": vec![Value::Null; steps],
     }));
     assert_eq!(
-        transaction_result(&committed, commit).unwrap(),
+        super::transaction_result(&committed, commit, Disclosure::Full).unwrap(),
         TransactionResult::Committed
     );
     let failing = |index: usize, message: &str, code: &str| {
@@ -804,7 +846,12 @@ fn interprets_migration_batch_results() {
     };
     // The step after BEGIN is the body's first statement.
     assert_eq!(
-        transaction_result(&failing(1, "boom", "SQLITE_ERROR"), commit).unwrap(),
+        super::transaction_result(
+            &failing(1, "boom", "SQLITE_ERROR"),
+            commit,
+            Disclosure::Full
+        )
+        .unwrap(),
         TransactionResult::Failed {
             statement: Some(0),
             error: StatementError {
@@ -815,33 +862,57 @@ fn interprets_migration_batch_results() {
     );
     // A busy database is retried, not reported as the migration's failure.
     assert!(
-        transaction_result(&failing(1, "database is locked", "SQLITE_BUSY"), commit)
-            .unwrap_err()
-            .is_transient()
+        super::transaction_result(
+            &failing(1, "database is locked", "SQLITE_BUSY"),
+            commit,
+            Disclosure::Full
+        )
+        .unwrap_err()
+        .is_transient()
     );
+    let secret = "migration-owner-token";
+    let busy = super::transaction_result(
+        &failing(1, secret, "SQLITE_BUSY"),
+        commit,
+        Disclosure::CodeOnly,
+    )
+    .unwrap_err();
+    assert_eq!(busy.kind, FailureKind::Busy);
+    assert!(!busy.message.contains(secret));
     // No commit result and no error: nothing was committed.
     let uncommitted = parse(json!({
         "step_results": vec![Value::Null; steps],
         "step_errors": vec![Value::Null; steps],
     }));
     assert_eq!(
-        transaction_result(&uncommitted, commit).unwrap_err().kind,
+        super::transaction_result(&uncommitted, commit, Disclosure::Full)
+            .unwrap_err()
+            .kind,
         FailureKind::Permanent
     );
     for message in [
         "SQLite error: duplicate column name: tainted",
         "SQLite error: table cuenv_infrastructure_resources already exists",
     ] {
-        let result = transaction_result(&failing(1, message, "SQLITE_ERROR"), commit).unwrap();
+        let result = super::transaction_result(
+            &failing(1, message, "SQLITE_ERROR"),
+            commit,
+            Disclosure::Full,
+        )
+        .unwrap();
         assert_eq!(
-            migration_outcome(&result, &first).unwrap(),
+            crate::state::sql::migration_outcome(&result, &first).unwrap(),
             MigrationOutcome::AlreadyApplied,
             "{message}"
         );
     }
-    let result =
-        transaction_result(&failing(1, "no such table: t", "SQLITE_ERROR"), commit).unwrap();
-    let error = migration_outcome(&result, &first).unwrap_err();
+    let result = super::transaction_result(
+        &failing(1, "no such table: t", "SQLITE_ERROR"),
+        commit,
+        Disclosure::Full,
+    )
+    .unwrap();
+    let error = crate::state::sql::migration_outcome(&result, &first).unwrap_err();
     assert!(error.message.contains("no such table"));
     let failure = Hrana::statement_failure(
         &fast_store("http://127.0.0.1:1", Duration::from_secs(1))
@@ -871,7 +942,7 @@ fn a_failing_fence_statement_means_a_lock_is_held_and_nothing_else_does() {
     // The fence trips with an integer overflow; any other failure of that
     // statement is an ordinary failure, not a held lock.
     assert_eq!(
-        migration_outcome(
+        crate::state::sql::migration_outcome(
             &failed(Some(fence), "SQLite error: integer overflow"),
             &transaction
         )
@@ -879,7 +950,7 @@ fn a_failing_fence_statement_means_a_lock_is_held_and_nothing_else_does() {
         MigrationOutcome::LockHeld
     );
     assert!(
-        migration_outcome(
+        crate::state::sql::migration_outcome(
             &failed(Some(fence), "CHECK constraint failed: lock_rows = 0"),
             &transaction
         )
@@ -887,7 +958,7 @@ fn a_failing_fence_statement_means_a_lock_is_held_and_nothing_else_does() {
     );
     // The same text from any other statement is an ordinary failure.
     assert!(
-        migration_outcome(
+        crate::state::sql::migration_outcome(
             &failed(Some(fence + 1), "SQLite error: integer overflow"),
             &transaction
         )
@@ -896,7 +967,7 @@ fn a_failing_fence_statement_means_a_lock_is_held_and_nothing_else_does() {
     // A backend that does not name the statement (D1) is matched by the
     // message, but only for a migration that has a fence.
     assert_eq!(
-        migration_outcome(
+        crate::state::sql::migration_outcome(
             &failed(None, "integer overflow: SQLITE_ERROR"),
             &transaction
         )
@@ -904,7 +975,13 @@ fn a_failing_fence_statement_means_a_lock_is_held_and_nothing_else_does() {
         MigrationOutcome::LockHeld
     );
     let first = MigrationTransaction::of(&MIGRATIONS[0]);
-    assert!(migration_outcome(&failed(None, "integer overflow: SQLITE_ERROR"), &first).is_err());
+    assert!(
+        crate::state::sql::migration_outcome(
+            &failed(None, "integer overflow: SQLITE_ERROR"),
+            &first
+        )
+        .is_err()
+    );
     // The fence runs before any statement of the migration, which binds
     // nothing (a backend may refuse parameters in a transaction).
     let sql: Vec<&str> = transaction
@@ -1043,12 +1120,13 @@ fn row_to_resource_reads_tainted_and_identity() {
             SqlValue::text("[\"id\"]"),
         ]
     };
-    let resource = row_to_resource(&row("1", SqlValue::text("{\"name\":\"a\"}"))).unwrap();
+    let resource =
+        crate::state::sql::row_to_resource(&row("1", SqlValue::text("{\"name\":\"a\"}"))).unwrap();
     assert!(resource.tainted);
     assert_eq!(resource.sensitive_attributes, ["id"]);
     assert_eq!(resource.serial, 7);
     assert_eq!(resource.identity, Some(json!({"name": "a"})));
-    let resource = row_to_resource(&row("0", SqlValue::Null)).unwrap();
+    let resource = crate::state::sql::row_to_resource(&row("0", SqlValue::Null)).unwrap();
     assert!(!resource.tainted);
     assert_eq!(resource.identity, None);
 }
@@ -1218,7 +1296,7 @@ fn tenant() -> TenantKey {
 
 #[tokio::test]
 async fn retries_transient_http_statuses_then_succeeds() {
-    let server = fake_server(Arc::new(|index, _| {
+    let server = crate::state::fake_server::fake_server(Arc::new(|index, _| {
         Some(match index {
             0 => (503, "unavailable".to_string()),
             1 => (429, "slow down".to_string()),
@@ -1233,7 +1311,7 @@ async fn retries_transient_http_statuses_then_succeeds() {
 
 #[tokio::test]
 async fn permanent_http_errors_are_not_retried_and_never_leak_the_token() {
-    let server = fake_server(Arc::new(|_, _| {
+    let server = crate::state::fake_server::fake_server(Arc::new(|_, _| {
         let echo = format!("bad token secret-token {}", "x".repeat(10_000));
         Some((401, echo))
     }))
@@ -1254,7 +1332,7 @@ async fn permanent_http_errors_are_not_retried_and_never_leak_the_token() {
 
 #[tokio::test]
 async fn write_errors_never_quote_a_body_echoing_the_state() {
-    let server = fake_server(Arc::new(|_, body| {
+    let server = crate::state::fake_server::fake_server(Arc::new(|_, body| {
         // Echo the request, state included, as some servers do.
         Some((
             400,
@@ -1344,7 +1422,7 @@ fn busy_response() -> String {
 #[tokio::test]
 async fn a_busy_database_is_tried_past_the_limit_on_other_failures() {
     let busy_attempts = RetryPolicy::DEFAULT.retries as usize + 5;
-    let server = fake_server(Arc::new(move |index, _| {
+    let server = crate::state::fake_server::fake_server(Arc::new(move |index, _| {
         Some(if index < busy_attempts {
             (200, busy_response())
         } else {
@@ -1360,7 +1438,8 @@ async fn a_busy_database_is_tried_past_the_limit_on_other_failures() {
 
 #[tokio::test]
 async fn a_busy_database_is_given_up_on_once_its_budget_runs_out() {
-    let server = fake_server(Arc::new(|_, _| Some((200, busy_response())))).await;
+    let server =
+        crate::state::fake_server::fake_server(Arc::new(|_, _| Some((200, busy_response())))).await;
     let store = fast_store(&server.url, Duration::from_secs(5));
     let started = std::time::Instant::now();
     let message = store.list(&tenant()).await.unwrap_err().to_string();
@@ -1374,7 +1453,7 @@ async fn taking_a_lock_waits_for_a_busy_database() {
     let inserts = Arc::new(AtomicUsize::new(0));
     let insert_counter = Arc::clone(&inserts);
     let busy_attempts = RetryPolicy::DEFAULT.retries as usize + 5;
-    let server = fake_server(Arc::new(move |_, body| {
+    let server = crate::state::fake_server::fake_server(Arc::new(move |_, body| {
         let sql = first_statement(&body);
         if schema_rows(&sql, LATEST_SCHEMA_VERSION).is_some() {
             return Some((
@@ -1449,7 +1528,7 @@ async fn lock_insert_with_lost_response_is_recovered_from_the_lock_row() {
     let recorded = Arc::clone(&inserted);
     let inserts = Arc::new(AtomicUsize::new(0));
     let insert_counter = Arc::clone(&inserts);
-    let server = fake_server(Arc::new(move |_, body| {
+    let server = crate::state::fake_server::fake_server(Arc::new(move |_, body| {
         let sql = first_statement(&body);
         if schema_rows(&sql, LATEST_SCHEMA_VERSION).is_some() {
             return Some((
@@ -1492,7 +1571,7 @@ async fn lock_insert_with_lost_response_is_recovered_from_the_lock_row() {
 
 #[tokio::test]
 async fn lock_held_by_another_run_is_reported() {
-    let server = fake_server(Arc::new(|_, body| {
+    let server = crate::state::fake_server::fake_server(Arc::new(|_, body| {
         let sql = first_statement(&body);
         Some(if schema_rows(&sql, LATEST_SCHEMA_VERSION).is_some() {
             (
@@ -1514,8 +1593,8 @@ async fn lock_held_by_another_run_is_reported() {
     let store = fast_store(&server.url, Duration::from_secs(5));
     let error = store.lock(&tenant(), "test").await.unwrap_err();
     assert!(
-        matches!(&error, InfrastructureError::Locked { lock_identifier, holder, .. }
-            if lock_identifier == "other-lock" && holder == "someone else"),
+        matches!(&error, InfrastructureError::Locked { lock, .. }
+            if lock.identifier() == Some("other-lock") && lock.holder == "someone else"),
         "{error:?}"
     );
 }
@@ -1527,7 +1606,7 @@ async fn recording_database(
 ) -> (FakeServer, Arc<Mutex<Vec<String>>>) {
     let statements = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&statements);
-    let server = fake_server(Arc::new(move |_, body| {
+    let server = crate::state::fake_server::fake_server(Arc::new(move |_, body| {
         let requests = body["requests"].as_array().unwrap();
         recorded.lock().unwrap().extend(
             requests
@@ -1684,17 +1763,29 @@ fn the_no_flag_identity_and_named_environments_are_distinct_key_values() {
     let dev = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
     let staging = TenantKey::with_environment("example.com/app", "web", "Staging").unwrap();
     assert_eq!(
-        tenant_arguments(&none),
+        crate::state::sql::tenant_arguments(&none),
         vec![
             SqlValue::text("example.com/app"),
             SqlValue::text("web"),
             SqlValue::text(""),
         ]
     );
-    assert_eq!(tenant_arguments(&dev)[2], SqlValue::text("Dev"));
-    assert_eq!(tenant_arguments(&staging)[2], SqlValue::text("Staging"));
-    assert_ne!(tenant_arguments(&dev), tenant_arguments(&staging));
-    assert_ne!(tenant_arguments(&none), tenant_arguments(&dev));
+    assert_eq!(
+        crate::state::sql::tenant_arguments(&dev)[2],
+        SqlValue::text("Dev")
+    );
+    assert_eq!(
+        crate::state::sql::tenant_arguments(&staging)[2],
+        SqlValue::text("Staging")
+    );
+    assert_ne!(
+        crate::state::sql::tenant_arguments(&dev),
+        crate::state::sql::tenant_arguments(&staging)
+    );
+    assert_ne!(
+        crate::state::sql::tenant_arguments(&none),
+        crate::state::sql::tenant_arguments(&dev)
+    );
     // The empty key value belongs to the no-flag identity alone.
     assert!(TenantKey::with_environment("example.com/app", "web", "").is_err());
 }
@@ -1790,11 +1881,11 @@ async fn every_state_statement_is_scoped_by_environment() {
 
 #[tokio::test]
 async fn redirects_are_not_followed() {
-    let elsewhere = fake_server(Arc::new(|_, _| {
+    let elsewhere = crate::state::fake_server::fake_server(Arc::new(|_, _| {
         Some((200, execute_response(&json!([]), 0)))
     }))
     .await;
-    let redirecting = fake_server_with_headers(
+    let redirecting = crate::state::fake_server::fake_server_with_headers(
         Arc::new(|_, _| Some((307, String::new()))),
         format!("location: {}/v2/pipeline\r\n", elsewhere.url),
     )
@@ -1808,7 +1899,7 @@ async fn redirects_are_not_followed() {
 
 #[tokio::test]
 async fn oversized_responses_are_refused_without_retrying() {
-    let server = fake_server(Arc::new(|_, body| {
+    let server = crate::state::fake_server::fake_server(Arc::new(|_, body| {
         Some((
             200,
             pipeline_response(&body, |_| {
@@ -1834,7 +1925,7 @@ const PROXY_CHILD_VARIABLE: &str = "CUENV_INFRASTRUCTURE_TEST_PROXY_CHILD";
 #[tokio::test]
 async fn plaintext_loopback_requests_bypass_proxy_environment() {
     if std::env::var_os(PROXY_CHILD_VARIABLE).is_some() {
-        let server = fake_server(Arc::new(|_, body| {
+        let server = crate::state::fake_server::fake_server(Arc::new(|_, body| {
             Some((200, pipeline_response(&body, |_| Some(json!([])))))
         }))
         .await;
@@ -1924,7 +2015,7 @@ async fn a_lock_is_not_inserted_when_the_schema_moved_since_it_was_checked() {
     let reads = Arc::clone(&version_reads);
     let inserts = Arc::new(Mutex::new(Vec::<String>::new()));
     let recorded = Arc::clone(&inserts);
-    let server = fake_server(Arc::new(move |_, body| {
+    let server = crate::state::fake_server::fake_server(Arc::new(move |_, body| {
         let sql = first_statement(&body);
         if sql == SELECT_SCHEMA_VERSION {
             // The check sees the current schema; a migration then commits,
@@ -1991,10 +2082,10 @@ fn table_names(names: &[&str]) -> Value {
 #[test]
 fn tables_of_unreleased_builds_are_told_apart_from_foreign_ones() {
     let names = |names: &[&str]| -> Vec<String> { names.iter().map(ToString::to_string).collect() };
-    assert_eq!(classify_layout(&[]), Layout::Recognized);
+    assert_eq!(crate::state::sql::classify_layout(&[]), Layout::Recognized);
     // Names that merely start alike are not cuenv's.
     assert_eq!(
-        classify_layout(&names(&["cuenv_infrastructure_notes"])),
+        crate::state::sql::classify_layout(&names(&["cuenv_infrastructure_notes"])),
         Layout::Recognized
     );
     for unreleased in [
@@ -2004,13 +2095,16 @@ fn tables_of_unreleased_builds_are_told_apart_from_foreign_ones() {
         "cuenv_infrastructurestructure_resources",
     ] {
         assert_eq!(
-            classify_layout(&names(&["cuenv_infrastructure_resources", unreleased])),
+            crate::state::sql::classify_layout(&names(&[
+                "cuenv_infrastructure_resources",
+                unreleased
+            ])),
             Layout::Unreleased(names(&[unreleased])),
             "{unreleased}"
         );
     }
     assert_eq!(
-        classify_layout(&names(&["cuenv_infrastructure_locks"])),
+        crate::state::sql::classify_layout(&names(&["cuenv_infrastructure_locks"])),
         Layout::Unrecorded(names(&["cuenv_infrastructure_locks"]))
     );
 }
@@ -2109,17 +2203,22 @@ fn only_the_overflow_of_the_fence_means_a_lock_is_held() {
             message: message.to_string(),
             code: None,
         });
-        transaction_result(
+        super::transaction_result(
             &BatchResult {
                 step_results: Vec::new(),
                 step_errors: errors,
             },
             transaction.statements.len() + 1,
+            Disclosure::Full,
         )
         .unwrap()
     };
     assert_eq!(
-        migration_outcome(&failed("SQLite error: integer overflow"), &transaction).unwrap(),
+        crate::state::sql::migration_outcome(
+            &failed("SQLite error: integer overflow"),
+            &transaction
+        )
+        .unwrap(),
         MigrationOutcome::LockHeld
     );
     // Any other failure of the fence statement is not a held lock.
@@ -2127,7 +2226,8 @@ fn only_the_overflow_of_the_fence_means_a_lock_is_held() {
         "SQLite error: no such table: cuenv_infrastructure_locks",
         "database is locked",
     ] {
-        let failure = migration_outcome(&failed(message), &transaction).unwrap_err();
+        let failure =
+            crate::state::sql::migration_outcome(&failed(message), &transaction).unwrap_err();
         assert!(failure.message.contains(message), "{}", failure.message);
     }
 }

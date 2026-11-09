@@ -70,6 +70,7 @@ pub struct ManagedResource {
     /// Resource schema version the state was written with.
     pub schema_version: i64,
     /// Resource state as cty JSON.
+    #[serde(deserialize_with = "crate::type_system::deserialize_json_value")]
     pub state: serde_json::Value,
     /// Provider private data, opaque to cuenv.
     #[serde(with = "base64_bytes")]
@@ -86,7 +87,10 @@ pub struct ManagedResource {
     pub tainted: bool,
     /// Resource identity data as cty JSON, for providers that declare an
     /// identity schema.
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::type_system::deserialize_optional_json_value"
+    )]
     pub identity: Option<serde_json::Value>,
     /// How many times the stored record was written: 1 after the first
     /// write, one more after every further write. Assigned by the store

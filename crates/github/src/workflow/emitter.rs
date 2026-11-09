@@ -7,7 +7,7 @@ use crate::workflow::schema::{
     ReleaseTrigger, RunsOn, ScheduleTrigger, Step, Workflow, WorkflowDispatchTrigger,
     WorkflowInput, WorkflowTriggers,
 };
-use crate::workflow::stage_renderer::{GitHubStageRenderer, transform_secret_ref};
+use crate::workflow::stage_renderer::GitHubStageRenderer;
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, TriggerCondition};
 use indexmap::IndexMap;
@@ -22,37 +22,37 @@ pub use super::release::{ReleaseTarget, ReleaseWorkflowBuilder};
 /// The main step of a workflow emitted by
 /// [`GitHubActionsEmitter::emit_command_workflow`].
 #[derive(Debug, Clone, Copy)]
-pub struct CommandWorkflow<'a> {
+pub struct CommandWorkflow<'workflow> {
     /// Display name of the main step.
-    pub step_name: &'a str,
+    pub step_name: &'workflow str,
     /// Id of the main step, for follow-up steps that read its outcome.
-    pub step_id: Option<&'a str>,
+    pub step_id: Option<&'workflow str>,
     /// Shell command the main step runs.
-    pub command: &'a str,
+    pub command: &'workflow str,
     /// Concurrency group of the workflow; the default is one group per
     /// workflow and ref.
-    pub concurrency_group: Option<&'a str>,
+    pub concurrency_group: Option<&'workflow str>,
     /// Whether a newer run in the same concurrency group cancels one that is
     /// still in progress.
     pub cancel_in_progress: bool,
     /// Condition for the job (`jobs.<id>.if`).
-    pub job_if: Option<&'a str>,
+    pub job_if: Option<&'workflow str>,
     /// Steps that run after the main step, before the success and failure
     /// phase steps.
-    pub follow_up_steps: &'a [Step],
+    pub follow_up_steps: &'workflow [Step],
     /// GitHub environment for the job. Unlike the pipeline environment, it
     /// does not select a cuenv environment (`CUENV_ENVIRONMENT`).
-    pub job_environment: Option<&'a str>,
+    pub job_environment: Option<&'workflow str>,
     /// What the main job's `GITHUB_TOKEN` may do.
     pub token_scope: TokenScope,
     /// A job that runs after the main job, with its own permissions and
     /// without the main job's secrets.
-    pub follow_up_job: Option<&'a FollowUpJob<'a>>,
+    pub follow_up_job: Option<&'workflow FollowUpJob<'workflow>>,
     /// Steps that run after setup, right before the main step.
-    pub leading_steps: &'a [Step],
+    pub leading_steps: &'workflow [Step],
     /// Permissions the main job needs beyond its scope, as
     /// `(scope, "read" | "write")` pairs; configured ceilings still apply.
-    pub additional_permissions: &'a [(&'a str, &'a str)],
+    pub additional_permissions: &'workflow [(&'workflow str, &'workflow str)],
 }
 
 /// What the main job's `GITHUB_TOKEN` may do.
@@ -393,7 +393,10 @@ impl GitHubActionsEmitter {
         // Pass secret env vars from setup tasks to main step (e.g., OP_SERVICE_ACCOUNT_TOKEN)
         // Transform ${VAR} to ${{ secrets.VAR }} format for GitHub Actions
         for (key, value) in secret_env {
-            main_step = main_step.with_env(key, transform_secret_ref(&value));
+            main_step = main_step.with_env(
+                key,
+                crate::workflow::stage_renderer::transform_secret_ref(&value),
+            );
         }
 
         steps.push(main_step);
@@ -750,7 +753,7 @@ impl GitHubActionsEmitter {
                 task,
                 ir,
                 &SimpleJobOptions::orchestrated(
-                    ir.pipeline.environment.as_ref(),
+                    ir.pipeline.environment.as_deref(),
                     None, // project_path - not used in single-project mode
                 ),
             );

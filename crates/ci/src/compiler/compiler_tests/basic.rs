@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    CachePolicy, Compiler, CompilerOptions, Input, Project, Task, TaskDependency, TaskNode,
+};
 
 #[test]
 fn test_compile_simple_task() {

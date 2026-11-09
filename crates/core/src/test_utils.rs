@@ -3,7 +3,7 @@
 //! This module provides common helper functions for creating test fixtures
 //! across different test modules.
 
-use crate::tasks::{Input, Mapping, ProjectReference, Task, TaskDependency, TaskNode};
+use crate::tasks::{Task, TaskDependency, TaskNode};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -35,33 +35,6 @@ pub fn create_task_ref(ref_str: &str, deps: Vec<&str>) -> Task {
     task
 }
 
-/// Create a task with project reference input
-pub fn create_task_with_project_ref(
-    name: &str,
-    deps: Vec<&str>,
-    project: &str,
-    task: &str,
-    mappings: Vec<(&str, &str)>,
-) -> Task {
-    Task {
-        command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(TaskDependency::from_name).collect(),
-        description: Some(format!("Test task {}", name)),
-        inputs: vec![Input::Project(ProjectReference {
-            project: project.to_string(),
-            task: task.to_string(),
-            map: mappings
-                .into_iter()
-                .map(|(from, to)| Mapping {
-                    from: from.to_string(),
-                    to: to.to_string(),
-                })
-                .collect(),
-        })],
-        ..Default::default()
-    }
-}
-
 /// Create a test hook for onEnter/onExit testing
 pub fn create_test_hook(order: i32, command: &str) -> cuenv_hooks::Hook {
     cuenv_hooks::Hook {
@@ -80,17 +53,7 @@ pub fn create_test_hook(order: i32, command: &str) -> cuenv_hooks::Hook {
 /// Returns a `TempDir` that will be cleaned up when dropped.
 /// The directory contains an env.cue file with the provided content.
 ///
-/// # Example
-///
-/// ```ignore
-/// let dir = create_temp_project(r#"
-/// package cuenv
-/// import "github.com/cuenv/cuenv/schema"
-/// schema.#Project
-/// name: "test"
-/// "#);
-/// assert!(dir.path().join("env.cue").exists());
-/// ```
+/// The generated file's contents are checked by `test_create_temp_project`.
 #[must_use]
 pub fn create_temp_project(cue_content: &str) -> TempDir {
     let dir = tempfile::Builder::new()
@@ -107,13 +70,8 @@ pub fn create_temp_project(cue_content: &str) -> TempDir {
 /// - package.json with the project name
 /// - The appropriate lockfile for the package manager
 ///
-/// # Example
-///
-/// ```ignore
-/// let dir = create_mock_workspace(PackageManager::Bun);
-/// assert!(dir.path().join("bun.lock").exists());
-/// assert!(dir.path().join("package.json").exists());
-/// ```
+/// Package-manager-specific fixture creation is covered by the
+/// `test_create_mock_workspace_*` tests below.
 #[must_use]
 pub fn create_mock_workspace(manager: PackageManager) -> TempDir {
     let dir = tempfile::Builder::new()

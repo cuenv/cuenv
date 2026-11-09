@@ -11,7 +11,7 @@ use cuenv_core::tasks::TaskCacheMode;
 use cuenv_task_exec::cache::TaskCacheConfig;
 
 use super::remote_cache;
-use crate::commands::relative_path_from_root;
+use crate::commands;
 
 /// Resolve the on-disk root for the local CAS + action cache.
 ///
@@ -32,11 +32,11 @@ pub(super) fn resolve_cache_root(project_root: &Path) -> PathBuf {
 }
 
 /// Everything `build_task_cache` needs that is not the cache's own settings.
-pub(super) struct TaskCacheContext<'a> {
+pub(super) struct TaskCacheContext<'context> {
     /// Root of the project whose task is running.
-    pub(super) project_root: &'a Path,
+    pub(super) project_root: &'context Path,
     /// Root of the VCS workspace, which bounds path-shaped project references.
-    pub(super) hasher_root: &'a Path,
+    pub(super) hasher_root: &'context Path,
     /// Project roots by name and by module-relative path.
     pub(super) project_roots: BTreeMap<String, PathBuf>,
     /// Runtime identity folded into every action key.
@@ -222,7 +222,7 @@ pub(super) fn resolve_runtime_cache_identity(
                 }
             };
 
-            let project_path = relative_path_from_root(module_root, project_root);
+            let project_path = commands::relative_path_from_root(module_root, project_root);
             let project_key = project_path.to_string_lossy().into_owned();
             let Some(locked_runtime) = lockfile.find_runtime(&project_key) else {
                 identity.cache_disabled_reason = Some(format!(

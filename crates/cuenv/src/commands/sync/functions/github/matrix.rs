@@ -1,9 +1,7 @@
 //! GitHub Actions matrix workflow emission.
 
-use super::{
-    PipelineContext, consumes_cuenv_bootstrap, inject_cuenv_bootstrap_jobs, pipeline_cuenv_setup,
-    sanitize_workflow_name, simple_job_execution, simple_job_options,
-};
+use super::implementation;
+use super::implementation::{BootstrapInput, PipelineContext, sanitize_workflow_name};
 use cuenv_core::Result;
 use std::collections::{BTreeMap, HashSet};
 
@@ -12,26 +10,26 @@ struct BuiltPipelineJobs {
     bootstrap_consumers: HashSet<String>,
 }
 
-struct PipelineJobBuildContext<'a> {
-    ctx: &'a PipelineContext,
-    ir: &'a cuenv_ci::ir::IntermediateRepresentation,
-    emitter: &'a cuenv_github::workflow::GitHubActionsEmitter,
+struct PipelineJobBuildContext<'context> {
+    ctx: &'context PipelineContext,
+    ir: &'context cuenv_ci::ir::IntermediateRepresentation,
+    emitter: &'context cuenv_github::workflow::GitHubActionsEmitter,
     cuenv_setup: cuenv_github::workflow::CuenvSetup,
 }
 
-struct PipelineJobsRequest<'a> {
-    expanded_tasks: &'a [cuenv_core::ci::PipelineTask],
-    ctx: &'a PipelineContext,
-    ir: &'a cuenv_ci::ir::IntermediateRepresentation,
-    emitter: &'a cuenv_github::workflow::GitHubActionsEmitter,
+struct PipelineJobsRequest<'request> {
+    expanded_tasks: &'request [cuenv_core::ci::PipelineTask],
+    ctx: &'request PipelineContext,
+    ir: &'request cuenv_ci::ir::IntermediateRepresentation,
+    emitter: &'request cuenv_github::workflow::GitHubActionsEmitter,
     cuenv_setup: cuenv_github::workflow::CuenvSetup,
 }
 
-struct TransitiveDependencyJobRequest<'a> {
-    jobs: &'a mut indexmap::IndexMap<String, cuenv_github::workflow::schema::Job>,
-    bootstrap_consumers: &'a mut HashSet<String>,
-    processed_task_names: &'a HashSet<String>,
-    build_context: &'a PipelineJobBuildContext<'a>,
+struct TransitiveDependencyJobRequest<'request> {
+    jobs: &'request mut indexmap::IndexMap<String, cuenv_github::workflow::schema::Job>,
+    bootstrap_consumers: &'request mut HashSet<String>,
+    processed_task_names: &'request HashSet<String>,
+    build_context: &'request PipelineJobBuildContext<'request>,
 }
 
 /// Emit a workflow with matrix expansion for tasks that have matrix configurations.
@@ -49,7 +47,7 @@ pub(super) fn emit_matrix_workflow(
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    let cuenv_setup = pipeline_cuenv_setup(ctx, &emitter, &ir);
+    let cuenv_setup = implementation::pipeline_cuenv_setup(ctx, &emitter, &ir);
 
     let explicit_task_names: HashSet<String> = ctx
         .pipeline_tasks
@@ -71,7 +69,14 @@ pub(super) fn emit_matrix_workflow(
         cuenv_setup,
     });
     let mut jobs = built_jobs.jobs;
-    inject_cuenv_bootstrap_jobs(&mut jobs, &ir, &emitter, &built_jobs.bootstrap_consumers);
+    implementation::inject_cuenv_bootstrap_jobs(
+        &mut jobs,
+        BootstrapInput {
+            ir: &ir,
+            emitter: &emitter,
+            bootstrap_consumers: &built_jobs.bootstrap_consumers,
+        },
+    );
 
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 
@@ -120,18 +125,18 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
         match pipeline_task {
             cuenv_core::ci::PipelineTask::Simple(_) | cuenv_core::ci::PipelineTask::Node(_) => {
                 if let Some(ir_task) = request.ctx.tasks.iter().find(|t| t.id == task_name) {
-                    let execution = simple_job_execution(request.ctx, ir_task);
+                    let execution = implementation::simple_job_execution(request.ctx, ir_task);
                     let mut job = request.emitter.build_simple_job(
                         ir_task,
                         request.ir,
-                        &simple_job_options(request.ctx, ir_task, cuenv_setup),
+                        &implementation::simple_job_options(request.ctx, ir_task, cuenv_setup),
                     );
                     job.needs = ir_task
                         .depends_on
                         .iter()
                         .map(|dep| dep.replace(['.', ' '], "-"))
                         .collect();
-                    if consumes_cuenv_bootstrap(cuenv_setup, execution) {
+                    if implementation::consumes_cuenv_bootstrap(cuenv_setup, execution) {
                         bootstrap_consumers.insert(job_id.clone());
                     }
                     jobs.insert(job_id, job);
@@ -167,13 +172,13 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                         &synthetic_task,
                         request.ir,
                         &cuenv_github::workflow::ArtifactAggregationJobOptions {
-                            environment: request.ctx.environment.as_ref(),
+                            environment: request.ctx.environment.as_deref(),
                             previous_jobs: &combined_needs,
                             project_path: request.ctx.project_path.as_deref(),
                             cuenv_setup,
                         },
                     );
-                    if consumes_cuenv_bootstrap(
+                    if implementation::consumes_cuenv_bootstrap(
                         cuenv_setup,
                         cuenv_github::workflow::TaskExecution::Orchestrated,
                     ) {
@@ -184,7 +189,8 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                     let ir_task = request.ctx.tasks.iter().find(|t| t.id == task_name);
                     let synthetic_task =
                         create_synthetic_matrix_task(task_name, matrix_task, ir_task);
-                    let execution = simple_job_execution(request.ctx, &synthetic_task);
+                    let execution =
+                        implementation::simple_job_execution(request.ctx, &synthetic_task);
                     let previous_jobs: Vec<_> = synthetic_task
                         .depends_on
                         .iter()
@@ -201,7 +207,7 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
                         &synthetic_task,
                         request.ir,
                         &cuenv_github::workflow::MatrixJobOptions {
-                            environment: request.ctx.environment.as_ref(),
+                            environment: request.ctx.environment.as_deref(),
                             arch_runners: arch_runners.as_ref(),
                             previous_jobs: &previous_jobs,
                             project_path: request.ctx.project_path.as_deref(),
@@ -212,7 +218,7 @@ fn build_pipeline_jobs(request: &PipelineJobsRequest<'_>) -> BuiltPipelineJobs {
 
                     for (id, job) in expanded_jobs {
                         artifact_source_jobs.insert(id.clone());
-                        if consumes_cuenv_bootstrap(cuenv_setup, execution) {
+                        if implementation::consumes_cuenv_bootstrap(cuenv_setup, execution) {
                             bootstrap_consumers.insert(id.clone());
                         }
                         jobs.insert(id, job);
@@ -247,18 +253,22 @@ fn add_transitive_dependency_jobs(request: &mut TransitiveDependencyJobRequest<'
             continue;
         }
 
-        let execution = simple_job_execution(build_context.ctx, ir_task);
+        let execution = implementation::simple_job_execution(build_context.ctx, ir_task);
         let mut job = build_context.emitter.build_simple_job(
             ir_task,
             build_context.ir,
-            &simple_job_options(build_context.ctx, ir_task, build_context.cuenv_setup),
+            &implementation::simple_job_options(
+                build_context.ctx,
+                ir_task,
+                build_context.cuenv_setup,
+            ),
         );
         job.needs = ir_task
             .depends_on
             .iter()
             .map(|dep| dep.replace(['.', ' '], "-"))
             .collect();
-        if consumes_cuenv_bootstrap(build_context.cuenv_setup, execution) {
+        if implementation::consumes_cuenv_bootstrap(build_context.cuenv_setup, execution) {
             request.bootstrap_consumers.insert(job_id.clone());
         }
         request.jobs.insert(job_id, job);

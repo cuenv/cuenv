@@ -1,4 +1,10 @@
-use super::*;
+use std::collections::{BTreeMap, HashMap};
+
+use super::{
+    ActivationCondition, AnnotationValue, CI, Contributor, ContributorTask, ManualTrigger,
+    Pipeline, PipelineCondition, PipelineMode, PipelineTask, RunnerMapping, StringOrVec,
+    WorkflowDispatchInput,
+};
 
 #[test]
 fn test_string_or_vec() {

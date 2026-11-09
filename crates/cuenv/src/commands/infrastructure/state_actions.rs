@@ -4,15 +4,12 @@
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
     BackendMismatch, MIGRATION_FENCE_PREFIX, RecoverOptions, RecoverOverrides, UnrecordedStore,
-    strip_control_characters,
 };
 
 use super::action::FenceRelease;
 
 use super::dispatch::CommandContext;
-use super::failure::failure;
-use super::guard::tenant_label;
-use super::lock::under_lock;
+
 use super::output::{Finding, LockOutcome, LockReport, OtherEnvironment};
 use crate::cli::{CliError, InfrastructureFailureKind, LockStatus};
 
@@ -21,27 +18,29 @@ pub(super) async fn remove_resource(
     context: &CommandContext<'_>,
     address: &str,
 ) -> Result<(), CliError> {
-    under_lock(context, "state remove", |lock| async move {
+    super::lock::under_lock(context, "state remove", |lock| async move {
         // The addresses alone are read, so a record whose content cannot be
         // decoded can still be named and forgotten.
         let recorded = context
             .store
             .addresses(context.tenant)
             .await
-            .map_err(|error| failure(&error, context.invocation))?;
+            .map_err(|error| super::failure::failure(&error, context.invocation))?;
         let Some(recorded_address) = recorded
             .iter()
             .find(|candidate| candidate.to_string() == address)
         else {
             let known: Vec<String> = recorded
                 .iter()
-                .map(|candidate| strip_control_characters(&candidate.to_string()))
+                .map(|candidate| {
+                    cuenv_infrastructure::strip_control_characters(&candidate.to_string())
+                })
                 .collect();
             return Err(CliError::config_with_help(
                 format!(
                     "{} has no managed resource {} in state",
-                    tenant_label(context.tenant),
-                    strip_control_characters(address)
+                    super::guard::tenant_label(context.tenant),
+                    cuenv_infrastructure::strip_control_characters(address)
                 ),
                 if known.is_empty() {
                     "No resources are recorded for this project.".to_string()
@@ -54,7 +53,7 @@ pub(super) async fn remove_resource(
             .store
             .delete(context.tenant, &lock, recorded_address)
             .await
-            .map_err(|error| failure(&error, context.invocation))?;
+            .map_err(|error| super::failure::failure(&error, context.invocation))?;
         context.output.removed(context.tenant, recorded_address);
         Ok(())
     })
@@ -69,21 +68,20 @@ pub(super) async fn recover(
     unrecorded: &UnrecordedStore,
     overrides: RecoverOverrides,
 ) -> Result<(), CliError> {
+    let others = pending_in_other_environments(context, unrecorded)?;
     if !unrecorded
         .has_pending(context.tenant)
-        .map_err(|error| failure(&error, context.invocation))?
+        .map_err(|error| super::failure::failure(&error, context.invocation))?
     {
         context.output.recovered(context.tenant, &[]);
-        context
-            .output
-            .other_environments(&pending_in_other_environments(context, unrecorded));
+        context.output.other_environments(&others);
         return Ok(());
     }
-    let result = under_lock(context, "state recover", |lock| async move {
+    let result = super::lock::under_lock(context, "state recover", |lock| async move {
         if overrides.backend == BackendMismatch::Accept {
             let pending = unrecorded
                 .list(context.tenant)
-                .map_err(|error| failure(&error, context.invocation))?;
+                .map_err(|error| super::failure::failure(&error, context.invocation))?;
             for record in pending
                 .iter()
                 .filter(|record| unrecorded.differs_from_backend(record))
@@ -92,7 +90,9 @@ pub(super) async fn recover(
                     "warning: recording {} from {} although it was saved for a different state \
                      backend than the one in use",
                     record.record.address,
-                    strip_control_characters(&record.file.display().to_string())
+                    cuenv_infrastructure::strip_control_characters(
+                        &record.file.display().to_string()
+                    )
                 ));
             }
         }
@@ -106,14 +106,12 @@ pub(super) async fn recover(
                 },
             )
             .await
-            .map_err(|error| failure(&error, context.invocation))?;
+            .map_err(|error| super::failure::failure(&error, context.invocation))?;
         context.output.recovered(context.tenant, &recovered);
         Ok(())
     })
     .await;
-    context
-        .output
-        .other_environments(&pending_in_other_environments(context, unrecorded));
+    context.output.other_environments(&others);
     result
 }
 
@@ -123,21 +121,22 @@ pub(super) async fn recover(
 pub(super) fn pending_in_other_environments(
     context: &CommandContext<'_>,
     unrecorded: &UnrecordedStore,
-) -> Vec<OtherEnvironment> {
-    context
-        .siblings
-        .declared()
-        .into_iter()
-        .filter(|(_, tenant)| unrecorded.has_pending(tenant).unwrap_or(false))
-        .map(|(name, _)| OtherEnvironment {
-            command: context
-                .invocation
-                .with_environment(Some(&name))
-                .command("state recover"),
-            environment: name,
-            finding: Finding::UnrecordedChanges,
-        })
-        .collect()
+) -> Result<Vec<OtherEnvironment>, CliError> {
+    let mut found = Vec::new();
+    for (name, tenant) in context.siblings.declared()? {
+        let invocation = context.invocation.with_environment(Some(&name));
+        if unrecorded
+            .has_pending(&tenant)
+            .map_err(|error| super::failure::failure(&error, &invocation))?
+        {
+            found.push(OtherEnvironment {
+                command: invocation.command("state recover"),
+                environment: name,
+                finding: Finding::UnrecordedChanges,
+            });
+        }
+    }
+    Ok(found)
 }
 
 /// What `state list` without `--env` says about the project's environments:
@@ -147,16 +146,19 @@ pub(super) fn pending_in_other_environments(
 /// manages nothing without `--env`, so there every environment is named.
 pub(super) async fn resources_in_other_environments(
     context: &CommandContext<'_>,
-) -> Vec<OtherEnvironment> {
+) -> Result<Vec<OtherEnvironment>, CliError> {
     let environments_only =
         context.siblings.top_level.resources == 0 && context.siblings.top_level.data_sources == 0;
     let mut found = Vec::new();
-    for (name, tenant) in context.siblings.declared() {
+    for (name, tenant) in context.siblings.declared()? {
         let count = context
-            .store
-            .addresses(&tenant)
-            .await
-            .map_or(0, |addresses| addresses.len());
+            .interrupts
+            .until_interrupted(context.store.addresses(&tenant))
+            .await?
+            .map_err(|error| {
+                super::failure::failure(&error, &context.invocation.with_environment(Some(&name)))
+            })?
+            .len();
         if count > 0 || environments_only {
             found.push(OtherEnvironment {
                 command: context
@@ -168,7 +170,7 @@ pub(super) async fn resources_in_other_environments(
             });
         }
     }
-    found
+    Ok(found)
 }
 
 /// `state adopt`: retired. Project names are unique, so a project's state
@@ -193,54 +195,83 @@ pub(super) async fn unlock(
         .store
         .current_lock(tenant)
         .await
-        .map_err(|error| failure(&error, context.invocation))?;
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     // What an object store adds (the cuenv version, the last change), for
     // whoever decides whether the run is gone. Best effort.
     let details = match (&current, context.store.object_features()) {
-        (Some(_), Some(features)) => features.lock_details(tenant).await.ok().flatten(),
+        (Some(lock), Some(features)) if lock.identifier().is_some() => {
+            features.lock_details(tenant).await.ok().flatten()
+        }
         _ => None,
     };
     let (Some(current), Some(lock_identifier)) = (current.as_ref(), lock_identifier) else {
         if let Some(lock_identifier) = lock_identifier {
-            return Err(unmatched_lock(context, lock_identifier).await);
+            return Err(unmatched_lock(context, lock_identifier).await?);
         }
+        let others = locks_in_other_environments(context).await?;
         context.output.lock(&LockReport {
             tenant,
             lock: current.as_ref(),
             outcome: LockOutcome::Shown,
-            unlock_command: current.as_ref().map(|lock| {
-                context.invocation.command(&format!(
-                    "unlock {}",
-                    strip_control_characters(&lock.lock_identifier)
-                ))
-            }),
+            unlock_command: current
+                .as_ref()
+                .and_then(|lock| lock.identifier())
+                .map(|identifier| {
+                    context.invocation.command(&format!(
+                        "unlock {}",
+                        cuenv_infrastructure::strip_control_characters(identifier)
+                    ))
+                }),
             details: details.as_ref(),
         });
-        context
-            .output
-            .other_environments(&locks_in_other_environments(context).await);
+        context.output.other_environments(&others);
         return Ok(());
     };
+    let Some(current_identifier) = current.identifier() else {
+        return Err(CliError::config_with_help(
+            "this lock belongs to a migration; nothing was released",
+            "Inspect the migration operation and use its recovery procedure.",
+        ));
+    };
+    if lock_identifier != current_identifier {
+        return Err(CliError::infrastructure(
+            format!(
+                "{} is locked by another run; nothing was released",
+                super::guard::tenant_label(tenant)
+            ),
+            Some(format!(
+                "Run `{}` without an identifier to inspect the lock.",
+                context.invocation.command("unlock")
+            )),
+            InfrastructureFailureKind::Locked,
+        )
+        .with_lock(LockStatus {
+            identifier: cuenv_infrastructure::strip_control_characters(current_identifier),
+            released: false,
+        }));
+    }
     if lock_identifier.starts_with(MIGRATION_FENCE_PREFIX) && fence == FenceRelease::Refuse {
         return Err(CliError::config_with_help(
             format!(
                 "{} is a migration fence: its state was migrated to another backend, and the \
                  lock keeps writes off this copy; nothing was released",
-                strip_control_characters(lock_identifier)
+                cuenv_infrastructure::strip_control_characters(lock_identifier)
             ),
             format!(
                 "To undo the migration, run `{}`. To release the fence anyway (writes here will \
                  not reach the migrated state), add --migration-fence.",
-                context.invocation.command("state migrate --rollback")
+                context
+                    .invocation
+                    .command("state migrate --confirm-maintenance --source-physical-identity <source-uuid> --target-physical-identity <target-uuid> --rollback")
             ),
         ));
     }
     if let Some(details) = &details {
         emit_stderr!(format!(
             "Releasing lock {} held by '{}' since {}{}, taken by cuenv {}; last change: {}",
-            strip_control_characters(lock_identifier),
-            strip_control_characters(&current.holder),
-            strip_control_characters(&current.acquired_at),
+            cuenv_infrastructure::strip_control_characters(lock_identifier),
+            cuenv_infrastructure::strip_control_characters(&current.holder),
+            cuenv_infrastructure::strip_control_characters(&current.acquired_at),
             current
                 .age_description()
                 .map_or_else(String::new, |age| format!(" ({age} ago)")),
@@ -252,16 +283,15 @@ pub(super) async fn unlock(
         .store
         .force_unlock(tenant, lock_identifier)
         .await
-        .map_err(|error| failure(&error, context.invocation))?;
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     if !released {
         // The lock is held, just not by the run the operator named: that
         // is concurrent activity, not a configuration mistake.
-        let holder = strip_control_characters(&current.lock_identifier);
+        let holder = cuenv_infrastructure::strip_control_characters(current_identifier);
         return Err(CliError::infrastructure(
             format!(
-                "{} is locked by {holder}, not {}; nothing was released",
-                tenant_label(tenant),
-                strip_control_characters(lock_identifier)
+                "{} is no longer locked by {holder}; nothing was released",
+                super::guard::tenant_label(tenant)
             ),
             Some(format!(
                 "Run `{}` without an identifier to see who holds the lock now.",
@@ -289,18 +319,23 @@ pub(super) async fn unlock(
 pub(super) async fn unmatched_lock(
     context: &CommandContext<'_>,
     lock_identifier: &str,
-) -> CliError {
-    let identifier = strip_control_characters(lock_identifier);
+) -> Result<CliError, CliError> {
     let mut elsewhere = Vec::new();
-    for (name, tenant) in context.siblings.declared() {
-        let held = context.store.current_lock(&tenant).await.ok().flatten();
-        if held.is_some_and(|lock| lock.lock_identifier == lock_identifier) {
+    for (name, tenant) in context.siblings.declared()? {
+        let held = context
+            .interrupts
+            .until_interrupted(context.store.current_lock(&tenant))
+            .await?
+            .map_err(|error| {
+                super::failure::failure(&error, &context.invocation.with_environment(Some(&name)))
+            })?;
+        if held.is_some_and(|lock| lock.identifier() == Some(lock_identifier)) {
             elsewhere.push(format!(
                 "`{}`",
                 context
                     .invocation
                     .with_environment(Some(&name))
-                    .command(&format!("unlock {identifier}"))
+                    .command("unlock")
             ));
         }
     }
@@ -318,36 +353,53 @@ pub(super) async fn unmatched_lock(
             elsewhere.join(" or ")
         )
     };
-    CliError::config_with_help(
+    Ok(CliError::config_with_help(
         format!(
-            "{} is not locked by {identifier}; nothing was released",
-            tenant_label(context.tenant)
+            "{} is not locked by the supplied identifier; nothing was released",
+            super::guard::tenant_label(context.tenant)
         ),
         help,
-    )
+    ))
 }
 
 /// What a run without `--env` says about other environments of the project
 /// that hold a lock: `unlock` only looks at the identity it was given.
 pub(super) async fn locks_in_other_environments(
     context: &CommandContext<'_>,
-) -> Vec<OtherEnvironment> {
+) -> Result<Vec<OtherEnvironment>, CliError> {
     let mut found = Vec::new();
-    for (name, tenant) in context.siblings.declared() {
-        if let Ok(Some(lock)) = context.store.current_lock(&tenant).await {
-            let identifier = strip_control_characters(&lock.lock_identifier);
-            found.push(OtherEnvironment {
-                command: context
-                    .invocation
-                    .with_environment(Some(&name))
-                    .command(&format!("unlock {identifier}")),
-                environment: name,
-                finding: Finding::Locked {
-                    lock_identifier: identifier,
-                    holder: strip_control_characters(&lock.holder),
+    for (name, tenant) in context.siblings.declared()? {
+        let held = context
+            .interrupts
+            .until_interrupted(context.store.current_lock(&tenant))
+            .await?
+            .map_err(|error| {
+                super::failure::failure(&error, &context.invocation.with_environment(Some(&name)))
+            })?;
+        if let Some(lock) = held {
+            let command = lock.identifier().map_or_else(
+                || {
+                    context
+                        .invocation
+                        .with_environment(Some(&name))
+                        .command("unlock")
                 },
+                |identifier| {
+                    context
+                        .invocation
+                        .with_environment(Some(&name))
+                        .command(&format!(
+                            "unlock {}",
+                            cuenv_infrastructure::strip_control_characters(identifier)
+                        ))
+                },
+            );
+            found.push(OtherEnvironment {
+                command,
+                environment: name,
+                finding: Finding::Locked { lock },
             });
         }
     }
-    found
+    Ok(found)
 }

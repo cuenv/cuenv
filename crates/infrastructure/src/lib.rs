@@ -47,11 +47,11 @@ pub use error::{
 pub use in_flight::{IN_FLIGHT_RESOURCE_TYPE, InFlightChange};
 pub use state::{
     AddressingChoice, ConditionalPut, Credentials, D1Configuration, D1StateStore, HistoryEntry,
-    LastWriter, LockDetails, LockInformation, LockRequest, MIGRATION_FENCE_PREFIX, ManagedResource,
-    ManifestEntry, MemoryStateStore, MigrationManifest, ObjectLocation, ObjectStateFeatures,
-    ObjectStateStore, ObjectStoreConfiguration, ObjectTenant, RecordVersion, ResourceAddress,
-    RestoreRequest, StateLock, StateSize, StateStore, StoredTenant, TenantImport, TenantLock,
-    TursoConfiguration, TursoStateStore,
+    LastWriter, LockDetails, LockIdentity, LockInformation, LockRequest, MIGRATION_FENCE_PREFIX,
+    ManagedResource, ManifestEntry, MemoryStateStore, MigrationManifest, ObjectLocation,
+    ObjectStateFeatures, ObjectStateStore, ObjectStoreConfiguration, ObjectTenant, RecordVersion,
+    ResourceAddress, RestoreRequest, StateLock, StateSize, StateStore, StoredTenant, TenantImport,
+    TenantLock, TursoConfiguration, TursoStateStore,
 };
 pub use tenant::{ProjectInstance, TenantKey, read_module_path};
 

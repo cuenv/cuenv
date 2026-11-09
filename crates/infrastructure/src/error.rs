@@ -4,7 +4,7 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::state::{ResourceAddress, TenantLock};
+use crate::state::{LockInformation, ResourceAddress, TenantLock};
 
 /// Result alias for this crate.
 pub type Result<Success> = std::result::Result<Success, InfrastructureError>;
@@ -80,31 +80,22 @@ pub enum InfrastructureError {
     State(String),
 
     /// The tenant's state is locked by another run.
-    #[error(
-        "state for {tenant} is locked by '{holder}' (lock {lock_identifier}, acquired {acquired_at}); \
-         if that run is gone, release the lock"
-    )]
+    #[error("state for {tenant} is locked {lock}; if that run is gone, review the lock")]
     Locked {
         /// Tenant whose state is locked.
         tenant: String,
-        /// Lock identifier.
-        lock_identifier: String,
-        /// Description of the lock holder.
-        holder: String,
-        /// When the lock was acquired.
-        acquired_at: String,
+        /// Operator-visible lock information.
+        lock: LockInformation,
     },
 
     /// The run no longer holds the tenant's lock, so it must not write.
     #[error(
-        "state for {tenant} is no longer locked by this run (lock {lock_identifier}); \
+        "state for {tenant} is no longer locked by this run; \
          another run may have taken over, so nothing further was written"
     )]
     LockLost {
         /// Tenant whose lock was lost.
         tenant: String,
-        /// The lock identifier this run held.
-        lock_identifier: String,
     },
 
     /// A provider changed a resource but its new state could not be recorded.
@@ -456,13 +447,26 @@ fn describe_blocking_locks(locks: &[TenantLock]) -> String {
                 .lock
                 .age_description()
                 .map_or_else(String::new, |age| format!(", {age} ago"));
-            format!(
-                "{} (lock {}, held by '{}' since {}{age})",
-                held.label(),
-                held.lock.lock_identifier,
-                held.lock.holder,
-                held.lock.acquired_at
-            )
+            match held.lock.identifier() {
+                Some(identifier) => format!(
+                    "{} (lock {identifier}, held by '{}' since {}{age})",
+                    held.label(),
+                    held.lock.holder,
+                    held.lock.acquired_at
+                ),
+                None => match held.lock.operation_id() {
+                    Some(operation) => format!(
+                        "{} (migration {operation}, held since {}{age})",
+                        held.label(),
+                        held.lock.acquired_at
+                    ),
+                    None => format!(
+                        "{} (migration lock held since {}{age})",
+                        held.label(),
+                        held.lock.acquired_at
+                    ),
+                },
+            }
         })
         .collect();
     if locks.len() > LISTED_BLOCKING_LOCKS {
@@ -606,7 +610,9 @@ mod tests {
             project: project.into(),
             environment: environment.map(ToString::to_string),
             lock: crate::state::LockInformation {
-                lock_identifier: format!("lock-{project}"),
+                identity: crate::state::LockIdentity::Ordinary {
+                    identifier: format!("lock-{project}"),
+                },
                 holder: "apply by ci".into(),
                 acquired_at: "2026-01-01T00:00:00+00:00".into(),
             },
@@ -649,9 +655,13 @@ mod tests {
         let errors = [
             InfrastructureError::Locked {
                 tenant: "tenant".into(),
-                lock_identifier: "lock-1".into(),
-                holder: "holder".into(),
-                acquired_at: "now".into(),
+                lock: crate::state::LockInformation {
+                    identity: crate::state::LockIdentity::Ordinary {
+                        identifier: "lock-1".into(),
+                    },
+                    holder: "holder".into(),
+                    acquired_at: "now".into(),
+                },
             },
             InfrastructureError::UnrecordedChange {
                 address: "random_pet.name".into(),
@@ -666,7 +676,9 @@ mod tests {
                     project: "web".into(),
                     environment: Some("Dev".into()),
                     lock: crate::state::LockInformation {
-                        lock_identifier: "lock-1".into(),
+                        identity: crate::state::LockIdentity::Ordinary {
+                            identifier: "lock-1".into(),
+                        },
                         holder: "holder".into(),
                         acquired_at: "2026-01-01T00:00:00+00:00".into(),
                     },

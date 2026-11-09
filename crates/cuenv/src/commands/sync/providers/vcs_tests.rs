@@ -1,8 +1,10 @@
-use super::*;
+use super::{CollectedVcsDependency, VcsSyncRequest, VcsSyncScope, sync_vcs_dependencies};
+use crate::commands::sync::provider::{SyncMode, SyncOptions};
+use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
+use cuenv_core::manifest::VcsDependency;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
-use tempfile::tempdir;
 
 macro_rules! sync_vcs {
     ($root:expr, $dependencies:expr, $options:expr, $scope:expr $(,)?) => {
@@ -24,7 +26,8 @@ fn gitignore_section_is_replaced() {
     )
     .expect("gitignore");
 
-    sync_gitignore(workspace.path(), &[".cuenv/vcs/lib/".to_string()]).expect("sync gitignore");
+    super::sync_gitignore(workspace.path(), &[".cuenv/vcs/lib/".to_string()])
+        .expect("sync gitignore");
     let content = fs::read_to_string(workspace.path().join(".gitignore")).expect("gitignore");
     assert!(content.contains("target/"));
     assert!(content.contains("# BEGIN cuenv vcs"));
@@ -36,23 +39,27 @@ fn gitignore_section_is_replaced() {
         "# BEGIN cuenv vcs\nold/\n",
     )
     .expect("malformed gitignore");
-    assert!(sync_gitignore(workspace.path(), &[".cuenv/vcs/lib/".to_string()]).is_err());
+    assert!(super::sync_gitignore(workspace.path(), &[".cuenv/vcs/lib/".to_string()]).is_err());
 }
 
 #[test]
 fn invalid_materialization_paths_are_rejected() {
     let workspace = create_workspace();
     let root = workspace.path();
-    assert!(validate_materialization_path(root, "../dep").is_err());
-    assert!(validate_materialization_path(root, "/dep").is_err());
-    assert!(validate_materialization_path(root, ".").is_err());
-    assert!(validate_materialization_path(root, "./").is_err());
-    assert!(validate_materialization_path(root, ".git/hooks").is_err());
-    assert!(validate_materialization_path(root, "vendor/.git/hooks").is_err());
-    assert!(validate_materialization_path(root, ".cuenv/vcs/cache/lib").is_err());
-    assert!(validate_materialization_path(root, ".cuenv/vcs/tmp/lib").is_err());
-    assert!(validate_materialization_path(root, "vendor/de[p]").is_err());
-    assert!(validate_materialization_path(root, "vendor/dep").is_ok());
+    assert!(super::super::paths::validate_materialization_path(root, "../dep").is_err());
+    assert!(super::super::paths::validate_materialization_path(root, "/dep").is_err());
+    assert!(super::super::paths::validate_materialization_path(root, ".").is_err());
+    assert!(super::super::paths::validate_materialization_path(root, "./").is_err());
+    assert!(super::super::paths::validate_materialization_path(root, ".git/hooks").is_err());
+    assert!(super::super::paths::validate_materialization_path(root, "vendor/.git/hooks").is_err());
+    assert!(
+        super::super::paths::validate_materialization_path(root, ".cuenv/vcs/cache/lib").is_err()
+    );
+    assert!(
+        super::super::paths::validate_materialization_path(root, ".cuenv/vcs/tmp/lib").is_err()
+    );
+    assert!(super::super::paths::validate_materialization_path(root, "vendor/de[p]").is_err());
+    assert!(super::super::paths::validate_materialization_path(root, "vendor/dep").is_ok());
 }
 
 #[test]
@@ -557,8 +564,8 @@ fn workspace_sync_allows_renamed_dependency_at_same_path() {
 }
 
 fn create_workspace() -> tempfile::TempDir {
-    let dir = tempdir().expect("tempdir");
-    run_git(
+    let dir = tempfile::tempdir().expect("tempdir");
+    super::run_git(
         [OsStr::new("init"), OsStr::new("-b"), OsStr::new("main")],
         Some(dir.path()),
     )
@@ -567,13 +574,13 @@ fn create_workspace() -> tempfile::TempDir {
 }
 
 fn create_source_repo() -> tempfile::TempDir {
-    let dir = tempdir().expect("tempdir");
-    run_git(
+    let dir = tempfile::tempdir().expect("tempdir");
+    super::run_git(
         [OsStr::new("init"), OsStr::new("-b"), OsStr::new("main")],
         Some(dir.path()),
     )
     .expect("git init");
-    run_git(
+    super::run_git(
         [
             OsStr::new("config"),
             OsStr::new("user.email"),
@@ -582,7 +589,7 @@ fn create_source_repo() -> tempfile::TempDir {
         Some(dir.path()),
     )
     .expect("git config email");
-    run_git(
+    super::run_git(
         [
             OsStr::new("config"),
             OsStr::new("user.name"),
@@ -591,7 +598,7 @@ fn create_source_repo() -> tempfile::TempDir {
         Some(dir.path()),
     )
     .expect("git config name");
-    run_git(
+    super::run_git(
         [
             OsStr::new("config"),
             OsStr::new("commit.gpgsign"),
@@ -602,8 +609,8 @@ fn create_source_repo() -> tempfile::TempDir {
     .expect("git config commit signing");
     let mut file = fs::File::create(dir.path().join("lib.txt")).expect("file");
     writeln!(file, "hello").expect("write");
-    run_git([OsStr::new("add"), OsStr::new("lib.txt")], Some(dir.path())).expect("git add");
-    run_git(
+    super::run_git([OsStr::new("add"), OsStr::new("lib.txt")], Some(dir.path())).expect("git add");
+    super::run_git(
         [
             OsStr::new("commit"),
             OsStr::new("-m"),
@@ -623,7 +630,7 @@ fn create_source_repo_with_subdirs() -> tempfile::TempDir {
     fs::create_dir_all(&skills).expect("create skills subdir");
     fs::write(skills.join("SKILL.md"), "# Example skill\n").expect("write SKILL.md");
     fs::write(dir.path().join("other.txt"), "sibling content\n").expect("write sibling");
-    run_git(
+    super::run_git(
         [
             OsStr::new("add"),
             OsStr::new(".agents/skills/example/SKILL.md"),
@@ -632,7 +639,7 @@ fn create_source_repo_with_subdirs() -> tempfile::TempDir {
         Some(dir.path()),
     )
     .expect("git add subdirs");
-    run_git(
+    super::run_git(
         [
             OsStr::new("commit"),
             OsStr::new("-m"),
@@ -707,12 +714,15 @@ fn subdir_invalid_values_rejected() {
         ".agents/-evil",
     ] {
         assert!(
-            validate_subdir(bad).is_err(),
+            super::validate_subdir(bad).is_err(),
             "expected '{bad}' to be rejected"
         );
     }
-    assert!(validate_subdir(".agents/skills").is_ok());
-    assert_eq!(validate_subdir(".agents/skills").unwrap(), ".agents/skills");
+    assert!(super::validate_subdir(".agents/skills").is_ok());
+    assert_eq!(
+        super::validate_subdir(".agents/skills").unwrap(),
+        ".agents/skills"
+    );
 }
 
 #[test]
@@ -804,7 +814,7 @@ fn changing_subdir_at_same_path_rematerialises() {
     let other = source.path().join(".agents/skills/other");
     fs::create_dir_all(&other).expect("create other skill dir");
     fs::write(other.join("SKILL.md"), "# Other\n").expect("write other SKILL.md");
-    run_git(
+    super::run_git(
         [
             OsStr::new("add"),
             OsStr::new(".agents/skills/other/SKILL.md"),
@@ -812,7 +822,7 @@ fn changing_subdir_at_same_path_rematerialises() {
         Some(source.path()),
     )
     .expect("git add other");
-    run_git(
+    super::run_git(
         [
             OsStr::new("commit"),
             OsStr::new("-m"),
@@ -893,8 +903,9 @@ fn create_source_repo_with_overlay_children() -> tempfile::TempDir {
         fs::create_dir_all(&skill).expect("create skill dir");
         fs::write(skill.join("SKILL.md"), format!("# {child}\n")).expect("write SKILL.md");
     }
-    run_git([OsStr::new("add"), OsStr::new(".agents")], Some(dir.path())).expect("git add skills");
-    run_git(
+    super::run_git([OsStr::new("add"), OsStr::new(".agents")], Some(dir.path()))
+        .expect("git add skills");
+    super::run_git(
         [
             OsStr::new("commit"),
             OsStr::new("-m"),
@@ -1015,14 +1026,13 @@ fn overlay_adopts_existing_non_overlay_materialization() {
 #[cfg(unix)]
 #[test]
 fn overlay_rejects_symlinked_parent() {
-    use std::os::unix::fs::symlink;
-
     let source = create_source_repo_with_overlay_children();
     let workspace = create_workspace();
     let dependency = overlay_dependency(source.path().display().to_string());
-    let outside = tempdir().expect("outside tempdir");
+    let outside = tempfile::tempdir().expect("outside tempdir");
     fs::create_dir_all(workspace.path().join(".agents")).expect("create agents dir");
-    symlink(outside.path(), workspace.path().join(".agents/skills")).expect("symlink parent");
+    std::os::unix::fs::symlink(outside.path(), workspace.path().join(".agents/skills"))
+        .expect("symlink parent");
 
     let err = sync_vcs!(
         workspace.path(),
@@ -1089,8 +1099,9 @@ fn overlay_prunes_dropped_child() {
 
     // Upstream drops the `other` child.
     fs::remove_dir_all(source.path().join(".agents/skills/other")).expect("remove other");
-    run_git([OsStr::new("add"), OsStr::new("-A")], Some(source.path())).expect("git add removal");
-    run_git(
+    super::run_git([OsStr::new("add"), OsStr::new("-A")], Some(source.path()))
+        .expect("git add removal");
+    super::run_git(
         [
             OsStr::new("commit"),
             OsStr::new("-m"),
@@ -1157,12 +1168,12 @@ fn overlay_rejects_file_child() {
     let source = create_source_repo_with_overlay_children();
     // Add a loose file directly under the subtree root.
     fs::write(source.path().join(".agents/skills/loose.txt"), "loose\n").expect("write loose");
-    run_git(
+    super::run_git(
         [OsStr::new("add"), OsStr::new(".agents/skills/loose.txt")],
         Some(source.path()),
     )
     .expect("git add loose");
-    run_git(
+    super::run_git(
         [
             OsStr::new("commit"),
             OsStr::new("-m"),
@@ -1193,7 +1204,7 @@ fn overlay_rejects_invalid_child_name_before_materializing() {
     let invalid = source.path().join(".agents/skills/-bad");
     fs::create_dir_all(&invalid).expect("create invalid child");
     fs::write(invalid.join("SKILL.md"), "# Bad\n").expect("write invalid child");
-    run_git(
+    super::run_git(
         [
             OsStr::new("add"),
             OsStr::new(".agents/skills/-bad/SKILL.md"),
@@ -1201,7 +1212,7 @@ fn overlay_rejects_invalid_child_name_before_materializing() {
         Some(source.path()),
     )
     .expect("git add invalid child");
-    run_git(
+    super::run_git(
         [
             OsStr::new("commit"),
             OsStr::new("-m"),

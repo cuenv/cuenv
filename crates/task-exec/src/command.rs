@@ -26,20 +26,39 @@ pub async fn execute_command(
     args: &[String],
     environment: &Environment,
 ) -> Result<i32> {
-    execute_command_with_redaction(command, args, environment, &[]).await
+    execute_command_with_redaction(CommandExecution {
+        command,
+        args,
+        environment,
+        secrets: &[],
+    })
+    .await
+}
+
+/// A command and its environment and secrets for output redaction.
+pub struct CommandExecution<'command> {
+    /// Executable to run.
+    pub command: &'command str,
+    /// Arguments passed to the executable.
+    pub args: &'command [String],
+    /// Environment applied to the child process.
+    pub environment: &'command Environment,
+    /// Values to redact from captured output.
+    pub secrets: &'command [String],
 }
 
 /// Execute a command with secret redaction
 ///
 /// Secret values in stdout/stderr are replaced with [REDACTED].
-pub async fn execute_command_with_redaction(
-    command: &str,
-    args: &[String],
-    environment: &Environment,
-    secrets: &[String],
-) -> Result<i32> {
+pub async fn execute_command_with_redaction(request: CommandExecution<'_>) -> Result<i32> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
+    let CommandExecution {
+        command,
+        args,
+        environment,
+        secrets,
+    } = request;
     tracing::info!("Executing command: {} {:?}", command, args);
     let mut cmd = Command::new(command);
     cmd.args(args);
@@ -48,6 +67,7 @@ pub async fn execute_command_with_redaction(
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
+    cmd.env_remove("CUENV_HOOK_SESSION");
 
     if secrets.is_empty() {
         cmd.stdout(Stdio::inherit());

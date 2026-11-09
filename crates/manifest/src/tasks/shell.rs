@@ -95,8 +95,8 @@ impl ScriptShell {
 ///
 /// Serializes as a plain boolean, so the CUE schema wire format is
 /// unchanged.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(from = "bool", into = "bool")]
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(into = "bool")]
 pub enum ShellOptionToggle {
     /// The option is enabled (its `set` flag is emitted).
     Enabled,
@@ -113,13 +113,16 @@ impl ShellOptionToggle {
     }
 }
 
-impl From<bool> for ShellOptionToggle {
-    fn from(enabled: bool) -> Self {
-        if enabled {
+impl<'de> Deserialize<'de> for ShellOptionToggle {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(if bool::deserialize(deserializer)? {
             Self::Enabled
         } else {
             Self::Disabled
-        }
+        })
     }
 }
 
@@ -193,4 +196,22 @@ pub struct Shell {
     pub command: Option<String>,
     /// Flag for command execution (e.g., "-c", "--command")
     pub flag: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellOptionToggle;
+
+    #[test]
+    fn shell_toggles_round_trip_as_booleans() {
+        for (wire, expected) in [
+            ("true", ShellOptionToggle::Enabled),
+            ("false", ShellOptionToggle::Disabled),
+        ] {
+            let parsed: ShellOptionToggle = serde_json::from_str(wire).unwrap();
+            assert_eq!(parsed, expected);
+            assert_eq!(serde_json::to_string(&parsed).unwrap(), wire);
+        }
+        assert!(serde_json::from_str::<ShellOptionToggle>("\"true\"").is_err());
+    }
 }

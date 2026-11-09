@@ -1,7 +1,11 @@
-use super::*;
+use std::collections::BTreeMap;
+
+use crate::error::{InfrastructureError, Result};
 use crate::references::ConfigurationReferences;
-use crate::schema::{Documentation, NestedAttributes, NestedBlock, Presence};
-use crate::type_system::Type;
+use crate::schema::{
+    Attribute, Block, Documentation, NestedAttributes, NestedBlock, Nesting, Presence,
+};
+use crate::type_system::{Type, Value};
 use serde_json::json;
 
 fn attribute() -> Attribute {
@@ -298,7 +302,9 @@ fn proposed_state_is_null_and_provider_echoes_are_errors() -> Result<()> {
         Value::Unknown,
     ] {
         let state = Value::Object(BTreeMap::from([("value_wo".into(), value)]));
-        let error = check_state(&block, &state, "test").unwrap_err().to_string();
+        let error = super::check_state(&block, &state, "test")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("non-null write-only"));
         assert!(!error.contains("test-write-only-secret-731"));
     }
@@ -329,7 +335,9 @@ fn nested_state_checks_hide_map_keys_and_reject_unknown_leaves() {
             Value::Object(BTreeMap::from([("value_wo".into(), Value::Unknown)])),
         )])),
     )]));
-    let error = check_state(&block, &value, "test").unwrap_err().to_string();
+    let error = super::check_state(&block, &value, "test")
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("credentials[<hidden key>].value_wo"));
     assert!(!error.contains("hidden-private-map-key"));
 }
@@ -340,7 +348,7 @@ fn unsupported_contexts_reject_markers_at_any_depth() {
         json!({"resolver":"exec","writeOnly":true}),
         json!({"nested":[{"resolver":"exec","writeOnly":true}]}),
     ] {
-        assert!(reject_markers(&value).is_err());
+        assert!(super::reject_markers(&value).is_err());
     }
 }
 
@@ -365,10 +373,10 @@ fn unknown_write_only_ancestors_fail_instead_of_being_nulled() {
             Value::Unknown,
             Value::Object(BTreeMap::from([("credentials".into(), Value::Unknown)])),
         ] {
-            assert!(check_state(&schema, &value, "test").is_err());
+            assert!(super::check_state(&schema, &value, "test").is_err());
         }
         assert!(
-            check_state(
+            super::check_state(
                 &schema,
                 &Value::Object(BTreeMap::from([("credentials".into(), Value::Null)])),
                 "test"

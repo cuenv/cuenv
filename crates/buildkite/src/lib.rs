@@ -5,7 +5,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```
 //! use cuenv_buildkite::BuildkiteEmitter;
 //! use cuenv_ci::emitter::Emitter;
 //! use cuenv_ci::ir::IntermediateRepresentation;
@@ -14,10 +14,11 @@
 //!     .with_emojis()
 //!     .with_default_queue("linux-x86");
 //!
-//! let ir: IntermediateRepresentation = /* ... */;
+//! let ir = IntermediateRepresentation::new("build");
 //! let yaml = emitter.emit(&ir)?;
 //!
-//! println!("{}", yaml);
+//! assert!(yaml.contains("steps"));
+//! # Ok::<(), cuenv_ci::emitter::EmitterError>(())
 //! ```
 //!
 //! # IR to Buildkite Mapping

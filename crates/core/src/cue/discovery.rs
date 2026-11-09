@@ -17,14 +17,14 @@ use std::path::{Path, PathBuf};
 ///
 /// ```
 /// use std::path::Path;
-/// use cuenv_core::cue::discovery::compute_relative_path;
+/// use cuenv_core::cue::discovery;
 ///
 /// let module_root = Path::new("/repo");
 /// let target = Path::new("/repo/services/api");
-/// assert_eq!(compute_relative_path(target, module_root), "services/api");
+/// assert_eq!(discovery::compute_relative_path(target, module_root), "services/api");
 ///
 /// // Same path returns "."
-/// assert_eq!(compute_relative_path(module_root, module_root), ".");
+/// assert_eq!(discovery::compute_relative_path(module_root, module_root), ".");
 /// ```
 #[must_use]
 pub fn compute_relative_path(target: &Path, module_root: &Path) -> String {
@@ -49,10 +49,10 @@ pub fn compute_relative_path(target: &Path, module_root: &Path) -> String {
 /// # Examples
 ///
 /// ```
-/// use cuenv_core::cue::discovery::adjust_meta_key_path;
+/// use cuenv_core::cue::discovery;
 ///
-/// assert_eq!(adjust_meta_key_path("./tasks/build", "services/api"), "services/api/tasks/build");
-/// assert_eq!(adjust_meta_key_path("other/path", "services/api"), "other/path");
+/// assert_eq!(discovery::adjust_meta_key_path("./tasks/build", "services/api"), "services/api/tasks/build");
+/// assert_eq!(discovery::adjust_meta_key_path("other/path", "services/api"), "other/path");
 /// ```
 #[must_use]
 pub fn adjust_meta_key_path(meta_key: &str, relative_path: &str) -> String {
@@ -71,13 +71,13 @@ pub fn adjust_meta_key_path(meta_key: &str, relative_path: &str) -> String {
 ///
 /// ```
 /// use std::path::PathBuf;
-/// use cuenv_core::cue::discovery::format_eval_errors;
+/// use cuenv_core::cue::discovery;
 ///
 /// let errors = vec![
 ///     (PathBuf::from("/repo/a"), "syntax error"),
 ///     (PathBuf::from("/repo/b"), "missing field"),
 /// ];
-/// let summary = format_eval_errors(&errors);
+/// let summary = discovery::format_eval_errors(&errors);
 /// assert!(summary.contains("/repo/a: syntax error"));
 /// assert!(summary.contains("/repo/b: missing field"));
 /// ```
@@ -379,11 +379,7 @@ fn strip_comments(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        EnvFileStatus, adjust_meta_key_path, compute_relative_path, detect_package_name,
-        find_ancestor_env_files, find_cue_module_root, find_env_file, format_eval_errors,
-        strip_comments,
-    };
+    use super::EnvFileStatus;
     use std::fs;
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -397,7 +393,7 @@ mod tests {
 comment */
 package cuenv // inline
         "#;
-        let cleaned = strip_comments(source);
+        let cleaned = super::strip_comments(source);
         assert!(cleaned.contains("package cuenv"));
         assert!(!cleaned.contains("line comment"));
         assert!(!cleaned.contains("block"));
@@ -408,7 +404,7 @@ package cuenv // inline
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "// comment\npackage cuenv // inline\n\nenv: {{}}").unwrap();
 
-        let package = detect_package_name(Path::new(file.path())).unwrap();
+        let package = super::detect_package_name(Path::new(file.path())).unwrap();
         assert_eq!(package, Some("cuenv".to_string()));
     }
 
@@ -421,7 +417,7 @@ package cuenv // inline
         )
         .unwrap();
 
-        let package = detect_package_name(Path::new(file.path())).unwrap();
+        let package = super::detect_package_name(Path::new(file.path())).unwrap();
         assert_eq!(package, Some("cuenv".to_string()));
     }
 
@@ -429,7 +425,7 @@ package cuenv // inline
     fn detect_package_name_handles_missing() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "// only comments").unwrap();
-        let package = detect_package_name(Path::new(file.path())).unwrap();
+        let package = super::detect_package_name(Path::new(file.path())).unwrap();
         assert!(package.is_none());
     }
 
@@ -438,7 +434,7 @@ package cuenv // inline
         let temp_dir = TempDir::new().unwrap();
         fs::write(temp_dir.path().join("env.cue"), "package other\n").unwrap();
 
-        let status = find_env_file(temp_dir.path(), "cuenv").unwrap();
+        let status = super::find_env_file(temp_dir.path(), "cuenv").unwrap();
         match status {
             EnvFileStatus::PackageMismatch { found_package } => {
                 assert_eq!(found_package.as_deref(), Some("other"));
@@ -457,7 +453,7 @@ package cuenv // inline
         let nested = root.join("apps/site/src");
         fs::create_dir_all(&nested).unwrap();
 
-        let found = find_cue_module_root(&nested);
+        let found = super::find_cue_module_root(&nested);
         assert!(found.is_some());
         assert_eq!(found.unwrap(), root.canonicalize().unwrap());
     }
@@ -465,7 +461,7 @@ package cuenv // inline
     #[test]
     fn find_cue_module_root_returns_none_when_missing() {
         let temp_dir = TempDir::new().unwrap();
-        let result = find_cue_module_root(temp_dir.path());
+        let result = super::find_cue_module_root(temp_dir.path());
         assert!(result.is_none());
     }
 
@@ -483,7 +479,7 @@ package cuenv // inline
         fs::create_dir_all(root.join("apps/site")).unwrap();
         fs::write(root.join("apps/site/env.cue"), "package cuenv\n").unwrap();
 
-        let ancestors = find_ancestor_env_files(&root.join("apps/site"), "cuenv").unwrap();
+        let ancestors = super::find_ancestor_env_files(&root.join("apps/site"), "cuenv").unwrap();
 
         assert_eq!(ancestors.len(), 3);
         assert_eq!(ancestors[0], root.canonicalize().unwrap());
@@ -504,7 +500,8 @@ package cuenv // inline
         fs::create_dir_all(root.join("monorepo/apps")).unwrap();
         fs::write(root.join("monorepo/apps/env.cue"), "package cuenv\n").unwrap();
 
-        let ancestors = find_ancestor_env_files(&root.join("monorepo/apps"), "cuenv").unwrap();
+        let ancestors =
+            super::find_ancestor_env_files(&root.join("monorepo/apps"), "cuenv").unwrap();
 
         assert_eq!(ancestors.len(), 2);
         assert_eq!(ancestors[0], root.join("monorepo").canonicalize().unwrap());
@@ -528,7 +525,7 @@ package cuenv // inline
         fs::create_dir_all(root.join("apps/site")).unwrap();
         fs::write(root.join("apps/site/env.cue"), "package cuenv\n").unwrap();
 
-        let ancestors = find_ancestor_env_files(&root.join("apps/site"), "cuenv").unwrap();
+        let ancestors = super::find_ancestor_env_files(&root.join("apps/site"), "cuenv").unwrap();
 
         assert_eq!(ancestors.len(), 2);
         assert_eq!(ancestors[0], root.canonicalize().unwrap());
@@ -539,26 +536,29 @@ package cuenv // inline
     fn compute_relative_path_basic() {
         let module_root = Path::new("/repo");
         let target = Path::new("/repo/services/api");
-        assert_eq!(compute_relative_path(target, module_root), "services/api");
+        assert_eq!(
+            super::compute_relative_path(target, module_root),
+            "services/api"
+        );
     }
 
     #[test]
     fn compute_relative_path_same_path() {
         let path = Path::new("/repo");
-        assert_eq!(compute_relative_path(path, path), ".");
+        assert_eq!(super::compute_relative_path(path, path), ".");
     }
 
     #[test]
     fn compute_relative_path_unrelated_paths() {
         let module_root = Path::new("/repo");
         let target = Path::new("/other/path");
-        assert_eq!(compute_relative_path(target, module_root), ".");
+        assert_eq!(super::compute_relative_path(target, module_root), ".");
     }
 
     #[test]
     fn adjust_meta_key_path_with_dot_slash_prefix() {
         assert_eq!(
-            adjust_meta_key_path("./tasks/build", "services/api"),
+            super::adjust_meta_key_path("./tasks/build", "services/api"),
             "services/api/tasks/build"
         );
     }
@@ -566,26 +566,29 @@ package cuenv // inline
     #[test]
     fn adjust_meta_key_path_without_prefix() {
         assert_eq!(
-            adjust_meta_key_path("other/path", "services/api"),
+            super::adjust_meta_key_path("other/path", "services/api"),
             "other/path"
         );
     }
 
     #[test]
     fn adjust_meta_key_path_only_replaces_first_occurrence() {
-        assert_eq!(adjust_meta_key_path("./a/./b", "rel"), "rel/a/./b");
+        assert_eq!(super::adjust_meta_key_path("./a/./b", "rel"), "rel/a/./b");
     }
 
     #[test]
     fn format_eval_errors_empty() {
         let errors: Vec<(PathBuf, String)> = vec![];
-        assert_eq!(format_eval_errors(&errors), "");
+        assert_eq!(super::format_eval_errors(&errors), "");
     }
 
     #[test]
     fn format_eval_errors_single() {
         let errors = vec![(PathBuf::from("/repo/a"), "syntax error")];
-        assert_eq!(format_eval_errors(&errors), "  /repo/a: syntax error");
+        assert_eq!(
+            super::format_eval_errors(&errors),
+            "  /repo/a: syntax error"
+        );
     }
 
     #[test]
@@ -594,7 +597,7 @@ package cuenv // inline
             (PathBuf::from("/repo/a"), "syntax error"),
             (PathBuf::from("/repo/b"), "missing field"),
         ];
-        let result = format_eval_errors(&errors);
+        let result = super::format_eval_errors(&errors);
         assert!(result.contains("/repo/a: syntax error"));
         assert!(result.contains("/repo/b: missing field"));
         assert!(result.contains('\n'));

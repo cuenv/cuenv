@@ -1,4 +1,4 @@
-use super::{CliRenderer, stdout_line};
+use super::{CliRenderer, cli_renderer};
 use crate::event::CiEvent;
 
 impl CliRenderer {
@@ -9,21 +9,21 @@ impl CliRenderer {
                 event_type,
                 ref_name,
             } => {
-                stdout_line(format_args!(
+                cli_renderer::stdout_line(format_args!(
                     "Context: {provider} (event: {event_type}, ref: {ref_name})"
                 ));
             }
             CiEvent::ChangedFilesFound { count } => {
-                stdout_line(format_args!("Changed files: {count}"));
+                cli_renderer::stdout_line(format_args!("Changed files: {count}"));
             }
             CiEvent::ProjectsDiscovered { count } => {
-                stdout_line(format_args!("Found {count} projects"));
+                cli_renderer::stdout_line(format_args!("Found {count} projects"));
             }
             CiEvent::ProjectSkipped { path, reason } => {
-                stdout_line(format_args!("Project {path}: {reason}"));
+                cli_renderer::stdout_line(format_args!("Project {path}: {reason}"));
             }
             CiEvent::TaskExecuting { task, .. } => {
-                stdout_line(format_args!("  -> Executing {task}"));
+                cli_renderer::stdout_line(format_args!("  -> Executing {task}"));
             }
             CiEvent::TaskResult {
                 task,
@@ -32,15 +32,15 @@ impl CliRenderer {
                 ..
             } => {
                 if *success {
-                    stdout_line(format_args!("  -> {task} passed"));
+                    cli_renderer::stdout_line(format_args!("  -> {task} passed"));
                 } else if let Some(err) = error {
-                    stdout_line(format_args!("  -> {task} failed: {err}"));
+                    cli_renderer::stdout_line(format_args!("  -> {task} failed: {err}"));
                 } else {
-                    stdout_line(format_args!("  -> {task} failed"));
+                    cli_renderer::stdout_line(format_args!("  -> {task} failed"));
                 }
             }
             CiEvent::ReportGenerated { path } => {
-                stdout_line(format_args!("Report written to: {path}"));
+                cli_renderer::stdout_line(format_args!("Report written to: {path}"));
             }
         }
     }

@@ -1,4 +1,8 @@
-use super::*;
+use std::collections::BTreeMap;
+
+use super::{PlanProblem, PlanValues};
+use crate::schema::{Attribute, Block, NestedAttributes, NestedBlock, Nesting, Presence};
+use crate::type_system::{PathStep, Type, Value};
 
 fn attribute(value_type: Type, presence: Presence) -> Attribute {
     Attribute {
@@ -49,9 +53,9 @@ fn text(value: &str) -> Value {
     Value::String(value.to_string())
 }
 
-/// [`plan_problems`] of prior, configuration and planned values.
+/// [`super::plan_problems`] of prior, configuration and planned values.
 fn check(block: &Block, [prior, configuration, planned]: [&Value; 3]) -> Vec<PlanProblem> {
-    plan_problems(
+    super::plan_problems(
         block,
         PlanValues {
             prior,
@@ -298,7 +302,7 @@ fn optional_nested_attributes_holding_only_computed_values_were_not_configured()
         object(&[("inner", object(&[("token", text("t"))]))]),
     )]);
     let configuration = object(&[("settings", Value::Null)]);
-    assert_eq!(proposed_new(&block, &prior, &configuration), prior);
+    assert_eq!(super::proposed_new(&block, &prior, &configuration), prior);
 }
 
 #[test]
@@ -313,7 +317,7 @@ fn set_counts_are_not_compared_with_a_configuration_holding_unknowns() {
 }
 
 fn compatible(block: &Block, planned: &Value, actual: &Value) -> Vec<String> {
-    compatibility_problems(block, planned, actual)
+    super::compatibility_problems(block, planned, actual)
         .iter()
         .map(PlanProblem::to_string)
         .collect()
@@ -462,7 +466,7 @@ fn proposed_new_carries_computed_children_of_nested_attributes() {
             rule("c", Value::Null),
         ],
     );
-    let proposed = proposed_new(&block, &prior, &configuration);
+    let proposed = super::proposed_new(&block, &prior, &configuration);
     assert_eq!(
         proposed,
         resource(
@@ -487,7 +491,7 @@ fn proposed_new_correlates_set_elements_by_their_configured_values() {
         Value::Null,
         vec![rule("b", Value::Null), rule("new", Value::Null)],
     );
-    let proposed = proposed_new(&block, &prior, &configuration);
+    let proposed = super::proposed_new(&block, &prior, &configuration);
     assert_eq!(
         proposed,
         resource(
@@ -509,7 +513,7 @@ fn proposed_new_correlates_list_blocks_by_index() {
         ("rule", Value::List(vec![rule("a", Value::Null)])),
     ]);
     assert_eq!(
-        proposed_new(&block, &prior, &configuration),
+        super::proposed_new(&block, &prior, &configuration),
         object(&[
             ("name", text("renamed")),
             ("rule", Value::List(vec![rule("a", text("r-a"))])),
@@ -546,7 +550,7 @@ fn removed_optional_nested_values_are_not_kept_from_prior_state() {
         object(&[("mode", text("fast")), ("token", text("t"))]),
     )]);
     assert_eq!(
-        proposed_new(&block, &configured_before, &configuration),
+        super::proposed_new(&block, &configured_before, &configuration),
         configuration
     );
 
@@ -556,7 +560,7 @@ fn removed_optional_nested_values_are_not_kept_from_prior_state() {
         object(&[("mode", Value::Null), ("token", text("t"))]),
     )]);
     assert_eq!(
-        proposed_new(&block, &computed_before, &configuration),
+        super::proposed_new(&block, &computed_before, &configuration),
         computed_before
     );
 }
@@ -596,7 +600,7 @@ fn empty_values_follow_nesting_modes() {
 #[test]
 fn paths_render_like_terraform() {
     assert_eq!(
-        render_steps(&[
+        super::render_steps(&[
             PathStep::Attribute("rules".into()),
             PathStep::Index(0),
             PathStep::Attribute("tags".into()),
@@ -675,11 +679,11 @@ fn map_compatibility_problems_hide_short_and_sensitive_keys() {
     for key in ["q", "synthetic-sensitive-map-key"] {
         let planned = object(&[("credentials", object(&[(key, text("value"))]))]);
         let renamed = object(&[("credentials", object(&[("other", text("value"))]))]);
-        let problems = compatibility_problems(&block, &planned, &renamed);
+        let problems = super::compatibility_problems(&block, &planned, &renamed);
         assert_map_keys_hidden(&problems, key);
 
         let changed = object(&[("credentials", object(&[(key, text("changed"))]))]);
-        let problems = compatibility_problems(&block, &planned, &changed);
+        let problems = super::compatibility_problems(&block, &planned, &changed);
         assert_map_keys_hidden(&problems, key);
         assert_eq!(problems[0].path, "credentials[<hidden key>]");
 
@@ -689,7 +693,8 @@ fn map_compatibility_problems_hide_short_and_sensitive_keys() {
             .get_mut("credentials")
             .unwrap()
             .sensitive = true;
-        let sensitive_problems = compatibility_problems(&sensitive_block, &planned, &renamed);
+        let sensitive_problems =
+            super::compatibility_problems(&sensitive_block, &planned, &renamed);
         assert_eq!(
             sensitive_problems[0].to_string(),
             "credentials: inconsistent values for sensitive attribute"
@@ -716,7 +721,7 @@ fn dynamic_map_block_compatibility_problems_hide_keys() {
             ("name", text("example")),
             ("rule", object(&[("other", rule("first", Value::Null))])),
         ]);
-        let problems = compatibility_problems(&block, &planned, &renamed);
+        let problems = super::compatibility_problems(&block, &planned, &renamed);
         assert_map_keys_hidden(&problems, key);
     }
 }
@@ -743,7 +748,7 @@ fn dynamic_object_compatibility_hides_runtime_field_names() {
         };
         let planned = object(&[("data", dynamic("planned"))]);
         let actual = object(&[("data", dynamic("changed"))]);
-        let problems = compatibility_problems(&block, &planned, &actual);
+        let problems = super::compatibility_problems(&block, &planned, &actual);
         assert_map_keys_hidden(&problems, key);
         assert_eq!(problems[0].path, "data[<hidden key>][<hidden key>]");
         assert!(!format!("{problems:?}").contains("nested-private-key"));
@@ -761,10 +766,13 @@ fn diagnostic_masking_does_not_change_structured_path_identity() {
         PathStep::Key("second".into()),
     ];
     assert_ne!(first, second);
-    assert_ne!(render_steps(&first), render_steps(&second));
-    assert_eq!(render_diagnostic_steps(&first), "rules[<hidden key>]");
+    assert_ne!(super::render_steps(&first), super::render_steps(&second));
     assert_eq!(
-        render_diagnostic_steps(&first),
-        render_diagnostic_steps(&second)
+        super::render_diagnostic_steps(&first),
+        "rules[<hidden key>]"
+    );
+    assert_eq!(
+        super::render_diagnostic_steps(&first),
+        super::render_diagnostic_steps(&second)
     );
 }

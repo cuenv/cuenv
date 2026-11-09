@@ -16,9 +16,12 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```
 //! use cuenv_release::backends::{ReleaseBackend, BackendContext, PublishResult};
 //! use cuenv_release::artifact::PackagedArtifact;
+//! use cuenv_release::error::Result;
+//! use std::future::Future;
+//! use std::pin::Pin;
 //!
 //! struct MyBackend;
 //!
@@ -27,8 +30,8 @@
 //!
 //!     fn publish<'a>(
 //!         &'a self,
-//!         ctx: &'a BackendContext,
-//!         artifacts: &'a [PackagedArtifact],
+//!         _ctx: &'a BackendContext,
+//!         _artifacts: &'a [PackagedArtifact],
 //!     ) -> Pin<Box<dyn Future<Output = Result<PublishResult>> + Send + 'a>> {
 //!         Box::pin(async move {
 //!             // Upload artifacts...
@@ -36,6 +39,12 @@
 //!         })
 //!     }
 //! }
+//!
+//! let backend = MyBackend;
+//! let context = BackendContext::new("app", "1.0.0");
+//! let result = tokio_test::block_on(backend.publish(&context, &[]))?;
+//! assert!(result.success);
+//! # Ok::<(), cuenv_release::error::Error>(())
 //! ```
 
 use crate::artifact::PackagedArtifact;

@@ -8,7 +8,6 @@
 
 use cuenv_infrastructure::TenantLock;
 
-use super::evaluation::escape_control_characters;
 use super::{InfrastructureAction, InfrastructureOptions, UnlockScope};
 
 /// Default value of `-p` / `--path`.
@@ -97,20 +96,23 @@ impl Invocation {
     /// `infrastructure.state` says which backend to reach. An object store's
     /// lock names its own package instead, which that store keys state by.
     #[must_use]
-    pub(super) fn unlock_command(&self, lock: &TenantLock) -> String {
-        Self {
-            environment: lock.environment.clone(),
-            unlock_scope: UnlockScope::default(),
-            // An object store keys locks by package too: name the lock's.
-            package: lock.package.clone().unwrap_or_else(|| self.package.clone()),
-            ..self.clone()
-        }
-        .command(&format!(
-            "unlock {} --module {} --project {}",
-            quote_argument(&lock.lock.lock_identifier),
-            quote_argument(&lock.module_path),
-            quote_argument(&lock.project)
-        ))
+    pub(super) fn unlock_command(&self, lock: &TenantLock) -> Option<String> {
+        let identifier = lock.lock.identifier()?;
+        Some(
+            Self {
+                environment: lock.environment.clone(),
+                unlock_scope: UnlockScope::default(),
+                // An object store keys locks by package too: name the lock's.
+                package: lock.package.clone().unwrap_or_else(|| self.package.clone()),
+                ..self.clone()
+            }
+            .command(&format!(
+                "unlock {} --module {} --project {}",
+                quote_argument(identifier),
+                quote_argument(&lock.module_path),
+                quote_argument(&lock.project)
+            )),
+        )
     }
 }
 
@@ -127,7 +129,7 @@ pub(super) fn quote_argument(value: &str) -> String {
     }
     format!(
         "'{}'",
-        escape_control_characters(value).replace('\'', "'\\''")
+        super::evaluation::escape_control_characters(value).replace('\'', "'\\''")
     )
 }
 
@@ -168,14 +170,19 @@ mod tests {
             environment: None,
             package: None,
             lock: cuenv_infrastructure::LockInformation {
-                lock_identifier: "lock-2".to_string(),
+                identity: cuenv_infrastructure::LockIdentity::Ordinary {
+                    identifier: "lock-2".to_string(),
+                },
                 holder: "ci".to_string(),
                 acquired_at: "2026-01-01T00:00:00+00:00".to_string(),
             },
         };
         assert_eq!(
             named.unlock_command(&lock),
-            "cuenv infrastructure unlock lock-2 --module example.com/other --project api"
+            Some(
+                "cuenv infrastructure unlock lock-2 --module example.com/other --project api"
+                    .to_string()
+            )
         );
     }
 

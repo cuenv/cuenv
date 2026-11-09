@@ -3,14 +3,13 @@
 //! This module tests that all examples in the `examples/` directory can be
 //! loaded and produce valid task DAGs.
 
-use cuengine::evaluate_cue_package_typed;
+use cuenv::commands::CommandExecutor;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::Tasks;
 use cuenv_task_exec::TaskGraph;
 use std::error::Error;
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -24,9 +23,6 @@ struct ExampleExpectations {
     has_hooks: bool,
     /// Whether the example defines environment variables
     has_env: bool,
-    /// Whether this example is expected to fail CUE evaluation
-    /// (e.g., uses non-concrete values that can't be marshaled to JSON)
-    expect_eval_failure: bool,
 }
 
 /// Get the path to the examples directory
@@ -40,15 +36,15 @@ fn get_examples_dir() -> TestResult<PathBuf> {
 }
 
 /// Load a Project manifest from an example directory.
-///
-/// Note: After the module-wide evaluation refactoring (`evaluate_module`), CUE evaluation
-/// requires a module root with `cue.mod/module.cue`. The examples are subdirectories within
-/// the main project module. This function may fail in test environments where the module
-/// structure isn't fully available.
 fn load_example_manifest(example_path: &Path) -> TestResult<Project> {
-    evaluate_cue_package_typed::<Project>(example_path, "examples").map_err(|e| {
-        Box::new(io::Error::other(format!("Failed to load manifest: {e}"))) as Box<dyn Error>
-    })
+    let directory = example_path.canonicalize()?;
+    let executor = CommandExecutor::new("examples".to_string());
+    let module = executor.module(&directory)?;
+    let relative = directory.strip_prefix(&module.root)?;
+    let instance = module.get(relative).ok_or_else(|| {
+        io::Error::other(format!("No evaluated project in {}", directory.display()))
+    })?;
+    Ok(instance.to_project()?)
 }
 
 fn load_named_example(examples_dir: &Path, name: &str) -> TestResult<Project> {
@@ -57,25 +53,6 @@ fn load_named_example(examples_dir: &Path, name: &str) -> TestResult<Project> {
             "Failed to load example '{name}': {err}"
         ))) as Box<dyn Error>
     })
-}
-
-/// Check if the FFI/module evaluation is available for these tests.
-/// Returns false if examples can't be evaluated due to module root requirements.
-fn ffi_available() -> bool {
-    get_examples_dir()
-        .is_ok_and(|examples_dir| load_example_manifest(&examples_dir.join("env-basic")).is_ok())
-}
-
-/// Skip test with message if FFI is unavailable
-macro_rules! skip_if_ffi_unavailable {
-    () => {
-        if !ffi_available() {
-            eprintln!(
-                "Skipping test: FFI/module evaluation unavailable (examples need cue.mod root)"
-            );
-            return Ok(());
-        }
-    };
 }
 
 /// Build a `TaskGraph` from a `Project` manifest and validate it
@@ -103,218 +80,186 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             min_task_count: 0, // No tasks, only env vars
             has_hooks: false,
             has_env: true,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "task-output-ref",
             min_task_count: 4, // tmpdir, work, cleanup, pipeline
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "task-basic",
             min_task_count: 5, // interpolate, propagate, greetAll, greetIndividual, shellExample
             has_hooks: false,
             has_env: true,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "imported-task-dirs",
             min_task_count: 5, // definition, caller, definitionSubdir, callerSubdir, moduleRelative
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "contrib-rust-task",
             min_task_count: 1, // fmt
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "reusable-task-refs",
             min_task_count: 2, // migrate, deploy
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "hook",
             min_task_count: 2, // verify_env, show_env
             has_hooks: true,
             has_env: true,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "hook-delayed",
             min_task_count: 2, // status, verify_all
             has_hooks: true,
             has_env: true,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-pipeline",
             min_task_count: 1, // test
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "test-fail",
             min_task_count: 0, // No tasks, just a failing hook
             has_hooks: true,
             has_env: true,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "codegen-hello",
             min_task_count: 0, // No tasks, only codegen config for code generation
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-onepassword",
             min_task_count: 1, // deploy
             has_hooks: false,
             has_env: true, // Has production environment with 1Password refs
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-infisical",
             min_task_count: 1, // deploy
             has_hooks: false,
             has_env: true, // Has production environment with Infisical refs
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-infisical-oidc",
             min_task_count: 1, // deploy
             has_hooks: false,
             has_env: true, // Infisical refs resolved with GitHub OIDC
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-infisical-action",
             min_task_count: 1, // deploy
             has_hooks: false,
             has_env: false, // Secrets come from Infisical/secrets-action
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-gcp-secret",
             min_task_count: 1, // deploy
             has_hooks: false,
             has_env: true, // Has production environment with GCP Secret Manager refs
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-aws-secrets",
             min_task_count: 1, // deploy
             has_hooks: false,
             has_env: true, // Has production environment with AWS Secrets Manager refs
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "services-readiness",
             min_task_count: 1, // prepare
             has_hooks: false,
             has_env: false, // Services + a prepare task; no env block
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "infrastructure-random",
             min_task_count: 0, // Managed resources only
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-cachix",
             min_task_count: 1, // build
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-hestia",
             min_task_count: 1, // build
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-namespace-cache",
             min_task_count: 1, // build
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-gh-models",
             min_task_count: 1, // eval.prompts
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-cuenv-homebrew",
             min_task_count: 1, // build
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-cuenv-nix",
             min_task_count: 1, // build
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-bun-workspace",
             min_task_count: 1, // version
             has_hooks: false,
             has_env: true, // Has empty env block
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "ci-codecov",
             min_task_count: 1, // test
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "container-image",
             min_task_count: 1, // codegen
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "task-captures",
             min_task_count: 2, // build, report
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
         ExampleExpectations {
             name: "vcs-subdir",
             min_task_count: 1, // inspect
             has_hooks: false,
             has_env: false,
-            expect_eval_failure: false,
         },
     ]
 }
 
 #[test]
 fn test_allexamples_load_successfully() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let examples_dir = get_examples_dir()?;
     let expectations = get_example_expectations();
 
@@ -326,19 +271,8 @@ fn test_allexamples_load_successfully() -> TestResult {
             "Example directory '{name}' does not exist at {example_path:?}",
         );
 
-        let result = load_example_manifest(&example_path);
-
-        if expectation.expect_eval_failure {
-            // This example is expected to fail CUE evaluation
-            assert!(
-                result.is_err(),
-                "Example '{name}' was expected to fail evaluation but succeeded",
-            );
-        } else if let Err(err) = result {
-            return Err(Box::new(io::Error::other(format!(
-                "Failed to load example '{name}': {err}"
-            ))));
-        }
+        load_example_manifest(&example_path)
+            .map_err(|err| io::Error::other(format!("Failed to load example '{name}': {err}")))?;
     }
 
     Ok(())
@@ -346,18 +280,11 @@ fn test_allexamples_load_successfully() -> TestResult {
 
 #[test]
 fn test_allexamples_build_valid_dag() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let examples_dir = get_examples_dir()?;
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
         let name = expectation.name;
-        // Skip examples that are expected to fail evaluation
-        if expectation.expect_eval_failure {
-            continue;
-        }
-
         let manifest = load_named_example(&examples_dir, name)?;
 
         // Validate task count
@@ -390,7 +317,7 @@ fn test_allexamples_build_valid_dag() -> TestResult {
         );
 
         // Validate parallel groups can be computed
-        let parallel_groups = graph.get_parallel_groups();
+        let parallel_groups = graph.parallel_groups();
         let parallel_err = parallel_groups.as_ref().err();
         assert!(
             parallel_groups.is_ok(),
@@ -403,18 +330,11 @@ fn test_allexamples_build_valid_dag() -> TestResult {
 
 #[test]
 fn test_allexamples_have_expected_hooks() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let examples_dir = get_examples_dir()?;
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
         let name = expectation.name;
-        // Skip examples that are expected to fail evaluation
-        if expectation.expect_eval_failure {
-            continue;
-        }
-
         let manifest = load_named_example(&examples_dir, name)?;
 
         let has_hooks = manifest
@@ -434,18 +354,11 @@ fn test_allexamples_have_expected_hooks() -> TestResult {
 
 #[test]
 fn test_allexamples_have_expected_env() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let examples_dir = get_examples_dir()?;
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
         let name = expectation.name;
-        // Skip examples that are expected to fail evaluation
-        if expectation.expect_eval_failure {
-            continue;
-        }
-
         let manifest = load_named_example(&examples_dir, name)?;
 
         let has_env = manifest.env.is_some();
@@ -528,8 +441,6 @@ fn test_no_unexpected_example_directories() -> TestResult {
 /// boundary applied.
 #[test]
 fn test_rules_examples_evaluate() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let examples_dir = get_examples_dir()?;
 
     for name in RULES_ONLY_EXAMPLES {
@@ -559,8 +470,6 @@ fn test_rules_examples_evaluate() -> TestResult {
 
 #[test]
 fn test_task_basic_specific_tasks() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let examples_dir = get_examples_dir()?;
     let manifest = load_named_example(&examples_dir, "task-basic")?;
 
@@ -585,8 +494,6 @@ fn test_task_basic_specific_tasks() -> TestResult {
 
 #[test]
 fn test_reusable_task_refs_example_preserves_dependencies() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let examples_dir = get_examples_dir()?;
     let manifest = load_named_example(&examples_dir, "reusable-task-refs")?;
 
@@ -624,8 +531,6 @@ fn test_reusable_task_refs_example_preserves_dependencies() -> TestResult {
 
 #[test]
 fn test_ci_pipeline_has_pipeline_config() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let examples_dir = get_examples_dir()?;
     let manifest = load_named_example(&examples_dir, "ci-pipeline")?;
 
@@ -649,8 +554,6 @@ fn test_ci_pipeline_has_pipeline_config() -> TestResult {
 
 #[test]
 fn test_hook_delayed_has_ordered_hooks() -> TestResult {
-    skip_if_ffi_unavailable!();
-
     let examples_dir = get_examples_dir()?;
     let manifest = load_named_example(&examples_dir, "hook-delayed")?;
 

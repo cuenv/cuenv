@@ -59,15 +59,25 @@ env: {}
         .await
 }
 
+#[given(expr = "a project with a missing required environment variable")]
+async fn given_project_with_missing_required_env(world: &mut TestWorld) -> StepResult {
+    world
+        .write_test_project(
+            "missing_env_test",
+            r#"package test
+
+name: "missing-env-test"
+env: { API_KEY!: string }
+"#,
+        )
+        .await
+}
+
 #[given(expr = "a project with base environment {string}")]
 async fn given_project_with_base_env(world: &mut TestWorld, base_env: String) -> StepResult {
-    // Parse "VAR=value" format
-    let parts: Vec<&str> = base_env.splitn(2, '=').collect();
-    let (var_name, var_value) = if parts.len() == 2 {
-        (parts[0], parts[1])
-    } else {
-        ("BASE_VAR", "base")
-    };
+    let (var_name, var_value) = base_env
+        .split_once('=')
+        .ok_or_else(|| anyhow!("expected a base environment entry in NAME=value form"))?;
 
     // Schema-free for test isolation
     let cue_content = format!(
@@ -106,24 +116,18 @@ async fn given_derived_environment(
     env_name: String,
     env_var: String,
 ) -> StepResult {
-    // Parse "VAR=value" format
-    let parts: Vec<&str> = env_var.splitn(2, '=').collect();
-    let (var_name, var_value) = if parts.len() == 2 {
-        (parts[0], parts[1])
-    } else {
-        ("DEV_VAR", "dev")
-    };
+    let (var_name, var_value) = env_var
+        .split_once('=')
+        .ok_or_else(|| anyhow!("expected a derived environment entry in NAME=value form"))?;
 
     let base_var = world
         .env_vars
         .get("_base_var")
-        .cloned()
-        .unwrap_or("BASE_VAR".to_string());
+        .ok_or_else(|| anyhow!("base environment name was not configured"))?;
     let base_value = world
         .env_vars
         .get("_base_value")
-        .cloned()
-        .unwrap_or("base".to_string());
+        .ok_or_else(|| anyhow!("base environment value was not configured"))?;
 
     // Schema-free for test isolation
     let cue_content = format!(

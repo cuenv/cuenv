@@ -15,7 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::str::FromStr;
 
-use serde_json::{Number as JsonNumber, value::RawValue};
+use serde::Deserialize;
+use serde::de::{MapAccess, Visitor};
+use serde_json::Number as JsonNumber;
+use serde_json::value::RawValue;
 
 use crate::error::{InfrastructureError, Result};
 use crate::references::ConfigurationSelector;
@@ -116,6 +119,30 @@ pub fn parse_json_preserving_numbers(
     )
 }
 
+/// Deserialize an open-ended JSON value without rounding numbers or treating
+/// serde_json's private map keys as scalar values.
+pub(crate) fn deserialize_json_value<'de, D>(
+    deserializer: D,
+) -> std::result::Result<serde_json::Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Box::<RawValue>::deserialize(deserializer)?;
+    parse_json_preserving_numbers(&raw, &[]).map_err(serde::de::Error::custom)
+}
+
+/// Deserialize an optional open-ended JSON value with the same guarantees.
+pub(crate) fn deserialize_optional_json_value<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Box<RawValue>>::deserialize(deserializer)?
+        .map(|raw| parse_json_preserving_numbers(&raw, &[]).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
 fn walk_json_numbers(
     raw: &RawValue,
     path: &mut Vec<ConfigurationSelector>,
@@ -128,8 +155,7 @@ fn walk_json_numbers(
     }
     match raw.get().as_bytes().first() {
         Some(b'{') => {
-            let fields: BTreeMap<String, Box<RawValue>> =
-                serde_json::from_str(raw.get()).map_err(|_| json_number_error())?;
+            let fields = raw_object(raw)?;
             for (name, value) in fields {
                 path.push(ConfigurationSelector::Field(name));
                 walk_json_numbers(&value, path, tokens)?;
@@ -160,6 +186,47 @@ fn json_number_error() -> InfrastructureError {
     InfrastructureError::codec("JSON numeric data could not be decoded losslessly")
 }
 
+/// Decode object members without losing duplicate keys before validation.
+fn raw_object(raw: &RawValue) -> Result<BTreeMap<String, Box<RawValue>>> {
+    struct Fields(BTreeMap<String, Box<RawValue>>);
+
+    impl<'de> Deserialize<'de> for Fields {
+        fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            struct FieldsVisitor;
+
+            impl<'de> Visitor<'de> for FieldsVisitor {
+                type Value = Fields;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str("a JSON object with unique keys")
+                }
+
+                fn visit_map<M>(self, mut map: M) -> std::result::Result<Fields, M::Error>
+                where
+                    M: MapAccess<'de>,
+                {
+                    let mut fields = BTreeMap::new();
+                    while let Some((key, value)) = map.next_entry::<String, Box<RawValue>>()? {
+                        if fields.insert(key, value).is_some() {
+                            return Err(serde::de::Error::custom("duplicate JSON object key"));
+                        }
+                    }
+                    Ok(Fields(fields))
+                }
+            }
+
+            deserializer.deserialize_map(FieldsVisitor)
+        }
+    }
+
+    serde_json::from_str::<Fields>(raw.get())
+        .map(|fields| fields.0)
+        .map_err(|_| json_number_error())
+}
+
 fn parse_raw_json(
     raw: &RawValue,
     path: &mut Vec<ConfigurationSelector>,
@@ -173,8 +240,7 @@ fn parse_raw_json(
     }
     match raw.get().as_bytes().first() {
         Some(b'{') => {
-            let fields: BTreeMap<String, Box<RawValue>> =
-                serde_json::from_str(raw.get()).map_err(|_| json_number_error())?;
+            let fields = raw_object(raw)?;
             let mut object = serde_json::Map::new();
             for (name, raw) in fields {
                 path.push(ConfigurationSelector::Field(name.clone()));
@@ -858,7 +924,8 @@ fn from_configuration_json(
                 ));
             }
             let mut converted = Vec::with_capacity(items.len());
-            for (index, (item, element_type)) in items.iter().zip(element_types).enumerate() {
+            let indexed_items = items.iter().zip(element_types).enumerate();
+            for (index, (item, element_type)) in indexed_items {
                 path.push(index.to_string());
                 converted.push(from_configuration_json(item, element_type, path)?);
                 path.pop();
@@ -1605,6 +1672,20 @@ mod tests {
         let raw = RawValue::from_string(text).map_err(|_| json_number_error())?;
         assert!(scan_json_numbers(&raw).is_err());
         assert!(parse_json_preserving_numbers(&raw, &[]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn raw_json_traversals_refuse_duplicate_keys_without_rendering_input() -> Result<()> {
+        let raw: &RawValue = serde_json::from_str(r#"{"secret":18446744073709551617,"secret":1}"#)
+            .map_err(|_| json_number_error())?;
+        let scan = scan_json_numbers(raw).unwrap_err();
+        let parse = parse_json_preserving_numbers(raw, &[]).unwrap_err();
+        for error in [scan, parse] {
+            let rendered = error.to_string();
+            assert!(!rendered.contains("secret"));
+            assert!(!rendered.contains("18446744073709551617"));
+        }
         Ok(())
     }
 

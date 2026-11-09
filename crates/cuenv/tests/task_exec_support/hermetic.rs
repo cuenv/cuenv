@@ -1,7 +1,6 @@
-use super::{TestResult, create_test_dir, find_in_path, init_cue_module, run_cuenv};
-use std::fs;
-use std::io;
+use super::TestResult;
 use std::path::Path;
+use std::{fs, io};
 use tempfile::TempDir;
 
 fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
@@ -25,8 +24,8 @@ fn find_path_line<'a>(stdout: &'a str, expected_prefix: &str) -> TestResult<&'a 
 
 #[test]
 fn test_exec_hermetic_path_no_host_pollution() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
 
     // Create a minimal project with a custom PATH in env
     let cue_content = r#"package test
@@ -40,8 +39,8 @@ env: {
     write_env(&temp_dir, cue_content)?;
 
     // Run printenv PATH via exec - use absolute path since PATH is hermetic
-    let printenv = find_in_path("printenv")?;
-    let (stdout, _stderr, success) = run_cuenv(&[
+    let printenv = super::find_in_path("printenv")?;
+    let (stdout, _stderr, success) = super::run_cuenv(&[
         "exec",
         "-p",
         path_arg(temp_dir.path())?,
@@ -78,12 +77,12 @@ env: {
 
 #[test]
 fn test_task_hermetic_path_no_host_pollution() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
 
     // Create a project with a task that prints PATH
     // Use absolute path since PATH is hermetic
-    let printenv = find_in_path("printenv")?;
+    let printenv = super::find_in_path("printenv")?;
     let cue_content = format!(
         r#"package test
 
@@ -104,7 +103,7 @@ tasks: {{
     write_env(&temp_dir, &cue_content)?;
 
     // Run the task
-    let (stdout, _stderr, success) = run_cuenv(&[
+    let (stdout, _stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,

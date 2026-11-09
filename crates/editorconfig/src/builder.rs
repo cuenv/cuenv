@@ -5,16 +5,18 @@ use std::path::{Path, PathBuf};
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use cuenv_editorconfig::{EditorConfigFile, EditorConfigSection};
+/// ```rust
+/// use cuenv_editorconfig::{EditorConfigFile, EditorConfigSection, RootMode};
+/// # let directory = tempfile::tempdir()?;
 ///
 /// let result = EditorConfigFile::builder()
-///     .directory("/path/to/project")
-///     .is_root(true)
+///     .directory(directory.path())
+///     .is_root(RootMode::Root)
 ///     .section("*", EditorConfigSection::new()
 ///         .indent_style("space")
 ///         .indent_size(4))
 ///     .generate()?;
+/// assert!(directory.path().join(".editorconfig").exists());
 /// # Ok::<(), cuenv_editorconfig::Error>(())
 /// ```
 #[derive(Debug, Default)]
@@ -24,6 +26,24 @@ pub struct EditorConfigFileBuilder {
     sections: Vec<(String, EditorConfigSection)>,
     dry_run: bool,
     header: Option<String>,
+}
+
+/// Whether editor configuration is rooted at this file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootMode {
+    /// Stop searching parent directories.
+    Root,
+    /// Continue searching parent directories.
+    Inherit,
+}
+
+/// Whether generation writes changes or only reports them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteMode {
+    /// Write generated content.
+    Write,
+    /// Report what would change without writing.
+    DryRun,
 }
 
 /// Entry point for building and generating EditorConfig files.
@@ -52,8 +72,8 @@ impl EditorConfigFileBuilder {
     /// When true, adds `root = true` at the top of the file, which tells
     /// editors to stop searching for .editorconfig files in parent directories.
     #[must_use]
-    pub const fn is_root(mut self, is_root: bool) -> Self {
-        self.is_root = is_root;
+    pub const fn is_root(mut self, mode: RootMode) -> Self {
+        self.is_root = matches!(mode, RootMode::Root);
         self
     }
 
@@ -82,8 +102,8 @@ impl EditorConfigFileBuilder {
     /// When true, no files will be written. The result will indicate
     /// what would happen with `WouldCreate` and `WouldUpdate` statuses.
     #[must_use]
-    pub const fn dry_run(mut self, dry_run: bool) -> Self {
-        self.dry_run = dry_run;
+    pub const fn dry_run(mut self, mode: WriteMode) -> Self {
+        self.dry_run = matches!(mode, WriteMode::DryRun);
         self
     }
 

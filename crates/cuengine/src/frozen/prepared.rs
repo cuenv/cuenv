@@ -1,9 +1,6 @@
 //! Stateless, authenticated provenance reuse for an immutable source graph.
 
-use super::{
-    DeferredValue, FrozenInstance, ScalarFill, SpecializationResult, ValuePath, decode_result,
-    encode_options, encode_snapshot,
-};
+use super::snapshot::{DeferredValue, FrozenInstance, ScalarFill, SpecializationResult, ValuePath};
 use crate::Result;
 use serde::Serialize;
 use std::fmt;
@@ -86,13 +83,13 @@ impl FrozenInstance {
         let instance = self.clone();
         let options = options.clone();
         crate::frozen_worker::run(move || {
-            let snapshot = encode_snapshot(&instance.snapshot)?;
-            let options = encode_options(&options)?;
+            let snapshot = super::snapshot::encode_snapshot(&instance.snapshot)?;
+            let options = super::snapshot::encode_options(&options)?;
             // SAFETY: the owned C strings live through the synchronous call;
             // decode_result takes ownership of and frees its result allocation.
             #[expect(unsafe_code, reason = "Required for prepared CUE provenance FFI")]
             let pointer = unsafe { cue_prepare_frozen(snapshot.as_ptr(), options.as_ptr()) };
-            let capability: String = decode_result(pointer, "cue_prepare_frozen")?;
+            let capability: String = super::snapshot::decode_result(pointer, "cue_prepare_frozen")?;
             Ok(PreparedInstance {
                 instance,
                 capability: Arc::from(capability),
@@ -118,16 +115,16 @@ impl PreparedInstance {
         options: &PreparedSpecializationOptions,
     ) -> Result<SpecializationResult> {
         let _permit = crate::frozen_worker::admit()?;
-        let snapshot = encode_snapshot(&self.instance.snapshot)?;
-        let capability = encode_snapshot(&self.capability)?;
-        let options = encode_options(options)?;
+        let snapshot = super::snapshot::encode_snapshot(&self.instance.snapshot)?;
+        let capability = super::snapshot::encode_snapshot(&self.capability)?;
+        let options = super::snapshot::encode_options(options)?;
         // SAFETY: all input strings live through this synchronous call;
         // decode_result takes ownership of and frees its result allocation.
         #[expect(unsafe_code, reason = "Required for prepared CUE specialization FFI")]
         let pointer = unsafe {
             cue_specialize_prepared(snapshot.as_ptr(), capability.as_ptr(), options.as_ptr())
         };
-        decode_result(pointer, "cue_specialize_prepared")
+        super::snapshot::decode_result(pointer, "cue_specialize_prepared")
     }
 
     /// Check that real values change nothing outside the declared references.
@@ -141,13 +138,13 @@ impl PreparedInstance {
     /// until the evaluation timeout.
     pub fn verify(&self, options: &VerificationOptions) -> Result<()> {
         let _permit = crate::frozen_worker::admit()?;
-        let snapshot = encode_snapshot(&self.instance.snapshot)?;
-        let options = encode_options(options)?;
+        let snapshot = super::snapshot::encode_snapshot(&self.instance.snapshot)?;
+        let options = super::snapshot::encode_options(options)?;
         // SAFETY: both inputs remain alive throughout the synchronous call, and
         // decode_result takes ownership of and frees its result allocation.
         #[expect(unsafe_code, reason = "Required for frozen CUE verification FFI")]
         let pointer = unsafe { cue_verify_frozen(snapshot.as_ptr(), options.as_ptr()) };
-        decode_result::<bool>(pointer, "cue_verify_frozen").map(|_| ())
+        super::snapshot::decode_result::<bool>(pointer, "cue_verify_frozen").map(|_| ())
     }
 }
 

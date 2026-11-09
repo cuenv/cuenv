@@ -54,8 +54,8 @@ impl Compiler {
             return true;
         };
 
-        if let Some(always_val) = condition.always {
-            return always_val;
+        if condition.always == Some(false) {
+            return false;
         }
 
         if !condition.runtime_type.is_empty() {
@@ -94,13 +94,23 @@ impl Compiler {
             return false;
         }
 
+        let selected_tasks =
+            if condition.task_command.is_empty() && condition.task_labels.is_empty() {
+                None
+            } else {
+                self.options.pipeline.as_ref().map(|_| {
+                    crate::pipeline::selected_task_ids(&ir.pipeline.pipeline_tasks, &ir.tasks)
+                })
+            };
         if !condition.task_command.is_empty()
-            && !Self::has_task_command(&condition.task_command, ir)
+            && !Self::has_task_command(&condition.task_command, ir, selected_tasks.as_ref())
         {
             return false;
         }
 
-        if !condition.task_labels.is_empty() && !self.has_task_labels(&condition.task_labels) {
+        if !condition.task_labels.is_empty()
+            && !self.has_task_labels(&condition.task_labels, ir, selected_tasks.as_ref())
+        {
             return false;
         }
 
@@ -133,6 +143,23 @@ impl Compiler {
             {
                 return false;
             }
+        }
+
+        if condition
+            .has_service
+            .is_some_and(|expected| expected == self.project.services.is_empty())
+        {
+            return false;
+        }
+        if !condition.service_command.is_empty()
+            && !self.project.services.values().any(|service| {
+                service
+                    .primary_command()
+                    .and_then(cuenv_workspaces::command_name)
+                    .is_some_and(|command| condition.service_command.contains(&command))
+            })
+        {
+            return false;
         }
 
         true
@@ -317,11 +344,13 @@ impl Compiler {
     }
 
     /// Check if any pipeline task uses the specified command.
-    fn has_task_command(commands: &[String], ir: &IntermediateRepresentation) -> bool {
+    fn has_task_command(
+        commands: &[String],
+        ir: &IntermediateRepresentation,
+        selected: Option<&HashSet<String>>,
+    ) -> bool {
         for task in &ir.tasks {
-            if !ir.pipeline.pipeline_tasks.is_empty()
-                && !ir.pipeline.pipeline_tasks.contains(&task.id)
-            {
+            if selected.is_some_and(|ids| !ids.contains(&task.id)) {
                 continue;
             }
 
@@ -346,23 +375,21 @@ impl Compiler {
         false
     }
 
-    /// Check if any pipeline task has the specified labels.
-    fn has_task_labels(&self, labels: &[String]) -> bool {
-        let Some(ref pipeline) = self.options.pipeline else {
+    /// Check selected pipeline tasks and their dependencies for any listed label.
+    fn has_task_labels(
+        &self,
+        labels: &[String],
+        ir: &IntermediateRepresentation,
+        selected: Option<&HashSet<String>>,
+    ) -> bool {
+        let Some(selected) = selected else {
             return false;
         };
-
-        for pipeline_task in &pipeline.tasks {
-            let task_name = pipeline_task.task_name();
-            if let Some(task) = self.find_task(task_name) {
-                let has_all = labels.iter().all(|l| task.labels.contains(l));
-                if has_all {
-                    return true;
-                }
-            }
-        }
-
-        false
+        ir.tasks
+            .iter()
+            .filter(|task| selected.contains(&task.id))
+            .filter_map(|task| self.find_task(&task.id))
+            .any(|task| labels.iter().any(|label| task.labels.contains(label)))
     }
 
     /// Derive the build stage from contributor task priority.

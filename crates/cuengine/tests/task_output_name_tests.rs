@@ -1,6 +1,6 @@
 //! Tests for task output reference names derived during CUE evaluation.
 
-use cuengine::{ModuleEvalOptions, evaluate_module};
+use cuengine::ModuleEvalOptions;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ fn evaluate_fixture_with_task_field(
         ..Default::default()
     };
 
-    Ok(evaluate_module(
+    Ok(cuengine::evaluate_module(
         &project_root()?,
         "fixture",
         Some(&options),

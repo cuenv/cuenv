@@ -1,6 +1,9 @@
 package examples
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"github.com/cuenv/cuenv/schema"
+	c "github.com/cuenv/cuenv/contrib/contributors"
+)
 
 schema.#Project
 
@@ -25,10 +28,14 @@ tasks: {
 	}
 }
 
-ci: pipelines: {
-	deploy: {
-		environment: "production"
-		tasks: [_t.deploy]
-		when: branch: "main"
+ci: {
+	providers: ["github"]
+	contributors: [c.#Cuenv, c.#OnePassword]
+	pipelines: {
+		deploy: {
+			environment: "production"
+			tasks: [_t.deploy]
+			when: branch: "main"
+		}
 	}
 }

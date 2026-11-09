@@ -1,0 +1,195 @@
+{
+    "name": "task-basic",
+    "env": {
+        "NAME": "Jack O'Neill"
+    },
+    "tasks": {
+        "interpolate": {
+            "stdout": {
+                "cuenvOutputRef": true,
+                "cuenvTask": "interpolate",
+                "cuenvOutput": "stdout"
+            },
+            "stderr": {
+                "cuenvOutputRef": true,
+                "cuenvTask": "interpolate",
+                "cuenvOutput": "stderr"
+            },
+            "exitCode": {
+                "cuenvOutputRef": true,
+                "cuenvTask": "interpolate",
+                "cuenvOutput": "exitCode"
+            },
+            "command": "echo",
+            "args": [
+                "Hello ",
+                "Jack O'Neill",
+                "!"
+            ],
+            "dir": {
+                "from": "definition",
+                "path": "."
+            }
+        },
+        "propagate": {
+            "stdout": {
+                "cuenvOutputRef": true,
+                "cuenvTask": "propagate",
+                "cuenvOutput": "stdout"
+            },
+            "stderr": {
+                "cuenvOutputRef": true,
+                "cuenvTask": "propagate",
+                "cuenvOutput": "stderr"
+            },
+            "exitCode": {
+                "cuenvOutputRef": true,
+                "cuenvTask": "propagate",
+                "cuenvOutput": "exitCode"
+            },
+            "command": "printenv",
+            "args": [
+                "NAME"
+            ],
+            "dir": {
+                "from": "definition",
+                "path": "."
+            }
+        },
+        "greetAll": [
+            {
+                "stdout": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "",
+                    "cuenvOutput": "stdout"
+                },
+                "stderr": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "",
+                    "cuenvOutput": "stderr"
+                },
+                "exitCode": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "",
+                    "cuenvOutput": "exitCode"
+                },
+                "command": "echo",
+                "args": [
+                    "Hello 1 ",
+                    "Jack O'Neill",
+                    "!"
+                ],
+                "dir": {
+                    "from": "definition",
+                    "path": "."
+                }
+            },
+            {
+                "stdout": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "",
+                    "cuenvOutput": "stdout"
+                },
+                "stderr": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "",
+                    "cuenvOutput": "stderr"
+                },
+                "exitCode": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "",
+                    "cuenvOutput": "exitCode"
+                },
+                "command": "echo",
+                "args": [
+                    "Hello 2 ",
+                    "Jack O'Neill",
+                    "!"
+                ],
+                "dir": {
+                    "from": "definition",
+                    "path": "."
+                }
+            }
+        ],
+        "greetIndividual": {
+            "type": "group",
+            "jack": {
+                "stdout": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "greetIndividual.jack",
+                    "cuenvOutput": "stdout"
+                },
+                "stderr": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "greetIndividual.jack",
+                    "cuenvOutput": "stderr"
+                },
+                "exitCode": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "greetIndividual.jack",
+                    "cuenvOutput": "exitCode"
+                },
+                "command": "echo",
+                "args": [
+                    "Hello Jack"
+                ],
+                "dir": {
+                    "from": "definition",
+                    "path": "."
+                }
+            },
+            "tealc": {
+                "stdout": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "greetIndividual.tealc",
+                    "cuenvOutput": "stdout"
+                },
+                "stderr": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "greetIndividual.tealc",
+                    "cuenvOutput": "stderr"
+                },
+                "exitCode": {
+                    "cuenvOutputRef": true,
+                    "cuenvTask": "greetIndividual.tealc",
+                    "cuenvOutput": "exitCode"
+                },
+                "command": "echo",
+                "args": [
+                    "Hello Teal'c"
+                ],
+                "dir": {
+                    "from": "definition",
+                    "path": "."
+                }
+            }
+        },
+        "shellExample": {
+            "stdout": {
+                "cuenvOutputRef": true,
+                "cuenvTask": "shellExample",
+                "cuenvOutput": "stdout"
+            },
+            "stderr": {
+                "cuenvOutputRef": true,
+                "cuenvTask": "shellExample",
+                "cuenvOutput": "stderr"
+            },
+            "exitCode": {
+                "cuenvOutputRef": true,
+                "cuenvTask": "shellExample",
+                "cuenvOutput": "exitCode"
+            },
+            "script": "echo \"Hello from Bash\"",
+            "scriptShell": "bash",
+            "shellOptions": {
+                "errexit": true
+            },
+            "dir": {
+                "from": "definition",
+                "path": "."
+            }
+        }
+    }
+}

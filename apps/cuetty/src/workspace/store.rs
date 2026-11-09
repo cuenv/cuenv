@@ -1,6 +1,7 @@
 //! Durable workspace metadata, deliberately separate from live terminal state.
 
-use super::{Node, PaneId, SavedTree, Workspace, validate_tab};
+use super::workspace_model;
+use super::{Node, PaneId, SavedTree, Workspace};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -69,7 +70,7 @@ impl WorkspaceSnapshot {
                 version: self.schema_version,
             });
         }
-        if !validate_tab(&self.tree.tab) {
+        if !workspace_model::validate_tab(&self.tree.tab) {
             return Err(StoreError::InvalidTree);
         }
 
@@ -148,7 +149,11 @@ impl WorkspaceSnapshot {
 fn collect_panes(node: &Node<PaneId>, ids: &mut Vec<PaneId>) {
     match node {
         Node::Pane(pane) => ids.push(pane.id),
-        Node::Split { children, .. } => children.iter().for_each(|child| collect_panes(child, ids)),
+        Node::Split { children, .. } => {
+            for child in children {
+                collect_panes(child, ids);
+            }
+        }
     }
 }
 
@@ -337,13 +342,13 @@ fn put_node(out: &mut Vec<u8>, node: &Node<PaneId>, depth: usize) -> Result<(), 
     Ok(())
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
+struct Reader<'data> {
+    bytes: &'data [u8],
     pos: usize,
     nodes: usize,
 }
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], StoreError> {
+impl<'data> Reader<'data> {
+    fn take(&mut self, n: usize) -> Result<&'data [u8], StoreError> {
         let end = self
             .pos
             .checked_add(n)

@@ -12,15 +12,6 @@ pub struct LayoutRect {
 }
 
 impl LayoutRect {
-    pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
     fn valid(self) -> bool {
         [self.x, self.y, self.width, self.height]
             .iter()
@@ -53,6 +44,12 @@ impl Default for MinSizePolicy {
     fn default() -> Self {
         Self::new(1.0, 1.0)
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ProjectionOptions {
+    pub focused: Option<PaneId>,
+    pub minimum: MinSizePolicy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -88,37 +85,42 @@ impl std::error::Error for ProjectionError {}
 pub fn project_node<C>(
     node: &Node<C>,
     bounds: LayoutRect,
-    focused: Option<PaneId>,
-    minimum: MinSizePolicy,
+    options: ProjectionOptions,
 ) -> Result<Vec<PaneLayout>, ProjectionError> {
     if !bounds.valid() {
         return Err(ProjectionError::InvalidBounds);
     }
-    if !minimum.width.is_finite()
-        || !minimum.height.is_finite()
-        || minimum.width < 0.0
-        || minimum.height < 0.0
+    if !options.minimum.width.is_finite()
+        || !options.minimum.height.is_finite()
+        || options.minimum.width < 0.0
+        || options.minimum.height < 0.0
     {
         return Err(ProjectionError::InvalidMinimumSize);
     }
 
-    let mut output = Vec::new();
-    project(node, bounds, focused, minimum, &mut output)?;
-    Ok(output)
+    let mut context = ProjectionContext {
+        options,
+        output: Vec::new(),
+    };
+    project(node, bounds, &mut context)?;
+    Ok(context.output)
+}
+
+struct ProjectionContext {
+    options: ProjectionOptions,
+    output: Vec<PaneLayout>,
 }
 
 fn project<C>(
     node: &Node<C>,
     bounds: LayoutRect,
-    focused: Option<PaneId>,
-    minimum: MinSizePolicy,
-    output: &mut Vec<PaneLayout>,
+    context: &mut ProjectionContext,
 ) -> Result<(), ProjectionError> {
     match node {
-        Node::Pane(pane) => output.push(PaneLayout {
+        Node::Pane(pane) => context.output.push(PaneLayout {
             pane_id: pane.id,
             bounds,
-            focused: focused == Some(pane.id),
+            focused: context.options.focused == Some(pane.id),
         }),
         Node::Split {
             axis,
@@ -135,7 +137,7 @@ fn project<C>(
             if children.is_empty() {
                 return Ok(());
             }
-            for (index, weight) in weights.iter().copied().enumerate() {
+            for (index, &weight) in weights.iter().enumerate() {
                 if !weight.is_finite() || weight <= 0.0 {
                     return Err(ProjectionError::InvalidWeight {
                         index,
@@ -149,8 +151,8 @@ fn project<C>(
                 Axis::Vertical => bounds.height,
             };
             let minimum_extent = match axis {
-                Axis::Horizontal => minimum.width,
-                Axis::Vertical => minimum.height,
+                Axis::Horizontal => context.options.minimum.width,
+                Axis::Vertical => context.options.minimum.height,
             };
             let required = minimum_extent * children.len() as f32;
             if required > available + f32::EPSILON {
@@ -176,12 +178,20 @@ fn project<C>(
                     cursor + extents[index]
                 };
                 let child_bounds = match axis {
-                    Axis::Horizontal => {
-                        LayoutRect::new(cursor, bounds.y, end - cursor, bounds.height)
-                    }
-                    Axis::Vertical => LayoutRect::new(bounds.x, cursor, bounds.width, end - cursor),
+                    Axis::Horizontal => LayoutRect {
+                        x: cursor,
+                        y: bounds.y,
+                        width: end - cursor,
+                        height: bounds.height,
+                    },
+                    Axis::Vertical => LayoutRect {
+                        x: bounds.x,
+                        y: cursor,
+                        width: bounds.width,
+                        height: end - cursor,
+                    },
                 };
-                project(child, child_bounds, focused, minimum, output)?;
+                project(child, child_bounds, context)?;
                 cursor = end;
             }
         }
@@ -246,19 +256,60 @@ mod tests {
         }
     }
     fn full() -> LayoutRect {
-        LayoutRect::new(0.0, 0.0, 100.0, 80.0)
+        LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 80.0,
+        }
     }
 
     #[test]
     fn horizontal_and_vertical_splits_cover_bounds() {
         let horizontal = split(Axis::Horizontal, vec![1.0, 3.0], vec![pane(1), pane(2)]);
-        let result = project_node(&horizontal, full(), None, MinSizePolicy::new(0.0, 0.0)).unwrap();
-        assert_eq!(result[0].bounds, LayoutRect::new(0.0, 0.0, 25.0, 80.0));
-        assert_eq!(result[1].bounds, LayoutRect::new(25.0, 0.0, 75.0, 80.0));
+        let options = ProjectionOptions {
+            focused: None,
+            minimum: MinSizePolicy::new(0.0, 0.0),
+        };
+        let result = project_node(&horizontal, full(), options).unwrap();
+        assert_eq!(
+            result[0].bounds,
+            LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 25.0,
+                height: 80.0
+            }
+        );
+        assert_eq!(
+            result[1].bounds,
+            LayoutRect {
+                x: 25.0,
+                y: 0.0,
+                width: 75.0,
+                height: 80.0
+            }
+        );
         let vertical = split(Axis::Vertical, vec![1.0, 1.0], vec![pane(3), pane(4)]);
-        let result = project_node(&vertical, full(), None, MinSizePolicy::new(0.0, 0.0)).unwrap();
-        assert_eq!(result[0].bounds, LayoutRect::new(0.0, 0.0, 100.0, 40.0));
-        assert_eq!(result[1].bounds, LayoutRect::new(0.0, 40.0, 100.0, 40.0));
+        let result = project_node(&vertical, full(), options).unwrap();
+        assert_eq!(
+            result[0].bounds,
+            LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0
+            }
+        );
+        assert_eq!(
+            result[1].bounds,
+            LayoutRect {
+                x: 0.0,
+                y: 40.0,
+                width: 100.0,
+                height: 40.0
+            }
+        );
     }
 
     #[test]
@@ -274,15 +325,19 @@ mod tests {
         let a = project_node(
             &tree,
             full(),
-            Some(PaneId::new(2)),
-            MinSizePolicy::new(0.0, 0.0),
+            ProjectionOptions {
+                focused: Some(PaneId::new(2)),
+                minimum: MinSizePolicy::new(0.0, 0.0),
+            },
         )
         .unwrap();
         let b = project_node(
             &tree,
             full(),
-            Some(PaneId::new(2)),
-            MinSizePolicy::new(0.0, 0.0),
+            ProjectionOptions {
+                focused: Some(PaneId::new(2)),
+                minimum: MinSizePolicy::new(0.0, 0.0),
+            },
         )
         .unwrap();
         assert_eq!(a, b);
@@ -296,9 +351,16 @@ mod tests {
         let tree = split(Axis::Horizontal, vec![99.0, 1.0], vec![pane(1), pane(2)]);
         let result = project_node(
             &tree,
-            LayoutRect::new(0.0, 0.0, 100.0, 10.0),
-            None,
-            MinSizePolicy::new(20.0, 0.0),
+            LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 10.0,
+            },
+            ProjectionOptions {
+                focused: None,
+                minimum: MinSizePolicy::new(20.0, 0.0),
+            },
         )
         .unwrap();
         assert_eq!(result[1].bounds.width, 20.0);
@@ -306,9 +368,16 @@ mod tests {
         assert!(matches!(
             project_node(
                 &tree,
-                LayoutRect::new(0.0, 0.0, 30.0, 10.0),
-                None,
-                MinSizePolicy::new(20.0, 0.0)
+                LayoutRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 30.0,
+                    height: 10.0
+                },
+                ProjectionOptions {
+                    focused: None,
+                    minimum: MinSizePolicy::new(20.0, 0.0),
+                }
             ),
             Err(ProjectionError::InsufficientSpace { .. })
         ));
@@ -319,8 +388,12 @@ mod tests {
         assert_eq!(
             project_node(
                 &pane(1),
-                LayoutRect::new(0.0, 0.0, -1.0, 1.0),
-                None,
+                LayoutRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: -1.0,
+                    height: 1.0
+                },
                 Default::default()
             ),
             Err(ProjectionError::InvalidBounds)
@@ -331,7 +404,7 @@ mod tests {
             vec![pane(1), pane(2)],
         );
         assert!(matches!(
-            project_node(&tree, full(), None, Default::default()),
+            project_node(&tree, full(), Default::default()),
             Err(ProjectionError::InvalidWeight { index: 1, .. })
         ));
     }

@@ -55,9 +55,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::{
-    InfrastructureError, Result, UnrecordedFileProblem, describe_json_error, json_error_category,
-};
+use crate::error::{InfrastructureError, Result, UnrecordedFileProblem};
 use crate::state::{
     ConditionalPut, ManagedResource, RecordVersion, ResourceAddress, StateLock, StateStore,
 };
@@ -208,6 +206,7 @@ struct FileResource {
     provider: String,
     provider_source: String,
     schema_version: i64,
+    #[serde(deserialize_with = "crate::type_system::deserialize_json_value")]
     state: serde_json::Value,
     #[serde(with = "crate::state::base64_bytes")]
     private: Vec<u8>,
@@ -215,6 +214,10 @@ struct FileResource {
     #[serde(default)]
     sensitive_attributes: Vec<String>,
     tainted: bool,
+    #[serde(
+        default,
+        deserialize_with = "crate::type_system::deserialize_optional_json_value"
+    )]
     identity: Option<serde_json::Value>,
     generation: uuid::Uuid,
 }
@@ -442,7 +445,7 @@ impl UnrecordedStore {
             InfrastructureError::codec(format!(
                 "cannot serialize the unrecorded record of {} ({})",
                 record.address,
-                json_error_category(&error)
+                crate::error::json_error_category(&error)
             ))
         })?;
         let file = directory.join(&name);
@@ -757,7 +760,10 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
         kinded_file_problem(
             file,
             UnrecordedFileProblem::Format,
-            format!("it is not valid JSON ({})", describe_json_error(&error)),
+            format!(
+                "it is not valid JSON ({})",
+                crate::error::describe_json_error(&error)
+            ),
         )
     })?;
     match (header.kind.as_deref(), header.format_version) {
@@ -803,7 +809,7 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
             UnrecordedFileProblem::Format,
             format!(
                 "it is not a valid unrecorded record ({})",
-                describe_json_error(&error)
+                crate::error::describe_json_error(&error)
             ),
         )
     })?;
@@ -1229,6 +1235,68 @@ mod tests {
             })
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[tokio::test]
+    async fn recovery_preserves_reserved_objects_and_refuses_rounded_numbers() {
+        let root = tempfile::tempdir().unwrap();
+        let pending = UnrecordedStore::at(root.path());
+        let tenant = tenant("precision");
+        let mut resource = record("pet", "replace-me");
+        resource.state = serde_json::json!({
+            "raw": {"$serde_json::private::RawValue": "42"},
+            "number": {"$serde_json::private::Number": "42"},
+            "value": "replace-me"
+        });
+        resource.identity = Some(serde_json::json!({
+            "$serde_json::private::RawValue": "42"
+        }));
+        let file = save(&pending, &tenant, &resource);
+        let original = std::fs::read_to_string(&file).unwrap();
+        let listed = pending.list(&tenant).unwrap();
+        assert_eq!(listed[0].record.state, resource.state);
+        assert_eq!(listed[0].record.identity, resource.identity);
+
+        let state = MemoryStateStore::new();
+        let lock = state.lock(&tenant, "precision recovery").await.unwrap();
+        for number in [
+            "18446744073709551617",
+            "0.123456789012345678901234567890123456789",
+        ] {
+            let invalid = original.replace("\"replace-me\"", number);
+            std::fs::write(&file, &invalid).unwrap();
+            assert!(pending.list(&tenant).is_err());
+            assert!(
+                pending
+                    .recover(
+                        &state,
+                        &tenant,
+                        &RecoverOptions {
+                            lock: &lock,
+                            overrides: RecoverOverrides::default(),
+                        },
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(state.list(&tenant).await.unwrap().is_empty());
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), invalid);
+        }
+        std::fs::write(&file, original).unwrap();
+        pending
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: RecoverOverrides::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let recovered = state.list(&tenant).await.unwrap();
+        assert_eq!(recovered[0].state, resource.state);
+        assert_eq!(recovered[0].identity, resource.identity);
     }
 
     #[test]

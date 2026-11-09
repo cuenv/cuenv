@@ -1,7 +1,8 @@
-use super::{TaskExecutionContext, TaskExecutionInput};
-use crate::commands::task::execute;
-use crate::commands::task::types::TaskExecutionRequest;
-use crate::commands::task_picker::{PickerResult, SelectableTask, run_picker};
+use super::context::{TaskExecutionContext, TaskExecutionInput};
+
+use crate::commands::task::types::{TaskExecutionRequest, TaskLocation};
+use crate::commands::task_picker;
+use crate::commands::task_picker::{PickerResult, SelectableTask};
 use cuenv_core::Result;
 use cuenv_core::tasks::TaskNode;
 
@@ -23,10 +24,12 @@ pub(super) async fn maybe_run_interactive_picker(
         })
         .collect();
 
-    match run_picker(selectable) {
+    match task_picker::run_picker(selectable) {
         Ok(PickerResult::Selected(selected_task)) => {
             let request = selected_task_request(input, &selected_task);
-            Box::pin(execute(request)).await.map(Some)
+            Box::pin(crate::commands::task::execute(request))
+                .await
+                .map(Some)
         }
         Ok(PickerResult::Cancelled) => Ok(Some(String::new())),
         Err(e) => Err(cuenv_core::Error::configuration(format!(
@@ -47,9 +50,12 @@ fn selected_task_request<'a>(
     input: &TaskExecutionInput<'a>,
     selected_task: &str,
 ) -> TaskExecutionRequest<'a> {
-    let mut request =
-        TaskExecutionRequest::named(input.path, input.package, selected_task, input.executor)
-            .with_format(input.format);
+    let mut request = TaskExecutionRequest::named(
+        TaskLocation::new(input.path, input.package),
+        selected_task,
+        input.executor,
+    )
+    .with_format(input.format);
 
     if let Some(env) = input.environment {
         request = request.with_environment(env);

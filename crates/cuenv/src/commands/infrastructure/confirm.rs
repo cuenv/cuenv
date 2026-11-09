@@ -4,7 +4,7 @@ use std::future::Future;
 use std::io::IsTerminal;
 use std::pin::Pin;
 
-use cuenv_infrastructure::{PlanMode, strip_control_characters};
+use cuenv_infrastructure::PlanMode;
 
 use super::action::{ConfirmationPolicy, InfrastructureAction};
 use super::dispatch::CommandContext;
@@ -141,7 +141,7 @@ pub(super) async fn confirm_operation(
         .await?;
     match answer {
         Ok(Some(line)) => {
-            let answer = strip_control_characters(line.trim());
+            let answer = cuenv_infrastructure::strip_control_characters(line.trim());
             cuenv_events::emit_prompt_resolved!(PROMPT_IDENTIFIER, answer.as_str());
             if answer == "yes" {
                 Ok(())

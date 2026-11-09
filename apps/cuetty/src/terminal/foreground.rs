@@ -13,11 +13,11 @@ pub(super) struct ForegroundProcess {
 
 /// What a shell was started to do.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ShellRun<'a> {
+pub(super) enum ShellRun<'arguments> {
     /// Read commands from the terminal.
     Interactive,
     /// Run this script, then exit.
-    Script(&'a str),
+    Script(&'arguments str),
     /// Run commands given to it some other way, such as `-c`, then exit.
     Commands,
 }

@@ -4,15 +4,15 @@ use crate::tasks::{Input, Task, TaskDependency, TaskNode};
 use std::collections::HashMap;
 
 /// Engine that applies contributors to modify the task DAG
-pub struct ContributorEngine<'a> {
-    contributors: &'a [Contributor],
+pub struct ContributorEngine<'engine> {
+    contributors: &'engine [Contributor],
     context: ContributorContext,
 }
 
-impl<'a> ContributorEngine<'a> {
+impl<'engine> ContributorEngine<'engine> {
     /// Create a new contributor engine
     #[must_use]
-    pub fn new(contributors: &'a [Contributor], context: ContributorContext) -> Self {
+    pub fn new(contributors: &'engine [Contributor], context: ContributorContext) -> Self {
         Self {
             contributors,
             context,
@@ -68,8 +68,8 @@ impl<'a> ContributorEngine<'a> {
             return true;
         };
 
-        if when.always == Some(true) {
-            return true;
+        if when.always == Some(false) {
+            return false;
         }
 
         if !when.workspace_member.is_empty() {
@@ -144,7 +144,7 @@ impl<'a> ContributorEngine<'a> {
                     .map(|s| Input::Path(s.clone()))
                     .collect(),
                 outputs: contrib_task.outputs.clone(),
-                hermetic: contrib_task.hermetic.into(),
+                hermetic: crate::tasks::Hermetic::Enabled(contrib_task.hermetic),
                 depends_on: contrib_task
                     .depends_on
                     .iter()

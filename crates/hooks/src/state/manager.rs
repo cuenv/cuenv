@@ -1,12 +1,83 @@
-use super::HookExecutionState;
 use crate::{Error, Result};
-use fs4::tokio::AsyncFileExt;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::debug;
+
+fn is_reserved_state_identifier(instance_hash: &str) -> bool {
+    let upper = instance_hash.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || matches!(
+            upper.as_bytes(),
+            [b'C', b'O', b'M', b'1'..=b'9'] | [b'L', b'P', b'T', b'1'..=b'9']
+        )
+}
+
+fn validate_state_directory(path: &Path, metadata: &std::fs::Metadata) -> Result<()> {
+    if !metadata.file_type().is_dir() {
+        return Err(Error::configuration(format!(
+            "Hook state directory {} must be a directory, not a symlink or file",
+            path.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != effective_uid() || metadata.mode() & 0o077 != 0 {
+            return Err(Error::configuration(format!(
+                "Hook state directory {} must be owned by the current user and private (mode 0700 or stricter)",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn effective_uid() -> u32 {
+    rustix::process::geteuid().as_raw()
+}
+
+#[cfg(unix)]
+fn secure_default_state_directory(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let directory = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(Error::Io {
+                source,
+                path: Some(path.to_path_buf().into_boxed_path()),
+                operation: "open default state directory without following symlinks".to_string(),
+            });
+        }
+    };
+    let metadata = directory.metadata().map_err(|source| Error::Io {
+        source,
+        path: Some(path.to_path_buf().into_boxed_path()),
+        operation: "inspect default state directory".to_string(),
+    })?;
+    if metadata.uid() != effective_uid() || metadata.mode() & 0o022 != 0 {
+        return Err(Error::configuration(format!(
+            "Default hook state directory {} must be owned by the current user and not writable by group or others",
+            path.display()
+        )));
+    }
+    if metadata.mode() & 0o077 != 0 {
+        let permissions = std::fs::Permissions::from_mode(metadata.mode() & !0o077);
+        directory
+            .set_permissions(permissions)
+            .map_err(|source| Error::Io {
+                source,
+                path: Some(path.to_path_buf().into_boxed_path()),
+                operation: "make default state directory private".to_string(),
+            })?;
+    }
+    Ok(())
+}
 
 /// Manages persistent state for hook execution sessions
 #[derive(Debug, Clone)]
@@ -27,6 +98,10 @@ impl StateManager {
     /// - Linux: `~/.local/state/cuenv/hooks`
     /// - macOS: `~/Library/Application Support/cuenv/hooks`
     /// - Windows: `%APPDATA%\cuenv\hooks`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no platform state or data directory is available.
     pub fn default_state_dir() -> Result<PathBuf> {
         let base = dirs::state_dir()
             .or_else(dirs::data_dir)
@@ -34,244 +109,167 @@ impl StateManager {
         Ok(base.join("cuenv").join("hooks"))
     }
 
-    /// Create a state manager using the default state directory
+    /// Create a state manager using the default state directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the default path is unavailable or insecure.
     pub fn with_default_dir() -> Result<Self> {
-        Ok(Self::new(Self::default_state_dir()?))
+        let state_dir = Self::default_state_dir()?;
+        #[cfg(unix)]
+        secure_default_state_directory(&state_dir)?;
+        Ok(Self::new(state_dir))
     }
 
     /// Get the state directory path
     #[must_use]
-    pub fn get_state_dir(&self) -> &Path {
+    pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
 
-    /// Ensure the state directory exists
+    /// Ensure the state directory exists and is private to the current user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be created or verified private.
     pub async fn ensure_state_dir(&self) -> Result<()> {
-        if !self.state_dir.exists() {
-            fs::create_dir_all(&self.state_dir)
-                .await
-                .map_err(|e| Error::Io {
-                    source: e,
-                    path: Some(self.state_dir.clone().into_boxed_path()),
-                    operation: "create_dir_all".to_string(),
-                })?;
-            debug!("Created state directory: {}", self.state_dir.display());
-        }
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        builder.mode(0o700);
+        builder
+            .create(&self.state_dir)
+            .await
+            .map_err(|source| Error::Io {
+                source,
+                path: Some(self.state_dir.clone().into_boxed_path()),
+                operation: "create state directory".to_string(),
+            })?;
+        let metadata = fs::symlink_metadata(&self.state_dir)
+            .await
+            .map_err(|source| Error::Io {
+                source,
+                path: Some(self.state_dir.clone().into_boxed_path()),
+                operation: "inspect state directory".to_string(),
+            })?;
+        validate_state_directory(&self.state_dir, &metadata)?;
         Ok(())
     }
 
-    /// Generate a state file path for a given directory hash
-    pub(super) fn state_file_path(&self, instance_hash: &str) -> PathBuf {
-        self.state_dir.join(format!("{}.json", instance_hash))
+    pub(super) async fn state_dir_exists(&self) -> Result<bool> {
+        match fs::symlink_metadata(&self.state_dir).await {
+            Ok(metadata) => {
+                validate_state_directory(&self.state_dir, &metadata)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(source) => Err(Error::Io {
+                source,
+                path: Some(self.state_dir.clone().into_boxed_path()),
+                operation: "inspect state directory".to_string(),
+            }),
+        }
     }
 
-    /// Get the state file path for a given directory hash (public for PID files)
-    #[must_use]
-    pub fn get_state_file_path(&self, instance_hash: &str) -> PathBuf {
-        self.state_dir.join(format!("{}.json", instance_hash))
+    pub(super) fn state_dir_exists_sync(&self) -> Result<bool> {
+        match std::fs::symlink_metadata(&self.state_dir) {
+            Ok(metadata) => {
+                validate_state_directory(&self.state_dir, &metadata)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(source) => Err(Error::Io {
+                source,
+                path: Some(self.state_dir.clone().into_boxed_path()),
+                operation: "inspect state directory".to_string(),
+            }),
+        }
     }
 
-    /// Save execution state to disk with atomic write and locking
-    pub async fn save_state(&self, state: &HookExecutionState) -> Result<()> {
-        self.ensure_state_dir().await?;
+    /// Generate a state file path for a valid instance identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identifier is empty or is not a safe filename.
+    pub fn try_state_file_path(&self, instance_hash: &str) -> Result<PathBuf> {
+        if instance_hash.is_empty()
+            || !instance_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            || is_reserved_state_identifier(instance_hash)
+        {
+            return Err(Error::configuration(
+                "Invalid hook state instance identifier",
+            ));
+        }
+        Ok(self.state_dir.join(format!("{}.json", instance_hash)))
+    }
+}
 
-        let state_file = self.state_file_path(&state.instance_hash);
-        let json = serde_json::to_string_pretty(state)
-            .map_err(|e| Error::serialization(format!("Failed to serialize state: {e}")))?;
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn managed_default_permissions_are_tightened_only_when_safe() {
+        use std::os::unix::fs::PermissionsExt;
 
-        let temp_path = state_file.with_extension("tmp");
-
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp_path)
-            .await
-            .map_err(|e| Error::Io {
-                source: e,
-                path: Some(temp_path.clone().into_boxed_path()),
-                operation: "open".to_string(),
-            })?;
-
-        file.lock_exclusive().map_err(|e| {
-            Error::configuration(format!(
-                "Failed to acquire exclusive lock on state temp file: {}",
-                e
-            ))
-        })?;
-
-        file.write_all(json.as_bytes())
-            .await
-            .map_err(|e| Error::Io {
-                source: e,
-                path: Some(temp_path.clone().into_boxed_path()),
-                operation: "write_all".to_string(),
-            })?;
-
-        file.sync_all().await.map_err(|e| Error::Io {
-            source: e,
-            path: Some(temp_path.clone().into_boxed_path()),
-            operation: "sync_all".to_string(),
-        })?;
-
-        drop(file);
-
-        fs::rename(&temp_path, &state_file)
-            .await
-            .map_err(|e| Error::Io {
-                source: e,
-                path: Some(state_file.clone().into_boxed_path()),
-                operation: "rename".to_string(),
-            })?;
-
-        debug!(
-            "Saved execution state for directory hash: {}",
-            state.instance_hash
+        let directory = tempfile::tempdir().unwrap();
+        let default = directory.path().join("hooks");
+        std::fs::create_dir(&default).unwrap();
+        std::fs::set_permissions(&default, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::secure_default_state_directory(&default).unwrap();
+        assert_eq!(
+            std::fs::metadata(&default).unwrap().permissions().mode() & 0o777,
+            0o700
         );
-        Ok(())
-    }
 
-    /// Load execution state from disk with shared locking
-    pub async fn load_state(&self, instance_hash: &str) -> Result<Option<HookExecutionState>> {
-        let state_file = self.state_file_path(instance_hash);
-
-        if !state_file.exists() {
-            return Ok(None);
-        }
-
-        let mut file = match OpenOptions::new().read(true).open(&state_file).await {
-            Ok(f) => f,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    return Ok(None);
-                }
-                return Err(Error::Io {
-                    source: e,
-                    path: Some(state_file.clone().into_boxed_path()),
-                    operation: "open".to_string(),
-                });
-            }
-        };
-
-        file.lock_shared().map_err(|e| {
-            Error::configuration(format!(
-                "Failed to acquire shared lock on state file: {}",
-                e
-            ))
-        })?;
-
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)
-            .await
-            .map_err(|e| Error::Io {
-                source: e,
-                path: Some(state_file.clone().into_boxed_path()),
-                operation: "read_to_string".to_string(),
-            })?;
-
-        drop(file);
-
-        let state: HookExecutionState = serde_json::from_str(&contents)
-            .map_err(|e| Error::serialization(format!("Failed to deserialize state: {e}")))?;
-
-        debug!(
-            "Loaded execution state for directory hash: {}",
-            instance_hash
+        std::fs::set_permissions(&default, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(super::secure_default_state_directory(&default).is_err());
+        assert_eq!(
+            std::fs::metadata(&default).unwrap().permissions().mode() & 0o777,
+            0o775
         );
-        Ok(Some(state))
+
+        let link = directory.path().join("link");
+        std::os::unix::fs::symlink(&default, &link).unwrap();
+        assert!(super::secure_default_state_directory(&link).is_err());
+        assert_eq!(
+            std::fs::metadata(default).unwrap().permissions().mode() & 0o777,
+            0o775
+        );
     }
 
-    /// Remove state file for a directory
-    pub async fn remove_state(&self, instance_hash: &str) -> Result<()> {
-        let state_file = self.state_file_path(instance_hash);
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn replacing_state_with_an_open_reader_never_removes_the_old_state() {
+        use crate::state::{HookExecutionIdentity, HookExecutionState, StateManager};
+        use std::io::Read;
 
-        if state_file.exists() {
-            fs::remove_file(&state_file).await.map_err(|e| Error::Io {
-                source: e,
-                path: Some(state_file.into_boxed_path()),
-                operation: "remove_file".to_string(),
-            })?;
-            debug!(
-                "Removed execution state for directory hash: {}",
-                instance_hash
-            );
+        let directory = tempfile::tempdir().unwrap();
+        let manager = StateManager::new(directory.path().to_path_buf());
+        let mut state = HookExecutionState::new(
+            HookExecutionIdentity {
+                session_id: uuid::Uuid::from_u128(0x11111111_1111_4111_8111_111111111111),
+                directory_path: directory.path().to_path_buf(),
+                instance_hash: "reader".to_string(),
+                config_hash: "config".to_string(),
+            },
+            Vec::new(),
+        );
+        manager.seed_test_state(&state).await.unwrap();
+        let path = manager.try_state_file_path("reader").unwrap();
+        let mut reader = std::fs::File::open(path).unwrap();
+        state.completed_hooks = 1;
+        let result = manager.seed_test_state(&state).await;
+        let persisted = manager.load_state("reader").await.unwrap().unwrap();
+        if result.is_ok() {
+            assert_eq!(persisted.completed_hooks, 1);
+        } else {
+            assert_eq!(persisted.completed_hooks, 0);
         }
-
-        Ok(())
-    }
-
-    /// List all active execution states
-    pub async fn list_active_states(&self) -> Result<Vec<HookExecutionState>> {
-        if !self.state_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut states = Vec::new();
-        let mut dir = fs::read_dir(&self.state_dir).await.map_err(|e| Error::Io {
-            source: e,
-            path: Some(self.state_dir.clone().into_boxed_path()),
-            operation: "read_dir".to_string(),
-        })?;
-
-        while let Some(entry) = dir.next_entry().await.map_err(|e| Error::Io {
-            source: e,
-            path: Some(self.state_dir.clone().into_boxed_path()),
-            operation: "next_entry".to_string(),
-        })? {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                && let Ok(Some(state)) = self.load_state(stem).await
-            {
-                states.push(state);
-            }
-        }
-
-        Ok(states)
-    }
-
-    /// Load execution state from disk synchronously with shared locking.
-    /// This is the sync equivalent of `load_state` for the fast path.
-    pub fn load_state_sync(&self, instance_hash: &str) -> Result<Option<HookExecutionState>> {
-        let state_file = self.state_file_path(instance_hash);
-
-        if !state_file.exists() {
-            return Ok(None);
-        }
-
-        let mut file = match std::fs::File::open(&state_file) {
-            Ok(f) => f,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    return Ok(None);
-                }
-                return Err(Error::Io {
-                    source: e,
-                    path: Some(state_file.clone().into_boxed_path()),
-                    operation: "open".to_string(),
-                });
-            }
-        };
-
-        file.lock_shared().map_err(|e| {
-            Error::configuration(format!(
-                "Failed to acquire shared lock on state file: {}",
-                e
-            ))
-        })?;
-
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).map_err(|e| Error::Io {
-            source: e,
-            path: Some(state_file.clone().into_boxed_path()),
-            operation: "read_to_string".to_string(),
-        })?;
-
-        drop(file);
-
-        let state: HookExecutionState = serde_json::from_str(&contents)
-            .map_err(|e| Error::serialization(format!("Failed to deserialize state: {e}")))?;
-
-        Ok(Some(state))
+        let mut old = String::new();
+        reader.read_to_string(&mut old).unwrap();
+        let old: HookExecutionState = serde_json::from_str(&old).unwrap();
+        assert_eq!(old.completed_hooks, 0);
     }
 }

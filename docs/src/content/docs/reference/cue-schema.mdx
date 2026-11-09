@@ -117,6 +117,8 @@ env: {
 Environment values are strings. The schema also accepts `int` and `bool` (they
 are converted to strings when exported), but this site standardizes on quoted
 strings so values look the same in CUE as they do in the process environment.
+Variable names use uppercase letters, digits and underscores, and must start
+with a letter or underscore. These names are valid shell identifiers.
 
 ### #EnvironmentVariable
 

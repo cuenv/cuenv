@@ -8,11 +8,5 @@ pub mod terminal;
 pub mod workspace;
 
 fn main() {
-    // Rio's child shell inherits this process environment. Keep the
-    // identity stable for shell integrations and terminal-aware tools.
-    unsafe {
-        std::env::set_var("TERM_PROGRAM", "cuetty");
-        std::env::set_var("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
-    }
     terminal::run();
 }

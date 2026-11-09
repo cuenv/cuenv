@@ -10,12 +10,12 @@ use super::selection::{LogicalPosition, Selection, TextSource};
 
 /// A `TextSource` view over one sampled terminal frame. Physical rows, soft
 /// wrap boundaries, and spacer cells are intentionally preserved verbatim.
-pub struct FrameTextSource<'a> {
-    frame: &'a TerminalFrame,
+pub struct FrameTextSource<'frame> {
+    frame: &'frame TerminalFrame,
 }
 
-impl<'a> FrameTextSource<'a> {
-    pub fn new(frame: &'a TerminalFrame) -> Self {
+impl<'frame> FrameTextSource<'frame> {
+    pub fn new(frame: &'frame TerminalFrame) -> Self {
         Self { frame }
     }
 }
@@ -271,17 +271,17 @@ fn match_selection(matched: SearchMatch) -> Selection {
 mod tests {
     use super::*;
     use crate::terminal::model::{
-        CursorShape, CursorState, Known, SamplingToken, TerminalCell, TerminalDimensions,
+        CursorShape, CursorState, Known, RowWrap, SamplingToken, TerminalCell, TerminalDimensions,
         TerminalRow,
     };
 
-    fn frame(rows: Vec<(&str, bool)>) -> TerminalFrame {
+    fn frame(rows: Vec<(&str, RowWrap)>) -> TerminalFrame {
         TerminalFrame {
             dimensions: TerminalDimensions::new(rows.len() as u16, 4),
             rows: rows
                 .into_iter()
-                .map(|(text, soft_wrapped)| TerminalRow {
-                    soft_wrapped,
+                .map(|(text, wrap)| TerminalRow {
+                    soft_wrapped: wrap.is_soft(),
                     dirty: false,
                     cells: text.chars().map(TerminalCell::narrow).collect(),
                 })
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn frame_source_preserves_soft_wraps_and_spacers_for_copy() {
-        let mut sampled = frame(vec![("ab", true), ("cd", false)]);
+        let mut sampled = frame(vec![("ab", RowWrap::Soft), ("cd", RowWrap::None)]);
         sampled.rows[0].cells.push(TerminalCell::trailing_spacer());
         let source = FrameTextSource::new(&sampled);
         assert!(source.line_soft_wrapped(0));
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn drag_copy_and_literal_search_state_are_deterministic() {
-        let sampled = frame(vec![("one ", false), ("one ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None), ("one ", RowWrap::None)]);
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn drag_includes_both_end_cells_in_either_direction() {
-        let sampled = frame(vec![("abcd", false)]);
+        let sampled = frame(vec![("abcd", RowWrap::None)]);
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn same_cell_click_does_not_create_a_selection() {
-        let sampled = frame(vec![("abcd", false)]);
+        let sampled = frame(vec![("abcd", RowWrap::None)]);
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn cross_soft_wrap_drag_keeps_the_logical_line_contiguous() {
-        let sampled = frame(vec![("ab", true), ("cd", false)]);
+        let sampled = frame(vec![("ab", RowWrap::Soft), ("cd", RowWrap::None)]);
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn a_search_highlights_every_match_until_it_closes() {
-        let sampled = frame(vec![("one ", false), ("one ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None), ("one ", RowWrap::None)]);
         let mut state = InteractionState::default();
         assert!(state.search_matches().is_empty());
         state.enter_search(&sampled);
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn highlights_follow_the_text_as_output_moves_it() {
-        let sampled = frame(vec![("one ", false), ("two ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None), ("two ", RowWrap::None)]);
         let mut state = InteractionState::default();
         state.enter_search(&sampled);
         for key in "one".chars() {
@@ -443,7 +443,7 @@ mod tests {
         }
         assert_eq!(state.current_match().map(|m| m.start.line), Some(0));
 
-        let scrolled = frame(vec![("two ", false), ("one ", false)]);
+        let scrolled = frame(vec![("two ", RowWrap::None), ("one ", RowWrap::None)]);
         state.refresh_search(&scrolled);
 
         assert_eq!(state.search_matches().len(), 1);
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn a_refresh_leaves_a_selection_the_user_made() {
-        let sampled = frame(vec![("one ", false), ("two ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None), ("two ", RowWrap::None)]);
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,
@@ -472,14 +472,17 @@ mod tests {
         state.extend_selection(hit, LogicalPosition { line: 1, column: 2 });
         let made = state.selection();
 
-        state.refresh_search(&frame(vec![("xxxx", false), ("two ", false)]));
+        state.refresh_search(&frame(vec![
+            ("xxxx", RowWrap::None),
+            ("two ", RowWrap::None),
+        ]));
 
         assert_eq!(state.selection(), made);
     }
 
     #[test]
     fn a_query_with_no_matches_lets_go_of_the_last_one() {
-        let sampled = frame(vec![("one ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None)]);
         let mut state = InteractionState::default();
         state.enter_search(&sampled);
         let matched = state.search_key(SearchKey::Character('o'), &sampled);
@@ -495,7 +498,7 @@ mod tests {
 
     #[test]
     fn starting_over_lets_go_of_the_match_the_last_search_was_on() {
-        let sampled = frame(vec![("one ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None)]);
         let mut state = InteractionState::default();
         state.enter_search(&sampled);
         let matched = state.search_key(SearchKey::Character('o'), &sampled);
@@ -519,14 +522,14 @@ mod tests {
 
     #[test]
     fn closing_a_search_leaves_its_match_selected_to_copy() {
-        let sampled = frame(vec![("one ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None)]);
         let state = closed_search_on_a_match(&sampled);
         assert_eq!(state.copy(&sampled).as_deref(), Some("o"));
     }
 
     #[test]
     fn reopening_a_closed_search_lets_go_of_the_match_it_left_selected() {
-        let sampled = frame(vec![("one ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None)]);
         let mut state = closed_search_on_a_match(&sampled);
 
         state.enter_search(&sampled);
@@ -538,7 +541,7 @@ mod tests {
 
     #[test]
     fn a_selection_made_after_a_closed_search_outlasts_the_next_one() {
-        let sampled = frame(vec![("one ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None)]);
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,
@@ -558,7 +561,7 @@ mod tests {
 
     #[test]
     fn a_selection_that_happens_to_cover_the_match_is_still_the_users() {
-        let sampled = frame(vec![("one ", false)]);
+        let sampled = frame(vec![("one ", RowWrap::None)]);
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,
@@ -584,7 +587,7 @@ mod tests {
 
     #[test]
     fn viewport_change_clears_visible_frame_coordinates() {
-        let sampled = frame(vec![("abcd", false)]);
+        let sampled = frame(vec![("abcd", RowWrap::None)]);
         let hit = CellHitTest {
             cell_width: 1.0,
             cell_height: 1.0,
@@ -598,7 +601,7 @@ mod tests {
         state.search_key(SearchKey::Character('b'), &sampled);
         assert!(state.current_match().is_some());
 
-        let scrolled = frame(vec![("xxbb", false)]);
+        let scrolled = frame(vec![("xxbb", RowWrap::None)]);
         state.viewport_changed(&scrolled);
 
         assert_eq!(state.copy(&sampled), None);
@@ -615,7 +618,7 @@ mod tests {
     fn a_scroll_that_does_not_move_the_view_keeps_the_selection_and_navigation() {
         let at_bottom = TerminalFrame {
             viewport_offset: Some(0),
-            ..frame(vec![("one ", false), ("one ", false)])
+            ..frame(vec![("one ", RowWrap::None), ("one ", RowWrap::None)])
         };
         let mut state = InteractionState::default();
         state.enter_search(&at_bottom);
@@ -638,7 +641,7 @@ mod tests {
     fn a_scroll_that_moves_the_view_lets_go_of_what_was_on_screen() {
         let at_bottom = TerminalFrame {
             viewport_offset: Some(0),
-            ..frame(vec![("one ", false)])
+            ..frame(vec![("one ", RowWrap::None)])
         };
         let mut state = InteractionState::default();
         state.enter_search(&at_bottom);
@@ -657,7 +660,7 @@ mod tests {
 
     #[test]
     fn wide_cell_hit_on_trailing_spacer_copies_the_glyph_once() {
-        let mut sampled = frame(vec![("a", false)]);
+        let mut sampled = frame(vec![("a", RowWrap::None)]);
         sampled.rows[0].cells = vec![
             TerminalCell::narrow('a'),
             TerminalCell::wide('界'),
