@@ -155,7 +155,7 @@ impl Default for GitHubToolProvider {
 
 impl GitHubToolProvider {
     fn build_client() -> std::result::Result<Client, String> {
-        http::ensure_rustls_crypto_provider();
+        http::ensure_rustls_crypto_provider().map_err(|err| err.to_string())?;
 
         secret_http::client_builder()
             .build()

@@ -350,6 +350,31 @@ fn test_is_ci_with_ci_env_var() {
 }
 
 #[test]
+fn test_is_ci_ignores_falsy_provider_vars() {
+    // CI detection auto-approves hooks; `GITHUB_ACTIONS=false` must not.
+    let unset_others = vec![
+        "CI",
+        "GITLAB_CI",
+        "BUILDKITE",
+        "JENKINS_URL",
+        "CIRCLECI",
+        "TRAVIS",
+        "BITBUCKET_PIPELINES",
+        "AZURE_PIPELINES",
+        "TF_BUILD",
+        "DRONE",
+        "TEAMCITY_VERSION",
+    ];
+    for falsy in ["false", "FALSE", "0", ""] {
+        temp_env::with_vars_unset(unset_others.clone(), || {
+            temp_env::with_var("GITHUB_ACTIONS", Some(falsy), || {
+                assert!(!super::is_ci(), "GITHUB_ACTIONS={falsy:?} is not CI");
+            });
+        });
+    }
+}
+
+#[test]
 fn test_is_ci_with_provider_specific_vars() {
     // Test GitHub Actions
     temp_env::with_var_unset("CI", || {

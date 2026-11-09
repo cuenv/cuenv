@@ -36,6 +36,10 @@ pub enum ExecutorError {
     #[error(transparent)]
     Runner(#[from] RunnerError),
 
+    /// Task graph could not be ordered (for example, a dependency cycle)
+    #[error(transparent)]
+    TaskGraph(#[from] cuenv_task_graph::Error),
+
     /// Task panicked during execution
     #[error("Task panicked: {0}")]
     TaskPanic(String),
@@ -60,6 +64,7 @@ impl From<ExecutorError> for cuenv_core::Error {
             ExecutorError::Compilation(msg) => Self::configuration(msg),
             ExecutorError::Secret(e) => Self::secret_resolution(e.to_string()),
             ExecutorError::Runner(e) => Self::execution(e.to_string()),
+            ExecutorError::TaskGraph(e) => Self::from(e),
             ExecutorError::TaskPanic(msg) => Self::execution(format!("Task panicked: {msg}")),
             ExecutorError::PipelineNotFound { name, available } => Self::configuration(format!(
                 "Pipeline '{name}' not found. Available: {available}"
