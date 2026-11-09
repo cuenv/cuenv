@@ -3,9 +3,9 @@ package schema
 // Base secret type with resolver
 // Mode is auto-negotiated based on environment variables:
 // - AWS: AWS CLI standard credential and region chain
-// - GCP: GOOGLE_APPLICATION_CREDENTIALS → HTTP, otherwise CLI
+// - GCP: HTTPS API; token from GOOGLE_OAUTH_ACCESS_TOKEN, otherwise gcloud ADC
 // - 1Password: OP_SERVICE_ACCOUNT_TOKEN → HTTP, otherwise CLI
-// - Vault: VAULT_TOKEN + VAULT_ADDR → HTTP, otherwise CLI
+// - Vault: schema only; no resolver is registered yet
 // - Infisical: Universal Auth, OIDC Auth (identity ID + JWT) or INFISICAL_TOKEN → HTTP
 //
 // `value` and `policies` are reserved for #EnvironmentVariableWithPolicies,

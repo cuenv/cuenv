@@ -12,7 +12,7 @@ We welcome contributions to cuenv! This guide will help you get started with con
 - Rust 1.90.0+ (install via [rustup](https://rustup.rs/))
 - Git for version control
 - Nix (optional, for reproducible development environment)
-- Go 1.21+ (for CUE engine development)
+- Go 1.26+ (for CUE engine development)
 
 ### Development Setup
 

@@ -19,8 +19,8 @@ import "strings"
 //
 // cuenv launches unmodified Terraform provider binaries and drives them over
 // the Terraform plugin protocol (versions 5 and 6) using gRPC. Every managed
-// resource is stored as its own record in a remote SQLite database (Turso or
-// Cloudflare D1),
+// resource is stored as its own record in a remote state backend (a Turso or
+// Cloudflare D1 SQLite database, or an S3-compatible object store),
 // keyed by the CUE module path (tenant), project name (discriminator) and
 // selected named environment. Legacy no-flag configuration has a distinct
 // state namespace.
@@ -203,9 +203,9 @@ import "strings"
 	//   "inherit"  the ambient environment, minus the credentials of cuenv's
 	//              own secret resolvers, plus the project's variables that the
 	//              action's policy allows;
-	//   "isolated" an empty environment except PATH, HOME, proxy and TLS
-	//              variables, plus the project's variables that the action's
-	//              policy allows.
+	//   "isolated" an empty environment except PATH, HOME, USER, LOGNAME,
+	//              TMPDIR, proxy and TLS variables, plus the project's
+	//              variables that the action's policy allows.
 	providerEnvironment?: *"inherit" | "isolated"
 
 	// Semantic checks. They live beside `providers` and `resources`, not

@@ -125,7 +125,7 @@ import "github.com/cuenv/cuenv/schema"
 			provider: github: {
 				uses: "actions/setup-go@v5"
 				with: {
-					"go-version":            "1.24"
+					"go-version-file":       "crates/cuengine/go.mod"
 					"cache-dependency-path": "crates/cuengine/go.sum"
 				}
 			}

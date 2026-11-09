@@ -524,9 +524,11 @@ supervisor consumes that request to stop and re-spawn the service.
 
 Plan and apply infrastructure declared in the project's `infrastructure` block by
 driving Terraform provider plugins over gRPC. State is stored in the
-configured state database (Turso or Cloudflare D1), keyed by the CUE module path, the project name and
-the selected environment, and owned by one CUE instance (the project's
-directory and package).
+configured state backend (Turso, Cloudflare D1 or S3-compatible object
+storage), keyed by the CUE module path, the project name and the selected
+environment. The CUE instance (the project's directory and package) that last
+took the lock is recorded as the last writer; it is informational, not an
+ownership gate.
 See [Manage infrastructure](/how-to/infrastructure/).
 
 :::caution[Experimental]

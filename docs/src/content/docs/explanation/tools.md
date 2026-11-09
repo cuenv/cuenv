@@ -367,4 +367,4 @@ The provider's cache key includes the profile, components, and targets to ensure
 - [Tools How-To Guide](/how-to/tools/) - Practical usage
 - [Configuration Schema](/reference/cue-schema/#toolsruntime) - Schema reference
 - [CLI Reference](/reference/cli/#cuenv-tools) - Command documentation
-- [Examples](/reference/examples/#tools-management) - Practical examples
+- [Examples](/reference/examples/#tools) - Practical examples

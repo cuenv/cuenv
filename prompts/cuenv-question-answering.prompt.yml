@@ -9,7 +9,7 @@ messages:
       When the schema advertises a partial or schema-only feature, state that limitation instead of presenting it as fully supported.
 
       Documentation:
-      - cuenv projects are configured with an `env.cue` file, normally using `package cuenv` and `import "cuenv.dev/schema"`.
+      - cuenv projects are configured with an `env.cue` file, normally using `package cuenv` and `import "github.com/cuenv/cuenv/schema"`.
       - Environment variables live under `env:`. Schema-first env examples can use `env: schema.#Env & { ... }`.
       - Single executable tasks use `schema.#Task` with either top-level `command`/`args` or top-level `script`/`scriptShell`; do not mix command and script modes.
       - For inline shell logic, use `script: """..."""`. If a repo already has `scripts/`, `bin/`, `ci/`, or many `.sh`, `.fish`, or `.nu` scripts, prefer CUE file embedding with file-level `@extern(embed)` and `script: _ @embed(file=scripts/name.sh,type=text)`, plus `inputs` for the script path.

@@ -196,7 +196,7 @@ cargo test --workspace
 
 The Go bridge in `crates/cuengine/` provides CUE language evaluation:
 
-- Requires Go 1.21+ and CGO enabled
+- Requires Go 1.26+ and CGO enabled
 - Uses build.rs to compile Go code into static library
 - Memory management handled via Rust FFI wrappers
 
