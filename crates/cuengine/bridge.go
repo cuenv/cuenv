@@ -700,7 +700,12 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		if withReferences {
 			refs := make(map[string]string)
 			// Extract from evaluated value for canonical paths (resolves let bindings).
-			extractReferencesFromValue(built.value, built.relPath, "", refs)
+			walk := referenceWalk{
+				instancePath: built.relPath,
+				source:       sourceReferencesFromAST(built.inst, built.relPath),
+				refs:         refs,
+			}
+			walk.visit(built.value, "")
 			// Fall back to AST extraction for other references (backwards compat).
 			astRefs := extractReferencesFromAST(built.inst, built.relPath)
 			for k, v := range astRefs {

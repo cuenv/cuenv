@@ -212,7 +212,8 @@ fn extracts_depends_on_reference_inside_selector_wrapped_expression() {
     let reference = result
         .meta
         .get("./tasks.publish.dependsOn[0]")
-        .and_then(|meta| meta.reference.as_deref());
+        .and_then(|meta| meta.reference.as_deref())
+        .map(strip_task_ref_prefix);
 
     assert_eq!(
         reference,

@@ -420,6 +420,20 @@ func selectorToPath(sel *ast.SelectorExpr) string {
 // Uses CUE's ReferencePath() API which resolves through let bindings and aliases.
 // This is schema-agnostic - it extracts reference paths for ALL values that have them.
 func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, refs map[string]string) {
+	walk := referenceWalk{instancePath: instancePath, refs: refs}
+	walk.visit(v, fieldPath)
+}
+
+// referenceWalk records the reference path of every evaluated value.
+type referenceWalk struct {
+	instancePath string
+	// source answers the fields whose declaration settles the reference;
+	// empty when there is no source to consult.
+	source sourceReferences
+	refs   map[string]string
+}
+
+func (w *referenceWalk) visit(v cue.Value, fieldPath string) {
 	// Skip invalid or error values
 	if v.Err() != nil {
 		return
@@ -428,11 +442,18 @@ func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, ref
 	// For every value, check if it came from a reference
 	// Record the raw reference path - let consumers decide how to interpret it
 	if fieldPath != "" {
-		if refPath, ambiguous := checkedReferencePath(v); refPath != "" || ambiguous {
-			metaKey := fmt.Sprintf("%s/%s", instancePath, fieldPath)
+		metaKey := makeMetaKey(w.instancePath, fieldPath)
+		refPath, found := w.reference(v, metaKey)
+		if refPath != "" || found != referenceAbsent {
 			// An empty entry reserves an ambiguous field so the AST fallback
 			// cannot choose one of several references arbitrarily.
-			refs[metaKey] = refPath
+			w.refs[metaKey] = refPath
+		}
+		if found == referenceThroughConstraint && refPath != "" && !reachesHiddenValue(refPath) {
+			// A visible referenced value records its own fields where it is
+			// declared. Walking them again through every constrained
+			// reference re-evaluates a dependency chain once per level.
+			return
 		}
 	}
 
@@ -453,15 +474,168 @@ func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, ref
 			if fieldPath != "" {
 				childPath = fieldPath + "." + label
 			}
-			extractReferencesFromValue(iter.Value(), instancePath, childPath, refs)
+			w.visit(iter.Value(), childPath)
 		}
 	case cue.ListKind:
 		list, _ := v.List()
 		for i := 0; list.Next(); i++ {
 			childPath := fmt.Sprintf("%s[%d]", fieldPath, i)
-			extractReferencesFromValue(list.Value(), instancePath, childPath, refs)
+			w.visit(list.Value(), childPath)
 		}
 	}
+}
+
+// reference finds a value's reference path. The source answers it where it
+// can, because Value.Expr on a constrained value re-evaluates the value and
+// its whole dependency chain.
+func (w *referenceWalk) reference(v cue.Value, metaKey string) (string, referenceFinding) {
+	if direct := directReferencePath(v); direct != "" {
+		return direct, referenceDirect
+	}
+	if declared, ok := w.source.declarations[metaKey]; ok {
+		if declared == "" {
+			return "", referenceAbsent
+		}
+		return declared, referenceThroughConstraint
+	}
+	return constrainedReferencePath(v)
+}
+
+// reachesHiddenValue reports whether a reference goes through a hidden field
+// or a definition, whose fields the walk does not visit where they are
+// declared.
+func reachesHiddenValue(refPath string) bool {
+	for _, segment := range strings.Split(refPath, ".") {
+		if strings.HasPrefix(segment, "_") || strings.HasPrefix(segment, "#") {
+			return true
+		}
+	}
+	return false
+}
+
+// sourceReferences records what the source declares at each field and list
+// element: the path of a bare reference (`build`, `tasks.build`), or empty
+// for a value that cannot be a reference (a literal, or a definition
+// conjoined with literals). Fields declared inconsistently, or as anything
+// else, are left out for the evaluated value to answer.
+type sourceReferences struct {
+	declarations map[string]string
+	conflicting  map[string]bool
+}
+
+func sourceReferencesFromAST(inst *build.Instance, instancePath string) sourceReferences {
+	source := sourceReferences{
+		declarations: make(map[string]string),
+		conflicting:  make(map[string]bool),
+	}
+	for _, f := range inst.Files {
+		for _, decl := range f.Decls {
+			switch d := decl.(type) {
+			case *ast.Field:
+				label, _, _ := ast.LabelName(d.Label)
+				source.walk(d.Value, makeMetaKey(instancePath, label), label, instancePath)
+			case *ast.EmbedDecl:
+				source.walk(d.Expr, "", "", instancePath)
+			}
+		}
+	}
+	return source
+}
+
+func (s *sourceReferences) walk(expr ast.Expr, metaKey, fieldPath, instancePath string) {
+	if metaKey != "" {
+		reference, known := declaredReference(expr)
+		s.record(metaKey, reference, known)
+		if reference != "" {
+			return
+		}
+	}
+	switch e := expr.(type) {
+	case *ast.StructLit:
+		for _, elem := range e.Elts {
+			switch child := elem.(type) {
+			case *ast.Field:
+				label, _, _ := ast.LabelName(child.Label)
+				childPath := label
+				if fieldPath != "" {
+					childPath = fieldPath + "." + label
+				}
+				s.walk(child.Value, makeMetaKey(instancePath, childPath), childPath, instancePath)
+			case *ast.EmbedDecl:
+				s.walk(child.Expr, "", fieldPath, instancePath)
+			}
+		}
+	case *ast.ListLit:
+		for i, elem := range e.Elts {
+			indexPath := fmt.Sprintf("%s[%d]", fieldPath, i)
+			s.walk(elem, makeMetaKey(instancePath, indexPath), indexPath, instancePath)
+		}
+	case *ast.BinaryExpr:
+		// Reach the fields of the operands; the operands themselves share
+		// this field's key.
+		s.walk(e.X, "", fieldPath, instancePath)
+		s.walk(e.Y, "", fieldPath, instancePath)
+	case *ast.ParenExpr:
+		s.walk(e.X, "", fieldPath, instancePath)
+	}
+}
+
+// record keeps one declaration per key; a key declared twice differently,
+// or once in a form the source cannot settle, is left to evaluation.
+func (s *sourceReferences) record(metaKey, reference string, known bool) {
+	if s.conflicting[metaKey] {
+		return
+	}
+	existing, seen := s.declarations[metaKey]
+	if known && (!seen || existing == reference) {
+		s.declarations[metaKey] = reference
+		return
+	}
+	delete(s.declarations, metaKey)
+	s.conflicting[metaKey] = true
+}
+
+// declaredReference classifies a declared expression: the path it names when
+// it is a bare reference, empty and known when it cannot be a reference, and
+// unknown otherwise.
+func declaredReference(expr ast.Expr) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		if isBuiltinType(e.Name) || strings.HasPrefix(e.Name, "#") {
+			return "", true
+		}
+		return e.Name, true
+	case *ast.SelectorExpr:
+		if _, ok := e.X.(*ast.Ident); !ok {
+			return "", false
+		}
+		path := selectorToPath(e)
+		if path == "" {
+			return "", false
+		}
+		segments := strings.Split(path, ".")
+		if strings.HasPrefix(segments[len(segments)-1], "#") {
+			return "", true
+		}
+		return path, true
+	case *ast.BasicLit, *ast.StructLit, *ast.ListLit, *ast.Interpolation:
+		return "", true
+	case *ast.ParenExpr:
+		return declaredReference(e.X)
+	case *ast.BinaryExpr:
+		if e.Op != token.AND {
+			return "", false
+		}
+		// Only a conjunction of values that are not references is settled
+		// here; one with a reference operand is left to evaluation.
+		for _, operand := range []ast.Expr{e.X, e.Y} {
+			if reference, known := declaredReference(operand); !known || reference != "" {
+				return "", false
+			}
+		}
+		return "", true
+	}
+	return "", false
 }
 
 // safeReferencePath safely extracts the reference path from a CUE value.
@@ -471,30 +645,59 @@ func safeReferencePath(v cue.Value) string {
 	return result
 }
 
-func checkedReferencePath(v cue.Value) (result string, ambiguous bool) {
+// referenceFinding says how a value's reference path was established.
+type referenceFinding int
+
+const (
+	// referenceAbsent: the value is not a reference.
+	referenceAbsent referenceFinding = iota
+	// referenceDirect: the value is a plain reference.
+	referenceDirect
+	// referenceThroughConstraint: a schema constraint made the reference a
+	// conjunction; its path is empty when the conjuncts disagree.
+	referenceThroughConstraint
+)
+
+func checkedReferencePath(v cue.Value) (string, referenceFinding) {
+	if direct := directReferencePath(v); direct != "" {
+		return direct, referenceDirect
+	}
+	return constrainedReferencePath(v)
+}
+
+// directReferencePath is the path of a value that is a plain reference.
+func directReferencePath(v cue.Value) (result string) {
 	// Use recover to handle panics from ReferencePath on non-reference values
 	defer func() {
 		if r := recover(); r != nil {
 			result = ""
-			ambiguous = true
 		}
 	}()
-
 	root, path := v.ReferencePath()
 	if root.Exists() {
-		return path.String(), false
+		return path.String()
 	}
-
-	// A schema constraint can turn a reference into a conjunction. Inspect
-	// its conjuncts, but accept only one unambiguous value reference; type
-	// definitions and disjunctions do not identify the referenced value.
-	return conjunctReferencePath(v, 0)
+	return ""
 }
 
-func conjunctReferencePath(v cue.Value, depth int) (string, bool) {
-	if depth >= 64 {
-		return "", true
+// constrainedReferencePath finds the reference a schema constraint turned
+// into a conjunction. It accepts only one unambiguous value reference; type
+// definitions and disjunctions do not identify the referenced value.
+func constrainedReferencePath(v cue.Value) (result string, found referenceFinding) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = ""
+			found = referenceThroughConstraint
+		}
+	}()
+	reference, ambiguous := conjunctReferencePath(v)
+	if reference == "" && !ambiguous {
+		return "", referenceAbsent
 	}
+	return reference, referenceThroughConstraint
+}
+
+func conjunctReferencePath(v cue.Value) (string, bool) {
 	op, args := v.Expr()
 	if op != cue.AndOp {
 		return "", false
@@ -508,9 +711,12 @@ func conjunctReferencePath(v cue.Value, depth int) (string, bool) {
 			if len(selectors) > 0 && selectors[len(selectors)-1].LabelType() != cue.DefinitionLabel {
 				candidate = path.String()
 			}
-		} else {
+		} else if isConjunction(arg.Source()) {
+			// Expand only a nested conjunction. Expr on any other conjunct
+			// evaluates it afresh, repeating the dependency chain behind it
+			// on every level, which grows exponentially with its depth.
 			var ambiguous bool
-			candidate, ambiguous = conjunctReferencePath(arg, depth+1)
+			candidate, ambiguous = conjunctReferencePath(arg)
 			if ambiguous {
 				return "", true
 			}
@@ -524,4 +730,19 @@ func conjunctReferencePath(v cue.Value, depth int) (string, bool) {
 		reference = candidate
 	}
 	return reference, false
+}
+
+// isConjunction reports whether a conjunct's source is itself a `&`
+// expression, read from the syntax so nothing is evaluated.
+func isConjunction(source ast.Node) bool {
+	for {
+		switch x := source.(type) {
+		case *ast.ParenExpr:
+			source = x.X
+		case *ast.BinaryExpr:
+			return x.Op == token.AND
+		default:
+			return false
+		}
+	}
 }

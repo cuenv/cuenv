@@ -2505,8 +2505,12 @@ impl InfrastructureEngine {
                         }
                     },
                     identity: {
-                        let (identity, warning) =
-                            applied_identity(provider, &change.address, &response, stored);
+                        let (identity, warning) = applied_identity(&AppliedIdentity {
+                            provider,
+                            address: &change.address,
+                            response: &response,
+                            stored,
+                        });
                         if let Some(warning) = warning {
                             on_event(ApplyEvent::Warning(warning));
                         }
@@ -3902,16 +3906,27 @@ struct Refreshed {
     identity: Option<Vec<u8>>,
 }
 
+/// An applied change whose identity is recorded.
+#[derive(Clone, Copy)]
+struct AppliedIdentity<'applied> {
+    provider: &'applied LoadedProvider,
+    address: &'applied ResourceAddress,
+    response: &'applied protocol::ApplyResourceChangeResponse,
+    /// The record before the change, whose identity survives a bad one.
+    stored: Option<&'applied ManagedResource>,
+}
+
 /// The identity to record after an apply, and a warning when the provider
 /// returned identity that cannot be kept. The change already happened, so a
 /// bad identity never fails it: the record keeps its earlier identity, as
 /// a client without identity support would.
-fn applied_identity(
-    provider: &LoadedProvider,
-    address: &ResourceAddress,
-    response: &protocol::ApplyResourceChangeResponse,
-    stored: Option<&ManagedResource>,
-) -> (Option<serde_json::Value>, Option<String>) {
+fn applied_identity(applied: &AppliedIdentity<'_>) -> (Option<serde_json::Value>, Option<String>) {
+    let AppliedIdentity {
+        provider,
+        address,
+        response,
+        stored,
+    } = *applied;
     let schema = provider.identity_schemas.get(&address.resource_type);
     let earlier = || stored.and_then(|stored| stored.identity.clone());
     match identity::received(
