@@ -100,10 +100,31 @@ impl GitHubCIProvider {
             })
     }
 
+    /// The commit a push event moved the branch from.
+    ///
+    /// GitHub Actions does not export this as an environment variable; it is
+    /// the `before` field of the push event payload at `GITHUB_EVENT_PATH`.
+    /// An explicit `GITHUB_BEFORE` still takes precedence.
     fn get_before_sha() -> Option<String> {
-        std::env::var("GITHUB_BEFORE")
-            .ok()
-            .filter(|sha| sha != NULL_SHA && !sha.is_empty())
+        let explicit = std::env::var("GITHUB_BEFORE").ok();
+        let from_event = || {
+            let event_path = std::env::var("GITHUB_EVENT_PATH").ok()?;
+            let event: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(event_path).ok()?).ok()?;
+            Self::parse_push_before_sha(&event)
+        };
+        match explicit {
+            Some(sha) => Some(sha).filter(|sha| sha != NULL_SHA && !sha.is_empty()),
+            None => from_event(),
+        }
+    }
+
+    fn parse_push_before_sha(event: &serde_json::Value) -> Option<String> {
+        event
+            .get("before")?
+            .as_str()
+            .filter(|sha| *sha != NULL_SHA && !sha.is_empty())
+            .map(str::to_string)
     }
 
     fn parse_pr_base_sha(event: &serde_json::Value) -> Option<String> {
@@ -646,6 +667,31 @@ mod tests {
                 Some(valid_sha.to_string())
             );
         });
+    }
+
+    #[test]
+    fn test_get_before_sha_reads_push_event_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let event_path = dir.path().join("event.json");
+        std::fs::write(&event_path, r#"{"before": "abc123def456"}"#).unwrap();
+        temp_env::with_vars(
+            [
+                ("GITHUB_BEFORE", None),
+                ("GITHUB_EVENT_PATH", Some(event_path.to_str().unwrap())),
+            ],
+            || {
+                assert_eq!(
+                    GitHubCIProvider::get_before_sha(),
+                    Some("abc123def456".to_string())
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_parse_push_before_sha_filters_null_sha() {
+        let event = serde_json::json!({ "before": NULL_SHA });
+        assert!(GitHubCIProvider::parse_push_before_sha(&event).is_none());
     }
 
     #[test]

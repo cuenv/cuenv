@@ -1,19 +1,19 @@
 //! Bitbucket CODEOWNERS provider.
 //!
-//! Bitbucket supports CODEOWNERS files at:
-//! - `CODEOWNERS` (repository root)
+//! Bitbucket Cloud and Data Center read the CODEOWNERS file only from
+//! `.bitbucket/CODEOWNERS`.
 //!
 //! Bitbucket uses `# Section` comment syntax for sections (same as GitHub).
 //!
-//! This provider aggregates all project ownership rules into a single file
-//! at the repository root `CODEOWNERS`.
+//! This provider aggregates all project ownership rules into that single
+//! file.
 
 use cuenv_codeowners::SectionStyle;
 use cuenv_codeowners::provider::CodeOwnersProvider;
 
 /// Bitbucket CODEOWNERS provider.
 ///
-/// Writes a single aggregated CODEOWNERS file to the repository root.
+/// Writes a single aggregated CODEOWNERS file to `.bitbucket/CODEOWNERS`.
 /// Uses comment-style `# Section` syntax for grouping rules. Sync and check
 /// behavior comes from the [`CodeOwnersProvider`] default methods.
 #[derive(Debug, Clone, Copy, Default)]
@@ -21,7 +21,7 @@ pub struct BitbucketCodeOwnersProvider;
 
 impl CodeOwnersProvider for BitbucketCodeOwnersProvider {
     fn output_path(&self) -> &str {
-        "CODEOWNERS"
+        ".bitbucket/CODEOWNERS"
     }
 
     fn section_style(&self) -> SectionStyle {
@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn test_bitbucket_provider_output_path() {
         let provider = BitbucketCodeOwnersProvider;
-        assert_eq!(provider.output_path(), "CODEOWNERS");
+        assert_eq!(provider.output_path(), ".bitbucket/CODEOWNERS");
     }
 
     #[test]
@@ -68,8 +68,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.status, SyncStatus::Created);
-        // Bitbucket uses CODEOWNERS at repo root
-        assert!(result.path.ends_with("CODEOWNERS"));
+        // Bitbucket reads CODEOWNERS from the .bitbucket directory
+        assert!(result.path.ends_with(".bitbucket/CODEOWNERS"));
         assert!(!result.path.to_string_lossy().contains(".github"));
         assert!(result.content.contains("/services/api/*.rs @backend-team"));
 
@@ -175,7 +175,12 @@ mod tests {
         let provider = BitbucketCodeOwnersProvider;
 
         // Create file with different content
-        fs::write(temp.path().join("CODEOWNERS"), "# Different content\n").unwrap();
+        fs::create_dir_all(temp.path().join(".bitbucket")).unwrap();
+        fs::write(
+            temp.path().join(".bitbucket/CODEOWNERS"),
+            "# Different content\n",
+        )
+        .unwrap();
 
         let projects = vec![ProjectOwners::new(
             "services/api",

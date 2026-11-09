@@ -42,7 +42,7 @@ impl HomebrewConfig {
             homepage: String::new(),
             token: None,
             token_env: "HOMEBREW_TAP_TOKEN".to_string(),
-            tag_prefix: "v".to_string(),
+            tag_prefix: String::new(),
         }
     }
 

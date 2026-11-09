@@ -344,7 +344,11 @@ mod tests {
         let artifacts = orchestrator.load_existing_artifacts().unwrap();
 
         assert_eq!(artifacts.len(), 1);
-        assert_eq!(artifacts[0].sha256, "unknown");
+        // Without a CHECKSUMS.txt entry the archive itself is hashed.
+        assert_eq!(
+            artifacts[0].sha256,
+            "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72"
+        );
     }
 
     #[tokio::test]

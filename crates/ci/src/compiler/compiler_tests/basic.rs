@@ -103,6 +103,48 @@ fn expanded_task_output_still_compiles_to_an_artifact_download() {
 }
 
 #[test]
+fn hyphenated_task_output_resolves_its_artifact_download_path() {
+    let mut project = Project::new("test-project");
+    project.tasks.insert(
+        "ci.flake-drv-paths".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "list-drvs".to_string(),
+            outputs: vec!["out/drv-paths".to_string()],
+            ..Default::default()
+        })),
+    );
+    project.tasks.insert(
+        "ci.consume".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "consume".to_string(),
+            inputs: vec![Input::Task(cuenv_core::tasks::TaskOutput {
+                task: "ci.flake-drv-paths".to_string(),
+                map: None,
+            })],
+            ..Default::default()
+        })),
+    );
+    project.expand_cross_project_references();
+
+    let compiler = Compiler::with_options(
+        project,
+        CompilerOptions {
+            ci_mode: true,
+            ..Default::default()
+        },
+    );
+    let ir = compiler.compile().unwrap();
+    let consume = ir
+        .tasks
+        .iter()
+        .find(|task| task.id == "ci.consume")
+        .unwrap();
+
+    assert_eq!(consume.artifact_downloads.len(), 1);
+    assert_eq!(consume.artifact_downloads[0].path, "out/drv-paths");
+}
+
+#[test]
 fn test_compile_deployment_task() {
     let mut project = Project::new("test-project");
 
