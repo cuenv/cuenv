@@ -105,8 +105,11 @@ pub struct WalkCallbacks<P, F, J> {
 ///
 /// # Errors
 ///
-/// Propagates the first `E` returned by `prepare_node` or `run_node`,
-/// or a `JoinError` wrapped via the user-supplied `from_join_error`.
+/// Returns the graph's ordering error (for example a dependency cycle
+/// introduced by output references) before running anything, and
+/// otherwise propagates the first `E` returned by `prepare_node` or
+/// `run_node`, or a `JoinError` wrapped via the user-supplied
+/// `from_join_error`.
 pub async fn walk_parallel_graph<T, O, E, P, F, Fut, J>(
     graph: &TaskGraph<T>,
     policy: WalkPolicy,
@@ -118,7 +121,7 @@ where
     P: FnMut(GraphNode<T>, &HashMap<String, O>) -> Result<GraphNode<T>, E>,
     F: Fn(GraphNode<T>) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<O, E>> + Send + 'static,
-    E: Send + 'static,
+    E: From<cuenv_task_graph::Error> + Send + 'static,
     J: Fn(tokio::task::JoinError) -> E + Send + Sync,
 {
     let WalkCallbacks {
@@ -126,14 +129,7 @@ where
         run_node,
         from_join_error,
     } = callbacks;
-    let Ok(parallel_groups) = graph.parallel_groups() else {
-        tracing::error!("parallel group computation failed");
-        return Ok(WalkSummary {
-            outcomes: Vec::new(),
-            skipped: Vec::new(),
-            failed: 0,
-        });
-    };
+    let parallel_groups = graph.parallel_groups().map_err(E::from)?;
 
     let mut outcomes: Vec<(String, O)> = Vec::new();
     let mut outcomes_by_name: HashMap<String, O> = HashMap::new();
@@ -245,4 +241,44 @@ pub fn passthrough_prepare<T, O, E>(
     _outcomes: &HashMap<String, O>,
 ) -> Result<GraphNode<T>, E> {
     Ok(node)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::tasks::Task;
+
+    #[derive(Clone)]
+    struct Ran;
+
+    impl WalkOutcome for Ran {
+        fn is_success(&self) -> bool {
+            true
+        }
+    }
+
+    /// A cycle must fail the walk instead of reporting an empty success.
+    #[tokio::test]
+    async fn cyclic_graph_is_an_error_not_an_empty_success() {
+        let mut graph: TaskGraph<Task> = TaskGraph::new();
+        let a = graph.add_task("a", Task::default()).unwrap();
+        let b = graph.add_task("b", Task::default()).unwrap();
+        graph.add_edge(a, b);
+        graph.add_edge(b, a);
+
+        let result = walk_parallel_graph(
+            &graph,
+            WalkPolicy::fail_fast(),
+            WalkCallbacks {
+                prepare_node: passthrough_prepare::<_, Ran, cuenv_core::Error>,
+                run_node: |_node: GraphNode<Task>| async { Ok::<_, cuenv_core::Error>(Ran) },
+                from_join_error: |error: tokio::task::JoinError| {
+                    cuenv_core::Error::execution(error.to_string())
+                },
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "a cyclic graph must not walk successfully");
+    }
 }

@@ -408,9 +408,12 @@ fn single_root_dir(dir: &Path) -> Result<Option<PathBuf>> {
     }
 
     let only_entry = entries.swap_remove(0);
-    let entry_path = only_entry.path();
-    if entry_path.is_dir() {
-        Ok(Some(entry_path))
+    // `DirEntry::file_type` does not follow symlinks. Following one here would
+    // let an archive whose only entry is a link (say, to `$HOME`) make
+    // `finalize_extracted_tree` move every file under the link target into
+    // the tool cache.
+    if only_entry.file_type()?.is_dir() {
+        Ok(Some(only_entry.path()))
     } else {
         Ok(None)
     }

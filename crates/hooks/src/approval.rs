@@ -47,13 +47,17 @@ const CI_VARS: &[&str] = &[
 /// Returns `true` if any of these environment variables are set to a truthy value.
 #[must_use]
 pub fn is_ci() -> bool {
-    // Check for the generic CI variable first (most CI systems set this)
-    if std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false") {
-        return true;
-    }
+    // CI detection auto-approves hooks, so an explicitly falsy value
+    // (`GITHUB_ACTIONS=false`, `CI=0`) must not count as CI.
+    let truthy = |var: &str| {
+        std::env::var(var).is_ok_and(|value| {
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+    };
 
-    // Check for specific CI provider variables
-    CI_VARS.iter().any(|var| std::env::var(var).is_ok())
+    // The generic CI variable first (most CI systems set this), then the
+    // provider-specific ones.
+    truthy("CI") || CI_VARS.iter().any(|var| truthy(var))
 }
 
 /// Manages approval of configurations before hook execution

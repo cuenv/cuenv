@@ -525,3 +525,16 @@ mod entry_paths {
         assert!(!is_safe_entry("\t../bad\n".trim()));
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn single_symlinked_root_is_not_flattened() {
+    let outside = temp_dir();
+    std::fs::write(outside.path().join("precious.txt"), b"keep me").unwrap();
+
+    let extracted = temp_dir();
+    std::os::unix::fs::symlink(outside.path(), extracted.path().join("root")).unwrap();
+
+    assert_eq!(super::single_root_dir(extracted.path()).unwrap(), None);
+    assert!(outside.path().join("precious.txt").exists());
+}
