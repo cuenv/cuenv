@@ -177,7 +177,15 @@ fn collect_tasks_for_export(
         })?;
 
         // Collect all tasks from the compiled IR (phase tasks + regular tasks)
-        compiled_runtimes = ir.runtimes;
+        // and every project's runtimes, keeping the first runtime per id.
+        for runtime in ir.runtimes {
+            if !compiled_runtimes
+                .iter()
+                .any(|existing: &cuenv_ci::ir::Runtime| existing.id == runtime.id)
+            {
+                compiled_runtimes.push(runtime);
+            }
+        }
         all_ir_tasks.extend(ir.tasks);
     }
 

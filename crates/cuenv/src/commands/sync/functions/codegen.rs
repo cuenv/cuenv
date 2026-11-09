@@ -155,8 +155,15 @@ async fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<
             .map(|path| format!("  {path}"))
             .collect::<Vec<_>>()
             .join("\n");
+        // Keep the per-file output (including `--diff` hunks) ahead of the
+        // drift summary; it is the only place the diffs are rendered.
+        let details = if sync_result.output.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n\n", sync_result.output)
+        };
         return Err(cuenv_core::Error::configuration(format!(
-            "Generated files are out of sync. Run 'cuenv sync codegen' to update:\n{drift_list}"
+            "{details}Generated files are out of sync. Run 'cuenv sync codegen' to update:\n{drift_list}"
         )));
     }
 

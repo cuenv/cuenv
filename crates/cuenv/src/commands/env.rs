@@ -63,10 +63,10 @@ pub async fn execute_env_list(
     let output = match format {
         "json" => serde_json::to_string_pretty(&environments)
             .map_err(|e| cuenv_core::Error::configuration(format!("Failed to format JSON: {e}")))?,
-        "simple" => environments.join("\n"),
+        "text" | "env" | "simple" => environments.join("\n"),
         other => {
             return Err(cuenv_core::Error::configuration(format!(
-                "Unsupported format: '{other}'. Supported formats are 'json' and 'simple'."
+                "Unsupported format: '{other}'. Supported formats are 'text', 'env', and 'json'."
             )));
         }
     };
@@ -132,10 +132,10 @@ pub async fn execute_env_print(
     let output = match format {
         "json" => serde_json::to_string_pretty(&resolved_vars)
             .map_err(|e| cuenv_core::Error::configuration(format!("Failed to format JSON: {e}")))?,
-        "env" | "simple" => format_as_env_vars(&resolved_vars),
+        "env" | "text" | "simple" => format_as_env_vars(&resolved_vars),
         other => {
             return Err(cuenv_core::Error::configuration(format!(
-                "Unsupported format: '{other}'. Supported formats are 'json', 'env', and 'simple'."
+                "Unsupported format: '{other}'. Supported formats are 'env', 'text', and 'json'."
             )));
         }
     };
