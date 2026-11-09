@@ -7,7 +7,7 @@ use fs4::tokio::AsyncFileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -513,23 +513,8 @@ pub fn compute_directory_key(path: &Path) -> String {
 
 /// Validate and canonicalize a path to prevent path traversal attacks
 fn validate_and_canonicalize_path(path: &Path) -> Result<PathBuf> {
-    // All path components are allowed - parent directory references and prefixes
-    // are resolved through canonicalization, and we validate the final result
-    for component in path.components() {
-        match component {
-            // All component types are valid for input paths:
-            // - Normal: regular path segments
-            // - RootDir/CurDir: explicit root or current directory
-            // - ParentDir: resolved through canonicalization
-            // - Prefix: Windows drive prefixes
-            Component::Normal(_)
-            | Component::RootDir
-            | Component::CurDir
-            | Component::ParentDir
-            | Component::Prefix(_) => {}
-        }
-    }
-
+    // Every component kind is acceptable: parent directory references and
+    // prefixes are resolved through canonicalization below.
     // If the path exists, canonicalize it
     if path.exists() {
         std::fs::canonicalize(path)

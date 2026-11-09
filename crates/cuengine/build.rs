@@ -218,7 +218,6 @@ fn write_bridge_fingerprint(fingerprint_path: &Path, source_fingerprint: &str) -
 fn tracked_build_inputs(bridge_dir: &Path) -> BuildResult<Vec<PathBuf>> {
     let mut paths = vec![
         bridge_dir.join("build.rs"),
-        bridge_dir.join("bridge.h"),
         bridge_dir.join("go.mod"),
         bridge_dir.join("go.sum"),
     ];
