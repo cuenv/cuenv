@@ -94,22 +94,22 @@ fn test_format_env_diff_exports_and_loaded_message() {
     env.insert("FOO".to_string(), "bar baz".to_string());
     env.insert("NUM".to_string(), "42".to_string());
 
-    let bash = super::format_env_diff(dir, env.clone(), Shell::Bash).unwrap();
+    let bash = super::format_env_diff(dir, &env, Shell::Bash).unwrap();
     assert!(bash.contains("echo \"Project environment loaded\" >&2"));
     assert!(bash.contains("export CUENV_LOADED_DIR=\"/tmp/project\""));
     assert!(bash.contains("export FOO=\"bar baz\""));
     assert!(bash.contains("export NUM=\"42\""));
 
-    let zsh = super::format_env_diff(dir, env.clone(), Shell::Zsh).unwrap();
+    let zsh = super::format_env_diff(dir, &env, Shell::Zsh).unwrap();
     assert!(zsh.contains("echo \"Project environment loaded\" >&2"));
     assert!(zsh.contains("export FOO=\"bar baz\""));
 
-    let fish = super::format_env_diff(dir, env.clone(), Shell::Fish).unwrap();
+    let fish = super::format_env_diff(dir, &env, Shell::Fish).unwrap();
     assert!(fish.contains("echo \"Project environment loaded\" >&2"));
     assert!(fish.contains("set -gx CUENV_LOADED_DIR '/tmp/project'"));
     assert!(fish.contains("set -gx FOO 'bar baz'"));
 
-    let pwsh = super::format_env_diff(dir, env, Shell::PowerShell).unwrap();
+    let pwsh = super::format_env_diff(dir, &env, Shell::PowerShell).unwrap();
     assert!(pwsh.contains("Write-Host 'Project environment loaded'"));
     assert!(pwsh.contains("$env:CUENV_LOADED_DIR = '/tmp/project'"));
     assert!(pwsh.contains("$env:FOO = 'bar baz'"));

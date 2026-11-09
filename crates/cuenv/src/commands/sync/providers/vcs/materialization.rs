@@ -47,7 +47,7 @@ pub(super) fn prune_removed_vcs_dependencies(
 pub(super) fn should_update(name: &str, update: Option<&[String]>) -> bool {
     match update {
         None => false,
-        Some(names) if names.is_empty() => true,
+        Some([]) => true,
         Some(names) => names.iter().any(|candidate| candidate == name),
     }
 }

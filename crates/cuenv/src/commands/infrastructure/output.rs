@@ -705,20 +705,21 @@ impl Output {
         let tenant = super::tenant_label(report.tenant);
         match (lock, report.outcome) {
             (None, _) => emit_stdout!(format!("{tenant} is not locked")),
-            (Some(lock), LockOutcome::Shown) => match lock.identifier() {
-                Some(identifier) => emit_stdout!(format!(
-                    "{tenant} is locked by '{}' since {} (lock {}){}.\n\
-                     Confirm that run is gone, then release it with `{}`.",
-                    cuenv_infrastructure::strip_control_characters(&lock.holder),
-                    cuenv_infrastructure::strip_control_characters(&lock.acquired_at),
-                    cuenv_infrastructure::strip_control_characters(identifier),
-                    details_phrase(report.details),
-                    report
-                        .unlock_command
-                        .as_deref()
-                        .unwrap_or("cuenv infrastructure unlock <lock identifier>")
-                )),
-                None => {
+            (Some(lock), LockOutcome::Shown) => {
+                if let Some(identifier) = lock.identifier() {
+                    emit_stdout!(format!(
+                        "{tenant} is locked by '{}' since {} (lock {}){}.\n\
+                         Confirm that run is gone, then release it with `{}`.",
+                        cuenv_infrastructure::strip_control_characters(&lock.holder),
+                        cuenv_infrastructure::strip_control_characters(&lock.acquired_at),
+                        cuenv_infrastructure::strip_control_characters(identifier),
+                        details_phrase(report.details),
+                        report
+                            .unlock_command
+                            .as_deref()
+                            .unwrap_or("cuenv infrastructure unlock <lock identifier>")
+                    ));
+                } else {
                     let operation = lock
                         .operation_id()
                         .map_or_else(|| "unknown".to_string(), |id| id.to_string());
@@ -726,7 +727,7 @@ impl Output {
                         "{tenant} is locked by migration {operation}; use migration recovery."
                     ));
                 }
-            },
+            }
             (Some(lock), LockOutcome::Released) => {
                 if let Some(identifier) = lock.identifier() {
                     emit_stdout!(format!(

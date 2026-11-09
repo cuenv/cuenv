@@ -99,8 +99,8 @@ async fn recovery_requires_the_current_run_identity_even_after_directory_removal
         stale_run.as_str(),
         "--drained",
     ];
-    let stale = recover_command(&directory, &arguments)?;
-    assert!(!stale.status.success());
+    let refused = recover_command(&directory, &arguments)?;
+    assert!(!refused.status.success());
     assert_eq!(manager.reservations().await?.len(), 1);
 
     let run_id = identity.run_id.to_string();

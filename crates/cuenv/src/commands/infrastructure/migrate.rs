@@ -1077,11 +1077,11 @@ async fn rollback(
             "the migration manifest has inconsistent commit evidence; refusing rollback",
         ));
     }
-    if !source
+    if source
         .current_lock(tenant)
         .await
         .map_err(fail)?
-        .is_some_and(|held| held.identifier() == Some(fence.lock_identifier.as_str()))
+        .is_none_or(|held| held.identifier() != Some(fence.lock_identifier.as_str()))
     {
         return Err(CliError::config(
             "the source migration fence is missing or different; inspect both stores before rollback",

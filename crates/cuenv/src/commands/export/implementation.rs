@@ -250,7 +250,7 @@ pub async fn execute_export(
                 package,
                 shell,
             },
-            env,
+            &env,
         );
     }
     let config_hash = cuenv_hooks::compute_execution_hash(&hooks, &directory)?;
@@ -454,7 +454,7 @@ fn render_ready_environment(
             package: context.package,
             shell: context.shell,
         },
-        env_vars,
+        &env_vars,
     )
 }
 
@@ -566,8 +566,8 @@ end"#
 }
 
 /// Format environment variables as shell export commands
-fn format_env_diff(dir: &Path, env: HashMap<String, String>, shell: Shell) -> Result<String> {
-    let mut output = render_shell_assignments(&env, shell)?;
+fn format_env_diff(dir: &Path, env: &HashMap<String, String>, shell: Shell) -> Result<String> {
+    let mut output = render_shell_assignments(env, shell)?;
 
     // Record the loaded project only after its assignments succeed.
     output.push_str(&format_loaded_check(dir, shell));
@@ -749,6 +749,7 @@ pub(in crate::commands) fn preflight_shell_transition(
     )))
 }
 
+#[derive(Clone, Copy)]
 pub(in crate::commands) struct EnvironmentContext<'context> {
     pub(in crate::commands) directory: &'context Path,
     pub(in crate::commands) package: &'context str,
@@ -757,8 +758,10 @@ pub(in crate::commands) struct EnvironmentContext<'context> {
 
 pub(in crate::commands) fn format_environment(
     context: EnvironmentContext<'_>,
-    env: HashMap<String, String>,
+    env: &HashMap<String, String>,
 ) -> Result<String> {
+    use std::fmt::Write;
+
     let EnvironmentContext {
         directory,
         package,
@@ -767,7 +770,7 @@ pub(in crate::commands) fn format_environment(
     if std::env::var("CUENV_SHELL_INTEGRATION").as_deref() != Ok("1") {
         return format_env_diff(directory, env, shell);
     }
-    validate_shell_environment(&env)?;
+    validate_shell_environment(env)?;
     if matches!(shell, Shell::PowerShell) {
         return Err(cuenv_core::Error::configuration(
             "PowerShell shell integration is not available",
@@ -802,7 +805,6 @@ pub(in crate::commands) fn format_environment(
         names: union,
     }
     .token()?;
-    use std::fmt::Write;
     let mut output = format!("__cuenv_apply '{expected}' '{project}' '{nonce}'");
     for name in names {
         let value = &env[&name];

@@ -76,7 +76,7 @@ pub(super) fn withheld_environment_variables(
             withheld.extend(cuenv_infrastructure::plugin::isolated_withheld_names(
                 inputs.ambient.iter().cloned(),
                 inputs.provided,
-            ))
+            ));
         }
     }
     withheld.sort();
