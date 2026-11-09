@@ -2,69 +2,6 @@ use super::{ToolExtract, ToolProvider, ToolResolveRequest, ToolSource, UrlToolPr
 use cuenv_tool_runtime::{Arch, Os, Platform};
 
 #[test]
-fn test_expand_template_version() {
-    let result = UrlToolProvider::expand_template(
-        "https://example.com/tool-{version}.tar.gz",
-        "1.2.3",
-        &Platform::new(Os::Linux, Arch::X86_64),
-    );
-    assert_eq!(result, "https://example.com/tool-1.2.3.tar.gz");
-}
-
-#[test]
-fn test_expand_template_os_linux() {
-    let result = UrlToolProvider::expand_template(
-        "https://example.com/tool-{os}.tar.gz",
-        "1.0.0",
-        &Platform::new(Os::Linux, Arch::X86_64),
-    );
-    assert_eq!(result, "https://example.com/tool-linux.tar.gz");
-}
-
-#[test]
-fn test_expand_template_os_darwin() {
-    let result = UrlToolProvider::expand_template(
-        "https://example.com/tool-{os}.tar.gz",
-        "1.0.0",
-        &Platform::new(Os::Darwin, Arch::Arm64),
-    );
-    assert_eq!(result, "https://example.com/tool-darwin.tar.gz");
-}
-
-#[test]
-fn test_expand_template_arch_x86_64() {
-    let result = UrlToolProvider::expand_template(
-        "https://example.com/tool-{arch}.tar.gz",
-        "1.0.0",
-        &Platform::new(Os::Linux, Arch::X86_64),
-    );
-    assert_eq!(result, "https://example.com/tool-x86_64.tar.gz");
-}
-
-#[test]
-fn test_expand_template_arch_arm64() {
-    let result = UrlToolProvider::expand_template(
-        "https://example.com/tool-{arch}.tar.gz",
-        "1.0.0",
-        &Platform::new(Os::Linux, Arch::Arm64),
-    );
-    assert_eq!(result, "https://example.com/tool-aarch64.tar.gz");
-}
-
-#[test]
-fn test_expand_template_all() {
-    let result = UrlToolProvider::expand_template(
-        "https://example.com/{version}/{os}/{arch}/tool.tar.gz",
-        "2.0.0",
-        &Platform::new(Os::Darwin, Arch::Arm64),
-    );
-    assert_eq!(
-        result,
-        "https://example.com/2.0.0/darwin/aarch64/tool.tar.gz"
-    );
-}
-
-#[test]
 fn test_provider_name() {
     let provider = UrlToolProvider::new();
     assert_eq!(provider.name(), "url");

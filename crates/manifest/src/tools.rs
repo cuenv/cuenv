@@ -43,6 +43,31 @@ impl Platform {
             arch: Arch::parse(parts[1])?,
         })
     }
+
+    /// Expand `{version}`, `{os}`, and `{arch}` placeholders in a tool
+    /// source template (GitHub tags/assets/paths, URLs, OCI image refs).
+    ///
+    /// `{os}` expands to `darwin`/`linux` and `{arch}` to `aarch64`/`x86_64`,
+    /// so templates are portable across every tool provider.
+    #[must_use]
+    pub fn expand_template(&self, template: &str, version: &str) -> String {
+        const VERSION_PLACEHOLDER: &str = "{version}";
+        const OS_PLACEHOLDER: &str = "{os}";
+        const ARCH_PLACEHOLDER: &str = "{arch}";
+
+        let os = match self.os {
+            Os::Darwin => "darwin",
+            Os::Linux => "linux",
+        };
+        let arch = match self.arch {
+            Arch::Arm64 => "aarch64",
+            Arch::X86_64 => "x86_64",
+        };
+        template
+            .replace(VERSION_PLACEHOLDER, version)
+            .replace(OS_PLACEHOLDER, os)
+            .replace(ARCH_PLACEHOLDER, arch)
+    }
 }
 
 impl std::fmt::Display for Platform {
@@ -235,6 +260,63 @@ pub enum ToolExtract {
     },
 }
 
+impl ToolExtract {
+    /// Return a copy with `{version}`, `{os}`, and `{arch}` placeholders in
+    /// the extraction path expanded for `platform`.
+    #[must_use]
+    pub fn expand_template(&self, platform: &Platform, version: &str) -> Self {
+        match self {
+            Self::Bin { path, as_name } => Self::Bin {
+                path: platform.expand_template(path, version),
+                as_name: as_name.clone(),
+            },
+            Self::Lib { path, env } => Self::Lib {
+                path: platform.expand_template(path, version),
+                env: env.clone(),
+            },
+            Self::Include { path } => Self::Include {
+                path: platform.expand_template(path, version),
+            },
+            Self::PkgConfig { path } => Self::PkgConfig {
+                path: platform.expand_template(path, version),
+            },
+            Self::File { path, env } => Self::File {
+                path: platform.expand_template(path, version),
+                env: env.clone(),
+            },
+        }
+    }
+
+    /// Where this extracted artifact lives inside a tool's cache directory.
+    ///
+    /// Binaries land in `bin/` (renamed by `as` when set), libraries in
+    /// `lib/`, headers in `include/`, pkg-config files in `lib/pkgconfig/`,
+    /// and other files in `files/`. `tool_name` is the fallback file name
+    /// when the extraction path has none.
+    #[must_use]
+    pub fn cache_target(&self, cache_dir: &std::path::Path, tool_name: &str) -> std::path::PathBuf {
+        let file_name = |path: &str| -> String {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(tool_name)
+                .to_string()
+        };
+        match self {
+            Self::Bin { path, as_name } => cache_dir
+                .join("bin")
+                .join(as_name.clone().unwrap_or_else(|| file_name(path))),
+            Self::Lib { path, .. } => cache_dir.join("lib").join(file_name(path)),
+            Self::Include { path } => cache_dir.join("include").join(file_name(path)),
+            Self::PkgConfig { path } => cache_dir
+                .join("lib")
+                .join("pkgconfig")
+                .join(file_name(path)),
+            Self::File { path, .. } => cache_dir.join("files").join(file_name(path)),
+        }
+    }
+}
+
 impl ToolSource {
     /// Get the provider type name.
     #[must_use]
@@ -299,3 +381,7 @@ pub enum ToolActivationSource {
         tool: String,
     },
 }
+
+#[cfg(test)]
+#[path = "tools_tests.rs"]
+mod tests;

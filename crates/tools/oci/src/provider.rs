@@ -66,28 +66,6 @@ impl OciToolProvider {
         options.cache_dir().join("oci").join(sanitized)
     }
 
-    /// Expand `{version}`, `{os}`, `{arch}` placeholders.
-    ///
-    /// `{arch}` follows the same convention used by the URL and GitHub
-    /// providers (`aarch64`, `x86_64`) so that templates are portable across
-    /// providers. Image-index platform selection still uses the OCI
-    /// convention (`arm64`, `amd64`) internally via [`Self::to_oci_platform`].
-    fn expand_template(template: &str, version: &str, platform: &CorePlatform) -> String {
-        let os_str = match platform.os {
-            CoreOs::Darwin => "darwin",
-            CoreOs::Linux => "linux",
-        };
-        let arch_str = match platform.arch {
-            CoreArch::Arm64 => "aarch64",
-            CoreArch::X86_64 => "x86_64",
-        };
-
-        template
-            .replace("{version}", version)
-            .replace("{os}", os_str)
-            .replace("{arch}", arch_str)
-    }
-
     /// Translate a core platform to the OCI registry platform shape used by
     /// the lower-level [`OciClient`].
     fn to_oci_platform(platform: &CorePlatform) -> OciPlatform {
@@ -140,8 +118,8 @@ impl ToolProvider for OciToolProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| cuenv_core::Error::tool_resolution("Missing 'path' in OCI config"))?;
 
-        let image = Self::expand_template(image_template, version, platform);
-        let path = Self::expand_template(path_template, version, platform);
+        let image = platform.expand_template(image_template, version);
+        let path = platform.expand_template(path_template, version);
 
         info!(%tool_name, %image, %version, %platform, "Resolving OCI tool");
 
@@ -327,26 +305,6 @@ mod tests {
         let provider = OciToolProvider::new();
         assert_eq!(provider.name(), "oci");
         assert!(!provider.description().is_empty());
-    }
-
-    #[test]
-    fn test_expand_template_substitutes_version_os_arch() {
-        let result = OciToolProvider::expand_template(
-            "ghcr.io/owner/{os}/tool:{version}-{arch}",
-            "1.2.3",
-            &Platform::new(Os::Linux, Arch::Arm64),
-        );
-        assert_eq!(result, "ghcr.io/owner/linux/tool:1.2.3-aarch64");
-    }
-
-    #[test]
-    fn test_expand_template_x86_64() {
-        let result = OciToolProvider::expand_template(
-            "{os}-{arch}",
-            "0.1.0",
-            &Platform::new(Os::Darwin, Arch::X86_64),
-        );
-        assert_eq!(result, "darwin-x86_64");
     }
 
     #[test]

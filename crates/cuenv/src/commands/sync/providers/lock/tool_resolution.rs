@@ -10,10 +10,6 @@ use tracing::{debug, info};
 
 use crate::commands::sync::provider::{SyncMode, SyncOptions};
 
-const VERSION_TEMPLATE: &str = "{version}";
-const OS_TEMPLATE: &str = "{os}";
-const ARCH_TEMPLATE: &str = "{arch}";
-
 /// Collected tool specification from manifest.
 #[derive(Debug, Clone)]
 pub(super) struct CollectedTool {
@@ -375,8 +371,8 @@ pub(super) fn source_config_to_tool_source(
             let tag_template = tag
                 .clone()
                 .unwrap_or_else(|| format!("{}{}", tag_prefix, version));
-            let resolved_tag = expand_source_template(&tag_template, version, platform);
-            let resolved_asset = expand_source_template(asset, version, platform);
+            let resolved_tag = platform.expand_template(&tag_template, version);
+            let resolved_asset = platform.expand_template(asset, version);
             let resolve_context = ExtractResolveContext {
                 version,
                 platform,
@@ -440,7 +436,7 @@ pub(super) fn source_config_to_tool_source(
             }),
         ),
         SourceConfig::Url { url, path, extract } => {
-            let resolved_url = expand_source_template(url, version, platform);
+            let resolved_url = platform.expand_template(url, version);
             let resolve_context = ExtractResolveContext {
                 version,
                 platform,
@@ -477,21 +473,21 @@ fn resolve_extract_templates(
         .iter()
         .map(|item| match item {
             GitHubExtract::Bin { path, as_name } => ToolExtract::Bin {
-                path: expand_source_template(path, context.version, context.platform),
+                path: context.platform.expand_template(path, context.version),
                 as_name: as_name.clone(),
             },
             GitHubExtract::Lib { path, env } => ToolExtract::Lib {
-                path: expand_source_template(path, context.version, context.platform),
+                path: context.platform.expand_template(path, context.version),
                 env: env.clone(),
             },
             GitHubExtract::Include { path } => ToolExtract::Include {
-                path: expand_source_template(path, context.version, context.platform),
+                path: context.platform.expand_template(path, context.version),
             },
             GitHubExtract::PkgConfig { path } => ToolExtract::PkgConfig {
-                path: expand_source_template(path, context.version, context.platform),
+                path: context.platform.expand_template(path, context.version),
             },
             GitHubExtract::File { path, env } => ToolExtract::File {
-                path: expand_source_template(path, context.version, context.platform),
+                path: context.platform.expand_template(path, context.version),
                 env: env.clone(),
             },
         })
@@ -500,7 +496,7 @@ fn resolve_extract_templates(
     if resolved.is_empty()
         && let Some(path) = context.legacy_path
     {
-        let path = expand_source_template(path, context.version, context.platform);
+        let path = context.platform.expand_template(path, context.version);
         if path_looks_like_library(&path) {
             resolved.push(ToolExtract::Lib { path, env: None });
         } else {
@@ -520,22 +516,6 @@ fn path_looks_like_library(path: &str) -> bool {
             || ext.eq_ignore_ascii_case("so")
             || ext.eq_ignore_ascii_case("dll")
     }) || path.to_ascii_lowercase().contains(".so.")
-}
-
-fn expand_source_template(value: &str, version: &str, platform: &ToolPlatform) -> String {
-    let os_str = match platform.os {
-        cuenv_tool_runtime::Os::Darwin => "darwin",
-        cuenv_tool_runtime::Os::Linux => "linux",
-    };
-    let arch_str = match platform.arch {
-        cuenv_tool_runtime::Arch::Arm64 => "aarch64",
-        cuenv_tool_runtime::Arch::X86_64 => "x86_64",
-    };
-
-    value
-        .replace(VERSION_TEMPLATE, version)
-        .replace(OS_TEMPLATE, os_str)
-        .replace(ARCH_TEMPLATE, arch_str)
 }
 
 /// Compute a SHA256 digest for a resolved tool (for lockfile).

@@ -7,8 +7,9 @@ use oci_distribution::manifest::{ImageIndexEntry, OciDescriptor, OciManifest};
 use oci_distribution::secrets::RegistryAuth;
 use oci_distribution::{Client, Reference};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info, trace, warn};
 
@@ -64,11 +65,16 @@ impl OciClient {
     /// multi-arch image indexes, walks the entries and selects the one whose
     /// `platform.os`/`platform.architecture` match the requested platform.
     /// For single-arch manifests, returns the layers without further filtering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reference is invalid, the registry request
+    /// fails, or no manifest matches the requested platform.
     pub async fn resolve_digest(&self, image: &str, platform: &Platform) -> Result<ResolvedImage> {
         let reference = parse_reference(image)?;
         info!(%image, %platform, "Resolving image digest");
 
-        let auth = self.get_auth(&reference);
+        let auth = Self::get_auth(&reference);
         let client = self.client()?;
 
         // Pull the raw manifest so we can dispatch on image-index vs image-manifest
@@ -171,9 +177,15 @@ impl OciClient {
 
     /// Pull a blob (layer) to a file using its descriptor.
     ///
-    /// After downloading, the blob's SHA256 digest is verified against the
-    /// expected digest from the descriptor. If verification fails, the file
-    /// is deleted and an error is returned.
+    /// The blob is downloaded to a temporary sibling of `dest`, its SHA256
+    /// digest is verified against the descriptor, and only then is it
+    /// renamed into place. `dest` therefore never holds a partial or
+    /// unverified blob, so an existing `dest` can be trusted as cached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the download fails, the digest does not match,
+    /// or the file cannot be written or moved into place.
     pub async fn pull_blob_by_descriptor(
         &self,
         reference: &Reference,
@@ -187,35 +199,52 @@ impl OciClient {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        // Pull the blob
-        let mut file = tokio::fs::File::create(dest).await?;
-        let client = self.client()?;
-
-        client
-            .pull_blob(reference, descriptor, &mut file)
-            .await
-            .map_err(|e| Error::blob_pull_failed(&descriptor.digest, e.to_string()))?;
-
-        file.flush().await?;
-
-        // Verify the digest matches
-        let computed_digest = compute_file_digest(dest).await?;
-        if computed_digest != descriptor.digest {
-            // Remove the corrupted/invalid file
-            tokio::fs::remove_file(dest).await.ok();
-            return Err(Error::digest_mismatch(&descriptor.digest, &computed_digest));
+        let partial = partial_download_path(dest);
+        let result = self
+            .download_and_verify(reference, descriptor, &partial)
+            .await;
+        if result.is_err() {
+            tokio::fs::remove_file(&partial).await.ok();
         }
+        result?;
+        tokio::fs::rename(&partial, dest).await?;
 
         debug!(digest = %descriptor.digest, ?dest, "Pulled and verified blob");
         Ok(())
     }
 
+    /// Download a blob to `path` and verify its digest.
+    async fn download_and_verify(
+        &self,
+        reference: &Reference,
+        descriptor: &OciDescriptor,
+        path: &Path,
+    ) -> Result<()> {
+        let mut file = tokio::fs::File::create(path).await?;
+        self.client()?
+            .pull_blob(reference, descriptor, &mut file)
+            .await
+            .map_err(|e| Error::blob_pull_failed(&descriptor.digest, e.to_string()))?;
+        file.flush().await?;
+        drop(file);
+
+        let computed_digest = compute_file_digest(path).await?;
+        if computed_digest != descriptor.digest {
+            return Err(Error::digest_mismatch(&descriptor.digest, &computed_digest));
+        }
+        Ok(())
+    }
+
     /// Pull all layers for an image and cache them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any layer fails to download or verify.
     pub async fn pull_layers(
         &self,
         resolved: &ResolvedImage,
         cache: &OciCache,
-    ) -> Result<Vec<std::path::PathBuf>> {
+    ) -> Result<Vec<PathBuf>> {
         let mut paths = Vec::new();
 
         for descriptor in &resolved.layer_descriptors {
@@ -236,18 +265,16 @@ impl OciClient {
 
     /// Get authentication for a registry.
     ///
-    /// Currently returns anonymous auth. Can be extended to support:
-    /// - Docker config credentials
-    /// - Environment variables
-    /// - Keychain integration
-    fn get_auth(&self, reference: &Reference) -> RegistryAuth {
+    /// `ghcr.io` uses `GITHUB_TOKEN` (then `GH_TOKEN`) when set; every other
+    /// registry, and `ghcr.io` without a token, is accessed anonymously.
+    fn get_auth(reference: &Reference) -> RegistryAuth {
         // Check for GHCR token in environment
         if reference.registry() == "ghcr.io" {
             if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-                return RegistryAuth::Basic("".to_string(), token);
+                return RegistryAuth::Basic(String::new(), token);
             }
             if let Ok(token) = std::env::var("GH_TOKEN") {
-                return RegistryAuth::Basic("".to_string(), token);
+                return RegistryAuth::Basic(String::new(), token);
             }
         }
 
@@ -315,6 +342,20 @@ fn available_platforms(entries: &[ImageIndexEntry]) -> String {
     } else {
         rendered.join(", ")
     }
+}
+
+/// Temporary sibling path used while a blob downloads. Unique per process
+/// and per call, so concurrent pulls of the same blob never share a file.
+fn partial_download_path(dest: &Path) -> PathBuf {
+    static NEXT_DOWNLOAD: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT_DOWNLOAD.fetch_add(1, Ordering::Relaxed);
+    let file_name = dest
+        .file_name()
+        .map_or_else(|| "blob".into(), |name| name.to_string_lossy());
+    dest.with_file_name(format!(
+        "{file_name}.partial-{}-{sequence}",
+        std::process::id()
+    ))
 }
 
 /// Compute the SHA256 digest of a file.
@@ -432,7 +473,7 @@ mod tests {
         let file_path = temp.path().join("large.bin");
 
         // Write content larger than the buffer size (8192 bytes)
-        let content: Vec<u8> = (0..20000).map(|i| (i % 256) as u8).collect();
+        let content: Vec<u8> = (0..=u8::MAX).cycle().take(20_000).collect();
         std::fs::write(&file_path, &content).unwrap();
 
         let digest = compute_file_digest(&file_path).await.unwrap();
@@ -492,9 +533,8 @@ mod tests {
 
     #[test]
     fn test_oci_client_get_auth_anonymous() {
-        let client = OciClient::new();
         let reference = parse_reference("docker.io/library/nginx:latest").unwrap();
-        let auth = client.get_auth(&reference);
+        let auth = OciClient::get_auth(&reference);
         assert!(matches!(auth, RegistryAuth::Anonymous));
     }
 
@@ -503,9 +543,8 @@ mod tests {
         temp_env::with_vars(
             [("GITHUB_TOKEN", None::<&str>), ("GH_TOKEN", None::<&str>)],
             || {
-                let client = OciClient::new();
                 let reference = parse_reference("ghcr.io/owner/image:latest").unwrap();
-                let auth = client.get_auth(&reference);
+                let auth = OciClient::get_auth(&reference);
                 assert!(matches!(auth, RegistryAuth::Anonymous));
             },
         );
