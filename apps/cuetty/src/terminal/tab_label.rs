@@ -124,39 +124,6 @@ pub(super) fn resolve_tab_label(sources: TabLabelSources<'_>) -> String {
         .to_string()
 }
 
-/// What a collapsed tab's mark is taken from, in no particular order.
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct TabMarkSources<'mark> {
-    pub(super) custom_name: Option<&'mark str>,
-    pub(super) banner: Option<&'mark str>,
-    pub(super) directory: Option<&'mark Path>,
-    pub(super) label: &'mark str,
-}
-
-/// The mark of a collapsed tab. A tab's label follows whatever is running, so the
-/// mark comes from what the tab is for: its name or its project. That keeps the mark
-/// still and tells two tabs running the same tool apart.
-pub(super) fn tab_mark(sources: TabMarkSources<'_>) -> String {
-    let directory = sources.directory.map(directory_name);
-    tab_initial(
-        nonblank(sources.custom_name)
-            .or(nonblank(sources.banner))
-            .or(nonblank(directory.as_deref()))
-            .unwrap_or(sources.label),
-    )
-}
-
-/// A one-character stand-in for `label` where only a short mark fits.
-fn tab_initial(label: &str) -> String {
-    label
-        .chars()
-        .find(|character| character.is_alphanumeric())
-        .or_else(|| label.chars().next())
-        .map_or_else(String::new, |initial| {
-            initial.to_uppercase().take(1).collect()
-        })
-}
-
 /// A tab's full name, with the project's banner when it adds anything.
 pub(super) fn tab_tooltip(label: &str, banner: Option<&str>) -> String {
     match banner {
@@ -553,46 +520,6 @@ mod tests {
             ..TabLabelSources::default()
         };
         assert_eq!(resolve_tab_label(sources), "/");
-    }
-
-    #[test]
-    fn initials_skip_punctuation_and_stay_one_character() {
-        assert_eq!(tab_initial("cuenv"), "C");
-        assert_eq!(tab_initial(".config"), "C");
-        assert_eq!(tab_initial("~"), "~");
-        assert_eq!(tab_initial("/"), "/");
-        assert_eq!(tab_initial("ßeta"), "S");
-        assert_eq!(tab_initial(""), "");
-    }
-
-    #[test]
-    fn a_mark_prefers_the_custom_name_then_the_project() {
-        let mut sources = TabMarkSources {
-            custom_name: Some("deploys"),
-            banner: Some("academy"),
-            directory: Some(Path::new("/work/website")),
-            label: "cargo",
-        };
-        assert_eq!(tab_mark(sources), "D");
-        sources.custom_name = Some("  ");
-        assert_eq!(tab_mark(sources), "A");
-        sources.banner = None;
-        assert_eq!(tab_mark(sources), "W");
-        sources.directory = None;
-        assert_eq!(tab_mark(sources), "C");
-    }
-
-    #[test]
-    fn a_mark_does_not_follow_what_is_running() {
-        let mark = |label| {
-            tab_mark(TabMarkSources {
-                directory: Some(Path::new("/work/cuenv")),
-                label,
-                ..TabMarkSources::default()
-            })
-        };
-        assert_eq!(mark("cargo"), "C");
-        assert_eq!(mark("nvim"), "C");
     }
 
     #[test]

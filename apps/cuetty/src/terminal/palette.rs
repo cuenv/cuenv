@@ -32,7 +32,7 @@ impl Command {
             Self::RenameTab => "Rename tab",
             Self::NextTab => "Next tab",
             Self::PreviousTab => "Previous tab",
-            Self::ToggleSidebar => "Toggle sidebar",
+            Self::ToggleSidebar => "Pin or unpin project",
             Self::FindOnScreen => "Find on screen",
         }
     }
@@ -44,7 +44,7 @@ impl Command {
             Self::RenameTab => "Change the current tab's name",
             Self::NextTab => "Switch to the next tab",
             Self::PreviousTab => "Switch to the previous tab",
-            Self::ToggleSidebar => "Collapse or expand the tab sidebar",
+            Self::ToggleSidebar => "Pin the project to a sidebar, or let it float",
             Self::FindOnScreen => "Search the visible terminal",
         }
     }

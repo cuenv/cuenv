@@ -182,14 +182,16 @@ pub enum TitlebarVisibility {
     Hidden,
 }
 
-/// How much room the tab sidebar takes.
+/// Where the project's details live. Tabs always float over the terminal, so this only
+/// decides whether the project takes room of its own.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SidebarMode {
-    /// Tabs are listed by name.
+    /// A pill at the window's top right, which opens over the terminal on hover and
+    /// takes no room from it.
     #[default]
-    Expanded,
-    /// A narrow strip of initials, with names in tooltips.
-    Collapsed,
+    Floating,
+    /// Pinned to a sidebar on the right, which the terminal makes room for.
+    Pinned,
 }
 
 /// The sidebar of one window. `sidebar` says how it starts, so only the first
@@ -234,27 +236,24 @@ impl WindowSidebar {
     pub fn toggle(&mut self) {
         self.settled = Some(self.mode().toggled());
     }
-
-    /// Settles the sidebar open, for something that has to show there.
-    pub fn expand(&mut self) {
-        self.settled = Some(SidebarMode::Expanded);
-    }
 }
 
 impl SidebarMode {
     pub const fn toggled(self) -> Self {
         match self {
-            Self::Expanded => Self::Collapsed,
-            Self::Collapsed => Self::Expanded,
+            Self::Pinned => Self::Floating,
+            Self::Floating => Self::Pinned,
         }
     }
 
     fn parse(value: &str) -> Result<Self, String> {
         match value {
-            "expanded" => Ok(Self::Expanded),
-            "collapsed" => Ok(Self::Collapsed),
+            // The spellings from when the sidebar held the tabs, which mean the same
+            // thing for where the project lives.
+            "pinned" | "expanded" => Ok(Self::Pinned),
+            "floating" | "collapsed" => Ok(Self::Floating),
             _ => Err(format!(
-                "sidebar must be \"expanded\" or \"collapsed\", got \"{value}\""
+                "sidebar must be \"floating\" or \"pinned\", got \"{value}\""
             )),
         }
     }
@@ -1288,7 +1287,7 @@ mod tests {
                 banner: Some("Welcome to Cuetty".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
-                sidebar: SidebarMode::Expanded,
+                sidebar: SidebarMode::Floating,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -1631,22 +1630,22 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_defaults_to_expanded_and_can_start_collapsed() {
+    fn the_project_floats_by_default_and_can_start_pinned() {
         let sidebar = |value| match parse_value(value) {
             Evaluation::Valid(presentation) => presentation.sidebar,
             other => panic!("unexpected evaluation: {other:?}"),
         };
-        assert_eq!(sidebar(serde_json::json!({})), SidebarMode::Expanded);
-        assert_eq!(
-            sidebar(serde_json::json!({"sidebar": "expanded"})),
-            SidebarMode::Expanded
-        );
-        assert_eq!(
-            sidebar(serde_json::json!({"sidebar": "collapsed"})),
-            SidebarMode::Collapsed
-        );
+        assert_eq!(sidebar(serde_json::json!({})), SidebarMode::Floating);
+        for (value, mode) in [
+            ("floating", SidebarMode::Floating),
+            ("pinned", SidebarMode::Pinned),
+            ("collapsed", SidebarMode::Floating),
+            ("expanded", SidebarMode::Pinned),
+        ] {
+            assert_eq!(sidebar(serde_json::json!({"sidebar": value})), mode);
+        }
         for invalid in [
-            serde_json::json!({"sidebar": "Collapsed"}),
+            serde_json::json!({"sidebar": "Pinned"}),
             serde_json::json!({"sidebar": "hidden"}),
             serde_json::json!({"sidebar": false}),
         ] {
@@ -1667,48 +1666,46 @@ mod tests {
     #[test]
     fn only_the_first_evaluation_a_window_sees_sets_its_sidebar() {
         let mut sidebar = WindowSidebar::default();
-        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        assert_eq!(sidebar.mode(), SidebarMode::Floating);
         sidebar.observe(&Evaluation::Invalid("broken".into()));
-        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
-        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Pinned));
+        assert_eq!(sidebar.mode(), SidebarMode::Pinned);
 
         // Neither another directory's setting nor having none moves it.
-        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Expanded));
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Floating));
         sidebar.observe(&Evaluation::Absent);
-        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        assert_eq!(sidebar.mode(), SidebarMode::Pinned);
     }
 
     #[test]
     fn a_window_opens_on_the_global_sidebar_until_an_evaluation_settles_it() {
-        let mut sidebar =
-            WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Collapsed));
-        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        let mut sidebar = WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Pinned));
+        assert_eq!(sidebar.mode(), SidebarMode::Pinned);
         // Saying nothing leaves it where it opened, not on the default.
         sidebar.observe(&Evaluation::Invalid("broken".into()));
-        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        assert_eq!(sidebar.mode(), SidebarMode::Pinned);
         // The directory it opened in has the last word.
-        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Expanded));
-        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Floating));
+        assert_eq!(sidebar.mode(), SidebarMode::Floating);
     }
 
     #[test]
     fn a_broken_global_package_opens_on_the_default_sidebar() {
         let sidebar = WindowSidebar::expecting(&Evaluation::Invalid("broken".into()));
-        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        assert_eq!(sidebar.mode(), SidebarMode::Floating);
         assert_eq!(
             WindowSidebar::expecting(&Evaluation::Absent).mode(),
-            SidebarMode::Expanded
+            SidebarMode::Floating
         );
     }
 
     #[test]
     fn the_toggle_works_from_where_the_window_opened() {
-        let mut sidebar =
-            WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Collapsed));
+        let mut sidebar = WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Pinned));
         sidebar.toggle();
-        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
-        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
-        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        assert_eq!(sidebar.mode(), SidebarMode::Floating);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Pinned));
+        assert_eq!(sidebar.mode(), SidebarMode::Floating);
     }
 
     /// Evaluates once `release` says to, and to nothing in particular.
@@ -1871,33 +1868,19 @@ mod tests {
     fn a_directory_without_configuration_settles_the_sidebar_on_its_default() {
         let mut sidebar = WindowSidebar::default();
         sidebar.observe(&Evaluation::Absent);
-        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
-        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
-    }
-
-    #[test]
-    fn a_sidebar_opened_for_an_edit_stays_open_whatever_is_still_being_evaluated() {
-        // Already showing expanded, but only because nothing has settled it yet.
-        let mut sidebar = WindowSidebar::default();
-        sidebar.expand();
-        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Collapsed));
-        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
-
-        let mut sidebar =
-            WindowSidebar::expecting(&evaluation_with_sidebar(SidebarMode::Collapsed));
-        sidebar.expand();
-        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Pinned));
+        assert_eq!(sidebar.mode(), SidebarMode::Floating);
     }
 
     #[test]
     fn the_toggle_outranks_an_evaluation_still_on_its_way() {
         let mut sidebar = WindowSidebar::default();
         sidebar.toggle();
-        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
-        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Expanded));
-        assert_eq!(sidebar.mode(), SidebarMode::Collapsed);
+        assert_eq!(sidebar.mode(), SidebarMode::Pinned);
+        sidebar.observe(&evaluation_with_sidebar(SidebarMode::Floating));
+        assert_eq!(sidebar.mode(), SidebarMode::Pinned);
         sidebar.toggle();
-        assert_eq!(sidebar.mode(), SidebarMode::Expanded);
+        assert_eq!(sidebar.mode(), SidebarMode::Floating);
     }
 
     #[test]
@@ -1914,14 +1897,14 @@ mod tests {
         })) else {
             panic!("the configuration is valid");
         };
-        presentation.sidebar = SidebarMode::Collapsed;
+        presentation.sidebar = SidebarMode::Pinned;
         assert!(state.apply(generation, Evaluation::Valid(presentation.clone())));
 
         assert!(state.observe_cwd(PathBuf::from("/b")));
         assert_eq!(state.presentation.banner, None);
         assert_eq!(state.presentation.rail, None);
         assert_eq!(state.presentation.titlebar, presentation.titlebar);
-        assert_eq!(state.presentation.sidebar, SidebarMode::Collapsed);
+        assert_eq!(state.presentation.sidebar, SidebarMode::Pinned);
         assert_eq!(state.presentation.terminal, presentation.terminal);
 
         // The new directory's own evaluation still decides in the end.
@@ -1941,7 +1924,7 @@ mod tests {
                 banner: Some("A".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Shown,
-                sidebar: SidebarMode::Expanded,
+                sidebar: SidebarMode::Floating,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -1954,7 +1937,7 @@ mod tests {
                 banner: Some("late A".into()),
                 rail: None,
                 titlebar: TitlebarVisibility::Shown,
-                sidebar: SidebarMode::Expanded,
+                sidebar: SidebarMode::Floating,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })
@@ -2007,7 +1990,7 @@ mod tests {
             banner: Some("A".into()),
             rail: None,
             titlebar: TitlebarVisibility::Shown,
-            sidebar: SidebarMode::Expanded,
+            sidebar: SidebarMode::Floating,
             keybindings: Keybindings::default(),
             terminal: Box::default(),
         };
@@ -2026,7 +2009,7 @@ mod tests {
             banner: Some("A".into()),
             rail: Some(RailColor(255, 0, 0)),
             titlebar: TitlebarVisibility::Shown,
-            sidebar: SidebarMode::Expanded,
+            sidebar: SidebarMode::Floating,
             keybindings: Keybindings::default(),
             terminal: Box::default(),
         };
@@ -2258,7 +2241,7 @@ mod tests {
                 banner: Some("global".into()),
                 rail: Some(RailColor(255, 0, 0)),
                 titlebar: TitlebarVisibility::Hidden,
-                sidebar: SidebarMode::Expanded,
+                sidebar: SidebarMode::Floating,
                 keybindings: Keybindings::default(),
                 terminal: Box::default(),
             })

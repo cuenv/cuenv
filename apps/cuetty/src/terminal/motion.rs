@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 /// The time between frames of a transition.
 const FRAME: Duration = Duration::from_millis(16);
-/// How long the sidebar takes to open or close, the longest distance anything travels.
+/// How long the pinned sidebar takes to open or close, the longest distance anything travels.
 const SIDEBAR_TRANSITION: Duration = Duration::from_millis(150);
 /// How long the active tab's marker takes to reach another tab, and its fill to follow.
 const TAB_TRANSITION: Duration = Duration::from_millis(140);
@@ -267,7 +267,7 @@ struct FadeChange {
     now: Instant,
 }
 
-/// A button in the sidebar's footer.
+/// A control beside the tabs or the project.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum SidebarButton {
     Notice,
@@ -288,6 +288,10 @@ pub(super) enum SearchButton {
 /// Something in the chrome that lights up under the pointer.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum HoverTarget {
+    /// The floating tab stack, along with the reach around it, which opens it.
+    TabStack,
+    /// The project pill at the top right, along with the panel it opens.
+    ProjectPill,
     Tab(TabId),
     /// The close button on a tab's row, which lights up by itself inside the row's hover.
     TabClose(TabId),

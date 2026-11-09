@@ -3,21 +3,19 @@ use super::tokens;
 use super::tokens::{ChromeColors, Elevation, border, radius, size, space, text};
 
 use super::hover;
-use crate::integrations::cuenv::{RailColor, SidebarMode};
+use crate::integrations::cuenv::RailColor;
 use crate::terminal::engine;
-use crate::terminal::engine::{SIDEBAR_TOGGLE_KEY, TabClick, TerminalView};
+use crate::terminal::engine::{TabClick, TerminalView};
 use crate::terminal::model::Rgb;
 use crate::terminal::motion::{HoverTarget, SidebarButton};
-use crate::terminal::palette::Mode as PaletteMode;
 use crate::terminal::presentation::TerminalTheme;
-use crate::terminal::tab_label::TabMarkSources;
 use crate::terminal::tab_rename::TabRename;
 use crate::terminal::tab_status::TabIndicator;
 use crate::terminal::workspace_shell::TabNumber;
 use crate::workspace::{PaneId, TabId};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AppContext, ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton,
+    App, AppContext, ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton,
     ParentElement, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled,
     Window,
 };
@@ -33,7 +31,7 @@ struct DraggedTab {
 impl Render for DraggedTab {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         tokens::elevated(gpui::div(), Elevation::Raised, &self.colors)
-            .max_w(size::SIDEBAR_EXPANDED_WIDTH)
+            .max_w(size::TAB_STACK_WIDTH)
             .h(size::TAB_ROW_HEIGHT)
             .px(space::LG)
             .flex()
@@ -67,10 +65,66 @@ fn rail_scroll_target(
         .and_then(|active| tabs.position(|tab| tab == active))
 }
 
+/// How a closed tab shows: the active one as a ring, the rest as dots coloured by what
+/// they have to say, so a failure or a bell still catches the eye.
+fn render_tab_dot(dot: TabDot, colors: &ChromeColors) -> Div {
+    let fill = match dot.indicator {
+        Some(TabIndicator::Failed) => Some(colors.danger),
+        Some(TabIndicator::Bell | TabIndicator::Unread) => Some(colors.accent),
+        Some(TabIndicator::Running) => Some(colors.text_secondary),
+        Some(TabIndicator::Finished) | None => None,
+    };
+    let shape = match dot.ring {
+        Some(ring) => gpui::div()
+            .size(size::TAB_DOT_ACTIVE)
+            .rounded_full()
+            .border(size::TAB_DOT_RING)
+            .border_color(ring)
+            .when_some(fill, |this, fill| this.bg(fill)),
+        None => gpui::div()
+            .size(size::TAB_DOT)
+            .rounded_full()
+            .bg(fill.unwrap_or(colors.text_muted)),
+    };
+    gpui::div()
+        .size(size::TAB_DOT_SLOT)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(shape)
+}
+
+/// One tab in the closed stack.
+struct TabDot {
+    /// The active tab's marker colour, which only it has.
+    ring: Option<Rgba>,
+    indicator: Option<TabIndicator>,
+}
+
 impl TerminalView {
-    /// Keeps the active tab's marker on screen when the list is taller than the
-    /// rail, whichever way the tab became active.
-    pub(in crate::terminal) fn reveal_active_rail_tab(&mut self, active_tab: Option<TabId>) {
+    /// Whether the tab stack shows names. Besides the pointer coming near, anything that
+    /// needs the names in sight holds it open: number hints, a name being typed, and a
+    /// tab being dragged to a new place.
+    pub(in crate::terminal) fn tab_stack_open(&self, cx: &App) -> bool {
+        self.tab_hints_visible
+            || self.tab_rename.is_some()
+            || cx.has_active_drag()
+            || self.hover_level(HoverTarget::TabStack) > 0.0
+    }
+
+    /// Keeps the active tab's marker on screen when the open list is taller than the
+    /// window, whichever way the tab became active. The closed stack has nothing to
+    /// scroll, so the list reveals the active tab again each time it opens.
+    pub(in crate::terminal) fn reveal_active_rail_tab(
+        &mut self,
+        active_tab: Option<TabId>,
+        cx: &App,
+    ) {
+        if !self.tab_stack_open(cx) {
+            self.rail_revealed_tab = None;
+            return;
+        }
         let tabs = self.registry.workspace.workspace().tabs();
         if let Some(index) = rail_scroll_target(
             active_tab,
@@ -82,19 +136,100 @@ impl TerminalView {
         self.rail_revealed_tab = active_tab;
     }
 
-    pub(in crate::terminal) fn render_sidebar(
+    /// The tabs, floating over the right of the terminal and centred on it. Closed, they
+    /// are a column of dots that takes almost nothing from the terminal; the pointer
+    /// coming near opens them into a list of names.
+    pub(in crate::terminal) fn render_tab_stack(
         &self,
         active_tab: Option<TabId>,
         theme: &TerminalTheme,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = ChromeColors::from_theme(theme);
-        let mode = self.sidebar_mode();
-        let marker_color = active_tab_marker_color(
+        let marker_color = self.tab_marker_color(&colors);
+        let stack = if self.tab_stack_open(cx) {
+            self.render_tab_list(active_tab, &colors, cx)
+                .into_any_element()
+        } else {
+            let dots = self
+                .registry
+                .workspace
+                .workspace()
+                .tabs()
+                .iter()
+                .map(|tab| {
+                    render_tab_dot(
+                        TabDot {
+                            ring: (active_tab == Some(tab.id)).then_some(marker_color),
+                            indicator: self
+                                .registry
+                                .sessions
+                                .get(&tab.focused)
+                                .and_then(|state| state.status.indicator()),
+                        },
+                        &colors,
+                    )
+                })
+                .collect::<Vec<_>>();
+            tokens::elevated(gpui::div(), Elevation::Raised, &colors)
+                .rounded_full()
+                .max_h_full()
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(space::XXS)
+                .py(space::SM)
+                .px(space::XXS)
+                .children(dots)
+                .into_any_element()
+        };
+        // Takes the window's height so the stack can centre in it, and has no listeners,
+        // so the pointer passes through it to the terminal everywhere but the stack.
+        gpui::div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(space::LG)
+            .py(space::LG)
+            .flex()
+            .flex_col()
+            .justify_center()
+            .child(
+                gpui::div()
+                    .relative()
+                    .max_h_full()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    // The reach: near enough the stack counts as over it.
+                    .pl(size::TAB_STACK_REACH)
+                    .py(space::LG)
+                    .child(stack)
+                    .child(hover::hover_region(HoverTarget::TabStack, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// The active tab's marker colour, from the active tab's project.
+    fn tab_marker_color(&self, colors: &ChromeColors) -> Rgba {
+        active_tab_marker_color(
             self.active_state()
                 .and_then(|state| state.cuenv.presentation.rail),
-            &colors,
-        );
+            colors,
+        )
+    }
+
+    /// The open stack: a row for each tab, then a way to start another.
+    fn render_tab_list(
+        &self,
+        active_tab: Option<TabId>,
+        colors: &ChromeColors,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let marker_color = self.tab_marker_color(colors);
+        let colors = *colors;
         let now = std::time::Instant::now();
         let tab_list = self.registry.workspace.workspace().tabs();
         let tabs = tab_list
@@ -120,12 +255,6 @@ impl TerminalView {
                     Some(indicator) => format!("{tooltip}\n{}", indicator.description()),
                     None => tooltip,
                 };
-                let mark = crate::terminal::tab_label::tab_mark(TabMarkSources {
-                    custom_name: tab.custom_name.as_deref(),
-                    banner,
-                    directory: cuenv.and_then(|cuenv| cuenv.cwd.as_deref()),
-                    label: &label,
-                });
                 render_tab_row(
                     TabRow {
                         id: tab.id,
@@ -139,7 +268,6 @@ impl TerminalView {
                             .filter(|rename| rename.tab() == tab.id)
                             .map(TabRename::text)
                             .map(str::to_owned),
-                        mark,
                         tooltip,
                         indicator,
                         number: self
@@ -150,7 +278,6 @@ impl TerminalView {
                         hover: self.motion.hover_level(HoverTarget::Tab(tab.id), now),
                         close_hover: self.motion.hover_level(HoverTarget::TabClose(tab.id), now),
                         active: self.motion.active_level(tab.id, now),
-                        mode,
                         colors,
                         mono: self.mono_font_family(),
                     },
@@ -162,12 +289,13 @@ impl TerminalView {
             .id("cuetty-rail-tabs")
             .track_scroll(&self.rail_scroll)
             .overflow_y_scroll()
-            .flex_1()
+            .relative()
+            .min_h_0()
+            .flex_shrink()
             .flex()
             .flex_col()
             .gap(space::XXS)
             .p(space::MD)
-            .min_h(size::TAB_LIST_MIN_HEIGHT)
             .children(tabs)
             // One marker for the whole list, which travels between rows. It follows them as
             // the list scrolls, being a child of what scrolls, and comes after them so a
@@ -182,153 +310,66 @@ impl TerminalView {
                     .rounded(radius::CONTROL)
                     .bg(marker_color)
             }));
-        let integration_notice = active_tab
-            .and_then(|tab_id| tab_list.iter().find(|tab| tab.id == tab_id))
-            .and_then(|tab| self.registry.sessions.get(&tab.focused))
-            .and_then(|state| state.marker_notice());
-        // A message does not fit here, and an evaluation error can run to hundreds
-        // of characters. A marker reports that there is one and can never displace
-        // the tabs or controls.
-        let notice_marker = self
-            .registry
-            .notice
-            .as_deref()
-            .or(integration_notice)
-            .map(|notice| {
-                self.control(SidebarButton::Notice, &colors, cx)
-                    .tooltip(super::tooltip::chrome_tooltip(notice.to_string(), colors))
-                    .child(
-                        gpui::div()
-                            .size(size::NOTICE_MARK)
-                            .rounded(radius::CONTROL)
-                            .bg(colors.accent),
-                    )
-            });
-        let has_tasks = self
-            .active_state()
-            .is_some_and(|state| !state.task_catalogue().is_empty());
-        let new_tab = self
-            .control(SidebarButton::NewTab, &colors, cx)
-            .cursor_pointer()
-            .tooltip(super::tooltip::chrome_tooltip(
-                format!("New tab · {}", engine::app_chord_label("t")),
-                colors,
+        let new_tab_target = HoverTarget::Button(SidebarButton::NewTab);
+        let new_tab = gpui::div()
+            .id("cuetty-new-tab")
+            .relative()
+            .mx(space::MD)
+            .mb(space::MD)
+            .h(size::CONTROL_HEIGHT)
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(space::MD)
+            .px(space::LG)
+            .rounded(radius::CONTROL)
+            .bg(tokens::faded(
+                colors.state,
+                self.hover_level(new_tab_target),
             ))
+            .on_hover(hover::hover_fade(new_tab_target, cx))
+            .child(hover::hover_probe(new_tab_target, cx))
+            .cursor_pointer()
+            .text_size(text::BODY)
+            .text_color(colors.text_secondary)
             .on_click(cx.listener(|view, _event, window, cx| {
                 view.new_tab(window, cx);
             }))
-            .child(Icon::Plus.element(colors.text_secondary));
-        let palette_chord = self.palette_chord_label();
-        let tasks = self
-            .control(SidebarButton::Tasks, &colors, cx)
-            .when(
-                self.palette_open
-                    && PaletteMode::from_query(&self.palette_query) == PaletteMode::Tasks,
-                |this| this.bg(colors.state),
-            )
-            .cursor_pointer()
-            .tooltip(super::tooltip::chrome_tooltip(
-                format!("Search Cuenv tasks · {palette_chord}, then $"),
-                colors,
-            ))
-            .on_click(cx.listener(|view, _event, window, cx| {
-                view.open_command_palette(PaletteMode::Tasks);
-                view.focus_terminal(window);
-                cx.notify();
-            }))
-            .child(Icon::Tasks.element(colors.text_secondary));
-        let (toggle_label, toggle_icon) = match mode {
-            SidebarMode::Expanded => ("Collapse sidebar", Icon::SidebarCollapse),
-            SidebarMode::Collapsed => ("Expand sidebar", Icon::SidebarExpand),
+            .child(Icon::Plus.element(colors.text_secondary))
+            .child(gpui::div().flex_1().child("New tab"))
+            .child(
+                gpui::div()
+                    .flex_none()
+                    .font_family(self.mono_font_family())
+                    .text_size(text::CAPTION)
+                    .text_color(colors.text_muted)
+                    .child(engine::app_chord_label("t")),
+            );
+        // Whatever holds the stack open other than the pointer shows it whole at once.
+        let reveal = if self.tab_hints_visible || self.tab_rename.is_some() || cx.has_active_drag()
+        {
+            1.0
+        } else {
+            self.hover_level(HoverTarget::TabStack)
         };
-        let toggle = self
-            .control(SidebarButton::Toggle, &colors, cx)
-            .cursor_pointer()
-            .tooltip(super::tooltip::chrome_tooltip(
-                format!(
-                    "{toggle_label} · {}",
-                    engine::app_chord_label(SIDEBAR_TOGGLE_KEY)
-                ),
-                colors,
-            ))
-            .on_click(cx.listener(|view, _event, _window, cx| view.toggle_sidebar(cx)))
-            .child(toggle_icon.element(colors.text_secondary));
-        let palette_hint = (mode == SidebarMode::Expanded).then(|| {
-            let target = HoverTarget::Button(SidebarButton::PaletteHint);
-            gpui::div()
-                .id("cuetty-palette-hint")
-                .mx(space::SM)
-                .mt(space::SM)
-                .px(space::SM)
-                .py(space::XS)
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(space::MD)
-                .rounded(radius::CONTROL)
-                .bg(tokens::faded(colors.state, self.hover_level(target)))
-                .on_hover(hover::hover_fade(target, cx))
-                .child(hover::hover_probe(target, cx))
-                .cursor_pointer()
-                .text_size(text::CAPTION)
-                .text_color(colors.text_muted)
-                .on_click(cx.listener(|view, _event, window, cx| {
-                    view.open_command_palette(PaletteMode::Commands);
-                    view.focus_terminal(window);
-                    cx.notify();
-                }))
-                .child(gpui::div().min_w_0().truncate().child("Commands"))
-                .child(
-                    gpui::div()
-                        .flex_none()
-                        .font_family(self.mono_font_family())
-                        .child(palette_chord.clone()),
-                )
-        });
-        // A narrow strip has no room for a name and a value, let alone a list of them.
-        let project_panel = (mode == SidebarMode::Expanded)
-            .then(|| self.render_project_panel(&colors))
-            .flatten();
-        let footer = gpui::div()
-            .w_full()
-            .flex_shrink_0()
-            .flex()
-            .gap(space::XS)
-            .p(space::SM)
-            .map(|this| match mode {
-                SidebarMode::Expanded => this.flex_row().items_center(),
-                SidebarMode::Collapsed => this.flex_col().items_center(),
-            })
-            .children(notice_marker)
-            .child(new_tab)
-            .when(has_tasks, |this| this.child(tasks))
-            // Expanded, the toggle sits at the far end of the row, where the
-            // collapsed sidebar's edge will be.
-            .when(mode == SidebarMode::Expanded, |this| {
-                this.child(gpui::div().flex_1())
-            })
-            .child(toggle);
-        gpui::div()
-            .relative()
-            .w_full()
-            .flex_1()
+        tokens::elevated(gpui::div(), Elevation::Floating, &colors)
+            .id("cuetty-tab-stack")
+            // Keeps clicks from falling through to start a selection in the terminal.
+            .occlude()
+            .w(size::TAB_STACK_WIDTH)
+            .max_h_full()
             .min_h_0()
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(radius::PANEL)
-            .bg(colors.sidebar)
-            .border(border::HAIRLINE)
-            .border_color(colors.divider)
+            .opacity(reveal)
+            .font_family(tokens::ui_font_family())
             .child(tabs)
-            .children(project_panel)
-            .children(palette_hint)
-            .child(footer)
-            .into_any_element()
+            .child(new_tab)
     }
 
-    /// The square-ish hit target every sidebar control shares.
-    fn control(
+    /// The square-ish hit target every chrome control shares.
+    pub(super) fn control(
         &self,
         button: SidebarButton,
         colors: &ChromeColors,
@@ -485,8 +526,6 @@ struct TabRow {
     subtitle: String,
     /// The name being typed, while the user is renaming this tab.
     editing: Option<String>,
-    /// What stands in for the label when the sidebar is collapsed.
-    mark: String,
     tooltip: String,
     indicator: Option<TabIndicator>,
     number: Option<TabNumber>,
@@ -497,7 +536,6 @@ struct TabRow {
     close_hover: f32,
     /// How strongly the row shows as the active one, which fades as tabs switch.
     active: f32,
-    mode: SidebarMode,
     colors: ChromeColors,
     mono: SharedString,
 }
@@ -510,7 +548,6 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         label,
         subtitle,
         editing,
-        mark,
         tooltip,
         indicator,
         number,
@@ -518,7 +555,6 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         hover,
         close_hover,
         active,
-        mode,
         colors,
         mono,
     } = row;
@@ -591,112 +627,73 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         } else {
             text::REGULAR
         })
-        .map(|this| match mode {
-            SidebarMode::Expanded => this
-                .gap(space::MD)
-                .px(space::LG)
-                .child(
-                    gpui::div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .line_height(text::LINE_HEIGHT)
-                        .child(match editing {
-                            Some(editing) => render_name_field(editing, label, &colors),
-                            None => gpui::div().truncate().child(label),
-                        })
-                        .when(!subtitle.is_empty(), |this| {
-                            this.child(
-                                gpui::div()
-                                    .truncate()
-                                    .text_size(text::CAPTION)
-                                    .text_color(subtitle_color)
-                                    .font_weight(text::REGULAR)
-                                    .child(subtitle),
-                            )
-                        }),
-                )
-                .children(number.map(|number| {
-                    gpui::div()
-                        .flex_none()
-                        .font_family(mono.clone())
-                        .text_size(text::CAPTION)
-                        .text_color(colors.text_muted)
-                        .font_weight(text::REGULAR)
-                        .child(engine::tab_number_hint(number))
-                }))
-                .child(
-                    // The button takes over from the indicator while the row is hovered.
-                    gpui::div()
-                        .relative()
-                        .size(size::TAB_ACTION)
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .children(indicator.map(|indicator| {
-                            render_indicator(indicator, &colors).opacity(1.0 - hover)
-                        }))
-                        .child(
-                            render_close_button(
-                                CloseButton {
-                                    id,
-                                    pane,
-                                    reveal: hover,
-                                    hover: close_hover,
-                                    colors,
-                                },
-                                cx,
-                            )
-                            .absolute()
-                            .inset_0(),
-                        ),
-                ),
-            // Only a character fits, so the hint stands in for the mark. The row is too
-            // narrow for a close button to clear the mark, where a click on the tab lands,
-            // so a collapsed tab has none: selecting it and the close chord do that.
-            SidebarMode::Collapsed => this
+        .gap(space::MD)
+        .px(space::LG)
+        .child(
+            gpui::div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .line_height(text::LINE_HEIGHT)
+                .child(match editing {
+                    Some(editing) => render_name_field(editing, label, &colors),
+                    None => gpui::div().truncate().child(label),
+                })
+                .when(!subtitle.is_empty(), |this| {
+                    this.child(
+                        gpui::div()
+                            .truncate()
+                            .text_size(text::CAPTION)
+                            .text_color(subtitle_color)
+                            .font_weight(text::REGULAR)
+                            .child(subtitle),
+                    )
+                }),
+        )
+        .children(number.map(|number| {
+            gpui::div()
+                .flex_none()
+                .font_family(mono.clone())
+                .text_size(text::CAPTION)
+                .text_color(colors.text_muted)
+                .font_weight(text::REGULAR)
+                .child(engine::tab_number_hint(number))
+        }))
+        .child(
+            // The button takes over from the indicator while the row is hovered.
+            gpui::div()
+                .relative()
+                .size(size::TAB_ACTION)
+                .flex_none()
+                .flex()
+                .items_center()
                 .justify_center()
-                .child(
-                    gpui::div()
-                        .h(size::TAB_MARK_HEIGHT)
-                        .line_height(size::TAB_MARK_HEIGHT)
-                        .child(match number {
-                            Some(number) => gpui::div()
-                                .font_family(mono.clone())
-                                .text_size(text::LABEL)
-                                .text_color(colors.text_muted)
-                                .font_weight(text::REGULAR)
-                                .child(number.digit().to_string()),
-                            None => gpui::div().child(mark),
-                        }),
+                .children(
+                    indicator
+                        .map(|indicator| render_indicator(indicator, &colors).opacity(1.0 - hover)),
                 )
-                .children(indicator.map(|indicator| {
-                    gpui::div()
-                        .absolute()
-                        .bottom_0()
-                        .left_0()
-                        .right_0()
-                        .flex()
-                        .justify_center()
-                        .child(render_indicator(indicator, &colors))
-                })),
-        })
+                .child(
+                    render_close_button(
+                        CloseButton {
+                            id,
+                            pane,
+                            reveal: hover,
+                            hover: close_hover,
+                            colors,
+                        },
+                        cx,
+                    )
+                    .absolute()
+                    .inset_0(),
+                ),
+        )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::terminal::config::TerminalConfig;
-
-    #[test]
-    fn a_collapsed_tabs_indicator_sits_clear_of_its_mark() {
-        let row = size::TAB_ROW_TWO_LINE_HEIGHT - border::HAIRLINE * 2.0;
-        let mark_bottom = (row + size::TAB_MARK_HEIGHT) / 2.0;
-        let indicator_top = row - size::STATUS_ICON;
-        assert!(mark_bottom <= indicator_top);
-    }
 
     #[test]
     fn active_tab_marker_prefers_the_project_accent_over_the_theme_accent() {

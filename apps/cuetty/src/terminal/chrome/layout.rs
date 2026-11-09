@@ -5,6 +5,7 @@ use crate::terminal::engine::TerminalView;
 use crate::terminal::motion::SidebarFrame;
 use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_status::ExitFailure;
+use gpui::prelude::FluentBuilder;
 use gpui::{
     Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Styled,
     WindowControlArea,
@@ -47,18 +48,23 @@ pub(in crate::terminal) fn exit_notice_height(failure: Option<ExitFailure>) -> P
 }
 
 /// The width the sidebar settles at in a mode, along with the gap between it and the
-/// window's edge.
+/// window's edge. A floating project takes no room at all.
 pub(in crate::terminal) fn sidebar_width(mode: SidebarMode) -> f32 {
-    f32::from(match mode {
-        SidebarMode::Expanded => size::SIDEBAR_EXPANDED_WIDTH,
-        SidebarMode::Collapsed => size::SIDEBAR_COLLAPSED_WIDTH,
-    })
+    match mode {
+        SidebarMode::Pinned => f32::from(size::SIDEBAR_WIDTH),
+        SidebarMode::Floating => 0.0,
+    }
 }
 
-/// The sidebar as this draw has it, and how wide.
+/// The chrome around the terminal as this draw has it.
 pub(in crate::terminal) struct ShellPanels {
-    pub(in crate::terminal) sidebar: gpui::AnyElement,
+    /// The pinned sidebar, while any of it is on screen.
+    pub(in crate::terminal) sidebar: Option<gpui::AnyElement>,
     pub(in crate::terminal) sidebar_frame: SidebarFrame,
+    /// The tabs, which float over the terminal.
+    pub(in crate::terminal) tab_stack: gpui::AnyElement,
+    /// The floating project, unless it is pinned or has nothing to show.
+    pub(in crate::terminal) project_pill: Option<gpui::AnyElement>,
 }
 
 /// What the title strip signs the window with.
@@ -128,33 +134,37 @@ impl TerminalView {
         let ShellPanels {
             sidebar,
             sidebar_frame,
+            tab_stack,
+            project_pill,
         } = panels;
         // The slot gives the layout the sidebar's room, which moves in one step. The panel
         // travels inside it against the window's edge, where the room it has not reached
         // yet is the same material as everything else.
-        let sidebar_slot = gpui::div()
-            .w(gpui::px(sidebar_frame.slot))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .items_end()
-            .pr(space::MD)
-            .pb(space::MD)
-            // With no title strip this is all that is left to move the window by.
-            .child(if titlebar_visibility == TitlebarVisibility::Hidden {
-                draggable(inset_above_sidebar)
-            } else {
-                inset_above_sidebar
-            })
-            .child(
-                gpui::div()
-                    .w(gpui::px(sidebar_frame.panel) - space::MD)
-                    .flex_1()
-                    .min_h(gpui::px(0.0))
-                    .flex()
-                    .flex_col()
-                    .child(sidebar),
-            );
+        let sidebar_slot = sidebar.map(|sidebar| {
+            gpui::div()
+                .w(gpui::px(sidebar_frame.slot))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .items_end()
+                .pr(space::MD)
+                .pb(space::MD)
+                // With no title strip this is all that is left to move the window by.
+                .child(if titlebar_visibility == TitlebarVisibility::Hidden {
+                    draggable(inset_above_sidebar)
+                } else {
+                    inset_above_sidebar
+                })
+                .child(
+                    gpui::div()
+                        .w((gpui::px(sidebar_frame.panel) - space::MD).max(gpui::px(0.0)))
+                        .flex_1()
+                        .min_h(gpui::px(0.0))
+                        .flex()
+                        .flex_col()
+                        .child(sidebar),
+                )
+        });
         let workspace = gpui::div()
             .flex_1()
             .min_h(gpui::px(0.0))
@@ -165,18 +175,36 @@ impl TerminalView {
             // through until a later resize happens to trigger a relayout.
             .child(
                 gpui::div()
+                    .relative()
                     .flex_1()
                     .min_w(gpui::px(0.0))
                     .min_h(gpui::px(0.0))
                     .flex()
-                    .child(content),
+                    .child(content)
+                    // Over the terminal, which keeps all of its width.
+                    .child(tab_stack),
             )
-            .child(sidebar_slot);
+            .children(sidebar_slot);
         // This root is the single background layer. The grid only fills whole
         // cells, so padding and whatever is left over past the last row and column
         // read as one continuous canvas with the chrome. Default-background cells
         // never repaint it, and no structural child may, or the alpha would compound.
+        // The project sits at the top right: in the title strip when there is one, and
+        // otherwise over the terminal's corner.
+        let pill_top = match titlebar_visibility {
+            TitlebarVisibility::Shown => (size::TITLEBAR_HEIGHT - size::PROJECT_PILL_HEIGHT) / 2.0,
+            TitlebarVisibility::Hidden => space::MD,
+        };
+        let has_pill = project_pill.is_some();
+        let project_pill = project_pill.map(|pill| {
+            gpui::div()
+                .absolute()
+                .top(pill_top)
+                .right(space::SM)
+                .child(pill)
+        });
         let shell = gpui::div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -185,7 +213,10 @@ impl TerminalView {
         if titlebar_visibility == TitlebarVisibility::Hidden {
             // The terminal grid is resized from its measured bounds, so it reclaims
             // whatever the strip leaves without extra arithmetic here.
-            return shell.child(workspace).into_any_element();
+            return shell
+                .child(workspace)
+                .children(project_pill)
+                .into_any_element();
         }
         let title = self.registry.active_tab_label();
         // Sits in the margin the title leaves for the window controls' sake, over against
@@ -216,7 +247,12 @@ impl TerminalView {
             .text_size(text::LABEL)
             .text_color(colors.text_secondary)
             .children(title.map(|title| gpui::div().min_w_0().truncate().child(title)))
-            .child(wordmark);
-        shell.child(titlebar).child(workspace).into_any_element()
+            // The project takes the wordmark's place when it has something to show.
+            .when(!has_pill, |this| this.child(wordmark));
+        shell
+            .child(titlebar)
+            .child(workspace)
+            .children(project_pill)
+            .into_any_element()
     }
 }

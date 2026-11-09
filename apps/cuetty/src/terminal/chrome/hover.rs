@@ -4,7 +4,8 @@ use super::super::engine::TerminalView;
 use super::super::motion::{HoverTarget, MotionPace, PANEL_FADE_IN};
 use crate::integrations::cuenv::Keybindings;
 use gpui::{
-    Animation, AnimationExt, App, Context, Div, HitboxBehavior, IntoElement, Styled, Window,
+    Animation, AnimationExt, App, Context, DispatchPhase, Div, Hitbox, HitboxBehavior, IntoElement,
+    MouseMoveEvent, Styled, Window,
 };
 
 /// `panel` fading in as it first appears, which starts again each time it reopens because
@@ -77,6 +78,44 @@ pub(super) fn hover_probe(target: HoverTarget, cx: &Context<TerminalView>) -> im
             let news = view
                 .update(cx, |view, _cx| fade_hover(view, target, pointer))
                 .unwrap_or(false);
+            if news {
+                super::super::engine::redraw_after_this_frame(view, cx);
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// Lights `target` while the pointer is anywhere over the element this is the last child
+/// of, children included. Chrome floating over the terminal keeps the pointer to itself
+/// so a click there starts no selection, which also hides it from its parent's own hover,
+/// so this sits above the children and only watches. GPUI draws nothing new for a pointer
+/// moving over an element without listeners of its own, so a move that crosses its edge
+/// asks for the draw that settles the hover.
+pub(super) fn hover_region(target: HoverTarget, cx: &Context<TerminalView>) -> impl IntoElement {
+    let view = cx.weak_entity();
+    gpui::canvas(
+        |bounds, window, _cx| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |_bounds, hitbox, window, cx| {
+            let over = |hitbox: &Hitbox, window: &Window| {
+                hitbox.is_hovered(window) && window.is_window_hovered()
+            };
+            let was_over = over(&hitbox, window);
+            let pointer = if was_over {
+                Pointer::Over
+            } else {
+                Pointer::Away
+            };
+            let news = view
+                .update(cx, |view, _cx| fade_hover(view, target, pointer))
+                .unwrap_or(false);
+            let watcher = view.clone();
+            window.on_mouse_event(move |_event: &MouseMoveEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble && over(&hitbox, window) != was_over {
+                    let _ = watcher.update(cx, |_view, cx| cx.notify());
+                }
+            });
             if news {
                 super::super::engine::redraw_after_this_frame(view, cx);
             }

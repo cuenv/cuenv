@@ -70,9 +70,9 @@ The current usable slice includes:
 - Four complete themes, or `auto` to follow the desktop's light or dark, shared by Rio's
   semantic resolver and the GPUI chrome. Catppuccin Mocha is the default.
 - Ghostty is the visual reference for restrained native chrome: traffic lights,
-  one title strip that shares the terminal's surface, a sidebar floating inset from
-  the window's edges so it sits comfortably with rounded corners, stable single-line
-  tab labels, and a full-bleed terminal.
+  one title strip that shares the terminal's surface, tabs and the project floating
+  over the terminal's edges rather than taking room from it, stable single-line tab
+  labels, and a full-bleed terminal.
 - Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
   selection, Rio-owned history navigation, and visible-frame literal search. A mouse selection is
   copied to the system clipboard on release; an empty click leaves it alone. Holding a selection
@@ -104,9 +104,10 @@ The current usable slice includes:
   Physical device input and macOS still need interactive verification.
 - The active pane's post-layout GPUI canvas is the source of truth for each Rio
   resize, so the measured width already excludes the title strip, terminal
-  inset, and the sidebar in its current state instead of leaving a stale
-  frame clipped in the viewport, so toggling the sidebar or the title strip resizes the
-  grid within a few frames, even at an idle prompt. The sidebar's panel slides over
+  inset, and a pinned sidebar in its current state instead of leaving a stale
+  frame clipped in the viewport, so pinning the sidebar or toggling the title strip resizes the
+  grid within a few frames, even at an idle prompt. The floating tabs and project pill
+  take nothing from the grid. The sidebar's panel slides over
   150ms while the room it is given moves in one step, at the start of opening and at
   the end of closing, so a toggle resizes the grid and tells the PTY once rather than
   on every frame of the animation.
@@ -128,10 +129,12 @@ The current usable slice includes:
   is Ctrl-1 to Ctrl-9 selecting a tab that exists.
   Ctrl-Page Up and Ctrl-Page Down switch to the previous and next tab,
   wrapping at either end. The command palette is configurable (see below).
-- A right-side tab sidebar, 200px wide and listing tabs by name, that collapses
-  to 56px with its toggle or Cmd-B (Ctrl-Shift-B on Linux). Collapsed, each tab
-  shows an initial taken from its user-set name, project banner, or directory, so it
-  stays put as programs come and go, with the full name as a tooltip. A tab is named after, in order, the name
+- Tabs floating over the right edge of the terminal, centred on it, so the terminal
+  keeps its full width. Closed, they are a column of dots: the active tab a ring in the
+  marker colour, a failed tab red, and a tab with a bell or unread output in the accent.
+  Bringing the pointer within 24px opens the column into a 220px list of tab names, which
+  closes when the pointer leaves. Number hints, a name being edited, and a tab being
+  dragged also hold it open. A tab is named after, in order, the name
   the user gave it, the Cuenv task it is running, the program in its foreground or
   a title that program set, and finally its directory; with none of those it is
   `Terminal`. A task launched from Cuetty names its tab until `cuenv` hands the
@@ -143,12 +146,11 @@ The current usable slice includes:
   the script, and Nix's
   `.name-wrapped` binaries are shown as `name`. A tab list taller than the window scrolls, and
   follows the active tab.
-- A close button revealed on an expanded tab's row when the pointer is over it. It takes
-  over from the tab's indicator while it shows. A collapsed row has none, because it is too
-  narrow for one to stay clear of where a click selects the tab: select it and use the
-  close chord, Cmd-W (Ctrl-Shift-W on Linux).
+- A close button revealed on a tab's row in the open list when the pointer is over it. It
+  takes over from the tab's indicator while it shows. Cmd-W (Ctrl-Shift-W on Linux) closes
+  the active tab.
 - Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place,
-  expanding the sidebar if it is collapsed. Enter or clicking elsewhere keeps the name and
+  holding the tab list open meanwhile. Enter or clicking elsewhere keeps the name and
   Escape abandons the edit. The name then outranks every name Cuetty derives until it is
   emptied, which hands the tab back to its derived name.
 - Dragging a tab onto another moves it to that tab's place in the list, which the number
@@ -158,8 +160,8 @@ The current usable slice includes:
   colours move towards its background, so drawn glyphs stay even and a translucent
   window's material does not change; emoji, which bring their own colours, stay as they
   are. Chrome keeps its colours, and the fade costs an idle window no redraws.
-- Chrome that moves briefly, and only in answer to something: the sidebar's controls and
-  rows and their close buttons fade their hover over 100ms, and on a switch of tab one
+- Chrome that moves briefly, and only in answer to something: the tab list and project
+  panel open, and controls, rows, and their close buttons fade their hover, over 100ms, and on a switch of tab one
   marker slides to its new place over 140ms while the row fills hand over. The command palette fades in over 120ms,
   already taking keys as it does. A hover stays true when the chrome moves under a still
   pointer, as when the tab list scrolls. Nothing draws once it has landed, and
@@ -173,21 +175,25 @@ The current usable slice includes:
 - Three elevations for whatever floats over the terminal, each one token for its shadow,
   outline, fill, and corners: tooltips and a dragged tab sit just off the surface, the
   search bar floats, and the command palette is the highest thing in the window.
-- A hint at the foot of the expanded sidebar naming the active tab's command palette chord,
+- A hint at the foot of the project panel naming the active tab's command palette chord,
   such as `⌘K` or `Ctrl+Shift+K`. Clicking it opens the palette.
-- A muted second line on each expanded tab, such as `cuenv · main`: its directory,
+- A muted second line on each tab in the open list, such as `cuenv · main`: its directory,
   unless the tab is already named after it, and the git branch that directory is on, or
   a detached commit's short form. Cuetty reads the repository's `HEAD` file every couple
   of seconds and spawns no process, following `.git` files for worktrees and submodules.
   With neither known the line is simply absent.
-- A project panel in the expanded sidebar, for an active tab whose exact directory holds a
-  `package cuenv`: the project's name, its runtime type and runnable task count, the variables
+- A project pill at the window's top right, in the title strip when there is one, for an
+  active tab whose exact directory holds a `package cuenv`. It names the project and how
+  it runs, with an accent dot when there is a notice, and hovering it opens the project
+  panel beneath it. The panel's pin button, or Cmd-B (Ctrl-Shift-B on Linux), pins the
+  panel to a 240px sidebar on the right, which the terminal makes room for, and unpins it
+  again. The panel shows the project's name, its runtime type and runnable task count, the variables
   in `env`, and each named set of overrides in `env.environment`. It says what the CUE declares,
   not what the shell has loaded. Nothing is resolved: a secret appears as `•••• onepassword`, and
   its reference is dropped while parsing, while a value written out in CUE is shown as written.
-  A passthrough appears as `from $NAME`, and a tooltip holds a whole value. The panel scrolls
-  past 240px, gives way to the tab list in a short window, and has no place in the collapsed sidebar.
-- A small indicator on each tab, beside its name or below its collapsed mark, with its
+  A passthrough appears as `from $NAME`, and a tooltip holds a whole value. Floating, the
+  panel scrolls past 420px; pinned, it takes the sidebar's height.
+- A small indicator on each tab, beside its name in the open list or as its dot's colour, with its
   meaning in the tab's tooltip: a bell for a bell rung in a tab not on screen, which
   includes every tab while the window is in the background, a ring
   while a task launched from Cuetty runs, counted from the Enter that runs it if it
@@ -236,15 +242,16 @@ silently substituted for Rio.
 Cuetty aims to be calm: the terminal is what you came for, and the chrome around it
 should not compete with it.
 
-- **One material.** The terminal, the title strip, and the sidebar read as one surface.
+- **One material.** The terminal, the title strip, and a pinned sidebar read as one surface.
   At `transparency: 0` the whole window is opaque; above that they share a single opacity
   over the native blur, rather than a pane of glass beside a pane of paint.
 - **Neutral chrome, one accent.** The chrome takes its surfaces and text from the
   [theme](#themes). A single accent colours only small marks: the active tab's marker,
   the notice dot, an unread tab, the caret. A project's `rail` recolours that marker and
   nothing else, so no setting can fill a region with colour.
-- **The sidebar is on the right.** It is 200px wide and lists tabs by name, and collapses
-  to a 56px strip of initials; `sidebar` chooses how a window starts.
+- **The terminal keeps its width.** Tabs are dots over its right edge and the project a
+  pill at its top right, both opening on hover. Pinning the project gives it a 240px
+  sidebar instead; `sidebar` chooses how a window starts.
 - **Type does the hierarchy.** Chrome text is the platform's sans-serif on a small scale
   of 11 to 14px with three text colours; only paths and shortcuts are monospaced.
 - **Depth is for what floats.** The command palette, tooltips, and search bar
@@ -269,8 +276,8 @@ are evaluated in the exact directory; imports that require a module context
 fail through normal CUE evaluation. A matching package may provide a
 single-line `banner` and a quoted `rail: "#RRGGBB"`. The banner joins the tab's
 name in its tooltip; `rail` is the project accent, so `rail: "#ff0000"` colours the
-small marker on the active tab while that tab is active and never fills the
-sidebar. Terminal panes are never framed, and the former `border` field is
+small marker on the active tab while that tab is active, and the project's mark, and
+never fills a surface. Terminal panes are never framed, and the former `border` field is
 rejected as unknown. The title strip shows the active tab's name on the terminal's
 own surface, with a small muted `cuetty` wordmark at its far end, and the window takes the same name as its title in every titlebar state,
 for window switchers and compositors. `titlebar: false` hides it while that tab is active and lets the
@@ -278,8 +285,8 @@ terminal extend to the top of the window; it defaults to `true`. `keybindings: p
 [Keybindings](#keybindings). Off macOS the strip draws only under client-side
 decorations: Cuetty asks for server-side ones, and a window that gets them leaves its
 title and moving it to the windowing system, whether or not that shows a title bar, so
-`titlebar` has no effect there and the sidebar names the tab. A hidden strip leaves the small gap above the
-sidebar to move the window by. GPUI cannot hide the traffic lights once a window exists, so
+`titlebar` has no effect there and the tab list names the tab. A hidden strip leaves the small gap above a
+pinned sidebar to move the window by. GPUI cannot hide the traffic lights once a window exists, so
 on macOS the terminal starts below them instead, in a band the strip's height that also
 moves the window; a larger `padding.top` still applies.
 
@@ -318,7 +325,7 @@ transparency: 10
 | `transparency` | Integer percent, 0–100; the terminal canvas, title strip, and sidebar share this opacity | 0 |
 | `theme` | `"auto"`, `"catppuccin-mocha"`, `"catppuccin-latte"`, `"graphite"`, or `"paper"`: the whole palette for the terminal and the chrome. See [Themes](#themes) | `"catppuccin-mocha"` |
 | `accent` | Quoted `#RRGGBB`; the window's accent, for instance to match a compositor's window border. See [Accent colours](#accent-colours) | The theme's accent |
-| `sidebar` | `"expanded"` or `"collapsed"`: how a window's sidebar starts. A window opens with the global package's look and sidebar when that evaluates within half a second, so its first frame is already the right size, then its first directory's evaluation settles the setting. Only that first configuration is read, so changing directory or editing the value later does not move it, and the toggle and its shortcut outrank it for the life of the window | `"expanded"` |
+| `sidebar` | `"floating"` or `"pinned"`: whether a window's project starts as a pill over the terminal or pinned to a sidebar. The earlier `"collapsed"` and `"expanded"` still parse, as floating and pinned. A window opens with the global package's look and sidebar when that evaluates within half a second, so its first frame is already the right size, then its first directory's evaluation settles the setting. Only that first configuration is read, so changing directory or editing the value later does not move it, and the toggle and its shortcut outrank it for the life of the window | `"floating"` |
 
 Fields are optional. The active tab's settings determine the rendered grid,
 terminal inset, and window material. At `transparency: 0` the whole window is
@@ -462,11 +469,11 @@ keeps its look but drops the previous `banner` and `rail`, and a new tab starts 
 the look of the tab it opened from, so neither flashes the defaults or resizes the
 grid. Invalid matching CUE keeps the last
 valid presentation for that directory and exposes an integration notice: a small
-accent marker beside the sidebar's controls, with the message in its tooltip. The
+accent dot on the project pill, and a marker beside the project panel's controls with the message in its tooltip. The
 tooltip stops at twelve lines; `cue eval .:cuetty` in that directory prints a
 whole evaluation error.
 
-The command palette lists Cuetty actions, including tabs, the sidebar, and
+The command palette lists Cuetty actions, including tabs, pinning the project, and
 terminal search. Type `$` to search task, group, and sequence names from the
 active tab's exact-CWD `package cuenv`; removing `$` returns to commands. The
 task button opens this same task mode. The palette does not participate in
@@ -479,7 +486,7 @@ takes a pasted newline as text. Enter is pressed only while the foreground is an
 interactive shell, judged from the name and start-up arguments of the process that
 holds it: a program, or a shell running a script (`bash deploy.sh`, `sh -c …`), gets the
 command but no Enter, so it cannot submit something the user was still writing or
-answer a script's question. The sidebar's notice marker then says the command is
+answer a script's question. The project's notice marker then says the command is
 waiting, on that pane, until Enter or Ctrl-C finishes the line or the foreground
 changes; a configuration error for that pane takes priority over it. A shell's builtin, such as `read`, or a subshell looks the
 same as its prompt from outside, so a command launched during one does get an Enter. Required task parameters leave an editable command at the prompt. The app does not duplicate
@@ -496,7 +503,7 @@ to Ctrl-8 for NUL, ESC, FS, GS, RS, US, and DEL. With no such tab, the key reach
 terminal.
 
 The command palette opens with Cmd-K on macOS and Ctrl-Shift-K elsewhere,
-leaving plain Ctrl-K to the shell. The sidebar hint shows the active chord.
+leaving plain Ctrl-K to the shell. The project panel's hint shows the active chord.
 Rebind it from any `package cuetty`, global
 or per-directory:
 
@@ -508,7 +515,7 @@ keybindings: palette: *"ctrl-shift-p" | string
 
 A chord is `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`)
 followed by a key, matched case-insensitively against that exact modifier set.
-Cmd-B on macOS and Ctrl-Shift-B elsewhere collapse and expand the sidebar.
+Cmd-B on macOS and Ctrl-Shift-B elsewhere pin the project to a sidebar and unpin it.
 Cmd-R on macOS and Ctrl-Shift-R elsewhere rename the active tab.
 
 A palette chord takes precedence over the tab number and Ctrl-Page chords it

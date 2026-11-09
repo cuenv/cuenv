@@ -129,8 +129,20 @@ pub(super) mod border {
 pub(super) mod size {
     use gpui::Pixels;
 
-    pub(in crate::terminal::chrome) const SIDEBAR_EXPANDED_WIDTH: Pixels = gpui::px(200.0);
-    pub(in crate::terminal::chrome) const SIDEBAR_COLLAPSED_WIDTH: Pixels = gpui::px(56.0);
+    pub(in crate::terminal::chrome) const SIDEBAR_WIDTH: Pixels = gpui::px(240.0);
+    /// The open tab stack, which floats over the terminal.
+    pub(in crate::terminal::chrome) const TAB_STACK_WIDTH: Pixels = gpui::px(220.0);
+    /// How far from the closed stack the pointer opens it.
+    pub(in crate::terminal::chrome) const TAB_STACK_REACH: Pixels = gpui::px(24.0);
+    /// The room each tab's dot has in the closed stack.
+    pub(in crate::terminal::chrome) const TAB_DOT_SLOT: Pixels = gpui::px(16.0);
+    pub(in crate::terminal::chrome) const TAB_DOT: Pixels = gpui::px(6.0);
+    /// The active tab's ring, which has to read as different at a glance.
+    pub(in crate::terminal::chrome) const TAB_DOT_ACTIVE: Pixels = gpui::px(10.0);
+    pub(in crate::terminal::chrome) const TAB_DOT_RING: Pixels = gpui::px(2.0);
+    pub(in crate::terminal::chrome) const PROJECT_PILL_HEIGHT: Pixels = gpui::px(24.0);
+    pub(in crate::terminal::chrome) const PROJECT_POPOVER_WIDTH: Pixels = gpui::px(280.0);
+    pub(in crate::terminal::chrome) const PROJECT_POPOVER_MAX_HEIGHT: Pixels = gpui::px(420.0);
     pub(in crate::terminal::chrome) const TITLEBAR_HEIGHT: Pixels = gpui::px(34.0);
     /// Height of the native macOS window controls.
     pub(in crate::terminal::chrome) const WINDOW_CONTROLS_HEIGHT: Pixels = gpui::px(16.0);
@@ -142,15 +154,8 @@ pub(super) mod size {
     pub(in crate::terminal::chrome) const TAB_ROW_HEIGHT: Pixels = gpui::px(32.0);
     /// A tab's row in the list, with room for a second line beneath the name, or for an
     /// indicator beneath a collapsed tab's mark. It has this height with or without
-    /// them and in both sidebar modes, so neither arriving nor collapsing shifts the list.
+    /// them, so neither arriving nor leaving shifts the list.
     pub(in crate::terminal::chrome) const TAB_ROW_TWO_LINE_HEIGHT: Pixels = gpui::px(44.0);
-    /// The most the project panel takes from the tab list, past which it scrolls.
-    pub(in crate::terminal::chrome) const PROJECT_PANEL_MAX_HEIGHT: Pixels = gpui::px(240.0);
-    /// What the tab list keeps for itself when the window is too short for both: two
-    /// rows, so the project panel gives way first.
-    pub(in crate::terminal::chrome) const TAB_LIST_MIN_HEIGHT: Pixels = gpui::px(112.0);
-    /// The line a collapsed tab's mark sits on, in the middle of its row.
-    pub(in crate::terminal::chrome) const TAB_MARK_HEIGHT: Pixels = gpui::px(16.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = gpui::px(3.0);
     pub(in crate::terminal::chrome) const TAB_MARKER_HEIGHT: Pixels = gpui::px(16.0);
     pub(in crate::terminal::chrome) const PALETTE_WIDTH: Pixels = gpui::px(520.0);

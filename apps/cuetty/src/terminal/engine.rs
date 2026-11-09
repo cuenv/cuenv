@@ -1833,8 +1833,9 @@ fn selection_scroll_direction(y: f32, hit: CellHitTest) -> i32 {
 /// What besides the tabs is on screen for the pointer to be over.
 #[derive(Debug, Default)]
 struct LiveHoverTargets {
-    /// Only an expanded sidebar has room for tabs' close buttons.
+    /// Only the open tab stack has room for tabs' close buttons.
     tab_close_buttons: bool,
+    project_pill: bool,
     notice: bool,
     tasks: bool,
     palette_hint: bool,
@@ -1849,6 +1850,8 @@ impl LiveHoverTargets {
     /// Whether `target` is on screen this draw, given the tabs there are.
     fn holds(&self, target: HoverTarget, tabs: &[TabId]) -> bool {
         match target {
+            HoverTarget::TabStack => !tabs.is_empty(),
+            HoverTarget::ProjectPill => self.project_pill,
             HoverTarget::Tab(tab) => tabs.contains(&tab),
             HoverTarget::TabClose(tab) => self.tab_close_buttons && tabs.contains(&tab),
             HoverTarget::Button(button) => self.button(button),
@@ -2729,7 +2732,7 @@ impl TerminalView {
         }
     }
 
-    /// Starts editing a tab's name in its row, which needs the sidebar to be expanded.
+    /// Starts editing a tab's name in its row, which holds the tab stack open.
     fn begin_tab_rename(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_tab_rename();
         let tabs = self.registry.workspace.workspace().tabs();
@@ -2738,9 +2741,6 @@ impl TerminalView {
         };
         self.tab_rename = Some(TabRename::new(tab, tabs[index].custom_name.as_deref()));
         self.palette_open = false;
-        // Settled, so that a first evaluation still on its way cannot collapse the row
-        // out from under the edit.
-        self.sidebar.expand();
         // Keys go to the name until the edit ends, so the name has to be in sight.
         self.rail_scroll.scroll_to_item(index);
         self.focus.focus(window);
@@ -3076,14 +3076,11 @@ impl TerminalView {
         self.sidebar.mode()
     }
 
-    /// The terminal grid follows once, from the bounds measured in the layout this change
-    /// causes, however long the panel takes to get there; see [`SidebarFrame`].
+    /// Pins the project to a sidebar, or lets it float again. The terminal grid follows
+    /// once, from the bounds measured in the layout this change causes, however long the
+    /// panel takes to get there; see [`SidebarFrame`].
     pub(super) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        // A collapsed tab has nowhere to show the name being edited.
-        self.commit_tab_rename();
         self.sidebar.toggle();
-        // Rows change height between the two, which can leave the active tab off screen.
-        self.rail_revealed_tab = None;
         cx.notify();
     }
 
@@ -3307,7 +3304,7 @@ impl TerminalView {
             pace,
             now,
         );
-        let live = self.live_hover_targets();
+        let live = self.live_hover_targets(cx);
         // A drag's listeners go with the scrollbar, so nothing else would ever end it.
         if !live.scrollbar {
             self.scrollbar_grab = None;
@@ -3321,7 +3318,7 @@ impl TerminalView {
     }
 
     /// What is on screen to be hovered, besides the tabs.
-    fn live_hover_targets(&self) -> LiveHoverTargets {
+    fn live_hover_targets(&self, cx: &App) -> LiveHoverTargets {
         let geometry_failed =
             geometry_problem(&self.workspace_bounds, self.active_state()).is_some();
         let has_tasks = !geometry_failed
@@ -3329,13 +3326,19 @@ impl TerminalView {
                 .active_state()
                 .is_some_and(|state| !state.task_catalogue().is_empty());
         LiveHoverTargets {
-            tab_close_buttons: self.sidebar_mode() == SidebarMode::Expanded,
+            tab_close_buttons: self.tab_stack_open(cx),
             notice: self.registry.notice.is_some()
                 || self
                     .active_state()
                     .is_some_and(|state| state.marker_notice().is_some()),
             tasks: has_tasks,
-            palette_hint: self.sidebar_mode() == SidebarMode::Expanded,
+            project_pill: self.project_pill_shown(),
+            palette_hint: self.sidebar_mode() == SidebarMode::Pinned
+                || (self.project_pill_shown()
+                    && self
+                        .motion
+                        .hover_level(HoverTarget::ProjectPill, std::time::Instant::now())
+                        > 0.0),
             palette_rows: if self.palette_open {
                 self.palette_items().len()
             } else {
@@ -3812,12 +3815,15 @@ impl Render for TerminalView {
         let padding = self.config.terminal_padding;
         let sidebar_frame = self.animate_chrome(cx);
         let active_tab = self.active_tab();
-        self.reveal_active_rail_tab(active_tab);
+        self.reveal_active_rail_tab(active_tab, cx);
         self.registry.note_active_pane();
-        let sidebar = self.render_sidebar(active_tab, &theme, cx);
+        // Drawn for as long as any of it shows, so unpinning slides it away.
+        let sidebar = (sidebar_frame.panel > 0.0).then(|| self.render_project_sidebar(&theme, cx));
         let panels = ShellPanels {
             sidebar,
             sidebar_frame,
+            tab_stack: self.render_tab_stack(active_tab, &theme, cx),
+            project_pill: self.render_project_pill(&theme, cx),
         };
         if let Some(problem) = geometry_problem(&self.workspace_bounds, self.active_state()) {
             return self.render_pane_problem(panels, problem, cx);
@@ -4544,7 +4550,7 @@ mod tests {
     }
 
     #[test]
-    fn a_close_button_is_only_there_for_a_tab_in_an_expanded_sidebar() {
+    fn a_close_button_is_only_there_for_a_tab_in_the_open_stack() {
         let tab = TabId::new(1);
         let expanded = LiveHoverTargets {
             tab_close_buttons: true,

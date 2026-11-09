@@ -86,13 +86,21 @@ the current tab's directory; and clean shell/window close.
 The shell follows Ghostty's restrained presentation: native traffic lights,
 one title strip that shares the terminal's surface, names the active tab, which
 also titles the window for window switchers and compositors, and signs itself with a
-small muted `cuetty` wordmark at its far end, a
-right-side tab sidebar floating inset from the window's edges so it sits comfortably
-with rounded window corners, and a full-bleed terminal surface in the chosen theme. The sidebar is 200px wide and lists tabs by name. Its toggle, or
-Cmd-B (Ctrl-Shift-B on Linux), slides it down to 56px, resizing the grid once rather than on every frame, with an initial for each tab, taken
-from its user-set name, project banner, or directory so it stays put as programs come
-and go, and the full name as a tooltip; `sidebar: "collapsed"` in CUE starts it that
-way. A window opens with the global package's look and sidebar when that evaluates
+small muted `cuetty` wordmark at its far end, and a full-bleed terminal surface in
+the chosen theme. The terminal keeps the whole width of the window: the chrome floats
+over it. Tabs are a column of dots centred on the right edge, the active one a ring
+in the marker colour and the rest coloured by status (red for a failure, the accent
+for a bell or unread output). Bringing the pointer within 24px of the column opens
+it into a 220px list of tab names, which closes again when the pointer leaves; number
+hints, a name being edited, and a tab being dragged also hold it open. The project
+in the active tab's directory is a pill at the top right, in the title strip when
+there is one and in place of the wordmark, naming the project and how it runs, with
+an accent dot when there is a notice. Hovering it opens the project panel beneath it.
+The panel's pin button, or Cmd-B (Ctrl-Shift-B on Linux), pins the project to a
+240px sidebar instead, which the grid makes room for, resizing once rather than on
+every frame; `sidebar: "pinned"` in CUE starts it that way, and `"floating"` is the
+default. The earlier `"expanded"` and `"collapsed"` still parse, as pinned and
+floating. A window opens with the global package's look and sidebar when that evaluates
 within half a second, so its first frame is already the right size. Only the first
 configuration a window evaluates settles the sidebar, so neither `cd` nor a later
 edit moves it, and the toggle outranks that setting for the life of the
@@ -106,9 +114,9 @@ keeps what was last known (a pipeline whose first command has exited, as in
 Nix's `.name-wrapped`
 binaries are shown as `name`. A tab
 list taller than the window scrolls, and follows the active tab. The terminal fades back slightly while its window does not have the keyboard; inactive
-panes have nothing to dim until split panes exist. The foot of the expanded sidebar names the command palette's chord.
-Dragging a tab onto another moves it to that tab's place in the list. Hovering an expanded tab reveals a button that closes
-it; a collapsed tab is too narrow for one to stay clear of where a click selects it, so it is closed with the close chord. Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place: Enter
+panes have nothing to dim until split panes exist. The foot of the project panel names the command palette's chord.
+Dragging a tab onto another moves it to that tab's place in the list. Hovering a tab in the open list reveals a button that closes
+it. Double-clicking a tab, or Cmd-R (Ctrl-Shift-R on Linux), edits its name in place: Enter
 or clicking elsewhere keeps it, Escape abandons it, and an empty name hands the tab back to
 its derived one. Each expanded tab has a muted
 second line such as `cuenv · main`, with its directory, unless the tab is already named after
@@ -129,9 +137,9 @@ readable above a strip saying how it ended, until Enter, Ctrl-D, or the close ch
 dismisses it, and it offers no tasks in the meantime; one that exits cleanly
 closes its tab at once. A task launched from Cuetty cannot report failure, because it
 runs in the shell and Rio discards the status shells report through OSC 133. Restrained
-active-tab treatment and compact footer controls keep the sidebar readable
-without competing with terminal content. By default, the Rio surface sits in a
-14px inset below the title strip beside the sidebar. The inset, and any space left
+active-tab treatment and floating chrome that keeps to the window's edges keep the
+tabs readable without competing with terminal content. By default, the Rio surface sits in a
+14px inset below the title strip. The inset, and any space left
 over past the grid's last whole column and row, use the same surface colour from
 one background layer, so they read as breathing room inside one continuous
 terminal canvas rather than a contrasting frame or strip. Clicking the terminal viewport requests focus.
@@ -177,7 +185,7 @@ do the floating task panels and their outlines, whose own text would otherwise
 compete with the terminal text they cover. The native Cuetty menu contains Quit Cuetty and
 Cmd-Q uses the same application action. Before calling the POC visually usable,
 check that native window
-controls and the sidebar remain visible, the prompt fills the terminal surface
+controls and the tab dots remain visible, the prompt fills the terminal surface
 without a second frame, the cursor changes with focus, ANSI colour and Unicode
 remain correct, and resizing changes the shell's `stty size` without stealing
 tab clicks.
@@ -326,8 +334,8 @@ the Cuetty title strip while that tab is active so the terminal extends to the
 top of the window; it defaults to `true`. Off macOS the strip draws only under
 client-side decorations: Cuetty asks for server-side ones, and a window that gets them
 leaves its title and moving it to the windowing system, whether or not that shows a
-title bar, so `titlebar` has no effect there and the sidebar names the tab. With the strip hidden the small gap above the
-sidebar moves the window. GPUI cannot hide the traffic lights once a window exists, so on
+title bar, so `titlebar` has no effect there and the tab list names the tab. With the strip hidden the small gap above a
+pinned sidebar moves the window. GPUI cannot hide the traffic lights once a window exists, so on
 macOS the terminal starts below them instead, in a band the strip's height that also moves
 the window; a larger `padding.top` still applies. Rio reports shell CWD changes through its public working-directory API;
 Cuetty re-evaluates and rebinds its native directory watcher after `cd`. Until that
@@ -335,8 +343,8 @@ evaluation lands, a tab keeps its look but drops the previous `banner` and `rail
 a new tab starts from the look of the tab it opened from, so neither a `cd` nor a new
 tab flashes the defaults or resizes the grid.
 Malformed matching configuration retains the last valid presentation for that
-directory, if one exists, and shows an integration notice: a small accent marker
-beside the sidebar's controls, with the message in its tooltip. The tooltip stops
+directory, if one exists, and shows an integration notice: an accent dot on the
+project pill, and a marker beside the project panel's controls with the message in its tooltip. The tooltip stops
 at twelve lines; `cue eval .:cuetty` in that directory prints a whole evaluation
 error. Workspace action failures appear the same way until the next tab switch or
 successful action. So does a task pasted without running, on its own pane, until Enter
@@ -380,7 +388,7 @@ applies only the global package and checks for its directory on each poll.
 `-`-separated modifiers (`ctrl`, `alt`, `shift`, `cmd`/`super`) followed by a
 key and match that exact modifier set. A palette chord takes precedence over the tab
 number and Ctrl-Page chords it conflicts with, as the binding the user chose.
-The sidebar hint shows the active tab's chord in the platform's own spelling.
+The project panel's hint shows the active tab's chord in the platform's own spelling.
 
 Home Manager users can link their own CUE file as the global package:
 
@@ -396,7 +404,7 @@ per-directory packages should override.
 When the same directory contains an evaluable `package cuenv`, Cuetty also
 discovers its `tasks` map. The command palette opens with Cuetty actions such as
 new tab, rename tab, and find on screen. Type `$` to search the active tab's
-Cuenv tasks, or use the task button in the sidebar to open that mode directly.
+Cuenv tasks, or use the task button in the project panel to open that mode directly.
 Deleting `$` returns to commands. Selecting a task invokes the existing CLI in the same terminal pane
 whose working directory supplied the catalogue, pasting the command and pressing Enter
 separately, because a shell in bracketed paste mode takes a pasted newline as text. Enter
@@ -413,16 +421,17 @@ terminal beneath, and clicking outside closes it. Its results scroll under a
 fixed field and hint, following the keyboard selection, so every match remains
 reachable even when there are more than nine.
 
-The same evaluation fills a panel in the expanded sidebar, between the tabs and the
+The same evaluation fills the project panel, above the
 palette hint: the project's `name`, its `runtime` type and runnable task count, the variables
 in `env`, and each named set of overrides in `env.environment`. It says what the active tab's
 exact directory declares, not what its shell has loaded, and it resolves nothing. A secret
 shows as `•••• onepassword`, and parsing keeps only that resolver's name, so its reference
 and an `exec` secret's command never reach the UI. A passthrough shows as `from $NAME`.
 A value written out in CUE is shown as written, so a literal token is on screen like any
-other value. A tooltip holds the whole value. The panel stops at 240px and scrolls, and gives way to the tab
-list in a short window. The collapsed sidebar has no room for it. A project with nothing
-to report, or a directory without one, shows no panel, and changing directory clears it.
+other value. A tooltip holds the whole value. Floating, the panel stops at 420px and scrolls; pinned,
+it takes the sidebar's height. A directory without a project, tasks, or a notice shows no
+pill, leaving the wordmark, and a pinned sidebar says there is no project there.
+Changing directory clears it.
 
 On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
 compiler that GPUI needs. Runtime is only verified when
