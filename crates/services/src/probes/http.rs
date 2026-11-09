@@ -30,22 +30,25 @@ impl HttpProbe {
     }
 
     /// Parse the URL into (host, port, path) components.
-    fn parse_url(&self) -> Option<(String, u16, String)> {
+    ///
+    /// The probe speaks plaintext HTTP/1.1 over TCP, so `https://` URLs are
+    /// rejected: they could only ever time out against a TLS listener.
+    fn parse_url(&self) -> Result<(String, u16, String), String> {
         let url = &self.url;
 
-        let (scheme, rest) = if let Some(rest) = url.strip_prefix("http://") {
-            ("http", rest)
-        } else if let Some(rest) = url.strip_prefix("https://") {
-            ("https", rest)
-        } else {
-            ("http", url.as_str())
-        };
+        if url.starts_with("https://") {
+            return Err(format!(
+                "https readiness probes are not supported ({url}); probe a plain http:// \
+                 endpoint or use a command probe"
+            ));
+        }
+        let rest = url.strip_prefix("http://").unwrap_or(url.as_str());
 
         let (host_port, path) = rest
             .find('/')
             .map_or((rest, "/"), |i| (&rest[..i], &rest[i..]));
 
-        let default_port: u16 = if scheme == "https" { 443 } else { 80 };
+        let default_port: u16 = 80;
 
         let (host, port) = host_port.rfind(':').map_or((host_port, default_port), |i| {
             let port_str = &host_port[i + 1..];
@@ -54,15 +57,16 @@ impl HttpProbe {
                 .map_or((host_port, default_port), |p| (&host_port[..i], p))
         });
 
-        Some((host.to_string(), port, path.to_string()))
+        Ok((host.to_string(), port, path.to_string()))
     }
 }
 
 #[async_trait]
 impl ProbeRunner for HttpProbe {
     async fn check(&self) -> ProbeOutcome {
-        let Some((host, port, path)) = self.parse_url() else {
-            return ProbeOutcome::Fatal(format!("invalid URL: {}", self.url));
+        let (host, port, path) = match self.parse_url() {
+            Ok(parts) => parts,
+            Err(message) => return ProbeOutcome::Fatal(message),
         };
 
         let addr = format!("{host}:{port}");
@@ -70,9 +74,8 @@ impl ProbeRunner for HttpProbe {
         let connect_result =
             tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&addr)).await;
 
-        let mut stream = match connect_result {
-            Ok(Ok(s)) => s,
-            Ok(Err(_)) | Err(_) => return ProbeOutcome::NotReady,
+        let Ok(Ok(mut stream)) = connect_result else {
+            return ProbeOutcome::NotReady;
         };
 
         let request = format!(
@@ -149,6 +152,16 @@ mod tests {
         assert_eq!(host, "localhost");
         assert_eq!(port, 8080);
         assert_eq!(path, "/");
+    }
+
+    #[tokio::test]
+    async fn test_https_probe_is_fatal() {
+        let probe = HttpProbe::new(
+            "https://localhost:8443/health".to_string(),
+            vec![200],
+            "GET".to_string(),
+        );
+        assert!(matches!(probe.check().await, ProbeOutcome::Fatal(_)));
     }
 
     #[tokio::test]

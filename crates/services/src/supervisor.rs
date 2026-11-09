@@ -276,7 +276,7 @@ impl ServiceSupervisor {
             .ok()
         });
 
-        loop {
+        'supervise: loop {
             if shutdown.is_cancelled() {
                 return SupervisorResult::Stopped;
             }
@@ -496,71 +496,69 @@ impl ServiceSupervisor {
                 .unwrap_or("restart");
 
             // Wait for process exit, shutdown, file watcher, or a manual
-            // control request queued by `cuenv down` / `cuenv restart`.
-            let wait = tokio::select! {
-                status = child.wait() => ServiceWait::Exited(status),
-                () = shutdown.cancelled() => ServiceWait::Shutdown,
-                Some(watch_event) = watch_rx.recv() => {
-                    let changed: Vec<String> = watch_event.paths.iter()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .collect();
-                    cuenv_events::emit_service_watch!(&self.name, &changed);
-                    if watch_on == "sync" {
-                        ServiceWait::Sync
-                    } else {
-                        ServiceWait::Restart(RestartTrigger::Watch)
+            // control request queued by `cuenv down` / `cuenv restart`. A
+            // `watch.on: "sync"` change signals the running process in place
+            // and keeps waiting on the same child.
+            let exit_status = loop {
+                let wait = tokio::select! {
+                    status = child.wait() => ServiceWait::Exited(status),
+                    () = shutdown.cancelled() => ServiceWait::Shutdown,
+                    Some(watch_event) = watch_rx.recv() => {
+                        let changed: Vec<String> = watch_event.paths.iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect();
+                        cuenv_events::emit_service_watch!(&self.name, &changed);
+                        if watch_on == "sync" {
+                            ServiceWait::Sync
+                        } else {
+                            ServiceWait::Restart(RestartTrigger::Watch)
+                        }
                     }
-                }
-                () = wait_for_control_request(
-                    self.session.as_ref(),
-                    &self.name,
-                    ManualControlRequest::Restart,
-                ) => {
-                    ServiceWait::Restart(RestartTrigger::Manual)
-                }
-                () = wait_for_control_request(
-                    self.session.as_ref(),
-                    &self.name,
-                    ManualControlRequest::Stop,
-                ) => ServiceWait::Stop,
-            };
+                    () = wait_for_control_request(
+                        self.session.as_ref(),
+                        &self.name,
+                        ManualControlRequest::Restart,
+                    ) => {
+                        ServiceWait::Restart(RestartTrigger::Manual)
+                    }
+                    () = wait_for_control_request(
+                        self.session.as_ref(),
+                        &self.name,
+                        ManualControlRequest::Stop,
+                    ) => ServiceWait::Stop,
+                };
 
-            let exit_status = match wait {
-                ServiceWait::Exited(status) => {
-                    abort_output_handles(stdout_handle, stderr_handle);
-                    status
-                }
-                ServiceWait::Shutdown => {
-                    self.stop_running_process(&mut child).await;
-                    abort_output_handles(stdout_handle, stderr_handle);
-                    return SupervisorResult::Stopped;
-                }
-                ServiceWait::Stop => {
-                    self.stop_running_process(&mut child).await;
-                    abort_output_handles(stdout_handle, stderr_handle);
-                    return SupervisorResult::Stopped;
-                }
-                ServiceWait::Sync => {
-                    // Send SIGHUP to the running process for in-place config reload.
-                    // No restart counter increment — the process keeps running.
-                    if let Some(pid) = child.id() {
-                        send_sighup(pid, &self.name);
+                match wait {
+                    ServiceWait::Exited(status) => {
+                        abort_output_handles(stdout_handle, stderr_handle);
+                        break status;
                     }
-                    continue;
-                }
-                ServiceWait::Restart(trigger) => {
-                    attempt = self
-                        .restart_running_process(
-                            &mut child,
-                            RestartStep {
-                                trigger,
-                                current_attempt: attempt,
-                            },
-                            &mut restart_history,
-                        )
-                        .await;
-                    abort_output_handles(stdout_handle, stderr_handle);
-                    continue;
+                    ServiceWait::Shutdown | ServiceWait::Stop => {
+                        self.stop_running_process(&mut child).await;
+                        abort_output_handles(stdout_handle, stderr_handle);
+                        return SupervisorResult::Stopped;
+                    }
+                    ServiceWait::Sync => {
+                        // SIGHUP asks the process to reload in place. No
+                        // restart counter increment: the process keeps running.
+                        if let Some(pid) = child.id() {
+                            send_sighup(pid, &self.name);
+                        }
+                    }
+                    ServiceWait::Restart(trigger) => {
+                        attempt = self
+                            .restart_running_process(
+                                &mut child,
+                                RestartStep {
+                                    trigger,
+                                    current_attempt: attempt,
+                                },
+                                &mut restart_history,
+                            )
+                            .await;
+                        abort_output_handles(stdout_handle, stderr_handle);
+                        continue 'supervise;
+                    }
                 }
             };
 
@@ -710,5 +708,83 @@ impl ServiceSupervisor {
             ports: self.service.ports.clone(),
         };
         self.session.update_service(&state)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use cuenv_core::manifest::{Entrypoint, Script, ServiceWatch};
+
+    fn line_count(path: &std::path::Path) -> usize {
+        std::fs::read_to_string(path).map_or(0, |content| content.lines().count())
+    }
+
+    async fn wait_for_lines(path: &std::path::Path, expected: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while line_count(path) < expected && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// A `watch.on: "sync"` change must signal the running process in place
+    /// instead of spawning a second copy next to it.
+    #[tokio::test]
+    async fn sync_watch_signals_without_respawning() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let trigger = root.join("trigger.txt");
+        std::fs::write(&trigger, "initial").unwrap();
+        let starts = root.join("starts.log");
+        let hups = root.join("hups.log");
+
+        let service = Service {
+            entrypoint: Entrypoint::Script(Script {
+                script: format!(
+                    "echo start >> '{}'; trap \"echo hup >> '{}'\" HUP; \
+                     while true; do sleep 0.05; done",
+                    starts.display(),
+                    hups.display()
+                ),
+                script_shell: None,
+                shell_options: None,
+            }),
+            watch: Some(ServiceWatch {
+                paths: vec!["trigger.txt".to_string()],
+                ignore: None,
+                debounce: Some("50ms".to_string()),
+                on: Some("sync".to_string()),
+                rebuild: None,
+            }),
+            ..Service::default()
+        };
+        let session = Arc::new(SessionManager::create(root, "sync-test").unwrap());
+        let supervisor = ServiceSupervisor::new(SupervisorConfig {
+            name: "reloader".to_string(),
+            service,
+            project_root: root.to_path_buf(),
+            session,
+        });
+
+        let shutdown = CancellationToken::new();
+        let (readiness_tx, _readiness_rx) = watch::channel(ReadinessOutcome::Pending);
+        let run = {
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { supervisor.run(shutdown, readiness_tx).await })
+        };
+
+        wait_for_lines(&starts, 1).await;
+        assert_eq!(line_count(&starts), 1, "service should start once");
+
+        std::fs::write(&trigger, "changed").unwrap();
+        wait_for_lines(&hups, 1).await;
+        assert!(line_count(&hups) >= 1, "sync change should send SIGHUP");
+
+        // Give a wrongly respawned copy time to record its start.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(line_count(&starts), 1, "sync change must not respawn");
+
+        shutdown.cancel();
+        assert!(matches!(run.await.unwrap(), SupervisorResult::Stopped));
     }
 }

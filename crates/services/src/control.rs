@@ -8,7 +8,7 @@ use crate::session::SessionManager;
 
 /// Manual control request kinds queued by service lifecycle commands.
 #[derive(Clone, Copy)]
-pub(crate) enum ManualControlRequest {
+pub enum ManualControlRequest {
     /// Stop a running service.
     Stop,
     /// Restart a running service.
@@ -32,7 +32,7 @@ impl ManualControlRequest {
 }
 
 /// Wait until a persisted manual control request is available for a service.
-pub(crate) async fn wait_for_control_request(
+pub async fn wait_for_control_request(
     session: &SessionManager,
     service_name: &str,
     request: ManualControlRequest,

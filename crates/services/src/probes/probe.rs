@@ -63,14 +63,14 @@ pub async fn run_probe_loop(probe: &dyn ProbeRunner, config: &ProbeLoopConfig) -
         let elapsed = start.elapsed();
         if elapsed >= config.timeout {
             return ProbeLoopResult::TimedOut {
-                after_ms: elapsed.as_millis() as u64,
+                after_ms: saturating_millis(elapsed),
             };
         }
 
         match probe.check().await {
             ProbeOutcome::Ready => {
                 return ProbeLoopResult::Ready {
-                    after_ms: elapsed.as_millis() as u64,
+                    after_ms: saturating_millis(elapsed),
                 };
             }
             ProbeOutcome::NotReady => {
@@ -81,6 +81,10 @@ pub async fn run_probe_loop(probe: &dyn ProbeRunner, config: &ProbeLoopConfig) -
             }
         }
     }
+}
+
+fn saturating_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Build a `ProbeLoopConfig` from readiness common fields.
