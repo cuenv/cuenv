@@ -7,7 +7,7 @@ use cuenv_core::manifest::{Entrypoint, Service};
 use tokio::process::{Child, Command};
 
 /// Process helper for one service definition.
-pub(crate) struct ServiceProcess<'service_process> {
+pub struct ServiceProcess<'service_process> {
     name: &'service_process str,
     service: &'service_process Service,
     project_root: &'service_process Path,
@@ -28,12 +28,10 @@ impl<'service_process> ServiceProcess<'service_process> {
 
     pub(crate) async fn spawn(&self) -> crate::Result<Child> {
         let (program, args) = self.resolve_command()?;
-        let working_dir = self
-            .service
-            .dir
-            .as_ref()
-            .map(|dir| self.project_root.join(dir))
-            .unwrap_or_else(|| self.project_root.to_path_buf());
+        let working_dir = self.service.dir.as_ref().map_or_else(
+            || self.project_root.to_path_buf(),
+            |dir| self.project_root.join(dir),
+        );
         let (program, args) = wrap_with_supervisor(program, args);
 
         let mut command = Command::new(&program);
@@ -83,7 +81,7 @@ impl<'service_process> ServiceProcess<'service_process> {
         match &self.service.entrypoint {
             Entrypoint::Task(task) => {
                 if let Some(ref script) = task.script {
-                    format!("script: {}", &script[..script.len().min(60)])
+                    format!("script: {}", script_preview(script))
                 } else if task.args.is_empty() {
                     task.command.clone()
                 } else {
@@ -91,17 +89,13 @@ impl<'service_process> ServiceProcess<'service_process> {
                 }
             }
             Entrypoint::Script(script) => {
-                format!("script: {}", &script.script[..script.script.len().min(60)])
+                format!("script: {}", script_preview(&script.script))
             }
             Entrypoint::Command(command) => {
                 let args: Vec<String> = command
                     .args
                     .iter()
-                    .map(|arg| {
-                        arg.as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| arg.to_string())
-                    })
+                    .map(|arg| arg.as_str().map_or_else(|| arg.to_string(), str::to_string))
                     .collect();
                 if args.is_empty() {
                     command.command.clone()
@@ -122,7 +116,7 @@ impl<'service_process> ServiceProcess<'service_process> {
                         .map_or(("bash", "-c"), |shell| shell.command_and_flag());
                     Ok((command.to_string(), vec![flag.to_string(), script.clone()]))
                 } else {
-                    Ok((task.command.clone(), task.args.to_vec()))
+                    Ok((task.command.clone(), task.args.clone()))
                 }
             }
             Entrypoint::Script(script) => {
@@ -215,6 +209,14 @@ fn configure_process_group(command: &mut Command) {
     }
 }
 
+/// First 60 characters of a script, cut on a character boundary.
+fn script_preview(script: &str) -> &str {
+    script
+        .char_indices()
+        .nth(60)
+        .map_or(script, |(end, _)| &script[..end])
+}
+
 fn signal_process_group(pid: u32, signal: &str) {
     #[cfg(unix)]
     {
@@ -224,11 +226,7 @@ fn signal_process_group(pid: u32, signal: &str) {
             "SIGQUIT" => libc::SIGQUIT,
             _ => libc::SIGTERM,
         };
-        // SAFETY: kill accepts integer arguments and does not access Rust
-        // memory. The child PID identifies the process group to signal.
-        unsafe {
-            libc::kill(-(pid as i32), signal);
-        }
+        kill_process_group(pid, signal);
     }
 
     #[cfg(not(unix))]
@@ -239,15 +237,29 @@ fn signal_process_group(pid: u32, signal: &str) {
 
 fn force_kill_process_group(pid: u32) {
     #[cfg(unix)]
-    // SAFETY: kill accepts integer arguments and does not access Rust
-    // memory. The child PID identifies the process group to signal.
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
-    }
+    kill_process_group(pid, libc::SIGKILL);
 
     #[cfg(not(unix))]
     {
         let _ = pid;
+    }
+}
+
+/// Send `signal` to the process group led by `pid`.
+///
+/// A PID that does not fit in `pid_t` is ignored rather than wrapped: a
+/// wrapped value would turn the negative group address into a positive
+/// single-process address.
+#[cfg(unix)]
+#[expect(unsafe_code, reason = "kill(2) has no safe standard library wrapper")]
+fn kill_process_group(pid: u32, signal: libc::c_int) {
+    let Ok(group) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    // SAFETY: kill takes plain integers and touches no Rust memory. The
+    // negative PID addresses the process group the child leads.
+    unsafe {
+        libc::kill(-group, signal);
     }
 }
 
@@ -256,6 +268,13 @@ mod tests {
     use super::*;
     use cuenv_core::manifest::{Command as ManifestCommand, Script};
     use serde_json::json;
+
+    #[test]
+    fn script_preview_cuts_on_character_boundaries() {
+        let script = format!("{}é tail", "a".repeat(59));
+        assert_eq!(script_preview(&script), format!("{}é", "a".repeat(59)));
+        assert_eq!(script_preview("short"), "short");
+    }
 
     #[test]
     fn command_display_renders_non_string_args() {

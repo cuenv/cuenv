@@ -36,4 +36,6 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio-test = { workspace = true }
+
+[lints]
+workspace = true

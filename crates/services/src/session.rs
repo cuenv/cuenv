@@ -166,8 +166,7 @@ impl SessionManager {
     #[must_use]
     pub fn is_alive(&self) -> bool {
         self.info()
-            .map(|info| is_pid_alive(info.controller_pid))
-            .unwrap_or(false)
+            .is_ok_and(|info| is_pid_alive(info.controller_pid))
     }
 
     /// Request graceful shutdown of the session controller.
@@ -616,9 +615,8 @@ mod tests {
         for metadata in [zero_pid, "{invalid json".to_string()] {
             let path = session.root().join("session.json");
             fs::write(&path, &metadata).unwrap();
-            let error = match SessionManager::create(dir.path(), "replacement") {
-                Ok(_) => panic!("corrupt session must not be replaced"),
-                Err(error) => error,
+            let Err(error) = SessionManager::create(dir.path(), "replacement") else {
+                panic!("corrupt session must not be replaced");
             };
             assert!(error.to_string().contains("corrupt session.json"));
             assert_eq!(fs::read_to_string(&path).unwrap(), metadata);
@@ -668,9 +666,8 @@ mod tests {
         assert!(error.to_string().contains("corrupt session.json"));
         assert!(error.to_string().contains("does not fit platform pid_t"));
         assert!(!session.is_alive());
-        let error = match SessionManager::create(dir.path(), "replacement") {
-            Ok(_) => panic!("out-of-range PID must not be treated as a stale session"),
-            Err(error) => error,
+        let Err(error) = SessionManager::create(dir.path(), "replacement") else {
+            panic!("out-of-range PID must not be treated as a stale session");
         };
         assert!(error.to_string().contains("corrupt session.json"));
         assert_eq!(fs::read_to_string(path).unwrap(), metadata);

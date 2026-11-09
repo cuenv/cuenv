@@ -33,11 +33,10 @@ impl ProbeRunner for CommandProbe {
 
         match result {
             Ok(status) if status.success() => ProbeOutcome::Ready,
-            Ok(_) => ProbeOutcome::NotReady,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 ProbeOutcome::Fatal(format!("probe command not found: {}", self.command))
             }
-            Err(_) => ProbeOutcome::NotReady,
+            Ok(_) | Err(_) => ProbeOutcome::NotReady,
         }
     }
 }
