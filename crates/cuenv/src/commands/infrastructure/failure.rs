@@ -1,9 +1,6 @@
 //! Turning infrastructure errors into CLI errors with remedies.
 
-use cuenv_infrastructure::{
-    InfrastructureError, TenantLock, UnrecordedFileProblem, strip_control_characters,
-    strip_control_characters_except_newlines,
-};
+use cuenv_infrastructure::{InfrastructureError, TenantLock, UnrecordedFileProblem};
 
 use super::invocation::Invocation;
 use crate::cli::{CliError, InfrastructureFailureKind, LockStatus};
@@ -12,7 +9,7 @@ use crate::cli::{CliError, InfrastructureFailureKind, LockStatus};
 /// text first and then stripped of control characters except newlines
 /// (stripping first would change a secret that contains one).
 pub(super) fn printable_text(text: &str) -> String {
-    strip_control_characters_except_newlines(&cuenv_events::redact(text))
+    cuenv_infrastructure::strip_control_characters_except_newlines(&cuenv_events::redact(text))
 }
 
 /// Map an engine or store error to the command's error, with the help an
@@ -31,13 +28,18 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
                     "Check the secret's fields and the credentials of its `{}` resolver. The \
                      resolver's own message is not shown, so that nothing it printed can \
                      reveal the value; run the resolver by hand to see it.",
-                    strip_control_characters(resolver)
+                    cuenv_infrastructure::strip_control_characters(resolver)
                 ),
             );
         }
-        InfrastructureError::Locked {
-            lock_identifier, ..
-        } => {
+        InfrastructureError::Locked { lock, .. } => {
+            let Some(lock_identifier) = lock.identifier() else {
+                return CliError::infrastructure(
+                    message,
+                    Some("The lock belongs to a migration; inspect the operation before recovery.".to_string()),
+                    InfrastructureFailureKind::Locked,
+                );
+            };
             return CliError::infrastructure(
                 message,
                 Some(format!(
@@ -45,13 +47,13 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
                      is gone, release the lock with `{}`.",
                     invocation.command(&format!(
                         "unlock {}",
-                        strip_control_characters(lock_identifier)
+                        cuenv_infrastructure::strip_control_characters(lock_identifier)
                     ))
                 )),
                 InfrastructureFailureKind::Locked,
             )
             .with_lock(LockStatus {
-                identifier: strip_control_characters(lock_identifier),
+                identifier: cuenv_infrastructure::strip_control_characters(lock_identifier),
                 released: false,
             });
         }
@@ -87,7 +89,7 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
         InfrastructureError::UnrecordedFile { path, kind, .. } => (
             InfrastructureFailureKind::Failed,
             Some(unrecorded_file_help(
-                &strip_control_characters(path),
+                &cuenv_infrastructure::strip_control_characters(path),
                 *kind,
                 invocation,
             )),
@@ -100,7 +102,7 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
                  either run `{}` to write the saved record anyway (this does not accept a file \
                  saved for another backend), or move its file out of the unrecorded change \
                  directory to keep the stored record.",
-                strip_control_characters(address),
+                cuenv_infrastructure::strip_control_characters(address),
                 invocation.command("state recover --force")
             )),
         ),
@@ -157,7 +159,7 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
                 "The state store answered, but its record of {} is damaged or was not \
                  written by cuenv; this is not a connection problem, so the state backend \
                  settings and token are fine. {}",
-                strip_control_characters(address),
+                cuenv_infrastructure::strip_control_characters(address),
                 undecodable_record_remedy(address, invocation)
             )),
         ),
@@ -211,15 +213,14 @@ pub(super) fn failure(error: &InfrastructureError, invocation: &Invocation) -> C
 /// What to do about a damaged record: `state remove` forgets it by address
 /// (without decoding it), when it has an address.
 pub(super) fn undecodable_record_remedy(address: &str, invocation: &Invocation) -> String {
-    let address = strip_control_characters(address);
-    if address.starts_with('(') {
-        return "Inspect or repair that row in the state database; it has no readable address, \
-                so `state remove` cannot name it."
+    if cuenv_infrastructure::ResourceAddress::parse(address).is_none() {
+        return "The error does not identify the record's address. Inspect or repair the state \
+                store; if you know the address, `state remove` can forget the record."
             .to_string();
     }
     format!(
         "Forget it with `{}` (the real object is not touched; the next plan creates it \
-         again), or repair that row in the state database.",
+         again), or repair that record in the state store.",
         invocation.command(&format!("state remove {address}"))
     )
 }
@@ -280,25 +281,30 @@ pub(super) fn migration_blocked(
         let commands: Vec<String> = locks
             .iter()
             .take(LISTED_UNLOCK_COMMANDS)
-            .map(|held| format!("`{}`", invocation.unlock_command(held)))
+            .filter_map(|held| {
+                invocation
+                    .unlock_command(held)
+                    .map(|command| format!("`{command}`"))
+            })
             .collect();
-        help = format!(
-            "{help} After checking that its run is gone, release a lock with {}.",
-            commands.join(" or ")
-        );
+        if !commands.is_empty() {
+            help = format!(
+                "{help} After checking that its run is gone, release a lock with {}.",
+                commands.join(" or ")
+            );
+        }
     }
     let blocking: Vec<serde_json::Value> = locks
         .iter()
         .map(|held| {
-            serde_json::json!({
-                "module": held.module_path,
-                "project": held.project,
-                "environment": held.environment,
-                "lockIdentifier": held.lock.lock_identifier,
-                "holder": held.lock.holder,
-                "acquiredAt": held.lock.acquired_at,
-                "unlockCommand": invocation.unlock_command(held),
-            })
+            let mut value = super::output::lock_information_json(&held.lock);
+            value.insert("module".into(), serde_json::json!(held.module_path));
+            value.insert("project".into(), serde_json::json!(held.project));
+            value.insert("environment".into(), serde_json::json!(held.environment));
+            if let Some(command) = invocation.unlock_command(held) {
+                value.insert("unlockCommand".into(), serde_json::json!(command));
+            }
+            serde_json::Value::Object(value)
         })
         .collect();
     CliError::infrastructure(message, Some(help), InfrastructureFailureKind::Locked)

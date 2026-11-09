@@ -48,7 +48,6 @@ pub(super) fn resolve_environment(
 
 #[cfg(test)]
 mod tests {
-    use super::apply_task_env;
     use std::collections::BTreeMap;
 
     #[test]
@@ -60,7 +59,7 @@ mod tests {
                 "cuenv:passthrough:CUENV_TEST_GITHUB_ACTOR".to_string(),
             )]);
 
-            apply_task_env(&mut env, &task_env);
+            super::apply_task_env(&mut env, &task_env);
 
             assert_eq!(env.get("GITHUB_ACTOR"), Some(&"octocat".to_string()));
         });
@@ -75,7 +74,7 @@ mod tests {
                 "cuenv:passthrough:CUENV_TEST_MISSING_ACTOR".to_string(),
             )]);
 
-            apply_task_env(&mut env, &task_env);
+            super::apply_task_env(&mut env, &task_env);
 
             assert!(!env.contains_key("GITHUB_ACTOR"));
         });
@@ -86,7 +85,7 @@ mod tests {
         let mut env = BTreeMap::from([("GITHUB_REF_NAME".to_string(), "main".to_string())]);
         let task_env = BTreeMap::from([("GITHUB_REF_NAME".to_string(), "release".to_string())]);
 
-        apply_task_env(&mut env, &task_env);
+        super::apply_task_env(&mut env, &task_env);
 
         assert_eq!(env.get("GITHUB_REF_NAME"), Some(&"release".to_string()));
     }

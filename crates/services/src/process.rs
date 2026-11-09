@@ -6,17 +6,19 @@ use std::time::Duration;
 use cuenv_core::manifest::{Entrypoint, Service};
 use tokio::process::{Child, Command};
 
-use crate::duration::parse_duration;
-
 /// Process helper for one service definition.
-pub(crate) struct ServiceProcess<'a> {
-    name: &'a str,
-    service: &'a Service,
-    project_root: &'a Path,
+pub(crate) struct ServiceProcess<'service_process> {
+    name: &'service_process str,
+    service: &'service_process Service,
+    project_root: &'service_process Path,
 }
 
-impl<'a> ServiceProcess<'a> {
-    pub(crate) fn new(name: &'a str, service: &'a Service, project_root: &'a Path) -> Self {
+impl<'service_process> ServiceProcess<'service_process> {
+    pub(crate) fn new(
+        name: &'service_process str,
+        service: &'service_process Service,
+        project_root: &'service_process Path,
+    ) -> Self {
         Self {
             name,
             service,
@@ -53,7 +55,7 @@ impl<'a> ServiceProcess<'a> {
             .unwrap_or("SIGTERM");
         let timeout = shutdown_config
             .and_then(|shutdown| shutdown.timeout.as_deref())
-            .and_then(|duration| parse_duration(duration).ok())
+            .and_then(|duration| crate::duration::parse_duration(duration).ok())
             .unwrap_or(Duration::from_secs(10));
 
         if let Some(pid) = child.id() {
@@ -191,8 +193,11 @@ fn configure_process_group(command: &mut Command) {
     {
         #[expect(
             unsafe_code,
-            reason = "pre_exec runs in the forked child; setpgid/prctl are async-signal-safe and affect only the child"
+            reason = "pre_exec configures the process group and Linux parent-death signal in the forked child"
         )]
+        // SAFETY: the pre-exec closure only calls setpgid and, on Linux,
+        // prctl, then returns the OS error directly. It does not allocate or
+        // acquire locks inherited from other threads.
         unsafe {
             command.pre_exec(|| {
                 if libc::setpgid(0, 0) != 0 {
@@ -219,6 +224,8 @@ fn signal_process_group(pid: u32, signal: &str) {
             "SIGQUIT" => libc::SIGQUIT,
             _ => libc::SIGTERM,
         };
+        // SAFETY: kill accepts integer arguments and does not access Rust
+        // memory. The child PID identifies the process group to signal.
         unsafe {
             libc::kill(-(pid as i32), signal);
         }
@@ -232,6 +239,8 @@ fn signal_process_group(pid: u32, signal: &str) {
 
 fn force_kill_process_group(pid: u32) {
     #[cfg(unix)]
+    // SAFETY: kill accepts integer arguments and does not access Rust
+    // memory. The child PID identifies the process group to signal.
     unsafe {
         libc::kill(-(pid as i32), libc::SIGKILL);
     }

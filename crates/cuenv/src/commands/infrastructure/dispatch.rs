@@ -12,7 +12,7 @@ use cuenv_infrastructure::{
     AddressingChoice, Credentials, D1Configuration, D1StateStore, EngineOptions, EngineSetup,
     InfrastructureEngine, InfrastructureError, ObjectLocation, ObjectStateStore,
     ObjectStoreConfiguration, PlanMode, ProjectInstance, StateStore, TenantKey, TursoConfiguration,
-    TursoStateStore, UnrecordedStore, strip_control_characters,
+    TursoStateStore, UnrecordedStore,
 };
 use cuenv_manifest::lockfile::LockedInfrastructureProvider;
 use cuenv_manifest::manifest::{
@@ -20,19 +20,17 @@ use cuenv_manifest::manifest::{
 };
 
 use super::action::{InfrastructureAction, LockListing, MigrateRequest, StateAction};
-use super::apply::{Convergence, ImportRequest, converge, import, plan};
+use super::apply::{Convergence, ImportRequest};
 use super::confirm::Answers;
-use super::failure::failure;
-use super::guard::{Siblings, tenant_label};
+
+use super::guard::Siblings;
 use super::interrupts::Interrupts;
 use super::invocation::Invocation;
-use super::migrate::{MigrationRun, migrate};
-use super::object_state::{Restore, pull, rename, restore};
+use super::migrate::MigrationRun;
+use super::object_state::Restore;
 use super::output::Output;
-use super::resolve::{StateCredential, resolve_state_token};
-use super::state_actions::{
-    adopt, recover, remove_resource, resources_in_other_environments, unlock,
-};
+use super::resolve::StateCredential;
+
 use super::types;
 use crate::cli::CliError;
 
@@ -82,15 +80,15 @@ pub(super) async fn dispatch(
                 .interrupts
                 .until_interrupted(context.store.list(context.tenant))
                 .await?
-                .map_err(|error| failure(&error, context.invocation))?;
+                .map_err(|error| super::failure::failure(&error, context.invocation))?;
+            let other_environments =
+                super::state_actions::resources_in_other_environments(context).await?;
             context.output.state(
                 context.tenant,
                 &resources,
                 context.store.location(context.tenant).as_deref(),
             );
-            context
-                .output
-                .other_environments(&resources_in_other_environments(context).await);
+            context.output.other_environments(&other_environments);
             Ok(())
         }
         InfrastructureAction::State(StateAction::Locks(listing)) => {
@@ -110,7 +108,7 @@ pub(super) async fn dispatch(
                 }
             };
             let mut locks = listed.map_err(|error| {
-                let failed = failure(&error, context.invocation);
+                let failed = super::failure::failure(&error, context.invocation);
                 if *listing == LockListing::All && error.to_string().contains("AccessDenied") {
                     failed.with_help(
                         "The state credential is probably prefix-scoped to some modules: list \
@@ -126,12 +124,12 @@ pub(super) async fn dispatch(
             context.output.locks(&locks, context.invocation);
             Ok(())
         }
-        InfrastructureAction::State(StateAction::Pull) => pull(context).await,
+        InfrastructureAction::State(StateAction::Pull) => super::object_state::pull(context).await,
         InfrastructureAction::State(StateAction::Restore {
             serial,
             confirmation,
         }) => {
-            restore(
+            super::object_state::restore(
                 context,
                 &Restore {
                     unrecorded: &unrecorded_store(&inputs, context)?,
@@ -141,19 +139,22 @@ pub(super) async fn dispatch(
             )
             .await
         }
-        InfrastructureAction::State(StateAction::Rename(source)) => rename(context, source).await,
+        InfrastructureAction::State(StateAction::Rename(source)) => {
+            super::object_state::rename(context, source, &unrecorded_store(&inputs, context)?).await
+        }
         InfrastructureAction::State(StateAction::Migrate(request)) => {
             // Boxed: the migration's future is large and runs once.
             Box::pin(migrate_state(context, &inputs, *request)).await
         }
         InfrastructureAction::State(StateAction::Remove { address }) => {
-            remove_resource(context, address).await
+            super::state_actions::remove_resource(context, address).await
         }
         InfrastructureAction::State(StateAction::Recover { overrides }) => {
-            recover(context, &unrecorded_store(&inputs, context)?, *overrides).await
+            super::state_actions::recover(context, &unrecorded_store(&inputs, context)?, *overrides)
+                .await
         }
         InfrastructureAction::State(StateAction::Adopt) => {
-            adopt(context);
+            super::state_actions::adopt(context);
             Ok(())
         }
         InfrastructureAction::Unlock {
@@ -163,16 +164,20 @@ pub(super) async fn dispatch(
         } => {
             context
                 .interrupts
-                .until_interrupted(unlock(context, lock_identifier.as_deref(), *fence))
+                .until_interrupted(super::state_actions::unlock(
+                    context,
+                    lock_identifier.as_deref(),
+                    *fence,
+                ))
                 .await?
         }
-        InfrastructureAction::Plan => plan(context, inputs).await,
+        InfrastructureAction::Plan => super::apply::plan(context, inputs).await,
         InfrastructureAction::Import {
             address,
             identifier,
             identity,
         } => {
-            import(ImportRequest {
+            super::apply::import(ImportRequest {
                 context,
                 inputs,
                 address,
@@ -187,7 +192,7 @@ pub(super) async fn dispatch(
             expected_plan,
             ..
         } => {
-            converge(
+            super::apply::converge(
                 &Convergence {
                     mode: PlanMode::Apply,
                     confirmation: *confirmation,
@@ -203,7 +208,7 @@ pub(super) async fn dispatch(
             confirmation,
             identity,
         } => {
-            converge(
+            super::apply::converge(
                 &Convergence {
                     mode: PlanMode::Destroy,
                     confirmation: *confirmation,
@@ -224,6 +229,7 @@ async fn migrate_state(
     inputs: &EngineInputs,
     request: MigrateRequest,
 ) -> Result<(), CliError> {
+    super::run::require_migration_maintenance(&request)?;
     let Some(target) = &inputs.infrastructure.migrate_state_to else {
         return Err(CliError::config_with_help(
             "`state migrate` needs `infrastructure.migrateStateTo`, naming the backend to copy \
@@ -238,7 +244,9 @@ async fn migrate_state(
             target.backend()
         )));
     };
-    let credential = resolve_state_token(InfrastructurePolicyAction::StateMigrate, target).await?;
+    let credential =
+        super::resolve::resolve_state_token(InfrastructurePolicyAction::StateMigrate, target)
+            .await?;
     let store = connect_object_store(
         s3,
         &credential,
@@ -247,13 +255,14 @@ async fn migrate_state(
             tenant: context.tenant,
         },
     )
-    .map_err(|error| failure(&error, context.invocation))?;
-    migrate(
+    .map_err(|error| super::failure::failure(&error, context.invocation))?;
+    super::migrate::migrate(
         context,
         &MigrationRun {
             target: &store,
             unrecorded: &unrecorded_store(inputs, context)?,
             source_label: inputs.infrastructure.state.backend().to_string(),
+            target_root: s3.root.as_deref(),
             request,
         },
     )
@@ -315,10 +324,10 @@ pub(super) fn unrecorded_store(
         .map_or_else(UnrecordedStore::default_location, |directory| {
             Ok(UnrecordedStore::at(directory))
         })
-        .map_err(|error| failure(&error, context.invocation))?;
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     unrecorded
         .bound_to(context.store.as_ref())
-        .map_err(|error| failure(&error, context.invocation))
+        .map_err(|error| super::failure::failure(&error, context.invocation))
 }
 
 /// What a connection is for: the CUE instance whose package an object store
@@ -441,7 +450,7 @@ pub(super) fn parse_write_interval(text: &str) -> cuenv_infrastructure::Result<D
         InfrastructureError::configuration(format!(
             "`infrastructure.state.s3.minWriteInterval` must be a whole number of `ms` or `s`, \
              such as \"250ms\" or \"1s\", not \"{}\"",
-            strip_control_characters(text)
+            cuenv_infrastructure::strip_control_characters(text)
         ))
     };
     let (digits, unit) = text
@@ -467,16 +476,16 @@ pub(super) async fn note_last_writer(context: &CommandContext<'_>) -> Result<(),
         .interrupts
         .until_interrupted(context.store.last_writer(context.tenant))
         .await?
-        .map_err(|error| failure(&error, context.invocation))?;
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     if let Some(writer) = writer
         && writer.instance != *context.instance
     {
         emit_stderr!(format!(
             "note: the state of {} was last written from {} ({}); this run is {}",
-            tenant_label(context.tenant),
-            strip_control_characters(writer.instance.as_str()),
-            strip_control_characters(&writer.recorded_at),
-            strip_control_characters(context.instance.as_str())
+            super::guard::tenant_label(context.tenant),
+            cuenv_infrastructure::strip_control_characters(writer.instance.as_str()),
+            cuenv_infrastructure::strip_control_characters(&writer.recorded_at),
+            cuenv_infrastructure::strip_control_characters(context.instance.as_str())
         ));
     }
     Ok(())

@@ -7,18 +7,16 @@ use cuenv_infrastructure::{
 };
 
 use super::action::{ConfirmationPolicy, Identity};
-use super::confirm::confirm;
-use super::dispatch::{CommandContext, EngineInputs, engine, note_last_writer};
-use super::failure::{failure, printable_text};
-use super::interrupts::{Interrupts, interrupted_after_completion};
+
+use super::dispatch::{CommandContext, EngineInputs};
+
+use super::interrupts::Interrupts;
 use super::invocation::Invocation;
-use super::lock::under_lock;
-use super::object_state::{
-    RenameCheck, RenameResponse, check_rename, refuse_full_state, refuse_unmigrated,
-};
+
+use super::object_state::{RenameCheck, RenameResponse};
 use super::output;
 use super::output::{Converged, Output};
-use super::run::parse_resource_address;
+
 use crate::cli::CliError;
 
 /// `plan`: refresh and plan without the lock.
@@ -26,14 +24,22 @@ pub(super) async fn plan(
     context: &CommandContext<'_>,
     inputs: EngineInputs,
 ) -> Result<(), CliError> {
-    note_last_writer(context).await?;
-    before_change(context, &inputs, Identity::Detect, RenameResponse::Report).await?;
-    let mut engine = engine(context, inputs);
+    super::dispatch::note_last_writer(context).await?;
+    before_change(
+        context,
+        &inputs,
+        RenamePolicy {
+            identity: Identity::Detect,
+            response: RenameResponse::Report,
+        },
+    )
+    .await?;
+    let mut engine = super::dispatch::engine(context, inputs);
     // Planning honours the interrupt itself: providers are asked to stop
     // and the next resource is not planned.
     let result = engine.plan(PlanMode::Apply).await;
     engine.shutdown().await;
-    let plan = result.map_err(|error| failure(&error, context.invocation))?;
+    let plan = result.map_err(|error| super::failure::failure(&error, context.invocation))?;
     context.interrupts.check()?;
     context.output.plan(&plan);
     context
@@ -51,29 +57,36 @@ pub(super) struct ImportRequest<'command, 'context> {
     pub(super) identity: Identity,
 }
 
+#[derive(Clone, Copy)]
+struct RenamePolicy {
+    identity: Identity,
+    response: RenameResponse,
+}
+
 /// The checks before a run that may create a tenant's state: a migration
 /// under way, a tenant not migrated yet, and a probable rename.
 async fn before_change(
     context: &CommandContext<'_>,
     inputs: &EngineInputs,
-    identity: Identity,
-    response: RenameResponse,
+    policy: RenamePolicy,
 ) -> Result<(), CliError> {
     if let Some(target) = &inputs.infrastructure.migrate_state_to {
         emit_stderr!(format!(
             "warning: `migrateStateTo` names {} state: a migration is under way. Once `{}` has \
              copied every environment, make it the `state` and remove `migrateStateTo`",
             target.backend(),
-            context.invocation.command("state migrate --all")
+            context
+                .invocation
+                .command("state migrate --confirm-maintenance --source-physical-identity <source-uuid> --target-physical-identity <target-uuid> --all")
         ));
     }
-    refuse_unmigrated(context).await?;
-    check_rename(
+    super::object_state::refuse_unmigrated(context).await?;
+    super::object_state::check_rename(
         context,
         &RenameCheck {
             project_directory: &inputs.project_directory,
-            identity,
-            response,
+            identity: policy.identity,
+            response: policy.response,
         },
     )
     .await
@@ -88,15 +101,23 @@ pub(super) async fn import(request: ImportRequest<'_, '_>) -> Result<(), CliErro
         identifier,
         identity,
     } = request;
-    let target = parse_resource_address(address)?;
-    before_change(context, &inputs, identity, RenameResponse::Refuse).await?;
-    let mut engine = engine(context, inputs);
+    let target = super::run::parse_resource_address(address)?;
+    before_change(
+        context,
+        &inputs,
+        RenamePolicy {
+            identity,
+            response: RenameResponse::Refuse,
+        },
+    )
+    .await?;
+    let mut engine = super::dispatch::engine(context, inputs);
     let importing = &mut engine;
-    let result = under_lock(context, "import", |lock| async move {
+    let result = super::lock::under_lock(context, "import", |lock| async move {
         let warnings = importing
             .import(&target, identifier, &lock)
             .await
-            .map_err(|error| failure(&error, context.invocation))?;
+            .map_err(|error| super::failure::failure(&error, context.invocation))?;
         context.interrupts.check()?;
         for warning in warnings {
             emit_stderr!(format!("warning: {warning}"));
@@ -138,43 +159,52 @@ pub(super) async fn converge(
         .map(ReviewedPlanDigest::parse)
         .transpose()
         .map_err(|error| CliError::config(error.to_string()))?;
-    note_last_writer(context).await?;
-    before_change(context, &inputs, identity, RenameResponse::Refuse).await?;
-    let mut engine = engine(context, inputs);
+    super::dispatch::note_last_writer(context).await?;
+    before_change(
+        context,
+        &inputs,
+        RenamePolicy {
+            identity,
+            response: RenameResponse::Refuse,
+        },
+    )
+    .await?;
+    let mut engine = super::dispatch::engine(context, inputs);
     let planning = &mut engine;
     let expected_plan = &expected_plan;
-    let result = under_lock(context, output::operation_name(mode), |lock| async move {
-        let plan = planning
-            .plan(mode)
-            .await
-            .map_err(|error| failure(&error, context.invocation))?;
-        context.interrupts.check()?;
-        if mode == PlanMode::Apply {
-            refuse_full_state(context, &plan).await?;
-        }
-        context.output.preview(&plan);
-        if let Some(expected) = expected_plan {
-            refuse_unreviewed(&plan, expected, context.invocation)?;
-        }
-        if plan.has_work() && convergence.confirmation == ConfirmationPolicy::Prompt {
-            confirm(mode, context).await?;
-        }
-        apply_plan(Application {
-            engine: planning,
-            plan: &plan,
-            lock: &lock,
-            mode,
-            output: context.output,
-            invocation: context.invocation,
-            interrupts: context.interrupts,
+    let result =
+        super::lock::under_lock(context, output::operation_name(mode), |lock| async move {
+            let plan = planning
+                .plan(mode)
+                .await
+                .map_err(|error| super::failure::failure(&error, context.invocation))?;
+            context.interrupts.check()?;
+            if mode == PlanMode::Apply {
+                super::object_state::refuse_full_state(context, &plan).await?;
+            }
+            context.output.preview(&plan);
+            if let Some(expected) = expected_plan {
+                refuse_unreviewed(&plan, expected, context.invocation)?;
+            }
+            if plan.has_work() && convergence.confirmation == ConfirmationPolicy::Prompt {
+                super::confirm::confirm(mode, context).await?;
+            }
+            apply_plan(Application {
+                engine: planning,
+                plan: &plan,
+                lock: &lock,
+                mode,
+                output: context.output,
+                invocation: context.invocation,
+                interrupts: context.interrupts,
+            })
+            .await?;
+            context
+                .output
+                .state_location(context.store.location(context.tenant).as_deref());
+            Ok(())
         })
-        .await?;
-        context
-            .output
-            .state_location(context.store.location(context.tenant).as_deref());
-        Ok(())
-    })
-    .await;
+        .await;
     engine.shutdown().await;
     result
 }
@@ -264,17 +294,19 @@ pub(super) async fn apply_plan(application: Application<'_>) -> Result<(), CliEr
             reported_deleted_not_recreated.push(address.to_string());
         }
         ApplyEvent::Warning(warning) => {
-            emit_stderr!(format!("warning: {}", printable_text(&warning)));
+            emit_stderr!(format!(
+                "warning: {}",
+                super::failure::printable_text(&warning)
+            ));
         }
     };
     let applied = engine
         .apply(plan, ApplyContext { lock }, &mut on_event)
         .await
         .map_err(|error| {
-            failure(&error, invocation).with_deleted_not_recreated(deleted_not_recreated(
-                &error,
-                &reported_deleted_not_recreated,
-            ))
+            super::failure::failure(&error, invocation).with_deleted_not_recreated(
+                deleted_not_recreated(&error, &reported_deleted_not_recreated),
+            )
         })?;
     let converged = Converged {
         mode,
@@ -286,10 +318,11 @@ pub(super) async fn apply_plan(application: Application<'_>) -> Result<(), CliEr
     // exit code is 130, like any interrupted run), still reporting what was
     // applied.
     if interrupts.is_requested() {
-        return Err(
-            interrupted_after_completion(&output::applied_phrase(&converged), invocation)
-                .with_detail("result", output::converged_json(&converged)),
-        );
+        return Err(super::interrupts::interrupted_after_completion(
+            &output::applied_phrase(&converged),
+            invocation,
+        )
+        .with_detail("result", output::converged_json(&converged)));
     }
     output.converged(&converged);
     Ok(())

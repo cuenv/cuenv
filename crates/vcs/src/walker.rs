@@ -263,12 +263,12 @@ impl Collected {
 /// walking past a `result` link from `nix build` into the store, or a
 /// `.direnv` profile, would hash a toolchain nobody declared. Naming such a
 /// directory explicitly in a pattern still follows it.
-struct Walk<'a> {
-    globset: &'a GlobSet,
+struct Walk<'walk> {
+    globset: &'walk GlobSet,
     /// Canonical workspace root.
-    workspace: &'a Path,
+    workspace: &'walk Path,
     /// Canonical directories never descended into.
-    excluded: &'a [PathBuf],
+    excluded: &'walk [PathBuf],
     /// Canonical directories on the current descent, so a symlink back to an
     /// ancestor is not followed forever.
     descent: Vec<PathBuf>,
@@ -612,13 +612,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_selected_file_symlink_is_hashed_as_its_target() {
-        use std::os::unix::fs::symlink;
-
         let workspace = TempDir::new().unwrap();
         let root = workspace.path();
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
-        symlink(root.join("src/main.rs"), root.join("src/alias.rs")).unwrap();
+        std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("src/alias.rs")).unwrap();
 
         assert_eq!(
             resolved(root, &["**/*.rs"]),
@@ -633,12 +631,11 @@ mod tests {
     #[test]
     fn a_file_symlink_may_point_outside_the_workspace() {
         // Bazel treats a symlinked source file as whatever it points at.
-        use std::os::unix::fs::symlink;
 
         let workspace = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("shared.toml"), "shared").unwrap();
-        symlink(
+        std::os::unix::fs::symlink(
             outside.path().join("shared.toml"),
             workspace.path().join("config.toml"),
         )
@@ -658,14 +655,14 @@ mod tests {
     #[test]
     fn an_in_workspace_directory_symlink_is_walked_under_its_own_name() {
         // pnpm links workspace packages this way.
-        use std::os::unix::fs::symlink;
 
         let workspace = TempDir::new().unwrap();
         let root = workspace.path();
         fs::create_dir_all(root.join("packages/lib/src")).unwrap();
         fs::write(root.join("packages/lib/src/index.ts"), "lib").unwrap();
         fs::create_dir_all(root.join("app/node_modules")).unwrap();
-        symlink(root.join("packages/lib"), root.join("app/node_modules/lib")).unwrap();
+        std::os::unix::fs::symlink(root.join("packages/lib"), root.join("app/node_modules/lib"))
+            .unwrap();
 
         assert_eq!(
             resolved(root, &["app/**/*.ts"]),
@@ -681,14 +678,13 @@ mod tests {
     fn a_directory_symlink_leaving_the_workspace_is_not_walked() {
         // The shape `nix build` leaves behind. Walking it would hash a store
         // path no declaration named.
-        use std::os::unix::fs::symlink;
 
         let workspace = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
         fs::create_dir_all(workspace.path().join("src")).unwrap();
         fs::write(workspace.path().join("src/main.rs"), "fn main() {}").unwrap();
         fs::write(outside.path().join("store.rs"), "not ours").unwrap();
-        symlink(outside.path(), workspace.path().join("result")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("result")).unwrap();
 
         assert_eq!(
             resolved(workspace.path(), &["**/*.rs"]),
@@ -699,13 +695,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn naming_a_path_through_a_directory_symlink_follows_it() {
-        use std::os::unix::fs::symlink;
-
         let workspace = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
         fs::create_dir_all(outside.path().join("bin")).unwrap();
         fs::write(outside.path().join("bin/tool"), "tool").unwrap();
-        symlink(outside.path(), workspace.path().join("result")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("result")).unwrap();
 
         assert_eq!(
             resolved(workspace.path(), &["result/bin/tool"]),
@@ -720,13 +714,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_dangling_symlink_fails_only_when_selected() {
-        use std::os::unix::fs::symlink;
-
         let workspace = TempDir::new().unwrap();
         let root = workspace.path();
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
-        symlink(root.join("gone"), root.join("src/stale.txt")).unwrap();
+        std::os::unix::fs::symlink(root.join("gone"), root.join("src/stale.txt")).unwrap();
 
         assert_eq!(
             resolved(root, &["src/**/*.rs"]),
@@ -741,13 +733,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlink_cycle_is_not_followed_forever() {
-        use std::os::unix::fs::symlink;
-
         let workspace = TempDir::new().unwrap();
         let root = workspace.path();
         fs::create_dir_all(root.join("pkg")).unwrap();
         fs::write(root.join("pkg/index.js"), "pkg").unwrap();
-        symlink(root.join("pkg"), root.join("pkg/self")).unwrap();
+        std::os::unix::fs::symlink(root.join("pkg"), root.join("pkg/self")).unwrap();
 
         assert_eq!(
             resolved(root, &["**/*.js"]),

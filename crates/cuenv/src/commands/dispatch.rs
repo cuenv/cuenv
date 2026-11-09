@@ -1,6 +1,6 @@
 use super::{Command, CommandExecutor, handler};
 use cuenv_core::Result;
-use handler::CommandRunner;
+use handler::{CommandHandler, CommandRunner};
 
 impl CommandExecutor {
     /// Execute a command with automatic event lifecycle management.
@@ -20,6 +20,7 @@ impl CommandExecutor {
                 Ok(())
             }
             command @ (Command::EnvPrint { .. }
+            | Command::EnvRecover { .. }
             | Command::EnvList { .. }
             | Command::EnvLoad { .. }
             | Command::EnvStatus { .. }
@@ -32,7 +33,9 @@ impl CommandExecutor {
             | Command::Task { .. }
             | Command::Ci { .. }
             | Command::Sync { .. }
-            | Command::ShellInit { .. }) => self.execute_handler_command(command).await,
+            | Command::ShellInit { .. }
+            | Command::ShellSession { .. }
+            | Command::ShellRefresh) => self.execute_handler_command(command).await,
             Command::Completions { .. }
             | Command::Info { .. }
             | Command::Fmt { .. }
@@ -61,6 +64,24 @@ impl CommandExecutor {
 
     async fn execute_env_command(&self, command: Command) -> Result<()> {
         match command {
+            Command::EnvRecover {
+                list,
+                directory_key,
+                instance_hash,
+                run_id,
+                drained,
+            } => {
+                let request = super::hooks::HookRecoveryRequest {
+                    list,
+                    directory_key,
+                    instance_hash,
+                    run_id,
+                    drained,
+                };
+                let output = super::hooks::execute_env_recover(&request).await?;
+                cuenv_events::println_redacted(&output);
+                Ok(())
+            }
             Command::EnvPrint {
                 path,
                 package,
@@ -112,12 +133,17 @@ impl CommandExecutor {
                 package,
                 shell,
             } => {
-                self.run_command(handler::EnvCheckHandler {
+                let output = handler::EnvCheckHandler {
                     path,
                     package,
                     shell,
-                })
-                .await
+                }
+                .execute(self)
+                .await?;
+                if !output.is_empty() {
+                    cuenv_events::print_redacted(&output);
+                }
+                Ok(())
             }
             Command::EnvInspect { path, package } => {
                 self.run_command(handler::EnvInspectHandler { path, package })
@@ -203,6 +229,18 @@ impl CommandExecutor {
                 cuenv_events::println_redacted(&super::hooks::execute_shell_init(shell));
                 Ok(())
             }
+            Command::ShellSession { current } => {
+                let id = if current {
+                    super::hooks::required_hook_session()?
+                } else {
+                    uuid::Uuid::new_v4()
+                };
+                cuenv_events::println_redacted(&id.to_string());
+                Ok(())
+            }
+            Command::ShellRefresh => Err(cuenv_core::Error::configuration(
+                "Shell refresh must run through initialized shell integration",
+            )),
             _ => unreachable!("handler dispatch called for another command family"),
         }
     }

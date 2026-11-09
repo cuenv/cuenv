@@ -49,7 +49,39 @@
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
-        cuetty = import ./apps/cuetty/nix.nix { pkgs = cuettyPkgs; inherit cue-bridge; };
+        # Cargo build outputs are ignored by Git but can exist in a task's
+        # materialized input tree. Exclude them from every flake source.
+        sourceFilter = path: _type: builtins.baseNameOf path != "target";
+        filteredSource = path: builtins.path {
+          inherit path;
+          filter = sourceFilter;
+        };
+        rustfmtOptions = "imports_granularity=Module,hex_literal_case=Lower,format_macro_matchers=true";
+        # These command-line options work with the pinned stable rustfmt even
+        # though its configuration-file parser rejects them. Verify each toolchain.
+        rustfmtProbe = ''
+          printf '%s\n' \
+            'use std::{path::Path, sync::Arc};' \
+            'const COLOR: u32 = 0xABCDEF;' \
+            'macro_rules! demo {' \
+            '    ( $a: ident , $b: expr ) => { ($a, $b) };' \
+            '}' |
+            rustfmt --edition 2024 --config ${rustfmtOptions} > "$TMPDIR/style-actual.rs"
+          printf '%s\n' \
+            'use std::path::Path;' \
+            'use std::sync::Arc;' \
+            'const COLOR: u32 = 0xabcdef;' \
+            'macro_rules! demo {' \
+            '    ($a:ident, $b:expr) => {' \
+            '        ($a, $b)' \
+            '    };' \
+            '}' > "$TMPDIR/style-expected.rs"
+          diff -u "$TMPDIR/style-expected.rs" "$TMPDIR/style-actual.rs"
+        '';
+        cuetty = import ./apps/cuetty/nix.nix {
+          pkgs = cuettyPkgs;
+          inherit cue-bridge rustfmtOptions rustfmtProbe sourceFilter;
+        };
 
         # Native packages and checks need the compiler and lint/format tools,
         # not Rust documentation, an analyzer, or four platforms' std libraries.
@@ -104,9 +136,9 @@
         cue-bridge = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
           pname = "libcue-bridge";
           inherit version;
-          src = ./crates/cuengine;
+          src = filteredSource ./crates/cuengine;
           vendorHash = "sha256-2127EeuvrvXzjJQNgN3yVd7il9PCISlS+8+N1sUlYPQ=";
-          nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
+          nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.hostPlatform.isDarwin) [ pkgs.binutils ];
 
           # buildGoModule's default checkPhase calls `getGoDirs`, which only its own
           # buildPhase defines. Overriding buildPhase therefore made the inherited
@@ -136,7 +168,8 @@
             export CGO_ENABLED=1
 
             go vet ./...
-            go test ./...
+            # Include the scaling experiment instead of silently skipping it.
+            CUENV_FROZEN_SCALING=1 GOMAXPROCS=4 go test -timeout 30m ./...
 
             runHook postCheck
           '';
@@ -166,6 +199,10 @@
           map toRepoPath (sourceFiles.files ++ sourceFiles.trees)
           ++ map (tree: fs.fileFilter (file: file.hasExt "cue") (toRepoPath tree)) sourceFiles.cueTrees
         );
+        targetFreeFileset = fs.fromSource (pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = sourceFilter;
+        });
         #
         # Crane looks for manifests and lockfiles in a filtered source's
         # original directory rather than the filtered tree
@@ -176,9 +213,71 @@
           name = "source";
           path = fs.toSource {
             root = ./.;
-            inherit fileset;
+            fileset = fs.intersection fileset targetFreeFileset;
           };
         };
+        # This standalone workspace has its own lockfile and must not resolve
+        # dependencies through the root workspace's Cargo vendor directory.
+        functionEnumSource = builtins.path {
+          name = "function-enum-source";
+          path = fs.toSource {
+            root = ./tools/function-enum;
+            fileset = fs.intersection targetFreeFileset (fs.unions (
+              map toRepoPath (builtins.filter
+                (path: pkgs.lib.hasPrefix "tools/function-enum/" path)
+                (sourceFiles.fmtFiles ++ sourceFiles.fmtTrees))
+            ));
+          };
+        };
+        # Inspect all first-party Rust trees, including applications and tools
+        # outside the root Cargo workspace.
+        # Filter before walking so local build and dependency trees never enter
+        # the inventory used to detect an undeclared top-level Rust source.
+        rustScannerInventory = builtins.path {
+          name = "rust-scanner-inventory";
+          path = ./.;
+          filter = path: type:
+            let name = builtins.baseNameOf path;
+            in if type == "directory"
+              then !(builtins.elem name [ ".git" "node_modules" "result" "target" ])
+              else pkgs.lib.hasSuffix ".rs" name;
+        };
+        rustScannerPaths =
+          let
+            walk = directory:
+              let entries = builtins.readDir directory;
+              in pkgs.lib.concatMap (name:
+                let path = "${directory}/${name}";
+                in if entries.${name} == "directory" then walk path else [ path ]
+              ) (builtins.attrNames entries);
+          in walk rustScannerInventory;
+        rustOutsideScannerRoots = builtins.filter (path:
+          let relative = pkgs.lib.removePrefix "${rustScannerInventory}/" path;
+          in !(pkgs.lib.any (root: pkgs.lib.hasPrefix "${root}/" relative) [ "crates" "apps" "tools" ])
+        ) rustScannerPaths;
+        rustParameterFiles = fs.intersection targetFreeFileset (fs.unions (
+          map (tree: fs.fileFilter (file:
+            file.hasExt "rs" || (file.type == "symlink" && file.name != "result")
+          ) (toRepoPath tree))
+            ([ "crates" ] ++ sourceFiles.rustStyleTrees)
+        ));
+        rustParameterInputs = fs.unions (
+          [ ./crates ] ++ map toRepoPath (
+            sourceFiles.cuettyFiles ++ sourceFiles.cuettyTrees
+            ++ sourceFiles.fmtFiles ++ sourceFiles.fmtTrees
+            ++ sourceFiles.rustStyleFiles ++ sourceFiles.rustStyleInputTrees
+          )
+        );
+        rustParameterUnlisted = fs.toList (fs.difference rustParameterFiles rustParameterInputs);
+        rustParameterSource = if rustOutsideScannerRoots != [ ]
+          then throw "Rust source lies outside the declared scanner roots: ${
+            pkgs.lib.concatMapStringsSep ", " toString rustOutsideScannerRoots
+          }"
+          else if rustParameterUnlisted != [ ]
+          then throw "Rust style sources must be listed in nix/source-files.json: ${
+            pkgs.lib.concatMapStringsSep ", " toString rustParameterUnlisted
+          }"
+          else toCraneSource rustParameterFiles;
         # Dependency builds take it too: crane reduces it to manifests,
         # lockfiles and stub targets, so their artifacts stay cached when
         # source code changes.
@@ -213,7 +312,7 @@
 
         lockedCargoExtraArgs = "--locked";
         workspaceAllFeaturesCargoExtraArgs = "${lockedCargoExtraArgs} --workspace --all-features";
-        workspaceDocCargoExtraArgs = "${lockedCargoExtraArgs} --workspace";
+        workspaceDocCargoExtraArgs = "${lockedCargoExtraArgs} --workspace --all-features";
         cuenvPackageCargoExtraArgs = "${lockedCargoExtraArgs} --package cuenv";
         bddCargoExtraArgs = "${cuenvPackageCargoExtraArgs} --test bdd";
 
@@ -292,14 +391,45 @@
           doInstallCargoArtifacts = false;
         };
 
-        clippy-check = craneLib.cargoClippy (workspaceCheckArgs // {
+        styleClippyArgs = "--all-targets -- -D warnings -D clippy::wildcard_imports -D clippy::undocumented_unsafe_blocks -D clippy::needless_for_each";
+        workspace-clippy-check = craneLib.cargoClippy (workspaceCheckArgs // {
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
-          cargoClippyExtraArgs = "--all-targets -- -D warnings";
+          cargoClippyExtraArgs = styleClippyArgs;
         });
+        function-enum-clippy-check = craneLib.cargoClippy {
+          src = functionEnumSource;
+          pname = "cuenv-function-enum";
+          version = (builtins.fromTOML (builtins.readFile ./tools/function-enum/Cargo.toml)).package.version;
+          cargoArtifacts = null;
+          cargoExtraArgs = "--locked --all-features";
+          cargoClippyExtraArgs = styleClippyArgs;
+          doInstallCargoArtifacts = false;
+        };
+        function-parameter-check = craneLib.buildPackage {
+          src = functionEnumSource;
+          pname = "cuenv-rust-source-style";
+          version = (builtins.fromTOML (builtins.readFile ./tools/function-enum/Cargo.toml)).package.version;
+          cargoArtifacts = null;
+          cargoExtraArgs = "--locked";
+          doCheck = true;
+          doInstallCargoArtifacts = false;
+          postCheck = ''
+            cargo run --release --locked -- --check-style --path ${rustParameterSource}
+          '';
+        };
+        clippy-check = pkgs.linkFarm "cuenv-clippy" [
+          { name = "workspace"; path = workspace-clippy-check; }
+          { name = "function-enum"; path = function-enum-clippy-check; }
+        ];
 
         nextest-check = craneLib.cargoNextest (workspaceCheckArgs // ciBuildArgs // {
           cargoArtifacts = workspaceCiCargoArtifacts;
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.fish pkgs.zsh pkgs.powershell ];
+          CUENV_TEST_PWSH = "${pkgs.powershell}/bin/pwsh";
+          # Hook supervisor tests must exercise the CLI instead of passing when
+          # an independently built binary is unavailable.
+          CUENV_EXECUTABLE = "${cuenv}/bin/cuenv";
           # HTTP client construction loads native roots, including in mock tests.
           SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         });
@@ -311,7 +441,7 @@
         fake-terraform-provider = pkgs.buildGoModule {
           pname = "terraform-provider-fake";
           version = "0.0.0";
-          src = ./crates/infrastructure/tests/fake_provider;
+          src = filteredSource ./crates/infrastructure/tests/fake_provider;
           vendorHash = "sha256-HM6/k59eDfD7OpH5S3C8j6YN0Q0ina6KuKfrJVWyTB8=";
           doCheck = true;
           checkPhase = ''
@@ -330,7 +460,7 @@
         numeric-interop = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
           pname = "cuenv-numeric-interop";
           version = "0.0.0";
-          src = ./crates/infrastructure/tests/numeric_interop;
+          src = filteredSource ./crates/infrastructure/tests/numeric_interop;
           vendorHash = "sha256-0tNx+rVKuNpAOzCtHd9Gpf/g+gtvzpmq4UShMsOKAS8=";
           doCheck = true;
           checkPhase = ''
@@ -370,12 +500,27 @@
           (testFile: "--test ${pkgs.lib.removeSuffix ".rs" (builtins.baseNameOf testFile)}")
           infrastructureE2eTestFiles);
 
-        # Formatting is part of the merge gate; without this check rustfmt drift
-        # reached a pushed head unnoticed.
+        # Apply the Rust style guide's import, hex, and macro formatting rules.
         fmt-check = craneLib.cargoFmt {
-          inherit src;
+          src = toCraneSource (
+            fs.unions ([ sourceFileset ] ++ map toRepoPath (sourceFiles.fmtFiles ++ sourceFiles.fmtTrees))
+          );
           pname = "cuenv";
           inherit version;
+          rustFmtExtraArgs = "--config ${rustfmtOptions}";
+          preBuild =
+            assert pkgs.lib.assertMsg
+              ((builtins.fromTOML (builtins.readFile ./treefmt.toml)).formatter.rustfmt.options == [
+                "--edition"
+                "2024"
+                "--config"
+                rustfmtOptions
+              ])
+              "treefmt Rust options must match the Nix formatting checks";
+            rustfmtProbe;
+          postBuild = ''
+            cargo fmt --manifest-path tools/function-enum/Cargo.toml --all -- --check --config ${rustfmtOptions}
+          '';
         };
 
         infrastructureE2eCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
@@ -561,8 +706,16 @@
           # wasmtime 41.x (pinned by extism 1.21; patches only in 36.x/42.0.2+/43.0.1+):
           #     RUSTSEC-2026-0085 0086 0087 0088 0089 0091 0092 0093 0094 0095 0096 0114
           buildPhaseCargoCommand = ''
+            # Yanked releases were already ignored; avoid querying a registry
+            # index that is unavailable in this offline derivation.
+            if [ -e .cargo/audit.toml ]; then
+              echo "Update the audit derivation to account for .cargo/audit.toml" >&2
+              exit 1
+            fi
+            mkdir -p .cargo
+            printf '[yanked]\nenabled = false\n' > .cargo/audit.toml
+
             cargo audit --db ${rustsec-advisory-db} --no-fetch --deny warnings \
-              --ignore yanked \
               --ignore RUSTSEC-2023-0071 \
               --ignore RUSTSEC-2026-0085 \
               --ignore RUSTSEC-2026-0086 \
@@ -576,6 +729,26 @@
               --ignore RUSTSEC-2026-0095 \
               --ignore RUSTSEC-2026-0096 \
               --ignore RUSTSEC-2026-0114
+
+            # Verify that disabling the index check does not disable advisories.
+            cat > "$TMPDIR/vulnerable.lock" <<'EOF'
+            version = 4
+
+            [[package]]
+            name = "bytes"
+            version = "1.10.1"
+            source = "registry+https://github.com/rust-lang/crates.io-index"
+            EOF
+            if cargo audit --db ${rustsec-advisory-db} --no-fetch --deny warnings \
+              --file "$TMPDIR/vulnerable.lock" > "$TMPDIR/audit-probe.log" 2>&1; then
+              echo "The audit failed to reject a known vulnerable dependency" >&2
+              exit 1
+            fi
+            if ! grep -q 'RUSTSEC-2026-0007' "$TMPDIR/audit-probe.log"; then
+              cat "$TMPDIR/audit-probe.log" >&2
+              echo "The audit did not report the expected advisory" >&2
+              exit 1
+            fi
           '';
           nativeBuildInputs = [ pkgs.cargo-audit ];
         };
@@ -617,7 +790,7 @@
           pkg-config
           llvmPackages.bintools
           bun
-        ] ++ lib.optionals stdenv.isLinux [
+        ] ++ lib.optionals stdenv.hostPlatform.isLinux [
           cargo-llvm-cov
           gcc # Provides cc linker for cargo
           patchelf
@@ -639,7 +812,8 @@
           cuenv-fake-terraform-provider = fake-terraform-provider;
           cuenv-fmt = fmt-check;
           cuenv-nextest = nextest-check;
-        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          cuenv-rust-parameter-style = function-parameter-check;
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           # Building the package also checks its executable and dlopen paths.
           cuetty = cuetty.package;
           # Linux only: the suites need sqld, the nixpkgs Terraform providers and
@@ -675,7 +849,7 @@
             cd docs
             bun install
             
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+            ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             # Patch wrangler workerd binary (Linux only)
             __patchTarget="./node_modules/@cloudflare/workerd-linux-64/bin/workerd"
             if [[ -f "$__patchTarget" ]]; then
@@ -698,14 +872,16 @@
             echo "Prebuilt CUE bridge available at: ${cue-bridge}"
             echo "Crane-based build system active"
             echo "sccache enabled (RUSTC_WRAPPER set)"
-            echo "Docs dependencies installed${pkgs.lib.optionalString pkgs.stdenv.isLinux ", wrangler patched, mold linker available"}"
+            echo "Docs dependencies installed${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ", wrangler patched, mold linker available"}"
           '';
-        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
         });
 
         apps = {
-          cuetty = flake-utils.lib.mkApp { drv = cuetty.package; };
+          cuetty = (flake-utils.lib.mkApp { drv = cuetty.package; }) // {
+            meta.description = "Cuetty terminal";
+          };
           default = {
             type = "app";
             program = "${cuenv}/bin/cuenv";

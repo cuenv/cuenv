@@ -24,7 +24,7 @@ Feature: Task execution behaviors
     Given a project with tasks:
       | name     | command                    | depends_on  |
       | failing  | sh -c 'exit 1'             | []          |
-      | depends  | echo "should not run"      | [failing]   |
+      | depends  | echo "depends executed"    | [failing]   |
     When I run "cuenv task depends"
     Then the task "failing" should fail
     And the task "depends" should not execute

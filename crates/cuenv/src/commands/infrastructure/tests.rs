@@ -1,9 +1,14 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use cuenv_infrastructure::state::{
+    LegacyMigrationAccess, LegacyMigrationCopy, LegacyMigrationDeleteRequest,
+    LegacyMigrationRecordRequest, LegacyMigrationSnapshotRead, LegacyMigrationSource,
+    LegacyMigrationWriterRequest, MigrationMutation,
+};
 use cuenv_infrastructure::{
     ChangedRecord, ConditionalPut, InfrastructureError, LastWriter, LockInformation, LockRequest,
     ManagedResource, MemoryStateStore, ProjectInstance, RecordVersion, RecoverOverrides,
@@ -13,23 +18,24 @@ use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, InfrastructureState};
 use tokio::sync::mpsc;
 
-use super::confirm::{AnswerFuture, Answers, confirm};
-use super::dispatch::{CommandContext, EngineInputs, StoreScope, connect, dispatch};
+use super::confirm::{AnswerFuture, Answers};
+use super::dispatch::{CommandContext, EngineInputs, StoreScope};
 use super::evaluation::{self, EnvironmentSelection, NameCheck, Needs, TargetRequest, TopLevel};
-use super::guard::{GuardRequest, SelectionFacts, Siblings, guard_selection};
+use super::guard::{GuardRequest, SelectionFacts, Siblings};
 use super::interrupts::{Interrupts, SignalSource};
 use super::invocation::Invocation;
-use super::lock::{release, under_lock};
+
 use super::output::{Finish, Output};
-use super::resolve::{environment_variables_for_action, resolve_state_token};
-use super::run::{run, validate_state_url};
+
 use super::{
     ConfirmationPolicy, FenceRelease, Identity, InfrastructureAction, InfrastructureOptions,
-    LockListing, SeparateState, StateAction, UnlockScope,
+    LockListing, MigrateRequest, MigrationDirection, MigrationMaintenance,
+    MigrationPhysicalIdentities, MigrationScope, SeparateState, SourceUpgrade, StateAction,
+    UnlockScope,
 };
 use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
-    EXIT_LOCKED, EXIT_OK, LockStatus, OutputFormat, error_code_for, exit_code_for,
+    EXIT_LOCKED, EXIT_OK, LockStatus, OutputFormat,
 };
 
 /// Recovery that overwrites a stored record that changed (`--force`).
@@ -62,14 +68,14 @@ fn state_only_actions_resolve_no_project_variables() {
     ]);
     // The state token comes from `infrastructure.state`, never from the
     // project's variables.
-    let state_environment = environment_variables_for_action(
+    let state_environment = super::resolve::environment_variables_for_action(
         &InfrastructureAction::State(StateAction::List),
         &environment,
     );
     assert!(state_environment.is_empty(), "{state_environment:?}");
 
     let provider_environment =
-        environment_variables_for_action(&InfrastructureAction::Plan, &environment);
+        super::resolve::environment_variables_for_action(&InfrastructureAction::Plan, &environment);
     assert_eq!(provider_environment, environment);
 }
 
@@ -101,19 +107,22 @@ async fn d1_state_is_validated_before_any_secret_and_needs_its_token() {
     let unset =
         serde_json::json!({"cuenvPassthrough": true, "name": "CUENV_TEST_D1_TOKEN_NEVER_SET"});
     let infrastructure = d1_infrastructure("0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9", &unset);
-    validate_state_url(&infrastructure).unwrap();
-    let invalid = validate_state_url(&d1_infrastructure("my-database", &unset))
+    super::run::validate_state_url(&infrastructure).unwrap();
+    let invalid = super::run::validate_state_url(&d1_infrastructure("my-database", &unset))
         .unwrap_err()
         .to_string();
     assert!(invalid.contains("D1 database identifier"), "{invalid}");
 
     // Unlike Turso (a local `sqld` may need none), D1 refuses to connect
     // without a token; a passthrough to an unset variable names it.
-    let credential =
-        resolve_state_token(InfrastructurePolicyAction::StateList, &infrastructure.state)
-            .await
-            .unwrap();
-    let Err(missing) = connect(&infrastructure.state, credential, &store_scope()) else {
+    let credential = super::resolve::resolve_state_token(
+        InfrastructurePolicyAction::StateList,
+        &infrastructure.state,
+    )
+    .await
+    .unwrap();
+    let Err(missing) = super::dispatch::connect(&infrastructure.state, credential, &store_scope())
+    else {
         panic!("connected to D1 without a token");
     };
     let missing = missing.to_string();
@@ -131,15 +140,18 @@ async fn a_state_token_is_resolved_like_an_environment_variable() {
         "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
         &serde_json::json!(["resolved-", "d1-token"]),
     );
-    let credential =
-        resolve_state_token(InfrastructurePolicyAction::StateList, &infrastructure.state)
-            .await
-            .unwrap();
+    let credential = super::resolve::resolve_state_token(
+        InfrastructurePolicyAction::StateList,
+        &infrastructure.state,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         credential.values[0].value.as_deref(),
         Some("resolved-d1-token")
     );
-    let store = connect(&infrastructure.state, credential, &store_scope()).unwrap();
+    let store =
+        super::dispatch::connect(&infrastructure.state, credential, &store_scope()).unwrap();
     assert!(store.recovery_identity().is_some());
 
     // Turso without a token connects (with a warning) for a local `sqld`.
@@ -147,9 +159,10 @@ async fn a_state_token_is_resolved_like_an_environment_variable() {
         "state": {"turso": {"url": "http://127.0.0.1:8080"}},
     }))
     .unwrap();
-    let credential = resolve_state_token(InfrastructurePolicyAction::StateList, &turso.state)
-        .await
-        .unwrap();
+    let credential =
+        super::resolve::resolve_state_token(InfrastructurePolicyAction::StateList, &turso.state)
+            .await
+            .unwrap();
     assert_eq!(credential.values[0].value, None);
     assert!(
         credential.values[0]
@@ -158,7 +171,7 @@ async fn a_state_token_is_resolved_like_an_environment_variable() {
         "{}",
         credential.values[0].absence
     );
-    connect(&turso.state, credential, &store_scope()).unwrap();
+    super::dispatch::connect(&turso.state, credential, &store_scope()).unwrap();
 }
 
 #[tokio::test]
@@ -178,7 +191,7 @@ async fn s3_state_is_validated_first_and_needs_both_keys() {
         serde_json::from_value(serde_json::json!({"state": {"s3": state}})).unwrap()
     };
     let infrastructure = s3(serde_json::json!({}));
-    validate_state_url(&infrastructure).unwrap();
+    super::run::validate_state_url(&infrastructure).unwrap();
     for (extra, expected) in [
         (
             serde_json::json!({"endpoint": "http://minio.internal:9000"}),
@@ -194,17 +207,20 @@ async fn s3_state_is_validated_first_and_needs_both_keys() {
         ),
         (serde_json::json!({"root": "Upper"}), "root"),
     ] {
-        let error = validate_state_url(&s3(extra.clone()))
+        let error = super::run::validate_state_url(&s3(extra.clone()))
             .unwrap_err()
             .to_string();
         assert!(error.contains(expected), "{extra}: {error}");
     }
 
-    let credential =
-        resolve_state_token(InfrastructurePolicyAction::StateList, &infrastructure.state)
-            .await
-            .unwrap();
-    let Err(missing) = connect(&infrastructure.state, credential, &store_scope()) else {
+    let credential = super::resolve::resolve_state_token(
+        InfrastructurePolicyAction::StateList,
+        &infrastructure.state,
+    )
+    .await
+    .unwrap();
+    let Err(missing) = super::dispatch::connect(&infrastructure.state, credential, &store_scope())
+    else {
         panic!("connected to S3 without a secret access key");
     };
     let missing = missing.to_string();
@@ -217,10 +233,11 @@ async fn s3_state_is_validated_first_and_needs_both_keys() {
 
     let complete =
         s3(serde_json::json!({"secretAccessKey": "secret", "minWriteInterval": "250ms"}));
-    let credential = resolve_state_token(InfrastructurePolicyAction::StateList, &complete.state)
-        .await
-        .unwrap();
-    let store = connect(&complete.state, credential, &store_scope()).unwrap();
+    let credential =
+        super::resolve::resolve_state_token(InfrastructurePolicyAction::StateList, &complete.state)
+            .await
+            .unwrap();
+    let store = super::dispatch::connect(&complete.state, credential, &store_scope()).unwrap();
     assert!(store.recovery_identity().is_some());
     assert_eq!(
         store.location(&store_scope().tenant.clone()).as_deref(),
@@ -413,7 +430,7 @@ infrastructure: {
         action: InfrastructureAction::Plan,
         output: OutputFormat::Text,
     };
-    let error = run(&options, &harness.output, &harness.interrupts)
+    let error = super::run::run(&options, &harness.output, &harness.interrupts)
         .await
         .unwrap_err();
 
@@ -443,7 +460,7 @@ infrastructure: {
     let project = module.path().join("app");
     assert!(evaluate_at_environment(&project, NameCheck::TargetOnly, Some("Dev")).is_ok());
     let error = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("dev")).unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI);
     assert!(
         error
             .to_string()
@@ -505,7 +522,7 @@ infrastructure: {
         Some("dev"),
     )
     .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_EVAL, "{error}");
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_EVAL, "{error}");
 }
 
 #[test]
@@ -528,7 +545,7 @@ infrastructure: {
 "#,
     );
     let error = evaluate(module.path(), NameCheck::TargetOnly).unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_EVAL, "{error}");
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_EVAL, "{error}");
     assert!(!error.to_string().contains("synthetic-sensitive-value"));
 }
 
@@ -583,7 +600,7 @@ fn a_duplicate_name_in_another_package_is_refused() {
         &format!("package deployment\n\nname: \"app\"\n{INFRASTRUCTURE}"),
     );
     let error = evaluate(module.path(), NameCheck::WholeModule).unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI);
     assert!(
         error.to_string().contains("elsewhere:deployment"),
         "{error}"
@@ -608,7 +625,7 @@ fn a_project_without_infrastructure_is_named_as_such() {
     write(root, "cue.mod/module.cue", MODULE);
     write(root, "app/env.cue", "package cuenv\n\nname: \"app\"\n");
     let error = evaluate(root, NameCheck::TargetOnly).unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI);
     assert!(
         error
             .to_string()
@@ -658,7 +675,7 @@ fn project_names_are_unique_in_the_package_without_regard_to_case() {
             "package cuenv\n\nname: \"App\"\n",
         );
         let error = evaluate(module.path(), NameCheck::WholeModule).unwrap_err();
-        assert_eq!(exit_code_for(&error), EXIT_CLI, "{error:?}");
+        assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI, "{error:?}");
         let message = error.to_string();
         assert!(message.contains("must be unique"), "{message}");
         assert!(message.contains("'app', 'other'"), "{message}");
@@ -703,7 +720,7 @@ fn an_instance_that_fails_to_evaluate_fails_closed() {
         "package cuenv\n\nname: \"broken\"\nvalue: missingReference\n",
     );
     let error = evaluate(module.path(), NameCheck::WholeModule).unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_EVAL);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_EVAL);
     let message = error.to_string();
     assert!(
         message.contains("one or more CUE instances could not be evaluated"),
@@ -726,7 +743,7 @@ fn a_project_the_loader_skips_fails_closed_and_says_why() {
     let project = directory.path().join("deploy/_staging/app");
 
     let error = evaluate_at(&project, NameCheck::WholeModule).unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_CLI, "{error:?}");
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI, "{error:?}");
     assert!(
         error
             .to_string()
@@ -794,7 +811,7 @@ fn the_infrastructure_block_must_be_concrete_only_for_this_command() {
 
     // Other commands evaluate the same instance without the requirement.
     let executor = crate::commands::CommandExecutor::new("cuenv".to_string());
-    assert!(executor.get_module(&root.join("app")).is_ok());
+    assert!(executor.module(&root.join("app")).is_ok());
 }
 
 // ---------------------------------------------------------------------
@@ -813,10 +830,52 @@ struct CountingStore {
     inner: MemoryStateStore,
     migrations: AtomicUsize,
     acquisitions: AtomicUsize,
+    fail_unlock: AtomicBool,
+    fail_dev_addresses: AtomicBool,
+    fail_dev_lock: AtomicBool,
 }
 
 #[async_trait]
 impl StateStore for CountingStore {
+    fn legacy_migration_source(&self) -> Option<LegacyMigrationSource> {
+        self.inner.legacy_migration_source()
+    }
+
+    async fn read_legacy_migration_snapshot(
+        &self,
+        access: &LegacyMigrationAccess<'_>,
+    ) -> cuenv_infrastructure::Result<LegacyMigrationSnapshotRead> {
+        self.inner.read_legacy_migration_snapshot(access).await
+    }
+
+    async fn check_legacy_migration_copy(
+        &self,
+        request: &LegacyMigrationCopy<'_>,
+    ) -> cuenv_infrastructure::Result<MigrationMutation> {
+        self.inner.check_legacy_migration_copy(request).await
+    }
+
+    async fn replace_legacy_migration_record(
+        &self,
+        request: &LegacyMigrationRecordRequest<'_>,
+    ) -> cuenv_infrastructure::Result<MigrationMutation> {
+        self.inner.replace_legacy_migration_record(request).await
+    }
+
+    async fn delete_legacy_migration_record(
+        &self,
+        request: &LegacyMigrationDeleteRequest<'_>,
+    ) -> cuenv_infrastructure::Result<MigrationMutation> {
+        self.inner.delete_legacy_migration_record(request).await
+    }
+
+    async fn set_legacy_migration_writer(
+        &self,
+        request: &LegacyMigrationWriterRequest<'_>,
+    ) -> cuenv_infrastructure::Result<MigrationMutation> {
+        self.inner.set_legacy_migration_writer(request).await
+    }
+
     async fn migrate(&self) -> cuenv_infrastructure::Result<()> {
         self.migrations.fetch_add(1, Ordering::SeqCst);
         self.inner.migrate().await
@@ -867,6 +926,9 @@ impl StateStore for CountingStore {
         tenant: &TenantKey,
         lock: &StateLock,
     ) -> cuenv_infrastructure::Result<bool> {
+        if self.fail_unlock.load(Ordering::SeqCst) {
+            return Err(InfrastructureError::state("source unlock unavailable"));
+        }
         self.inner.unlock(tenant, lock).await
     }
 
@@ -874,6 +936,9 @@ impl StateStore for CountingStore {
         &self,
         tenant: &TenantKey,
     ) -> cuenv_infrastructure::Result<Option<LockInformation>> {
+        if tenant.environment() == Some("dev") && self.fail_dev_lock.load(Ordering::SeqCst) {
+            return Err(InfrastructureError::state("sibling lock unavailable"));
+        }
         self.inner.current_lock(tenant).await
     }
 
@@ -893,6 +958,9 @@ impl StateStore for CountingStore {
         &self,
         tenant: &TenantKey,
     ) -> cuenv_infrastructure::Result<Vec<ResourceAddress>> {
+        if tenant.environment() == Some("dev") && self.fail_dev_addresses.load(Ordering::SeqCst) {
+            return Err(InfrastructureError::state("sibling state unavailable"));
+        }
         self.inner.addresses(tenant).await
     }
 
@@ -1059,7 +1127,7 @@ impl Harness {
     }
 
     async fn run(&self, action: InfrastructureAction) -> Result<(), CliError> {
-        dispatch(&action, &self.context(), self.inputs()).await
+        super::dispatch::dispatch(&action, &self.context(), self.inputs()).await
     }
 
     fn migrations(&self) -> usize {
@@ -1173,7 +1241,7 @@ async fn reads_never_create_or_upgrade_tables_and_take_no_lock() {
         })
         .await
         .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI);
     assert_eq!(harness.migrations(), 0);
     assert_eq!(harness.acquisitions(), 0);
 }
@@ -1210,7 +1278,7 @@ async fn writes_upgrade_the_tables_first_and_release_the_lock() {
         }))
         .await
         .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI);
     assert!(error.to_string().contains("random_pet.missing"), "{error}");
     assert!(harness.current_lock().await.is_none());
 }
@@ -1308,7 +1376,7 @@ async fn an_interrupted_no_work_apply_reports_failure_and_releases_the_lock() {
         let mut engine =
             InfrastructureEngine::new(super::dispatch::engine_setup(context, harness.inputs()));
         let planning = &mut engine;
-        let error = under_lock(
+        let error = super::lock::under_lock(
             context,
             super::output::operation_name(mode),
             |lock| async move {
@@ -1333,8 +1401,15 @@ async fn an_interrupted_no_work_apply_reports_failure_and_releases_the_lock() {
         .unwrap_err();
         engine.shutdown().await;
 
-        assert_eq!(exit_code_for(&error), EXIT_INTERRUPTED, "{mode:?}");
-        assert_eq!(error_code_for(&error), "infrastructure_interrupted");
+        assert_eq!(
+            crate::cli::exit_code_for(&error),
+            EXIT_INTERRUPTED,
+            "{mode:?}"
+        );
+        assert_eq!(
+            crate::cli::error_code_for(&error),
+            "infrastructure_interrupted"
+        );
         assert!(lock_of(&error).unwrap().released);
         assert_eq!(harness.acquisitions(), 1);
         assert!(harness.current_lock().await.is_none());
@@ -1460,14 +1535,17 @@ async fn declining_the_prompt_cancels_with_exit_code_one_and_releases_the_lock()
     ] {
         let harness = Harness::new(OutputFormat::Text, script);
         let context = harness.context();
-        let error = under_lock(&context, "apply", |_lock| async {
-            confirm(cuenv_infrastructure::PlanMode::Apply, &context).await
+        let error = super::lock::under_lock(&context, "apply", |_lock| async {
+            super::confirm::confirm(cuenv_infrastructure::PlanMode::Apply, &context).await
         })
         .await
         .unwrap_err();
-        assert_eq!(exit_code_for(&error), EXIT_CANCELLED);
-        assert_eq!(exit_code_for(&error), 1);
-        assert_eq!(error_code_for(&error), "infrastructure_cancelled");
+        assert_eq!(crate::cli::exit_code_for(&error), EXIT_CANCELLED);
+        assert_eq!(crate::cli::exit_code_for(&error), 1);
+        assert_eq!(
+            crate::cli::error_code_for(&error),
+            "infrastructure_cancelled"
+        );
         assert!(error.to_string().contains(reason), "{error}");
         // The prompt was answered while the lock was held, and the lock is
         // released afterwards.
@@ -1480,7 +1558,7 @@ async fn declining_the_prompt_cancels_with_exit_code_one_and_releases_the_lock()
         assert_eq!(
             lock_of(&error),
             Some(&LockStatus {
-                identifier: held.lock_identifier,
+                identifier: held.identifier().unwrap().to_string(),
                 released: true
             })
         );
@@ -1492,14 +1570,14 @@ async fn declining_the_prompt_cancels_with_exit_code_one_and_releases_the_lock()
 async fn confirming_the_prompt_proceeds_under_the_same_lock() {
     let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
     let context = harness.context();
-    let lock = under_lock(&context, "apply", |lock| async {
-        confirm(cuenv_infrastructure::PlanMode::Apply, &context).await?;
+    let lock = super::lock::under_lock(&context, "apply", |lock| async {
+        super::confirm::confirm(cuenv_infrastructure::PlanMode::Apply, &context).await?;
         Ok(lock)
     })
     .await
     .unwrap();
     let held = harness.answers.locks_while_asked()[0].clone().unwrap();
-    assert_eq!(held.lock_identifier, lock.lock_identifier);
+    assert_eq!(held.identifier(), Some(lock.lock_identifier.as_str()));
     assert!(harness.current_lock().await.is_none());
 }
 
@@ -1510,12 +1588,12 @@ async fn an_interrupt_at_the_prompt_releases_the_lock() {
         Script::Interrupt(mpsc::unbounded_channel().0),
     );
     let context = harness.context();
-    let error = under_lock(&context, "destroy", |_lock| async {
-        confirm(cuenv_infrastructure::PlanMode::Destroy, &context).await
+    let error = super::lock::under_lock(&context, "destroy", |_lock| async {
+        super::confirm::confirm(cuenv_infrastructure::PlanMode::Destroy, &context).await
     })
     .await
     .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_INTERRUPTED);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_INTERRUPTED);
     assert!(lock_of(&error).unwrap().released);
     assert!(harness.answers.locks_while_asked()[0].is_some());
     assert!(harness.current_lock().await.is_none());
@@ -1588,7 +1666,7 @@ async fn state_recover_refuses_to_overwrite_a_newer_record_unless_forced() {
         }))
         .await
         .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_INFRASTRUCTURE);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_INFRASTRUCTURE);
     let help = error.help().unwrap();
     assert!(help.contains("state recover --force"), "{help}");
     assert!(help.contains("move its file"), "{help}");
@@ -1629,7 +1707,7 @@ async fn an_unusable_unrecorded_file_names_the_file_not_the_state_store() {
         }))
         .await
         .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_INFRASTRUCTURE);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_INFRASTRUCTURE);
     let help = error.help().unwrap();
     assert!(help.contains(&file.display().to_string()), "{help}");
     assert!(help.contains("move it out of that directory"), "{help}");
@@ -1652,8 +1730,9 @@ async fn unlock_with_another_identifier_is_a_lock_failure() {
         })
         .await
         .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_LOCKED);
-    assert_eq!(error_code_for(&error), "infrastructure_locked");
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_LOCKED);
+    assert_eq!(crate::cli::error_code_for(&error), "infrastructure_locked");
+    assert!(!format!("{error:?}").contains("stale"));
     assert_eq!(
         lock_of(&error),
         Some(&LockStatus {
@@ -1669,6 +1748,8 @@ async fn unlock_with_another_identifier_is_a_lock_failure() {
 #[derive(Debug, Default)]
 struct UnreleasableStore {
     unlock_attempts: AtomicUsize,
+    force_unlock_attempts: AtomicUsize,
+    reported_lock: Option<LockInformation>,
 }
 
 #[async_trait]
@@ -1744,7 +1825,7 @@ impl StateStore for UnreleasableStore {
         &self,
         _tenant: &TenantKey,
     ) -> cuenv_infrastructure::Result<Option<LockInformation>> {
-        Ok(None)
+        Ok(self.reported_lock.clone())
     }
 
     async fn force_unlock(
@@ -1752,7 +1833,87 @@ impl StateStore for UnreleasableStore {
         _tenant: &TenantKey,
         _lock_identifier: &str,
     ) -> cuenv_infrastructure::Result<bool> {
+        self.force_unlock_attempts.fetch_add(1, Ordering::SeqCst);
         Ok(false)
+    }
+}
+
+#[tokio::test]
+async fn migration_lock_inspection_and_unlock_do_not_expose_or_release_the_token() {
+    let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    let operation = uuid::Uuid::new_v4();
+    let token = "private-migration-token";
+    let store = Arc::new(UnreleasableStore {
+        reported_lock: Some(LockInformation {
+            identity: cuenv_infrastructure::LockIdentity::Migration {
+                operation_id: Some(operation),
+            },
+            holder: token.to_string(),
+            acquired_at: "2026-01-01T00:00:00Z".to_string(),
+        }),
+        ..UnreleasableStore::default()
+    });
+    let dynamic: Arc<dyn StateStore> = store.clone();
+    let context = CommandContext {
+        store: &dynamic,
+        ..harness.context()
+    };
+    let error = super::state_actions::unlock(&context, Some(token), FenceRelease::Allow)
+        .await
+        .unwrap_err();
+    let envelope = serde_json::to_string(&crate::cli::error_envelope(&error)).unwrap();
+    assert!(!format!("{error:?} {envelope}").contains(token));
+    assert_eq!(store.force_unlock_attempts.load(Ordering::SeqCst), 0);
+
+    super::state_actions::unlock(&context, None, FenceRelease::Refuse)
+        .await
+        .unwrap();
+    let result = harness.result();
+    assert_eq!(result["lock"]["kind"], "migration");
+    assert_eq!(result["lock"]["operationId"], operation.to_string());
+    assert!(result["lock"].get("lockIdentifier").is_none());
+    assert!(!result.to_string().contains(token));
+}
+
+#[test]
+fn migration_lock_diagnostics_do_not_offer_an_ordinary_unlock() {
+    let operation = uuid::Uuid::new_v4();
+    let secret = "private-holder-token";
+    let lock = LockInformation {
+        identity: cuenv_infrastructure::LockIdentity::Migration {
+            operation_id: Some(operation),
+        },
+        holder: secret.to_string(),
+        acquired_at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    let held = cuenv_infrastructure::TenantLock {
+        module_path: "example.com/app".into(),
+        package: None,
+        project: "app".into(),
+        environment: None,
+        lock: lock.clone(),
+    };
+    let invocation = Invocation::default();
+    assert!(invocation.unlock_command(&held).is_none());
+    let errors = [
+        InfrastructureError::Locked {
+            tenant: "example.com/app#app".into(),
+            lock,
+        },
+        InfrastructureError::StateMigrationBlocked {
+            version: 2,
+            locks: vec![held],
+        },
+    ];
+    for error in errors {
+        let failure = super::failure(&error, &invocation);
+        let rendered = format!(
+            "{error:?} {failure:?} {}",
+            serde_json::to_string(&crate::cli::error_envelope(&failure)).unwrap()
+        );
+        assert!(!rendered.contains(secret), "{rendered}");
+        assert!(rendered.contains(&operation.to_string()), "{rendered}");
+        assert!(!rendered.contains("unlockCommand"), "{rendered}");
     }
 }
 
@@ -1762,7 +1923,7 @@ async fn release_does_not_wait_after_its_last_attempt() {
     let tenant = TenantKey::try_new("example.com/infrastructure", "app").unwrap();
     let started = tokio::time::Instant::now();
     assert!(
-        release(&store, &tenant, &StateLock::generate())
+        super::lock::release(&store, &tenant, &StateLock::generate())
             .await
             .is_err()
     );
@@ -1779,12 +1940,12 @@ async fn an_unreleased_lock_is_never_reported_as_released() {
     let context = harness.context();
 
     // An interrupted run whose release failed.
-    let error = under_lock(&context, "apply", |_lock| async {
+    let error = super::lock::under_lock(&context, "apply", |_lock| async {
         Err::<(), _>(super::interrupts::interrupted())
     })
     .await
     .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_INTERRUPTED);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_INTERRUPTED);
     let lock = lock_of(&error).unwrap();
     assert!(!lock.released);
     let help = error.help().unwrap();
@@ -1795,16 +1956,16 @@ async fn an_unreleased_lock_is_never_reported_as_released() {
     );
 
     // A successful run whose release failed.
-    let error = under_lock(&context, "state remove", |_lock| async { Ok(()) })
+    let error = super::lock::under_lock(&context, "state remove", |_lock| async { Ok(()) })
         .await
         .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_INFRASTRUCTURE);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_INFRASTRUCTURE);
     assert!(!lock_of(&error).unwrap().released);
     assert!(error.to_string().contains("was NOT released"), "{error}");
 
     // A configuration error whose release failed keeps the lock in the
     // report.
-    let error = under_lock(&context, "state remove", |_lock| async {
+    let error = super::lock::under_lock(&context, "state remove", |_lock| async {
         Err::<(), _>(CliError::config("no such resource"))
     })
     .await
@@ -1822,7 +1983,7 @@ async fn a_lock_that_was_taken_away_during_the_run_is_not_reported_as_released()
 
     // The run loses its lock (the row is removed by another actor) and fails
     // on its next fenced write, as the engine does.
-    let error = under_lock(&context, "apply", |lock| async move {
+    let error = super::lock::under_lock(&context, "apply", |lock| async move {
         assert!(
             store
                 .force_unlock(&tenant, &lock.lock_identifier)
@@ -1847,7 +2008,7 @@ async fn a_lock_that_was_taken_away_during_the_run_is_not_reported_as_released()
     // A run that finished but no longer held its lock still succeeded.
     let store = Arc::clone(&harness.store);
     let tenant = harness.tenant.clone();
-    under_lock(&context, "state remove", |lock| async move {
+    super::lock::under_lock(&context, "state remove", |lock| async move {
         store
             .force_unlock(&tenant, &lock.lock_identifier)
             .await
@@ -1906,6 +2067,59 @@ fn options_for(module: &Path, action: InfrastructureAction) -> InfrastructureOpt
 }
 
 #[tokio::test]
+async fn migration_requires_maintenance_before_configuration_evaluation() {
+    let scratch = module_directory();
+    let options = options_for(
+        scratch.path(),
+        InfrastructureAction::State(StateAction::Migrate(MigrateRequest {
+            maintenance: MigrationMaintenance::Unconfirmed,
+            physical_identities: None,
+            scope: MigrationScope::Selected,
+            direction: MigrationDirection::Forward,
+            source_upgrade: SourceUpgrade::Refuse,
+        })),
+    );
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    let error = super::run::run(&options, &harness.output, &harness.interrupts)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("maintenance window"));
+    assert!(error.help().unwrap().contains("--confirm-maintenance"));
+}
+
+#[tokio::test]
+async fn migration_rejects_missing_or_equal_physical_identities_before_evaluation() {
+    let scratch = module_directory();
+    for identities in [
+        None,
+        Some(MigrationPhysicalIdentities {
+            source: uuid::Uuid::nil(),
+            target: uuid::Uuid::from_u128(1),
+        }),
+        Some(MigrationPhysicalIdentities {
+            source: uuid::Uuid::from_u128(1),
+            target: uuid::Uuid::from_u128(1),
+        }),
+    ] {
+        let options = options_for(
+            scratch.path(),
+            InfrastructureAction::State(StateAction::Migrate(MigrateRequest {
+                maintenance: MigrationMaintenance::Confirmed,
+                physical_identities: identities,
+                scope: MigrationScope::Selected,
+                direction: MigrationDirection::Forward,
+                source_upgrade: SourceUpgrade::Refuse,
+            })),
+        );
+        let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+        let error = super::run::run(&options, &harness.output, &harness.interrupts)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("identit"), "{error}");
+    }
+}
+
+#[tokio::test]
 async fn an_invalid_state_url_fails_before_any_secret_resolver_runs_for_every_action() {
     let scratch = module_directory();
     let marker = scratch.path().join("resolver-ran");
@@ -1945,14 +2159,18 @@ async fn an_invalid_state_url_fails_before_any_secret_resolver_runs_for_every_ac
         },
     ] {
         let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
-        let error = run(
+        let error = super::run::run(
             &options_for(module.path(), action.clone()),
             &harness.output,
             &harness.interrupts,
         )
         .await
         .unwrap_err();
-        assert_eq!(exit_code_for(&error), EXIT_CLI, "{action:?}: {error}");
+        assert_eq!(
+            crate::cli::exit_code_for(&error),
+            EXIT_CLI,
+            "{action:?}: {error}"
+        );
         assert!(
             error.to_string().to_lowercase().contains("loopback"),
             "{action:?}: expected the URL contract, got {error}"
@@ -2068,7 +2286,7 @@ impl GuardCase<'_> {
             facts: &facts,
             inputs: &inputs,
         };
-        guard_selection(&context, &request).await
+        super::guard::guard_selection(&context, &request).await
     }
 }
 
@@ -2110,7 +2328,11 @@ async fn a_run_without_env_is_refused_when_only_environments_are_declared() {
     };
     for action in [apply_action(), destroy_action()] {
         let error = case.guard(&action).await.unwrap_err();
-        assert_eq!(exit_code_for(&error), EXIT_CLI, "{action:?}: {error}");
+        assert_eq!(
+            crate::cli::exit_code_for(&error),
+            EXIT_CLI,
+            "{action:?}: {error}"
+        );
         let text = texts(&error);
         assert!(text.contains("--env"), "{action:?}: {text}");
         assert!(text.contains("declared environments: dev, prod"), "{text}");
@@ -2196,7 +2418,7 @@ async fn data_only_top_level_cannot_bypass_recorded_legacy_managed_state() {
         configured: &[],
     };
     let error = case.guard(&apply_action()).await.unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI);
     let text = texts(&error);
     assert!(text.contains("1 resource(s) are still recorded"), "{text}");
     assert!(text.contains("`cuenv infrastructure destroy`"), "{text}");
@@ -2316,7 +2538,7 @@ async fn an_environment_creating_what_the_unselected_identity_records_is_refused
         configured: &["random_pet.pet"],
     };
     let error = case.guard(&apply_action()).await.unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI);
     let text = texts(&error);
     assert!(text.contains("random_pet.pet"), "{text}");
     assert!(text.contains("already recorded"), "{text}");
@@ -2393,7 +2615,7 @@ async fn a_run_without_env_creating_what_an_environment_records_is_refused() {
         configured: &["random_pet.pet", "random_id.id", "random_string.fresh"],
     };
     let error = case.guard(&apply_action()).await.unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI);
     let text = texts(&error);
     // It names the environments and the addresses, never the address nobody
     // else records.
@@ -2501,7 +2723,7 @@ async fn a_mistyped_environment_is_refused_but_a_removed_one_with_state_is_used(
         },
     ] {
         let error = case.guard(&action).await.unwrap_err();
-        assert_eq!(exit_code_for(&error), EXIT_CLI, "{action:?}");
+        assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI, "{action:?}");
         let text = texts(&error);
         assert!(
             text.contains("no infrastructure environment named 'stagin'"),
@@ -2576,7 +2798,7 @@ async fn other_environments_reach_the_json_result_of_state_list() {
         siblings: &siblings,
         ..harness.context()
     };
-    dispatch(
+    super::dispatch::dispatch(
         &InfrastructureAction::State(StateAction::List),
         &context,
         harness.inputs(),
@@ -2602,6 +2824,139 @@ async fn other_environments_reach_the_json_result_of_state_list() {
 }
 
 #[tokio::test]
+async fn state_list_refuses_an_unreadable_sibling_without_a_partial_result() {
+    let (harness, _) = harness_with_a_recorded_dev_environment().await;
+    harness
+        .counting
+        .fail_dev_addresses
+        .store(true, Ordering::SeqCst);
+    let siblings = siblings_of(&harness, None);
+    let context = CommandContext {
+        siblings: &siblings,
+        ..harness.context()
+    };
+    let error = super::dispatch::dispatch(
+        &InfrastructureAction::State(StateAction::List),
+        &context,
+        harness.inputs(),
+    )
+    .await
+    .expect_err("a sibling read failure must fail the command");
+    assert!(error.to_string().contains("sibling state unavailable"));
+    assert!(matches!(harness.output.finish(), Finish::Report(None)));
+}
+
+#[tokio::test]
+async fn state_list_refuses_an_invalid_declared_environment_without_partial_output() {
+    let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    let siblings = Siblings {
+        declared_environments: vec!["dev ".to_string()],
+        ..siblings_of(&harness, None)
+    };
+    let context = CommandContext {
+        siblings: &siblings,
+        ..harness.context()
+    };
+    let error = super::dispatch::dispatch(
+        &InfrastructureAction::State(StateAction::List),
+        &context,
+        harness.inputs(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("invalid name"));
+    assert!(matches!(harness.output.finish(), Finish::Report(None)));
+}
+
+#[tokio::test]
+async fn unlock_refuses_an_unreadable_sibling_without_partial_output_or_mutation() {
+    for identifier in [None, Some("stale".to_string())] {
+        let (harness, _) = harness_with_a_recorded_dev_environment().await;
+        harness.counting.fail_dev_lock.store(true, Ordering::SeqCst);
+        let siblings = siblings_of(&harness, None);
+        let context = CommandContext {
+            siblings: &siblings,
+            ..harness.context()
+        };
+        let error = super::dispatch::dispatch(
+            &InfrastructureAction::Unlock {
+                lock_identifier: identifier,
+                scope: UnlockScope::default(),
+                fence: FenceRelease::Refuse,
+            },
+            &context,
+            harness.inputs(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("sibling lock unavailable"));
+        assert!(matches!(harness.output.finish(), Finish::Report(None)));
+        assert!(harness.current_lock().await.is_none());
+    }
+}
+
+#[tokio::test]
+async fn recover_refuses_an_unreadable_sibling_before_writing_current_state() {
+    let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    let unrecorded = UnrecordedStore::at(harness.directory.path().join("unrecorded"));
+    let dev = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
+    let resource = managed("random_pet.pet");
+    let put = ConditionalPut {
+        resource: &resource,
+        expected: RecordVersion::Absent,
+    };
+    let own_file = unrecorded.save(&harness.tenant, &put).unwrap();
+    let dev_file = unrecorded.save(&dev, &put).unwrap();
+    let dev_directory = dev_file.parent().unwrap().to_path_buf();
+    std::fs::remove_file(dev_file).unwrap();
+    std::fs::remove_dir(&dev_directory).unwrap();
+    std::fs::write(dev_directory, b"not a directory").unwrap();
+    let siblings = siblings_of(&harness, None);
+    let context = CommandContext {
+        siblings: &siblings,
+        ..harness.context()
+    };
+    let error = super::state_actions::recover(&context, &unrecorded, RecoverOverrides::default())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("directory"));
+    assert!(own_file.exists());
+    assert!(
+        harness
+            .store
+            .list(&harness.tenant)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(harness.acquisitions(), 0);
+    assert!(matches!(harness.output.finish(), Finish::Report(None)));
+}
+
+#[tokio::test]
+async fn undeclared_environment_refuses_an_unreadable_recovery_directory() {
+    let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    std::fs::write(
+        harness.directory.path().join("unrecorded"),
+        b"not a directory",
+    )
+    .unwrap();
+    let case = GuardCase {
+        harness: &harness,
+        environment: Some("stagin"),
+        declared: &["dev", "prod"],
+        top_level: TopLevel::default(),
+        configured: &[],
+    };
+    let error = case
+        .guard(&InfrastructureAction::State(StateAction::List))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("directory"));
+    assert!(matches!(harness.output.finish(), Finish::Report(None)));
+}
+
+#[tokio::test]
 async fn other_environments_reach_the_json_result_of_unlock() {
     let (harness, dev) = harness_with_a_recorded_dev_environment().await;
     let lock = harness.store.lock(&dev, "ci-run").await.unwrap();
@@ -2610,7 +2965,7 @@ async fn other_environments_reach_the_json_result_of_unlock() {
         siblings: &siblings,
         ..harness.context()
     };
-    dispatch(
+    super::dispatch::dispatch(
         &InfrastructureAction::Unlock {
             lock_identifier: None,
             scope: UnlockScope::default(),
@@ -2638,7 +2993,7 @@ async fn the_other_environments_field_is_present_and_empty_with_env_selected() {
         siblings: &siblings,
         ..harness.context()
     };
-    dispatch(
+    super::dispatch::dispatch(
         &InfrastructureAction::State(StateAction::List),
         &context,
         harness.inputs(),
@@ -2921,9 +3276,13 @@ fn every_repair_hint_carries_the_selected_environment_and_project() {
     );
     let locked = InfrastructureError::Locked {
         tenant: "t".to_string(),
-        lock_identifier: "abc".to_string(),
-        holder: "someone".to_string(),
-        acquired_at: "now".to_string(),
+        lock: LockInformation {
+            identity: cuenv_infrastructure::LockIdentity::Ordinary {
+                identifier: "abc".to_string(),
+            },
+            holder: "someone".to_string(),
+            acquired_at: "now".to_string(),
+        },
     };
     let error = super::failure(&locked, &invocation);
     assert!(
@@ -2937,7 +3296,6 @@ fn every_repair_hint_carries_the_selected_environment_and_project() {
     );
     let lost = InfrastructureError::LockLost {
         tenant: "t".to_string(),
-        lock_identifier: "abc".to_string(),
     };
     let help = super::failure(&lost, &invocation)
         .help()
@@ -2959,7 +3317,7 @@ async fn an_unreleased_lock_hint_carries_the_environment() {
         store: &store,
         ..harness.context()
     };
-    let error = under_lock(&context, "state remove", |_lock| async { Ok(()) })
+    let error = super::lock::under_lock(&context, "state remove", |_lock| async { Ok(()) })
         .await
         .unwrap_err();
     let help = error.help().unwrap();
@@ -2985,7 +3343,7 @@ async fn unlock_with_an_identifier_that_matches_no_lock_fails_and_names_where_it
         ..harness.context()
     };
     // Nothing is locked here, and the named lock is the dev environment's.
-    let error = dispatch(
+    let error = super::dispatch::dispatch(
         &InfrastructureAction::Unlock {
             lock_identifier: Some(lock.lock_identifier.clone()),
             scope: UnlockScope::default(),
@@ -2996,19 +3354,17 @@ async fn unlock_with_an_identifier_that_matches_no_lock_fails_and_names_where_it
     )
     .await
     .unwrap_err();
-    assert_ne!(exit_code_for(&error), EXIT_OK);
+    assert_ne!(crate::cli::exit_code_for(&error), EXIT_OK);
     let text = format!("{error} {}", error.help().unwrap());
-    assert!(
-        text.contains(&format!("unlock {} --env dev", lock.lock_identifier)),
-        "{text}"
-    );
+    assert!(text.contains("unlock --env dev"), "{text}");
+    assert!(!text.contains(&lock.lock_identifier), "{text}");
     assert!(
         harness.store.current_lock(&dev).await.unwrap().is_some(),
         "the other environment's lock is untouched"
     );
 
     // An identifier that is nowhere also fails.
-    let error = dispatch(
+    let error = super::dispatch::dispatch(
         &InfrastructureAction::Unlock {
             lock_identifier: Some("nowhere".to_string()),
             scope: UnlockScope::default(),
@@ -3019,8 +3375,8 @@ async fn unlock_with_an_identifier_that_matches_no_lock_fails_and_names_where_it
     )
     .await
     .unwrap_err();
-    assert_ne!(exit_code_for(&error), EXIT_OK);
-    assert!(error.to_string().contains("nowhere"), "{error}");
+    assert_ne!(crate::cli::exit_code_for(&error), EXIT_OK);
+    assert!(!error.to_string().contains("nowhere"), "{error}");
     // The help is prose, not a run of padding spaces, and names where to look.
     let help = error.help().unwrap();
     assert!(!help.contains("  "), "{help:?}");
@@ -3045,7 +3401,9 @@ async fn showing_the_lock_without_env_mentions_locks_in_declared_environments() 
         siblings: &siblings,
         ..harness.context()
     };
-    let found = super::state_actions::locks_in_other_environments(&context).await;
+    let found = super::state_actions::locks_in_other_environments(&context)
+        .await
+        .unwrap();
     assert_eq!(found.len(), 1, "{found:?}");
     let note = found[0].note();
     assert!(
@@ -3068,6 +3426,7 @@ async fn showing_the_lock_without_env_mentions_locks_in_declared_environments() 
     assert!(
         super::state_actions::locks_in_other_environments(&context)
             .await
+            .unwrap()
             .is_empty()
     );
 }
@@ -3096,7 +3455,7 @@ async fn recovering_without_env_mentions_pending_changes_of_declared_environment
         siblings: &siblings,
         ..harness.context()
     };
-    let found = super::state_actions::pending_in_other_environments(&context, &unrecorded);
+    let found = super::state_actions::pending_in_other_environments(&context, &unrecorded).unwrap();
     assert_eq!(found.len(), 1, "{found:?}");
     let note = found[0].note();
     assert!(note.contains("environment 'dev'"), "{note}");
@@ -3153,7 +3512,7 @@ async fn a_failing_secret_names_its_variable_and_never_echoes_the_command_output
     assert!(text.contains("DB_PASSWORD"), "{text}");
     assert!(!text.contains("leaked-token"), "{text}");
     assert!(!text.contains("'secret'"), "{text}");
-    assert_eq!(exit_code_for(&error), EXIT_EVAL);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_EVAL);
 }
 
 #[test]
@@ -3209,7 +3568,7 @@ infrastructure: {
     let text = error.to_string();
     assert!(text.contains("providerEnvironment"), "{text}");
     assert!(text.contains("'staging'"), "{text}");
-    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_CLI);
     let prod = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("prod")).unwrap();
     assert_eq!(prod.provider_environment, ProviderEnvironment::Isolated);
 }
@@ -3219,7 +3578,7 @@ async fn an_operation_that_finished_but_could_not_release_its_lock_keeps_its_res
     let mut harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
     harness.store = Arc::new(UnreleasableStore::default());
     let context = harness.context();
-    let error = under_lock(&context, "state remove", |_lock| async {
+    let error = super::lock::under_lock(&context, "state remove", |_lock| async {
         // What the operation produced: the result envelope waits for the end
         // of the command.
         context
@@ -3229,7 +3588,7 @@ async fn an_operation_that_finished_but_could_not_release_its_lock_keeps_its_res
     })
     .await
     .unwrap_err();
-    assert_eq!(exit_code_for(&error), EXIT_INFRASTRUCTURE);
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_INFRASTRUCTURE);
     let envelope = serde_json::to_value(crate::cli::error_envelope(&error)).unwrap();
     assert_eq!(envelope["error"]["lockReleased"], false);
     assert_eq!(envelope["error"]["result"]["removed"], "random_pet.pet");
@@ -3243,8 +3602,11 @@ fn a_signal_during_the_last_operation_is_still_an_interrupt() {
         "0 created, 0 updated, 1 replaced, 0 deleted, 0 refreshed",
         &Invocation::default(),
     );
-    assert_eq!(exit_code_for(&error), EXIT_INTERRUPTED);
-    assert_eq!(error_code_for(&error), "infrastructure_interrupted");
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_INTERRUPTED);
+    assert_eq!(
+        crate::cli::error_code_for(&error),
+        "infrastructure_interrupted"
+    );
     assert!(error.to_string().contains("1 replaced"), "{error}");
     assert!(
         error
@@ -3262,7 +3624,9 @@ fn tenant_lock(project: &str, environment: Option<&str>) -> cuenv_infrastructure
         environment: environment.map(str::to_string),
         package: None,
         lock: LockInformation {
-            lock_identifier: format!("lock-{project}"),
+            identity: cuenv_infrastructure::LockIdentity::Ordinary {
+                identifier: format!("lock-{project}"),
+            },
             holder: "apply by ci".to_string(),
             acquired_at: "2026-01-01T00:00:00+00:00".to_string(),
         },
@@ -3278,8 +3642,8 @@ fn a_blocked_migration_is_a_lock_failure_with_every_lock_and_a_command_for_each(
         },
         &Invocation::default(),
     );
-    assert_eq!(exit_code_for(&error), EXIT_LOCKED);
-    assert_eq!(error_code_for(&error), "infrastructure_locked");
+    assert_eq!(crate::cli::exit_code_for(&error), EXIT_LOCKED);
+    assert_eq!(crate::cli::error_code_for(&error), "infrastructure_locked");
     let text = format!("{error} {}", error.help().unwrap());
     assert!(text.contains("example.com/other#web@Dev"), "{text}");
     assert!(
@@ -3311,7 +3675,7 @@ fn a_blocked_migration_is_a_lock_failure_with_every_lock_and_a_command_for_each(
         &InfrastructureError::StateMigrationPending { version: 2 },
         &Invocation::default(),
     );
-    assert_eq!(exit_code_for(&pending), EXIT_LOCKED);
+    assert_eq!(crate::cli::exit_code_for(&pending), EXIT_LOCKED);
 }
 
 #[test]
@@ -3381,6 +3745,17 @@ fn schema_and_file_problems_get_help_that_fits_them() {
         damaged.contains("`cuenv infrastructure state remove random_pet.pet`"),
         "{damaged}"
     );
+    for address in ["(an unknown resource)", "random_pet.pet; touch /tmp/no"] {
+        let damaged = help(InfrastructureError::UndecodableRecord {
+            address: address.to_string(),
+            problem: "invalid record".to_string(),
+        });
+        assert!(damaged.contains("does not identify"), "{damaged}");
+        assert!(
+            !damaged.contains("`cuenv infrastructure state remove"),
+            "{damaged}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3426,7 +3801,7 @@ async fn state_locks_lists_every_tenants_lock_and_unlock_names_a_project_that_ne
         tenant: &other,
         ..harness.context()
     };
-    dispatch(
+    super::dispatch::dispatch(
         &InfrastructureAction::Unlock {
             lock_identifier: Some(held.lock_identifier.clone()),
             scope: UnlockScope {

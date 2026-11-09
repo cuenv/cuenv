@@ -45,24 +45,21 @@ struct Store {
 }
 
 impl Store {
-    fn record_auth(&self, metadata: &tonic::metadata::MetadataMap) {
+    fn record_auth(&self, metadata: &tonic::metadata::MetadataMap) -> Result<(), Status> {
         if let Some(value) = metadata.get("authorization")
             && let Ok(value) = value.to_str()
         {
-            lock(&self.seen_authorization).push(value.to_string());
+            lock(&self.seen_authorization)?.push(value.to_string());
         }
+        Ok(())
     }
 }
 
-/// Lock a mutex, recovering from poisoning.
-///
-/// A poisoned mutex here means some other assertion already failed while the
-/// lock was held. The stored bytes are still perfectly valid, and panicking
-/// again would bury the original failure under this one.
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+/// The test server cannot trust state after a panic while it was being changed.
+fn lock<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, Status> {
     mutex
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .map_err(|_| Status::internal("test server state lock poisoned"))
 }
 
 fn key(digest: &pb::Digest) -> String {
@@ -87,8 +84,8 @@ impl CasService for CasImpl {
         &self,
         request: Request<pb::FindMissingBlobsRequest>,
     ) -> Result<Response<pb::FindMissingBlobsResponse>, Status> {
-        self.0.record_auth(request.metadata());
-        let blobs = lock(&self.0.blobs);
+        self.0.record_auth(request.metadata())?;
+        let blobs = lock(&self.0.blobs)?;
         let missing = request
             .into_inner()
             .blob_digests
@@ -104,8 +101,8 @@ impl CasService for CasImpl {
         &self,
         request: Request<pb::BatchUpdateBlobsRequest>,
     ) -> Result<Response<pb::BatchUpdateBlobsResponse>, Status> {
-        self.0.record_auth(request.metadata());
-        let mut blobs = lock(&self.0.blobs);
+        self.0.record_auth(request.metadata())?;
+        let mut blobs = lock(&self.0.blobs)?;
         let mut responses = Vec::new();
         for entry in request.into_inner().requests {
             let Some(digest) = entry.digest else {
@@ -124,8 +121,8 @@ impl CasService for CasImpl {
         &self,
         request: Request<pb::BatchReadBlobsRequest>,
     ) -> Result<Response<pb::BatchReadBlobsResponse>, Status> {
-        self.0.record_auth(request.metadata());
-        let blobs = lock(&self.0.blobs);
+        self.0.record_auth(request.metadata())?;
+        let blobs = lock(&self.0.blobs)?;
         let responses = request
             .into_inner()
             .digests
@@ -215,12 +212,12 @@ impl ByteStreamService for ByteStreamImpl {
         &self,
         request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
-        self.0.record_auth(request.metadata());
+        self.0.record_auth(request.metadata())?;
         let request = request.into_inner();
         let resource_name = request.resource_name;
         let key = key_from_resource_name(&resource_name)
             .ok_or_else(|| Status::invalid_argument("malformed resource name"))?;
-        let blobs = lock(&self.0.blobs);
+        let blobs = lock(&self.0.blobs)?;
         let data = blobs
             .get(&key)
             .ok_or_else(|| Status::not_found("blob not found"))?
@@ -255,7 +252,7 @@ impl ByteStreamService for ByteStreamImpl {
         &self,
         request: Request<tonic::Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
-        self.0.record_auth(request.metadata());
+        self.0.record_auth(request.metadata())?;
         let mut stream = request.into_inner();
         let mut key = None;
         let mut data = Vec::new();
@@ -292,7 +289,7 @@ impl ByteStreamService for ByteStreamImpl {
         }
         let key = key.ok_or_else(|| Status::invalid_argument("no resource name was sent"))?;
         let committed_size = i64::try_from(data.len()).unwrap_or(i64::MAX);
-        lock(&self.0.blobs).insert(key, data);
+        lock(&self.0.blobs)?.insert(key, data);
         Ok(Response::new(WriteResponse { committed_size }))
     }
 
@@ -314,12 +311,12 @@ impl ActionCacheService for ActionCacheImpl {
         &self,
         request: Request<pb::GetActionResultRequest>,
     ) -> Result<Response<pb::ActionResult>, Status> {
-        self.0.record_auth(request.metadata());
+        self.0.record_auth(request.metadata())?;
         let digest = request
             .into_inner()
             .action_digest
             .ok_or_else(|| Status::invalid_argument("missing action digest"))?;
-        let results = lock(&self.0.results);
+        let results = lock(&self.0.results)?;
         results
             .get(&key(&digest))
             .cloned()
@@ -331,7 +328,7 @@ impl ActionCacheService for ActionCacheImpl {
         &self,
         request: Request<pb::UpdateActionResultRequest>,
     ) -> Result<Response<pb::ActionResult>, Status> {
-        self.0.record_auth(request.metadata());
+        self.0.record_auth(request.metadata())?;
         let request = request.into_inner();
         let digest = request
             .action_digest
@@ -339,7 +336,7 @@ impl ActionCacheService for ActionCacheImpl {
         let result = request
             .action_result
             .ok_or_else(|| Status::invalid_argument("missing action result"))?;
-        lock(&self.0.results).insert(key(&digest), result.clone());
+        lock(&self.0.results)?.insert(key(&digest), result.clone());
         Ok(Response::new(result))
     }
 }
@@ -355,7 +352,7 @@ impl CapabilitiesService for CapabilitiesImpl {
         &self,
         request: Request<pb::GetCapabilitiesRequest>,
     ) -> Result<Response<pb::ServerCapabilities>, Status> {
-        self.store.record_auth(request.metadata());
+        self.store.record_auth(request.metadata())?;
         Ok(Response::new(pb::ServerCapabilities {
             cache_capabilities: Some(pb::CacheCapabilities {
                 digest_functions: self.digest_functions.clone(),
@@ -365,6 +362,58 @@ impl CapabilitiesService for CapabilitiesImpl {
             ..Default::default()
         }))
     }
+}
+
+#[tokio::test]
+async fn poisoned_server_state_returns_internal_status() {
+    let store = Arc::new(Store::default());
+    let poisoner = Arc::clone(&store);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poisoner.blobs.lock().unwrap();
+            panic!("poison test server blobs");
+        })
+        .join()
+        .is_err()
+    );
+    let result = CasService::find_missing_blobs(
+        &CasImpl(store),
+        Request::new(pb::FindMissingBlobsRequest::default()),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(status) if status.code() == tonic::Code::Internal
+            && status.message() == "test server state lock poisoned"
+    ));
+
+    let store = Arc::new(Store::default());
+    let poisoner = Arc::clone(&store);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poisoner.seen_authorization.lock().unwrap();
+            panic!("poison test server authentication capture");
+        })
+        .join()
+        .is_err()
+    );
+    let mut request = Request::new(pb::GetCapabilitiesRequest::default());
+    request
+        .metadata_mut()
+        .insert("authorization", "Bearer test".parse().unwrap());
+    let result = CapabilitiesService::get_capabilities(
+        &CapabilitiesImpl {
+            store,
+            digest_functions: vec![],
+        },
+        request,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(status) if status.code() == tonic::Code::Internal
+            && status.message() == "test server state lock poisoned"
+    ));
 }
 
 /// A server listening on an ephemeral port, shut down when dropped.

@@ -17,7 +17,8 @@ runtime: schema.#NixRuntime & {
 }
 
 ci: {
-	contributors: [c.#NamespaceCache]
+	providers: ["github"]
+	contributors: [c.#Nix, c.#Cuenv, c.#NamespaceCache]
 	provider: github: namespaceCache: {}
 	pipelines: {
 		build: {

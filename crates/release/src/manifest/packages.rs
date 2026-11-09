@@ -19,7 +19,7 @@ impl CargoManifest {
     /// # Errors
     ///
     /// Returns an error if workspace members cannot be discovered or parsed.
-    pub fn get_package_paths(&self) -> Result<HashMap<String, PathBuf>> {
+    pub fn package_paths(&self) -> Result<HashMap<String, PathBuf>> {
         let members = self.discover_members()?;
         let mut paths_map = HashMap::new();
 
@@ -41,7 +41,7 @@ impl CargoManifest {
     /// # Errors
     ///
     /// Returns an error if workspace members cannot be discovered or parsed.
-    pub fn get_package_names(&self) -> Result<Vec<String>> {
+    pub fn package_names(&self) -> Result<Vec<String>> {
         let members = self.discover_members()?;
         let mut names = Vec::new();
 

@@ -1,9 +1,14 @@
-use super::*;
-use crate::{Input, Task, TaskCacheMode, TaskCachePolicy};
-use cuenv_cas::{LocalActionCache, LocalCas};
+use super::{
+    Action, ActionResult, Arc, BTreeMap, BuildActionInput, CacheOutcome, CacheSkipReason, Digest,
+    ExecutionMetadata, MaterializeOutputs, OutputFile, Path, PathBuf, RecordInput, TaskCacheConfig,
+};
+use crate::{Input, Sandbox, Task, TaskCacheMode, TaskCachePolicy};
+use cuenv_cas::{LocalActionCache, LocalCas, OutputDirectory};
 use cuenv_core::environment::Environment;
+use cuenv_manifest::tasks::{MappedInput, Mapping, ProjectReference};
 use cuenv_vcs::WalkHasher;
 use std::fs;
+use std::time::Duration;
 use tempfile::TempDir;
 
 fn make_cache(root: &Path) -> TaskCacheConfig {
@@ -22,15 +27,26 @@ fn make_cache(root: &Path) -> TaskCacheConfig {
     }
 }
 
-fn make_task(command: &str, args: &[&str], inputs: &[&str], outputs: &[&str]) -> Task {
+#[derive(Clone, Copy)]
+struct TaskPaths<'paths> {
+    inputs: &'paths [&'paths str],
+    outputs: &'paths [&'paths str],
+}
+
+fn make_task(command: &str, args: &[&str], paths: TaskPaths<'_>) -> Task {
     Task {
         command: command.to_string(),
         args: args.iter().map(|arg| (*arg).to_string()).collect(),
-        inputs: inputs
+        inputs: paths
+            .inputs
             .iter()
             .map(|path| Input::Path((*path).to_string()))
             .collect(),
-        outputs: outputs.iter().map(|output| (*output).to_string()).collect(),
+        outputs: paths
+            .outputs
+            .iter()
+            .map(|output| (*output).to_string())
+            .collect(),
         cache: Some(TaskCachePolicy {
             mode: TaskCacheMode::ReadWrite,
             max_age: None,
@@ -40,7 +56,7 @@ fn make_task(command: &str, args: &[&str], inputs: &[&str], outputs: &[&str]) ->
 }
 
 async fn build_action_for_test(input: BuildActionInput<'_>) -> Option<(Action, Digest)> {
-    match build_action(input).await.unwrap() {
+    match super::build_action(input).await.unwrap() {
         CacheOutcome::Eligible(eligible) => Some((eligible.action, eligible.digest)),
         CacheOutcome::Skipped { .. } => None,
     }
@@ -50,7 +66,14 @@ async fn build_action_for_test(input: BuildActionInput<'_>) -> Option<(Action, D
 async fn build_action_returns_none_when_no_inputs() {
     let tmp = TempDir::new().unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &[], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &[],
+            outputs: &[],
+        },
+    );
     let env = Environment::new();
 
     let result = build_action_for_test(BuildActionInput {
@@ -70,7 +93,14 @@ async fn build_action_is_deterministic() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     let env = Environment::new();
 
     let (_, first) = build_action_for_test(BuildActionInput {
@@ -101,7 +131,14 @@ async fn build_action_changes_when_input_changes() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "first").unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     let env = Environment::new();
 
     let (_, first) = build_action_for_test(BuildActionInput {
@@ -135,7 +172,14 @@ async fn build_action_changes_when_timeout_changes() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let cache = make_cache(tmp.path());
-    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let mut task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     let env = Environment::new();
 
     task.timeout = Some("10s".to_string());
@@ -171,7 +215,14 @@ async fn build_action_returns_none_when_task_has_task_level_env() {
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let side_effect = tmp.path().join("side-effect.txt");
     let cache = make_cache(tmp.path());
-    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let mut task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     task.env.insert(
         "GH_TOKEN".to_string(),
         serde_json::json!({
@@ -205,12 +256,19 @@ async fn runtime_env_skip_keeps_resolved_inputs_for_sandboxing() {
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let cache = make_cache(tmp.path());
 
-    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let mut task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     task.env
         .insert("TOKEN".to_string(), serde_json::json!("runtime"));
     let env = Environment::new();
 
-    let outcome = build_action(BuildActionInput {
+    let outcome = super::build_action(BuildActionInput {
         task: &task,
         task_name: "task-env",
         environment: &env,
@@ -235,12 +293,19 @@ async fn input_resolution_failure_precedes_runtime_env_cache_skip() {
     let mut cache = make_cache(tmp.path());
     cache.vcs_hasher_root = tmp.path().join("other-root");
 
-    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let mut task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     task.env
         .insert("TOKEN".to_string(), serde_json::json!("runtime"));
     let env = Environment::new();
 
-    let outcome = build_action(BuildActionInput {
+    let outcome = super::build_action(BuildActionInput {
         task: &task,
         task_name: "task-env",
         environment: &env,
@@ -271,7 +336,14 @@ async fn build_action_hashes_inputs_relative_to_task_project_root() {
     fs::write(nested_project_root.join("src/input.txt"), "nested-project").unwrap();
 
     let cache = make_cache(workspace_root);
-    let task = make_task("echo", &["hi"], &["src/input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["src/input.txt"],
+            outputs: &[],
+        },
+    );
     let env = Environment::new();
 
     let (_, first) = build_action_for_test(BuildActionInput {
@@ -329,8 +401,22 @@ async fn build_action_changes_when_command_changes() {
     let cache = make_cache(tmp.path());
     let env = Environment::new();
 
-    let task1 = make_task("cargo", &["build"], &["input.txt"], &[]);
-    let task2 = make_task("cargo", &["test"], &["input.txt"], &[]);
+    let task1 = make_task(
+        "cargo",
+        &["build"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
+    let task2 = make_task(
+        "cargo",
+        &["test"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
 
     let (_, first) = build_action_for_test(BuildActionInput {
         task: &task1,
@@ -411,11 +497,18 @@ async fn sandbox_tier_changes_action_digest() {
     fs::write(tmp.path().join("input.txt"), "same").unwrap();
     let cache = make_cache(tmp.path());
     let env = Environment::new();
-    let isolated = make_task("echo", &["hi"], &["input.txt"], &["out.txt"]);
+    let isolated = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &["out.txt"],
+        },
+    );
     let mut unisolated = isolated.clone();
     unisolated.hermetic = crate::Hermetic::Options(crate::HermeticOptions {
         passthrough: Vec::new(),
-        sandbox: Some(crate::Sandbox::None),
+        sandbox: Some(Sandbox::None),
     });
 
     let (_, isolated_digest) = build_action_for_test(BuildActionInput {
@@ -451,7 +544,14 @@ async fn record_then_lookup_roundtrips() {
     fs::write(workdir.join("out.txt"), "produced").unwrap();
 
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &["out.txt"]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &["out.txt"],
+        },
+    );
     let env = Environment::new();
 
     let (_, action_digest) = build_action_for_test(BuildActionInput {
@@ -465,7 +565,7 @@ async fn record_then_lookup_roundtrips() {
     .await
     .unwrap();
 
-    record(RecordInput {
+    super::record(RecordInput {
         cache: &cache,
         action_digest: &action_digest,
         workdir: &workdir,
@@ -478,7 +578,7 @@ async fn record_then_lookup_roundtrips() {
     .await
     .unwrap();
 
-    let recorded = lookup(&cache, &action_digest, &task)
+    let recorded = super::lookup(&cache, &action_digest, &task)
         .await
         .unwrap()
         .unwrap();
@@ -488,9 +588,16 @@ async fn record_then_lookup_roundtrips() {
 
     let fresh = tmp.path().join("fresh");
     fs::create_dir_all(&fresh).unwrap();
-    let (stdout, stderr, exit_code) = materialize_hit(&cache, &fresh, &task, &recorded)
-        .await
-        .unwrap();
+    let (stdout, stderr, exit_code) = super::materialize_hit(
+        &cache,
+        MaterializeOutputs {
+            workdir: &fresh,
+            task: &task,
+            result: &recorded,
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(stdout, "stdout-text");
     assert_eq!(stderr, "stderr-text");
     assert_eq!(exit_code, 0);
@@ -506,9 +613,16 @@ async fn output_directory_roundtrips_as_a_reapi_tree() {
     fs::write(workdir.join("dist/nested/app.js"), "built").unwrap();
 
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &["dist"]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &["dist"],
+        },
+    );
     let action_digest = Digest::of_bytes(b"directory-action");
-    record(RecordInput {
+    super::record(RecordInput {
         cache: &cache,
         action_digest: &action_digest,
         workdir: &workdir,
@@ -521,7 +635,7 @@ async fn output_directory_roundtrips_as_a_reapi_tree() {
     .await
     .unwrap();
 
-    let recorded = lookup(&cache, &action_digest, &task)
+    let recorded = super::lookup(&cache, &action_digest, &task)
         .await
         .unwrap()
         .unwrap();
@@ -531,9 +645,16 @@ async fn output_directory_roundtrips_as_a_reapi_tree() {
     let fresh = tmp.path().join("fresh");
     fs::create_dir_all(&fresh).unwrap();
     fs::write(fresh.join("dist"), "stale file").unwrap();
-    materialize_hit(&cache, &fresh, &task, &recorded)
-        .await
-        .unwrap();
+    super::materialize_hit(
+        &cache,
+        MaterializeOutputs {
+            workdir: &fresh,
+            task: &task,
+            result: &recorded,
+        },
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         fs::read_to_string(fresh.join("dist/nested/app.js")).unwrap(),
@@ -559,7 +680,14 @@ async fn record_and_materialize_preserve_executable_outputs() {
     fs::set_permissions(&script, permissions).unwrap();
 
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &["bin"]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &["bin"],
+        },
+    );
     let env = Environment::new();
 
     let (_, action_digest) = build_action_for_test(BuildActionInput {
@@ -573,7 +701,7 @@ async fn record_and_materialize_preserve_executable_outputs() {
     .await
     .unwrap();
 
-    record(RecordInput {
+    super::record(RecordInput {
         cache: &cache,
         action_digest: &action_digest,
         workdir: &workdir,
@@ -586,15 +714,22 @@ async fn record_and_materialize_preserve_executable_outputs() {
     .await
     .unwrap();
 
-    let recorded = lookup(&cache, &action_digest, &task)
+    let recorded = super::lookup(&cache, &action_digest, &task)
         .await
         .unwrap()
         .unwrap();
     let fresh = tmp.path().join("fresh");
     fs::create_dir_all(&fresh).unwrap();
-    materialize_hit(&cache, &fresh, &task, &recorded)
-        .await
-        .unwrap();
+    super::materialize_hit(
+        &cache,
+        MaterializeOutputs {
+            workdir: &fresh,
+            task: &task,
+            result: &recorded,
+        },
+    )
+    .await
+    .unwrap();
 
     let mode = fs::metadata(fresh.join("bin/run.sh"))
         .unwrap()
@@ -636,7 +771,14 @@ async fn build_action_returns_none_when_cache_mode_never() {
 async fn build_action_returns_none_when_explicit_input_is_missing() {
     let tmp = TempDir::new().unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["missing.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["missing.txt"],
+            outputs: &[],
+        },
+    );
     let env = Environment::new();
 
     let result = build_action_for_test(BuildActionInput {
@@ -684,7 +826,7 @@ async fn lookup_respects_max_age() {
     })
     .await
     .unwrap();
-    record(RecordInput {
+    super::record(RecordInput {
         cache: &cache,
         action_digest: &action_digest,
         workdir: &workdir,
@@ -697,8 +839,8 @@ async fn lookup_respects_max_age() {
     .await
     .unwrap();
 
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    let lookup_result = lookup(&cache, &action_digest, &task).await.unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    let lookup_result = super::lookup(&cache, &action_digest, &task).await.unwrap();
     assert!(lookup_result.is_none());
 }
 
@@ -711,7 +853,14 @@ async fn record_skips_non_zero_exit_codes() {
     fs::write(workdir.join("out.txt"), "produced").unwrap();
 
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &["out.txt"]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &["out.txt"],
+        },
+    );
     let env = Environment::new();
 
     let (_, action_digest) = build_action_for_test(BuildActionInput {
@@ -725,7 +874,7 @@ async fn record_skips_non_zero_exit_codes() {
     .await
     .unwrap();
 
-    record(RecordInput {
+    super::record(RecordInput {
         cache: &cache,
         action_digest: &action_digest,
         workdir: &workdir,
@@ -738,7 +887,7 @@ async fn record_skips_non_zero_exit_codes() {
     .await
     .unwrap();
 
-    let lookup_result = lookup(&cache, &action_digest, &task).await.unwrap();
+    let lookup_result = super::lookup(&cache, &action_digest, &task).await.unwrap();
     assert!(lookup_result.is_none());
 }
 
@@ -761,7 +910,7 @@ fn decode_action(bytes: &[u8]) -> Action {
 }
 
 async fn skip_reason_for_test(input: BuildActionInput<'_>) -> Option<CacheSkipReason> {
-    match build_action(input).await.unwrap() {
+    match super::build_action(input).await.unwrap() {
         CacheOutcome::Eligible(_) => None,
         CacheOutcome::Skipped { reason, .. } => Some(reason),
     }
@@ -772,7 +921,14 @@ async fn build_action_skips_non_hermetic_tasks() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let cache = make_cache(tmp.path());
-    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let mut task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     task.hermetic = cuenv_manifest::tasks::Hermetic::Enabled(false);
     let env = Environment::new();
 
@@ -800,7 +956,14 @@ async fn build_action_skips_workdir_outside_project_and_module_roots() {
     fs::write(project.join("input.txt"), "payload").unwrap();
 
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     let env = Environment::new();
 
     let reason = skip_reason_for_test(BuildActionInput {
@@ -823,7 +986,14 @@ async fn action_environment_is_declared_only() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     let mut env = Environment::new();
     env.set("DECLARED".to_string(), "yes".to_string());
 
@@ -884,7 +1054,14 @@ async fn build_action_stores_action_and_command_blobs() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     let env = Environment::new();
 
     let (action, action_digest) = build_action_for_test(BuildActionInput {
@@ -919,10 +1096,17 @@ async fn lookup_ignores_an_entry_whose_output_blob_was_evicted() {
     fs::write(workdir.join("out.txt"), "produced").unwrap();
 
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["out.txt"], &["out.txt"]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["out.txt"],
+            outputs: &["out.txt"],
+        },
+    );
     let action_digest = Digest::of_bytes(b"evicted-action");
 
-    record(RecordInput {
+    super::record(RecordInput {
         cache: &cache,
         action_digest: &action_digest,
         workdir: &workdir,
@@ -935,7 +1119,7 @@ async fn lookup_ignores_an_entry_whose_output_blob_was_evicted() {
     .await
     .unwrap();
     assert!(
-        lookup(&cache, &action_digest, &task)
+        super::lookup(&cache, &action_digest, &task)
             .await
             .unwrap()
             .is_some()
@@ -955,7 +1139,7 @@ async fn lookup_ignores_an_entry_whose_output_blob_was_evicted() {
     fs::remove_file(&blob).unwrap();
 
     assert!(
-        lookup(&cache, &action_digest, &task)
+        super::lookup(&cache, &action_digest, &task)
             .await
             .unwrap()
             .is_none()
@@ -986,11 +1170,25 @@ async fn materialize_hit_rejects_output_paths_that_escape_the_workdir() {
         stderr_digest: None,
         execution_metadata: ExecutionMetadata::default(),
     };
-    let task = make_task("echo", &[], &[], &["escaped.txt"]);
+    let task = make_task(
+        "echo",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &["escaped.txt"],
+        },
+    );
 
-    let error = materialize_hit(&cache, &workdir, &task, &result)
-        .await
-        .unwrap_err();
+    let error = super::materialize_hit(
+        &cache,
+        MaterializeOutputs {
+            workdir: &workdir,
+            task: &task,
+            result: &result,
+        },
+    )
+    .await
+    .unwrap_err();
     assert!(
         error
             .to_string()
@@ -1030,12 +1228,26 @@ async fn materialize_hit_leaves_existing_outputs_intact_when_a_blob_is_missing()
         stderr_digest: None,
         execution_metadata: ExecutionMetadata::default(),
     };
-    let task = make_task("echo", &[], &[], &["first.txt", "second.txt"]);
+    let task = make_task(
+        "echo",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &["first.txt", "second.txt"],
+        },
+    );
 
     assert!(
-        materialize_hit(&cache, &workdir, &task, &result)
-            .await
-            .is_err()
+        super::materialize_hit(
+            &cache,
+            MaterializeOutputs {
+                workdir: &workdir,
+                task: &task,
+                result: &result
+            }
+        )
+        .await
+        .is_err()
     );
 
     // Staging means the first output is never installed, so the workspace is
@@ -1070,11 +1282,25 @@ async fn materialize_hit_removes_its_staging_directory() {
         stderr_digest: None,
         execution_metadata: ExecutionMetadata::default(),
     };
-    let task = make_task("echo", &[], &[], &["nested/out.txt"]);
+    let task = make_task(
+        "echo",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &["nested/out.txt"],
+        },
+    );
 
-    materialize_hit(&cache, &workdir, &task, &result)
-        .await
-        .unwrap();
+    super::materialize_hit(
+        &cache,
+        MaterializeOutputs {
+            workdir: &workdir,
+            task: &task,
+            result: &result,
+        },
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         fs::read_to_string(workdir.join("nested/out.txt")).unwrap(),
@@ -1095,21 +1321,28 @@ async fn materialize_hit_removes_its_staging_directory() {
 
 #[test]
 fn cached_result_rejects_ancestor_output_overlaps() {
-    let task = make_task("echo", &[], &[], &["dist"]);
+    let task = make_task(
+        "echo",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &["dist"],
+        },
+    );
     let result = ActionResult {
         output_files: vec![OutputFile {
             path: "dist/app.js".to_string(),
             digest: Digest::of_bytes(b"app"),
             is_executable: false,
         }],
-        output_directories: vec![cuenv_cas::OutputDirectory {
+        output_directories: vec![OutputDirectory {
             path: "dist".to_string(),
             tree_digest: Digest::of_bytes(b"tree"),
         }],
         ..ActionResult::default()
     };
 
-    let error = validate_cached_result(&task, &result).unwrap_err();
+    let error = super::validate_cached_result(&task, &result).unwrap_err();
     assert!(error.to_string().contains("overlapping output path"));
 }
 
@@ -1125,7 +1358,7 @@ fn output_globs_skip_scratch_directories() {
     fs::create_dir_all(scratch.join("dist")).unwrap();
     fs::write(scratch.join("dist/other.js"), "other").unwrap();
 
-    let outputs = collect_outputs(workdir, &["**/*.js".to_string()]).unwrap();
+    let outputs = super::collect_outputs(workdir, &["**/*.js".to_string()]).unwrap();
 
     assert_eq!(outputs, vec![PathBuf::from("dist/app.js")]);
 }
@@ -1136,7 +1369,14 @@ async fn an_invalid_cached_result_is_a_miss_not_a_failure() {
     // written. That must cost a rerun, not fail the task on every run.
     let tmp = TempDir::new().unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &[], &[], &["dist"]);
+    let task = make_task(
+        "echo",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &["dist"],
+        },
+    );
     let action_digest = Digest::of_bytes(b"some-action");
     let result = ActionResult {
         output_files: vec![OutputFile {
@@ -1153,7 +1393,7 @@ async fn an_invalid_cached_result_is_a_miss_not_a_failure() {
         .unwrap();
 
     assert!(
-        lookup(&cache, &action_digest, &task)
+        super::lookup(&cache, &action_digest, &task)
             .await
             .unwrap()
             .is_none()
@@ -1167,15 +1407,29 @@ async fn cache_hit_removes_a_declared_output_absent_from_the_result() {
     fs::create_dir_all(&workdir).unwrap();
     fs::write(workdir.join("stale.txt"), "old").unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &[], &[], &["stale.txt"]);
+    let task = make_task(
+        "echo",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &["stale.txt"],
+        },
+    );
     let result = ActionResult {
         exit_code: 0,
         ..ActionResult::default()
     };
 
-    materialize_hit(&cache, &workdir, &task, &result)
-        .await
-        .unwrap();
+    super::materialize_hit(
+        &cache,
+        MaterializeOutputs {
+            workdir: &workdir,
+            task: &task,
+            result: &result,
+        },
+    )
+    .await
+    .unwrap();
 
     assert!(!workdir.join("stale.txt").exists());
 }
@@ -1188,7 +1442,14 @@ async fn a_resolved_secret_is_never_written_into_the_stored_command_blob() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
 
     let mut env = Environment::new();
     env.set_secret("API_KEY".to_string(), "hunter2".to_string());
@@ -1221,7 +1482,14 @@ async fn a_task_with_secrets_and_no_salt_is_not_cached() {
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let mut cache = make_cache(tmp.path());
     cache.secret_salt = None;
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
 
     let mut env = Environment::new();
     env.set_secret("API_KEY".to_string(), "hunter2".to_string());
@@ -1244,7 +1512,14 @@ async fn rotating_a_secret_changes_the_action_digest() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
 
     let digest_for = |value: &str| {
         let mut env = Environment::new();
@@ -1278,28 +1553,28 @@ async fn rotating_a_secret_changes_the_action_digest() {
 #[test]
 fn output_walk_roots_bound_a_literal_pattern() {
     let workdir = Path::new("/w");
-    let roots = output_walk_roots(workdir, &["target/release/app".to_string()]);
+    let roots = super::output_walk_roots(workdir, &["target/release/app".to_string()]);
     assert_eq!(roots, vec![PathBuf::from("/w/target/release/app")]);
 }
 
 #[test]
 fn output_walk_roots_stop_at_the_first_wildcard() {
     let workdir = Path::new("/w");
-    let roots = output_walk_roots(workdir, &["dist/**/*.js".to_string()]);
+    let roots = super::output_walk_roots(workdir, &["dist/**/*.js".to_string()]);
     assert_eq!(roots, vec![PathBuf::from("/w/dist")]);
 }
 
 #[test]
 fn a_leading_wildcard_forces_the_whole_workdir() {
     let workdir = Path::new("/w");
-    let roots = output_walk_roots(workdir, &["**/*.js".to_string(), "dist/app".to_string()]);
+    let roots = super::output_walk_roots(workdir, &["**/*.js".to_string(), "dist/app".to_string()]);
     assert_eq!(roots, vec![PathBuf::from("/w")]);
 }
 
 #[test]
 fn nested_roots_are_collapsed_so_no_subtree_is_walked_twice() {
     let workdir = Path::new("/w");
-    let roots = output_walk_roots(
+    let roots = super::output_walk_roots(
         workdir,
         &[
             "dist/nested/deep/**/*".to_string(),
@@ -1324,14 +1599,14 @@ async fn output_collection_ignores_trees_outside_the_declared_patterns() {
     fs::create_dir_all(workdir.join("node_modules/pkg/deep")).unwrap();
     fs::write(workdir.join("node_modules/pkg/deep/index.js"), "dep").unwrap();
 
-    let collected = collect_outputs(workdir, &["dist/**/*".to_string()]).unwrap();
+    let collected = super::collect_outputs(workdir, &["dist/**/*".to_string()]).unwrap();
     assert_eq!(collected, vec![PathBuf::from("dist/app.js")]);
 }
 
 #[tokio::test]
 async fn a_declared_output_that_was_never_produced_is_not_an_error() {
     let tmp = TempDir::new().unwrap();
-    let collected = collect_outputs(tmp.path(), &["dist/**/*".to_string()]).unwrap();
+    let collected = super::collect_outputs(tmp.path(), &["dist/**/*".to_string()]).unwrap();
     assert!(collected.is_empty());
 }
 
@@ -1342,7 +1617,7 @@ async fn overlapping_patterns_report_each_file_once() {
     fs::create_dir_all(workdir.join("dist")).unwrap();
     fs::write(workdir.join("dist/app.js"), "built").unwrap();
 
-    let collected = collect_outputs(
+    let collected = super::collect_outputs(
         workdir,
         &["dist/**/*".to_string(), "dist/app.js".to_string()],
     )
@@ -1358,7 +1633,7 @@ async fn a_bare_directory_output_is_collected_as_one_tree() {
     fs::write(workdir.join("dist/a.js"), "a").unwrap();
     fs::write(workdir.join("dist/sub/b.js"), "b").unwrap();
 
-    let collected = collect_outputs(workdir, &["dist".to_string()]).unwrap();
+    let collected = super::collect_outputs(workdir, &["dist".to_string()]).unwrap();
     assert_eq!(collected, vec![PathBuf::from("dist")]);
 }
 
@@ -1371,9 +1646,16 @@ fn an_override_narrows_a_read_write_task_to_read() {
     let tmp = TempDir::new().unwrap();
     let mut cache = make_cache(tmp.path());
     cache.mode_override = Some(TaskCacheMode::Read);
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
 
-    let policy = effective_policy(&cache, &task);
+    let policy = super::effective_policy(&cache, &task);
     assert!(policy.mode.allows_read());
     assert!(!policy.mode.allows_write());
 }
@@ -1383,9 +1665,16 @@ fn an_override_can_force_write_only_to_refresh_a_poisoned_entry() {
     let tmp = TempDir::new().unwrap();
     let mut cache = make_cache(tmp.path());
     cache.mode_override = Some(TaskCacheMode::Write);
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
 
-    let policy = effective_policy(&cache, &task);
+    let policy = super::effective_policy(&cache, &task);
     assert!(!policy.mode.allows_read());
     assert!(policy.mode.allows_write());
 }
@@ -1397,13 +1686,20 @@ fn an_override_never_caches_a_task_that_opted_out() {
     let tmp = TempDir::new().unwrap();
     let mut cache = make_cache(tmp.path());
     cache.mode_override = Some(TaskCacheMode::ReadWrite);
-    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let mut task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
     task.cache = Some(TaskCachePolicy {
         mode: TaskCacheMode::Never,
         max_age: None,
     });
 
-    let policy = effective_policy(&cache, &task);
+    let policy = super::effective_policy(&cache, &task);
     assert!(!policy.mode.allows_read());
     assert!(!policy.mode.allows_write());
 }
@@ -1423,13 +1719,20 @@ fn an_override_only_removes_permissions_a_task_declared() {
         for override_mode in [TaskCacheMode::Read, TaskCacheMode::Write] {
             let mut cache = make_cache(tmp.path());
             cache.mode_override = Some(override_mode);
-            let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+            let mut task = make_task(
+                "echo",
+                &["hi"],
+                TaskPaths {
+                    inputs: &["input.txt"],
+                    outputs: &[],
+                },
+            );
             task.cache = Some(TaskCachePolicy {
                 mode: declared,
                 max_age: None,
             });
 
-            let effective = effective_policy(&cache, &task).mode;
+            let effective = super::effective_policy(&cache, &task).mode;
 
             assert_eq!(
                 effective.allows_read(),
@@ -1449,9 +1752,16 @@ fn an_override_only_removes_permissions_a_task_declared() {
 fn without_an_override_the_task_policy_is_used_verbatim() {
     let tmp = TempDir::new().unwrap();
     let cache = make_cache(tmp.path());
-    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let task = make_task(
+        "echo",
+        &["hi"],
+        TaskPaths {
+            inputs: &["input.txt"],
+            outputs: &[],
+        },
+    );
 
-    let policy = effective_policy(&cache, &task);
+    let policy = super::effective_policy(&cache, &task);
     assert!(policy.mode.allows_read());
     assert!(policy.mode.allows_write());
 }
@@ -1495,13 +1805,20 @@ fn cross_project_module() -> CrossProjectModule {
 }
 
 fn consuming_task(project: &str, mappings: &[(&str, &str)]) -> Task {
-    let mut task = make_task("bundle", &[], &[], &[]);
-    task.inputs = vec![Input::Project(cuenv_manifest::tasks::ProjectReference {
+    let mut task = make_task(
+        "bundle",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &[],
+        },
+    );
+    task.inputs = vec![Input::Project(ProjectReference {
         project: project.to_string(),
         task: "build".to_string(),
         map: mappings
             .iter()
-            .map(|(from, to)| cuenv_manifest::tasks::Mapping {
+            .map(|(from, to)| Mapping {
                 from: (*from).to_string(),
                 to: (*to).to_string(),
             })
@@ -1531,7 +1848,7 @@ async fn a_relative_project_path_resolves_within_the_hasher_workspace() {
     let task = consuming_task("../producer", &[("dist/app.js", "vendor/app.js")]);
     let env = Environment::new();
 
-    let outcome = build_action(BuildActionInput {
+    let outcome = super::build_action(BuildActionInput {
         task: &task,
         task_name: "consumer.bundle",
         environment: &env,
@@ -1573,7 +1890,7 @@ async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
     );
     let env = Environment::new();
 
-    let outcome = build_action(BuildActionInput {
+    let outcome = super::build_action(BuildActionInput {
         task: &task,
         task_name: "consumer.bundle",
         environment: &env,
@@ -1619,15 +1936,22 @@ async fn a_cross_project_input_is_hashed_from_the_other_project() {
 #[tokio::test]
 async fn an_expanded_task_output_keeps_its_destination_mapping() {
     let module = cross_project_module();
-    let mut task = make_task("bundle", &[], &[], &[]);
-    task.inputs = vec![Input::Mapped(cuenv_manifest::tasks::MappedInput {
+    let mut task = make_task(
+        "bundle",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &[],
+        },
+    );
+    task.inputs = vec![Input::Mapped(MappedInput {
         source: "producer/dist/app.js".to_string(),
         destination: "vendor/app.js".to_string(),
         producer_task: None,
     })];
     let env = Environment::new();
 
-    let outcome = build_action(BuildActionInput {
+    let outcome = super::build_action(BuildActionInput {
         task: &task,
         task_name: "consumer.bundle",
         environment: &env,
@@ -1819,11 +2143,14 @@ async fn file_and_directory_prefix_inputs_are_not_cached() {
 
 #[test]
 fn literal_prefix_bounds_a_pattern() {
-    assert_eq!(literal_prefix("dist/**/*.js"), PathBuf::from("dist"));
-    assert_eq!(literal_prefix("dist/app.js"), PathBuf::from("dist/app.js"));
+    assert_eq!(super::literal_prefix("dist/**/*.js"), PathBuf::from("dist"));
     assert_eq!(
-        literal_prefix("./dist/app.js"),
+        super::literal_prefix("dist/app.js"),
         PathBuf::from("dist/app.js")
     );
-    assert_eq!(literal_prefix("**/*.js"), PathBuf::new());
+    assert_eq!(
+        super::literal_prefix("./dist/app.js"),
+        PathBuf::from("dist/app.js")
+    );
+    assert_eq!(super::literal_prefix("**/*.js"), PathBuf::new());
 }

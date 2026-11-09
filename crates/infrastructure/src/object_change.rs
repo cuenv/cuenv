@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 
 use crate::schema::{Attribute, Block, NestedAttributes, NestedBlock, Nesting, Presence};
-use crate::type_system::{PathStep, Type, Value, raw_equal};
+use crate::type_system::{PathStep, Type, Value};
 
 static NULL_VALUE: Value = Value::Null;
 static UNKNOWN_VALUE: Value = Value::Unknown;
@@ -294,7 +294,7 @@ fn valid_prior_from_configuration(
     prior: &Value,
     configuration: &Value,
 ) -> bool {
-    raw_equal(configuration, prior, &schema.element_type())
+    crate::type_system::raw_equal(configuration, prior, &schema.element_type())
         || object_derives_from(schema, prior, configuration)
 }
 
@@ -326,7 +326,7 @@ fn object_derives_from(schema: ElementSchema<'_>, prior: &Value, configuration: 
 }
 
 fn attribute_derives_from(attribute: &Attribute, prior: &Value, configuration: &Value) -> bool {
-    if raw_equal(configuration, prior, &attribute.value_type) {
+    if crate::type_system::raw_equal(configuration, prior, &attribute.value_type) {
         return true;
     }
     // Nested sets cannot be correlated, so they must be equal.
@@ -349,7 +349,7 @@ fn attribute_derives_from(attribute: &Attribute, prior: &Value, configuration: &
 }
 
 fn block_derives_from(nested: &NestedBlock, prior: &Value, configuration: &Value) -> bool {
-    if raw_equal(configuration, prior, &nested.implied_type()) {
+    if crate::type_system::raw_equal(configuration, prior, &nested.implied_type()) {
         return true;
     }
     if nested.nesting == Nesting::Set {
@@ -381,7 +381,7 @@ fn collection_derives_from(
     let element_type = schema.element_type();
     let element_derives = |prior_element: &Value, configured: Option<&Value>| {
         configured.is_some_and(|configured| {
-            raw_equal(configured, prior_element, &element_type)
+            crate::type_system::raw_equal(configured, prior_element, &element_type)
                 || object_derives_from(schema, prior_element, configured)
         })
     };
@@ -528,7 +528,7 @@ impl PlanCheck {
             ));
             return;
         }
-        if raw_equal(planned, configuration, &nested.implied_type()) {
+        if crate::type_system::raw_equal(planned, configuration, &nested.implied_type()) {
             return;
         }
         if matches!(configuration, Value::Unknown) {
@@ -553,9 +553,8 @@ impl PlanCheck {
                     ));
                     return;
                 }
-                for (index, (planned_element, configured_element)) in
-                    planned_elements.iter().zip(configured_elements).enumerate()
-                {
+                let indexed_elements = planned_elements.iter().zip(configured_elements).enumerate();
+                for (index, (planned_element, configured_element)) in indexed_elements {
                     self.within(path_index(index), |check| {
                         if matches!(planned_element, Value::Unknown) {
                             check.problem(UNKNOWN_BLOCK_ELEMENT);
@@ -648,12 +647,15 @@ impl PlanCheck {
             }
             return;
         }
-        if raw_equal(planned, configuration, value_type) {
+        if crate::type_system::raw_equal(planned, configuration, value_type) {
             return;
         }
         // The provider returned the prior value in place of the configured
         // one: it considers them equivalent (semantic equality).
-        if raw_equal(planned, prior, value_type) && !prior.is_null() && !configuration.is_null() {
+        if crate::type_system::raw_equal(planned, prior, value_type)
+            && !prior.is_null()
+            && !configuration.is_null()
+        {
             return;
         }
         match attribute.presence {
@@ -715,9 +717,8 @@ impl PlanCheck {
                     ));
                     return;
                 }
-                for (index, (planned_element, configured_element)) in
-                    planned_elements.iter().zip(configured_elements).enumerate()
-                {
+                let indexed_elements = planned_elements.iter().zip(configured_elements).enumerate();
+                for (index, (planned_element, configured_element)) in indexed_elements {
                     self.within(path_index(index), |check| {
                         check.attributes(
                             attributes,
@@ -897,9 +898,8 @@ impl PlanCheck {
                     ));
                     return;
                 }
-                for (index, (planned_element, actual_element)) in
-                    planned_elements.iter().zip(actual_elements).enumerate()
-                {
+                let indexed_elements = planned_elements.iter().zip(actual_elements).enumerate();
+                for (index, (planned_element, actual_element)) in indexed_elements {
                     self.within(path_index(index), |check| {
                         check.compatible_object(block, planned_element, actual_element);
                     });
@@ -1029,7 +1029,7 @@ impl PlanCheck {
         }
         match value_type {
             Type::Boolean | Type::Number | Type::String => {
-                if !raw_equal(planned, actual, value_type) {
+                if !crate::type_system::raw_equal(planned, actual, value_type) {
                     self.problem("planned value changed after apply");
                 }
             }

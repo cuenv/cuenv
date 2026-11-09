@@ -62,10 +62,10 @@ impl ToolOptions {
         self
     }
 
-    /// Set force refetch.
+    /// Re-fetch tools even when they are cached.
     #[must_use]
-    pub fn with_force_refetch(mut self, force: bool) -> Self {
-        self.force_refetch = force;
+    pub fn with_force_refetch(mut self) -> Self {
+        self.force_refetch = true;
         self
     }
 
@@ -86,17 +86,17 @@ pub fn default_cache_dir() -> PathBuf {
 }
 
 /// Request parameters for tool resolution.
-pub struct ToolResolveRequest<'a> {
+pub struct ToolResolveRequest<'request> {
     /// Name of the tool (e.g., "jq").
-    pub tool_name: &'a str,
+    pub tool_name: &'request str,
     /// Version string from the manifest.
-    pub version: &'a str,
+    pub version: &'request str,
     /// Target platform.
-    pub platform: &'a Platform,
+    pub platform: &'request Platform,
     /// Provider-specific configuration from CUE.
-    pub config: &'a serde_json::Value,
+    pub config: &'request serde_json::Value,
     /// Optional authentication token (e.g., GitHub token for rate limiting).
-    pub token: Option<&'a str>,
+    pub token: Option<&'request str>,
 }
 
 /// Trait for tool providers (GitHub, OCI, Nix).
@@ -107,15 +107,52 @@ pub struct ToolResolveRequest<'a> {
 ///
 /// # Example
 ///
-/// ```ignore
-/// pub struct GitHubToolProvider { /* ... */ }
+/// ```
+/// use async_trait::async_trait;
+/// use cuenv_tool_runtime::{
+///     FetchedTool, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest, ToolSource,
+/// };
+///
+/// struct NixExample;
 ///
 /// #[async_trait]
-/// impl ToolProvider for GitHubToolProvider {
-///     fn name(&self) -> &'static str { "github" }
-///     fn description(&self) -> &'static str { "Fetch tools from GitHub releases" }
-///     // ...
+/// impl ToolProvider for NixExample {
+///     fn name(&self) -> &'static str { "nix-example" }
+///     fn description(&self) -> &'static str { "Resolve tools from a Nix flake" }
+///     fn can_handle(&self, source: &ToolSource) -> bool {
+///         matches!(source, ToolSource::Nix { .. })
+///     }
+///     async fn resolve(
+///         &self,
+///         request: &ToolResolveRequest<'_>,
+///     ) -> cuenv_core::Result<ResolvedTool> {
+///         Ok(ResolvedTool {
+///             name: request.tool_name.to_string(),
+///             version: request.version.to_string(),
+///             platform: request.platform.clone(),
+///             source: ToolSource::Nix {
+///                 flake: "nixpkgs".into(),
+///                 package: request.tool_name.into(),
+///                 output: None,
+///             },
+///         })
+///     }
+///     async fn fetch(
+///         &self,
+///         _resolved: &ResolvedTool,
+///         _options: &ToolOptions,
+///     ) -> cuenv_core::Result<FetchedTool> {
+///         Err(cuenv_core::Error::configuration("example provider does not fetch"))
+///     }
+///     fn is_cached(&self, _resolved: &ResolvedTool, _options: &ToolOptions) -> bool { false }
 /// }
+///
+/// let source = ToolSource::Nix {
+///     flake: "nixpkgs".into(),
+///     package: "jq".into(),
+///     output: None,
+/// };
+/// assert!(NixExample.can_handle(&source));
 /// ```
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
@@ -489,7 +526,7 @@ mod tests {
     fn test_tool_options_builder() {
         let opts = ToolOptions::new()
             .with_cache_dir(PathBuf::from("/custom/cache"))
-            .with_force_refetch(true);
+            .with_force_refetch();
 
         assert_eq!(opts.cache_dir, Some(PathBuf::from("/custom/cache")));
         assert!(opts.force_refetch);

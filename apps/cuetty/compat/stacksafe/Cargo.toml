@@ -1,0 +1,12 @@
+[package]
+name = "stacksafe"
+version = "0.1.4"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[features]
+serde = ["stacksafe_upstream/serde"]
+
+[dependencies]
+stacksafe_upstream = { package = "stacksafe", version = "=1.0.3" }

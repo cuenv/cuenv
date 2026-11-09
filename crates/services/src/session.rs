@@ -92,19 +92,19 @@ impl ServiceControlRequest {
 impl SessionManager {
     /// Create a new session for a project, writing `session.json`.
     ///
-    /// Fails if an existing session's controller PID is still alive.
+    /// Fails if an existing session is corrupt or its controller PID is still alive.
     ///
     /// # Errors
     ///
-    /// Returns an error if the session directory can't be created or a live session exists.
+    /// Returns an error if the session metadata is corrupt, the session directory
+    /// can't be created, or a live session exists.
     pub fn create(project_path: &Path, project_name: &str) -> crate::Result<Self> {
         let root = session_dir(project_path);
 
         // Check for existing live session
         if root.join("session.json").exists() {
-            if let Ok(existing) = Self::load_info(&root)
-                && is_pid_alive(existing.controller_pid)
-            {
+            let existing = Self::load_info(&root)?;
+            if is_pid_alive(existing.controller_pid) {
                 return Err(crate::Error::Session {
                     message: format!(
                         "another cuenv up session is running (PID {})",
@@ -318,8 +318,21 @@ impl SessionManager {
 
     fn load_info(root: &Path) -> crate::Result<SessionInfo> {
         let data = fs::read_to_string(root.join("session.json"))?;
-        serde_json::from_str(&data)
-            .map_err(|e| crate::Error::session(format!("corrupt session.json: {e}")))
+        let info: SessionInfo = serde_json::from_str(&data)
+            .map_err(|e| crate::Error::session(format!("corrupt session.json: {e}")))?;
+        if info.controller_pid == 0 {
+            return Err(crate::Error::session(
+                "corrupt session.json: controller PID must be greater than zero",
+            ));
+        }
+        #[cfg(unix)]
+        if i32::try_from(info.controller_pid).is_err() {
+            return Err(crate::Error::session(format!(
+                "corrupt session.json: controller PID {} does not fit platform pid_t",
+                info.controller_pid
+            )));
+        }
+        Ok(info)
     }
 
     fn request_service_control(
@@ -372,20 +385,32 @@ fn session_dir(project_path: &Path) -> PathBuf {
 }
 
 /// Check if a process with the given PID is alive.
+///
+/// On Unix, only `ESRCH` establishes that the process is absent. Other probe
+/// errors cannot establish that removing its session is safe.
 fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+
     #[cfg(unix)]
     {
         let Ok(raw_pid) = i32::try_from(pid) else {
             return false;
         };
-        // Signal 0 checks process existence without sending a signal
         #[expect(
             unsafe_code,
             reason = "kill(pid, 0) checks process liveness without sending a signal"
         )]
-        unsafe {
-            libc::kill(raw_pid, 0) == 0
-        }
+        // SAFETY: kill takes integer arguments and touches no Rust memory;
+        // signal 0 checks process existence without sending a signal.
+        let status = unsafe { libc::kill(raw_pid, 0) };
+        let result = if status == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+        pid_probe_indicates_alive(result)
     }
     #[cfg(not(unix))]
     {
@@ -394,7 +419,19 @@ fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+#[cfg(unix)]
+fn pid_probe_indicates_alive(result: std::io::Result<()>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => error.raw_os_error() != Some(libc::ESRCH),
+    }
+}
+
 fn signal_controller_shutdown(pid: u32) -> crate::Result<()> {
+    if pid == 0 {
+        return Err(crate::Error::session("invalid controller PID 0"));
+    }
+
     #[cfg(unix)]
     {
         let raw_pid = i32::try_from(pid).map_err(|_| crate::Error::Session {
@@ -406,6 +443,8 @@ fn signal_controller_shutdown(pid: u32) -> crate::Result<()> {
             unsafe_code,
             reason = "Sending SIGINT to the recorded controller PID requests graceful shutdown"
         )]
+        // SAFETY: kill takes integer arguments and touches no Rust memory;
+        // raw_pid is positive and fits the platform PID type.
         let result = unsafe { libc::kill(raw_pid, libc::SIGINT) };
 
         if result == 0 {
@@ -503,6 +542,24 @@ mod tests {
         assert!(!is_pid_alive(999_999));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn only_esrch_proves_a_controller_process_is_absent() {
+        assert!(pid_probe_indicates_alive(Ok(())));
+        assert!(!pid_probe_indicates_alive(Err(
+            std::io::Error::from_raw_os_error(libc::ESRCH)
+        )));
+        assert!(pid_probe_indicates_alive(Err(
+            std::io::Error::from_raw_os_error(libc::EPERM)
+        )));
+        assert!(pid_probe_indicates_alive(Err(
+            std::io::Error::from_raw_os_error(libc::EINVAL)
+        )));
+        assert!(pid_probe_indicates_alive(Err(std::io::Error::other(
+            "probe failed without an OS error code"
+        ))));
+    }
+
     #[test]
     fn test_load_nonexistent_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -526,6 +583,147 @@ mod tests {
                 controller_pid: 999_999
             }
         );
+    }
+
+    fn overwrite_controller_pid(session: &SessionManager, pid: u32) {
+        let mut info = session.info().expect("read session metadata");
+        info.controller_pid = pid;
+        let json = serde_json::to_string_pretty(&info).expect("serialize session metadata");
+        fs::write(session.root().join("session.json"), json).expect("write session metadata");
+    }
+
+    #[test]
+    fn zero_controller_pid_is_corrupt_session_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(dir.path(), "test-project").unwrap();
+        overwrite_controller_pid(&session, 0);
+
+        let error = session.info().expect_err("zero PID is invalid");
+        assert!(error.to_string().contains("corrupt session.json"));
+        assert!(error.to_string().contains("controller PID"));
+        assert!(!session.is_alive());
+        assert!(session.root().join("session.json").exists());
+    }
+
+    #[test]
+    fn creating_a_session_preserves_corrupt_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(dir.path(), "test-project").unwrap();
+        let mut info = session.info().unwrap();
+        info.controller_pid = 0;
+        let zero_pid = serde_json::to_string(&info).unwrap();
+
+        for metadata in [zero_pid, "{invalid json".to_string()] {
+            let path = session.root().join("session.json");
+            fs::write(&path, &metadata).unwrap();
+            let error = match SessionManager::create(dir.path(), "replacement") {
+                Ok(_) => panic!("corrupt session must not be replaced"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("corrupt session.json"));
+            assert_eq!(fs::read_to_string(&path).unwrap(), metadata);
+        }
+    }
+
+    #[test]
+    fn creating_a_session_still_removes_a_stale_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(dir.path(), "test-project").unwrap();
+        let stale_marker = session.root().join("stale-marker");
+        fs::write(&stale_marker, "old session").unwrap();
+
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--list",
+                "--exact",
+                "session::tests::creating_a_session_still_removes_a_stale_session",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn a controller process");
+        let pid = child.id();
+        assert!(child.wait().expect("reap controller process").success());
+        overwrite_controller_pid(&session, pid);
+
+        let replacement = SessionManager::create(dir.path(), "replacement").unwrap();
+        assert!(!stale_marker.exists());
+        assert_eq!(
+            replacement.info().unwrap().controller_pid,
+            std::process::id()
+        );
+        assert_eq!(replacement.info().unwrap().project_name, "replacement");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn out_of_range_controller_pid_is_preserved_as_corrupt_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(dir.path(), "test-project").unwrap();
+        overwrite_controller_pid(&session, u32::MAX);
+        let path = session.root().join("session.json");
+        let metadata = fs::read_to_string(&path).unwrap();
+
+        let error = session.request_shutdown().expect_err("PID must fit pid_t");
+        assert!(error.to_string().contains("corrupt session.json"));
+        assert!(error.to_string().contains("does not fit platform pid_t"));
+        assert!(!session.is_alive());
+        let error = match SessionManager::create(dir.path(), "replacement") {
+            Ok(_) => panic!("out-of-range PID must not be treated as a stale session"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("corrupt session.json"));
+        assert_eq!(fs::read_to_string(path).unwrap(), metadata);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zero_controller_pid_cannot_signal_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        const CHILD_MARKER: &str = "CUENV_TEST_ZERO_CONTROLLER_PID_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            // SAFETY: getpgrp has no arguments and does not access Rust memory.
+            #[expect(unsafe_code, reason = "verifying the test subprocess process group")]
+            let process_group = unsafe { libc::getpgrp() };
+            assert_eq!(
+                process_group,
+                i32::try_from(std::process::id()).unwrap(),
+                "the signalling regression must run in an isolated process group"
+            );
+
+            let dir = tempfile::tempdir().unwrap();
+            let session = SessionManager::create(dir.path(), "test-project").unwrap();
+            overwrite_controller_pid(&session, 0);
+            let loaded = SessionManager::load(dir.path()).expect("load session directory");
+
+            let error = loaded
+                .request_shutdown()
+                .expect_err("zero controller PID must be rejected");
+            assert!(error.to_string().contains("corrupt session.json"));
+            assert!(loaded.root().join("session.json").exists());
+            assert!(!is_pid_alive(0));
+            assert!(signal_controller_shutdown(0).is_err());
+            assert!(!is_pid_alive(u32::MAX));
+            assert!(signal_controller_shutdown(u32::MAX).is_err());
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("session::tests::zero_controller_pid_cannot_signal_process_group")
+            .arg("--nocapture")
+            .env(CHILD_MARKER, "1")
+            .process_group(0)
+            .output()
+            .expect("run isolated signalling regression");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "isolated signalling regression failed: {stdout}\n{stderr}"
+        );
+        assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
     }
 
     #[test]

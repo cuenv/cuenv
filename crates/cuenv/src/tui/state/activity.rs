@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use super::elapsed_millis_since;
+use cuenv_events::Stream;
 
 /// Status of a task in the execution graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +85,7 @@ impl TaskInfo {
     /// Get elapsed time in milliseconds for running tasks
     #[must_use]
     pub fn elapsed_ms(&self) -> Option<u64> {
-        self.start_time.map(elapsed_millis_since)
+        self.start_time.map(super::tui_state::elapsed_millis_since)
     }
 }
 
@@ -136,11 +136,10 @@ impl TaskOutput {
     }
 
     /// Add a line to the appropriate buffer (with bounded buffer management)
-    fn add_line(&mut self, line: String, is_stderr: bool) {
-        let (buffer, dirty_flag) = if is_stderr {
-            (&mut self.stderr, &mut self.stderr_dirty)
-        } else {
-            (&mut self.stdout, &mut self.stdout_dirty)
+    fn add_line(&mut self, line: String, stream: Stream) {
+        let (buffer, dirty_flag) = match stream {
+            Stream::Stdout => (&mut self.stdout, &mut self.stdout_dirty),
+            Stream::Stderr => (&mut self.stderr, &mut self.stderr_dirty),
         };
 
         if buffer.len() >= MAX_OUTPUT_LINES {
@@ -153,7 +152,7 @@ impl TaskOutput {
         }
         self.combined.push_back(OutputLine {
             content: line,
-            is_stderr,
+            is_stderr: stream == Stream::Stderr,
         });
 
         *dirty_flag = true;
@@ -161,12 +160,12 @@ impl TaskOutput {
 
     /// Add a stdout line (with bounded buffer)
     pub fn add_stdout(&mut self, line: String) {
-        self.add_line(line, false);
+        self.add_line(line, Stream::Stdout);
     }
 
     /// Add a stderr line (with bounded buffer)
     pub fn add_stderr(&mut self, line: String) {
-        self.add_line(line, true);
+        self.add_line(line, Stream::Stderr);
     }
 
     /// Clear dirty flags after rendering
@@ -247,6 +246,6 @@ impl ActivityModel {
     /// Milliseconds elapsed since [`ActivityModel`] construction.
     #[must_use]
     pub fn elapsed_ms(&self) -> u64 {
-        elapsed_millis_since(self.start_time)
+        super::tui_state::elapsed_millis_since(self.start_time)
     }
 }

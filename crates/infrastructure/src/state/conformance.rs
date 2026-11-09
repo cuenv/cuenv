@@ -67,7 +67,7 @@ pub async fn conforms(store: &dyn StateStore) {
         Err(InfrastructureError::Locked { .. })
     ));
     let held = store.current_lock(&tenant).await.unwrap().unwrap();
-    assert_eq!(held.lock_identifier, lock.lock_identifier);
+    assert_eq!(held.identifier(), Some(lock.lock_identifier.as_str()));
     assert_eq!(held.holder, "conformance");
     assert_eq!(
         store.last_writer(&tenant).await.unwrap().unwrap().instance,
@@ -75,7 +75,10 @@ pub async fn conforms(store: &dyn StateStore) {
     );
     let listed = store.locks().await.unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].lock.lock_identifier, lock.lock_identifier);
+    assert_eq!(
+        listed[0].lock.identifier(),
+        Some(lock.lock_identifier.as_str())
+    );
     assert_eq!(listed[0].tenant().unwrap(), tenant);
 
     // Writes need the current lock; each tenant is isolated.

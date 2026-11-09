@@ -23,9 +23,10 @@ use cuenv_events::{
 };
 
 use crate::control::{ManualControlRequest, wait_for_control_request};
-use crate::duration::parse_duration;
+use crate::duration;
 use crate::lifecycle::ServiceLifecycle;
-use crate::probes::{self, ProbeLoopResult, log::LogProbe};
+use crate::probes::log::LogProbe;
+use crate::probes::{self, ProbeLoopResult};
 use crate::process::ServiceProcess;
 use crate::session::{ServiceState, SessionManager};
 use crate::watcher::{ServiceWatcher, WatchEvent};
@@ -106,7 +107,7 @@ pub struct ServiceSupervisor {
 
 /// Parameters for a state update.
 #[derive(Clone, Copy)]
-pub struct StateUpdate<'a> {
+pub struct StateUpdate<'state_update> {
     /// New lifecycle state.
     pub lifecycle: ServiceLifecycle,
     /// Process ID (if running).
@@ -114,7 +115,7 @@ pub struct StateUpdate<'a> {
     /// Exit code (if exited).
     pub exit_code: Option<i32>,
     /// Error message (if failed).
-    pub error: Option<&'a str>,
+    pub error: Option<&'state_update str>,
 }
 
 #[derive(Clone, Copy)]
@@ -234,18 +235,18 @@ impl ServiceSupervisor {
         let max_restarts = restart_policy.and_then(|r| r.max_restarts).unwrap_or(5);
         let window = restart_policy
             .and_then(|r| r.window.as_deref())
-            .and_then(|w| parse_duration(w).ok())
+            .and_then(|w| duration::parse_duration(w).ok())
             .unwrap_or(Duration::from_secs(60));
 
         let backoff_config = restart_policy.and_then(|r| r.backoff.as_ref());
         let mut backoff = ExponentialBackoff::new(
             backoff_config
                 .and_then(|b| b.initial.as_deref())
-                .and_then(|s| parse_duration(s).ok())
+                .and_then(|s| duration::parse_duration(s).ok())
                 .unwrap_or(Duration::from_secs(1)),
             backoff_config
                 .and_then(|b| b.max.as_deref())
-                .and_then(|s| parse_duration(s).ok())
+                .and_then(|s| duration::parse_duration(s).ok())
                 .unwrap_or(Duration::from_secs(30)),
             backoff_config.and_then(|b| b.factor).unwrap_or(2.0),
         );
@@ -260,10 +261,19 @@ impl ServiceSupervisor {
             let debounce = w
                 .debounce
                 .as_deref()
-                .and_then(|d| parse_duration(d).ok())
+                .and_then(|d| duration::parse_duration(d).ok())
                 .unwrap_or(Duration::from_millis(200));
             let ignore = w.ignore.clone().unwrap_or_default();
-            ServiceWatcher::start(&self.project_root, &w.paths, &ignore, debounce, watch_tx).ok()
+            ServiceWatcher::start(
+                &self.project_root,
+                crate::watcher::WatchOptions {
+                    watch_paths: &w.paths,
+                    ignore_patterns: &ignore,
+                    debounce,
+                },
+                watch_tx,
+            )
+            .ok()
         });
 
         loop {

@@ -25,20 +25,22 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use cuenv_release::{Changeset, ChangesetManager, BumpType};
-//! use std::path::Path;
+//! ```
+//! use cuenv_release::{BumpType, Changeset, ChangesetManager, PackageChange};
 //!
 //! // Create a new changeset
 //! let changeset = Changeset::new(
 //!     "Add new feature",
-//!     vec![("cuenv-core".to_string(), BumpType::Minor)],
+//!     vec![PackageChange::new("cuenv-core", BumpType::Minor)],
 //!     Some("This adds a cool new feature".to_string()),
 //! );
 //!
-//! // Store it
-//! let manager = ChangesetManager::new(Path::new("."));
+//! // Store it in a project directory.
+//! let project = tempfile::tempdir()?;
+//! let manager = ChangesetManager::new(project.path());
 //! manager.add(&changeset)?;
+//! assert_eq!(manager.list()?.len(), 1);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 #![warn(missing_docs)]
@@ -68,7 +70,7 @@ pub use config::{
     HomebrewBackendConfig, ReleaseBackendsConfig, ReleaseConfig, ReleaseGitConfig,
     ReleasePackagesConfig, TagType, VersioningStrategy,
 };
-pub use conventional::{CommitParser, ConventionalCommit};
+pub use conventional::{CommitParser, ConventionalCommit, TagSelection};
 pub use cuenv_core::DryRun;
 pub use error::{Error, Result};
 pub use manifest::CargoManifest;

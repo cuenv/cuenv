@@ -9,21 +9,27 @@
 //! all expose the `grpcs://` endpoint that Bazel's `--remote_cache` takes,
 //! and cuenv dials it the same way.
 //!
-//! ```no_run
+//! ```
 //! use cuenv_cas::{Cas, LocalCas};
-//! use cuenv_cas_remote::{Credentials, LayeredCas, RemoteCas, RemoteClient, RemoteConfig};
+//! use cuenv_cas_remote::{Credentials, LayeredCas, RemoteConfig};
 //! use std::sync::Arc;
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let config = RemoteConfig::new("grpcs://cache.example.com:443")
-//!     .with_credentials(Credentials::Bearer(std::env::var("CACHE_TOKEN")?));
-//! let client = RemoteClient::connect(config).await?;
-//! let remote = Arc::new(RemoteCas::connect(client).await?) as Arc<dyn Cas>;
-//! let local = Arc::new(LocalCas::open("/var/cache/cuenv")?) as Arc<dyn Cas>;
+//!     .with_credentials(Credentials::Bearer("example-token".into()));
+//! # let _ = config;
+//! let local_dir = tempfile::tempdir()?;
+//! let remote_dir = tempfile::tempdir()?;
+//! let local = Arc::new(LocalCas::open(local_dir.path())?) as Arc<dyn Cas>;
+//! // A RemoteCas can be used here after connecting it with `config`.
+//! let remote = Arc::new(LocalCas::open(remote_dir.path())?) as Arc<dyn Cas>;
 //!
 //! // Reads fall through to the remote and are kept locally; writes stay
 //! // local until `with_push()` says otherwise.
 //! let cas = LayeredCas::new(local, remote);
+//! # let runtime = tokio::runtime::Runtime::new()?;
+//! # let digest = runtime.block_on(cas.put_bytes(b"example"))?;
+//! # assert_eq!(runtime.block_on(cas.get(&digest))?, b"example");
 //! # Ok(())
 //! # }
 //! ```

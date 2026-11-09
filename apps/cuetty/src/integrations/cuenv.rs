@@ -182,12 +182,6 @@ pub enum TitlebarVisibility {
     Hidden,
 }
 
-impl From<bool> for TitlebarVisibility {
-    fn from(shown: bool) -> Self {
-        if shown { Self::Shown } else { Self::Hidden }
-    }
-}
-
 /// How much room the tab sidebar takes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SidebarMode {
@@ -866,7 +860,13 @@ fn parse_value(value: serde_json::Value) -> Evaluation {
         rail,
         titlebar: dto
             .titlebar
-            .map(TitlebarVisibility::from)
+            .map(|shown| {
+                if shown {
+                    TitlebarVisibility::Shown
+                } else {
+                    TitlebarVisibility::Hidden
+                }
+            })
             .unwrap_or_default(),
         sidebar,
         keybindings,

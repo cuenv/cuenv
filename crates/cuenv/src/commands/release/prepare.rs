@@ -2,7 +2,7 @@
 
 use cuenv_release::{
     BumpType, CargoManifest, ChangelogGenerator, Changeset, CommitAnalyzer, CommitParser,
-    ConventionalCommit, PackageChange, ReleaseConfig, Version, VersionCalculator,
+    ConventionalCommit, PackageChange, ReleaseConfig, TagSelection, Version, VersionCalculator,
 };
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -54,11 +54,11 @@ enum ReleasePreparePlan {
     Nothing(String),
 }
 
-struct ReleasePreparePrRequest<'a> {
-    root: &'a Path,
-    bump_infos: &'a [PackageBumpInfo],
-    commits: &'a [ConventionalCommit],
-    output: &'a mut String,
+struct ReleasePreparePrRequest<'request> {
+    root: &'request Path,
+    bump_infos: &'request [PackageBumpInfo],
+    commits: &'request [ConventionalCommit],
+    output: &'request mut String,
 }
 
 /// Execute the `release prepare` command.
@@ -99,13 +99,15 @@ fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<R
     let root = Path::new(&opts.path).canonicalize().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to resolve path '{}': {e}", opts.path))
     })?;
-    let release_config = super::load_release_config(&root)?;
+    let release_config = super::implementation::load_release_config(&root)?;
 
     let commits = CommitParser::parse_since_tag(
         &root,
-        opts.since.as_deref(),
-        &release_config.git.tag_prefix,
-        release_config.git.tag_type,
+        TagSelection {
+            since_tag: opts.since.as_deref(),
+            tag_prefix: &release_config.git.tag_prefix,
+            tag_type: release_config.git.tag_type,
+        },
     )
     .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
 
@@ -116,7 +118,7 @@ fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<R
     }
 
     let manifest = CargoManifest::new(&root);
-    let package_paths = manifest.get_package_paths().map_err(|e| {
+    let package_paths = manifest.package_paths().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to read package paths: {e}"))
     })?;
     let package_versions = manifest.read_package_versions().map_err(|e| {
@@ -293,7 +295,7 @@ fn update_release_prepare_changelogs(
         else {
             continue;
         };
-        let changelog_path = generator.get_changelog_path(package_root);
+        let changelog_path = generator.changelog_path(package_root);
         generator
             .update_file(&changelog_path, &entry)
             .map_err(|e| {

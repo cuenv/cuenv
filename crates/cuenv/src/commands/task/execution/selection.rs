@@ -1,9 +1,6 @@
-use super::{TaskExecutionContext, TaskExecutionInput};
-use crate::commands::relative_path_from_root;
-use crate::commands::task::arguments::{apply_args_to_task, resolve_task_args};
-use crate::commands::task::discovery::{
-    find_tasks_with_labels, format_label_root, normalize_labels,
-};
+use super::context::{TaskExecutionContext, TaskExecutionInput};
+
+use crate::commands::task::discovery;
 use cuenv_core::Result;
 use cuenv_core::tasks::{Task, TaskNode, Tasks};
 use std::path::Path;
@@ -29,7 +26,7 @@ pub(super) fn validate_task_selection(input: &TaskExecutionInput<'_>) -> Result<
         ));
     }
 
-    let normalized_labels = normalize_labels(input.labels);
+    let normalized_labels = discovery::normalize_labels(input.labels);
     if !input.labels.is_empty() && normalized_labels.is_empty() {
         return Err(cuenv_core::Error::configuration(
             "Labels cannot be empty or whitespace-only",
@@ -125,10 +122,11 @@ fn selected_task_node(
         ));
     };
 
-    let resolved_args = resolve_task_args(task.params.as_ref(), input.task_args)?;
+    let resolved_args =
+        crate::commands::task::arguments::resolve_task_args(task.params.as_ref(), input.task_args)?;
     tracing::debug!("Resolved task args: {:?}", resolved_args);
 
-    let modified_task = apply_args_to_task(&task, &resolved_args);
+    let modified_task = crate::commands::task::arguments::apply_args_to_task(&task, &resolved_args);
     let modified_node = TaskNode::Task(Box::new(modified_task.clone()));
     tasks_in_scope
         .tasks
@@ -142,7 +140,7 @@ fn resolve_label_tasks(
     normalized_labels: &[String],
 ) -> Result<TaskResolution> {
     let mut tasks_in_scope = context.local_tasks.clone();
-    let matching_tasks = find_tasks_with_labels(&context.local_tasks, normalized_labels);
+    let matching_tasks = discovery::find_tasks_with_labels(&context.local_tasks, normalized_labels);
 
     if matching_tasks.is_empty() {
         return Err(cuenv_core::Error::configuration(format!(
@@ -150,7 +148,7 @@ fn resolve_label_tasks(
         )));
     }
 
-    let display_task_name = format_label_root(normalized_labels);
+    let display_task_name = discovery::format_label_root(normalized_labels);
     let synthetic = Task {
         script: Some("true".to_string()),
         hermetic: cuenv_core::tasks::Hermetic::Enabled(false),
@@ -189,8 +187,8 @@ fn current_instance_output_ref_deps(
     executor: &crate::commands::CommandExecutor,
     project_root: &Path,
 ) -> Result<Vec<cuenv_core::tasks::output_refs::OutputRefDep>> {
-    let module = executor.get_module(project_root)?;
-    let rel_path = relative_path_from_root(&module.root, project_root);
+    let module = executor.module(project_root)?;
+    let rel_path = crate::commands::relative_path_from_root(&module.root, project_root);
 
     Ok(module
         .get(&rel_path)

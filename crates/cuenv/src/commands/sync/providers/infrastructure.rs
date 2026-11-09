@@ -11,7 +11,7 @@ use cuenv_core::Result;
 use cuenv_infrastructure::registry::ProviderSource;
 
 use crate::cli::CliError;
-use crate::commands::infrastructure::types::{self, Generation, Module, pinned_archives};
+use crate::commands::infrastructure::types::{self, Generation, Module};
 use crate::commands::sync::provider::{SyncMode, SyncProvider, SyncRequest, SyncResult};
 
 /// Sync provider for generated infrastructure provider types.
@@ -60,7 +60,7 @@ async fn sync_module(request: SyncRequest<'_>) -> std::result::Result<SyncResult
     for (source_text, pin) in &lockfile.infrastructure_providers {
         let source = ProviderSource::parse(source_text)
             .map_err(|error| types::infrastructure_error(&error))?;
-        let platforms = pinned_archives(pin);
+        let platforms = crate::commands::infrastructure::types::pinned_archives(pin);
         let generated = Generation {
             source: &source,
             version: &pin.version,

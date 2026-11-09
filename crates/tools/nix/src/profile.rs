@@ -5,8 +5,7 @@
 
 use crate::commands;
 use cuenv_core::lockfile::Lockfile;
-use cuenv_core::paths::cache_dir;
-use cuenv_core::{Error, Result};
+use cuenv_core::{Error, Result, paths};
 use cuenv_tool_runtime::Platform;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -21,7 +20,7 @@ use tracing::info;
 ///
 /// Returns an error if the cache directory cannot be determined.
 pub fn profile_path_for_project(project_root: &Path) -> Result<PathBuf> {
-    let cache = cache_dir()?;
+    let cache = paths::cache_dir()?;
     let project_id = project_profile_id(project_root);
     Ok(cache.join("nix-profiles").join(project_id))
 }

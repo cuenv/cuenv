@@ -13,11 +13,25 @@
   "trees": [
     ".agents/skills",
     "contrib",
-    "crates"
+    "crates",
+    "examples"
   ],
+  "fmtFiles": [
+    "treefmt.toml",
+    "tools/function-enum/Cargo.toml",
+    "tools/function-enum/Cargo.lock"
+  ],
+  "fmtTrees": [
+    "tools/function-enum/src"
+  ],
+  "rustStyleTrees": [
+    "apps",
+    "tools"
+  ],
+  "rustStyleFiles": [],
+  "rustStyleInputTrees": [],
   "cueTrees": [
     "cue.mod",
-    "examples",
     "schema"
   ],
   "cuettyFiles": [
@@ -27,6 +41,7 @@
   ],
   "cuettyTrees": [
     "apps/cuetty/assets",
+    "apps/cuetty/compat",
     "apps/cuetty/src",
     "apps/cuetty/tests"
   ]

@@ -66,7 +66,7 @@ work, not validation of this later migration.
 | `params` with several statements is refused (7400) | A request that binds anything holds one statement. Multi-statement requests (the migration transaction, the schema version check, the migration announcement) bind nothing; their integers are computed locally and inlined. |
 | The statements of one request run as a transaction | A migration is one request: the fence, the DDL and the version bookkeeping commit together or not at all. D1 runs one request at a time per database, which gives the fence what `BEGIN IMMEDIATE` gives it on Turso. D1 has no `BEGIN`. |
 | A rejected statement is HTTP 400, code 7500, message ending `: SQLITE_ERROR` | The body is parsed before the status is used. The lock fence's `integer overflow` and `already exists` reach the migration logic; D1 does not say which statement failed, so the fence is matched by message, and only in a migration that has a fence. |
-| Numbers are JavaScript numbers | An integer above 2^53 (the fence returns `9223372036854775807` as `9223372036854776000` when no lock is held) is decoded as a float and never as an integer; no column cuenv reads comes near that. |
+| Numbers are JavaScript numbers | Integer results with magnitude at or above 2^53 are not accepted as exact integers, because an adjacent integer can round to the same number. Shared SQL record writes refuse to increment a serial at 2^53−1. |
 | Blobs come back as arrays of byte values | Decoded into bytes; anything else in such an array is unreadable, and the record is reported as undecodable by address. |
 | `success: false` can come with HTTP 200 | Checked at the envelope and per result. |
 | Retryable errors are named by message (Network connection lost, object reset, transient remote issue) | Retried with backoff whatever the HTTP status; every statement is safe to repeat. An overloaded database is not retried: Cloudflare asks for fewer requests. 429 honours `Retry-After` up to 30 seconds (for Turso too, since the HTTP rules are shared). |
@@ -120,17 +120,24 @@ work, not validation of this later migration.
   answers errors as D1 does: round trips, lock fencing, compare and swap,
   ownership, the migration fence, the pending-migration hold-off, newer schemas,
   and error classification, retries and redaction against canned responses.
+- The ignored `lifecycle_against_d1` test passed against a disposable real D1
+  database through a loopback relay backed by the Cloudflare connector. Its
+  27 `/raw` requests included the migration fence's SQL error; the database
+  was deleted after the test. The relay forwards the API's JSON envelopes and
+  status codes, but does not test cuenv's direct Cloudflare token, TLS, or
+  response-header handling. The test's optional
+  `CUENV_INFRASTRUCTURE_TEST_D1_RELAY` accepts only an HTTP loopback origin and
+  uses a separate synthetic `CUENV_INFRASTRUCTURE_TEST_D1_RELAY_TOKEN` instead
+  of reading the real API token.
 - The Turso behaviour tests run against the shared implementation; the tests
   of how a Hrana batch result is read were rewritten for the new seam
   (`transaction_result`, then `migration_outcome`).
 
-Not verified against real D1: the `/raw` endpoint specifically (the probes
-used the query endpoint, which takes the same body), including that a failing
-multi-statement request rolls back there too (Cloudflare documents rollback for
-`batch()`; the probe showed it for a multi-statement query; should it not hold,
-a migration that fails part way leaves tables without a version row, and the
-next run refuses with a schema conflict instead of writing), whether a D1 Read
-token may call `/raw` for reads, and the ignored `lifecycle_against_d1` test, which
-needs a database and token. REST queries were served by the primary in the
-probes; cuenv does not use the Sessions API, so it does not read from
+Not verified against real D1: whether a partially completed multi-statement
+`/raw` request rolls back (the earlier probe used `/query`), whether a D1 Read
+token may call `/raw` for reads, or the lifecycle test's direct token and TLS
+path. If rollback did not hold, a migration that fails part way could leave
+tables without a version row, and the next run would refuse with a schema
+conflict instead of writing. REST queries were served by the primary in the
+earlier probes; cuenv does not use the Sessions API, so it does not read from
 replicas.

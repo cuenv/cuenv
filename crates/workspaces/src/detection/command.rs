@@ -60,15 +60,15 @@ fn is_env_assignment(token: &str) -> bool {
 /// # Examples
 ///
 /// ```
-/// use cuenv_workspaces::detection::detect_from_command;
+/// use cuenv_workspaces::detection;
 /// use cuenv_workspaces::PackageManager;
 ///
-/// assert_eq!(detect_from_command("cargo"), Some(PackageManager::Cargo));
-/// assert_eq!(detect_from_command("npm"), Some(PackageManager::Npm));
-/// assert_eq!(detect_from_command("bun"), Some(PackageManager::Bun));
-/// assert_eq!(detect_from_command("pnpm"), Some(PackageManager::Pnpm));
-/// assert_eq!(detect_from_command("node"), Some(PackageManager::Npm));
-/// assert_eq!(detect_from_command("unknown"), None);
+/// assert_eq!(detection::detect_from_command("cargo"), Some(PackageManager::Cargo));
+/// assert_eq!(detection::detect_from_command("npm"), Some(PackageManager::Npm));
+/// assert_eq!(detection::detect_from_command("bun"), Some(PackageManager::Bun));
+/// assert_eq!(detection::detect_from_command("pnpm"), Some(PackageManager::Pnpm));
+/// assert_eq!(detection::detect_from_command("node"), Some(PackageManager::Npm));
+/// assert_eq!(detection::detect_from_command("unknown"), None);
 /// ```
 pub fn detect_from_command(command: &str) -> Option<PackageManager> {
     let cmd = command_name(command)?;

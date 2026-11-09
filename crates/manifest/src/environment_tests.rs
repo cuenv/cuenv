@@ -1,4 +1,5 @@
-use super::*;
+use super::{Env, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy};
+use crate::manifest::InfrastructurePolicyAction;
 use serde_json::json;
 
 fn error_of(value: serde_json::Value) -> String {

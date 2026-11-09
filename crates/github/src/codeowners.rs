@@ -33,10 +33,8 @@ impl CodeOwnersProvider for GitHubCodeOwnersProvider {
 mod tests {
     use super::*;
     use cuenv_codeowners::Rule;
-    use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
+    use cuenv_codeowners::provider::{ProjectOwners, SyncStatus, WriteMode};
     use std::fs;
-    use tempfile::tempdir;
-
     #[test]
     fn test_github_provider_output_path() {
         let provider = GitHubCodeOwnersProvider;
@@ -51,7 +49,7 @@ mod tests {
 
     #[test]
     fn test_github_sync_creates_file() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -60,7 +58,9 @@ mod tests {
             vec![Rule::new("*.rs", ["@backend-team"])],
         )];
 
-        let result = provider.sync(temp.path(), &projects, false).unwrap();
+        let result = provider
+            .sync(temp.path(), &projects, WriteMode::Write)
+            .unwrap();
 
         assert_eq!(result.status, SyncStatus::Created);
         assert!(result.path.ends_with(".github/CODEOWNERS"));
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_github_sync_dry_run() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -82,7 +82,9 @@ mod tests {
             vec![Rule::new("*.rs", ["@backend-team"])],
         )];
 
-        let result = provider.sync(temp.path(), &projects, true).unwrap();
+        let result = provider
+            .sync(temp.path(), &projects, WriteMode::DryRun)
+            .unwrap();
 
         assert_eq!(result.status, SyncStatus::WouldCreate);
         // File should NOT exist in dry-run mode
@@ -91,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_github_sync_updates_file() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
         // Create initial file
@@ -105,14 +107,16 @@ mod tests {
             vec![Rule::new("*.rs", ["@backend-team"])],
         )];
 
-        let result = provider.sync(temp.path(), &projects, false).unwrap();
+        let result = provider
+            .sync(temp.path(), &projects, WriteMode::Write)
+            .unwrap();
 
         assert_eq!(result.status, SyncStatus::Updated);
     }
 
     #[test]
     fn test_github_sync_unchanged() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -122,17 +126,21 @@ mod tests {
         )];
 
         // First sync creates the file
-        let result1 = provider.sync(temp.path(), &projects, false).unwrap();
+        let result1 = provider
+            .sync(temp.path(), &projects, WriteMode::Write)
+            .unwrap();
         assert_eq!(result1.status, SyncStatus::Created);
 
         // Second sync should be unchanged
-        let result2 = provider.sync(temp.path(), &projects, false).unwrap();
+        let result2 = provider
+            .sync(temp.path(), &projects, WriteMode::Write)
+            .unwrap();
         assert_eq!(result2.status, SyncStatus::Unchanged);
     }
 
     #[test]
     fn test_github_check_in_sync() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -142,7 +150,9 @@ mod tests {
         )];
 
         // Sync first
-        provider.sync(temp.path(), &projects, false).unwrap();
+        provider
+            .sync(temp.path(), &projects, WriteMode::Write)
+            .unwrap();
 
         // Check should report in sync
         let result = provider.check(temp.path(), &projects).unwrap();
@@ -151,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_github_check_out_of_sync() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
         // Create file with different content
@@ -172,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_github_check_missing_file() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -188,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_github_aggregates_multiple_projects() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![
@@ -209,7 +219,9 @@ mod tests {
             ),
         ];
 
-        let result = provider.sync(temp.path(), &projects, false).unwrap();
+        let result = provider
+            .sync(temp.path(), &projects, WriteMode::Write)
+            .unwrap();
 
         // All projects should be in the single file
         assert!(result.content.contains("/services/api/*.rs @backend-team"));
@@ -224,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_github_root_project() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
         // Project at repo root
@@ -237,7 +249,9 @@ mod tests {
             ],
         )];
 
-        let result = provider.sync(temp.path(), &projects, false).unwrap();
+        let result = provider
+            .sync(temp.path(), &projects, WriteMode::Write)
+            .unwrap();
 
         // Root patterns should be normalized
         assert!(result.content.contains("/*.rs @core-team"));
@@ -246,10 +260,10 @@ mod tests {
 
     #[test]
     fn test_github_empty_projects_error() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = GitHubCodeOwnersProvider;
 
-        let result = provider.sync(temp.path(), &[], false);
+        let result = provider.sync(temp.path(), &[], WriteMode::Write);
         assert!(result.is_err());
     }
 }

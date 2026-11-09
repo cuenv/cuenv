@@ -211,9 +211,10 @@ mod tests {
     use std::error::Error;
 
     #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
+    use std::fs;
     #[cfg(unix)]
-    use std::{fs, path::Path};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     #[test]
     fn config_defaults() {

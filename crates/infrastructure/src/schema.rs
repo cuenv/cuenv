@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::error::Result;
 use crate::protocol::{self, NestingMode};
-use crate::type_system::{Type, Value, deduplicate};
+use crate::type_system::{Type, Value};
 
 /// A provider's schemas for itself, its managed resources and its data sources.
 #[derive(Debug, Clone)]
@@ -341,7 +341,7 @@ impl Block {
                 ),
                 // Equal blocks of a set are one block, as in Terraform; only
                 // normalization can make two of them equal.
-                (Nesting::Set, Value::List(items)) => Value::List(deduplicate(
+                (Nesting::Set, Value::List(items)) => Value::List(crate::type_system::deduplicate(
                     items
                         .into_iter()
                         .map(|item| nested.block.normalize_configuration(item))

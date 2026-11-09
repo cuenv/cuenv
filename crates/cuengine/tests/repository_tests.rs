@@ -13,7 +13,7 @@
 //! holds build output and fixtures that other test binaries write while
 //! this one runs, which a recursive load would otherwise pick up.
 
-use cuengine::{InstanceFailures, ModuleEvalOptions, ModuleResult, PackageScope, evaluate_module};
+use cuengine::{InstanceFailures, ModuleEvalOptions, ModuleResult, PackageScope};
 use cuenv_core::environment::EnvValue;
 use cuenv_core::manifest::{
     Infrastructure, InfrastructurePolicyAction, Project, ProviderEnvironment,
@@ -105,7 +105,7 @@ fn every_instance_of_the_repository_evaluates() -> TestResult {
         instance_failures: InstanceFailures::Fail,
         ..Default::default()
     };
-    let result = evaluate_module(module.path(), "", Some(&options))?;
+    let result = cuengine::evaluate_module(module.path(), "", Some(&options))?;
     assert!(
         result.instances.contains_key(".:cuenv"),
         "the repository's own env.cue is missing: {:?}",
@@ -153,7 +153,7 @@ impl SchemaFixture {
             instance_failures: InstanceFailures::Fail,
             ..Default::default()
         };
-        evaluate_module(self.module.path(), "app", Some(&options))
+        cuengine::evaluate_module(self.module.path(), "app", Some(&options))
     }
 
     fn error(&self) -> TestResult<String> {
@@ -947,7 +947,7 @@ fn turso_url_contract() -> TestResult {
         concrete_paths: vec!["turso".to_string()],
         ..Default::default()
     };
-    let result = evaluate_module(fixture.module.path(), "check", Some(&options))?;
+    let result = cuengine::evaluate_module(fixture.module.path(), "check", Some(&options))?;
     for (index, url) in urls.iter().enumerate() {
         let valid = result.instances.contains_key(&format!("checks/url{index}"));
         assert_eq!(valid, index < accepted.len(), "{url:?}");
@@ -1008,7 +1008,7 @@ impl SchemaFixture {
             instance_failures: InstanceFailures::Fail,
             ..Default::default()
         };
-        let result = evaluate_module(self.module.path(), "app", Some(&options))?;
+        let result = cuengine::evaluate_module(self.module.path(), "app", Some(&options))?;
         let instance = result.instances.get("app").ok_or("app instance missing")?;
         Ok(serde_json::from_value(instance.clone())?)
     }

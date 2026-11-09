@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Attribute, BTreeMap, Block, Digest, Documentation, GeneratedTypes, NestedAttributes,
+    NestedBlock, Nesting, Package, PackageKind, Path, PathBuf, Presence, ProviderRelease,
+    ProviderSchema, ProviderSource, Sha256, Type, json,
+};
 use crate::schema::{ProviderCapabilities, Schema};
 use std::collections::HashMap;
 
@@ -113,7 +117,7 @@ fn source() -> ProviderSource {
 
 fn generated() -> GeneratedTypes {
     let source = source();
-    render(
+    super::render(
         &provider_schema(),
         ProviderRelease {
             source: &source,
@@ -316,7 +320,7 @@ fn import_lines_qualify_provider_packages() {
         r#""registry.terraform.io/acme/example-cloud/data/example_pet""#
     );
     let random = ProviderSource::parse("hashicorp/random").unwrap();
-    let types = render(
+    let types = super::render(
         &provider_schema(),
         ProviderRelease {
             source: &random,
@@ -335,7 +339,7 @@ fn data_source_packages_share_configuration_and_output_rules_with_resources() {
     let mut schema = provider_schema();
     schema.data_sources = schema.resources.clone();
     let source = source();
-    let types = render(
+    let types = super::render(
         &schema,
         ProviderRelease {
             source: &source,
@@ -365,11 +369,14 @@ fn data_source_packages_share_configuration_and_output_rules_with_resources() {
 
 #[test]
 fn provider_package_names_are_identifiers_apart_from_local_names() {
-    assert_eq!(provider_package_name("random"), "random_provider");
-    assert_eq!(provider_package_name("google-beta"), "google_beta_provider");
-    assert_eq!(provider_package_name("null"), "null_provider");
+    assert_eq!(super::provider_package_name("random"), "random_provider");
     assert_eq!(
-        provider_package_name("1password"),
+        super::provider_package_name("google-beta"),
+        "google_beta_provider"
+    );
+    assert_eq!(super::provider_package_name("null"), "null_provider");
+    assert_eq!(
+        super::provider_package_name("1password"),
         "provider_1password_provider"
     );
 }
@@ -377,19 +384,19 @@ fn provider_package_names_are_identifiers_apart_from_local_names() {
 #[test]
 fn a_hostname_with_a_port_cannot_be_an_import_path() {
     let source = ProviderSource::parse("localhost:8443/acme/example").unwrap();
-    let error = import_path(&source).unwrap_err().to_string();
+    let error = super::import_path(&source).unwrap_err().to_string();
     assert!(error.contains("port"), "{error}");
 }
 
 #[test]
 fn descriptions_do_not_change_the_digest_but_shapes_do() {
     let schema = provider_schema();
-    let digest = schema_digest(&schema);
+    let digest = super::schema_digest(&schema);
     assert!(digest.starts_with("sha256:"), "{digest}");
     assert_eq!(digest.len(), "sha256:".len() + 64);
     assert_eq!(
         digest,
-        schema_digest(&provider_schema()),
+        super::schema_digest(&provider_schema()),
         "digest is stable"
     );
 
@@ -401,7 +408,7 @@ fn descriptions_do_not_change_the_digest_but_shapes_do() {
             length.documentation.description = "Something else.".into();
         }
     }
-    assert_eq!(digest, schema_digest(&described));
+    assert_eq!(digest, super::schema_digest(&described));
 
     let mut required = provider_schema();
     if let Some(length) = required
@@ -411,11 +418,11 @@ fn descriptions_do_not_change_the_digest_but_shapes_do() {
     {
         length.presence = Presence::Required;
     }
-    assert_ne!(digest, schema_digest(&required));
+    assert_ne!(digest, super::schema_digest(&required));
 
     let mut fewer = provider_schema();
     fewer.resources.remove("example_empty");
-    assert_ne!(digest, schema_digest(&fewer));
+    assert_ne!(digest, super::schema_digest(&fewer));
 }
 
 #[test]
@@ -424,7 +431,7 @@ fn providers_without_data_sources_preserve_the_legacy_digest() {
     schema.provider.block = Block::default();
     schema.resources.clear();
     assert_eq!(
-        schema_digest(&schema),
+        super::schema_digest(&schema),
         "sha256:8775c20fa4583efb231215871e3fcf84df44b1103e89c720418f980f6e4848f8"
     );
 }
@@ -432,16 +439,16 @@ fn providers_without_data_sources_preserve_the_legacy_digest() {
 #[test]
 fn data_source_schemas_are_sorted_and_bound_into_the_digest() {
     let mut schema = provider_schema();
-    let legacy = schema_digest(&schema);
+    let legacy = super::schema_digest(&schema);
     schema.data_sources = schema.resources.clone();
-    let digest = schema_digest(&schema);
+    let digest = super::schema_digest(&schema);
     assert_ne!(legacy, digest);
 
     let mut reordered = schema.clone();
     let mut entries: Vec<_> = reordered.data_sources.drain().collect();
     entries.sort_by(|(left, _), (right, _)| right.cmp(left));
     reordered.data_sources.extend(entries);
-    assert_eq!(digest, schema_digest(&reordered));
+    assert_eq!(digest, super::schema_digest(&reordered));
 
     let mut described = schema.clone();
     let pet = described.data_sources.get_mut("example_pet").unwrap();
@@ -453,7 +460,7 @@ fn data_source_schemas_are_sorted_and_bound_into_the_digest() {
         .unwrap()
         .documentation
         .description = "Words.".into();
-    assert_eq!(digest, schema_digest(&described));
+    assert_eq!(digest, super::schema_digest(&described));
 
     let mut changed = schema.clone();
     changed
@@ -465,7 +472,7 @@ fn data_source_schemas_are_sorted_and_bound_into_the_digest() {
         .get_mut("length")
         .unwrap()
         .value_type = Type::String;
-    assert_ne!(digest, schema_digest(&changed));
+    assert_ne!(digest, super::schema_digest(&changed));
     changed = schema.clone();
     changed
         .data_sources
@@ -476,12 +483,12 @@ fn data_source_schemas_are_sorted_and_bound_into_the_digest() {
         .get_mut("length")
         .unwrap()
         .presence = Presence::Required;
-    assert_ne!(digest, schema_digest(&changed));
+    assert_ne!(digest, super::schema_digest(&changed));
     changed = schema.clone();
     changed.data_sources.remove("example_empty");
-    assert_ne!(digest, schema_digest(&changed));
+    assert_ne!(digest, super::schema_digest(&changed));
     changed.data_sources.clear();
-    assert_eq!(legacy, schema_digest(&changed));
+    assert_eq!(legacy, super::schema_digest(&changed));
 }
 
 #[test]
@@ -492,22 +499,22 @@ fn provider_text_cannot_escape_a_comment() {
         deprecation_message: String::new(),
     };
     assert_eq!(
-        documentation_lines(&documentation, &["Note."]),
+        super::documentation_lines(&documentation, &["Note."]),
         ["First line", "Second[31m line", "", "Deprecated.", "Note."]
     );
 }
 
 #[test]
 fn labels_that_are_not_plain_identifiers_are_quoted() {
-    assert_eq!(label("name"), "name");
-    assert_eq!(label("if"), "\"if\"");
-    assert_eq!(label("_hidden"), "\"_hidden\"");
-    assert_eq!(label("9lives"), "\"9lives\"");
-    assert_eq!(label("with-dash"), "\"with-dash\"");
+    assert_eq!(super::label("name"), "name");
+    assert_eq!(super::label("if"), "\"if\"");
+    assert_eq!(super::label("_hidden"), "\"_hidden\"");
+    assert_eq!(super::label("9lives"), "\"9lives\"");
+    assert_eq!(super::label("with-dash"), "\"with-dash\"");
     // A `number` field would shadow the predeclared type `number`.
-    assert_eq!(label("number"), "\"number\"");
-    assert_eq!(label("list"), "\"list\"");
-    assert_eq!(label("cuenv_schema"), "\"cuenv_schema\"");
+    assert_eq!(super::label("number"), "\"number\"");
+    assert_eq!(super::label("list"), "\"list\"");
+    assert_eq!(super::label("cuenv_schema"), "\"cuenv_schema\"");
 }
 
 #[test]
@@ -667,7 +674,7 @@ fn generated_shape_types() -> TestResult<GeneratedTypes> {
         capabilities: ProviderCapabilities::default(),
     };
     let source = source();
-    Ok(render(
+    Ok(super::render(
         &schema,
         ProviderRelease {
             source: &source,
@@ -997,21 +1004,20 @@ fn write_only_generated_types_are_fenced_from_older_runtimes() {
     let resources: BTreeMap<_, _> = schema
         .resources
         .iter()
-        .map(|(name, resource)| (name, block_document(&resource.block)))
+        .map(|(name, resource)| (name, super::block_document(&resource.block)))
         .collect();
-    let legacy =
-        json!({"format":1,"provider":block_document(&schema.provider.block),"resources":resources});
+    let legacy = json!({"format":1,"provider":super::block_document(&schema.provider.block),"resources":resources});
     let mut contract_one = legacy.clone();
     contract_one["write_only_contract"] = json!(1);
     let contract_one = format!(
         "sha256:{}",
         hex::encode(Sha256::digest(contract_one.to_string().as_bytes()))
     );
-    assert_ne!(schema_digest(&schema), contract_one);
+    assert_ne!(super::schema_digest(&schema), contract_one);
     let mut hasher = Sha256::new();
     hasher.update(legacy.to_string().as_bytes());
     let legacy = format!("sha256:{}", hex::encode(hasher.finalize()));
-    assert_ne!(schema_digest(&schema), legacy);
+    assert_ne!(super::schema_digest(&schema), legacy);
     let types = generated();
     assert!(types.files[&PathBuf::from("provider.cue")].contains(&types.schema_digest));
     assert_ne!(types.schema_digest, legacy);
@@ -1048,7 +1054,7 @@ fn generated_write_only_arguments_keep_native_names_for_every_provider() -> Test
                 },
             },
         )]);
-        let types = render(
+        let types = super::render(
             &schema,
             ProviderRelease {
                 source: &source,

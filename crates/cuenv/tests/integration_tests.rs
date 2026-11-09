@@ -5,11 +5,9 @@
 
 use std::error::Error;
 use std::ffi::OsStr;
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::str;
+use std::{fs, io, str};
 use tempfile::TempDir;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;

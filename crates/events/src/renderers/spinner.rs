@@ -38,6 +38,40 @@ struct GroupBar {
     skipped: u64,
 }
 
+#[derive(Clone, Copy)]
+enum GroupMode {
+    Sequential,
+    Parallel,
+}
+
+struct GroupStart<'group> {
+    name: &'group str,
+    task_count: usize,
+    mode: GroupMode,
+    max_concurrency: Option<u32>,
+}
+
+struct GroupCompletion<'group> {
+    name: &'group str,
+    duration_ms: u64,
+    succeeded: usize,
+    failed: usize,
+    skipped: usize,
+}
+
+#[derive(Clone, Copy)]
+enum TaskOutcome {
+    Succeeded,
+    Failed(Option<i32>),
+}
+
+struct TaskCompletion<'task> {
+    name: &'task str,
+    outcome: TaskOutcome,
+    duration_ms: u64,
+    parent_group: Option<&'task str>,
+}
+
 impl SpinnerRenderer {
     /// Create a new spinner renderer.
     #[must_use]
@@ -50,11 +84,10 @@ impl SpinnerRenderer {
         }
     }
 
-    /// Enable / disable mirroring the latest output line under each task
-    /// spinner. Off by default to keep terminals quiet.
+    /// Mirror the latest output line under each task spinner.
     #[must_use]
-    pub const fn with_output_tail(mut self, enabled: bool) -> Self {
-        self.show_output_tail = enabled;
+    pub const fn with_output_tail(mut self) -> Self {
+        self.show_output_tail = true;
         self
     }
 
@@ -85,7 +118,16 @@ impl SpinnerRenderer {
                 sequential,
                 max_concurrency,
                 ..
-            } => self.start_group(name, *task_count, *sequential, *max_concurrency),
+            } => self.start_group(&GroupStart {
+                name,
+                task_count: *task_count,
+                mode: if *sequential {
+                    GroupMode::Sequential
+                } else {
+                    GroupMode::Parallel
+                },
+                max_concurrency: *max_concurrency,
+            }),
             TaskEvent::GroupCompleted {
                 name,
                 duration_ms,
@@ -93,7 +135,13 @@ impl SpinnerRenderer {
                 failed,
                 skipped,
                 ..
-            } => self.finish_group(name, *duration_ms, *succeeded, *failed, *skipped),
+            } => self.finish_group(&GroupCompletion {
+                name,
+                duration_ms: *duration_ms,
+                succeeded: *succeeded,
+                failed: *failed,
+                skipped: *skipped,
+            }),
             TaskEvent::Started {
                 name,
                 command,
@@ -138,37 +186,38 @@ impl SpinnerRenderer {
                 duration_ms,
                 parent_group,
                 ..
-            } => self.finish_task(
+            } => self.finish_task(&TaskCompletion {
                 name,
-                *success,
-                *exit_code,
-                *duration_ms,
-                parent_group.as_deref(),
-            ),
+                outcome: if *success {
+                    TaskOutcome::Succeeded
+                } else {
+                    TaskOutcome::Failed(*exit_code)
+                },
+                duration_ms: *duration_ms,
+                parent_group: parent_group.as_deref(),
+            }),
         }
     }
 
-    fn start_group(
-        &mut self,
-        name: &str,
-        task_count: usize,
-        sequential: bool,
-        max_concurrency: Option<u32>,
-    ) {
-        let total = u64::try_from(task_count).unwrap_or(u64::MAX);
+    fn start_group(&mut self, group: &GroupStart<'_>) {
+        let total = u64::try_from(group.task_count).unwrap_or(u64::MAX);
         let style = ProgressStyle::with_template(GROUP_TEMPLATE)
             .unwrap_or_else(|_| ProgressStyle::default_bar())
             .progress_chars("=> ");
         let bar = self.multi.add(ProgressBar::new(total));
         bar.set_style(style);
-        bar.set_prefix(format!("[{name}]"));
-        let mode = if sequential { "seq" } else { "par" };
-        let limit = max_concurrency
+        bar.set_prefix(format!("[{}]", group.name));
+        let mode = match group.mode {
+            GroupMode::Sequential => "seq",
+            GroupMode::Parallel => "par",
+        };
+        let limit = group
+            .max_concurrency
             .map(|n| format!(" cap={n}"))
             .unwrap_or_default();
         bar.set_message(format!("{mode}{limit}"));
         self.groups.insert(
-            name.to_string(),
+            group.name.to_string(),
             GroupBar {
                 bar,
                 total,
@@ -179,22 +228,15 @@ impl SpinnerRenderer {
         );
     }
 
-    fn finish_group(
-        &mut self,
-        name: &str,
-        duration_ms: u64,
-        succeeded: usize,
-        failed: usize,
-        skipped: usize,
-    ) {
-        let Some(group) = self.groups.remove(name) else {
+    fn finish_group(&mut self, completion: &GroupCompletion<'_>) {
+        let Some(group) = self.groups.remove(completion.name) else {
             return;
         };
-        let duration = HumanDuration(std::time::Duration::from_millis(duration_ms));
+        let duration = HumanDuration(std::time::Duration::from_millis(completion.duration_ms));
         group.bar.set_length(group.total);
-        let ok = u64::try_from(succeeded).unwrap_or(u64::MAX);
-        let bad = u64::try_from(failed).unwrap_or(u64::MAX);
-        let skp = u64::try_from(skipped).unwrap_or(u64::MAX);
+        let ok = u64::try_from(completion.succeeded).unwrap_or(u64::MAX);
+        let bad = u64::try_from(completion.failed).unwrap_or(u64::MAX);
+        let skp = u64::try_from(completion.skipped).unwrap_or(u64::MAX);
         group.bar.set_position(ok + bad + skp);
         group.bar.finish_with_message(format!(
             "{ok} ok, {bad} failed, {skp} skipped in {duration}"
@@ -268,26 +310,22 @@ impl SpinnerRenderer {
         self.tick_group(parent_group, GroupOutcome::Skipped);
     }
 
-    fn finish_task(
-        &mut self,
-        name: &str,
-        success: bool,
-        exit_code: Option<i32>,
-        duration_ms: u64,
-        parent_group: Option<&str>,
-    ) {
+    fn finish_task(&mut self, completion: &TaskCompletion<'_>) {
         let bar = self
             .tasks
-            .remove(name)
-            .unwrap_or_else(|| self.fresh_finish_bar(name, parent_group));
-        let duration = HumanDuration(std::time::Duration::from_millis(duration_ms));
-        if success {
-            bar.finish_with_message(format!("ok in {duration}"));
-            self.tick_group(parent_group, GroupOutcome::Succeeded);
-        } else {
-            let code = exit_code.map(|c| format!(" exit={c}")).unwrap_or_default();
-            bar.finish_with_message(format!("failed{code} in {duration}"));
-            self.tick_group(parent_group, GroupOutcome::Failed);
+            .remove(completion.name)
+            .unwrap_or_else(|| self.fresh_finish_bar(completion.name, completion.parent_group));
+        let duration = HumanDuration(std::time::Duration::from_millis(completion.duration_ms));
+        match completion.outcome {
+            TaskOutcome::Succeeded => {
+                bar.finish_with_message(format!("ok in {duration}"));
+                self.tick_group(completion.parent_group, GroupOutcome::Succeeded);
+            }
+            TaskOutcome::Failed(exit_code) => {
+                let code = exit_code.map(|c| format!(" exit={c}")).unwrap_or_default();
+                bar.finish_with_message(format!("failed{code} in {duration}"));
+                self.tick_group(completion.parent_group, GroupOutcome::Failed);
+            }
         }
     }
 
@@ -356,11 +394,15 @@ mod tests {
         }
     }
 
-    fn completed(name: &str, parent_group: Option<&str>, success: bool) -> TaskEvent {
+    fn completed(name: &str, parent_group: Option<&str>, outcome: TaskOutcome) -> TaskEvent {
+        let (success, exit_code) = match outcome {
+            TaskOutcome::Succeeded => (true, Some(0)),
+            TaskOutcome::Failed(exit_code) => (false, exit_code),
+        };
         TaskEvent::Completed {
             name: name.to_string(),
             success,
-            exit_code: Some(i32::from(!success)),
+            exit_code,
             duration_ms: 12,
             parent_group: parent_group.map(str::to_string),
         }
@@ -386,9 +428,16 @@ mod tests {
             max_concurrency: Some(2),
         });
         spinner.apply(&started("ci.fmt", Some("ci")));
-        spinner.apply(&completed("ci.fmt", Some("ci"), true));
+        spinner.apply(&completed("ci.fmt", Some("ci"), TaskOutcome::Succeeded));
         spinner.apply(&started("ci.test", Some("ci")));
-        spinner.apply(&completed("ci.test", Some("ci"), false));
+        spinner.apply(&completed(
+            "ci.test",
+            Some("ci"),
+            TaskOutcome::Failed(Some(1)),
+        ));
+        let group = spinner.groups.get("ci").unwrap();
+        assert_eq!((group.succeeded, group.failed, group.skipped), (1, 1, 0));
+        assert!(spinner.tasks.is_empty());
         spinner.apply(&TaskEvent::GroupCompleted {
             name: "ci".to_string(),
             success: false,
@@ -425,6 +474,6 @@ mod tests {
         let mut spinner = SpinnerRenderer::new();
         spinner.apply(&started("ci.fmt", None));
         spinner.print_above("output line while spinner active");
-        spinner.apply(&completed("ci.fmt", None, true));
+        spinner.apply(&completed("ci.fmt", None, TaskOutcome::Succeeded));
     }
 }

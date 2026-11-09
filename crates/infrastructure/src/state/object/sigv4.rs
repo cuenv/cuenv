@@ -12,10 +12,10 @@ use std::time::SystemTime;
 
 use aws_sigv4::http_request::{
     PayloadChecksumKind, PercentEncodingMode, SignableBody, SignableRequest, SignatureLocation,
-    SigningSettings, UriPathNormalizationMode, sign as sign_request,
+    SigningSettings, UriPathNormalizationMode,
 };
 use aws_sigv4::sign::v4;
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};
 
 use crate::error::{InfrastructureError, Result};
 
@@ -68,7 +68,7 @@ impl Credentials {
 }
 
 /// One request to sign.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct SigningRequest<'request> {
     /// HTTP method, upper case.
     pub method: &'request str,
@@ -88,13 +88,24 @@ pub struct SigningRequest<'request> {
 /// The headers a signed request carries besides its own.
 pub type SignedHeaders = Vec<(String, String)>;
 
-/// URI-encode `value` as SigV4 requires: unreserved characters stay, every
-/// other byte becomes `%XX` (upper case); `/` stays only when
-/// `keep_slash`.
+/// How to encode slashes in a URI component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlashEncoding {
+    /// Leave slashes intact when encoding a path.
+    Preserve,
+    /// Percent-encode slashes within a single component.
+    Encode,
+}
+
+/// Encode a string using the AWS URI encoding rules: unreserved characters
+/// stay as they are, and every other byte becomes `%XX` (upper case).
 #[must_use]
-pub fn uri_encode(value: &str, keep_slash: bool) -> String {
-    let set = if keep_slash { ENCODED_PATH } else { ENCODED };
-    utf8_percent_encode(value, set).to_string()
+pub fn uri_encode(value: &str, slash: SlashEncoding) -> String {
+    let set = match slash {
+        SlashEncoding::Preserve => ENCODED_PATH,
+        SlashEncoding::Encode => ENCODED,
+    };
+    percent_encoding::utf8_percent_encode(value, set).to_string()
 }
 
 /// The query string: names and values encoded, sorted by name then value,
@@ -103,7 +114,12 @@ pub fn uri_encode(value: &str, keep_slash: bool) -> String {
 pub fn canonical_query(query: &[(String, String)]) -> String {
     let mut pairs: Vec<(String, String)> = query
         .iter()
-        .map(|(name, value)| (uri_encode(name, false), uri_encode(value, false)))
+        .map(|(name, value)| {
+            (
+                uri_encode(name, SlashEncoding::Encode),
+                uri_encode(value, SlashEncoding::Encode),
+            )
+        })
         .collect();
     pairs.sort();
     pairs
@@ -155,7 +171,7 @@ pub fn sign(request: &SigningRequest<'_>, credentials: &Credentials) -> Result<S
         SignableBody::Bytes(request.body),
     )
     .map_err(|_| InfrastructureError::state("object storage: the request URL cannot be signed"))?;
-    let (instructions, _) = sign_request(signable, &params)
+    let (instructions, _) = aws_sigv4::http_request::sign(signable, &params)
         .map_err(|_| InfrastructureError::state("object storage: the request cannot be signed"))?
         .into_parts();
     Ok(instructions
@@ -262,7 +278,7 @@ mod tests {
                 Case {
                     method: "PUT",
                     host: "examplebucket.s3.amazonaws.com",
-                    path: &format!("/{}", uri_encode("test$file.text", false)),
+                    path: &format!("/{}", uri_encode("test$file.text", SlashEncoding::Encode)),
                     query: &[],
                     headers: &[
                         ("Date", "Fri, 24 May 2013 00:00:00 GMT"),
@@ -397,9 +413,15 @@ mod tests {
 
     #[test]
     fn encoding_keeps_only_unreserved_characters() {
-        assert_eq!(uri_encode("a-b_c.d~e/f", true), "a-b_c.d~e/f");
-        assert_eq!(uri_encode("a/b=c d", false), "a%2Fb%3Dc%20d");
-        assert_eq!(uri_encode("é", false), "%C3%A9");
+        assert_eq!(
+            uri_encode("a-b_c.d~e/f", SlashEncoding::Preserve),
+            "a-b_c.d~e/f"
+        );
+        assert_eq!(
+            uri_encode("a/b=c d", SlashEncoding::Encode),
+            "a%2Fb%3Dc%20d"
+        );
+        assert_eq!(uri_encode("é", SlashEncoding::Encode), "%C3%A9");
         assert_eq!(
             canonical_query(&pairs(&[("b", "2"), ("a", "z"), ("a", "y")])),
             "a=y&a=z&b=2"

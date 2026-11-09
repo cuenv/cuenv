@@ -12,28 +12,30 @@ use std::path::Path;
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use cuenv_workspaces::{WorkspaceDiscovery, Workspace};
+/// ```rust
+/// use cuenv_workspaces::{PackageManager, Result, Workspace, WorkspaceDiscovery, WorkspaceMember};
 /// use std::path::Path;
 ///
-/// struct CargoDiscovery;
+/// struct SinglePackage;
 ///
-/// impl WorkspaceDiscovery for CargoDiscovery {
+/// impl WorkspaceDiscovery for SinglePackage {
 ///     fn discover(&self, root: &Path) -> Result<Workspace> {
-///         // Find Cargo.toml, parse workspace members, etc.
-///         todo!()
+///         Ok(Workspace::new(root.to_path_buf(), PackageManager::Cargo))
 ///     }
 ///
-///     fn find_members(&self, root: &Path) -> Result<Vec<WorkspaceMember>> {
-///         // Use glob patterns from Cargo.toml to find member crates
-///         todo!()
+///     fn find_members(&self, _root: &Path) -> Result<Vec<WorkspaceMember>> {
+///         Ok(Vec::new())
 ///     }
 ///
 ///     fn validate_member(&self, member_path: &Path) -> Result<bool> {
-///         // Check for Cargo.toml in member directory
-///         todo!()
+///         Ok(member_path.join("Cargo.toml").is_file())
 ///     }
 /// }
+/// let directory = tempfile::tempdir()?;
+/// std::fs::write(directory.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n")?;
+/// assert!(SinglePackage.validate_member(directory.path())?);
+/// assert_eq!(SinglePackage.discover(directory.path())?.member_count(), 0);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait WorkspaceDiscovery {
     /// Discovers the complete workspace configuration from a root directory.
@@ -92,29 +94,42 @@ pub trait WorkspaceDiscovery {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use cuenv_workspaces::{LockfileParser, LockfileEntry};
+/// ```rust
+/// use cuenv_workspaces::{DependencySource, Error, LockfileEntry, LockfileParser, Result, Version};
 /// use std::path::Path;
 ///
-/// struct NpmLockfileParser;
+/// struct NameOnlyParser;
 ///
-/// impl LockfileParser for NpmLockfileParser {
+/// impl LockfileParser for NameOnlyParser {
 ///     fn parse(&self, lockfile_path: &Path) -> Result<Vec<LockfileEntry>> {
-///         // Parse package-lock.json and convert to LockfileEntry structs
-///         todo!()
+///         let name = std::fs::read_to_string(lockfile_path).map_err(|source| Error::Io {
+///             source, path: Some(lockfile_path.to_path_buf()), operation: "reading lockfile".into(),
+///         })?;
+///         Ok(vec![LockfileEntry {
+///             name: name.trim().into(), version: Version::new("1.0.0"),
+///             source: DependencySource::Path(lockfile_path.to_path_buf()),
+///             checksum: None, dependencies: vec![], is_workspace_member: false,
+///         }])
 ///     }
 ///
 ///     fn supports_lockfile(&self, path: &Path) -> bool {
 ///         path.file_name()
 ///             .and_then(|n| n.to_str())
-///             .map(|n| n == "package-lock.json")
+///             .map(|n| n == "name.lock")
 ///             .unwrap_or(false)
 ///     }
 ///
 ///     fn lockfile_name(&self) -> &str {
-///         "package-lock.json"
+///         "name.lock"
 ///     }
 /// }
+/// let directory = tempfile::tempdir()?;
+/// let path = directory.path().join("name.lock");
+/// std::fs::write(&path, "demo")?;
+/// let parser = NameOnlyParser;
+/// assert!(parser.supports_lockfile(&path));
+/// assert_eq!(parser.parse(&path)?[0].name, "demo");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait LockfileParser {
     /// Parses a lockfile into structured entries.

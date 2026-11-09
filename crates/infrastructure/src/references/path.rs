@@ -6,7 +6,7 @@ use serde_json::Value as Json;
 
 use crate::error::{InfrastructureError, Result};
 use crate::schema::Block;
-use crate::type_system::{PathStep, Value, value_at_path};
+use crate::type_system::{PathStep, Value};
 
 /// A nonempty configuration path rooted at an object attribute.
 ///
@@ -64,7 +64,7 @@ impl DestinationPath {
     /// a null or missing ancestor returns `None`.
     #[must_use]
     pub fn value<'value>(&self, root: &'value Value) -> Option<&'value Value> {
-        value_at_path(root, &self.0)
+        crate::type_system::value_at_path(root, &self.0)
     }
 
     /// Replace an existing JSON position without creating ancestors or keys.

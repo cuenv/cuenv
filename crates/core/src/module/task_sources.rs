@@ -26,9 +26,9 @@ const AUTHORED_TASK_SOURCE_FIELDS: &[&str] = &[
     "runtime",
 ];
 
-pub(super) struct TaskSourceMaps<'a> {
-    pub definitions: &'a SourceMap,
-    pub callers: Option<&'a SourceMap>,
+pub(super) struct TaskSourceMaps<'source> {
+    pub definitions: &'source SourceMap,
+    pub callers: Option<&'source SourceMap>,
 }
 
 pub(super) fn enrich_task_sources(
@@ -43,9 +43,9 @@ pub(super) fn enrich_task_sources(
     .enrich(value, "");
 }
 
-struct TaskSourceContext<'a> {
-    instance_path: &'a str,
-    maps: TaskSourceMaps<'a>,
+struct TaskSourceContext<'source> {
+    instance_path: &'source str,
+    maps: TaskSourceMaps<'source>,
 }
 
 impl TaskSourceContext<'_> {

@@ -19,22 +19,20 @@ use cuengine::{
     SkippedReason,
 };
 use cuenv_core::ModuleEvaluation;
-use cuenv_core::cue::discovery::compute_relative_path;
+
 use cuenv_core::manifest::Project;
-use cuenv_core::module::{NamedProject, duplicate_names_error, duplicate_project_names};
+use cuenv_core::module::NamedProject;
 use cuenv_infrastructure::{ProjectInstance, TenantKey};
 use cuenv_manifest::environment::Env;
 use cuenv_manifest::manifest::{
     Infrastructure, InfrastructureSelectionError, InfrastructureState, ProviderEnvironment,
 };
 
-use super::configuration_evaluator::{
-    NativeConfigurationEvaluator, SnapshotRequest, freeze_configuration,
-};
+use super::configuration_evaluator::{NativeConfigurationEvaluator, SnapshotRequest};
 use super::invocation::Invocation;
 use super::output_selectors::OutputSelectors;
 use crate::cli::CliError;
-use crate::commands::module_evaluation::{PathEvaluation, evaluate_path};
+use crate::commands::module_evaluation::PathEvaluation;
 
 /// Whether the command checks that the project name is unique in the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +166,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
                 "the infrastructure package must differ from the project package",
             ));
         }
-        let project = evaluate_path(PathEvaluation {
+        let project = crate::commands::module_evaluation::evaluate_path(PathEvaluation {
             target_path: &project_path,
             package: request.package,
             concrete_paths: vec!["name".to_string()],
@@ -182,7 +180,8 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         .map_err(|error| {
             safe_evaluation_failure(error, "the owning CUE project could not be evaluated")
         })?;
-        let relative = compute_relative_path(&project_path, &project.root);
+        let relative =
+            cuenv_core::cue::discovery::compute_relative_path(&project_path, &project.root);
         let fields = project
             .get(Path::new(&relative))
             .ok_or_else(|| CliError::config("the owning project could not be evaluated"))?
@@ -222,7 +221,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     if request.needs == Needs::StateOnly {
         export_paths.push("infrastructure.migrateStateTo".to_string());
     }
-    let mut module = evaluate_path(PathEvaluation {
+    let mut module = crate::commands::module_evaluation::evaluate_path(PathEvaluation {
         target_path: &target_path,
         package,
         concrete_paths: concrete_paths.clone(),
@@ -238,7 +237,8 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         })
     })?;
     let configuration_evaluator = if request.needs == Needs::Configuration {
-        let relative = compute_relative_path(&target_path, &module.root);
+        let relative =
+            cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root);
         if let Some(environment) = request.environment
             && let Some(instance) = module.get(Path::new(&relative))
         {
@@ -253,7 +253,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
                 return Err(unknown_environment(name, environment, &declared));
             }
         }
-        freeze_configuration(
+        super::configuration_evaluator::freeze_configuration(
             &mut module,
             &SnapshotRequest {
                 directory: &target_path,
@@ -264,7 +264,8 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     } else {
         None
     };
-    let relative_path = compute_relative_path(&target_path, &module.root);
+    let relative_path =
+        cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root);
     if let Some(fields) = project_fields {
         let instance = module
             .instances
@@ -301,7 +302,8 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         }
         Some(_) => EnvironmentSelection::NotDeclared,
     };
-    let project_relative_path = compute_relative_path(&project_path, &module.root);
+    let project_relative_path =
+        cuenv_core::cue::discovery::compute_relative_path(&project_path, &module.root);
     let instance = ProjectInstance::try_new(&project_relative_path, request.package)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
 
@@ -401,7 +403,8 @@ fn project_target(
     request: &TargetRequest<'_>,
 ) -> Result<ProjectedTarget, CliError> {
     let environment = request.environment;
-    let relative_path = compute_relative_path(target_path, &module.root);
+    let relative_path =
+        cuenv_core::cue::discovery::compute_relative_path(target_path, &module.root);
     let instance = module.get(Path::new(&relative_path)).ok_or_else(|| {
         CliError::config(format!(
             "No CUE instance found at path: {}",
@@ -567,14 +570,15 @@ fn select_infrastructure(
 /// may be stranded) must not stop the command, so a failure only means the
 /// value is unknown.
 fn export_if_evaluable(target_path: &Path, package: &str, path: &str) -> Option<serde_json::Value> {
-    let module = evaluate_path(PathEvaluation {
+    let module = crate::commands::module_evaluation::evaluate_path(PathEvaluation {
         target_path,
         package,
         concrete_paths: Vec::new(),
         export_paths: vec![path.to_string()],
     })
     .ok()?;
-    let relative_path = compute_relative_path(target_path, &module.root);
+    let relative_path =
+        cuenv_core::cue::discovery::compute_relative_path(target_path, &module.root);
     module
         .get(Path::new(&relative_path))
         .map(|instance| instance.value.clone())
@@ -739,14 +743,15 @@ fn explain_concrete_failure(failure: ConcreteFailure<'_>) -> CliError {
         export_paths,
         error,
     } = failure;
-    let lenient = evaluate_path(PathEvaluation {
+    let lenient = crate::commands::module_evaluation::evaluate_path(PathEvaluation {
         target_path,
         package,
         concrete_paths: Vec::new(),
         export_paths,
     });
     if let Ok(module) = lenient {
-        let relative_path = compute_relative_path(target_path, &module.root);
+        let relative_path =
+            cuenv_core::cue::discovery::compute_relative_path(target_path, &module.root);
         if let Some(instance) = module.get(Path::new(&relative_path)) {
             let project_name = instance
                 .value
@@ -1016,12 +1021,16 @@ fn check_unique_name(check: &UniquenessCheck<'_>) -> Result<(), CliError> {
         })
         .collect();
     let package_duplicates =
-        duplicate_project_names(named.iter().map(|(path, name)| NamedProject {
-            path: path.as_path(),
-            name: name.as_str(),
+        cuenv_core::module::duplicate_project_names(named.iter().map(|(path, name)| {
+            NamedProject {
+                path: path.as_path(),
+                name: name.as_str(),
+            }
         }));
     if !package_duplicates.is_empty() {
-        return Err(CliError::from(duplicate_names_error(&package_duplicates)));
+        return Err(CliError::from(cuenv_core::module::duplicate_names_error(
+            &package_duplicates,
+        )));
     }
     if matches!(check.state, InfrastructureState::S3(_)) {
         // Object-store state is keyed by package too.

@@ -428,8 +428,10 @@ func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, ref
 	// For every value, check if it came from a reference
 	// Record the raw reference path - let consumers decide how to interpret it
 	if fieldPath != "" {
-		if refPath := safeReferencePath(v); refPath != "" {
+		if refPath, ambiguous := checkedReferencePath(v); refPath != "" || ambiguous {
 			metaKey := fmt.Sprintf("%s/%s", instancePath, fieldPath)
+			// An empty entry reserves an ambiguous field so the AST fallback
+			// cannot choose one of several references arbitrarily.
 			refs[metaKey] = refPath
 		}
 	}
@@ -464,17 +466,62 @@ func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, ref
 
 // safeReferencePath safely extracts the reference path from a CUE value.
 // Returns empty string if the value is not a reference or if extraction fails.
-func safeReferencePath(v cue.Value) (result string) {
+func safeReferencePath(v cue.Value) string {
+	result, _ := checkedReferencePath(v)
+	return result
+}
+
+func checkedReferencePath(v cue.Value) (result string, ambiguous bool) {
 	// Use recover to handle panics from ReferencePath on non-reference values
 	defer func() {
 		if r := recover(); r != nil {
 			result = ""
+			ambiguous = true
 		}
 	}()
 
 	root, path := v.ReferencePath()
 	if root.Exists() {
-		return path.String()
+		return path.String(), false
 	}
-	return ""
+
+	// A schema constraint can turn a reference into a conjunction. Inspect
+	// its conjuncts, but accept only one unambiguous value reference; type
+	// definitions and disjunctions do not identify the referenced value.
+	return conjunctReferencePath(v, 0)
+}
+
+func conjunctReferencePath(v cue.Value, depth int) (string, bool) {
+	if depth >= 64 {
+		return "", true
+	}
+	op, args := v.Expr()
+	if op != cue.AndOp {
+		return "", false
+	}
+	var reference string
+	for _, arg := range args {
+		root, path := arg.ReferencePath()
+		candidate := ""
+		if root.Exists() {
+			selectors := path.Selectors()
+			if len(selectors) > 0 && selectors[len(selectors)-1].LabelType() != cue.DefinitionLabel {
+				candidate = path.String()
+			}
+		} else {
+			var ambiguous bool
+			candidate, ambiguous = conjunctReferencePath(arg, depth+1)
+			if ambiguous {
+				return "", true
+			}
+		}
+		if candidate == "" {
+			continue
+		}
+		if reference != "" && reference != candidate {
+			return "", true
+		}
+		reference = candidate
+	}
+	return reference, false
 }

@@ -47,9 +47,9 @@ pub enum Input {
 impl Input {
     /// Return the path/glob pattern if this input is a local path.
     #[must_use]
-    pub fn as_path(&self) -> Option<&String> {
+    pub fn as_path(&self) -> Option<&str> {
         match self {
-            Self::Path(path) => Some(path),
+            Self::Path(path) => Some(path.as_str()),
             Self::Project(_) | Self::Task(_) | Self::Mapped(_) => None,
         }
     }

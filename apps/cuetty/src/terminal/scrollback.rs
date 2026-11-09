@@ -1,5 +1,17 @@
 //! Backend-neutral transcript storage and viewport bookkeeping.
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineBreak {
+    Hard,
+    SoftWrap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFollow {
+    Enabled,
+    Disabled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScrollbackLine {
     pub text: String,
@@ -8,10 +20,10 @@ pub struct ScrollbackLine {
 }
 
 impl ScrollbackLine {
-    pub fn new(text: impl Into<String>, soft_wrapped: bool) -> Self {
+    pub fn new(text: impl Into<String>, line_break: LineBreak) -> Self {
         Self {
             text: text.into(),
-            soft_wrapped,
+            soft_wrapped: line_break == LineBreak::SoftWrap,
         }
     }
 }
@@ -76,13 +88,13 @@ impl ScrollbackBuffer {
         }
     }
 
-    pub fn append_text(&mut self, text: impl Into<String>, soft_wrapped: bool) {
-        self.append(ScrollbackLine::new(text, soft_wrapped));
+    pub fn append_text(&mut self, text: impl Into<String>, line_break: LineBreak) {
+        self.append(ScrollbackLine::new(text, line_break));
     }
 
-    pub fn set_follow_output(&mut self, follow: bool) {
-        self.follow_output = follow;
-        if follow {
+    pub fn set_follow_output(&mut self, follow: OutputFollow) {
+        self.follow_output = follow == OutputFollow::Enabled;
+        if self.follow_output {
             self.scroll_to_bottom();
         }
     }
@@ -152,7 +164,7 @@ mod tests {
     fn bounds_and_follow_output_are_stable() {
         let mut b = ScrollbackBuffer::new(3, 2);
         for n in 0..5 {
-            b.append_text(n.to_string(), false);
+            b.append_text(n.to_string(), LineBreak::Hard);
         }
         assert_eq!(
             b.lines()
@@ -164,21 +176,39 @@ mod tests {
         b.scroll_up(99);
         assert_eq!(b.top_line(), 0);
         assert!(!b.follows_output());
-        b.append_text("5", false);
+        b.append_text("5", LineBreak::Hard);
         assert_eq!(b.top_line(), 0);
         b.scroll_to_bottom();
-        b.append_text("6", false);
+        b.append_text("6", LineBreak::Hard);
         assert_eq!(b.visible_lines()[1].text, "6");
     }
     #[test]
     fn resize_preserves_top_line_when_not_following() {
         let mut b = ScrollbackBuffer::new(20, 2);
         for n in 0..8 {
-            b.append_text(n.to_string(), false);
+            b.append_text(n.to_string(), LineBreak::Hard);
         }
         b.scroll_up(2);
         let top = b.top_line();
         b.resize_viewport(4);
         assert_eq!(b.top_line(), top);
+    }
+
+    #[test]
+    fn line_break_and_follow_modes_preserve_scrollback_behavior() {
+        let mut buffer = ScrollbackBuffer::new(10, 1);
+        buffer.append_text("wrapped", LineBreak::SoftWrap);
+        buffer.append_text("finished", LineBreak::Hard);
+        assert!(buffer.lines()[0].soft_wrapped);
+        assert!(!buffer.lines()[1].soft_wrapped);
+
+        buffer.scroll_up(1);
+        buffer.set_follow_output(OutputFollow::Disabled);
+        buffer.append_text("new output", LineBreak::Hard);
+        assert!(!buffer.follows_output());
+        buffer.set_follow_output(OutputFollow::Enabled);
+        assert!(buffer.follows_output());
+        assert_eq!(buffer.viewport_offset(), 0);
+        assert_eq!(buffer.visible_lines()[0].text, "new output");
     }
 }

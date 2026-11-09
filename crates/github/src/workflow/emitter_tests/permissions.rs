@@ -1,5 +1,8 @@
-use super::*;
-
+use super::{
+    BTreeMap, BuildStage, CuenvBootstrapJobOptions, CuenvSetup, Emitter, GitHubActionsEmitter,
+    HashMap, Job, MatrixJobOptions, RunsOn, SimpleJobOptions, TaskExecution, TaskPhase,
+    TriggerCondition,
+};
 fn permissions(job: &Job) -> serde_yaml::Value {
     serde_yaml::to_value(job.permissions.as_ref().unwrap()).unwrap()
 }
@@ -7,12 +10,12 @@ fn permissions(job: &Job) -> serde_yaml::Value {
 #[test]
 fn plain_jobs_are_read_only_and_task_grants_stay_local() {
     let emitter = GitHubActionsEmitter::new();
-    let lint = make_task("lint", &["lint"]);
-    let mut publish = make_task("publish", &["publish"]);
+    let lint = super::make_task("lint", &["lint"]);
+    let mut publish = super::make_task("publish", &["publish"]);
     publish
         .github_permissions
         .insert("packages".into(), "write".into());
-    let ir = make_ir(vec![lint.clone(), publish.clone()]);
+    let ir = super::make_ir(vec![lint.clone(), publish.clone()]);
     let options = SimpleJobOptions::orchestrated(None, None);
     assert_eq!(
         permissions(&emitter.build_simple_job(&lint, &ir, &options)),
@@ -27,13 +30,14 @@ fn plain_jobs_are_read_only_and_task_grants_stay_local() {
 #[test]
 fn contributor_grants_follow_emitted_steps() {
     let emitter = GitHubActionsEmitter::new();
-    let lint = make_task("lint", &["lint"]);
-    let publish = make_task("publish.cue", &["publish"]);
-    let mut auth = make_phase_task("auth", &["login"], BuildStage::Setup, 25);
+    let lint = super::make_task("lint", &["lint"]);
+    let publish = super::make_task("publish.cue", &["publish"]);
+    let mut auth =
+        super::make_phase_task("auth", &["login"], TaskPhase::new(BuildStage::Setup, 25));
     auth.github_permissions
         .insert("id-token".into(), "write".into());
     auth.github_task_filter = vec![publish.id.clone()];
-    let ir = make_ir(vec![lint.clone(), publish.clone(), auth]);
+    let ir = super::make_ir(vec![lint.clone(), publish.clone(), auth]);
     let options = SimpleJobOptions::orchestrated(None, None);
     let lint_job = emitter.build_simple_job(&lint, &ir, &options);
     assert!(
@@ -56,17 +60,22 @@ fn contributor_grants_follow_emitted_steps() {
 #[test]
 fn skipped_setup_and_success_steps_do_not_widen_direct_jobs() {
     let emitter = GitHubActionsEmitter::new();
-    let task = make_task("lint", &["lint"]);
-    let mut setup = make_phase_task("setup", &["setup"], BuildStage::Setup, 10);
+    let task = super::make_task("lint", &["lint"]);
+    let mut setup =
+        super::make_phase_task("setup", &["setup"], TaskPhase::new(BuildStage::Setup, 10));
     setup.contributor = Some("cuenv".into());
     setup
         .github_permissions
         .insert("packages".into(), "write".into());
-    let mut success = make_phase_task("comment", &["comment"], BuildStage::Success, 50);
+    let mut success = super::make_phase_task(
+        "comment",
+        &["comment"],
+        TaskPhase::new(BuildStage::Success, 50),
+    );
     success
         .github_permissions
         .insert("pull-requests".into(), "write".into());
-    let ir = make_ir(vec![task.clone(), setup, success]);
+    let ir = super::make_ir(vec![task.clone(), setup, success]);
     let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::direct(None));
     assert!(permissions(&job)["packages"].is_null());
     assert!(permissions(&job)["pull-requests"].is_null());
@@ -85,11 +94,11 @@ fn pipeline_ceilings_clamp_never_grant_and_none_forbids() {
         ("packages".into(), "none".into()),
         ("id-token".into(), "write".into()),
     ]);
-    let mut task = make_task("publish", &["publish"]);
+    let mut task = super::make_task("publish", &["publish"]);
     task.deployment = true;
     task.github_permissions
         .insert("packages".into(), "write".into());
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
     let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
     assert_eq!(permissions(&job)["contents"], "read");
     assert_eq!(permissions(&job)["packages"], "none");
@@ -105,9 +114,13 @@ fn bootstrap_ignores_pipeline_map_and_artifact_upload_needs_no_write() {
     emitter
         .configured_permissions
         .insert("contents".into(), "none".into());
-    let mut setup = make_phase_task("cuenv.setup", &["build"], BuildStage::Setup, 10);
+    let mut setup = super::make_phase_task(
+        "cuenv.setup",
+        &["build"],
+        TaskPhase::new(BuildStage::Setup, 10),
+    );
     setup.contributor = Some("cuenv".into());
-    let ir = make_ir(vec![setup]);
+    let ir = super::make_ir(vec![setup]);
     let job = emitter
         .build_cuenv_bootstrap_job(
             &ir,
@@ -126,13 +139,21 @@ fn bootstrap_ignores_pipeline_map_and_artifact_upload_needs_no_write() {
 #[test]
 fn bootstrap_preserves_requirements_of_injected_cache_steps() {
     let emitter = GitHubActionsEmitter::new();
-    let mut setup = make_phase_task("cuenv.setup", &["build"], BuildStage::Setup, 10);
+    let mut setup = super::make_phase_task(
+        "cuenv.setup",
+        &["build"],
+        TaskPhase::new(BuildStage::Setup, 10),
+    );
     setup.contributor = Some("cuenv".into());
-    let mut cache = make_phase_task("cache", &["cache"], BuildStage::Bootstrap, 1);
+    let mut cache = super::make_phase_task(
+        "cache",
+        &["cache"],
+        TaskPhase::new(BuildStage::Bootstrap, 1),
+    );
     cache
         .github_permissions
         .insert("id-token".into(), "write".into());
-    let ir = make_ir(vec![setup, cache]);
+    let ir = super::make_ir(vec![setup, cache]);
     let job = emitter
         .build_cuenv_bootstrap_job(
             &ir,
@@ -148,7 +169,7 @@ fn bootstrap_preserves_requirements_of_injected_cache_steps() {
 #[test]
 fn matrix_jobs_keep_own_task_grants_and_drop_unrelated_phase_grants() {
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("publish", &["publish"]);
+    let mut task = super::make_task("publish", &["publish"]);
     task.matrix = Some(cuenv_ci::ir::MatrixConfig {
         dimensions: BTreeMap::from([(
             "arch".into(),
@@ -158,11 +179,12 @@ fn matrix_jobs_keep_own_task_grants_and_drop_unrelated_phase_grants() {
     });
     task.github_permissions
         .insert("packages".into(), "write".into());
-    let mut auth = make_phase_task("auth", &["login"], BuildStage::Setup, 25);
+    let mut auth =
+        super::make_phase_task("auth", &["login"], TaskPhase::new(BuildStage::Setup, 25));
     auth.github_permissions
         .insert("id-token".into(), "write".into());
     auth.github_task_filter = vec!["other".into()];
-    let ir = make_ir(vec![task.clone(), auth]);
+    let ir = super::make_ir(vec![task.clone(), auth]);
     let jobs = emitter.build_matrix_jobs(
         &task,
         &ir,
@@ -185,7 +207,7 @@ fn matrix_jobs_keep_own_task_grants_and_drop_unrelated_phase_grants() {
 #[test]
 fn thin_reporter_grants_are_attributed_and_capped() {
     let mut emitter = GitHubActionsEmitter::new();
-    let mut ir = make_ir(vec![make_task("lint", &["lint"])]);
+    let mut ir = super::make_ir(vec![super::make_task("lint", &["lint"])]);
     let grants = serde_yaml::to_value(emitter.build_permissions(&ir)).unwrap();
     assert_eq!(grants["checks"], "write");
     assert!(grants["pull-requests"].is_null());

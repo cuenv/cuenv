@@ -30,8 +30,12 @@ _flakeSourceFiles: _ @embed(file="nix/source-files.json")
 let _flakeInputs = list.Concat([
 	["flake.nix", "flake.lock"],
 	_flakeSourceFiles.files,
+	_flakeSourceFiles.fmtFiles,
+	_flakeSourceFiles.rustStyleFiles,
 	_flakeSourceFiles.cuettyFiles,
 	[for tree in _flakeSourceFiles.trees {"\(tree)/**"}],
+	[for tree in _flakeSourceFiles.fmtTrees {"\(tree)/**"}],
+	[for tree in _flakeSourceFiles.rustStyleInputTrees {"\(tree)/**"}],
 	[for tree in _flakeSourceFiles.cueTrees {"\(tree)/**/*.cue"}],
 	[for tree in _flakeSourceFiles.cuettyTrees {"\(tree)/**"}],
 ])
@@ -301,6 +305,7 @@ schema.#Project & {
 				command: "bash"
 				args: ["scripts/check-schema-docs.sh"]
 				inputs: _schemaDocsInputs
+				hermetic: {passthrough: ["PATH"]}
 			}
 
 			// The flake's derivation paths as a task exec root sees them: only
@@ -532,7 +537,7 @@ schema.#Project & {
 					find "$audit_db" -name '*.md' -exec sed -E -i.bak '/^cvss = "CVSS:4\\.0\\//d' {} +
 					find "$audit_db" -name '*.bak' -delete
 
-					cargo audit --db "$audit_db" --no-fetch --deny warnings --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0057 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0006 --ignore RUSTSEC-2026-0020 --ignore RUSTSEC-2026-0021 --ignore RUSTSEC-2026-0037
+					cargo audit --db "$audit_db" --no-fetch --deny warnings --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0006 --ignore RUSTSEC-2026-0020 --ignore RUSTSEC-2026-0021 --ignore RUSTSEC-2026-0037
 					"""
 				inputs: list.Concat([_baseInputs, ["Cargo.lock"]])
 			}

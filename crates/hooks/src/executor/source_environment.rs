@@ -1,19 +1,25 @@
 //! Source-hook environment capture.
 
-use super::execute_hook_with_timeout;
 use crate::types::Hook;
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
-use tracing::{debug, warn};
+use tracing::debug;
+
+type EnvironmentDelta = (HashMap<String, String>, Vec<String>);
 
 /// Execute a single source hook and return the resulting environment.
 ///
 /// This bypasses hook approval and state persistence, making it suitable for
 /// runtime-backed environment materialization where the manifest itself is the
 /// source of truth.
+///
+/// # Errors
+///
+/// Returns an error if the hook or source evaluation fails, or if the captured
+/// environment contains invalid entries.
 pub async fn capture_source_environment(
     hook: Hook,
     prior_env: &HashMap<String, String>,
@@ -25,9 +31,17 @@ pub async fn capture_source_environment(
         ));
     }
 
-    let hook_result = execute_hook_with_timeout(hook, &timeout_seconds).await?;
+    let hook_result =
+        super::hook_executor::execute_hook_with_timeout(hook, &timeout_seconds).await?;
+    if !hook_result.success {
+        return Err(Error::process(
+            hook_result
+                .error
+                .unwrap_or_else(|| "Source hook failed".to_string()),
+        ));
+    }
     let (env_delta, removed_keys) =
-        evaluate_shell_environment(&hook_result.stdout, prior_env).await?;
+        evaluate_shell_environment(&hook_result.stdout, prior_env, timeout_seconds).await?;
 
     let mut environment = prior_env.clone();
     for (key, value) in env_delta {
@@ -55,68 +69,63 @@ pub async fn detect_shell() -> String {
 
 async fn is_shell_capable(shell: &str) -> bool {
     let check_script = "case x in x) true ;& y) true ;; esac";
-    match Command::new(shell)
+    let mut command = Command::new(shell);
+    command
         .arg("-c")
         .arg(check_script)
-        .output()
-        .await
-    {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
+        .env_remove("CUENV_HOOK_SESSION");
+    matches!(
+        super::output::run_command(command, None, std::time::Duration::from_secs(3)).await,
+        Ok(Some(output)) if output.status.success()
+    )
 }
 
 /// Evaluate shell script and extract resulting environment variables.
 pub async fn evaluate_shell_environment(
     shell_script: &str,
     prior_env: &HashMap<String, String>,
-) -> Result<(HashMap<String, String>, Vec<String>)> {
-    const DELIMITER: &str = "__CUENV_ENV_START__";
+    timeout_seconds: u64,
+) -> Result<EnvironmentDelta> {
+    if prior_env.keys().any(|key| !is_valid_environment_name(key)) {
+        return Err(Error::configuration(
+            "Prior environment contains an invalid variable name",
+        ));
+    }
+    let delimiter = format!("__CUENV_ENV_START_{}__", uuid::Uuid::new_v4().simple());
 
     debug!(
         "Evaluating shell script to extract environment ({} bytes)",
         shell_script.len()
     );
 
-    tracing::trace!("Raw shell script from hook:\n{}", shell_script);
-
     let shell = if let Some(bash_path) = nix_bash_from_script(shell_script) {
-        debug!("Detected Nix bash in script: {}", bash_path.display());
+        debug!("Detected Nix bash in source script");
         bash_path.to_string_lossy().into_owned()
     } else {
         detect_shell().await
     };
 
-    debug!("Using shell: {}", shell);
+    debug!("Selected a shell for source evaluation");
 
     let env_cmd = find_env_command();
-    let env_before = capture_baseline_environment(&shell, &env_cmd, prior_env).await?;
+    let shell_context = ShellContext {
+        shell: &shell,
+        env_cmd: &env_cmd,
+        prior_env,
+        timeout: std::time::Duration::from_secs(timeout_seconds),
+    };
+    let env_before = capture_baseline_environment(&shell_context).await?;
     let filtered_script = filter_shell_script(shell_script);
-    tracing::trace!("Filtered shell script:\n{}", filtered_script);
-
-    let output =
-        evaluate_filtered_script(&shell, &env_cmd, DELIMITER, &filtered_script, prior_env).await?;
+    let output = evaluate_filtered_script(&shell_context, &delimiter, &filtered_script).await?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!(
-            "Shell script evaluation finished with error (exit code {:?}): {}",
-            output.status.code(),
-            stderr
-        );
+        return Err(Error::configuration("Source shell evaluation failed"));
     }
 
-    let env_output_bytes = environment_output_bytes(&output.stdout, DELIMITER);
+    let env_output_bytes = environment_output_bytes(&output.stdout, &delimiter)
+        .ok_or_else(|| Error::configuration("Source shell did not finish environment capture"))?;
     let (env_delta, removed_keys) =
-        parse_environment_delta(env_output_bytes, &env_before, prior_env);
-
-    if env_delta.is_empty() && removed_keys.is_empty() && !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::configuration(format!(
-            "Shell script evaluation failed and no environment captured. Error: {}",
-            stderr
-        )));
-    }
+        parse_environment_delta(env_output_bytes, &env_before, prior_env)?;
 
     debug!(
         "Evaluated shell script and extracted {} new/changed environment variables ({} removed)",
@@ -126,7 +135,7 @@ pub async fn evaluate_shell_environment(
     Ok((env_delta, removed_keys))
 }
 
-fn find_env_command() -> String {
+pub(super) fn find_env_command() -> String {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join("env");
@@ -137,7 +146,7 @@ fn find_env_command() -> String {
     "/usr/bin/env".to_string()
 }
 
-fn nix_bash_from_script(shell_script: &str) -> Option<PathBuf> {
+pub(super) fn nix_bash_from_script(shell_script: &str) -> Option<PathBuf> {
     for line in shell_script.lines() {
         if let Some(path) = line.strip_prefix("BASH='")
             && let Some(end) = path.find('\'')
@@ -152,27 +161,37 @@ fn nix_bash_from_script(shell_script: &str) -> Option<PathBuf> {
     None
 }
 
+struct ShellContext<'shell> {
+    shell: &'shell str,
+    env_cmd: &'shell str,
+    prior_env: &'shell HashMap<String, String>,
+    timeout: std::time::Duration,
+}
+
 async fn capture_baseline_environment(
-    shell: &str,
-    env_cmd: &str,
-    prior_env: &HashMap<String, String>,
+    context: &ShellContext<'_>,
 ) -> Result<HashMap<String, String>> {
-    let mut cmd_before = Command::new(shell);
+    let mut cmd_before = Command::new(context.shell);
     cmd_before.arg("-c");
-    cmd_before.arg(format!("{env_cmd} -0"));
+    cmd_before.arg(format!("{} -0", shell_quote(context.env_cmd)));
     cmd_before.stdout(Stdio::piped());
     cmd_before.stderr(Stdio::piped());
-    apply_prior_env(&mut cmd_before, prior_env);
+    apply_prior_env(&mut cmd_before, context.prior_env);
 
-    let output_before = cmd_before
-        .output()
-        .await
-        .map_err(|e| Error::configuration(format!("Failed to get initial environment: {}", e)))?;
+    let output_before = super::output::run_command(cmd_before, None, context.timeout)
+        .await?
+        .ok_or_else(|| Error::configuration("Baseline environment capture timed out"))?;
+
+    if !output_before.status.success() {
+        return Err(Error::configuration(
+            "Failed to capture baseline environment",
+        ));
+    }
 
     Ok(parse_env_output(&output_before.stdout))
 }
 
-fn filter_shell_script(shell_script: &str) -> String {
+pub(super) fn filter_shell_script(shell_script: &str) -> String {
     shell_script
         .lines()
         .filter(|line| {
@@ -187,55 +206,63 @@ fn filter_shell_script(shell_script: &str) -> String {
 }
 
 async fn evaluate_filtered_script(
-    shell: &str,
-    env_cmd: &str,
+    context: &ShellContext<'_>,
     delimiter: &str,
     filtered_script: &str,
-    prior_env: &HashMap<String, String>,
 ) -> Result<std::process::Output> {
-    let mut cmd = Command::new(shell);
+    if filtered_script.contains('\0') {
+        return Err(Error::configuration("Source script contains a null byte"));
+    }
+    let mut cmd = Command::new(context.shell);
     cmd.arg("-c");
-    cmd.arg(format!(
-        "{}\necho -ne '\\0{}\\0'; {env_cmd} -0",
-        filtered_script, delimiter
-    ));
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    apply_prior_env(&mut cmd, prior_env);
+    cmd.arg(source_evaluation_command(delimiter, context.env_cmd));
+    apply_prior_env(&mut cmd, context.prior_env);
+    super::output::run_command(cmd, Some(filtered_script.as_bytes()), context.timeout)
+        .await?
+        .ok_or_else(|| Error::configuration("Source shell evaluation timed out"))
+}
 
-    cmd.output()
-        .await
-        .map_err(|e| Error::configuration(format!("Failed to evaluate shell environment: {}", e)))
+pub(super) fn source_evaluation_command(delimiter: &str, env_command: &str) -> String {
+    // A fresh, non-exported variable avoids passing the script through argv or
+    // accidentally changing an inherited environment variable.
+    let variable = format!("__cuenv_source_{}", uuid::Uuid::new_v4().simple());
+    format!(
+        "set -e\nunset {variable}\n{variable}=$(command cat) || exit 1\neval \"${variable}\" 1>&2\nunset {variable}\nprintf '\\0%s\\0' '{delimiter}'\n{} -0",
+        shell_quote(env_command)
+    )
+}
+
+pub(super) fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn apply_prior_env(cmd: &mut Command, prior_env: &HashMap<String, String>) {
     for (key, value) in prior_env {
         cmd.env(key, value);
     }
+    cmd.env_remove("CUENV_HOOK_SESSION");
 }
 
-fn environment_output_bytes<'a>(stdout: &'a [u8], delimiter: &str) -> &'a [u8] {
+pub(super) fn environment_output_bytes<'a>(stdout: &'a [u8], delimiter: &str) -> Option<&'a [u8]> {
     let delimiter_bytes = format!("\0{delimiter}\0").into_bytes();
-    if let Some(idx) = stdout
+    let mut matches = stdout
         .windows(delimiter_bytes.len())
-        .position(|window| window == delimiter_bytes)
-    {
-        return &stdout[idx + delimiter_bytes.len()..];
+        .enumerate()
+        .filter_map(|(index, window)| (window == delimiter_bytes).then_some(index));
+    let first = matches.next()?;
+    if first != 0 || matches.next().is_some() {
+        return None;
     }
-
-    debug!("Environment delimiter not found in hook output");
-    let len = stdout.len();
-    let start = len.saturating_sub(1000);
-    let tail = String::from_utf8_lossy(&stdout[start..]);
-    warn!(
-        "Delimiter missing. Tail of stdout (last 1000 bytes):\n{}",
-        tail
-    );
-
-    &[]
+    Some(&stdout[first + delimiter_bytes.len()..])
 }
 
-fn parse_env_output(bytes: &[u8]) -> HashMap<String, String> {
+pub(super) fn is_valid_environment_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+pub(super) fn parse_env_output(bytes: &[u8]) -> HashMap<String, String> {
     String::from_utf8_lossy(bytes)
         .split('\0')
         .filter_map(|line| line.split_once('='))
@@ -243,28 +270,46 @@ fn parse_env_output(bytes: &[u8]) -> HashMap<String, String> {
         .collect()
 }
 
-fn parse_environment_delta(
+pub(super) fn parse_environment_delta(
     env_output_bytes: &[u8],
     env_before: &HashMap<String, String>,
     prior_env: &HashMap<String, String>,
-) -> (HashMap<String, String>, Vec<String>) {
+) -> Result<EnvironmentDelta> {
     let env_output = String::from_utf8_lossy(env_output_bytes);
     let mut env_delta = HashMap::new();
     let mut post_env_keys = std::collections::HashSet::new();
 
     for line in env_output.split('\0') {
+        if line.is_empty() {
+            continue;
+        }
         if let Some((key, value)) = line.split_once('=') {
             if should_skip_env_key(key) {
                 continue;
             }
 
-            if !key.is_empty() {
-                post_env_keys.insert(key.to_string());
+            if !is_valid_environment_name(key) {
+                if env_before.get(key).is_none_or(|before| before != value) {
+                    return Err(Error::configuration(
+                        "Source shell returned an invalid environment variable name",
+                    ));
+                }
+                continue;
             }
 
-            if !key.is_empty() && env_before.get(key) != Some(&value.to_string()) {
+            if !post_env_keys.insert(key.to_string()) {
+                return Err(Error::configuration(
+                    "Source shell returned a duplicate environment variable",
+                ));
+            }
+
+            if env_before.get(key).is_none_or(|before| before != value) {
                 env_delta.insert(key.to_string(), value.to_string());
             }
+        } else {
+            return Err(Error::configuration(
+                "Source shell returned a malformed environment entry",
+            ));
         }
     }
 
@@ -274,7 +319,7 @@ fn parse_environment_delta(
         .cloned()
         .collect();
 
-    (env_delta, removed_keys)
+    Ok((env_delta, removed_keys))
 }
 
 fn should_skip_env_key(key: &str) -> bool {

@@ -9,15 +9,15 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```rust
-/// use cuenv_editorconfig::EditorConfigSection;
+/// use cuenv_editorconfig::{EditorConfigSection, PropertyState};
 ///
 /// let section = EditorConfigSection::new()
 ///     .indent_style("space")
 ///     .indent_size(4)
 ///     .end_of_line("lf")
 ///     .charset("utf-8")
-///     .insert_final_newline(true)
-///     .trim_trailing_whitespace(true);
+///     .insert_final_newline(PropertyState::Enabled)
+///     .trim_trailing_whitespace(PropertyState::Enabled);
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -41,6 +41,27 @@ pub enum EditorConfigValue {
     Int(u32),
     /// String value (e.g., "tab" for indent_size, "off" for max_line_length)
     String(String),
+}
+
+/// A three-state EditorConfig property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyState {
+    /// Emit the property with value `true`.
+    Enabled,
+    /// Emit the property with value `false`.
+    Disabled,
+    /// Omit the property.
+    Unset,
+}
+
+impl PropertyState {
+    const fn value(self) -> Option<bool> {
+        match self {
+            Self::Enabled => Some(true),
+            Self::Disabled => Some(false),
+            Self::Unset => None,
+        }
+    }
 }
 
 impl EditorConfigValue {
@@ -144,29 +165,15 @@ impl EditorConfigSection {
 
     /// Set whether to trim trailing whitespace.
     #[must_use]
-    pub fn trim_trailing_whitespace(mut self, trim: bool) -> Self {
-        self.trim_trailing_whitespace = Some(trim);
-        self
-    }
-
-    /// Set whether to trim trailing whitespace from an optional value.
-    #[must_use]
-    pub fn trim_trailing_whitespace_opt(mut self, trim: Option<bool>) -> Self {
-        self.trim_trailing_whitespace = trim;
+    pub const fn trim_trailing_whitespace(mut self, trim: PropertyState) -> Self {
+        self.trim_trailing_whitespace = trim.value();
         self
     }
 
     /// Set whether to insert a final newline.
     #[must_use]
-    pub fn insert_final_newline(mut self, insert: bool) -> Self {
-        self.insert_final_newline = Some(insert);
-        self
-    }
-
-    /// Set whether to insert a final newline from an optional value.
-    #[must_use]
-    pub fn insert_final_newline_opt(mut self, insert: Option<bool>) -> Self {
-        self.insert_final_newline = insert;
+    pub const fn insert_final_newline(mut self, insert: PropertyState) -> Self {
+        self.insert_final_newline = insert.value();
         self
     }
 

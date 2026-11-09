@@ -13,9 +13,8 @@
 //! to a fixed size, and a plaintext loopback URL (a local `sqld`) is always
 //! contacted directly, never through an `HTTP_PROXY` that would see the token.
 
-use std::fmt;
-use std::iter;
 use std::time::Duration;
+use std::{fmt, iter};
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -29,7 +28,7 @@ use super::sql::{
     Attempted, Dialect, Disclosure, ExecuteResult, Failure, FailureKind, SqlStateStore,
     SqlTransport, SqlValue, Statement, StatementError, TransactionResult, sql_state_store,
 };
-use crate::error::{InfrastructureError, Result, describe_json_error, strip_control_characters};
+use crate::error::{InfrastructureError, Result};
 
 /// The backend's name in messages.
 const BACKEND: &str = "Turso";
@@ -135,6 +134,26 @@ impl TursoStateStore {
         );
         hex::encode(digest.finalize())
     }
+
+    /// Non-root paths may contain credentials and cannot be fingerprinted.
+    fn legacy_source(&self) -> Option<crate::state::LegacyMigrationSource> {
+        use sha2::Digest;
+        let endpoint = &self.inner.transport.pipeline_url;
+        if endpoint.path() != "/v2/pipeline"
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return None;
+        }
+        let mut digest = sha2::Sha256::new();
+        digest.update(b"cuenv-legacy-turso-connection-v1\0");
+        digest.update(endpoint.origin().ascii_serialization().as_bytes());
+        Some(crate::state::LegacyMigrationSource::Turso {
+            connection: crate::state::BackendIdentity::from_digest(digest.finalize().into()),
+        })
+    }
 }
 
 sql_state_store!(TursoStateStore);
@@ -194,7 +213,7 @@ impl Hrana {
         serde_json::from_slice(&bytes).map_err(|error| {
             Failure::permanent(format!(
                 "invalid Turso response ({})",
-                describe_json_error(&error)
+                crate::error::describe_json_error(&error)
             ))
         })
     }
@@ -295,7 +314,7 @@ impl SqlTransport for Hrana {
         let result = self
             .batch_once(transaction_steps(&all, commit_index), disclosure)
             .await?;
-        transaction_result(&result, commit_index)
+        transaction_result(&result, commit_index, disclosure)
     }
 
     fn secret(&self) -> Option<&str> {
@@ -339,7 +358,11 @@ fn transaction_steps<'statement>(
 
 /// What a transaction batch says: committed, or which body statement (after
 /// `BEGIN`, zero based) the database rejected.
-fn transaction_result(result: &BatchResult, commit_index: usize) -> Attempted<TransactionResult> {
+fn transaction_result(
+    result: &BatchResult,
+    commit_index: usize,
+    disclosure: Disclosure,
+) -> Attempted<TransactionResult> {
     let first_error = result
         .step_errors
         .iter()
@@ -348,7 +371,7 @@ fn transaction_result(result: &BatchResult, commit_index: usize) -> Attempted<Tr
         .find_map(|(index, error)| error.as_ref().map(|error| (index, error)));
     if let Some((index, error)) = first_error {
         if is_busy(error.code.as_deref()) {
-            return Err(statement_failure(error, Disclosure::Full));
+            return Err(statement_failure(error, disclosure));
         }
         return Ok(TransactionResult::Failed {
             statement: index.checked_sub(1),
@@ -381,10 +404,10 @@ fn is_busy(code: Option<&str>) -> bool {
 /// statement carried no state (a message may echo the arguments).
 fn statement_failure(error: &HranaError, disclosure: Disclosure) -> Failure {
     let busy = is_busy(error.code.as_deref());
-    let code = error
-        .code
-        .as_deref()
-        .map_or_else(|| "no code".to_string(), strip_control_characters);
+    let code = error.code.as_deref().map_or_else(
+        || "no code".to_string(),
+        crate::error::strip_control_characters,
+    );
     Failure::new(
         if busy {
             FailureKind::Busy
@@ -394,7 +417,7 @@ fn statement_failure(error: &HranaError, disclosure: Disclosure) -> Failure {
         match disclosure {
             Disclosure::Full => format!(
                 "Turso statement failed: {} ({code})",
-                strip_control_characters(&error.message)
+                crate::error::strip_control_characters(&error.message)
             ),
             Disclosure::CodeOnly => format!(
                 "Turso statement failed with {code} (message withheld: the statement carried \
@@ -420,12 +443,15 @@ fn describe_http_error(error: &HttpError<'_>) -> String {
     let code = serde_json::from_slice::<HranaErrorBody>(&error.body.bytes)
         .ok()
         .and_then(|body| body.code)
-        .map(|code| format!(" ({})", strip_control_characters(&code)))
+        .map(|code| format!(" ({})", crate::error::strip_control_characters(&code)))
         .unwrap_or_default();
     match error.disclosure {
         Disclosure::Full => format!(
             "Turso returned HTTP {status}{code}: {}",
-            strip_control_characters(&http::describe_error_body(error.body, error.total_bytes))
+            crate::error::strip_control_characters(&http::describe_error_body(
+                error.body,
+                error.total_bytes
+            ))
         ),
         Disclosure::CodeOnly => format!(
             "Turso returned HTTP {status}{code} (response body withheld: the request carried \

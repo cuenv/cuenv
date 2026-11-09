@@ -38,21 +38,19 @@ impl Compiler {
     /// Find a task node by name (handles dotted paths for nested tasks)
     /// Returns the TaskNode which can be a Task, Group, or List
     pub(super) fn find_task_node(&self, name: &str) -> Option<&TaskNode> {
-        let parts: Vec<&str> = name.split('.').collect();
-        let mut current_tasks = &self.project.tasks;
-
-        for (i, part) in parts.iter().enumerate() {
-            match current_tasks.get(*part) {
-                Some(node) if i == parts.len() - 1 => {
-                    return Some(node);
-                }
-                Some(TaskNode::Group(group)) => {
-                    current_tasks = &group.children;
-                }
-                _ => return None,
-            }
+        if let Some(node) = self.project.tasks.get(name) {
+            return Some(node);
         }
-        None
+        let mut parts = name.split('.');
+        let mut node = self.project.tasks.get(parts.next()?)?;
+        for part in parts {
+            node = match node {
+                TaskNode::Group(group) => group.children.get(part)?,
+                TaskNode::Sequence(steps) => steps.get(part.parse::<usize>().ok()?)?,
+                TaskNode::Task(_) => return None,
+            };
+        }
+        Some(node)
     }
 
     /// Find a leaf task by name (handles dotted paths for nested tasks)
@@ -265,7 +263,7 @@ impl Compiler {
         let secrets: BTreeMap<String, SecretConfig> = BTreeMap::new();
 
         // Convert inputs (path globs only for now)
-        let inputs: Vec<String> = task.iter_path_inputs().cloned().collect();
+        let inputs: Vec<String> = task.iter_path_inputs().map(str::to_owned).collect();
 
         // Convert outputs - use Orchestrator in CI mode for cross-job artifact sharing
         let output_type = if self.options.ci_mode {

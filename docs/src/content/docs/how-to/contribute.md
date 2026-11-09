@@ -111,6 +111,10 @@ gh workflow run cuenv-arm.yml --ref <branch>
 
 CI jobs get Nix store paths from a Namespace cache volume: each Linux runner mounts one at `/nix`, so a job starts with whatever an earlier job on that volume built, and anything missing comes from cache.nixos.org or is built. Volumes are per runner profile and the last job to finish writes it, so a job can still rebuild something another job built. macOS jobs do not mount a volume. To see whether a job started warm, check the Namespace cache step: it reports whether the cache paths were found and how much space they use. The repository no longer uses Hestia: its GitHub Actions cache was rate limited and evicting packs under parallel load, and once the volume was warm it served nothing.
 
+The Nix audit uses the pinned RustSec advisory database offline and includes a
+known-vulnerable fixture to verify that advisories are checked. It does not
+check for yanked releases, because the sandbox has no registry index.
+
 For performance changes, make the claim measurable. Add or update Criterion
 coverage next to the hot path, keep a behavior regression test for the
 optimized code path, and run the narrow benchmark slice before and after the
@@ -140,13 +144,47 @@ git push origin feature/my-new-feature
 
 #### Rust Code Style
 
-- Follow standard Rust formatting (`cargo fmt`)
-- Use `cargo clippy` for linting
+- Follow the [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html), applying API-design guidance in the context of cuenv's public contracts. Chromium- and Fuchsia-specific rules do not apply.
+- Do not use boolean function parameters; group more than three non-receiver parameters in an options struct. Use named modes when a call needs to select behavior.
+- Use the pinned Rust formatter with module-level import grouping, lowercase hex literals, and formatted macro matchers. The Nix checks cover the main workspace, Cuetty, and `tools/function-enum`.
+- Use Clippy for linting. The root, Cuetty, and `tools/function-enum` Nix checks also enforce Clippy's wildcard-import and undocumented-unsafe-block lints for all targets, including crates that do not inherit the workspace lint settings.
 - Document public APIs with rustdoc comments
 - Write unit tests for all public functions
 
+The parameter-style check parses first-party Rust files under `crates`, `apps`,
+and `tools`, including tests and helpers. It checks direct boolean parameters
+and counts non-receiver parameters. Trait implementations and foreign ABI
+signatures are exempt when their signatures are fixed externally. The check
+does not expand macros, inspect Rustdoc examples, resolve type aliases, or infer
+the meaning of booleans inside containers; review those cases when designing an
+API. Run the focused check with:
+
+```bash
+nix build .#checks.x86_64-linux.cuenv-rust-parameter-style -L --accept-flake-config
+```
+
+Replace `x86_64-linux` with the host system when needed.
+When adding an application or tool outside the source trees already listed in
+`nix/source-files.json`, add its Rust files to `rustStyleFiles` or its source
+directories to `rustStyleInputTrees`. This keeps the check and its task inputs
+in sync without including Cargo build outputs. A Rust source outside `crates`,
+`apps`, and `tools` fails the check until that root is added to the checker and
+the flake's scanner-root guard.
+
+To apply Rust formatting to each workspace with the repository's pinned toolchain:
+
+```bash
+nix develop --command cargo fmt --all -- --config imports_granularity=Module,hex_literal_case=Lower,format_macro_matchers=true
+nix develop --command cargo fmt --manifest-path apps/cuetty/Cargo.toml --all -- --config imports_granularity=Module,hex_literal_case=Lower,format_macro_matchers=true
+nix develop --command cargo fmt --manifest-path tools/function-enum/Cargo.toml --all -- --config imports_granularity=Module,hex_literal_case=Lower,format_macro_matchers=true
+```
+
+These settings are passed explicitly because the pinned stable `rustfmt` does
+not apply them from a configuration file. `cuenv fmt --fix` applies the usual
+formatting but does not pass these options. The Nix checks also verify that their
+formatters apply them.
+
 ````rust
-use cuengine::evaluate_cue_package_typed;
 use cuenv_core::manifest::Project;
 use std::path::Path;
 
@@ -163,14 +201,13 @@ use std::path::Path;
 /// # Examples
 ///
 /// ```rust
-/// # use cuengine::evaluate_cue_package;
 /// # use std::path::Path;
-/// let json = evaluate_cue_package(Path::new("./config"), "cuenv")?;
+/// let json = cuengine::evaluate_cue_package(Path::new("./config"), "cuenv")?;
 /// assert!(json.contains("env"));
 /// # Ok::<_, cuengine::CueEngineError>(())
 /// ```
 pub fn load_manifest(dir: &Path) -> cuengine::Result<Project> {
-    evaluate_cue_package_typed(dir, "cuenv")
+    cuengine::evaluate_cue_package_typed(dir, "cuenv")
 }
 ````
 
@@ -190,9 +227,10 @@ pub enum MyError {
 }
 ```
 
-Public error enums are `#[non_exhaustive]` so adding a variant is not a
-breaking change for downstream crates. A constructor that returns a `Result`
-is named `try_new`, never `new`.
+Mark public error enums `#[non_exhaustive]` when downstream callers should
+handle future variants. Some internal contracts deliberately require exhaustive
+matching, such as the CLI's mapping of core errors to exit codes. A constructor
+that returns a `Result` is named `try_new`, never `new`.
 
 #### Public API Shape
 
@@ -218,6 +256,33 @@ re-exports and a small amount of glue. Implementation lives in leaf modules
 named after their primary item.
 
 #### Testing
+
+The sandboxed Nix nextest check excludes the host-only Nix runtime tests. With
+a host Nix daemon, set `CUENV_TEST_NIXPKGS` to the local store path of the
+flake's pinned nixpkgs input, then run:
+
+```bash
+cuenv exec -- cargo test -p cuenv --test nix_flake_hook --test nix_flake_path -- --ignored
+```
+
+The full flake gate runs the workspace nextest suite, BDD scenarios (including
+failure on undefined or skipped steps), all-feature
+Rustdoc tests, Cuetty's ignored PTY tests, the Go bridge scaling test, and the
+ignored infrastructure suites against local test services. To run every test,
+also execute these host-only partitions in the Nix development shell:
+
+| Partition | Command and prerequisites |
+| --- | --- |
+| Task-graph stress | `cargo test --locked -p cuenv --test stress_tests -- --ignored` |
+| Provider registry | `cargo test --locked -p cuenv-infrastructure --test provider_end_to_end installs_provider_from_registry -- --ignored --exact`; requires network access |
+| Remote cache | Start a disposable Bazel Remote server, set `CUENV_REAPI_TEST_ENDPOINT`, then run `cargo test --locked -p cuenv-cas-remote --test external_reapi -- --ignored` |
+| CLI fake provider | Build `.#checks.x86_64-linux.cuenv-fake-terraform-provider`, set `CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER` to its binary, then run `cargo test --locked -p cuenv --lib commands::infrastructure::evaluation::tests::nested_native_reference_plans_and_applies_with_fake_provider -- --ignored --exact` |
+| Live D1 | Set `CUENV_INFRASTRUCTURE_TEST_D1_ACCOUNT_ID`, `CUENV_INFRASTRUCTURE_TEST_D1_DATABASE_ID`, and `CLOUDFLARE_D1_API_TOKEN` for a disposable database, then run `cargo test --locked -p cuenv-infrastructure --lib state::d1::tests::lifecycle_against_d1 -- --ignored --exact` |
+
+The host Nix partition above requires a running Nix daemon. Remove disposable
+servers, caches, and the D1 database after their tests. A sandboxed nextest run
+alone does not execute these host and network cases. Platform-specific tests
+also require their respective operating systems.
 
 Write tests using Rust's built-in test framework:
 

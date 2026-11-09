@@ -11,17 +11,18 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```
 //! use cuenv_task_graph::{TaskGraph, TaskNodeData};
 //!
 //! // Define a simple task type
+//! #[derive(Clone)]
 //! struct MyTask {
 //!     depends_on: Vec<String>,
 //! }
 //!
 //! impl TaskNodeData for MyTask {
-//!     fn depends_on(&self) -> &[String] {
-//!         &self.depends_on
+//!     fn dependency_names(&self) -> impl Iterator<Item = &str> {
+//!         self.depends_on.iter().map(String::as_str)
 //!     }
 //! }
 //!
@@ -33,40 +34,20 @@
 //!
 //! // Get execution order
 //! let sorted = graph.topological_sort()?;
+//! assert_eq!(sorted.iter().map(|node| node.name.as_str()).collect::<Vec<_>>(), ["build", "test"]);
+//! # Ok::<(), cuenv_task_graph::Error>(())
 //! ```
 
 mod error;
 mod graph;
 mod resolver;
+mod task_node_data;
 mod traversal;
 mod validation;
 
 pub use error::{Error, Result};
 pub use graph::{GraphNode, NodeKind, TaskGraph, compute_transitive_closure};
 pub use resolver::{TaskResolution, TaskResolver};
+pub use task_node_data::{MutableTaskNodeData, TaskNodeData};
 pub use traversal::{ParallelGroups, TopologicalOrder};
 pub use validation::ValidationResult;
-
-/// Trait for task data that can be stored in the task graph.
-///
-/// Implement this trait for your task type to enable it to be stored
-/// in a [`TaskGraph`] and participate in dependency resolution.
-pub trait TaskNodeData: Clone {
-    /// Returns an iterator over the names of tasks this task depends on.
-    fn dependency_names(&self) -> impl Iterator<Item = &str>;
-
-    /// Returns true if this task has a dependency on the given task name.
-    fn has_dependency(&self, name: &str) -> bool {
-        self.dependency_names().any(|n| n == name)
-    }
-}
-
-/// Trait for task data that supports dependency mutation during graph expansion.
-///
-/// Implement this for task types used with resolver-backed graph construction,
-/// where group-level dependencies or output references need to be folded into
-/// the task data before dependency edges are materialized.
-pub trait MutableTaskNodeData: TaskNodeData {
-    /// Adds a dependency to this task by name.
-    fn add_dependency(&mut self, dep: String);
-}

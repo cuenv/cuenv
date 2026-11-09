@@ -7,10 +7,9 @@
 //! and evaluates each directory individually with `recursive: false`, avoiding CUE's
 //! `./...:package` pattern which can hang when directories contain mixed packages.
 
-use crate::commands::convert_engine_error;
-use crate::commands::env_file::{discover_env_cue_directories, find_cue_module_root};
+use crate::commands::env_file;
 use cuengine::ModuleEvalOptions;
-use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path};
+
 use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, Result};
 use serde::Serialize;
@@ -44,11 +43,11 @@ struct ProjectInfo {
 
 /// Options for executing the info command.
 #[derive(Clone, Copy, Debug)]
-pub struct InfoOptions<'a> {
+pub struct InfoOptions<'options> {
     /// None for recursive evaluation (./...), Some(path) for specific directory only.
-    pub path: Option<&'a str>,
+    pub path: Option<&'options str>,
     /// CUE package name to evaluate.
-    pub package: &'a str,
+    pub package: &'options str,
     /// Whether to output JSON format.
     pub json_output: bool,
     /// Include source location metadata for all values.
@@ -91,7 +90,8 @@ impl DiscoveredModuleResults {
         }
 
         for (meta_key, meta_value) in raw.meta {
-            let adjusted_key = adjust_meta_key_path(&meta_key, dir_rel_path);
+            let adjusted_key =
+                cuenv_core::cue::discovery::adjust_meta_key_path(&meta_key, dir_rel_path);
             self.meta.insert(adjusted_key, meta_value);
         }
     }
@@ -128,7 +128,7 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
         return render_meta_output(&context.module_root, raw_result);
     }
 
-    render_module_summary(&context.module_root, raw_result, options.json_output)
+    render_module_summary(&context.module_root, raw_result, options)
 }
 
 fn resolve_info_context(options: InfoOptions<'_>) -> Result<InfoContext> {
@@ -144,7 +144,7 @@ fn resolve_info_context(options: InfoOptions<'_>) -> Result<InfoContext> {
     })?;
 
     // Find the CUE module root
-    let module_root = find_cue_module_root(&start_path).ok_or_else(|| {
+    let module_root = env_file::find_cue_module_root(&start_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
             "No CUE module found (looking for cue.mod/) starting from: {}",
             start_path.display()
@@ -173,7 +173,8 @@ fn evaluate_discovered_env_cue_directories(
     context: &InfoContext,
     options: InfoOptions<'_>,
 ) -> Result<cuengine::ModuleResult> {
-    let env_cue_dirs = discover_env_cue_directories(&context.module_root, options.package);
+    let env_cue_dirs =
+        env_file::discover_env_cue_directories(&context.module_root, options.package);
 
     if env_cue_dirs.is_empty() {
         return Err(cuenv_core::Error::configuration(format!(
@@ -186,7 +187,8 @@ fn evaluate_discovered_env_cue_directories(
     let mut discovered = DiscoveredModuleResults::default();
 
     for dir in env_cue_dirs {
-        let dir_rel_path = compute_relative_path(&dir, &context.module_root);
+        let dir_rel_path =
+            cuenv_core::cue::discovery::compute_relative_path(&dir, &context.module_root);
         let eval_options = ModuleEvalOptions {
             recursive: false,
             with_meta: options.with_meta,
@@ -197,7 +199,7 @@ fn evaluate_discovered_env_cue_directories(
 
         let Ok(raw) =
             cuengine::evaluate_module(&context.module_root, options.package, Some(&eval_options))
-                .map_err(convert_engine_error)
+                .map_err(crate::commands::convert_engine_error)
         else {
             continue;
         };
@@ -227,7 +229,7 @@ fn evaluate_specific_info_path(
     };
 
     cuengine::evaluate_module(&context.module_root, options.package, Some(&eval_options))
-        .map_err(convert_engine_error)
+        .map_err(crate::commands::convert_engine_error)
 }
 
 fn render_meta_output(module_root: &Path, raw_result: cuengine::ModuleResult) -> Result<String> {
@@ -243,13 +245,15 @@ fn render_meta_output(module_root: &Path, raw_result: cuengine::ModuleResult) ->
 fn render_module_summary(
     module_root: &Path,
     raw_result: cuengine::ModuleResult,
-    json_output: bool,
+    options: InfoOptions<'_>,
 ) -> Result<String> {
     let module = ModuleEvaluation::from_raw(
         module_root.to_path_buf(),
         raw_result.instances,
-        raw_result.projects,
-        None,
+        cuenv_core::module::ModuleEvaluationOptions {
+            project_paths: raw_result.projects,
+            references: None,
+        },
     );
 
     let mut projects: Vec<ProjectInfo> = module
@@ -263,7 +267,7 @@ fn render_module_summary(
         .collect();
     projects.sort_by(|a, b| a.name.cmp(&b.name));
 
-    if json_output {
+    if options.json_output {
         let output = InfoOutput {
             module_root: module_root.display().to_string(),
             base_count: module.base_count(),

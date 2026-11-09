@@ -445,7 +445,7 @@ pub enum TaskCondition {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivationCondition {
-    /// Always active (no conditions)
+    /// `false` disables the contributor; `true` leaves other conditions in effect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub always: Option<bool>,
 
@@ -478,7 +478,7 @@ pub struct ActivationCondition {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_command: Vec<String>,
 
-    /// Task label detection (active if any task has these labels)
+    /// Task label detection (active if a pipeline task has any listed label).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_labels: Vec<String>,
 
@@ -486,11 +486,11 @@ pub struct ActivationCondition {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<String>,
 
-    /// Service command detection (active if any service uses these commands)
+    /// Service command detection (active if a service uses any listed program).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_command: Vec<String>,
 
-    /// Service presence (active if project has any services defined)
+    /// Require services when true, or require no services when false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_service: Option<bool>,
 }

@@ -13,11 +13,11 @@ use crate::event::{
     CacheSkipReason, CiEvent, CommandEvent, EventCategory, InteractiveEvent, OutputEvent,
     ServiceEvent, SkipReason, SystemEvent, TaskEvent,
 };
-use crate::redaction::redact_cow;
+use crate::redaction;
 
 /// Replace every registered secret in `text`.
 fn scrub(text: &mut String) {
-    if let Cow::Owned(redacted) = redact_cow(text) {
+    if let Cow::Owned(redacted) = redaction::redact_cow(text) {
         *text = redacted;
     }
 }

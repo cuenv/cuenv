@@ -133,14 +133,20 @@ impl Changeset {
         id: impl Into<String>,
         summary: impl Into<String>,
         packages: Vec<PackageChange>,
-        description: Option<String>,
     ) -> Self {
         Self {
             id: id.into(),
             summary: summary.into(),
             packages,
-            description,
+            description: None,
         }
+    }
+
+    /// Add a longer description to the changeset.
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
     }
 
     /// Generate a unique changeset ID.
@@ -397,7 +403,7 @@ impl ChangesetManager {
     /// # Errors
     ///
     /// Returns an error if the changesets cannot be read.
-    pub fn get_package_bumps(&self) -> Result<HashMap<String, BumpType>> {
+    pub fn package_bumps(&self) -> Result<HashMap<String, BumpType>> {
         let changesets = self.list()?;
         let mut bumps: HashMap<String, BumpType> = HashMap::new();
 
@@ -553,7 +559,6 @@ Breaking change summary
             "abc123",
             "Fix bug",
             vec![PackageChange::new("my-pkg", BumpType::Patch)],
-            None,
         );
 
         let md = changeset.to_markdown();
@@ -571,8 +576,8 @@ Breaking change summary
                 PackageChange::new("pkg-a", BumpType::Minor),
                 PackageChange::new("pkg-b", BumpType::Patch),
             ],
-            Some("Extended description".to_string()),
-        );
+        )
+        .with_description("Extended description".to_string());
 
         let markdown = original.to_markdown();
         let parsed = Changeset::parse(&markdown, "roundtrip").unwrap();
@@ -592,7 +597,6 @@ Breaking change summary
             "test-cs",
             "Test change",
             vec![PackageChange::new("pkg", BumpType::Minor)],
-            None,
         );
 
         manager.add(&changeset).unwrap();
@@ -612,19 +616,17 @@ Breaking change summary
             "cs1",
             "Small fix",
             vec![PackageChange::new("pkg", BumpType::Patch)],
-            None,
         );
         let cs2 = Changeset::with_id(
             "cs2",
             "New feature",
             vec![PackageChange::new("pkg", BumpType::Minor)],
-            None,
         );
 
         manager.add(&cs1).unwrap();
         manager.add(&cs2).unwrap();
 
-        let bumps = manager.get_package_bumps().unwrap();
+        let bumps = manager.package_bumps().unwrap();
         // Should be Minor since it's the highest
         assert_eq!(bumps.get("pkg"), Some(&BumpType::Minor));
     }
@@ -638,7 +640,6 @@ Breaking change summary
             "to-remove",
             "Will be removed",
             vec![PackageChange::new("pkg", BumpType::Patch)],
-            None,
         );
 
         manager.add(&changeset).unwrap();
@@ -658,7 +659,6 @@ Breaking change summary
                 format!("cs-{i}"),
                 format!("Change {i}"),
                 vec![PackageChange::new("pkg", BumpType::Patch)],
-                None,
             );
             manager.add(&changeset).unwrap();
         }

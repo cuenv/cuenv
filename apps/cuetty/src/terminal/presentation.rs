@@ -5,7 +5,7 @@ use super::model::{Color, Rgb};
 use super::sizing::CellSize;
 use gpui::{
     Font, FontFallbacks, FontFeatures, FontWeight, Pixels, Point, Size, TextSystem,
-    WindowAppearance, WindowBackgroundAppearance, font, point, px,
+    WindowAppearance, WindowBackgroundAppearance,
 };
 
 use std::sync::Arc;
@@ -33,7 +33,7 @@ fn terminal_font() -> Font {
 }
 
 fn font_from_config(config: &TerminalConfig) -> Font {
-    let mut font = font(config.font.family.clone());
+    let mut font = gpui::font(config.font.family.clone());
     font.fallbacks = Some(FontFallbacks::from_fonts(config.font.fallbacks.clone()));
     font.features = font_features(&config.font);
     font
@@ -206,12 +206,12 @@ impl ScaleFactor {
 
     /// The logical length of a run of device pixels.
     pub fn logical(self, device_pixels: u32) -> Pixels {
-        px(device_pixels as f32 / self.0)
+        gpui::px(device_pixels as f32 / self.0)
     }
 
     /// The logical position of a fractional device pixel coordinate.
     pub fn logical_position(self, device_position: f32) -> Pixels {
-        px(device_position / self.0)
+        gpui::px(device_position / self.0)
     }
 
     /// The device pixel nearest a logical position.
@@ -225,13 +225,13 @@ impl ScaleFactor {
     /// which floors to the one before with the last variant: that glyph is rasterised
     /// differently and sits off the grid. The bias keeps it just past instead.
     fn glyph_position(self, device: f32) -> Pixels {
-        px((device + Self::GLYPH_BIAS) / self.0)
+        gpui::px((device + Self::GLYPH_BIAS) / self.0)
     }
 
     /// The nearest position that falls on a device pixel.
     pub fn snap(self, position: Point<Pixels>) -> Point<Pixels> {
-        let snap = |value: Pixels| px((f32::from(value) * self.0).round() / self.0);
-        point(snap(position.x), snap(position.y))
+        let snap = |value: Pixels| gpui::px((f32::from(value) * self.0).round() / self.0);
+        gpui::point(snap(position.x), snap(position.y))
     }
 }
 
@@ -256,10 +256,10 @@ impl TerminalMetrics {
         // unavailable, GPUI still resolves its robust platform fallback stack.
         let font = font_from_config(config);
         let font_id = text_system.resolve_font(&font);
-        let font_size = px(config.font.size_px);
+        let font_size = gpui::px(config.font.size_px);
         let width = text_system
             .ch_advance(font_id, font_size)
-            .unwrap_or(px(9.0));
+            .unwrap_or(gpui::px(9.0));
         // Terminal line geometry is a presentation contract, not an accident
         // of a selected font's ascent/descent metrics. It must remain stable
         // across fallback glyphs and match the PTY grid after snapping.
@@ -323,7 +323,7 @@ impl DeviceGrid {
 }
 
 fn terminal_line_height(font_size: Pixels, multiplier: f32) -> Pixels {
-    px((f32::from(font_size) * multiplier).max(1.0))
+    gpui::px((f32::from(font_size) * multiplier).max(1.0))
 }
 
 /// Rounds a cell to the nearest whole device pixels, rather than always up: a 9.6px
@@ -343,18 +343,18 @@ pub fn gpui_rgb(rgb: Rgb) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::sizing::terminal_size;
+    use super::super::sizing;
     use super::*;
 
     fn metrics(scale: f32) -> TerminalMetrics {
         TerminalMetrics {
             font: terminal_font(),
-            font_size: px(TERMINAL_FONT_SIZE),
+            font_size: gpui::px(TERMINAL_FONT_SIZE),
             bold_weight: FontWeight::SEMIBOLD,
             cell: Size {
-                width: px(9.6),
+                width: gpui::px(9.6),
                 height: terminal_line_height(
-                    px(TERMINAL_FONT_SIZE),
+                    gpui::px(TERMINAL_FONT_SIZE),
                     TERMINAL_LINE_HEIGHT_MULTIPLIER,
                 ),
             },
@@ -376,7 +376,7 @@ mod tests {
                 height: 38
             }
         );
-        assert_eq!(width, px(9.5));
+        assert_eq!(width, gpui::px(9.5));
         let (cell, width) = snapped(1.0);
         assert_eq!(
             cell,
@@ -385,7 +385,7 @@ mod tests {
                 height: 19
             }
         );
-        assert_eq!(width, px(10.0));
+        assert_eq!(width, gpui::px(10.0));
     }
 
     #[test]
@@ -393,11 +393,11 @@ mod tests {
         let metrics = metrics(1.5);
         let cell = metrics.device_cell();
         let surface = Size {
-            width: px(900.0),
-            height: px(600.0),
+            width: gpui::px(900.0),
+            height: gpui::px(600.0),
         };
         let (width, height) = metrics.scale.whole_device_size(surface);
-        let grid = terminal_size(width, height, cell);
+        let grid = sizing::terminal_size(width, height, cell);
         let painted = metrics.render_cell();
         // Everything the PTY was told about is painted, and it all fits.
         assert!(f32::from(painted.width) * f32::from(grid.cols) <= f32::from(surface.width));
@@ -413,20 +413,20 @@ mod tests {
     #[test]
     fn a_surface_measured_at_one_scale_gives_the_same_grid_at_another() {
         let surface = Size {
-            width: px(1000.0),
-            height: px(600.0),
+            width: gpui::px(1000.0),
+            height: gpui::px(600.0),
         };
         let grid_at = |scale| {
             let scale = ScaleFactor::new(scale);
             let (width, height) = scale.whole_device_size(surface);
             let cell = device_cell(
                 Size {
-                    width: px(10.0),
-                    height: px(19.0),
+                    width: gpui::px(10.0),
+                    height: gpui::px(19.0),
                 },
                 scale,
             );
-            terminal_size(width, height, cell)
+            sizing::terminal_size(width, height, cell)
         };
         assert_eq!((grid_at(1.0).cols, grid_at(1.0).rows), (100, 31));
         for scale in [2.0, 3.0] {
@@ -451,13 +451,15 @@ mod tests {
             let metrics = metrics(scale);
             let cell = metrics.device_cell();
             for origin in [0.0, 14.0, 21.0, 37.5] {
-                let snapped = metrics.scale.snap(point(px(origin), px(origin)));
+                let snapped = metrics
+                    .scale
+                    .snap(gpui::point(gpui::px(origin), gpui::px(origin)));
                 let grid = DeviceGrid::new(snapped, &metrics);
                 let first = metrics.scale.nearest_device_pixel(snapped.x);
                 for column in 0..600 {
                     let expected = first + cell.width as i32 * column;
                     let (pixel, fraction) =
-                        painted_at(grid.glyph_x(column as usize, px(0.0)), scale);
+                        painted_at(grid.glyph_x(column as usize, gpui::px(0.0)), scale);
                     assert_eq!(pixel, expected, "column {column} at {scale}x");
                     assert!(fraction < 0.25, "column {column} at {scale}x: {fraction}");
                 }
@@ -475,9 +477,9 @@ mod tests {
     #[test]
     fn a_combining_mark_keeps_its_distance_from_the_glyph_it_sits_on() {
         let metrics = metrics(1.5);
-        let grid = DeviceGrid::new(point(px(0.0), px(0.0)), &metrics);
-        let base = f32::from(grid.glyph_x(3, px(0.0)));
-        let mark = f32::from(grid.glyph_x(3, px(2.0)));
+        let grid = DeviceGrid::new(gpui::point(gpui::px(0.0), gpui::px(0.0)), &metrics);
+        let base = f32::from(grid.glyph_x(3, gpui::px(0.0)));
+        let mark = f32::from(grid.glyph_x(3, gpui::px(2.0)));
         assert!((mark - base - 2.0).abs() < 0.001);
     }
 
@@ -485,8 +487,8 @@ mod tests {
     fn a_tiny_cell_is_still_a_cell() {
         let cell = device_cell(
             Size {
-                width: px(0.1),
-                height: px(0.1),
+                width: gpui::px(0.1),
+                height: gpui::px(0.1),
             },
             ScaleFactor::new(1.0),
         );
@@ -502,9 +504,9 @@ mod tests {
     #[test]
     fn a_length_short_of_a_device_pixel_only_by_float_error_reaches_it() {
         let scale = ScaleFactor::new(1.25);
-        assert_eq!(scale.whole_device_pixels(px(799.9999)), 1000);
-        assert_eq!(scale.whole_device_pixels(px(799.5)), 999);
-        assert_eq!(scale.whole_device_pixels(px(0.0)), 1);
+        assert_eq!(scale.whole_device_pixels(gpui::px(799.9999)), 1000);
+        assert_eq!(scale.whole_device_pixels(gpui::px(799.5)), 999);
+        assert_eq!(scale.whole_device_pixels(gpui::px(0.0)), 1);
     }
 
     #[test]
@@ -516,8 +518,8 @@ mod tests {
 
     #[test]
     fn the_grid_origin_snaps_onto_a_device_pixel() {
-        let snapped = ScaleFactor::new(2.0).snap(point(px(14.3), px(14.2)));
-        assert_eq!(snapped, point(px(14.5), px(14.0)));
+        let snapped = ScaleFactor::new(2.0).snap(gpui::point(gpui::px(14.3), gpui::px(14.2)));
+        assert_eq!(snapped, gpui::point(gpui::px(14.5), gpui::px(14.0)));
     }
 
     #[test]

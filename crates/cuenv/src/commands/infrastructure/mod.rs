@@ -43,13 +43,14 @@ use self::guard::tenant_label;
 use self::interrupts::Interrupts;
 use self::invocation::Invocation;
 use self::output::{Finish, Output};
-use self::run::run;
+
 use crate::cli::CliError;
 
 pub use self::action::{
     ConfirmationPolicy, FenceRelease, Identity, InfrastructureAction, InfrastructureOptions,
-    LockListing, MigrateRequest, MigrationDirection, MigrationScope, RenameSource, SeparateState,
-    SourceEnvironment, SourceUpgrade, StateAction, UnlockScope,
+    LockListing, MigrateRequest, MigrationDirection, MigrationMaintenance,
+    MigrationPhysicalIdentities, MigrationScope, RenameSource, SeparateState, SourceEnvironment,
+    SourceUpgrade, StateAction, UnlockScope,
 };
 pub use self::provider::{ProviderAction, execute_provider};
 
@@ -72,7 +73,7 @@ pub async fn execute_infrastructure(options: &InfrastructureOptions) -> Result<(
     cuenv_infrastructure::plugin::install_log_redactor(cuenv_events::redact);
     let output = Output::new(options.output);
     let interrupts = Interrupts::claim(&output, Invocation::of(options))?;
-    let result = run(options, &output, &interrupts).await;
+    let result = self::run::run(options, &output, &interrupts).await;
     match output.finish() {
         // A forced exit is writing the only report and ending the process;
         // returning would let `main` print a second one.

@@ -275,7 +275,7 @@ impl ChangelogGenerator {
 
     /// Get the changelog file path for a package.
     #[must_use]
-    pub fn get_changelog_path(&self, package_root: &Path) -> std::path::PathBuf {
+    pub fn changelog_path(&self, package_root: &Path) -> std::path::PathBuf {
         package_root.join(&self.config.path)
     }
 
@@ -419,19 +419,16 @@ mod tests {
                 "cs1",
                 "Add feature A",
                 vec![PackageChange::new("my-pkg", BumpType::Minor)],
-                None,
             ),
             Changeset::with_id(
                 "cs2",
                 "Fix bug B",
                 vec![PackageChange::new("my-pkg", BumpType::Patch)],
-                None,
             ),
             Changeset::with_id(
                 "cs3",
                 "Other package change",
                 vec![PackageChange::new("other-pkg", BumpType::Minor)],
-                None,
             ),
         ];
 
@@ -452,7 +449,6 @@ mod tests {
             "cs1",
             "Other change",
             vec![PackageChange::new("other-pkg", BumpType::Minor)],
-            None,
         )];
 
         let version = Version::new(1, 0, 0);

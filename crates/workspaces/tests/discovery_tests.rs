@@ -439,15 +439,6 @@ fn test_integration_real_cargo_toml() {
         .unwrap();
     let discovery = CargoTomlDiscovery;
 
-    // Check if we are actually in the repo (might differ in some CI envs or packaged builds)
-    if !root.join("Cargo.toml").exists() {
-        tracing::info!(
-            "Skipping integration test: Cargo.toml not found at {}",
-            root.display()
-        );
-        return;
-    }
-
     let workspace = discovery
         .discover(root)
         .expect("Should discover real repo workspace");

@@ -1,10 +1,12 @@
-use super::*;
-
+use super::{
+    BuildStage, CuenvBootstrapJobOptions, CuenvSetup, GitHubActionsEmitter, RunsOn,
+    SimpleJobOptions, TaskPhase,
+};
 #[test]
 fn test_build_simple_job() {
     let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
-    let task = make_task("build", &["cargo", "build"]);
-    let ir = make_ir(vec![task.clone()]);
+    let task = super::make_task("build", &["cargo", "build"]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
 
@@ -23,18 +25,18 @@ fn test_build_simple_job() {
         .iter()
         .find(|s| s.name.as_deref() == Some("build"))
         .unwrap();
-    assert_github_context_env(task_step);
+    super::assert_github_context_env(task_step);
 }
 
 #[test]
 fn test_build_simple_job_preserves_explicit_task_env() {
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("publish", &["./publish.sh"]);
+    let mut task = super::make_task("publish", &["./publish.sh"]);
     task.env.insert(
         "GITHUB_ACTOR".to_string(),
         "cuenv:passthrough:GITHUB_ACTOR".to_string(),
     );
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
     let task_step = job
@@ -56,8 +58,8 @@ fn test_build_simple_job_preserves_explicit_task_env() {
 #[test]
 fn test_build_simple_job_with_environment() {
     let emitter = GitHubActionsEmitter::new();
-    let task = make_task("deploy", &["./deploy.sh"]);
-    let ir = make_ir(vec![task.clone()]);
+    let task = super::make_task("deploy", &["./deploy.sh"]);
+    let ir = super::make_ir(vec![task.clone()]);
     let env = "production".to_string();
 
     let job = emitter.build_simple_job(
@@ -80,8 +82,8 @@ fn test_build_simple_job_with_environment() {
 #[test]
 fn test_build_simple_job_with_working_directory() {
     let emitter = GitHubActionsEmitter::new();
-    let task = make_task("build", &["cargo", "build"]);
-    let ir = make_ir(vec![task.clone()]);
+    let task = super::make_task("build", &["cargo", "build"]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let job = emitter.build_simple_job(
         &task,
@@ -104,7 +106,7 @@ fn test_build_simple_job_with_working_directory() {
 #[test]
 fn test_build_simple_job_direct_execution_runs_ir_command() {
     let emitter = GitHubActionsEmitter::new();
-    let task = make_task(
+    let task = super::make_task(
         "checks.clippy",
         &[
             "nix",
@@ -114,7 +116,7 @@ fn test_build_simple_job_direct_execution_runs_ir_command() {
             "--accept-flake-config",
         ],
     );
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::direct(None));
 
@@ -140,9 +142,9 @@ fn test_build_simple_job_direct_execution_runs_ir_command() {
 #[test]
 fn test_build_simple_job_direct_execution_preserves_shell_command() {
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("security.audit", &["echo first && echo second"]);
+    let mut task = super::make_task("security.audit", &["echo first && echo second"]);
     task.shell = true;
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::direct(None));
 
@@ -159,35 +161,32 @@ fn test_build_simple_job_direct_execution_preserves_shell_command() {
 fn test_build_simple_job_direct_execution_skips_cuenv_setup_and_dependents() {
     let emitter = GitHubActionsEmitter::new();
 
-    let mut bootstrap_task = make_phase_task(
+    let mut bootstrap_task = super::make_phase_task(
         "cuenv:contributor:nix.install",
         &["install nix"],
-        BuildStage::Bootstrap,
-        0,
+        TaskPhase::new(BuildStage::Bootstrap, 0),
     );
     bootstrap_task.label = Some("Install Nix".to_string());
     bootstrap_task.contributor = Some("nix".to_string());
 
-    let mut cuenv_setup = make_phase_task(
+    let mut cuenv_setup = super::make_phase_task(
         "cuenv:contributor:cuenv.setup",
         &["nix build .#cuenv"],
-        BuildStage::Setup,
-        10,
+        TaskPhase::new(BuildStage::Setup, 10),
     );
     cuenv_setup.label = Some("Setup cuenv".to_string());
     cuenv_setup.contributor = Some("cuenv".to_string());
 
-    let mut onepassword_setup = make_phase_task(
+    let mut onepassword_setup = super::make_phase_task(
         "cuenv:contributor:1password.setup",
         &["cuenv secrets setup onepassword"],
-        BuildStage::Setup,
-        20,
+        TaskPhase::new(BuildStage::Setup, 20),
     );
     onepassword_setup.label = Some("Setup 1Password".to_string());
     onepassword_setup.contributor = Some("1password".to_string());
     onepassword_setup.depends_on = vec!["cuenv:contributor:cuenv.setup".to_string()];
 
-    let task = make_task(
+    let task = super::make_task(
         "checks.nextest",
         &[
             "nix",
@@ -197,7 +196,7 @@ fn test_build_simple_job_direct_execution_skips_cuenv_setup_and_dependents() {
             "--accept-flake-config",
         ],
     );
-    let ir = make_ir(vec![
+    let ir = super::make_ir(vec![
         bootstrap_task,
         cuenv_setup,
         onepassword_setup,
@@ -218,44 +217,40 @@ fn test_build_simple_job_direct_execution_skips_cuenv_setup_and_dependents() {
 fn test_build_cuenv_bootstrap_job_includes_cuenv_and_prereqs_but_not_dependents() {
     let emitter = GitHubActionsEmitter::new();
 
-    let mut bootstrap_task = make_phase_task(
+    let mut bootstrap_task = super::make_phase_task(
         "cuenv:contributor:nix.install",
         &["install nix"],
-        BuildStage::Bootstrap,
-        0,
+        TaskPhase::new(BuildStage::Bootstrap, 0),
     );
     bootstrap_task.label = Some("Install Nix".to_string());
     bootstrap_task.contributor = Some("nix".to_string());
 
-    let mut cachix_setup = make_phase_task(
+    let mut cachix_setup = super::make_phase_task(
         "cuenv:contributor:cachix.setup",
         &["setup cachix"],
-        BuildStage::Setup,
-        5,
+        TaskPhase::new(BuildStage::Setup, 5),
     );
     cachix_setup.label = Some("Setup Cachix".to_string());
     cachix_setup.contributor = Some("cachix".to_string());
 
-    let mut cuenv_setup = make_phase_task(
+    let mut cuenv_setup = super::make_phase_task(
         "cuenv:contributor:cuenv.setup",
         &["nix build .#cuenv"],
-        BuildStage::Setup,
-        10,
+        TaskPhase::new(BuildStage::Setup, 10),
     );
     cuenv_setup.label = Some("Build cuenv (nix)".to_string());
     cuenv_setup.contributor = Some("cuenv".to_string());
 
-    let mut onepassword_setup = make_phase_task(
+    let mut onepassword_setup = super::make_phase_task(
         "cuenv:contributor:1password.setup",
         &["cuenv secrets setup onepassword"],
-        BuildStage::Setup,
-        20,
+        TaskPhase::new(BuildStage::Setup, 20),
     );
     onepassword_setup.label = Some("Setup 1Password".to_string());
     onepassword_setup.contributor = Some("1password".to_string());
     onepassword_setup.depends_on = vec!["cuenv:contributor:cuenv.setup".to_string()];
 
-    let ir = make_ir(vec![
+    let ir = super::make_ir(vec![
         bootstrap_task,
         cachix_setup,
         cuenv_setup,
@@ -289,16 +284,15 @@ fn test_build_cuenv_bootstrap_job_includes_cuenv_and_prereqs_but_not_dependents(
 fn test_build_cuenv_bootstrap_job_respects_disabled_cuenv_build() {
     let emitter = GitHubActionsEmitter::new().without_cuenv_build();
 
-    let mut cuenv_setup = make_phase_task(
+    let mut cuenv_setup = super::make_phase_task(
         "cuenv:contributor:cuenv.setup",
         &["nix build .#cuenv"],
-        BuildStage::Setup,
-        10,
+        TaskPhase::new(BuildStage::Setup, 10),
     );
     cuenv_setup.label = Some("Build cuenv (nix)".to_string());
     cuenv_setup.contributor = Some("cuenv".to_string());
 
-    let ir = make_ir(vec![cuenv_setup]);
+    let ir = super::make_ir(vec![cuenv_setup]);
 
     assert!(
         emitter
@@ -317,45 +311,41 @@ fn test_build_cuenv_bootstrap_job_respects_disabled_cuenv_build() {
 fn test_build_simple_job_nix_package_setup_skips_only_cuenv_setup() {
     let emitter = GitHubActionsEmitter::new();
 
-    let mut bootstrap_task = make_phase_task(
+    let mut bootstrap_task = super::make_phase_task(
         "cuenv:contributor:nix.install",
         &["install nix"],
-        BuildStage::Bootstrap,
-        0,
+        TaskPhase::new(BuildStage::Bootstrap, 0),
     );
     bootstrap_task.label = Some("Install Nix".to_string());
     bootstrap_task.contributor = Some("nix".to_string());
 
-    let mut cachix_setup = make_phase_task(
+    let mut cachix_setup = super::make_phase_task(
         "cuenv:contributor:cachix.setup",
         &["setup cachix"],
-        BuildStage::Setup,
-        9,
+        TaskPhase::new(BuildStage::Setup, 9),
     );
     cachix_setup.label = Some("Setup Cachix".to_string());
     cachix_setup.contributor = Some("cachix".to_string());
 
-    let mut cuenv_setup = make_phase_task(
+    let mut cuenv_setup = super::make_phase_task(
         "cuenv:contributor:cuenv.setup",
         &["nix build .#cuenv"],
-        BuildStage::Setup,
-        10,
+        TaskPhase::new(BuildStage::Setup, 10),
     );
     cuenv_setup.label = Some("Build cuenv (nix)".to_string());
     cuenv_setup.contributor = Some("cuenv".to_string());
 
-    let mut onepassword_setup = make_phase_task(
+    let mut onepassword_setup = super::make_phase_task(
         "cuenv:contributor:1password.setup",
         &["cuenv secrets setup onepassword"],
-        BuildStage::Setup,
-        20,
+        TaskPhase::new(BuildStage::Setup, 20),
     );
     onepassword_setup.label = Some("Setup 1Password".to_string());
     onepassword_setup.contributor = Some("1password".to_string());
     onepassword_setup.depends_on = vec!["cuenv:contributor:cuenv.setup".to_string()];
 
-    let task = make_task("publish.github", &["gh", "release", "upload"]);
-    let ir = make_ir(vec![
+    let task = super::make_task("publish.github", &["gh", "release", "upload"]);
+    let ir = super::make_ir(vec![
         bootstrap_task,
         cachix_setup,
         cuenv_setup,
@@ -395,15 +385,23 @@ fn test_build_simple_job_nix_package_setup_skips_only_cuenv_setup() {
 
 #[test]
 fn nix_package_setup_precedes_early_cuenv_dependent() {
-    let mut setup = make_phase_task("cuenv.setup", &["nix build"], BuildStage::Setup, 10);
+    let mut setup = super::make_phase_task(
+        "cuenv.setup",
+        &["nix build"],
+        TaskPhase::new(BuildStage::Setup, 10),
+    );
     setup.contributor = Some("cuenv".to_string());
 
-    let mut dependent = make_phase_task("needs.cuenv", &["cuenv sync"], BuildStage::Setup, 5);
+    let mut dependent = super::make_phase_task(
+        "needs.cuenv",
+        &["cuenv sync"],
+        TaskPhase::new(BuildStage::Setup, 5),
+    );
     dependent.label = Some("Needs cuenv".to_string());
     dependent.depends_on.push("cuenv.setup".to_string());
 
-    let task = make_task("test", &["true"]);
-    let ir = make_ir(vec![setup, dependent, task.clone()]);
+    let task = super::make_task("test", &["true"]);
+    let ir = super::make_ir(vec![setup, dependent, task.clone()]);
     let job = GitHubActionsEmitter::new().build_simple_job(
         &task,
         &ir,
@@ -453,10 +451,14 @@ fn nix_cuenv_setup_accepts_byte_different_builds_of_the_store_path()
     )?;
     std::fs::set_permissions(&fake_nix, std::fs::Permissions::from_mode(0o755))?;
 
-    let mut setup = make_phase_task("cuenv.setup", &["nix build"], BuildStage::Setup, 10);
+    let mut setup = super::make_phase_task(
+        "cuenv.setup",
+        &["nix build"],
+        TaskPhase::new(BuildStage::Setup, 10),
+    );
     setup.contributor = Some("cuenv".to_string());
-    let task = make_task("test", &["true"]);
-    let ir = make_ir(vec![setup, task.clone()]);
+    let task = super::make_task("test", &["true"]);
+    let ir = super::make_ir(vec![setup, task.clone()]);
     let job = GitHubActionsEmitter::new().build_simple_job(
         &task,
         &ir,

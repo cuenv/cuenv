@@ -20,10 +20,10 @@ impl Redaction {
         let Ok(mut patterns) = self.patterns.write() else {
             return;
         };
-        for part in std::iter::once(value)
+        let nonempty_parts = std::iter::once(value)
             .chain(value.split(['\n', '\r']))
-            .filter(|part| !part.is_empty())
-        {
+            .filter(|part| !part.is_empty());
+        for part in nonempty_parts {
             let quoted = serde_json::to_string(part).unwrap_or_default();
             let quoted = quoted
                 .strip_prefix('"')

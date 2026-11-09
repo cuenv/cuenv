@@ -47,9 +47,5 @@ Feature: Background Hook Execution with Environment Loading
     Then the environment variables should not be loaded
     And I should see an error message about hook failure
 
-  Scenario: Changing Away From Directory Preserves State
-    Given I am in the "examples/hook" directory with completed hooks
-    When I change directory to "../"
-    Then the environment variables from hooks should still be set
-    When I change back to "examples/hook"
-    Then hooks should not re-execute since configuration hasn't changed
+  Scenario: Leaving Restores the Environment and Returning Reuses the Hook Result
+    Then leaving a project restores the shell environment and returning reuses its hook result

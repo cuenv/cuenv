@@ -3,14 +3,20 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use super::*;
-use crate::state::fake_server::{FakeServer, fake_server, fake_server_with_headers};
+use super::{
+    D1Configuration, D1StateStore, Duration, FailureKind, InfrastructureError, QueryBody, SqlValue,
+    Statement,
+};
+use crate::state::fake_server::FakeServer;
 use crate::state::sql::{LATEST_SCHEMA_VERSION, MIGRATIONS, Migration, MigrationWait, RetryPolicy};
 use crate::state::{
     ConditionalPut, LockRequest, ManagedResource, RecordVersion, ResourceAddress, StateLock,
     StateStore,
 };
 use crate::tenant::{ProjectInstance, TenantKey};
+
+#[path = "legacy_copy_tests.rs"]
+mod legacy_copy_tests;
 
 const ACCOUNT: &str = "0123456789abcdef0123456789abcdef";
 const DATABASE: &str = "0b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9";
@@ -22,6 +28,41 @@ fn configuration() -> D1Configuration {
         database_id: DATABASE.into(),
         api_token: TOKEN.into(),
     }
+}
+
+#[test]
+fn migration_connection_identity_excludes_tokens_and_rejects_unknown_paths() {
+    let first = D1StateStore::at(
+        configuration(),
+        "http://127.0.0.1:1234",
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let mut other_token = configuration();
+    other_token.api_token = "different-secret".into();
+    let same =
+        D1StateStore::at(other_token, "http://127.0.0.1:1234", Duration::from_secs(1)).unwrap();
+    let other = D1StateStore::at(
+        configuration(),
+        "http://127.0.0.1:1235",
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let path = D1StateStore::at(
+        configuration(),
+        "http://127.0.0.1:1234/secret",
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    assert_eq!(
+        first.legacy_migration_source(),
+        same.legacy_migration_source()
+    );
+    assert_ne!(
+        first.legacy_migration_source(),
+        other.legacy_migration_source()
+    );
+    assert!(path.legacy_migration_source().is_none());
 }
 
 /// A store talking to `server`, retrying quickly and never waiting for a
@@ -84,7 +125,10 @@ impl EmulatedD1 {
 
     async fn serve(self: &Arc<Self>) -> FakeServer {
         let database = Arc::clone(self);
-        fake_server(Arc::new(move |_, body| Some(database.answer(&body)))).await
+        crate::state::fake_server::fake_server(Arc::new(move |_, body| {
+            Some(database.answer(&body))
+        }))
+        .await
     }
 
     /// Run SQL against the database directly, outside the API.
@@ -352,7 +396,7 @@ async fn a_migration_fence_survives_and_does_not_block_a_schema_migration() {
     store.migrate().await.unwrap();
     assert_eq!(store.inner.schema_version().await.unwrap(), 2);
     let fence = store.current_lock(&tenant()).await.unwrap().unwrap();
-    assert_eq!(fence.lock_identifier, "migrated-0123");
+    assert_eq!(fence.identifier(), Some("migrated-0123"));
     // The fence still refuses every write that does not hold it.
     assert!(matches!(
         store.lock(&tenant(), "old-build").await,
@@ -618,11 +662,14 @@ async fn writes_are_fenced_by_the_lock_and_by_the_stored_version() {
     // Only one run holds the lock.
     let refused = store.lock(&tenant(), "second").await.unwrap_err();
     assert!(
-        matches!(&refused, InfrastructureError::Locked { holder, .. } if holder == "first"),
+        matches!(&refused, InfrastructureError::Locked { lock, .. } if lock.holder == "first"),
         "{refused:?}"
     );
     let information = store.current_lock(&tenant()).await.unwrap().unwrap();
-    assert_eq!(information.lock_identifier, lock.lock_identifier);
+    assert_eq!(
+        information.identifier(),
+        Some(lock.lock_identifier.as_str())
+    );
 
     // A write under a lock that is not the tenant's is refused.
     let stranger = StateLock::generate();
@@ -740,7 +787,10 @@ async fn writes_are_fenced_by_the_lock_and_by_the_stored_version() {
     assert_eq!(locks.len(), 1);
     assert!(
         store
-            .force_unlock(&locks[0].tenant().unwrap(), &locks[0].lock.lock_identifier)
+            .force_unlock(
+                &locks[0].tenant().unwrap(),
+                locks[0].lock.identifier().unwrap()
+            )
             .await
             .unwrap()
     );
@@ -788,7 +838,10 @@ async fn a_migration_refuses_while_any_lock_is_held() {
     let InfrastructureError::StateMigrationBlocked { version: 3, locks } = &refused else {
         panic!("{refused:?}");
     };
-    assert_eq!(locks[0].lock.lock_identifier, lock.lock_identifier);
+    assert_eq!(
+        locks[0].lock.identifier(),
+        Some(lock.lock_identifier.as_str())
+    );
     // The transaction left nothing behind: no table, no version.
     assert!(
         database
@@ -950,34 +1003,42 @@ fn requests_bind_text_and_only_in_one_statement() {
 
 #[test]
 fn cells_decode_exact_integers_blobs_and_nothing_else_as_such() {
-    assert_eq!(value(&json!(42)), SqlValue::Integer(42));
-    assert_eq!(value(&json!(-42)), SqlValue::Integer(-42));
+    assert_eq!(super::value(&json!(42)), SqlValue::Integer(42));
+    assert_eq!(super::value(&json!(-42)), SqlValue::Integer(-42));
     assert_eq!(
-        value(&json!(9_007_199_254_740_992_i64)),
-        SqlValue::Integer(1 << 53)
+        super::value(&json!((1_i64 << 53) - 1)),
+        SqlValue::Integer((1_i64 << 53) - 1)
     );
+    assert!(matches!(
+        super::value(&json!(1_i64 << 53)),
+        SqlValue::Float(_)
+    ));
+    assert!(matches!(
+        super::value(&json!(-(1_i64 << 53))),
+        SqlValue::Float(_)
+    ));
     // What D1 sends for the lock fence's value when no lock is held.
     assert!(matches!(
-        value(&serde_json::from_str("9223372036854776000").unwrap()),
+        super::value(&serde_json::from_str("9223372036854776000").unwrap()),
         SqlValue::Float(_)
     ));
     assert!(matches!(
-        value(&json!(9_007_199_254_740_993_i64)),
+        super::value(&json!(9_007_199_254_740_993_i64)),
         SqlValue::Float(_)
     ));
-    assert!(matches!(value(&json!(1.5)), SqlValue::Float(_)));
-    assert_eq!(value(&json!("text")), SqlValue::text("text"));
-    assert_eq!(value(&json!([0, 255])), SqlValue::Blob(vec![0, 255]));
-    assert_eq!(value(&json!([256])), SqlValue::Unreadable);
-    assert_eq!(value(&json!({"a": 1})), SqlValue::Unreadable);
-    assert_eq!(value(&Value::Null), SqlValue::Null);
+    assert!(matches!(super::value(&json!(1.5)), SqlValue::Float(_)));
+    assert_eq!(super::value(&json!("text")), SqlValue::text("text"));
+    assert_eq!(super::value(&json!([0, 255])), SqlValue::Blob(vec![0, 255]));
+    assert_eq!(super::value(&json!([256])), SqlValue::Unreadable);
+    assert_eq!(super::value(&json!({"a": 1})), SqlValue::Unreadable);
+    assert_eq!(super::value(&Value::Null), SqlValue::Null);
 }
 
 /// A server answering request number `index` with `reply(index)`.
 async fn replying(
     reply: impl Fn(usize) -> Option<(u16, String)> + Send + Sync + 'static,
 ) -> FakeServer {
-    fake_server(Arc::new(move |index, _| reply(index))).await
+    crate::state::fake_server::fake_server(Arc::new(move |index, _| reply(index))).await
 }
 
 fn ok_rows(rows: &Value) -> String {
@@ -1014,7 +1075,7 @@ async fn retryable_d1_errors_are_retried_even_as_http_400() {
 
 #[tokio::test]
 async fn rate_limits_are_retried_after_the_delay_asked_for() {
-    let server = fake_server_with_headers(
+    let server = crate::state::fake_server::fake_server_with_headers(
         Arc::new(|index, _| {
             Some(if index == 0 {
                 error(
@@ -1188,17 +1249,31 @@ async fn a_short_result_list_is_refused() {
 
 /// Against a real D1 database: the whole lifecycle. The database must be one
 /// nothing else uses; the test drops cuenv's tables at the end so it can run
-/// again.
+/// again. An optional loopback connector relay exercises the live D1 SQL
+/// behavior without testing the direct Cloudflare token or TLS path.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires an otherwise unused D1 database (CUENV_INFRASTRUCTURE_TEST_D1_ACCOUNT_ID, CUENV_INFRASTRUCTURE_TEST_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN)"]
 async fn lifecycle_against_d1() {
     let variable = |name: &str| std::env::var(name).unwrap();
-    let mut store = D1StateStore::try_new(D1Configuration {
-        account_id: variable("CUENV_INFRASTRUCTURE_TEST_D1_ACCOUNT_ID"),
-        database_id: variable("CUENV_INFRASTRUCTURE_TEST_D1_DATABASE_ID"),
-        api_token: variable("CLOUDFLARE_D1_API_TOKEN"),
-    })
-    .unwrap();
+    let mut store = if let Ok(endpoint) = std::env::var("CUENV_INFRASTRUCTURE_TEST_D1_RELAY") {
+        let endpoint =
+            d1_relay_endpoint(&endpoint).expect("D1 relay must use an HTTP loopback URL");
+        let token = variable("CUENV_INFRASTRUCTURE_TEST_D1_RELAY_TOKEN");
+        assert!(
+            is_d1_relay_token(&token),
+            "D1 relay requires a synthetic token"
+        );
+        let mut configuration = configuration();
+        configuration.api_token = token;
+        D1StateStore::at(configuration, &endpoint, Duration::from_secs(30)).unwrap()
+    } else {
+        D1StateStore::try_new(D1Configuration {
+            account_id: variable("CUENV_INFRASTRUCTURE_TEST_D1_ACCOUNT_ID"),
+            database_id: variable("CUENV_INFRASTRUCTURE_TEST_D1_DATABASE_ID"),
+            api_token: variable("CLOUDFLARE_D1_API_TOKEN"),
+        })
+        .unwrap()
+    };
     store.inner.migration_wait = MigrationWait {
         bound: Duration::ZERO,
         poll_interval: Duration::from_millis(100),
@@ -1245,4 +1320,56 @@ async fn lifecycle_against_d1() {
             .unwrap();
     }
     scenario.unwrap();
+}
+
+/// Accept only a direct loopback origin for a test relay.
+fn d1_relay_endpoint(input: &str) -> Option<String> {
+    let url = reqwest::Url::parse(input).ok()?;
+    if url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    let port = url.port().filter(|port| *port != 0)?;
+    Some(format!("http://127.0.0.1:{port}"))
+}
+
+/// A relay uses a generated placeholder rather than a Cloudflare API token.
+fn is_d1_relay_token(token: &str) -> bool {
+    token
+        .strip_prefix("cuenv-test-relay-")
+        .is_some_and(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
+#[test]
+fn d1_relay_accepts_only_loopback_and_synthetic_tokens() {
+    assert_eq!(
+        d1_relay_endpoint("http://127.0.0.1:1234"),
+        Some("http://127.0.0.1:1234".to_string())
+    );
+    for endpoint in [
+        "https://127.0.0.1:1234",
+        "http://192.0.2.1:1234",
+        "http://127.0.0.1:1234/path",
+        "http://user@127.0.0.1:1234",
+        "http://127.0.0.1:1234?secret=value",
+        "http://127.0.0.1:0",
+    ] {
+        assert!(d1_relay_endpoint(endpoint).is_none());
+    }
+    assert!(is_d1_relay_token(&format!(
+        "cuenv-test-relay-{}",
+        "a".repeat(64)
+    )));
+    assert!(!is_d1_relay_token("not-a-synthetic-token"));
 }

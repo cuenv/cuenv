@@ -22,6 +22,7 @@ async fn main() {
     }
 
     TestWorld::cucumber()
+        .fail_on_skipped()
         .run_and_exit("tests/bdd/features/")
         .await;
 }

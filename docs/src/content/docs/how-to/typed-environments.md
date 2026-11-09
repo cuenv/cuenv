@@ -93,13 +93,16 @@ See [Shell Integration](/how-to/install/#shell-integration) for setup instructio
 
 ## Validation
 
-Validation happens automatically when you run tasks or use `cuenv exec`. You can also manually check the environment:
+Validation happens automatically when you run tasks or use `cuenv exec`. You can also evaluate and print the environment:
 
 ```bash
-cuenv env check
+cuenv env print
 ```
 
-If any constraint fails (e.g., a required string is missing, or a value doesn't match a regex), cuenv will report an error and refuse to proceed.
+If a constraint fails (for example, a required string is missing or a value
+doesn't match a regex), cuenv reports an error. `env print` resolves secrets
+and redacts registered secret values in its output; treat the remaining
+environment values as sensitive too.
 
 ## Secret Management
 

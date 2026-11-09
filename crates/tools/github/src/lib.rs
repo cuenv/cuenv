@@ -6,9 +6,8 @@
 //! - Path-based binary extraction from archives
 
 use async_trait::async_trait;
-use cuenv_core::Result;
-use cuenv_core::http::ensure_rustls_crypto_provider;
-use cuenv_secrets::http::client_builder;
+use cuenv_core::{Result, http};
+use cuenv_secrets::http as secret_http;
 use cuenv_tool_archive as archive;
 use cuenv_tool_runtime::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
@@ -42,6 +41,28 @@ struct RateLimitInfo {
     remaining: Option<u32>,
     /// Unix timestamp when the rate limit resets.
     reset: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+enum Authentication {
+    Anonymous,
+    Authenticated,
+}
+
+impl Authentication {
+    fn from_token(token: Option<&str>) -> Self {
+        if token.is_some() {
+            Self::Authenticated
+        } else {
+            Self::Anonymous
+        }
+    }
+}
+
+struct ApiFailure<'api_failure> {
+    status: reqwest::StatusCode,
+    rate_limit: &'api_failure RateLimitInfo,
+    authentication: Authentication,
 }
 
 impl RateLimitInfo {
@@ -133,9 +154,9 @@ impl Default for GitHubToolProvider {
 
 impl GitHubToolProvider {
     fn build_client() -> std::result::Result<Client, String> {
-        ensure_rustls_crypto_provider();
+        http::ensure_rustls_crypto_provider();
 
-        client_builder()
+        secret_http::client_builder()
             .build()
             .map_err(|err| format!("Failed to create GitHub HTTP client: {err}"))
     }
@@ -194,7 +215,7 @@ impl GitHubToolProvider {
         debug!(%url, "Fetching GitHub release");
 
         let effective_token = Self::get_effective_token(token);
-        let is_authenticated = effective_token.is_some();
+        let authentication = Authentication::from_token(effective_token.as_deref());
         let client = self.client()?;
 
         let mut request = client.get(&url);
@@ -211,9 +232,11 @@ impl GitHubToolProvider {
             let rate_limit = RateLimitInfo::from_headers(response.headers());
 
             return Err(Self::build_api_error(
-                status,
-                &rate_limit,
-                is_authenticated,
+                &ApiFailure {
+                    status,
+                    rate_limit: &rate_limit,
+                    authentication,
+                },
                 &format!("release {} {}", repo, tag),
             ));
         }
@@ -224,12 +247,9 @@ impl GitHubToolProvider {
     }
 
     /// Build an appropriate error for GitHub API failures.
-    fn build_api_error(
-        status: reqwest::StatusCode,
-        rate_limit: &RateLimitInfo,
-        is_authenticated: bool,
-        resource: &str,
-    ) -> cuenv_core::Error {
+    fn build_api_error(failure: &ApiFailure<'_>, resource: &str) -> cuenv_core::Error {
+        let status = failure.status;
+        let rate_limit = failure.rate_limit;
         // Handle rate limit exceeded (403 with remaining=0)
         if status == reqwest::StatusCode::FORBIDDEN && rate_limit.is_exceeded() {
             let mut message = "GitHub API rate limit exceeded".to_string();
@@ -241,7 +261,7 @@ impl GitHubToolProvider {
                 message.push_str(&format!(". Resets in {}", reset_str));
             }
 
-            let help = if is_authenticated {
+            let help = if matches!(failure.authentication, Authentication::Authenticated) {
                 "Wait for the rate limit to reset, or use a different GitHub token"
             } else {
                 "Set GITHUB_TOKEN environment variable with `public_repo` scope \
@@ -254,7 +274,7 @@ impl GitHubToolProvider {
         // Handle 403 Forbidden (not rate limited)
         if status == reqwest::StatusCode::FORBIDDEN {
             let message = format!("Access denied to {} (HTTP 403 Forbidden)", resource);
-            let help = if is_authenticated {
+            let help = if matches!(failure.authentication, Authentication::Authenticated) {
                 "Check that your GITHUB_TOKEN has the required permissions. \
                  For private repositories, ensure the token has the `repo` scope"
             } else {
@@ -290,7 +310,7 @@ impl GitHubToolProvider {
         debug!(%url, "Downloading GitHub asset");
 
         let effective_token = Self::get_effective_token(token);
-        let is_authenticated = effective_token.is_some();
+        let authentication = Authentication::from_token(effective_token.as_deref());
         let client = self.client()?;
 
         let mut request = client.get(url);
@@ -306,9 +326,11 @@ impl GitHubToolProvider {
         if !status.is_success() {
             let rate_limit = RateLimitInfo::from_headers(response.headers());
             return Err(Self::build_api_error(
-                status,
-                &rate_limit,
-                is_authenticated,
+                &ApiFailure {
+                    status,
+                    rate_limit: &rate_limit,
+                    authentication,
+                },
                 "asset download",
             ));
         }
@@ -599,8 +621,15 @@ impl ToolProvider for GitHubToolProvider {
 
         if extract.is_empty() {
             // Legacy behavior: single binary inferred from archive.
-            let extracted =
-                archive::extract_binary(&data, asset, None, &cache_dir).map_err(archive_err)?;
+            let extracted = archive::extract_binary(
+                &data,
+                archive::ArchiveSource {
+                    name: asset,
+                    binary_path: None,
+                },
+                &cache_dir,
+            )
+            .map_err(archive_err)?;
             let final_path = if archive::file_looks_like_library(&extracted) {
                 let file_name = extracted
                     .file_name()
@@ -647,9 +676,15 @@ impl ToolProvider for GitHubToolProvider {
         let mut produced_paths: Vec<PathBuf> = Vec::with_capacity(extract.len());
         for item in extract {
             let source_path = Self::extract_source_path(item);
-            let extracted_path =
-                archive::extract_binary(&data, asset, Some(source_path), &extract_dir)
-                    .map_err(archive_err)?;
+            let extracted_path = archive::extract_binary(
+                &data,
+                archive::ArchiveSource {
+                    name: asset,
+                    binary_path: Some(source_path),
+                },
+                &extract_dir,
+            )
+            .map_err(archive_err)?;
             let final_path = self.cache_target_for_extract(&cache_dir, &resolved.name, item);
             if let Some(parent) = final_path.parent() {
                 std::fs::create_dir_all(parent)?;

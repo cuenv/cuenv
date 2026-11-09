@@ -75,9 +75,9 @@ enum OutputFormat {
     Text,
 }
 
-struct Invocation<'a> {
-    arguments: &'a [&'a str],
-    environment: &'a [(&'a str, &'a str)],
+struct Invocation<'invocation> {
+    arguments: &'invocation [&'invocation str],
+    environment: &'invocation [(&'invocation str, &'invocation str)],
     format: OutputFormat,
 }
 
@@ -820,7 +820,7 @@ infrastructure: {{
 async fn infrastructure_init_restores_locked_types_from_cached_provider() -> TestResult {
     use cuenv_infrastructure::Cancellation;
     use cuenv_infrastructure::cue_types::{self, ProviderRelease};
-    use cuenv_infrastructure::registry::{ProviderInstaller, ProviderSource, current_platform};
+    use cuenv_infrastructure::registry::{ProviderInstaller, ProviderSource};
     use sha2::{Digest, Sha256};
 
     let provider =
@@ -871,7 +871,7 @@ async fn infrastructure_init_restores_locked_types_from_cached_provider() -> Tes
             "version": version,
         }))?,
     )?;
-    let platform = current_platform()?.to_string();
+    let platform = cuenv_infrastructure::registry::current_platform()?.to_string();
     let lockfile = |schema_digest: &str| {
         format!(
             "version = 5\n[infrastructure_providers.\"{source}\"]\nversion = \"{version}\"\nschema_digest = \"{schema_digest}\"\n[infrastructure_providers.\"{source}\".platforms]\n{platform} = \"sha256:{archive_digest}\"\n"

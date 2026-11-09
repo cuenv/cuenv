@@ -210,7 +210,7 @@ impl Compiler {
     fn collect_inputs_from_node(&self, node: &TaskNode, paths: &mut HashSet<String>) {
         match node {
             TaskNode::Task(task) => {
-                paths.extend(task.iter_path_inputs().cloned());
+                paths.extend(task.iter_path_inputs().map(str::to_owned));
                 for dep in &task.depends_on {
                     self.collect_task_inputs(dep.task_name(), paths);
                 }

@@ -22,6 +22,7 @@ on:
     - apps/cuetty/Cargo.toml
     - apps/cuetty/Cargo.toml/**
     - apps/cuetty/assets/**
+    - apps/cuetty/compat/**
     - apps/cuetty/nix.nix
     - apps/cuetty/nix.nix/**
     - apps/cuetty/src/**
@@ -36,7 +37,7 @@ on:
     - deny.toml/**
     - env.cue
     - env.cue/**
-    - examples/**/*.cue
+    - examples/**
     - flake.lock
     - flake.lock/**
     - flake.nix
@@ -47,6 +48,13 @@ on:
     - nix/source-files.json/**
     - schema/**
     - schema/**/*.cue
+    - tools/function-enum/Cargo.lock
+    - tools/function-enum/Cargo.lock/**
+    - tools/function-enum/Cargo.toml
+    - tools/function-enum/Cargo.toml/**
+    - tools/function-enum/src/**
+    - treefmt.toml
+    - treefmt.toml/**
   pull_request:
     branches:
     - main
@@ -66,6 +74,7 @@ on:
     - apps/cuetty/Cargo.toml
     - apps/cuetty/Cargo.toml/**
     - apps/cuetty/assets/**
+    - apps/cuetty/compat/**
     - apps/cuetty/nix.nix
     - apps/cuetty/nix.nix/**
     - apps/cuetty/src/**
@@ -80,7 +89,7 @@ on:
     - deny.toml/**
     - env.cue
     - env.cue/**
-    - examples/**/*.cue
+    - examples/**
     - flake.lock
     - flake.lock/**
     - flake.nix
@@ -91,6 +100,13 @@ on:
     - nix/source-files.json/**
     - schema/**
     - schema/**/*.cue
+    - tools/function-enum/Cargo.lock
+    - tools/function-enum/Cargo.lock/**
+    - tools/function-enum/Cargo.toml
+    - tools/function-enum/Cargo.toml/**
+    - tools/function-enum/src/**
+    - treefmt.toml
+    - treefmt.toml/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true

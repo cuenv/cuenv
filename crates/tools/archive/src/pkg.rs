@@ -1,6 +1,6 @@
 //! macOS `.pkg` payload extraction via `pkgutil` and `cpio`.
 
-use crate::{ArchiveError, Result, ensure_executable, find_main_binary};
+use crate::{ArchiveError, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -71,7 +71,7 @@ pub fn extract_from_pkg(data: &[u8], binary_path: Option<&str>, dest: &Path) -> 
                 let found = ensure_contained(&found, &payload_dir)?;
                 return copy_extracted_file(&found, dest, path);
             }
-        } else if let Ok(found) = find_main_binary(&payload_dir) {
+        } else if let Ok(found) = crate::find_main_binary(&payload_dir) {
             let found = ensure_contained(&found, &payload_dir)?;
             return copy_extracted_file(&found, dest, "binary");
         }
@@ -97,7 +97,7 @@ fn copy_extracted_file(source: &Path, dest: &Path, fallback_name: &str) -> Resul
         .unwrap_or(fallback_name);
     let dest_path = dest.join(file_name);
     std::fs::copy(source, &dest_path)?;
-    ensure_executable(&dest_path)?;
+    crate::ensure_executable(&dest_path)?;
     Ok(dest_path)
 }
 

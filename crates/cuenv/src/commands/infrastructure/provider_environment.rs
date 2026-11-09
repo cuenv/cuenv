@@ -22,11 +22,8 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 
-use cuenv_infrastructure::plugin::{
-    ISOLATED_INHERITED_ENVIRONMENT_VARIABLES, isolated_withheld_names,
-};
+use cuenv_infrastructure::plugin::ISOLATED_INHERITED_ENVIRONMENT_VARIABLES;
 use cuenv_manifest::manifest::ProviderEnvironment;
-use cuenv_secrets::resolver_environment_variable_names;
 
 /// What decides which host variables a provider must not inherit.
 #[derive(Debug)]
@@ -70,15 +67,17 @@ pub(super) fn withheld_environment_variables(
         .collect();
     match inputs.mode {
         ProviderEnvironment::Inherit => withheld.extend(
-            resolver_environment_variable_names(inputs.ambient.iter().cloned())
+            cuenv_secrets::resolver_environment_variable_names(inputs.ambient.iter().cloned())
                 .into_iter()
                 .chain(inputs.configured_credentials.iter().cloned())
                 .filter(|name| !inputs.provided.contains(name)),
         ),
-        ProviderEnvironment::Isolated => withheld.extend(isolated_withheld_names(
-            inputs.ambient.iter().cloned(),
-            inputs.provided,
-        )),
+        ProviderEnvironment::Isolated => {
+            withheld.extend(cuenv_infrastructure::plugin::isolated_withheld_names(
+                inputs.ambient.iter().cloned(),
+                inputs.provided,
+            ))
+        }
     }
     withheld.sort();
     withheld.dedup();

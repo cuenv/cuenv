@@ -4,7 +4,7 @@ use petgraph::Direction::Outgoing;
 use std::collections::{HashSet, VecDeque};
 
 /// Borrowed predicate used to resolve whether an external dependency is affected.
-pub type ExternalAffectedResolver<'a> = &'a dyn Fn(&str) -> bool;
+pub type ExternalAffectedResolver<'resolver> = &'resolver dyn Fn(&str) -> bool;
 
 impl<T: TaskNodeData> TaskGraph<T> {
     /// Compute which tasks from a pipeline are affected, using transitive dependency propagation.
@@ -26,20 +26,36 @@ impl<T: TaskNodeData> TaskGraph<T> {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// // Without external dependency checking
+    /// ```
+    /// use cuenv_task_graph::{TaskGraph, TaskNodeData};
+    /// #[derive(Clone)]
+    /// struct Task { dependencies: Vec<String>, changed: bool }
+    /// impl TaskNodeData for Task {
+    ///     fn dependency_names(&self) -> impl Iterator<Item = &str> {
+    ///         self.dependencies.iter().map(String::as_str)
+    ///     }
+    /// }
+    /// let mut graph = TaskGraph::new();
+    /// let build = graph.add_task("build", Task { dependencies: vec![], changed: true })?;
+    /// let test = graph.add_task("test", Task { dependencies: vec!["build".into()], changed: false })?;
+    /// graph.add_task("deploy", Task { dependencies: vec!["#other:build".into()], changed: false })?;
+    /// graph.add_edge(build, test);
+    /// // Without external dependency checking.
     /// let affected = graph.compute_affected(
     ///     &["build", "test", "deploy"],
-    ///     |task| task.is_affected_by(&changed_files, &project_root),
+    ///     |task| task.changed,
     ///     None,
     /// );
     ///
-    /// // With external dependency checking (for CI cross-project deps)
+    /// assert_eq!(affected, ["build", "test"]);
+    /// // With external dependency checking (for CI cross-project deps).
     /// let affected = graph.compute_affected(
     ///     &["build", "test", "deploy"],
-    ///     |task| task.is_affected_by(&changed_files, &project_root),
-    ///     Some(&|dep: &str| check_external_dependency(dep, &all_projects, &changed_files)),
+    ///     |task| task.changed,
+    ///     Some(&|dep: &str| dep == "#other:build"),
     /// );
+    /// assert_eq!(affected, ["build", "test", "deploy"]);
+    /// # Ok::<(), cuenv_task_graph::Error>(())
     /// ```
     pub fn compute_affected<F>(
         &self,
@@ -120,8 +136,7 @@ fn affected_in_pipeline_order(
 ///
 /// # Example
 ///
-/// ```ignore
-/// use cuenv_task_graph::compute_transitive_closure;
+/// ```
 /// use std::collections::HashMap;
 ///
 /// let deps: HashMap<&str, Vec<String>> = [
@@ -130,11 +145,12 @@ fn affected_in_pipeline_order(
 ///     ("deploy", vec!["test".to_string()]),
 /// ].into_iter().collect();
 ///
-/// let closure = compute_transitive_closure(
+/// let closure = cuenv_task_graph::compute_transitive_closure(
 ///     ["deploy"],
 ///     |name| deps.get(name).map(|v| v.as_slice()),
 /// );
-/// // closure contains: {"deploy", "test", "build"}
+/// assert_eq!(closure.len(), 3);
+/// assert!(closure.contains("build"));
 /// ```
 #[must_use]
 pub fn compute_transitive_closure<'a>(

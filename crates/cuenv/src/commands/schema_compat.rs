@@ -1,7 +1,7 @@
 //! CUE schema dependency compatibility warnings.
 
 use cuenv_core::Result;
-use cuenv_core::cue::discovery::find_cue_module_root;
+use cuenv_core::cue::discovery;
 use semver::Version;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +27,7 @@ pub fn module_root_for_path(path: impl AsRef<Path>) -> Result<Option<PathBuf>> {
         .canonicalize()
         .map_err(|e| cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e))?;
 
-    Ok(find_cue_module_root(&target_path))
+    Ok(discovery::find_cue_module_root(&target_path))
 }
 
 /// Warn when the module's cuenv schema dependency differs from the running CLI.

@@ -4,8 +4,7 @@ use super::ExecutorError;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_tool_runtime::{
     Platform, ResolvedTool, ResolvedToolActivationStep, ToolActivationResolveOptions, ToolOptions,
-    ToolRegistry, apply_resolved_tool_activation, resolve_tool_activation,
-    validate_tool_activation,
+    ToolRegistry,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -60,7 +59,7 @@ pub(super) fn resolve_tool_activation_steps(
     };
 
     let options = ToolActivationResolveOptions::new(&lockfile, &lockfile_path);
-    resolve_tool_activation(&options).map_err(|e| {
+    cuenv_tool_runtime::resolve_tool_activation(&options).map_err(|e| {
         ExecutorError::Compilation(format!("Invalid tool activation configuration: {e}"))
     })
 }
@@ -71,7 +70,7 @@ pub(super) fn apply_tool_activation_steps(
 ) {
     for step in steps {
         let current = env.get(&step.var).map(String::as_str);
-        if let Some(new_value) = apply_resolved_tool_activation(current, step) {
+        if let Some(new_value) = cuenv_tool_runtime::apply_resolved_tool_activation(current, step) {
             env.insert(step.var.clone(), new_value);
         }
     }
@@ -105,7 +104,7 @@ pub(super) async fn ensure_tools_downloaded(
     }
 
     let activation_options = ToolActivationResolveOptions::new(&lockfile, &lockfile_path);
-    validate_tool_activation(&activation_options).map_err(|e| {
+    cuenv_tool_runtime::validate_tool_activation(&activation_options).map_err(|e| {
         ExecutorError::Compilation(format!("Invalid tool activation configuration: {e}"))
     })?;
 

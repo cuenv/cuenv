@@ -3,7 +3,7 @@
 
 use cuengine::{
     CueEngineError, InstanceFailures, ModuleEvalOptions, ModuleResult, PackageScope,
-    SkippedDirectories, SkippedDirectory, SkippedReason, evaluate_module,
+    SkippedDirectories, SkippedDirectory, SkippedReason,
 };
 use std::error::Error;
 use std::fs;
@@ -68,7 +68,7 @@ fn nested_concrete_path_validates_only_that_subtree() -> TestResult {
     )])?;
     let root = module.path();
 
-    let result = evaluate_module(
+    let result = cuengine::evaluate_module(
         root,
         PACKAGE,
         Some(&exact_options(root, &["config.strict"])),
@@ -77,7 +77,7 @@ fn nested_concrete_path_validates_only_that_subtree() -> TestResult {
     assert_eq!(instance["config"]["strict"]["size"], 1);
     assert!(instance["config"]["lenient"]["port"].is_null());
 
-    let error = expect_error(evaluate_module(
+    let error = expect_error(cuengine::evaluate_module(
         root,
         PACKAGE,
         Some(&exact_options(root, &["config.lenient"])),
@@ -95,7 +95,7 @@ fn missing_concrete_path_fails_closed() -> TestResult {
     let module = create_module(&[("values.cue", "config: size: 1")])?;
     let root = module.path();
 
-    let error = expect_error(evaluate_module(
+    let error = expect_error(cuengine::evaluate_module(
         root,
         PACKAGE,
         Some(&exact_options(root, &["config.absent"])),
@@ -115,7 +115,7 @@ fn malformed_concrete_path_is_a_configuration_error() -> TestResult {
     let root = module.path();
 
     for path in ["", "config..size", "config["] {
-        let error = expect_error(evaluate_module(
+        let error = expect_error(cuengine::evaluate_module(
             root,
             PACKAGE,
             Some(&exact_options(root, &[path])),
@@ -143,7 +143,7 @@ fn failing_instance_policy_names_every_failed_instance() -> TestResult {
         ..Default::default()
     };
 
-    let result = evaluate_module(root, PACKAGE, Some(&lenient))?;
+    let result = cuengine::evaluate_module(root, PACKAGE, Some(&lenient))?;
     assert_eq!(
         result.instances.keys().collect::<Vec<_>>(),
         vec!["valid"],
@@ -154,7 +154,7 @@ fn failing_instance_policy_names_every_failed_instance() -> TestResult {
         instance_failures: InstanceFailures::Fail,
         ..lenient
     };
-    let error = expect_error(evaluate_module(root, PACKAGE, Some(&strict)))?;
+    let error = expect_error(cuengine::evaluate_module(root, PACKAGE, Some(&strict)))?;
     assert!(
         matches!(error, CueEngineError::CueParse { .. }),
         "expected an evaluation error, got {error:?}"
@@ -212,7 +212,7 @@ fn all_packages() -> ModuleEvalOptions {
 #[test]
 fn all_packages_keys_instances_by_directory_and_package() -> TestResult {
     let module = create_multiple_package_module(None)?;
-    let result = evaluate_module(module.path(), "", Some(&all_packages()))?;
+    let result = cuengine::evaluate_module(module.path(), "", Some(&all_packages()))?;
 
     let mut keys: Vec<&str> = result.instances.keys().map(String::as_str).collect();
     keys.sort_unstable();
@@ -235,11 +235,11 @@ fn all_packages_with_failing_policy_fails_on_any_package() -> TestResult {
         instance_failures: InstanceFailures::Skip,
         ..all_packages()
     };
-    let result = evaluate_module(root, "", Some(&lenient))?;
+    let result = cuengine::evaluate_module(root, "", Some(&lenient))?;
     assert!(!result.instances.contains_key("mixed:broken"));
     assert_eq!(result.instances.len(), 3);
 
-    let error = expect_error(evaluate_module(root, "", Some(&all_packages())))?;
+    let error = expect_error(cuengine::evaluate_module(root, "", Some(&all_packages())))?;
     let message = error.to_string();
     assert!(
         message.contains("1 instance(s) could not be evaluated")
@@ -254,7 +254,11 @@ fn all_packages_rejects_a_package_name() -> TestResult {
     let module = create_multiple_package_module(None)?;
     let root = module.path();
 
-    let error = expect_error(evaluate_module(root, PACKAGE, Some(&all_packages())))?;
+    let error = expect_error(cuengine::evaluate_module(
+        root,
+        PACKAGE,
+        Some(&all_packages()),
+    ))?;
     assert!(
         matches!(error, CueEngineError::Configuration { .. }),
         "expected a configuration error, got {error:?}"
@@ -264,7 +268,7 @@ fn all_packages_rejects_a_package_name() -> TestResult {
         package_name: Some(PACKAGE.to_string()),
         ..all_packages()
     };
-    let error = expect_error(evaluate_module(root, "", Some(&named)))?;
+    let error = expect_error(cuengine::evaluate_module(root, "", Some(&named)))?;
     assert!(
         matches!(error, CueEngineError::Configuration { .. }),
         "expected a configuration error, got {error:?}"
@@ -280,7 +284,7 @@ fn named_scope_keeps_directory_keys() -> TestResult {
         package_name: Some(PACKAGE.to_string()),
         ..Default::default()
     };
-    let result = evaluate_module(module.path(), PACKAGE, Some(&options))?;
+    let result = cuengine::evaluate_module(module.path(), PACKAGE, Some(&options))?;
     assert_eq!(result.instances.keys().collect::<Vec<_>>(), vec!["."]);
     Ok(())
 }
@@ -299,7 +303,7 @@ fn export_paths_and_presence_paths_project_every_instance() -> TestResult {
         presence_paths: vec!["infrastructure".to_string()],
         ..all_packages()
     };
-    let result = evaluate_module(module.path(), "", Some(&options))?;
+    let result = cuengine::evaluate_module(module.path(), "", Some(&options))?;
 
     assert_eq!(result.instances["a:app"], serde_json::json!({"name": "a"}));
     assert_eq!(result.instances["b:app"], serde_json::json!({"name": "b"}));
@@ -315,7 +319,7 @@ fn invalid_export_path_is_a_configuration_error() -> TestResult {
         export_paths: vec!["tasks[0]".to_string()],
         ..all_packages()
     };
-    let error = expect_error(evaluate_module(module.path(), "", Some(&options)))?;
+    let error = expect_error(cuengine::evaluate_module(module.path(), "", Some(&options)))?;
     assert!(
         matches!(error, CueEngineError::Configuration { .. }),
         "expected a configuration error, got {error:?}"
@@ -334,7 +338,7 @@ fn skipped_directories_are_reported_on_request() -> TestResult {
         skipped_directories: SkippedDirectories::Report,
         ..all_packages()
     };
-    let result = evaluate_module(module.path(), "", Some(&report))?;
+    let result = cuengine::evaluate_module(module.path(), "", Some(&report))?;
     assert_eq!(result.instances.keys().collect::<Vec<_>>(), vec![".:app"]);
     assert_eq!(
         result.skipped_directories,
@@ -350,7 +354,7 @@ fn skipped_directories_are_reported_on_request() -> TestResult {
         ]
     );
 
-    let silent = evaluate_module(module.path(), "", Some(&all_packages()))?;
+    let silent = cuengine::evaluate_module(module.path(), "", Some(&all_packages()))?;
     assert!(silent.skipped_directories.is_empty());
     Ok(())
 }
@@ -377,7 +381,7 @@ fn module_root_named_like_a_skipped_directory_is_evaluated() -> TestResult {
             format!("package {PACKAGE}\n\nchild: true\n"),
         )?;
 
-        let result = evaluate_module(&root, "", Some(&all_packages()))?;
+        let result = cuengine::evaluate_module(&root, "", Some(&all_packages()))?;
         let mut keys: Vec<&str> = result.instances.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, vec![".:app", "child:app"], "root {name}");
@@ -391,7 +395,11 @@ fn evaluation_errors_list_every_error_without_option_hints() -> TestResult {
         "broken/values.cue",
         "#Config: close({size: int, name: string})\nconfig: #Config & {sise: 1, nmae: \"x\"}",
     )])?;
-    let error = expect_error(evaluate_module(module.path(), "", Some(&all_packages())))?;
+    let error = expect_error(cuengine::evaluate_module(
+        module.path(),
+        "",
+        Some(&all_packages()),
+    ))?;
     let message = error.to_string();
     assert!(
         message.starts_with("CUE evaluation failed at "),

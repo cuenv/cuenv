@@ -25,7 +25,14 @@ impl TaskListFormatter for TextFormatter {
             }
 
             let max_width = calculate_max_width(&group.nodes, 0);
-            format_text_nodes(&group.nodes, &mut output, max_width, "");
+            format_text_nodes(
+                &group.nodes,
+                &mut output,
+                TreeLayout {
+                    max_width,
+                    prefix: "",
+                },
+            );
         }
 
         if output.is_empty() {
@@ -59,10 +66,17 @@ fn calculate_max_width(nodes: &[TaskNode], depth: usize) -> usize {
     max
 }
 
+#[derive(Clone, Copy)]
+struct TreeLayout<'tree_layout> {
+    max_width: usize,
+    prefix: &'tree_layout str,
+}
+
 /// Format nodes in text tree format
-fn format_text_nodes(nodes: &[TaskNode], output: &mut String, max_width: usize, prefix: &str) {
+fn format_text_nodes(nodes: &[TaskNode], output: &mut String, layout: TreeLayout<'_>) {
     use std::fmt::Write;
 
+    let TreeLayout { max_width, prefix } = layout;
     let count = nodes.len();
     for (i, node) in nodes.iter().enumerate() {
         let is_last = i == count - 1;
@@ -93,7 +107,14 @@ fn format_text_nodes(nodes: &[TaskNode], output: &mut String, max_width: usize, 
 
         let child_prefix = if is_last { "   " } else { "│  " };
         let new_prefix = format!("{prefix}{child_prefix}");
-        format_text_nodes(&node.children, output, max_width, &new_prefix);
+        format_text_nodes(
+            &node.children,
+            output,
+            TreeLayout {
+                max_width,
+                prefix: &new_prefix,
+            },
+        );
     }
 }
 
@@ -159,7 +180,14 @@ impl TaskListFormatter for RichFormatter {
             let _ = writeln!(output, "{}:", self.bold(&group.header));
 
             let max_width = calculate_max_width(&group.nodes, 0);
-            format_rich_nodes(self, &group.nodes, &mut output, max_width, "");
+            self.format_nodes(
+                &group.nodes,
+                &mut output,
+                TreeLayout {
+                    max_width,
+                    prefix: "",
+                },
+            );
         }
 
         if output.is_empty() {
@@ -170,48 +198,52 @@ impl TaskListFormatter for RichFormatter {
     }
 }
 
-/// Format nodes in rich colored format (same tree structure as text)
-fn format_rich_nodes(
-    formatter: &RichFormatter,
-    nodes: &[TaskNode],
-    output: &mut String,
-    max_width: usize,
-    prefix: &str,
-) {
-    use std::fmt::Write;
+impl RichFormatter {
+    /// Format nodes in rich colored format (same tree structure as text)
+    fn format_nodes(&self, nodes: &[TaskNode], output: &mut String, layout: TreeLayout<'_>) {
+        use std::fmt::Write;
 
-    let count = nodes.len();
-    for (i, node) in nodes.iter().enumerate() {
-        let is_last = i == count - 1;
-        let marker = if is_last { "└─ " } else { "├─ " };
+        let TreeLayout { max_width, prefix } = layout;
+        let count = nodes.len();
+        for (i, node) in nodes.iter().enumerate() {
+            let is_last = i == count - 1;
+            let marker = if is_last { "└─ " } else { "├─ " };
 
-        let current_len =
-            prefix.chars().count() + marker.chars().count() + node.name.chars().count();
+            let current_len =
+                prefix.chars().count() + marker.chars().count() + node.name.chars().count();
 
-        // Dim tree connectors
-        let _ = write!(output, "{prefix}{}", formatter.dim(marker));
+            // Dim tree connectors
+            let _ = write!(output, "{prefix}{}", self.dim(marker));
 
-        // Colored name: cyan for tasks, dim for groups
-        let colored_name = if node.is_group {
-            formatter.dim(&node.name)
-        } else {
-            formatter.cyan(&node.name)
-        };
-        let _ = write!(output, "{colored_name}");
+            // Colored name: cyan for tasks, dim for groups
+            let colored_name = if node.is_group {
+                self.dim(&node.name)
+            } else {
+                self.cyan(&node.name)
+            };
+            let _ = write!(output, "{colored_name}");
 
-        if let Some(desc) = &node.description {
-            let padding = max_width.saturating_sub(current_len);
-            let dots = formatter.dim(&".".repeat(padding + 4));
-            let _ = write!(output, " {dots} {desc}");
+            if let Some(desc) = &node.description {
+                let padding = max_width.saturating_sub(current_len);
+                let dots = self.dim(&".".repeat(padding + 4));
+                let _ = write!(output, " {dots} {desc}");
+            }
+            let _ = writeln!(output);
+
+            let child_prefix = if is_last {
+                format!("{prefix}   ")
+            } else {
+                format!("{prefix}{}  ", self.dim("│"))
+            };
+            self.format_nodes(
+                &node.children,
+                output,
+                TreeLayout {
+                    max_width,
+                    prefix: &child_prefix,
+                },
+            );
         }
-        let _ = writeln!(output);
-
-        let child_prefix = if is_last {
-            format!("{prefix}   ")
-        } else {
-            format!("{prefix}{}  ", formatter.dim("│"))
-        };
-        format_rich_nodes(formatter, &node.children, output, max_width, &child_prefix);
     }
 }
 

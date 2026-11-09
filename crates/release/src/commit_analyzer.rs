@@ -13,9 +13,9 @@ use std::process::Command;
 
 /// A commit that affected a specific package.
 #[derive(Debug, Clone)]
-pub struct PackageAffect<'a> {
+pub struct PackageAffect<'commit> {
     /// The commit that caused this affect.
-    pub commit: &'a ConventionalCommit,
+    pub commit: &'commit ConventionalCommit,
     /// Files changed in this package by the commit.
     pub changed_files: Vec<PathBuf>,
 }
@@ -32,13 +32,13 @@ impl PackageAffect<'_> {
 ///
 /// This analyzer uses git diffs to map commits to packages based on
 /// which files were modified in each commit.
-pub struct CommitAnalyzer<'a> {
-    root: &'a Path,
+pub struct CommitAnalyzer<'workspace> {
+    root: &'workspace Path,
     /// Map of package names to their root paths (relative to workspace root).
     package_paths: HashMap<String, PathBuf>,
 }
 
-impl<'a> CommitAnalyzer<'a> {
+impl<'workspace> CommitAnalyzer<'workspace> {
     /// Create a new commit analyzer.
     ///
     /// # Arguments
@@ -46,7 +46,7 @@ impl<'a> CommitAnalyzer<'a> {
     /// * `root` - The workspace root path.
     /// * `package_paths` - Map of package names to their paths (relative to root).
     #[must_use]
-    pub const fn new(root: &'a Path, package_paths: HashMap<String, PathBuf>) -> Self {
+    pub const fn new(root: &'workspace Path, package_paths: HashMap<String, PathBuf>) -> Self {
         Self {
             root,
             package_paths,

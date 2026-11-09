@@ -1,6 +1,7 @@
 use super::ToolActivationResolveOptions;
 use crate::{Arch, Os, Platform, ToolExtract};
 use cuenv_core::{Error, Result};
+use cuenv_manifest::lockfile::LockedToolPlatform;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -14,6 +15,18 @@ pub(super) struct ToolPathIndex {
     pub(super) tool_bin_dirs: BTreeMap<String, Vec<PathBuf>>,
     pub(super) tool_lib_dirs: BTreeMap<String, Vec<PathBuf>>,
     pub(super) file_env_exports: BTreeMap<String, PathBuf>,
+}
+
+struct SelectedTool<'selected_tool> {
+    name: &'selected_tool str,
+    version: &'selected_tool str,
+    platform: &'selected_tool LockedToolPlatform,
+}
+
+struct CachedTool<'cached_tool> {
+    name: &'cached_tool str,
+    directory: &'cached_tool Path,
+    platform: &'cached_tool LockedToolPlatform,
 }
 
 impl ToolPathIndex {
@@ -40,6 +53,11 @@ impl ToolPathIndex {
         for (name, tool) in &options.lockfile.tools {
             let Some(platform_data) = tool.platforms.get(&platform_key) else {
                 continue;
+            };
+            let selected = SelectedTool {
+                name,
+                version: &tool.version,
+                platform: platform_data,
             };
 
             match platform_data.provider.as_str() {
@@ -103,25 +121,13 @@ impl ToolPathIndex {
                     add_tool_existing_dir(&mut index.tool_lib_dirs, name, rustup_dir.join("lib"));
                 }
                 "github" => {
-                    collect_github_tool_dirs(
-                        options,
-                        &mut index,
-                        name,
-                        &tool.version,
-                        platform_data,
-                    )?;
+                    collect_github_tool_dirs(options, &mut index, &selected)?;
                 }
                 "oci" => {
-                    collect_oci_tool_dirs(options, &mut index, name, platform_data);
+                    collect_oci_tool_dirs(options, &mut index, &selected);
                 }
-                provider_name => {
-                    collect_default_provider_dirs(
-                        options,
-                        &mut index,
-                        name,
-                        &tool.version,
-                        provider_name,
-                    );
+                _ => {
+                    collect_default_provider_dirs(options, &mut index, &selected);
                 }
             }
         }
@@ -133,12 +139,20 @@ impl ToolPathIndex {
 fn collect_github_tool_dirs(
     options: &ToolActivationResolveOptions<'_>,
     index: &mut ToolPathIndex,
-    name: &str,
-    version: &str,
-    platform_data: &cuenv_manifest::lockfile::LockedToolPlatform,
+    selected: &SelectedTool<'_>,
 ) -> Result<()> {
-    let tool_dir = options.cache_dir.join("github").join(name).join(version);
-    let extract: Vec<ToolExtract> = platform_data
+    let tool_dir = options
+        .cache_dir
+        .join("github")
+        .join(selected.name)
+        .join(selected.version);
+    let tool = CachedTool {
+        name: selected.name,
+        directory: &tool_dir,
+        platform: selected.platform,
+    };
+    let extract: Vec<ToolExtract> = selected
+        .platform
         .source
         .get("extract")
         .cloned()
@@ -146,48 +160,45 @@ fn collect_github_tool_dirs(
         .unwrap_or_default();
 
     if extract.is_empty() {
-        collect_legacy_github_dirs(index, name, platform_data, &tool_dir);
+        collect_legacy_github_dirs(index, &tool);
         return Ok(());
     }
 
     for item in extract {
-        collect_extract_dirs(index, name, &tool_dir, item)?;
+        collect_extract_dirs(index, &tool, item)?;
     }
 
     Ok(())
 }
 
-fn collect_legacy_github_dirs(
-    index: &mut ToolPathIndex,
-    name: &str,
-    platform_data: &cuenv_manifest::lockfile::LockedToolPlatform,
-    tool_dir: &Path,
-) {
+fn collect_legacy_github_dirs(index: &mut ToolPathIndex, tool: &CachedTool<'_>) {
     let mut all_bin_seen = index.all_bin_dirs.iter().cloned().collect();
     let mut all_lib_seen = index.all_lib_dirs.iter().cloned().collect();
-    let path_hint_is_lib = platform_data
+    let path_hint_is_lib = tool
+        .platform
         .source
         .get("path")
         .and_then(|v| v.as_str())
         .is_some_and(path_looks_like_library);
 
     if path_hint_is_lib {
-        let lib_dir = tool_dir.join("lib");
+        let lib_dir = tool.directory.join("lib");
         add_existing_dir(&mut index.all_lib_dirs, &mut all_lib_seen, lib_dir.clone());
-        add_tool_existing_dir(&mut index.tool_lib_dirs, name, lib_dir);
+        add_tool_existing_dir(&mut index.tool_lib_dirs, tool.name, lib_dir);
     } else {
-        let bin_dir = tool_dir.join("bin");
+        let bin_dir = tool.directory.join("bin");
         add_existing_dir(&mut index.all_bin_dirs, &mut all_bin_seen, bin_dir.clone());
-        add_tool_existing_dir(&mut index.tool_bin_dirs, name, bin_dir);
+        add_tool_existing_dir(&mut index.tool_bin_dirs, tool.name, bin_dir);
     }
 }
 
 fn collect_extract_dirs(
     index: &mut ToolPathIndex,
-    name: &str,
-    tool_dir: &Path,
+    tool: &CachedTool<'_>,
     item: ToolExtract,
 ) -> Result<()> {
+    let name = tool.name;
+    let tool_dir = tool.directory;
     let mut all_bin_seen = index.all_bin_dirs.iter().cloned().collect();
     let mut all_lib_seen = index.all_lib_dirs.iter().cloned().collect();
     let mut all_include_seen = index.all_include_dirs.iter().cloned().collect();
@@ -252,10 +263,9 @@ fn collect_extract_dirs(
 fn collect_oci_tool_dirs(
     options: &ToolActivationResolveOptions<'_>,
     index: &mut ToolPathIndex,
-    name: &str,
-    platform_data: &cuenv_manifest::lockfile::LockedToolPlatform,
+    tool: &SelectedTool<'_>,
 ) {
-    let Some(path) = platform_data.source.get("path").and_then(|v| v.as_str()) else {
+    let Some(path) = tool.platform.source.get("path").and_then(|v| v.as_str()) else {
         return;
     };
     let binary_name = Path::new(path)
@@ -277,26 +287,25 @@ fn collect_oci_tool_dirs(
     let mut all_bin_seen: HashSet<PathBuf> = index.all_bin_dirs.iter().cloned().collect();
     for dir in digest_dirs {
         add_existing_dir(&mut index.all_bin_dirs, &mut all_bin_seen, dir.clone());
-        add_tool_existing_dir(&mut index.tool_bin_dirs, name, dir);
+        add_tool_existing_dir(&mut index.tool_bin_dirs, tool.name, dir);
     }
 }
 
 fn collect_default_provider_dirs(
     options: &ToolActivationResolveOptions<'_>,
     index: &mut ToolPathIndex,
-    name: &str,
-    version: &str,
-    provider_name: &str,
+    tool: &SelectedTool<'_>,
 ) {
+    let name = tool.name;
     let mut all_bin_seen = index.all_bin_dirs.iter().cloned().collect();
     let mut all_lib_seen = index.all_lib_dirs.iter().cloned().collect();
     let mut all_include_seen = index.all_include_dirs.iter().cloned().collect();
     let mut all_pkgconfig_seen = index.all_pkgconfig_dirs.iter().cloned().collect();
     let tool_dir = options
         .cache_dir
-        .join(provider_name)
+        .join(&tool.platform.provider)
         .join(name)
-        .join(version);
+        .join(tool.version);
     let bin_dir = tool_dir.join("bin");
     let lib_dir = tool_dir.join("lib");
     let include_dir = tool_dir.join("include");

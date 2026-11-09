@@ -8,247 +8,44 @@
 //!
 //! Detect package managers in a directory:
 //!
-//! ```no_run
-//! use cuenv_workspaces::detection::detect_package_managers;
-//! use std::path::Path;
-//!
-//! let root = Path::new("/path/to/workspace");
-//! let managers = detect_package_managers(root)?;
-//!
-//! for manager in managers {
-//!     println!("Detected: {}", manager);
-//! }
-//! # Ok::<(), cuenv_workspaces::Error>(())
+//! ```rust
+//! use cuenv_workspaces::{PackageManager, detection};
+//! let root = tempfile::tempdir()?;
+//! std::fs::write(root.path().join("package-lock.json"), "{}")?;
+//! let managers = detection::detect_package_managers(root.path())?;
+//! assert!(managers.contains(&PackageManager::Npm));
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! Detect from a command string:
 //!
 //! ```
-//! use cuenv_workspaces::detection::detect_from_command;
+//! use cuenv_workspaces::detection;
 //! use cuenv_workspaces::PackageManager;
 //!
-//! assert_eq!(detect_from_command("cargo build"), Some(PackageManager::Cargo));
-//! assert_eq!(detect_from_command("npm install"), Some(PackageManager::Npm));
-//! assert_eq!(detect_from_command("bun run test"), Some(PackageManager::Bun));
+//! assert_eq!(detection::detect_from_command("cargo build"), Some(PackageManager::Cargo));
+//! assert_eq!(detection::detect_from_command("npm install"), Some(PackageManager::Npm));
+//! assert_eq!(detection::detect_from_command("bun run test"), Some(PackageManager::Bun));
 //! ```
 
-use crate::core::types::PackageManager;
-use crate::error::Result;
-use std::collections::HashSet;
-use std::path::Path;
-
 mod command;
+mod detector;
 mod filesystem;
 mod package_json;
 mod scoring;
 
 pub use command::{command_name, detect_from_command};
-#[cfg(test)]
-use filesystem::read_first_lines;
-use filesystem::{detect_yarn_version, find_lockfiles, validate_workspace_config};
-use package_json::detect_manager_from_package_json;
-use scoring::{Detection, prioritize_managers};
-#[cfg(test)]
-use scoring::{calculate_confidence, manager_priority};
-
-/// Detects all package managers present in the given directory.
-///
-/// This function scans for lockfiles and workspace configuration files,
-/// then returns a list of detected package managers ordered by confidence
-/// (highest first).
-///
-/// # Confidence scoring
-///
-/// - Lockfile + valid workspace config: 100
-/// - Lockfile only: 75
-/// - Valid workspace config only: 50
-///
-/// # Examples
-///
-/// ```no_run
-/// use cuenv_workspaces::detection::detect_package_managers;
-/// use std::path::Path;
-///
-/// let managers = detect_package_managers(Path::new("/workspace"))?;
-/// if !managers.is_empty() {
-///     println!("Primary package manager: {}", managers[0]);
-/// }
-/// # Ok::<(), cuenv_workspaces::Error>(())
-/// ```
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - Directory cannot be accessed
-/// - Workspace config exists but is invalid
-pub fn detect_package_managers(root: &Path) -> Result<Vec<PackageManager>> {
-    tracing::debug!("Detecting package managers in: {}", root.display());
-
-    let mut detections = Vec::new();
-    let mut detected_managers = HashSet::new();
-
-    detect_from_lockfiles(root, &mut detections, &mut detected_managers)?;
-    detect_from_package_json(root, &mut detections, &mut detected_managers)?;
-    detect_from_workspace_configs(root, &mut detections, &mut detected_managers)?;
-
-    Ok(prioritize_managers(detections))
-}
-
-/// Detect package managers from lockfiles.
-fn detect_from_lockfiles(
-    root: &Path,
-    detections: &mut Vec<Detection>,
-    detected_managers: &mut HashSet<PackageManager>,
-) -> Result<()> {
-    let lockfiles = find_lockfiles(root);
-    tracing::debug!("Found {} lockfile(s)", lockfiles.len());
-
-    for (manager, lockfile_path) in lockfiles {
-        let detected = process_lockfile(root, manager, &lockfile_path)?;
-        detections.push(detected);
-        detected_managers.insert(detected.manager);
-    }
-    Ok(())
-}
-
-/// Process a single lockfile and return the detected manager with confidence.
-fn process_lockfile(
-    root: &Path,
-    manager: PackageManager,
-    lockfile_path: &Path,
-) -> Result<Detection> {
-    tracing::debug!(
-        "Processing lockfile: {} ({})",
-        lockfile_path.display(),
-        manager
-    );
-
-    let detected_manager = if matches!(manager, PackageManager::YarnClassic) {
-        detect_yarn_version(lockfile_path)?
-    } else {
-        manager
-    };
-
-    let has_valid_config = validate_workspace_config(root, detected_manager)?;
-    let detection = Detection::from_signals(detected_manager, true, has_valid_config);
-    tracing::debug!(
-        "Manager {} has confidence {}",
-        detected_manager,
-        detection.confidence
-    );
-
-    Ok(detection)
-}
-
-/// Detect package manager from package.json if not already detected.
-fn detect_from_package_json(
-    root: &Path,
-    detections: &mut Vec<Detection>,
-    detected_managers: &mut HashSet<PackageManager>,
-) -> Result<()> {
-    if let Some(manager) = detect_manager_from_package_json(root, detected_managers)? {
-        let detection = Detection::from_signals(manager, false, true);
-        tracing::debug!(
-            "Manager {} detected via package.json (confidence {})",
-            manager,
-            detection.confidence
-        );
-        detections.push(detection);
-        detected_managers.insert(manager);
-    }
-    Ok(())
-}
-
-/// Detect package managers from workspace configs without lockfiles.
-fn detect_from_workspace_configs(
-    root: &Path,
-    detections: &mut Vec<Detection>,
-    detected_managers: &mut HashSet<PackageManager>,
-) -> Result<()> {
-    for manager in [PackageManager::Pnpm, PackageManager::Cargo] {
-        if is_manager_detected(detected_managers, manager) {
-            continue;
-        }
-
-        if validate_workspace_config(root, manager)? {
-            let detection = Detection::from_signals(manager, false, true);
-            tracing::debug!(
-                "Manager {} detected via config only (confidence {})",
-                manager,
-                detection.confidence
-            );
-            detections.push(detection);
-            detected_managers.insert(manager);
-        }
-    }
-    Ok(())
-}
-
-/// Combines filesystem and command-based detection with command hint prioritization.
-///
-/// If a command hint is provided, the corresponding package manager will be
-/// prioritized in the returned list if it was detected via filesystem scanning.
-///
-/// # Examples
-///
-/// ```no_run
-/// use cuenv_workspaces::detection::detect_with_command_hint;
-/// use std::path::Path;
-///
-/// // Detect with hint that we're using Bun
-/// let managers = detect_with_command_hint(
-///     Path::new("/workspace"),
-///     Some("bun run build")
-/// )?;
-///
-/// // If both Cargo and Bun were detected, Bun will be first
-/// # Ok::<(), cuenv_workspaces::Error>(())
-/// ```
-///
-/// # Errors
-///
-/// Returns an error if filesystem detection fails (e.g., unreadable directory).
-pub fn detect_with_command_hint(root: &Path, command: Option<&str>) -> Result<Vec<PackageManager>> {
-    let mut managers = detect_package_managers(root)?;
-
-    // If we have a command hint, try to prioritize that manager
-    if let Some(cmd) = command
-        && let Some(hinted_manager) = detect_from_command(cmd)
-    {
-        // Find the hinted manager in the list
-        if let Some(pos) = managers.iter().position(|m| *m == hinted_manager) {
-            // Move it to the front if it's not already there
-            if pos > 0 {
-                let manager = managers.remove(pos);
-                managers.insert(0, manager);
-                tracing::debug!("Prioritized {} based on command hint", manager);
-            }
-        }
-    }
-
-    Ok(managers)
-}
-
-fn is_manager_detected(
-    detected_managers: &HashSet<PackageManager>,
-    manager: PackageManager,
-) -> bool {
-    match manager {
-        PackageManager::YarnClassic | PackageManager::YarnModern => {
-            detected_managers.contains(&PackageManager::YarnClassic)
-                || detected_managers.contains(&PackageManager::YarnModern)
-        }
-        _ => detected_managers.contains(&manager),
-    }
-}
+pub use detector::{detect_package_managers, detect_with_command_hint};
 
 #[cfg(test)]
 mod tests {
+    use super::scoring::{Detection, DetectionSignals};
     use super::*;
+    use crate::core::types::PackageManager;
     use crate::error::Error;
     use std::fs;
     use std::io::BufReader;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 
     // Helper function to create a test workspace directory
@@ -290,10 +87,21 @@ mod tests {
 
     #[test]
     fn test_calculate_confidence() {
-        assert_eq!(calculate_confidence(true, true), 100);
-        assert_eq!(calculate_confidence(true, false), 75);
-        assert_eq!(calculate_confidence(false, true), 50);
-        assert_eq!(calculate_confidence(false, false), 0);
+        let cases = [
+            (true, true, 100),
+            (true, false, 75),
+            (false, true, 50),
+            (false, false, 0),
+        ];
+        for (has_lockfile, has_valid_config, expected) in cases {
+            assert_eq!(
+                super::scoring::calculate_confidence(DetectionSignals {
+                    has_lockfile,
+                    has_valid_config,
+                }),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -304,7 +112,7 @@ mod tests {
             Detection::with_confidence(PackageManager::Bun, 75),
         ];
 
-        let result = prioritize_managers(detections);
+        let result = super::scoring::prioritize_managers(detections);
 
         assert_eq!(result[0], PackageManager::Cargo); // Highest confidence
         assert_eq!(result[1], PackageManager::Bun); // Same confidence as npm, but higher priority
@@ -319,7 +127,7 @@ mod tests {
             Detection::with_confidence(PackageManager::Cargo, 75),
         ];
 
-        let result = prioritize_managers(detections);
+        let result = super::scoring::prioritize_managers(detections);
 
         // With equal confidence, should be sorted by priority: Cargo > Bun > npm
         assert_eq!(result[0], PackageManager::Cargo);
@@ -329,18 +137,42 @@ mod tests {
 
     #[test]
     fn test_detect_from_command() {
-        assert_eq!(detect_from_command("cargo"), Some(PackageManager::Cargo));
-        assert_eq!(detect_from_command("npm"), Some(PackageManager::Npm));
-        assert_eq!(detect_from_command("npx"), Some(PackageManager::Npm));
-        assert_eq!(detect_from_command("bun"), Some(PackageManager::Bun));
-        assert_eq!(detect_from_command("bunx"), Some(PackageManager::Bun));
-        assert_eq!(detect_from_command("pnpm"), Some(PackageManager::Pnpm));
-        assert_eq!(detect_from_command("deno"), Some(PackageManager::Deno));
         assert_eq!(
-            detect_from_command("yarn"),
+            super::command::detect_from_command("cargo"),
+            Some(PackageManager::Cargo)
+        );
+        assert_eq!(
+            super::command::detect_from_command("npm"),
+            Some(PackageManager::Npm)
+        );
+        assert_eq!(
+            super::command::detect_from_command("npx"),
+            Some(PackageManager::Npm)
+        );
+        assert_eq!(
+            super::command::detect_from_command("bun"),
+            Some(PackageManager::Bun)
+        );
+        assert_eq!(
+            super::command::detect_from_command("bunx"),
+            Some(PackageManager::Bun)
+        );
+        assert_eq!(
+            super::command::detect_from_command("pnpm"),
+            Some(PackageManager::Pnpm)
+        );
+        assert_eq!(
+            super::command::detect_from_command("deno"),
+            Some(PackageManager::Deno)
+        );
+        assert_eq!(
+            super::command::detect_from_command("yarn"),
             Some(PackageManager::YarnClassic)
         );
-        assert_eq!(detect_from_command("node"), Some(PackageManager::Npm));
+        assert_eq!(
+            super::command::detect_from_command("node"),
+            Some(PackageManager::Npm)
+        );
     }
 
     #[test]
@@ -386,40 +218,40 @@ mod tests {
     #[test]
     fn test_detect_from_command_with_args() {
         assert_eq!(
-            detect_from_command("cargo build"),
+            super::command::detect_from_command("cargo build"),
             Some(PackageManager::Cargo)
         );
         assert_eq!(
-            detect_from_command("npm install"),
+            super::command::detect_from_command("npm install"),
             Some(PackageManager::Npm)
         );
         assert_eq!(
-            detect_from_command("bun run test"),
+            super::command::detect_from_command("bun run test"),
             Some(PackageManager::Bun)
         );
         assert_eq!(
-            detect_from_command("bunx eslint"),
+            super::command::detect_from_command("bunx eslint"),
             Some(PackageManager::Bun)
         );
         assert_eq!(
-            detect_from_command("npx prisma generate"),
+            super::command::detect_from_command("npx prisma generate"),
             Some(PackageManager::Npm)
         );
         assert_eq!(
-            detect_from_command("FOO=bar cargo build"),
+            super::command::detect_from_command("FOO=bar cargo build"),
             Some(PackageManager::Cargo)
         );
         assert_eq!(
-            detect_from_command("env -i BUN_ENV=1 bun run test"),
+            super::command::detect_from_command("env -i BUN_ENV=1 bun run test"),
             Some(PackageManager::Bun)
         );
     }
 
     #[test]
     fn test_detect_from_command_unknown() {
-        assert_eq!(detect_from_command("unknown"), None);
-        assert_eq!(detect_from_command("make"), None);
-        assert_eq!(detect_from_command("python"), None);
+        assert_eq!(super::command::detect_from_command("unknown"), None);
+        assert_eq!(super::command::detect_from_command("make"), None);
+        assert_eq!(super::command::detect_from_command("python"), None);
     }
 
     #[test]
@@ -435,7 +267,7 @@ package@^1.0.0:
 "#;
         fs::write(&lockfile_path, classic_content).unwrap();
 
-        let result = detect_yarn_version(&lockfile_path).unwrap();
+        let result = super::filesystem::detect_yarn_version(&lockfile_path).unwrap();
         assert_eq!(result, PackageManager::YarnClassic);
     }
 
@@ -453,7 +285,7 @@ package@^1.0.0:
 "#;
         fs::write(&lockfile_path, modern_content).unwrap();
 
-        let result = detect_yarn_version(&lockfile_path).unwrap();
+        let result = super::filesystem::detect_yarn_version(&lockfile_path).unwrap();
         assert_eq!(result, PackageManager::YarnModern);
     }
 
@@ -470,7 +302,7 @@ __metadata:
 ";
         fs::write(&lockfile_path, modern_content).unwrap();
 
-        let result = detect_yarn_version(&lockfile_path).unwrap();
+        let result = super::filesystem::detect_yarn_version(&lockfile_path).unwrap();
         assert_eq!(result, PackageManager::YarnModern);
     }
 
@@ -478,7 +310,7 @@ __metadata:
     fn test_read_first_lines_respects_limit() {
         let reader = BufReader::new(&b"one\ntwo\nthree\nfour\n"[..]);
 
-        let lines = read_first_lines(reader, 2, Path::new("yarn.lock")).unwrap();
+        let lines = super::filesystem::read_first_lines(reader, 2, Path::new("yarn.lock")).unwrap();
 
         assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
     }
@@ -488,7 +320,7 @@ __metadata:
         let temp_dir = create_test_workspace();
         create_lockfile(temp_dir.path(), PackageManager::Cargo);
 
-        let result = find_lockfiles(temp_dir.path());
+        let result = super::filesystem::find_lockfiles(temp_dir.path());
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, PackageManager::Cargo);
@@ -499,7 +331,7 @@ __metadata:
         let temp_dir = create_test_workspace();
         create_lockfile(temp_dir.path(), PackageManager::Npm);
 
-        let result = find_lockfiles(temp_dir.path());
+        let result = super::filesystem::find_lockfiles(temp_dir.path());
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, PackageManager::Npm);
@@ -511,7 +343,7 @@ __metadata:
         create_lockfile(temp_dir.path(), PackageManager::Cargo);
         create_lockfile(temp_dir.path(), PackageManager::Npm);
 
-        let result = find_lockfiles(temp_dir.path());
+        let result = super::filesystem::find_lockfiles(temp_dir.path());
 
         assert_eq!(result.len(), 2);
         let managers: Vec<_> = result.iter().map(|(m, _)| *m).collect();
@@ -523,7 +355,7 @@ __metadata:
     fn test_find_lockfiles_none() {
         let temp_dir = create_test_workspace();
 
-        let result = find_lockfiles(temp_dir.path());
+        let result = super::filesystem::find_lockfiles(temp_dir.path());
 
         assert_eq!(result.len(), 0);
     }
@@ -534,7 +366,7 @@ __metadata:
 
         fs::write(temp_dir.path().join("bun.lock"), "text").unwrap();
 
-        let result = find_lockfiles(temp_dir.path());
+        let result = super::filesystem::find_lockfiles(temp_dir.path());
 
         // Should detect the text bun.lock
         assert_eq!(result.len(), 1);
@@ -547,7 +379,9 @@ __metadata:
         let temp_dir = create_test_workspace();
         create_workspace_config(temp_dir.path(), PackageManager::Cargo);
 
-        let result = validate_workspace_config(temp_dir.path(), PackageManager::Cargo).unwrap();
+        let result =
+            super::filesystem::validate_workspace_config(temp_dir.path(), PackageManager::Cargo)
+                .unwrap();
         assert!(result);
     }
 
@@ -556,7 +390,9 @@ __metadata:
         let temp_dir = create_test_workspace();
         create_workspace_config(temp_dir.path(), PackageManager::Npm);
 
-        let result = validate_workspace_config(temp_dir.path(), PackageManager::Npm).unwrap();
+        let result =
+            super::filesystem::validate_workspace_config(temp_dir.path(), PackageManager::Npm)
+                .unwrap();
         assert!(result);
     }
 
@@ -565,7 +401,9 @@ __metadata:
         let temp_dir = create_test_workspace();
         create_workspace_config(temp_dir.path(), PackageManager::Pnpm);
 
-        let result = validate_workspace_config(temp_dir.path(), PackageManager::Pnpm).unwrap();
+        let result =
+            super::filesystem::validate_workspace_config(temp_dir.path(), PackageManager::Pnpm)
+                .unwrap();
         assert!(result);
     }
 
@@ -575,7 +413,8 @@ __metadata:
         let config_path = temp_dir.path().join("package.json");
         fs::write(&config_path, "{ invalid json }").unwrap();
 
-        let result = validate_workspace_config(temp_dir.path(), PackageManager::Npm);
+        let result =
+            super::filesystem::validate_workspace_config(temp_dir.path(), PackageManager::Npm);
         assert!(result.is_err());
         assert!(matches!(result, Err(Error::InvalidWorkspaceConfig { .. })));
     }
@@ -586,7 +425,8 @@ __metadata:
         let config_path = temp_dir.path().join("Cargo.toml");
         fs::write(&config_path, "[invalid toml").unwrap();
 
-        let result = validate_workspace_config(temp_dir.path(), PackageManager::Cargo);
+        let result =
+            super::filesystem::validate_workspace_config(temp_dir.path(), PackageManager::Cargo);
         assert!(result.is_err());
         assert!(matches!(result, Err(Error::InvalidWorkspaceConfig { .. })));
     }
@@ -597,7 +437,8 @@ __metadata:
         let config_path = temp_dir.path().join("pnpm-workspace.yaml");
         fs::write(&config_path, "invalid: yaml: content:").unwrap();
 
-        let result = validate_workspace_config(temp_dir.path(), PackageManager::Pnpm);
+        let result =
+            super::filesystem::validate_workspace_config(temp_dir.path(), PackageManager::Pnpm);
         assert!(result.is_err());
         assert!(matches!(result, Err(Error::InvalidWorkspaceConfig { .. })));
     }
@@ -606,7 +447,9 @@ __metadata:
     fn test_validate_workspace_config_missing() {
         let temp_dir = create_test_workspace();
 
-        let result = validate_workspace_config(temp_dir.path(), PackageManager::Npm).unwrap();
+        let result =
+            super::filesystem::validate_workspace_config(temp_dir.path(), PackageManager::Npm)
+                .unwrap();
         assert!(!result); // Should return false, not error
     }
 
@@ -616,7 +459,7 @@ __metadata:
         create_lockfile(temp_dir.path(), PackageManager::Cargo);
         create_workspace_config(temp_dir.path(), PackageManager::Cargo);
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], PackageManager::Cargo);
@@ -628,7 +471,7 @@ __metadata:
         create_lockfile(temp_dir.path(), PackageManager::Npm);
         create_workspace_config(temp_dir.path(), PackageManager::Npm);
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result, vec![PackageManager::Npm]);
     }
@@ -649,7 +492,7 @@ __metadata:
         .unwrap();
         create_lockfile(temp_dir.path(), PackageManager::Bun);
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         // Cargo (lockfile + config = 100) and Bun (lockfile + config = 100) are detected
         // We should have at least 2 with Cargo and Bun first (sorted by priority)
@@ -665,7 +508,7 @@ __metadata:
         create_lockfile(temp_dir.path(), PackageManager::Cargo);
         // No workspace config
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], PackageManager::Cargo);
@@ -677,7 +520,7 @@ __metadata:
         create_workspace_config(temp_dir.path(), PackageManager::Cargo);
         // No lockfile
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], PackageManager::Cargo);
@@ -687,7 +530,7 @@ __metadata:
     fn test_detect_package_managers_empty_dir() {
         let temp_dir = create_test_workspace();
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result.len(), 0);
     }
@@ -708,11 +551,13 @@ __metadata:
         create_lockfile(temp_dir.path(), PackageManager::Bun);
 
         // Without hint, Cargo comes first (higher priority)
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
         assert_eq!(result[0], PackageManager::Cargo);
 
         // With Bun hint, Bun should come first
-        let result = detect_with_command_hint(temp_dir.path(), Some("bun run test")).unwrap();
+        let result =
+            super::detector::detect_with_command_hint(temp_dir.path(), Some("bun run test"))
+                .unwrap();
         assert_eq!(result[0], PackageManager::Bun);
         assert_eq!(result[1], PackageManager::Cargo);
     }
@@ -724,7 +569,9 @@ __metadata:
         create_workspace_config(temp_dir.path(), PackageManager::Cargo);
 
         // Hint for a manager that's not detected - should not affect results
-        let result = detect_with_command_hint(temp_dir.path(), Some("npm install")).unwrap();
+        let result =
+            super::detector::detect_with_command_hint(temp_dir.path(), Some("npm install"))
+                .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], PackageManager::Cargo);
     }
@@ -734,7 +581,7 @@ __metadata:
         let temp_dir = create_test_workspace();
         create_lockfile(temp_dir.path(), PackageManager::Cargo);
 
-        let result = detect_with_command_hint(temp_dir.path(), None).unwrap();
+        let result = super::detector::detect_with_command_hint(temp_dir.path(), None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], PackageManager::Cargo);
     }
@@ -748,7 +595,7 @@ __metadata:
         fs::write(&lockfile_path, "__metadata:\n  version: 6\n").unwrap();
         create_workspace_config(temp_dir.path(), PackageManager::YarnModern);
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result, vec![PackageManager::YarnModern]);
     }
@@ -763,7 +610,7 @@ __metadata:
         )
         .unwrap();
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result, vec![PackageManager::Npm]);
     }
@@ -778,7 +625,7 @@ __metadata:
         )
         .unwrap();
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result, vec![PackageManager::YarnClassic]);
     }
@@ -793,7 +640,7 @@ __metadata:
         )
         .unwrap();
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result, vec![PackageManager::YarnModern]);
     }
@@ -808,7 +655,7 @@ __metadata:
         )
         .unwrap();
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result, vec![PackageManager::Bun]);
     }
@@ -823,25 +670,36 @@ __metadata:
         )
         .unwrap();
 
-        let result = detect_package_managers(temp_dir.path()).unwrap();
+        let result = super::detector::detect_package_managers(temp_dir.path()).unwrap();
 
         assert_eq!(result, vec![PackageManager::YarnModern]);
     }
 
     #[test]
     fn test_manager_priority() {
-        assert!(manager_priority(PackageManager::Cargo) < manager_priority(PackageManager::Deno));
-        assert!(manager_priority(PackageManager::Deno) < manager_priority(PackageManager::Bun));
-        assert!(manager_priority(PackageManager::Bun) < manager_priority(PackageManager::Pnpm));
         assert!(
-            manager_priority(PackageManager::Pnpm) < manager_priority(PackageManager::YarnModern)
+            super::scoring::manager_priority(PackageManager::Cargo)
+                < super::scoring::manager_priority(PackageManager::Deno)
         );
         assert!(
-            manager_priority(PackageManager::YarnModern)
-                < manager_priority(PackageManager::YarnClassic)
+            super::scoring::manager_priority(PackageManager::Deno)
+                < super::scoring::manager_priority(PackageManager::Bun)
         );
         assert!(
-            manager_priority(PackageManager::YarnClassic) < manager_priority(PackageManager::Npm)
+            super::scoring::manager_priority(PackageManager::Bun)
+                < super::scoring::manager_priority(PackageManager::Pnpm)
+        );
+        assert!(
+            super::scoring::manager_priority(PackageManager::Pnpm)
+                < super::scoring::manager_priority(PackageManager::YarnModern)
+        );
+        assert!(
+            super::scoring::manager_priority(PackageManager::YarnModern)
+                < super::scoring::manager_priority(PackageManager::YarnClassic)
+        );
+        assert!(
+            super::scoring::manager_priority(PackageManager::YarnClassic)
+                < super::scoring::manager_priority(PackageManager::Npm)
         );
     }
 }

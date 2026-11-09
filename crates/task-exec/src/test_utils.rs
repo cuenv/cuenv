@@ -4,7 +4,7 @@
 //! is invisible across crate boundaries); candidates for the shared
 //! `crates/test-support` crate planned in RFC-0006 phase 7a.
 
-use crate::{Input, Mapping, ProjectReference, Task, TaskDependency};
+use crate::{Input, ProjectReference, Task, TaskDependency};
 
 /// Create a test task with dependencies and optional labels
 pub fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
@@ -28,25 +28,13 @@ pub fn create_task_ref(ref_str: &str, deps: Vec<&str>) -> Task {
 pub fn create_task_with_project_ref(
     name: &str,
     deps: Vec<&str>,
-    project: &str,
-    task: &str,
-    mappings: Vec<(&str, &str)>,
+    reference: ProjectReference,
 ) -> Task {
     Task {
         command: format!("echo {}", name),
         depends_on: deps.into_iter().map(TaskDependency::from_name).collect(),
         description: Some(format!("Test task {}", name)),
-        inputs: vec![Input::Project(ProjectReference {
-            project: project.to_string(),
-            task: task.to_string(),
-            map: mappings
-                .into_iter()
-                .map(|(from, to)| Mapping {
-                    from: from.to_string(),
-                    to: to.to_string(),
-                })
-                .collect(),
-        })],
+        inputs: vec![Input::Project(reference)],
         ..Default::default()
     }
 }

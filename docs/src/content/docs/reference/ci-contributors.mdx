@@ -33,37 +33,30 @@ value. It declares:
 3. One or more `tasks` it contributes when active.
 4. Optional `autoAssociate` rules that wire your own tasks to its setup task.
 
-The compiler applies contributors in a fixed-point loop: it evaluates every
-`when`, injects matching tasks, auto-associates user tasks by command, and
-repeats until the DAG stops changing. Only then is the stable graph handed to
-the executor.
+The task contributor engine evaluates `when` conditions, injects matching
+tasks, and applies auto-associations until the task graph stops changing. The
+CI compiler evaluates the registered stage contributors against the project
+and selected pipeline, and adds the active tasks to its intermediate
+representation (IR).
 
 ```
-Project + Pipeline -> Compiler -> fixed-point loop -> IR -> executor
-                                       ^
-                                       |
-                         Contributors (Nix, Cuenv, Cachix,
-                         1Password, GhModels, workspaces, ...)
+Project + Pipeline + Contributors -> CI compiler -> IR -> workflow
 ```
 
-### The three layers of a task ID
+### Contributor task IDs
 
 This is the single most common source of confusion, so name it up front. A
-contributor task has **three** identities depending on where you are looking:
+contributor task has a CUE identifier and a prefixed task identifier:
 
 | Layer | Looks like | Where you see it |
 | --- | --- | --- |
 | CUE `id` | `cachix.setup` | The `id` field in `contrib/contributors/*.cue` |
-| Runtime task ID | `cuenv:contributor:cachix.setup` | The DAG / `cuenv task` output (CUE id prefixed with `cuenv:contributor:`) |
-| Compiled IR id | `setup-cachix` | The built-in CI Intermediate Representation and the Rust contributor tests |
+| Task and compiled IR ID | `cuenv:contributor:cachix.setup` | The DAG, `cuenv task` output, and compiled CI IR |
 
 The CUE `id` is what you write and reference in `dependsOn`. The
 `cuenv:contributor:` prefix is what the runtime DAG uses (this is also the form
-`autoAssociate.injectDependency` targets). The compiled IR ids (`install-nix`,
-`setup-cuenv`, `setup-cachix`, `setup-1password`, `setup-gh-models`) are the
-canonical names the built-in CI compiler emits and that the integration tests
-assert against. Keep all three in mind when reading test output or debugging a
-workflow.
+`autoAssociate.injectDependency` targets). The CI compiler uses the same prefix
+for contributed task IDs and their dependencies.
 
 ## Priority and stages
 
@@ -81,9 +74,8 @@ of priority.
 
 ## Configuring CI before contributors can run
 
-Contributors only inject when you have told cuenv which providers to emit
-workflows for. **No workflow is generated without explicit provider
-configuration.** Pipelines are a CUE **map**, and tasks are CUE **references**,
+**No workflow is generated without explicit provider configuration.** Pipelines
+are a CUE **map**, and tasks are CUE **references**,
 not strings. Bind the local `tasks` to a helper with `let _t = tasks` and point
 the pipeline at `_t.<task>`:
 
@@ -162,28 +154,34 @@ The default set is the concatenation of three groups:
 | `#GitHubContributors` | `#Cachix`, `#Hestia`, `#NamespaceCache`, `#GhModels`, `#TrustedPublishing`, `#CueRegistryTrustedPublishing` |
 | `#DefaultContributors` | all of the above |
 
-Even when you include a contributor, it stays dormant until its `when` condition
-matches, so adding `#DefaultContributors` is safe.
+Conditional contributors stay dormant until their `when` condition matches.
+`#Nix` and `#Cuenv` run whenever they are included, including through
+`#DefaultContributors`.
 
 `#InfisicalOidc` and `#InfisicalSecretsAction` are opt-in and are not in any
 of these sets; add them next to the set you use.
 
 ### `#Nix` — install upstream Nix
 
-- **CUE id:** `nix` (task `nix.install`) · **Compiled IR id:** `install-nix`
+- **CUE id:** `nix` (task `nix.install`) · **Compiled IR id:** `cuenv:contributor:nix.install`
 - **Stage:** Bootstrap (priority **2**)
-- **Activates when:** the project uses a Nix runtime (`runtimeType: ["nix"]`)
+- **Activates when:** it is included in `ci.contributors`, regardless of runtime
 - **GitHub Action:** `cachix/install-nix-action@v31`, installing upstream Nix 2.31.2
 - **Token permissions:** no OIDC requirement
 
 ```cue
 package examples
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"github.com/cuenv/cuenv/schema"
+	c "github.com/cuenv/cuenv/contrib/contributors"
+)
 
 schema.#Project
 
 name: "my-project"
+
+ci: contributors: [c.#Nix]
 
 runtime: schema.#NixRuntime & {
 	flake:  "."
@@ -191,15 +189,14 @@ runtime: schema.#NixRuntime & {
 }
 ```
 
-Example: [`examples/ci-cachix`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cachix)
-(its Nix runtime is what makes this contributor active).
+Example: [`examples/ci-cachix`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cachix).
 
 ### `#Cuenv` — install or build cuenv
 
-- **CUE id:** `cuenv` (task `cuenv.setup`) · **Compiled IR id:** `setup-cuenv`
+- **CUE id:** `cuenv` (task `cuenv.setup`) · **Compiled IR id:** `cuenv:contributor:cuenv.setup`
 - **Stage:** Setup (priority **10**)
 - **Activates when:** always (cuenv is needed to run your tasks)
-- **Dependencies:** when built from a Nix-backed source, `cuenv.setup` depends on `nix.install` (`install-nix` in the IR)
+- **Prerequisite:** a Nix-backed source needs Nix available from the runner or an earlier contributor
 
 The default `#Cuenv` downloads a release binary and runs `cuenv sync ci`. In
 release mode, `config.ci.cuenv.version` defaults to `"self"`, which pins the
@@ -238,8 +235,8 @@ and [`examples/ci-cuenv-homebrew`](https://github.com/cuenv/cuenv/tree/main/exam
 
 ### `#Cachix` — Nix binary cache (GitHub)
 
-- **CUE id:** `cachix` (task `cachix.setup`) · **Compiled IR id:** `setup-cachix`
-- **Stage:** Setup (priority **9**)
+- **CUE id:** `cachix` (task `cachix.setup`) · **Compiled IR id:** `cuenv:contributor:cachix.setup`
+- **Stage:** Bootstrap (priority **9**)
 - **Activates when:** `ci.provider.github.cachix` is configured (`providerConfig: ["github.cachix"]`)
 - **Dependencies:** `nix.install`
 - **GitHub Action:** `cachix/cachix-action@v17`
@@ -249,7 +246,10 @@ Configure the cache under `ci.provider.github.cachix` exactly as in the example:
 ```cue
 package examples
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"github.com/cuenv/cuenv/schema"
+	c "github.com/cuenv/cuenv/contrib/contributors"
+)
 
 schema.#Project
 
@@ -257,12 +257,16 @@ let _t = tasks
 
 name: "ci-cachix"
 
+// Nix runtime (required for Cachix)
 runtime: schema.#NixRuntime & {
 	flake:  "."
 	output: "devShells.x86_64-linux.default"
 }
 
+// CI configuration with Cachix binary caching
 ci: {
+	providers: ["github"]
+	contributors: [c.#Nix, c.#Cuenv, c.#Cachix]
 	provider: github: cachix: {
 		name: "my-project-cache"
 	}
@@ -318,7 +322,7 @@ import c "github.com/cuenv/cuenv/contrib/contributors"
 
 ci: {
 	providers: ["github"]
-	contributors: [c.#Nix, c.#Hestia]
+	contributors: [c.#Nix, c.#Cuenv, c.#Hestia]
 	provider: github: hestia: {}
 	pipelines: build: {
 		tasks: [_t.build]
@@ -373,7 +377,7 @@ Example: [`examples/ci-namespace-cache`](https://github.com/cuenv/cuenv/tree/mai
 
 ### `#OnePassword` — 1Password secret resolution
 
-- **CUE id:** `1password` (task `1password.setup`) · **Compiled IR id:** `setup-1password`
+- **CUE id:** `1password` (task `1password.setup`) · **Compiled IR id:** `cuenv:contributor:1password.setup`
 - **Stage:** Setup (priority **20**)
 - **Activates when:** the pipeline environment contains 1Password references (`secretsProvider: ["onepassword"]`)
 - **Dependencies:** `cuenv.setup` (the 1Password setup runs `cuenv secrets setup onepassword`, so cuenv must already be installed)
@@ -382,7 +386,10 @@ Example: [`examples/ci-namespace-cache`](https://github.com/cuenv/cuenv/tree/mai
 ```cue
 package examples
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"github.com/cuenv/cuenv/schema"
+	c "github.com/cuenv/cuenv/contrib/contributors"
+)
 
 schema.#Project
 
@@ -390,9 +397,11 @@ let _t = tasks
 
 name: "ci-onepassword"
 
+// Environment with 1Password secret references
+// This triggers the OnePasswordContributor to inject setup steps
 env: {
 	environment: production: {
-		API_TOKEN:  schema.#OnePasswordRef & {ref: "op://vault/api/token"}
+		API_TOKEN: schema.#OnePasswordRef & {ref: "op://vault/api/token"}
 		DEPLOY_KEY: schema.#OnePasswordRef & {ref: "op://vault/deploy/key"}
 	}
 }
@@ -405,11 +414,15 @@ tasks: {
 	}
 }
 
-ci: pipelines: {
-	deploy: {
-		environment: "production"
-		tasks: [_t.deploy]
-		when: branch: "main"
+ci: {
+	providers: ["github"]
+	contributors: [c.#Cuenv, c.#OnePassword]
+	pipelines: {
+		deploy: {
+			environment: "production"
+			tasks: [_t.deploy]
+			when: branch: "main"
+		}
 	}
 }
 ```
@@ -506,7 +519,7 @@ for the trade-offs between the two patterns.
 
 ### `#GhModels` — GitHub Models CLI (GitHub)
 
-- **CUE id:** `gh-models` (task `gh-models.setup`) · **Compiled IR id:** `setup-gh-models`
+- **CUE id:** `gh-models` (task `gh-models.setup`) · **Compiled IR id:** `cuenv:contributor:gh-models.setup`
 - **Stage:** Setup (priority **25**)
 - **Activates when:** any pipeline task uses the `gh` / `models` commands (`taskCommand: ["gh", "models"]`)
 - **Command:** `gh extension install github/gh-models`
@@ -514,7 +527,10 @@ for the trade-offs between the two patterns.
 ```cue
 package examples
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"github.com/cuenv/cuenv/schema"
+	c "github.com/cuenv/cuenv/contrib/contributors"
+)
 
 schema.#Project
 
@@ -522,10 +538,16 @@ let _t = tasks
 
 name: "ci-gh-models"
 
-ci: pipelines: {
-	eval: {
-		tasks: [_t.evalPrompts]
-		when: branch: "main"
+// Pipeline that uses GitHub Models CLI for LLM evaluation
+// This triggers the GhModelsContributor to inject extension setup
+ci: {
+	providers: ["github"]
+	contributors: [c.#Cuenv, c.#GhModels]
+	pipelines: {
+		eval: {
+			tasks: [_t.evalPrompts]
+			when: branch: "main"
+		}
 	}
 }
 
@@ -596,7 +618,9 @@ are unioned only into jobs that emit their steps, including conditional steps
 that might execute. Optional `ci.github.tasks: ["publish.cue"]` restricts a
 contributor step to jobs running those task IDs. An omitted or empty list means
 all applicable jobs. The dedicated binary-release builder uses the synthetic
-task IDs `build` and `publish`. In thin mode, a filtered step is included when any
+task IDs `build` and `publish`. It renders the selected cuenv setup in both
+jobs and the selected 1Password setup in the publish job, with each step's
+environment and permissions. In thin mode, a filtered step is included when any
 task in the single job matches. Built-in trusted-publishing steps target `publish.crates`
 and `publish.cue`; custom task names must override this list in the contributor.
 
@@ -635,7 +659,7 @@ A contributor's `when` is a [`#ActivationCondition`](https://github.com/cuenv/cu
 All specified fields must be true (AND logic):
 
 ```cue
-// Always active.
+// Satisfy this field; any other specified conditions must also match.
 when: always: true
 
 // Active for Nix-based runtimes.
@@ -660,6 +684,15 @@ when: {
 The full field set is `always`, `workspaceMember`, `runtimeType`,
 `cuenvSource`, `secretsProvider`, `providerConfig`, `taskCommand`, `taskLabels`,
 `environment`, `serviceCommand`, and `hasService`.
+When `taskLabels` lists multiple labels, the condition matches if a selected
+pipeline task or one of its transitive dependencies has any one of them. Task
+groups and sequences include their children. `taskCommand` uses the same task
+selection and matches command/argument prefixes; it does not interpret script
+bodies. `serviceCommand` matches any listed primary program among the
+project's services; script-only services have no primary program. Set
+`hasService` to `true` to require at least one service or `false` to require
+none. Setting `always` to `false` disables the contributor; `true` leaves
+any other conditions in effect.
 
 ## Writing a custom contributor
 
@@ -739,30 +772,35 @@ This is the faithful shape of a test from
 ```rust
 #[test]
 fn test_onepassword_contributor_active_with_op_refs() -> Result<(), String> {
-    skip_if_ffi_unavailable!();
-
-    // ci-onepassword has op:// refs in the production environment.
+    // ci-onepassword has op:// refs in production environment
     let ir = compile_example("ci-onepassword", "deploy")?;
 
-    // The compiled IR id is `setup-1password` (CUE id `1password.setup`).
+    // Check that setup-1password task is present
     let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
     assert!(
-        setup_tasks.iter().any(|t| t.id == "setup-1password"),
+        setup_tasks
+            .iter()
+            .any(|t| t.id == "cuenv:contributor:1password.setup"),
         "OnePasswordContributor should inject 'setup-1password' task when op:// refs exist"
     );
 
-    // Verify the command.
-    let setup_1password = phase_task(&setup_tasks, "setup-1password")?;
+    // Verify the command
+    let setup_1password = phase_task(&setup_tasks, "cuenv:contributor:1password.setup")?;
+    assert_eq!(
+        setup_1password.command,
+        ["cuenv", "secrets", "setup", "onepassword"]
+    );
     assert!(
-        setup_1password.command[0].contains("cuenv secrets setup onepassword"),
-        "setup-1password should run 'cuenv secrets setup onepassword'"
+        setup_1password
+            .depends_on
+            .contains(&"cuenv:contributor:cuenv.setup".to_string())
     );
     Ok(())
 }
 ```
 
-Note how the test asserts against the **compiled IR id** `setup-1password`, even
-though the CUE you wrote used `id: "1password.setup"`. The `phase_task` helper
+The compiled IR prefixes the CUE task ID, so this test checks
+`cuenv:contributor:1password.setup` for `id: "1password.setup"`. The `phase_task` helper
 looks up a task by its compiled IR id within a stage. To test your own custom
 contributors, add an example project and assert that the compiled IR (or the
 generated workflow) contains your expected task.

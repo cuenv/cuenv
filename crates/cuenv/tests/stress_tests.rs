@@ -68,7 +68,7 @@ fn test_100_parallel_tasks() -> TestResult {
 
     assert!(!graph.has_cycles(), "Graph should not have cycles");
 
-    let groups = graph.get_parallel_groups()?;
+    let groups = graph.parallel_groups()?;
 
     assert_eq!(groups.len(), 1, "Should have exactly 1 parallel group");
     assert_eq!(
@@ -113,7 +113,7 @@ fn test_deep_dependency_chain_20_levels() -> TestResult {
 
     assert!(!graph.has_cycles(), "Graph should not have cycles");
 
-    let groups = graph.get_parallel_groups()?;
+    let groups = graph.parallel_groups()?;
 
     assert_eq!(
         groups.len(),
@@ -215,7 +215,7 @@ fn test_large_task_graph_1000_tasks() -> TestResult {
         "Should have at least 100 tasks, got {actual_task_count}"
     );
 
-    let groups = graph.get_parallel_groups()?;
+    let groups = graph.parallel_groups()?;
 
     assert!(
         !groups.is_empty(),
@@ -269,7 +269,7 @@ fn test_wide_graph_500_leaves() -> TestResult {
 
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups()?;
+    let groups = graph.parallel_groups()?;
 
     // Should have 2 levels: root, then all leaves
     assert_eq!(groups.len(), 2, "Should have 2 levels");
@@ -326,7 +326,7 @@ fn test_diamond_pattern_chain() -> TestResult {
 
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups()?;
+    let groups = graph.parallel_groups()?;
 
     // Each diamond adds 3 levels (top is shared with previous bottom):
     // Level 0: diamond_0_top

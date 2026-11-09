@@ -11,15 +11,16 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```
 //! use cuenv_homebrew::{HomebrewBackend, HomebrewConfig};
-//! use cuenv_release::backends::BackendContext;
+//! use cuenv_release::backends::ReleaseBackend;
 //!
 //! let config = HomebrewConfig::new("cuenv/homebrew-tap", "cuenv")
 //!     .with_homepage("https://github.com/cuenv/cuenv")
 //!     .with_license("AGPL-3.0-or-later");
 //!
 //! let backend = HomebrewBackend::new(config);
+//! assert_eq!(backend.name(), "Homebrew");
 //! ```
 
 #![warn(missing_docs)]

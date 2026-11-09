@@ -35,8 +35,9 @@ impl Subscriber for Capture {
 
 impl Visit for Capture {
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        let mut captured = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        let _ = writeln!(captured, "{}={value:?}", field.name());
+        if let Ok(mut captured) = self.0.lock() {
+            let _ = writeln!(captured, "{}={value:?}", field.name());
+        }
     }
 }
 
@@ -58,7 +59,7 @@ fn raw_bridge_tracing_excludes_payloads_error_messages_and_hints() {
             Path::new("."),
         );
     });
-    let captured = capture.0.lock().unwrap_or_else(|error| error.into_inner());
+    let captured = capture.0.lock().expect("trace capture lock poisoned");
     assert!(captured.contains("response_bytes"));
     assert!(captured.contains("error_code"));
     for forbidden in [
@@ -77,6 +78,35 @@ fn raw_bridge_tracing_excludes_payloads_error_messages_and_hints() {
             "raw trace contained {forbidden}"
         );
     }
+}
+
+#[test]
+fn poisoned_capture_does_not_panic_while_recording() {
+    let capture = Capture::default();
+    tracing::subscriber::with_default(capture.clone(), || {
+        tracing::info!(probe = "before");
+    });
+    assert!(
+        capture
+            .0
+            .lock()
+            .expect("capture starts healthy")
+            .contains("before")
+    );
+
+    let poisoner = Arc::clone(&capture.0);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poisoner.lock().expect("capture starts healthy");
+            panic!("poison trace capture");
+        })
+        .join()
+        .is_err()
+    );
+    tracing::subscriber::with_default(capture.clone(), || {
+        tracing::info!(probe = "after");
+    });
+    assert!(capture.0.is_poisoned());
 }
 
 #[test]

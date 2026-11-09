@@ -8,10 +8,9 @@
 use cuenv_core::lockfile::{LockedTool, Lockfile};
 use std::error::Error;
 use std::ffi::OsStr;
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::{fs, io};
 use tempfile::TempDir;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -157,7 +156,13 @@ fn write_executable(path: &Path, contents: &str) -> TestResult {
     Ok(())
 }
 
-fn seed_node_prefix(home: &Path, version: &str, with_corepack: bool) -> TestResult {
+#[derive(Clone, Copy)]
+enum Corepack {
+    Include,
+    Omit,
+}
+
+fn seed_node_prefix(home: &Path, version: &str, corepack: Corepack) -> TestResult {
     for cache_root in cache_roots(home) {
         let prefix = cache_root.join("cuenv/tools/url/node").join(version);
         write_executable(
@@ -172,7 +177,7 @@ fn seed_node_prefix(home: &Path, version: &str, with_corepack: bool) -> TestResu
             &prefix.join("bin/npx"),
             &format!("#!/bin/sh\necho npx-{version}-cuenv-fixture\n"),
         )?;
-        if with_corepack {
+        if matches!(corepack, Corepack::Include) {
             write_executable(
                 &prefix.join("bin/corepack"),
                 &format!("#!/bin/sh\necho corepack-{version}-cuenv-fixture\n"),
@@ -292,7 +297,7 @@ fn exec_activates_node_24_lts_prefix_with_corepack() -> TestResult {
     let output = run_cuenv(&root, &home, &["sync", "lock"])?;
     assert!(output.success, "sync lock failed: {}", output.stderr);
 
-    seed_node_prefix(&home, "24.14.0", true)?;
+    seed_node_prefix(&home, "24.14.0", Corepack::Include)?;
 
     let output = run_cuenv(&root, &home, &["exec", "--", "node", "--version"])?;
     assert!(output.success, "node exec failed: {}", output.stderr);
@@ -328,7 +333,7 @@ fn exec_activates_node_25_prefix_without_corepack() -> TestResult {
     let output = run_cuenv(&root, &home, &["sync", "lock"])?;
     assert!(output.success, "sync lock failed: {}", output.stderr);
 
-    seed_node_prefix(&home, "25.8.1", false)?;
+    seed_node_prefix(&home, "25.8.1", Corepack::Omit)?;
 
     let output = run_cuenv(&root, &home, &["exec", "--", "node", "--version"])?;
     assert!(output.success, "node exec failed: {}", output.stderr);

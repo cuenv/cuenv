@@ -1,4 +1,5 @@
-use super::*;
+use crate::graph::TaskGraph;
+use crate::test_utils;
 
 #[test]
 fn test_diamond_dependency_with_hooks() {
@@ -12,12 +13,13 @@ fn test_diamond_dependency_with_hooks() {
     //       final
     let mut graph = TaskGraph::new();
 
-    let hook = create_task("bun.hooks.beforeInstall[0]", vec![], vec![]);
-    let install = create_task("bun.install", vec!["bun.hooks.beforeInstall[0]"], vec![]);
-    let setup = create_task("bun.setup", vec!["bun.install"], vec![]);
-    let task_a = create_task("taskA", vec!["bun.setup"], vec![]);
-    let task_b = create_task("taskB", vec!["bun.setup"], vec![]);
-    let final_task = create_task("final", vec!["taskA", "taskB"], vec![]);
+    let hook = test_utils::create_task("bun.hooks.beforeInstall[0]", vec![], vec![]);
+    let install =
+        test_utils::create_task("bun.install", vec!["bun.hooks.beforeInstall[0]"], vec![]);
+    let setup = test_utils::create_task("bun.setup", vec!["bun.install"], vec![]);
+    let task_a = test_utils::create_task("taskA", vec!["bun.setup"], vec![]);
+    let task_b = test_utils::create_task("taskB", vec!["bun.setup"], vec![]);
+    let final_task = test_utils::create_task("final", vec!["taskA", "taskB"], vec![]);
 
     graph.add_task("bun.hooks.beforeInstall[0]", hook).unwrap();
     graph.add_task("bun.install", install).unwrap();
@@ -30,7 +32,7 @@ fn test_diamond_dependency_with_hooks() {
     assert_eq!(graph.task_count(), 6);
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     // Level 0: hook
     // Level 1: install
     // Level 2: setup
@@ -46,23 +48,23 @@ fn test_multiple_projects_with_hooks() {
     let mut graph = TaskGraph::new();
 
     // Project A hooks
-    let a_hook = create_task("projectA::bun.hooks.beforeInstall[0]", vec![], vec![]);
-    let a_install = create_task(
+    let a_hook = test_utils::create_task("projectA::bun.hooks.beforeInstall[0]", vec![], vec![]);
+    let a_install = test_utils::create_task(
         "projectA::bun.install",
         vec!["projectA::bun.hooks.beforeInstall[0]"],
         vec![],
     );
 
     // Project B hooks
-    let b_hook = create_task("projectB::npm.hooks.beforeInstall[0]", vec![], vec![]);
-    let b_install = create_task(
+    let b_hook = test_utils::create_task("projectB::npm.hooks.beforeInstall[0]", vec![], vec![]);
+    let b_install = test_utils::create_task(
         "projectB::npm.install",
         vec!["projectB::npm.hooks.beforeInstall[0]"],
         vec![],
     );
 
     // Cross-project integration
-    let integration = create_task(
+    let integration = test_utils::create_task(
         "integration",
         vec!["projectA::bun.install", "projectB::npm.install"],
         vec![],
@@ -82,7 +84,7 @@ fn test_multiple_projects_with_hooks() {
     assert_eq!(graph.task_count(), 5);
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     // Level 0: projectA hook, projectB hook (parallel)
     // Level 1: projectA install, projectB install (parallel)
     // Level 2: integration
@@ -97,10 +99,12 @@ fn test_hook_with_afterinstall() {
     // Test both beforeInstall and afterInstall hooks
     let mut graph = TaskGraph::new();
 
-    let before_hook = create_task("bun.hooks.beforeInstall[0]", vec![], vec![]);
-    let install = create_task("bun.install", vec!["bun.hooks.beforeInstall[0]"], vec![]);
-    let after_hook = create_task("bun.hooks.afterInstall[0]", vec!["bun.install"], vec![]);
-    let setup = create_task("bun.setup", vec!["bun.hooks.afterInstall[0]"], vec![]);
+    let before_hook = test_utils::create_task("bun.hooks.beforeInstall[0]", vec![], vec![]);
+    let install =
+        test_utils::create_task("bun.install", vec!["bun.hooks.beforeInstall[0]"], vec![]);
+    let after_hook =
+        test_utils::create_task("bun.hooks.afterInstall[0]", vec!["bun.install"], vec![]);
+    let setup = test_utils::create_task("bun.setup", vec!["bun.hooks.afterInstall[0]"], vec![]);
 
     graph
         .add_task("bun.hooks.beforeInstall[0]", before_hook)

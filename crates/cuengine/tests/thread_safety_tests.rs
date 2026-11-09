@@ -19,6 +19,8 @@ fn cstring_ptr_marker_preserves_string_access() -> TestResult {
     let cstring_ptr = c_allocated_cstring_ptr("test")?;
 
     assert!(!cstring_ptr.is_null());
+    // SAFETY: the helper returns an owned, non-null C string whose contents
+    // stay unchanged for the duration of the borrow.
     let result = unsafe { cstring_ptr.to_str()? };
     assert_eq!(result, "test");
     Ok(())

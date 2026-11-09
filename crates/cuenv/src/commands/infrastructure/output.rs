@@ -17,15 +17,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use cuenv_events::{emit_stderr, emit_stdout};
 use cuenv_infrastructure::{
     HistoryEntry, LastWriter, LockDetails, LockInformation, ManagedResource, ObjectTenant, Plan,
-    PlanMode, PlanSummary, ResourceAddress, TenantKey, TenantLock, strip_control_characters,
+    PlanMode, PlanSummary, ResourceAddress, TenantKey, TenantLock,
 };
 
 use super::action::MigrationDirection;
 use serde_json::{Value, json};
 
-use super::evaluation::escape_control_characters;
 use super::invocation::Invocation;
-use super::tenant_label;
+
 use crate::cli::OutputFormat;
 
 /// The project part of a tenant, without its environment: the JSON `tenant`
@@ -33,6 +32,33 @@ use crate::cli::OutputFormat;
 /// consumer never has to split a name apart.
 fn tenant_identity(tenant: &TenantKey) -> String {
     format!("{}#{}", tenant.module_path(), tenant.project())
+}
+
+/// Operator-facing lock metadata. Migration capabilities never enter this value.
+pub(super) fn lock_information_json(lock: &LockInformation) -> serde_json::Map<String, Value> {
+    let mut value = serde_json::Map::new();
+    value.insert(
+        "acquiredAt".into(),
+        json!(cuenv_infrastructure::strip_control_characters(
+            &lock.acquired_at
+        )),
+    );
+    if let Some(identifier) = lock.identifier() {
+        value.insert(
+            "lockIdentifier".into(),
+            json!(cuenv_infrastructure::strip_control_characters(identifier)),
+        );
+        value.insert(
+            "holder".into(),
+            json!(cuenv_infrastructure::strip_control_characters(&lock.holder)),
+        );
+    } else {
+        value.insert("kind".into(), json!("migration"));
+        if let Some(operation) = lock.operation_id() {
+            value.insert("operationId".into(), json!(operation.to_string()));
+        }
+    }
+    value
 }
 
 /// The JSON name of what a converging command does.
@@ -222,16 +248,15 @@ impl Output {
             let rows: Vec<Value> = locks
                 .iter()
                 .map(|held| {
-                    json!({
-                        "module": held.module_path,
-                        "package": held.package,
-                        "project": held.project,
-                        "environment": held.environment,
-                        "lockIdentifier": held.lock.lock_identifier,
-                        "holder": held.lock.holder,
-                        "acquiredAt": held.lock.acquired_at,
-                        "unlockCommand": invocation.unlock_command(held),
-                    })
+                    let mut value = lock_information_json(&held.lock);
+                    value.insert("module".into(), json!(held.module_path));
+                    value.insert("package".into(), json!(held.package));
+                    value.insert("project".into(), json!(held.project));
+                    value.insert("environment".into(), json!(held.environment));
+                    if let Some(command) = invocation.unlock_command(held) {
+                        value.insert("unlockCommand".into(), json!(command));
+                    }
+                    Value::Object(value)
                 })
                 .collect();
             self.envelope(json!({ "locks": rows }));
@@ -251,14 +276,26 @@ impl Output {
                 .lock
                 .age_description()
                 .map_or_else(String::new, |age| format!(" ({age} ago)"));
-            emit_stdout!(format!(
-                "{}\n  lock {}, held by '{}' since {}{age}\n  release: {}",
-                escape_control_characters(&held.label()),
-                held.lock.lock_identifier,
-                held.lock.holder,
-                held.lock.acquired_at,
-                invocation.unlock_command(held)
-            ));
+            if let Some(identifier) = held.lock.identifier() {
+                let command = invocation.unlock_command(held).unwrap_or_default();
+                emit_stdout!(format!(
+                    "{}\n  lock {}, held by '{}' since {}{age}\n  release: {command}",
+                    super::evaluation::escape_control_characters(&held.label()),
+                    cuenv_infrastructure::strip_control_characters(identifier),
+                    cuenv_infrastructure::strip_control_characters(&held.lock.holder),
+                    cuenv_infrastructure::strip_control_characters(&held.lock.acquired_at),
+                ));
+            } else {
+                let operation = held
+                    .lock
+                    .operation_id()
+                    .map_or_else(|| "unknown".to_string(), |id| id.to_string());
+                emit_stdout!(format!(
+                    "{}\n  migration {operation}, held since {}{age}; use migration recovery",
+                    super::evaluation::escape_control_characters(&held.label()),
+                    cuenv_infrastructure::strip_control_characters(&held.lock.acquired_at),
+                ));
+            }
         }
     }
 
@@ -318,7 +355,7 @@ impl Output {
         } else {
             emit_stdout!(format!(
                 "Removed {address} from the state of {}. The real object was not touched.",
-                tenant_label(tenant)
+                super::tenant_label(tenant)
             ));
         }
     }
@@ -335,7 +372,7 @@ impl Output {
         } else {
             emit_stdout!(format!(
                 "Imported {address} into the state of {}. Run {next_plan} to review its configuration.",
-                tenant_label(tenant),
+                super::tenant_label(tenant),
             ));
         }
     }
@@ -354,7 +391,7 @@ impl Output {
         if addresses.is_empty() {
             emit_stdout!(format!(
                 "No unrecorded changes for {}.",
-                tenant_label(tenant)
+                super::tenant_label(tenant)
             ));
             return;
         }
@@ -364,7 +401,7 @@ impl Output {
         emit_stdout!(format!(
             "Recovered {} unrecorded change(s) for {}.",
             addresses.len(),
-            tenant_label(tenant)
+            super::tenant_label(tenant)
         ));
     }
 
@@ -382,7 +419,10 @@ impl Output {
             }));
             return;
         }
-        emit_stdout!(format!("Nothing to adopt for {}.", tenant_label(tenant)));
+        emit_stdout!(format!(
+            "Nothing to adopt for {}.",
+            super::tenant_label(tenant)
+        ));
     }
 
     /// Where the run's state lives, when the backend has an address to
@@ -392,7 +432,7 @@ impl Output {
         let Some(location) = location else {
             return;
         };
-        let location = strip_control_characters(location);
+        let location = cuenv_infrastructure::strip_control_characters(location);
         emit_stderr!(format!("State: {location}"));
         if self.is_json() {
             self.gate.amend("stateLocation", Value::String(location));
@@ -403,17 +443,13 @@ impl Output {
     pub(super) fn pulled(&self, pulled: &Pulled<'_>) {
         let writer = pulled.writer.map(|writer| {
             json!({
-                "instance": strip_control_characters(writer.instance.as_str()),
-                "recordedAt": strip_control_characters(&writer.recorded_at),
+                "instance": cuenv_infrastructure::strip_control_characters(writer.instance.as_str()),
+                "recordedAt": cuenv_infrastructure::strip_control_characters(&writer.recorded_at),
             })
         });
-        let lock = pulled.lock.map(|lock| {
-            json!({
-                "lockIdentifier": strip_control_characters(&lock.lock_identifier),
-                "holder": strip_control_characters(&lock.holder),
-                "acquiredAt": strip_control_characters(&lock.acquired_at),
-            })
-        });
+        let lock = pulled
+            .lock
+            .map(|lock| Value::Object(lock_information_json(lock)));
         let document = json!({
             "tenant": tenant_identity(pulled.tenant),
             "environment": pulled.tenant.environment(),
@@ -440,15 +476,22 @@ impl Output {
             .addresses
             .iter()
             .fold(String::new(), |mut lines, address| {
-                let _ = write!(lines, "\n  {}", strip_control_characters(address));
+                let _ = write!(
+                    lines,
+                    "\n  {}",
+                    cuenv_infrastructure::strip_control_characters(address)
+                );
                 lines
             });
         emit_stderr!(format!(
             "Restoring {} at {} to serial {} (written by cuenv {}), with {} record(s):{}",
-            tenant_label(tenant),
-            location.map_or_else(|| "its backend".to_string(), strip_control_characters),
+            super::tenant_label(tenant),
+            location.map_or_else(
+                || "its backend".to_string(),
+                cuenv_infrastructure::strip_control_characters
+            ),
             entry.serial,
-            strip_control_characters(&entry.written_by),
+            cuenv_infrastructure::strip_control_characters(&entry.written_by),
             entry.addresses.len(),
             addresses
         ));
@@ -464,7 +507,7 @@ impl Output {
                 "addresses": entry
                     .addresses
                     .iter()
-                    .map(|address| strip_control_characters(address))
+                    .map(|address| cuenv_infrastructure::strip_control_characters(address))
                     .collect::<Vec<_>>(),
             }));
             return;
@@ -472,7 +515,7 @@ impl Output {
         emit_stdout!(format!(
             "Restored {} to the version of serial {} ({} record(s)). Run `plan` to see how the \
              real objects differ from it.",
-            tenant_label(tenant),
+            super::tenant_label(tenant),
             entry.serial,
             entry.addresses.len()
         ));
@@ -497,16 +540,16 @@ impl Output {
         }
         emit_stdout!(format!(
             "Moved the state of {} (package {}) to {} (package {}){}.",
-            tenant_label(&renamed.from.tenant),
-            escape_control_characters(&renamed.from.package),
-            tenant_label(&renamed.to.tenant),
-            escape_control_characters(&renamed.to.package),
+            super::tenant_label(&renamed.from.tenant),
+            super::evaluation::escape_control_characters(&renamed.from.package),
+            super::tenant_label(&renamed.to.tenant),
+            super::evaluation::escape_control_characters(&renamed.to.package),
             renamed
                 .location
                 .as_deref()
                 .map_or_else(String::new, |location| format!(
                     " at {}",
-                    strip_control_characters(location)
+                    cuenv_infrastructure::strip_control_characters(location)
                 ))
         ));
     }
@@ -540,13 +583,13 @@ impl Output {
         for migrated in &report.tenants {
             emit_stdout!(format!(
                 "{verb} {}{}",
-                tenant_label(&migrated.tenant),
+                super::tenant_label(&migrated.tenant),
                 migrated
                     .location
                     .as_deref()
                     .map_or_else(String::new, |location| format!(
                         " ({})",
-                        strip_control_characters(location)
+                        cuenv_infrastructure::strip_control_characters(location)
                     ))
             ));
         }
@@ -575,11 +618,11 @@ impl Output {
                 .iter()
                 .map(|change| {
                     json!({
-                        "address": strip_control_characters(&change.address.to_string()),
+                        "address": cuenv_infrastructure::strip_control_characters(&change.address.to_string()),
                         "marker": change.marker.to_string(),
-                        "step": strip_control_characters(&change.step),
-                        "startedAt": strip_control_characters(&change.started_at),
-                        "lockIdentifier": strip_control_characters(&change.lock_identifier),
+                        "step": cuenv_infrastructure::strip_control_characters(&change.step),
+                        "startedAt": cuenv_infrastructure::strip_control_characters(&change.started_at),
+                        "lockIdentifier": cuenv_infrastructure::strip_control_characters(&change.lock_identifier),
                     })
                 })
                 .collect();
@@ -605,21 +648,27 @@ impl Output {
             return;
         }
         if let Some(location) = location {
-            emit_stdout!(format!("State: {}", strip_control_characters(location)));
+            emit_stdout!(format!(
+                "State: {}",
+                cuenv_infrastructure::strip_control_characters(location)
+            ));
         }
         for change in &in_flight {
             emit_stderr!(format!(
                 "warning: the outcome of the {} of {} (started {} by lock {}) was never \
                  recorded; its marker is {}",
-                strip_control_characters(&change.step),
-                strip_control_characters(&change.address.to_string()),
-                strip_control_characters(&change.started_at),
-                strip_control_characters(&change.lock_identifier),
+                cuenv_infrastructure::strip_control_characters(&change.step),
+                cuenv_infrastructure::strip_control_characters(&change.address.to_string()),
+                cuenv_infrastructure::strip_control_characters(&change.started_at),
+                cuenv_infrastructure::strip_control_characters(&change.lock_identifier),
                 change.marker
             ));
         }
         if resources.is_empty() {
-            emit_stdout!(format!("No managed resources for {}", tenant_label(tenant)));
+            emit_stdout!(format!(
+                "No managed resources for {}",
+                super::tenant_label(tenant)
+            ));
             return;
         }
         emit_stdout!(format!("{:<40} {:<12} {}", "ADDRESS", "PROVIDER", "SOURCE"));
@@ -627,54 +676,66 @@ impl Output {
             let marker = if resource.tainted { " (tainted)" } else { "" };
             emit_stdout!(format!(
                 "{:<40} {:<12} {}{marker}",
-                strip_control_characters(&resource.address.to_string()),
-                strip_control_characters(&resource.provider),
-                strip_control_characters(&resource.provider_source)
+                cuenv_infrastructure::strip_control_characters(&resource.address.to_string()),
+                cuenv_infrastructure::strip_control_characters(&resource.provider),
+                cuenv_infrastructure::strip_control_characters(&resource.provider_source)
             ));
         }
     }
 
     /// The state of a tenant's lock, and whether this run released it.
     pub(super) fn lock(&self, report: &LockReport<'_>) {
-        let lock = report.lock.map(|lock| LockInformation {
-            lock_identifier: strip_control_characters(&lock.lock_identifier),
-            holder: strip_control_characters(&lock.holder),
-            acquired_at: strip_control_characters(&lock.acquired_at),
-        });
+        let lock = report.lock;
         if self.is_json() {
             self.envelope(json!({
                 "tenant": tenant_identity(report.tenant),
                 "environment": report.tenant.environment(),
-                "lock": lock.as_ref().map(|lock| json!({
-                    "lockIdentifier": lock.lock_identifier,
-                    "holder": lock.holder,
-                    "acquiredAt": lock.acquired_at,
-                    "cuenvVersion": report.details.map(|details| details.cuenv_version.clone()),
-                    "lastChange": report.details.and_then(|details| details.last_change.clone()),
-                })),
+                "lock": lock.map(|lock| {
+                    let mut value = lock_information_json(lock);
+                    if lock.identifier().is_some() {
+                        value.insert("cuenvVersion".into(), json!(report.details.map(|details| details.cuenv_version.clone())));
+                        value.insert("lastChange".into(), json!(report.details.and_then(|details| details.last_change.clone())));
+                    }
+                    Value::Object(value)
+                }),
                 "released": matches!(report.outcome, LockOutcome::Released),
             }));
             return;
         }
-        let tenant = tenant_label(report.tenant);
+        let tenant = super::tenant_label(report.tenant);
         match (lock, report.outcome) {
             (None, _) => emit_stdout!(format!("{tenant} is not locked")),
-            (Some(lock), LockOutcome::Shown) => emit_stdout!(format!(
-                "{tenant} is locked by '{}' since {} (lock {}){}.\n\
-                 Confirm that run is gone, then release it with `{}`.",
-                lock.holder,
-                lock.acquired_at,
-                lock.lock_identifier,
-                details_phrase(report.details),
-                report
-                    .unlock_command
-                    .as_deref()
-                    .unwrap_or("cuenv infrastructure unlock <lock identifier>")
-            )),
-            (Some(lock), LockOutcome::Released) => emit_stdout!(format!(
-                "Released lock {} held by '{}' on {tenant}",
-                lock.lock_identifier, lock.holder
-            )),
+            (Some(lock), LockOutcome::Shown) => match lock.identifier() {
+                Some(identifier) => emit_stdout!(format!(
+                    "{tenant} is locked by '{}' since {} (lock {}){}.\n\
+                     Confirm that run is gone, then release it with `{}`.",
+                    cuenv_infrastructure::strip_control_characters(&lock.holder),
+                    cuenv_infrastructure::strip_control_characters(&lock.acquired_at),
+                    cuenv_infrastructure::strip_control_characters(identifier),
+                    details_phrase(report.details),
+                    report
+                        .unlock_command
+                        .as_deref()
+                        .unwrap_or("cuenv infrastructure unlock <lock identifier>")
+                )),
+                None => {
+                    let operation = lock
+                        .operation_id()
+                        .map_or_else(|| "unknown".to_string(), |id| id.to_string());
+                    emit_stdout!(format!(
+                        "{tenant} is locked by migration {operation}; use migration recovery."
+                    ));
+                }
+            },
+            (Some(lock), LockOutcome::Released) => {
+                if let Some(identifier) = lock.identifier() {
+                    emit_stdout!(format!(
+                        "Released lock {} held by '{}' on {tenant}",
+                        cuenv_infrastructure::strip_control_characters(identifier),
+                        cuenv_infrastructure::strip_control_characters(&lock.holder)
+                    ));
+                }
+            }
         }
     }
 }
@@ -730,16 +791,13 @@ pub(super) enum Finding {
     /// Unrecorded changes saved locally (`state recover`).
     UnrecordedChanges,
     /// A held lock (`unlock`).
-    Locked {
-        lock_identifier: String,
-        holder: String,
-    },
+    Locked { lock: LockInformation },
 }
 
 impl OtherEnvironment {
     /// The note printed on standard error.
     pub(super) fn note(&self) -> String {
-        let environment = escape_control_characters(&self.environment);
+        let environment = super::evaluation::escape_control_characters(&self.environment);
         match &self.finding {
             Finding::Resources(count) => format!(
                 "environment '{environment}' has {count} recorded resource(s), recorded \
@@ -751,14 +809,18 @@ impl OtherEnvironment {
                  `{}`",
                 self.command
             ),
-            Finding::Locked {
-                lock_identifier,
-                holder,
-            } => format!(
-                "environment '{environment}' is locked by '{holder}' (lock {lock_identifier}); \
-                 release it with `{}`",
-                self.command
-            ),
+            Finding::Locked { lock } => match lock.identifier() {
+                Some(identifier) => format!(
+                    "environment '{environment}' is locked by '{}' (lock {}); release it with `{}`",
+                    cuenv_infrastructure::strip_control_characters(&lock.holder),
+                    cuenv_infrastructure::strip_control_characters(identifier),
+                    self.command
+                ),
+                None => format!(
+                    "environment '{environment}' has a migration lock; inspect it with `{}`",
+                    self.command
+                ),
+            },
         }
     }
 
@@ -773,12 +835,8 @@ impl OtherEnvironment {
             Finding::UnrecordedChanges => {
                 entry.insert("unrecordedChanges".to_string(), json!(true));
             }
-            Finding::Locked {
-                lock_identifier,
-                holder,
-            } => {
-                entry.insert("lockIdentifier".to_string(), json!(lock_identifier));
-                entry.insert("holder".to_string(), json!(holder));
+            Finding::Locked { lock } => {
+                entry.extend(lock_information_json(lock));
             }
         }
         entry.insert("command".to_string(), json!(self.command));
@@ -874,7 +932,7 @@ fn warnings(plan: &Plan) {
 fn render_plan_text(plan: &Plan) {
     emit_stdout!(format!(
         "cuenv infrastructure: {}",
-        tenant_label(&plan.tenant)
+        super::tenant_label(&plan.tenant)
     ));
     if plan.has_work() || !plan.data_sources.is_empty() {
         emit_stdout!(cuenv_infrastructure::render_plan(plan));

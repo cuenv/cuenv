@@ -15,9 +15,9 @@ use cuenv_core::Result;
 use tracing::instrument;
 
 // Re-export types for the public API. Some types may not be used externally yet.
-pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
+pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskLocation, TaskSelection};
 
-/// Execute a task using the new structured request API.
+/// Execute a task using a structured request.
 ///
 /// This is the preferred entry point for task execution. It accepts a
 /// `TaskExecutionRequest` which groups all parameters into a structured
@@ -29,12 +29,22 @@ pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection
 ///
 /// # Example
 ///
-/// ```ignore
-/// let request = TaskExecutionRequest::named("./", "cuenv", "build")
-///     .with_args(vec!["--release".to_string()])
-///     .with_environment("prod");
+/// ```
+/// use cuenv::commands::{CommandExecutor, task::{self, TaskExecutionRequest, TaskLocation}};
 ///
-/// let output = execute(request).await?;
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let directory = tempfile::Builder::new().prefix("cuenv-doc-").tempdir()?;
+/// # std::fs::create_dir(directory.path().join("cue.mod"))?;
+/// # std::fs::write(directory.path().join("cue.mod/module.cue"), "module: \"example.com/task-doc\"\nlanguage: version: \"v0.9.0\"\n")?;
+/// # std::fs::write(directory.path().join("env.cue"), "package cuenv\nname: \"task-doc\"\ntasks: build: {command: \"echo\", args: [\"build\"], hermetic: false}\n")?;
+/// let executor = CommandExecutor::new("cuenv".to_string());
+/// let location = TaskLocation::new(directory.path().to_string_lossy(), "cuenv");
+/// let request = TaskExecutionRequest::named(location, "build", &executor)
+///     .with_args(vec!["--release".to_string()]);
+///
+/// tokio::runtime::Runtime::new()?.block_on(task::execute(request))?;
+/// # Ok(())
+/// # }
 /// ```
 #[instrument(name = "task_execute", skip(request), fields(path = %request.path, package = %request.package))]
 pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {

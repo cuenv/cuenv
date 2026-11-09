@@ -76,7 +76,7 @@ impl SessionSpec {
 pub struct SessionHandle(String);
 
 impl SessionHandle {
-    pub fn new(identity: impl Into<String>) -> Result<Self, BackendError> {
+    pub fn try_new(identity: impl Into<String>) -> Result<Self, BackendError> {
         let identity = identity.into();
         if identity.is_empty() {
             return Err(BackendError::InvalidHandle);
@@ -201,7 +201,7 @@ impl SessionBackend for InMemorySessionBackend {
     fn create(&mut self, spec: SessionSpec) -> Result<SessionHandle, BackendError> {
         spec.validate()?;
         self.next_id += 1;
-        let handle = SessionHandle::new(format!("in-memory-{}", self.next_id))?;
+        let handle = SessionHandle::try_new(format!("in-memory-{}", self.next_id))?;
         self.sessions.insert(handle.clone(), spec);
         Ok(handle)
     }

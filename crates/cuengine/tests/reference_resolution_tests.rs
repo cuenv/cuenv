@@ -1,9 +1,8 @@
 //! Tests for reference extraction in module evaluation.
 
-use cuengine::{ModuleEvalOptions, evaluate_module};
-use std::fs;
-use std::io;
+use cuengine::ModuleEvalOptions;
 use std::path::Path;
+use std::{fs, io};
 use tempfile::TempDir;
 
 fn init_module(module_root: &Path, module_name: &str) -> io::Result<()> {
@@ -122,7 +121,7 @@ import shared "example.com/recursive-meta-test/shared"
         ..Default::default()
     };
 
-    let result = evaluate_module(module_root, "cuenv", Some(&options))
+    let result = cuengine::evaluate_module(module_root, "cuenv", Some(&options))
         .expect("recursive module evaluation should succeed");
 
     let instance_keys: Vec<&String> = result.instances.keys().collect();
@@ -207,7 +206,7 @@ fn extracts_depends_on_reference_inside_selector_wrapped_expression() {
         ..Default::default()
     };
 
-    let result = evaluate_module(module_root, "cuenv", Some(&options))
+    let result = cuengine::evaluate_module(module_root, "cuenv", Some(&options))
         .expect("module evaluation should succeed");
 
     let reference = result
@@ -346,7 +345,7 @@ fn extracts_task_node_references_for_depends_on_and_ci_paths() {
         ..Default::default()
     };
 
-    let result = evaluate_module(module_root, "cuenv", Some(&options))
+    let result = cuengine::evaluate_module(module_root, "cuenv", Some(&options))
         .expect("module evaluation should succeed");
 
     for (meta_key, expected_task_name) in [
@@ -432,7 +431,7 @@ _svc: #Svc
         ..Default::default()
     };
 
-    let result = evaluate_module(module_root, "cuenv", Some(&options))
+    let result = cuengine::evaluate_module(module_root, "cuenv", Some(&options))
         .expect("module evaluation should succeed");
 
     for (meta_key, expected_task_name) in [
@@ -490,7 +489,7 @@ fn preserves_empty_lists_as_json_arrays() {
         ..Default::default()
     };
 
-    let result = evaluate_module(module_root, "cuenv", Some(&options))
+    let result = cuengine::evaluate_module(module_root, "cuenv", Some(&options))
         .expect("module evaluation should succeed");
 
     let depends_on = &result.instances["."]["tasks"]["build"]["dependsOn"];

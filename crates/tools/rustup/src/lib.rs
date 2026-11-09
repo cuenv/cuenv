@@ -23,6 +23,13 @@ use tracing::{debug, info};
 /// components, and cross-compilation targets.
 pub struct RustupToolProvider;
 
+#[derive(Default)]
+struct ToolchainOptions<'options> {
+    profile: Option<&'options str>,
+    components: &'options [String],
+    targets: &'options [String],
+}
+
 impl Default for RustupToolProvider {
     fn default() -> Self {
         Self::new()
@@ -81,10 +88,11 @@ impl RustupToolProvider {
     async fn install_toolchain(
         &self,
         toolchain: &str,
-        profile: Option<&str>,
-        components: &[String],
-        targets: &[String],
+        options: &ToolchainOptions<'_>,
     ) -> Result<()> {
+        let profile = options.profile;
+        let components = options.components;
+        let targets = options.targets;
         let mut cmd = Command::new("rustup");
         cmd.arg("toolchain").arg("install").arg(toolchain);
 
@@ -127,23 +135,18 @@ impl RustupToolProvider {
     }
 
     /// Compute a digest for the toolchain configuration.
-    fn compute_digest(
-        toolchain: &str,
-        profile: Option<&str>,
-        components: &[String],
-        targets: &[String],
-    ) -> String {
+    fn compute_digest(toolchain: &str, options: &ToolchainOptions<'_>) -> String {
         let mut hasher = Sha256::new();
         hasher.update(toolchain.as_bytes());
         hasher.update(b"|");
-        hasher.update(profile.unwrap_or("default").as_bytes());
+        hasher.update(options.profile.unwrap_or("default").as_bytes());
         hasher.update(b"|");
-        for c in components {
+        for c in options.components {
             hasher.update(c.as_bytes());
             hasher.update(b",");
         }
         hasher.update(b"|");
-        for t in targets {
+        for t in options.targets {
             hasher.update(t.as_bytes());
             hasher.update(b",");
         }
@@ -265,8 +268,14 @@ impl ToolProvider for RustupToolProvider {
             "Fetching rustup toolchain"
         );
 
+        let toolchain_options = ToolchainOptions {
+            profile: profile.as_deref(),
+            components,
+            targets,
+        };
+
         // Install the toolchain (idempotent - safe to re-run)
-        self.install_toolchain(toolchain, profile.as_deref(), components, targets)
+        self.install_toolchain(toolchain, &toolchain_options)
             .await?;
 
         // Get the binary path
@@ -284,7 +293,7 @@ impl ToolProvider for RustupToolProvider {
             )));
         }
 
-        let sha256 = Self::compute_digest(toolchain, profile.as_deref(), components, targets);
+        let sha256 = Self::compute_digest(toolchain, &toolchain_options);
 
         info!(
             tool = %resolved.name,
@@ -429,29 +438,42 @@ mod tests {
     fn test_compute_digest() {
         let digest1 = RustupToolProvider::compute_digest(
             "1.83.0",
-            Some("default"),
-            &["clippy".into(), "rustfmt".into()],
-            &["x86_64-unknown-linux-gnu".into()],
+            &ToolchainOptions {
+                profile: Some("default"),
+                components: &["clippy".into(), "rustfmt".into()],
+                targets: &["x86_64-unknown-linux-gnu".into()],
+            },
         );
-        assert!(digest1.starts_with("sha256:"));
+        assert_eq!(
+            digest1,
+            "sha256:3961d4be5a641fe64d9182378c6e62e0710aa2d0a982ce6737f1437f3e76ea7d"
+        );
 
         // Different config should produce different digest
-        let digest2 = RustupToolProvider::compute_digest("1.83.0", Some("minimal"), &[], &[]);
+        let digest2 = RustupToolProvider::compute_digest(
+            "1.83.0",
+            &ToolchainOptions {
+                profile: Some("minimal"),
+                ..ToolchainOptions::default()
+            },
+        );
         assert_ne!(digest1, digest2);
 
         // Same config should produce same digest
         let digest3 = RustupToolProvider::compute_digest(
             "1.83.0",
-            Some("default"),
-            &["clippy".into(), "rustfmt".into()],
-            &["x86_64-unknown-linux-gnu".into()],
+            &ToolchainOptions {
+                profile: Some("default"),
+                components: &["clippy".into(), "rustfmt".into()],
+                targets: &["x86_64-unknown-linux-gnu".into()],
+            },
         );
         assert_eq!(digest1, digest3);
     }
 
     #[test]
     fn test_compute_digest_no_profile() {
-        let digest = RustupToolProvider::compute_digest("stable", None, &[], &[]);
+        let digest = RustupToolProvider::compute_digest("stable", &ToolchainOptions::default());
         assert!(digest.starts_with("sha256:"));
         // Default profile is used when None
         assert!(digest.len() > 10);
@@ -461,14 +483,16 @@ mod tests {
     fn test_compute_digest_multiple_components() {
         let digest = RustupToolProvider::compute_digest(
             "nightly",
-            Some("complete"),
-            &[
-                "clippy".into(),
-                "rustfmt".into(),
-                "rust-src".into(),
-                "rust-analyzer".into(),
-            ],
-            &[],
+            &ToolchainOptions {
+                profile: Some("complete"),
+                components: &[
+                    "clippy".into(),
+                    "rustfmt".into(),
+                    "rust-src".into(),
+                    "rust-analyzer".into(),
+                ],
+                ..ToolchainOptions::default()
+            },
         );
         assert!(digest.starts_with("sha256:"));
     }
@@ -477,13 +501,14 @@ mod tests {
     fn test_compute_digest_multiple_targets() {
         let digest = RustupToolProvider::compute_digest(
             "1.80.0",
-            None,
-            &[],
-            &[
-                "x86_64-unknown-linux-gnu".into(),
-                "aarch64-unknown-linux-gnu".into(),
-                "wasm32-unknown-unknown".into(),
-            ],
+            &ToolchainOptions {
+                targets: &[
+                    "x86_64-unknown-linux-gnu".into(),
+                    "aarch64-unknown-linux-gnu".into(),
+                    "wasm32-unknown-unknown".into(),
+                ],
+                ..ToolchainOptions::default()
+            },
         );
         assert!(digest.starts_with("sha256:"));
     }
@@ -492,15 +517,19 @@ mod tests {
     fn test_compute_digest_deterministic() {
         let digest1 = RustupToolProvider::compute_digest(
             "1.75.0",
-            Some("default"),
-            &["clippy".into()],
-            &["x86_64-pc-windows-msvc".into()],
+            &ToolchainOptions {
+                profile: Some("default"),
+                components: &["clippy".into()],
+                targets: &["x86_64-pc-windows-msvc".into()],
+            },
         );
         let digest2 = RustupToolProvider::compute_digest(
             "1.75.0",
-            Some("default"),
-            &["clippy".into()],
-            &["x86_64-pc-windows-msvc".into()],
+            &ToolchainOptions {
+                profile: Some("default"),
+                components: &["clippy".into()],
+                targets: &["x86_64-pc-windows-msvc".into()],
+            },
         );
         assert_eq!(digest1, digest2);
     }
@@ -510,15 +539,17 @@ mod tests {
         // Different component order should produce different digest
         let digest1 = RustupToolProvider::compute_digest(
             "stable",
-            None,
-            &["clippy".into(), "rustfmt".into()],
-            &[],
+            &ToolchainOptions {
+                components: &["clippy".into(), "rustfmt".into()],
+                ..ToolchainOptions::default()
+            },
         );
         let digest2 = RustupToolProvider::compute_digest(
             "stable",
-            None,
-            &["rustfmt".into(), "clippy".into()],
-            &[],
+            &ToolchainOptions {
+                components: &["rustfmt".into(), "clippy".into()],
+                ..ToolchainOptions::default()
+            },
         );
         assert_ne!(digest1, digest2);
     }

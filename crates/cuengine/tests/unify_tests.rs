@@ -1,6 +1,6 @@
 //! Tests for the `unify` evaluation option across the FFI boundary.
 
-use cuengine::{ModuleEvalOptions, UnifySource, evaluate_module};
+use cuengine::{ModuleEvalOptions, UnifySource};
 use std::error::Error;
 use std::fs;
 use std::path::Path;
@@ -38,7 +38,7 @@ fn unify_options(target: &Path, sources: &[&Path]) -> ModuleEvalOptions {
 }
 
 fn evaluate(target: &Path, sources: &[&Path]) -> cuengine::Result<serde_json::Value> {
-    let result = evaluate_module(target, PACKAGE, Some(&unify_options(target, sources)))?;
+    let result = cuengine::evaluate_module(target, PACKAGE, Some(&unify_options(target, sources)))?;
     Ok(result.instances.get(".").cloned().unwrap_or_default())
 }
 
@@ -96,6 +96,6 @@ fn unify_rejects_recursive_evaluation() -> TestResult {
         ..unify_options(local.path(), &[global.path()])
     };
 
-    assert!(evaluate_module(local.path(), PACKAGE, Some(&options)).is_err());
+    assert!(cuengine::evaluate_module(local.path(), PACKAGE, Some(&options)).is_err());
     Ok(())
 }

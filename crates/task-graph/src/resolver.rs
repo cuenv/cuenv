@@ -42,22 +42,25 @@ pub enum TaskResolution<T: TaskNodeData> {
 ///
 /// # Example
 ///
-/// ```ignore
-/// impl TaskResolver<Task> for Tasks {
-///     fn resolve(&self, name: &str) -> Option<TaskResolution<Task>> {
-///         let definition = self.get(name)?;
-///         match definition {
-///             TaskNode::Task(task) => Some(TaskResolution::Single(task.clone())),
-///             TaskNode::Group(TaskGroup::Sequential(tasks)) => {
-///                 let children = (0..tasks.len())
-///                     .map(|i| format!("{}[{}]", name, i))
-///                     .collect();
-///                 Some(TaskResolution::Sequential { children })
-///             }
-///             // ... parallel handling
-///         }
+/// ```
+/// use cuenv_task_graph::{TaskNodeData, TaskResolution, TaskResolver};
+/// use std::collections::HashMap;
+///
+/// #[derive(Clone)]
+/// struct Task { dependencies: Vec<String> }
+/// impl TaskNodeData for Task {
+///     fn dependency_names(&self) -> impl Iterator<Item = &str> {
+///         self.dependencies.iter().map(String::as_str)
 ///     }
 /// }
+/// struct Tasks(HashMap<String, Task>);
+/// impl TaskResolver<Task> for Tasks {
+///     fn resolve(&self, name: &str) -> Option<TaskResolution<Task>> {
+///         self.0.get(name).cloned().map(TaskResolution::Single)
+///     }
+/// }
+/// let tasks = Tasks(HashMap::from([("build".into(), Task { dependencies: vec![] })]));
+/// assert!(matches!(tasks.resolve("build"), Some(TaskResolution::Single(_))));
 /// ```
 pub trait TaskResolver<T: TaskNodeData> {
     /// Resolve a task name to its definition (single or group).

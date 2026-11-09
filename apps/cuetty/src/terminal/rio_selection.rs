@@ -394,7 +394,7 @@ mod tests {
     fn visible_copy_matches_the_frame_selection_contract() {
         use crate::terminal::interaction::FrameTextSource;
         use crate::terminal::model::SamplingToken;
-        use crate::terminal::rio_adapter::snapshot;
+        use crate::terminal::rio_adapter;
 
         let mut terminal = Crosswords::new(
             CrosswordsSize::new(4, 3),
@@ -405,7 +405,7 @@ mod tests {
             32,
         );
         Processor::default().advance(&mut terminal, "a界e\u{301}z\r\n".as_bytes());
-        let frame = snapshot(&terminal, SamplingToken(0));
+        let frame = rio_adapter::snapshot(&terminal, SamplingToken(0));
         let source = FrameTextSource::new(&frame);
         for first in 0..12 {
             for second in 0..12 {

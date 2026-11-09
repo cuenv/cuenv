@@ -108,12 +108,34 @@ pub enum SourceEnvironment {
 /// What `state migrate` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MigrateRequest {
+    /// Whether the operator confirmed the required maintenance window.
+    pub maintenance: MigrationMaintenance,
+    /// Operator-attested identities for the two physical stores.
+    pub physical_identities: Option<MigrationPhysicalIdentities>,
     /// Which tenants.
     pub scope: MigrationScope,
     /// Forward, or back.
     pub direction: MigrationDirection,
     /// Whether the SQL source may be upgraded to the current schema first.
     pub source_upgrade: SourceUpgrade,
+}
+
+/// Stable physical store identities supplied by the operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationPhysicalIdentities {
+    /// Physical source database or bucket.
+    pub source: uuid::Uuid,
+    /// Physical target bucket.
+    pub target: uuid::Uuid,
+}
+
+/// Whether the operator has confirmed the migration maintenance window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationMaintenance {
+    /// The required maintenance window has not been confirmed.
+    Unconfirmed,
+    /// All clients and in-flight operations are stopped through cutover.
+    Confirmed,
 }
 
 /// The tenants `state migrate` works on.

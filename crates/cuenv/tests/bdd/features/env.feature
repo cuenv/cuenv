@@ -37,7 +37,14 @@ Feature: Environment command behaviors
     And the output should contain "DEV_VAR"
     And the exit code should be 0
 
-  Scenario: Environment with missing required variable fails gracefully
+  Scenario: Environment without variables prints successfully
     Given a project with no environment variables
     When I run "cuenv env print"
     Then the exit code should be 0
+
+  Scenario: Environment with a missing required variable fails gracefully
+    Given a project with a missing required environment variable
+    When I run "cuenv env print"
+    Then the exit code should not be 0
+    And the output should contain "API_KEY"
+    And the output should contain "incomplete"

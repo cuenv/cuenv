@@ -4,7 +4,6 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use cuenv_events::{CuenvEvent, EventCategory, EventSource, JsonRenderer, OutputEvent, TaskEvent};
-use std::hint::black_box;
 use uuid::Uuid;
 
 fn task_output_event(bytes: usize) -> CuenvEvent {
@@ -40,14 +39,18 @@ fn benchmark_json_render_to_writer(c: &mut Criterion) {
         let mut output = Vec::with_capacity(70 * 1024);
         b.iter(|| {
             output.clear();
-            black_box(renderer.render_to_writer(black_box(&task_event), &mut output))
+            std::hint::black_box(
+                renderer.render_to_writer(std::hint::black_box(&task_event), &mut output),
+            )
         });
     });
     group.bench_function("generic_output_64k", |b| {
         let mut output = Vec::with_capacity(70 * 1024);
         b.iter(|| {
             output.clear();
-            black_box(renderer.render_to_writer(black_box(&generic_event), &mut output))
+            std::hint::black_box(
+                renderer.render_to_writer(std::hint::black_box(&generic_event), &mut output),
+            )
         });
     });
     group.finish();

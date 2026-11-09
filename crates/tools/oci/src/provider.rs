@@ -18,7 +18,7 @@ use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
 
 use crate::cache::OciCache;
-use crate::extract::extract_from_layers;
+
 use crate::platform::Platform as OciPlatform;
 use crate::registry::OciClient;
 
@@ -26,8 +26,10 @@ use crate::registry::OciClient;
 ///
 /// Configuration shape (from CUE `#Oci`):
 ///
-/// ```ignore
-/// source: #Oci & {
+/// ```cue
+/// import "github.com/cuenv/cuenv/schema"
+///
+/// source: schema.#Oci & {
 ///     image: "ghcr.io/owner/image:{version}"
 ///     path:  "/usr/local/bin/tool"
 /// }
@@ -214,7 +216,7 @@ impl ToolProvider for OciToolProvider {
             std::fs::create_dir_all(parent)?;
         }
 
-        extract_from_layers(&layer_paths, path, &final_path).map_err(|e| {
+        crate::extract::extract_from_layers(&layer_paths, path, &final_path).map_err(|e| {
             cuenv_core::Error::tool_resolution(format!(
                 "Failed to extract '{path}' from '{image}': {e}"
             ))
@@ -403,6 +405,35 @@ mod tests {
             ToolSource::Oci { image, path } => {
                 assert_eq!(image, "ghcr.io/owner/linux-aarch64:9.9.9");
                 assert_eq!(path, "/opt/linux/tool");
+            }
+            _ => panic!("expected OCI source"),
+        }
+    }
+
+    #[tokio::test]
+    async fn documentation_source_resolves_version_and_binary_path() {
+        let provider = OciToolProvider::new();
+        let config = serde_json::json!({
+            "type": "oci",
+            "image": "ghcr.io/owner/image:{version}",
+            "path": "/usr/local/bin/tool"
+        });
+        let platform = Platform::new(Os::Linux, Arch::Arm64);
+        let resolved = provider
+            .resolve(&ToolResolveRequest {
+                tool_name: "tool",
+                version: "1.2.3",
+                platform: &platform,
+                config: &config,
+                token: None,
+            })
+            .await
+            .unwrap();
+
+        match resolved.source {
+            ToolSource::Oci { image, path } => {
+                assert_eq!(image, "ghcr.io/owner/image:1.2.3");
+                assert_eq!(path, "/usr/local/bin/tool");
             }
             _ => panic!("expected OCI source"),
         }

@@ -35,7 +35,6 @@ mod tests {
     use cuenv_codeowners::Rule;
     use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
     use std::fs;
-    use tempfile::tempdir;
 
     #[test]
     fn test_bitbucket_provider_output_path() {
@@ -51,7 +50,7 @@ mod tests {
 
     #[test]
     fn test_bitbucket_sync_creates_file() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = BitbucketCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -60,7 +59,13 @@ mod tests {
             vec![Rule::new("*.rs", ["@backend-team"])],
         )];
 
-        let result = provider.sync(temp.path(), &projects, false).unwrap();
+        let result = provider
+            .sync(
+                temp.path(),
+                &projects,
+                cuenv_codeowners::provider::WriteMode::Write,
+            )
+            .unwrap();
 
         assert_eq!(result.status, SyncStatus::Created);
         // Bitbucket uses CODEOWNERS at repo root
@@ -75,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_bitbucket_uses_comment_section_syntax() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = BitbucketCodeOwnersProvider;
 
         let projects = vec![
@@ -91,7 +96,13 @@ mod tests {
             ),
         ];
 
-        let result = provider.sync(temp.path(), &projects, false).unwrap();
+        let result = provider
+            .sync(
+                temp.path(),
+                &projects,
+                cuenv_codeowners::provider::WriteMode::Write,
+            )
+            .unwrap();
 
         // Bitbucket uses # Section syntax (like GitHub, unlike GitLab's [Section])
         assert!(
@@ -112,7 +123,7 @@ mod tests {
 
     #[test]
     fn test_bitbucket_sync_dry_run() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = BitbucketCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -121,7 +132,13 @@ mod tests {
             vec![Rule::new("*.rs", ["@backend-team"])],
         )];
 
-        let result = provider.sync(temp.path(), &projects, true).unwrap();
+        let result = provider
+            .sync(
+                temp.path(),
+                &projects,
+                cuenv_codeowners::provider::WriteMode::DryRun,
+            )
+            .unwrap();
 
         assert_eq!(result.status, SyncStatus::WouldCreate);
         assert!(!result.path.exists());
@@ -129,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_bitbucket_check_in_sync() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = BitbucketCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
@@ -139,7 +156,13 @@ mod tests {
         )];
 
         // Sync first
-        provider.sync(temp.path(), &projects, false).unwrap();
+        provider
+            .sync(
+                temp.path(),
+                &projects,
+                cuenv_codeowners::provider::WriteMode::Write,
+            )
+            .unwrap();
 
         // Check should report in sync
         let result = provider.check(temp.path(), &projects).unwrap();
@@ -148,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_bitbucket_check_out_of_sync() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = BitbucketCodeOwnersProvider;
 
         // Create file with different content
@@ -166,10 +189,14 @@ mod tests {
 
     #[test]
     fn test_bitbucket_empty_projects_error() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = BitbucketCodeOwnersProvider;
 
-        let result = provider.sync(temp.path(), &[], false);
+        let result = provider.sync(
+            temp.path(),
+            &[],
+            cuenv_codeowners::provider::WriteMode::Write,
+        );
         assert!(result.is_err());
     }
 }

@@ -251,6 +251,32 @@ mod tests {
     }
 
     #[test]
+    fn test_always_is_combined_with_other_activation_conditions() {
+        let mut contributor = create_test_contributor("workspace", vec!["bun"]);
+        let is_active = |contributor: &Contributor, workspace: &str| {
+            let context = ContributorContext {
+                workspace_member: Some(workspace.to_string()),
+                ..Default::default()
+            };
+            ContributorEngine::new(std::slice::from_ref(contributor), context)
+                .is_active(contributor)
+        };
+
+        contributor.when.as_mut().unwrap().always = Some(true);
+        assert!(is_active(&contributor, "bun"));
+        assert!(!is_active(&contributor, "npm"));
+
+        contributor.when.as_mut().unwrap().always = Some(false);
+        assert!(!is_active(&contributor, "bun"));
+
+        contributor.when.as_mut().unwrap().workspace_member.clear();
+        assert!(!is_active(&contributor, "bun"));
+
+        contributor.when.as_mut().unwrap().always = None;
+        assert!(is_active(&contributor, "bun"));
+    }
+
+    #[test]
     fn test_no_condition_means_always_active() {
         let contrib = Contributor {
             id: "no-condition".to_string(),
@@ -290,7 +316,7 @@ mod tests {
         tasks.insert("a".to_string(), TaskNode::Task(Box::new(task_a)));
         tasks.insert("b".to_string(), TaskNode::Task(Box::new(task_b)));
 
-        let dag = build_expected_dag(&tasks);
+        let dag = dag::build_expected_dag(&tasks);
 
         assert_eq!(dag.get("a"), Some(&vec![]));
         assert_eq!(dag.get("b"), Some(&vec!["a".to_string()]));

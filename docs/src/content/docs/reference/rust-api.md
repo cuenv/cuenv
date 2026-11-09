@@ -14,24 +14,25 @@ The CUE evaluation engine crate provides the interface to evaluate CUE configura
 The recommended entry point for CUE evaluation. Evaluates an entire CUE module at once, returning all instances (projects and bases) in a single call. This is more efficient than per-directory evaluation when working with monorepos.
 
 ```rust
-use cuengine::evaluate_module;
+use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
-use cuenv_core::cue::discovery::find_cue_module_root;
+use cuenv_core::cue::discovery;
 use cuenv_core::manifest::Project;
 use std::path::Path;
 
 // Find the module root (directory containing cue.mod/)
 let project_path = Path::new("./my-project");
-let module_root = find_cue_module_root(project_path).ok_or("no CUE module")?;
+let module_root = discovery::find_cue_module_root(project_path).ok_or("no CUE module")?;
 
 // Evaluate the entire module with a specific package
-let result = evaluate_module(&module_root, "cuenv", None)?;
+let options = ModuleEvalOptions { recursive: true, ..Default::default() };
+let result = cuengine::evaluate_module(&module_root, "cuenv", Some(&options))?;
 
 // Wrap the directory-keyed instances for easy access
-let module = ModuleEvaluation::from_raw(module_root, result.instances, result.projects, None);
+let module = ModuleEvaluation::from_raw(module_root, result.instances, cuenv_core::module::ModuleEvaluationOptions { project_paths: result.projects, references: None });
 
 // Access specific project by relative path
-let instance = module.get(Path::new("my-project"))?;
+let instance = module.get(Path::new("my-project")).ok_or("project not found")?;
 let project: Project = instance.deserialize()?;
 
 // Iterate all projects in the module
@@ -142,9 +143,7 @@ only: every instance is still loaded, built and checked, so
 check that needs a few fields of every instance should use it:
 
 ```rust
-use cuengine::{
-    evaluate_module, InstanceFailures, ModuleEvalOptions, PackageScope, SkippedDirectories,
-};
+use cuengine::{InstanceFailures, ModuleEvalOptions, PackageScope, SkippedDirectories};
 
 let options = ModuleEvalOptions {
     recursive: true,
@@ -155,7 +154,7 @@ let options = ModuleEvalOptions {
     skipped_directories: SkippedDirectories::Report,
     ..Default::default()
 };
-let result = evaluate_module(&module_root, "", Some(&options))?;
+let result = cuengine::evaluate_module(&module_root, "", Some(&options))?;
 for (key, value) in &result.instances {
     let name = value.get("name").and_then(|name| name.as_str());
     let has_infrastructure = result
@@ -190,12 +189,11 @@ at once.
 Free function for single-directory evaluation. Use `evaluate_module()` for module-wide operations:
 
 ```rust
-use cuengine::{evaluate_cue_package, evaluate_cue_package_typed};
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use std::path::Path;
 
-let json = evaluate_cue_package(Path::new("./project"), "cuenv")?;
-let manifest: Cuenv = evaluate_cue_package_typed(Path::new("./project"), "cuenv")?;
+let json = cuengine::evaluate_cue_package(Path::new("./project"), "cuenv")?;
+let manifest: Project = cuengine::evaluate_cue_package_typed(Path::new("./project"), "cuenv")?;
 ```
 
 ### `get_bridge_version`
@@ -211,14 +209,17 @@ println!("bridge reports {version}");
 
 Core library with types for tasks, environments, hooks, and secrets.
 
-### Cuenv (Manifest)
+### Project (Manifest)
 
-The root configuration type parsed from CUE.
+The root configuration type parsed from CUE. Workspace detection and setup
+task injection happen in the task executor; parsing a `Project` does not add
+implicit tasks. Use `TaskExecutor::execute_node` to execute a task node.
 
 ```rust
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
+use std::path::Path;
 
-let manifest: Cuenv = evaluator.evaluate()?;
+let manifest: Project = cuengine::evaluate_cue_package_typed(Path::new("."), "cuenv")?;
 ```
 
 **Fields:**
@@ -228,8 +229,8 @@ let manifest: Cuenv = evaluator.evaluate()?;
 | `config`     | `Option<Config>`         | Global configuration    |
 | `env`        | `Option<Env>`            | Environment variables   |
 | `hooks`      | `Option<Hooks>`          | Shell hooks             |
-| `tasks`      | `HashMap<String, Tasks>` | Task definitions        |
-| `workspaces` | `Option<Workspaces>`     | Workspace configuration |
+| `tasks`      | `HashMap<String, TaskNode>` | Task definitions     |
+| `runtime`    | `Option<Runtime>`           | Runtime configuration |
 
 ### Task Types
 
@@ -243,33 +244,34 @@ The main task type enum with three variants:
 use cuenv_core::tasks::{TaskNode, Task, TaskGroup, TaskDependency};
 
 // TaskNode::Task - single executable command
-let build = TaskNode::Task(Task {
-    command: Some("cargo".into()),
+let build = TaskNode::Task(Box::new(Task {
+    command: "cargo".into(),
     args: vec!["build".into(), "--release".into()],
     description: Some("Build release binaries".into()),
     depends_on: vec![
         TaskDependency::from_name("lint"),
         TaskDependency::from_name("test"),
     ],
-    inputs: vec!["src/**/*.rs".into(), "Cargo.toml".into()],
     outputs: vec!["target/release/app".into()],
     ..Default::default()
-});
+}));
 
 // TaskNode::Group - parallel execution
 let checks = TaskNode::Group(TaskGroup {
     type_: "group".into(),
     children: [
-        ("lint".into(), TaskNode::Task(Task { command: Some("cargo".into()), args: vec!["clippy".into()], ..Default::default() })),
-        ("test".into(), TaskNode::Task(Task { command: Some("cargo".into()), args: vec!["test".into()], ..Default::default() })),
+        ("lint".into(), TaskNode::Task(Box::new(Task { command: "cargo".into(), args: vec!["clippy".into()], ..Default::default() }))),
+        ("test".into(), TaskNode::Task(Box::new(Task { command: "cargo".into(), args: vec!["test".into()], ..Default::default() }))),
     ].into_iter().collect(),
-    ..Default::default()
+    depends_on: Vec::new(),
+    max_concurrency: None,
+    description: None,
 });
 
 // TaskNode::Sequence - sequential execution
 let deploy = TaskNode::Sequence(vec![
-    TaskNode::Task(Task { command: Some("build".into()), ..Default::default() }),
-    TaskNode::Task(Task { command: Some("push".into()), ..Default::default() }),
+    TaskNode::Task(Box::new(Task { command: "build".into(), ..Default::default() })),
+    TaskNode::Task(Box::new(Task { command: "push".into(), ..Default::default() })),
 ]);
 ```
 
@@ -277,7 +279,7 @@ let deploy = TaskNode::Sequence(vec![
 
 | Variant                             | Description                                        |
 | ----------------------------------- | -------------------------------------------------- |
-| `TaskNode::Task(Task)`              | Single executable command or script                |
+| `TaskNode::Task(Box<Task>)`         | Single executable command or script                |
 | `TaskNode::Group(TaskGroup)`        | Parallel execution - all children run concurrently |
 | `TaskNode::Sequence(Vec<TaskNode>)` | Sequential execution - runs in order               |
 
@@ -289,7 +291,7 @@ Represents a single executable command.
 
 | Field               | Type                                 | Description                                                          |
 | ------------------- | ------------------------------------ | -------------------------------------------------------------------- |
-| `command`           | `Option<String>`                     | Command to execute                                                   |
+| `command`           | `String`                             | Command to execute, or empty for a script                            |
 | `args`              | `Vec<String>`                        | Command arguments                                                    |
 | `script`            | `Option<String>`                     | Multi-line script (alternative to command)                           |
 | `script_shell`      | `Option<ScriptShell>`                | Shell for script execution (default: bash)                           |
@@ -299,9 +301,9 @@ Represents a single executable command.
 | `inputs`            | `Vec<Input>`                         | Files/globs or task output references                                |
 | `outputs`           | `Vec<String>`                        | Declared outputs that become cacheable artifacts                     |
 | `description`       | `Option<String>`                     | Human-friendly summary                                               |
-| `hermetic`          | `Option<bool>`                       | Isolated execution (default: true)                                   |
+| `hermetic`          | `Hermetic`                           | Isolated execution settings (default: enabled)                       |
 | `timeout`           | `Option<String>`                     | Execution timeout (e.g., "30m")                                      |
-| `continue_on_error` | `Option<bool>`                       | Continue on failure (default: false)                                 |
+| `continue_on_error` | `bool`                               | Continue on failure (default: false)                                 |
 
 #### TaskDependency
 
@@ -328,7 +330,7 @@ Parallel execution group - all child tasks run concurrently.
 | `type_`           | `String`                    | Type discriminator (always "group")         |
 | `children`        | `HashMap<String, TaskNode>` | Named child tasks (run in parallel)         |
 | `depends_on`      | `Vec<TaskDependency>`       | Dependencies on other tasks                 |
-| `max_concurrency` | `Option<i32>`               | Limit concurrent executions (0 = unlimited) |
+| `max_concurrency` | `Option<u32>`               | Limit concurrent executions (0 = unlimited) |
 | `description`     | `Option<String>`            | Human-readable description                  |
 
 ### Environment
@@ -363,8 +365,9 @@ use cuenv_hooks::{Hook, Hooks};
 
 | Field      | Type                | Description                     |
 | ---------- | ------------------- | ------------------------------- |
-| `on_enter` | `Option<Vec<Hook>>` | Hooks to run on directory entry |
-| `on_exit`  | `Option<Vec<Hook>>` | Hooks to run on directory exit  |
+| `on_enter` | `Option<HashMap<String, Hook>>` | Named hooks to run on directory entry |
+| `on_exit`  | `Option<HashMap<String, Hook>>` | Named hooks to run on directory exit  |
+| `pre_push` | `Option<HashMap<String, Hook>>` | Named hooks to run before a Git push |
 
 ### Hook
 
@@ -376,9 +379,9 @@ A single hook execution.
 | ----------- | ------------- | -------- | --------------------------------- |
 | `command`   | `String`      | required | Command to execute                |
 | `args`      | `Vec<String>` | `[]`     | Command arguments                 |
-| `order`     | `i32`         | 0        | Execution order (lower = earlier) |
-| `propagate` | `bool`        | false    | Export to child processes         |
-| `source`    | `bool`        | false    | Source output as shell script     |
+| `order`     | `i32`         | 100      | Execution order (lower = earlier) |
+| `propagate` | `bool`        | false    | Include in descendant directories |
+| `source`    | `Option<bool>` | `None`  | Source output as shell script     |
 | `inputs`    | `Vec<String>` | `[]`     | Input files for cache tracking    |
 
 ### HookExecutor
@@ -397,11 +400,11 @@ let executor = HookExecutor::try_new(config)?;
 Manages hook configuration approvals for security.
 
 ```rust
-use cuenv_hooks::{ApprovalManager, check_approval_status, ApprovalStatus};
+use cuenv_hooks::{ApprovalManager, ApprovalStatus};
 use std::path::Path;
 
 let manager = ApprovalManager::with_default_file()?;
-let status = check_approval_status(&manager, Path::new("."), hooks.as_ref())?;
+let status = cuenv_hooks::check_approval_status(&manager, Path::new("."), hooks.as_ref())?;
 
 match status {
     ApprovalStatus::Approved => println!("Config is approved"),
@@ -418,34 +421,37 @@ match status {
 
 #### Secret
 
-Secret reference with exec-based resolution.
+Secret reference with a resolver such as exec or 1Password.
 
 ```rust
-use cuenv_core::secrets::Secret;
+use cuenv_manifest::secrets::Secret;
 ```
 
 **Fields:**
 
 | Field      | Type          | Description                   |
 | ---------- | ------------- | ----------------------------- |
-| `resolver` | `String`      | Resolver type (always "exec") |
-| `command`  | `String`      | Command to retrieve secret    |
-| `args`     | `Vec<String>` | Command arguments             |
+| `resolver` | `String`      | Resolver type                  |
+| `command`  | `String`      | Command for the exec resolver  |
+| `args`     | `Vec<String>` | Command arguments              |
+| `op_ref`   | `Option<String>` | 1Password reference         |
+| `extra`    | `HashMap<String, Value>` | Provider-specific fields |
 
 #### Policy
 
 Access control policy for secrets.
 
 ```rust
-use cuenv_core::secrets::Policy;
+use cuenv_core::environment::Policy;
 ```
 
 **Fields:**
 
 | Field         | Type          | Description                   |
 | ------------- | ------------- | ----------------------------- |
-| `allow_tasks` | `Vec<String>` | Tasks that can access         |
-| `allow_exec`  | `Vec<String>` | Exec commands that can access |
+| `allow_tasks` | `Option<Vec<String>>` | Tasks that can access |
+| `allow_exec`  | `Option<Vec<String>>` | Exec commands that can access |
+| `allow_infrastructure` | `Option<Vec<InfrastructurePolicyAction>>` | Infrastructure actions that can access |
 
 ### Shell
 
@@ -484,23 +490,26 @@ use cuenv_core::Error;
 | Variant         | Description                            |
 | --------------- | -------------------------------------- |
 | `Configuration` | Configuration parsing/validation error |
-| `Ffi`           | FFI operation failure                  |
-| `CueParse`      | CUE parsing error                      |
+| `Eval`          | CUE evaluation or FFI error             |
 | `Io`            | I/O operation failure                  |
 | `Task`          | Task execution error                   |
 | `Secret`        | Secret resolution error                |
-| `Shell`         | Shell integration error                |
+| `Tool`          | Tool activation error                  |
+| `ChildExit`     | Exit status from a child command       |
 
-All errors implement `miette::Diagnostic` for rich error reporting:
+`cuenv_core::Error` implements `miette::Diagnostic` for rich error reporting.
+The standalone CUE engine error can be converted for use with miette:
 
 ```rust
 use miette::Result;
-use cuengine::evaluate_cue_package_typed;
 use cuenv_core::manifest::Project;
 use std::path::Path;
 
 fn run() -> Result<()> {
-    let manifest: Project = evaluate_cue_package_typed(Path::new("."), "cuenv")?;
+    use miette::IntoDiagnostic;
+
+    let manifest: Project = cuengine::evaluate_cue_package_typed(Path::new("."), "cuenv")
+        .into_diagnostic()?;
     println!("Loaded project: {:?}", manifest.name);
     Ok(())
 }
@@ -533,34 +542,10 @@ let pkg_name = PackageName::try_from("cuenv")?;
 
 #### Task cache helpers
 
-The task cache utilities live under the `cuenv-cache` crate.
-
-```rust
-use cuenv_cache::{
-    compute_cache_key, lookup, materialize_outputs, CacheKeyEnvelope,
-};
-use std::{collections::BTreeMap, path::Path};
-
-let envelope = CacheKeyEnvelope {
-    inputs: BTreeMap::new(),
-    command: "cargo".into(),
-    args: vec!["build".into()],
-    shell: None,
-    env: BTreeMap::new(),
-    cuenv_version: cuenv_core::VERSION.to_string(),
-    platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
-    workspace_lockfile_hashes: None,
-    workspace_package_hashes: None,
-};
-
-let (key, _) = compute_cache_key(&envelope)?;
-if let Some(entry) = lookup(&key, None) {
-    println!("cache hit stored at {}", entry.path.display());
-    materialize_outputs(&key, Path::new("artifacts"), None)?;
-}
-```
-
-Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` are available when integrating custom executors with cuenv's cache layout.
+Task cache policy, action construction, lookup, materialization, and recording
+are provided by `cuenv_task_exec::cache`. Content-addressed storage and action
+cache implementations are provided by `cuenv_cas`; remote access lives in
+`cuenv_cas_remote`.
 
 ## cuenv-infrastructure
 
@@ -634,7 +619,7 @@ environment)` is a separate identity for a named environment (including
   identity to another. The Turso and D1 stores (`TursoStateStore`,
   `D1StateStore`, which share one SQLite implementation) keep one table family keyed by
   `(module_path, project, environment, …)`, with an empty environment for the
-  no-flag identity, at schema version 1; `migrate()` fails with
+  no-flag identity, at schema version 2; `migrate()` fails with
   `InfrastructureError::StateSchemaNewer` for a newer schema and, for any later
   migration, with `InfrastructureError::StateMigrationBlocked` (listing the
   blocking `TenantLock`s) while a lock row exists, after waiting a bounded time

@@ -91,6 +91,7 @@ fn json_error_to_io(error: serde_json::Error) -> io::Error {
 mod tests {
     use super::*;
     use crate::event::{EventCategory, EventSource, OutputEvent};
+    use crate::redaction;
     use uuid::Uuid;
 
     struct BrokenPipeWriter;
@@ -219,10 +220,9 @@ mod tests {
 
     #[test]
     fn output_events_with_secrets_are_written_without_them_even_when_json_escapes_them() {
-        use crate::redaction::{register_secret, test_support::with_clean_registry};
-        with_clean_registry(|| {
-            register_secret("plain-secret-VVVV");
-            register_secret("quo\"te\\back-QQQQ");
+        redaction::test_support::with_clean_registry(|| {
+            redaction::register_secret("plain-secret-VVVV");
+            redaction::register_secret("quo\"te\\back-QQQQ");
             let renderer = JsonRenderer::new();
             let event = CuenvEvent::new(
                 Uuid::nil(),

@@ -40,18 +40,6 @@ struct DagTask {
     command: Option<String>,
 }
 
-/// Get path to the cuenv binary
-fn get_cuenv_bin() -> TestResult<PathBuf> {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    Ok(Path::new(manifest_dir)
-        .parent() // crates
-        .and_then(|p| p.parent()) // project root
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "failed to find project root"))?
-        .join("target")
-        .join("debug")
-        .join("cuenv"))
-}
-
 /// Get path to examples directory
 fn get_examples_dir() -> TestResult<PathBuf> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -62,27 +50,13 @@ fn get_examples_dir() -> TestResult<PathBuf> {
         .join("examples"))
 }
 
-/// Check if the cuenv binary exists
-fn binary_available() -> bool {
-    get_cuenv_bin().is_ok_and(|bin| bin.exists())
-}
-
-/// Skip test if binary is not available
-macro_rules! skip_if_binary_unavailable {
-    () => {
-        if !binary_available() {
-            return Ok(());
-        }
-    };
-}
-
 /// Run cuenv with --dry-run and parse the DAG export
 fn run_dry_run(example: &str, task: &str) -> TestResult<DagExport> {
-    let bin = get_cuenv_bin()?;
+    let bin = env!("CARGO_BIN_EXE_cuenv");
     let examples_dir = get_examples_dir()?;
     let example_path = examples_dir.join(example);
 
-    let output = clean_environment_command(&bin)
+    let output = clean_environment_command(bin)
         .args(["task", task, "--dry-run", "--path"])
         .arg(&example_path)
         .args(["--package", "examples"])
@@ -109,8 +83,6 @@ fn run_dry_run(example: &str, task: &str) -> TestResult<DagExport> {
 
 #[test]
 fn test_task_basic_greetall_dag_structure() -> TestResult {
-    skip_if_binary_unavailable!();
-
     let dag = run_dry_run("task-basic", "greetAll")?;
 
     // Verify we got some tasks in the DAG
@@ -136,8 +108,6 @@ fn test_task_basic_greetall_dag_structure() -> TestResult {
 
 #[test]
 fn test_task_basic_parallel_groups() -> TestResult {
-    skip_if_binary_unavailable!();
-
     let dag = run_dry_run("task-basic", "greetAll")?;
 
     // Verify parallel groups exist
@@ -170,8 +140,6 @@ fn test_task_basic_parallel_groups() -> TestResult {
 
 #[test]
 fn test_interpolate_task_dag() -> TestResult {
-    skip_if_binary_unavailable!();
-
     let dag = run_dry_run("task-basic", "interpolate")?;
 
     // Verify DAG structure
@@ -195,8 +163,6 @@ fn test_interpolate_task_dag() -> TestResult {
 
 #[test]
 fn test_dag_export_includes_command_info() -> TestResult {
-    skip_if_binary_unavailable!();
-
     let dag = run_dry_run("task-basic", "interpolate")?;
 
     // All tasks should have command info
@@ -217,8 +183,6 @@ fn test_dag_export_includes_command_info() -> TestResult {
 
 #[test]
 fn test_hook_example_verify_env_dag() -> TestResult {
-    skip_if_binary_unavailable!();
-
     let dag = run_dry_run("hook", "verify_env")?;
 
     // DAG should have tasks
@@ -239,8 +203,6 @@ fn test_hook_example_verify_env_dag() -> TestResult {
 
 #[test]
 fn test_ci_pipeline_test_task_dag() -> TestResult {
-    skip_if_binary_unavailable!();
-
     let dag = run_dry_run("ci-pipeline", "test")?;
 
     // DAG should have tasks
@@ -264,8 +226,6 @@ fn test_ci_pipeline_test_task_dag() -> TestResult {
 
 #[test]
 fn test_dry_run_with_nonexistent_task_fails() -> TestResult {
-    skip_if_binary_unavailable!();
-
     let result = run_dry_run("task-basic", "nonexistent_task_12345");
 
     assert!(result.is_err(), "dry-run with nonexistent task should fail");
@@ -275,13 +235,11 @@ fn test_dry_run_with_nonexistent_task_fails() -> TestResult {
 
 #[test]
 fn test_dry_run_with_nonexistent_example_fails() -> TestResult {
-    skip_if_binary_unavailable!();
-
-    let bin = get_cuenv_bin()?;
+    let bin = env!("CARGO_BIN_EXE_cuenv");
     let examples_dir = get_examples_dir()?;
     let example_path = examples_dir.join("nonexistent-example-12345");
 
-    let output = clean_environment_command(&bin)
+    let output = clean_environment_command(bin)
         .args(["task", "test", "--dry-run", "--path"])
         .arg(&example_path)
         .args(["--package", "examples"])

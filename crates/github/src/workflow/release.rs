@@ -8,6 +8,9 @@ use crate::workflow::schema::{
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation};
 use indexmap::IndexMap;
 
+const CUENV_SETUP_TASK: &str = "cuenv:contributor:cuenv.setup";
+const ONEPASSWORD_SETUP_TASK: &str = "cuenv:contributor:1password.setup";
+
 /// Target platform configuration for release builds.
 #[derive(Debug, Clone)]
 pub struct ReleaseTarget {
@@ -163,10 +166,9 @@ impl ReleaseWorkflowBuilder {
         if let Some(cuenv_task) = ir
             .sorted_phase_tasks(BuildStage::Setup)
             .iter()
-            .find(|t| t.id == "setup-cuenv")
+            .find(|t| t.id == CUENV_SETUP_TASK)
         {
-            let command = cuenv_task.command.first().cloned().unwrap_or_default();
-            steps.push(Step::run(&command).with_name("Setup cuenv"));
+            steps.push(self.emitter.stage_renderer().render_task(cuenv_task));
         }
 
         let environment = ir.pipeline.environment.as_deref();
@@ -203,7 +205,7 @@ impl ReleaseWorkflowBuilder {
             permissions: Some(
                 self.emitter
                     .permissions_for_tasks(ir.tasks.iter().filter(|task| {
-                        task.phase == Some(BuildStage::Bootstrap) || task.id == "setup-cuenv"
+                        task.phase == Some(BuildStage::Bootstrap) || task.id == CUENV_SETUP_TASK
                     })),
             ),
             name: Some("Build ${{ matrix.target }}".to_string()),
@@ -247,10 +249,9 @@ impl ReleaseWorkflowBuilder {
         if let Some(cuenv_task) = ir
             .sorted_phase_tasks(BuildStage::Setup)
             .iter()
-            .find(|t| t.id == "setup-cuenv")
+            .find(|t| t.id == CUENV_SETUP_TASK)
         {
-            let command = cuenv_task.command.first().cloned().unwrap_or_default();
-            steps.push(Step::run(&command).with_name("Setup cuenv"));
+            steps.push(self.emitter.stage_renderer().render_task(cuenv_task));
         }
 
         for target in &self.targets {
@@ -268,12 +269,12 @@ impl ReleaseWorkflowBuilder {
             steps.push(download_step);
         }
 
-        let has_1password = ir
+        let onepassword_task = ir
             .sorted_phase_tasks(BuildStage::Setup)
-            .iter()
-            .any(|t| t.id == "setup-1password");
-        if has_1password {
-            steps.push(Step::run("cuenv secrets setup onepassword").with_name("Setup 1Password"));
+            .into_iter()
+            .find(|task| task.id == ONEPASSWORD_SETUP_TASK);
+        if let Some(task) = onepassword_task {
+            steps.push(self.emitter.stage_renderer().render_task(task));
         }
 
         let environment = ir.pipeline.environment.as_deref();
@@ -284,7 +285,7 @@ impl ReleaseWorkflowBuilder {
         let mut publish_step = Step::run(&publish_cmd).with_name("Publish release");
         GitHubActionsEmitter::add_github_context_env(&mut publish_step);
 
-        if has_1password {
+        if onepassword_task.is_some() {
             publish_step.env.insert(
                 "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
                 "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}".to_string(),
@@ -297,8 +298,8 @@ impl ReleaseWorkflowBuilder {
                 let mut required =
                     GitHubActionsEmitter::required_permissions(ir.tasks.iter().filter(|task| {
                         task.phase == Some(BuildStage::Bootstrap)
-                            || task.id == "setup-cuenv"
-                            || task.id == "setup-1password"
+                            || task.id == CUENV_SETUP_TASK
+                            || task.id == ONEPASSWORD_SETUP_TASK
                     }));
                 // Uploading GitHub release assets uses GITHUB_TOKEN.
                 required.contents = Some(PermissionLevel::Write);
@@ -353,11 +354,119 @@ mod tests {
         );
     }
 
-    struct ActionTaskFixture<'a> {
-        id: &'a str,
-        label: &'a str,
+    #[test]
+    fn release_jobs_render_compiled_contributor_steps_and_permissions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use cuenv_ci::compiler::{Compiler, CompilerOptions};
+        use cuenv_core::ci::{CI, Pipeline};
+        use cuenv_core::manifest::Project;
+
+        let mut project = Project::new("release");
+        project.ci = Some(serde_json::from_value::<CI>(serde_json::json!({
+            "contributors": [
+                {
+                    "id": "cuenv",
+                    "tasks": [{
+                        "id": "cuenv.setup",
+                        "label": "Setup cuenv",
+                        "priority": 10,
+                        "script": "install-cuenv --version stable",
+                        "env": {"GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"},
+                        "ci": {"github": {"permissions": {"actions": "write"}}}
+                    }]
+                },
+                {
+                    "id": "1password",
+                    "tasks": [{
+                        "id": "1password.setup",
+                        "label": "Setup 1Password",
+                        "priority": 20,
+                        "command": "cuenv",
+                        "args": ["secrets", "setup", "onepassword"],
+                        "dependsOn": ["cuenv.setup"],
+                        "env": {"OP_SERVICE_ACCOUNT_TOKEN": "${OP_SERVICE_ACCOUNT_TOKEN}"},
+                        "ci": {"github": {"permissions": {"id-token": "write"}}}
+                    }]
+                }
+            ]
+        }))?);
+        let ir = Compiler::with_options(
+            project,
+            CompilerOptions {
+                pipeline: Some(Pipeline {
+                    environment: Some("production".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .compile()?;
+        assert!(ir.tasks.iter().any(|task| task.id == CUENV_SETUP_TASK));
+        assert!(
+            ir.tasks
+                .iter()
+                .any(|task| task.id == ONEPASSWORD_SETUP_TASK)
+        );
+
+        let workflow = ReleaseWorkflowBuilder::new(GitHubActionsEmitter::new()).build(&ir);
+        let build = &workflow.jobs["build"];
+        let publish = &workflow.jobs["publish"];
+        for job in [build, publish] {
+            let setup = job
+                .steps
+                .iter()
+                .find(|step| step.name.as_deref() == Some("Setup cuenv"))
+                .ok_or("cuenv setup is missing")?;
+            assert_eq!(setup.run.as_deref(), Some("install-cuenv --version stable"));
+            assert_eq!(
+                setup.env.get("GITHUB_TOKEN").map(String::as_str),
+                Some("${{ secrets.GITHUB_TOKEN }}")
+            );
+            assert_eq!(
+                job.permissions
+                    .as_ref()
+                    .and_then(|permissions| permissions.actions),
+                Some(PermissionLevel::Write)
+            );
+        }
+        let setup = publish
+            .steps
+            .iter()
+            .find(|step| step.name.as_deref() == Some("Setup 1Password"))
+            .ok_or("1Password setup is missing")?;
+        assert_eq!(
+            setup.run.as_deref(),
+            Some("cuenv secrets setup onepassword")
+        );
+        assert_eq!(
+            setup
+                .env
+                .get("OP_SERVICE_ACCOUNT_TOKEN")
+                .map(String::as_str),
+            Some("${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}")
+        );
+        assert_eq!(
+            publish
+                .permissions
+                .as_ref()
+                .and_then(|permissions| permissions.id_token),
+            Some(PermissionLevel::Write)
+        );
+        assert_eq!(
+            build
+                .permissions
+                .as_ref()
+                .and_then(|permissions| permissions.id_token),
+            None
+        );
+        Ok(())
+    }
+
+    struct ActionTaskFixture<'fixture> {
+        id: &'fixture str,
+        label: &'fixture str,
         priority: i32,
-        uses: &'a str,
+        uses: &'fixture str,
     }
 
     fn action_task(fixture: &ActionTaskFixture<'_>) -> Task {

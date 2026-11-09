@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    InterruptPolicy, JsonEventStream, interrupt_policy, json_event_stream, requires_async_runtime,
+};
+use cuenv::cli;
+use cuenv::commands::Command;
+use cuenv::tracing::{Level, TracingConfig, TracingFormat};
 
 #[test]
 fn test_panic_hook() {
@@ -141,7 +146,6 @@ async fn test_command_conversion() {
 /// Build a synthetic lockfile with a single image artifact carrying the
 /// provided `extract` entries for `platform_str`.
 fn make_oci_lockfile(
-    image: &str,
     digest: &str,
     platform_str: &str,
     extract: Vec<cuenv_core::lockfile::LockedOciExtract>,
@@ -152,7 +156,7 @@ fn make_oci_lockfile(
     let mut lockfile = Lockfile::new();
     lockfile.artifacts.push(LockedArtifact {
         kind: ArtifactKind::Image {
-            image: image.to_string(),
+            image: "nginx:1.25-alpine".to_string(),
             extract,
         },
         platforms: BTreeMap::from([(
@@ -189,7 +193,6 @@ async fn test_activate_lockfile_artifacts_cache_hit_path() {
 
     let platform = Platform::new("linux", "x86_64");
     let lockfile = make_oci_lockfile(
-        "nginx:1.25-alpine",
         digest,
         &platform.to_string(),
         vec![LockedOciExtract {
@@ -199,9 +202,16 @@ async fn test_activate_lockfile_artifacts_cache_hit_path() {
     );
 
     let client = OciClient::new();
-    let bin_dirs = super::activate_lockfile_artifacts(&lockfile, &client, &cache, &platform)
-        .await
-        .expect("activation should succeed via cache hit");
+    let bin_dirs = super::activate_lockfile_artifacts(
+        &lockfile,
+        super::oci_activate::OciActivationContext {
+            client: &client,
+            cache: &cache,
+            platform: &platform,
+        },
+    )
+    .await
+    .expect("activation should succeed via cache hit");
 
     let expected_parent = cache.binary_path(digest, binary_name);
     let expected_parent = expected_parent.parent().unwrap().to_path_buf();
@@ -223,17 +233,19 @@ async fn test_activate_lockfile_artifacts_skips_when_no_extract() {
     let platform = Platform::new("linux", "x86_64");
     // No extract entries — should warn + skip without contacting any
     // network and return an empty set of PATH directories.
-    let lockfile = make_oci_lockfile(
-        "nginx:1.25-alpine",
-        "sha256:cafebabe",
-        &platform.to_string(),
-        vec![],
-    );
+    let lockfile = make_oci_lockfile("sha256:cafebabe", &platform.to_string(), vec![]);
 
     let client = OciClient::new();
-    let bin_dirs = super::activate_lockfile_artifacts(&lockfile, &client, &cache, &platform)
-        .await
-        .expect("activation should succeed by skipping the artifact");
+    let bin_dirs = super::activate_lockfile_artifacts(
+        &lockfile,
+        super::oci_activate::OciActivationContext {
+            client: &client,
+            cache: &cache,
+            platform: &platform,
+        },
+    )
+    .await
+    .expect("activation should succeed by skipping the artifact");
 
     assert!(bin_dirs.is_empty());
 }
@@ -249,7 +261,6 @@ async fn test_activate_lockfile_artifacts_skips_when_platform_mismatch() {
 
     // Lockfile only has darwin-arm64 data; we activate on linux-x86_64.
     let lockfile = make_oci_lockfile(
-        "nginx:1.25-alpine",
         "sha256:cafebabe",
         "darwin-arm64",
         vec![LockedOciExtract {
@@ -260,9 +271,16 @@ async fn test_activate_lockfile_artifacts_skips_when_platform_mismatch() {
 
     let platform = Platform::new("linux", "x86_64");
     let client = OciClient::new();
-    let bin_dirs = super::activate_lockfile_artifacts(&lockfile, &client, &cache, &platform)
-        .await
-        .expect("should succeed by skipping non-matching platform");
+    let bin_dirs = super::activate_lockfile_artifacts(
+        &lockfile,
+        super::oci_activate::OciActivationContext {
+            client: &client,
+            cache: &cache,
+            platform: &platform,
+        },
+    )
+    .await
+    .expect("should succeed by skipping non-matching platform");
 
     assert!(bin_dirs.is_empty());
 }

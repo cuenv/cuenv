@@ -1,4 +1,4 @@
-use super::*;
+use super::{Compiler, CompilerOptions, HashMap, Project, PurityMode};
 
 #[test]
 fn test_purity_analysis_pure_flake() {
@@ -186,12 +186,12 @@ fn test_compute_runtime() {
 
     let compiler = Compiler::with_options(project, options);
     let runtime = compiler
-        .compute_runtime(
-            "nix-x86_64-linux",
-            "github:NixOS/nixpkgs",
-            "devShells.x86_64-linux.default",
-            "x86_64-linux",
-        )
+        .compute_runtime(crate::compiler::RuntimeSpec {
+            id: "nix-x86_64-linux",
+            flake_ref: "github:NixOS/nixpkgs",
+            output: "devShells.x86_64-linux.default",
+            system: "x86_64-linux",
+        })
         .unwrap();
 
     assert_eq!(runtime.id, "nix-x86_64-linux");

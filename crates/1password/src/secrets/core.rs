@@ -116,6 +116,19 @@ fn duration_milliseconds_i64(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
+/// Inputs for a 1Password SDK invocation.
+#[derive(Clone, Copy)]
+pub struct InvokeRequest<'request> {
+    /// Client created by the SDK.
+    pub client_id: u64,
+    /// SDK method name.
+    pub method: &'request str,
+    /// Method parameters.
+    pub params: &'request serde_json::Map<String, serde_json::Value>,
+    /// Secret identifier used in diagnostics.
+    pub context: &'request str,
+}
+
 /// `SharedCore` wraps the 1Password WASM plugin for thread-safe access.
 ///
 /// The WASM runtime is single-threaded, so we use a mutex to serialize access.
@@ -259,7 +272,7 @@ impl SharedCore {
     /// The method name and parameters depend on the specific operation.
     /// For resolving secrets, use method `SecretsResolve` with the secret reference.
     ///
-    /// The `context` parameter is used for error messages to identify which secret failed.
+    /// The request context identifies the secret in error messages.
     ///
     /// # Errors
     ///
@@ -268,13 +281,13 @@ impl SharedCore {
     /// - The WASM invoke call fails
     /// - The response cannot be parsed
     /// - 1Password returns an error for the operation
-    pub fn invoke(
-        &mut self,
-        client_id: u64,
-        method: &str,
-        params: &serde_json::Map<String, serde_json::Value>,
-        context: &str,
-    ) -> Result<String, SecretError> {
+    pub fn invoke(&mut self, request: InvokeRequest<'_>) -> Result<String, SecretError> {
+        let InvokeRequest {
+            client_id,
+            method,
+            params,
+            context,
+        } = request;
         // Structure matches Go SDK's InvokeConfig exactly:
         // InvokeConfig { Invocation { ClientID, Parameters { MethodName, SerializedParams } } }
         let request = serde_json::json!({

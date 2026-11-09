@@ -10,13 +10,13 @@
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
-use cuenv_core::cue::discovery::compute_relative_path;
+
 use cuenv_core::module::TASK_FIELD;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::commands::env_file::{discover_env_cue_directories, find_cue_module_root};
-use crate::commands::task::list_builder::prepare_task_index;
+use crate::commands::env_file;
+use crate::commands::task::list_builder;
 
 /// Complete task names by querying the CUE configuration in the current directory
 fn complete_tasks() -> Vec<CompletionCandidate> {
@@ -44,12 +44,12 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
     let dir_path = Path::new(path);
 
     // Find the module root
-    let Some(module_root) = find_cue_module_root(dir_path) else {
+    let Some(module_root) = env_file::find_cue_module_root(dir_path) else {
         return Vec::new();
     };
 
     // Discover all directories with env.cue files matching our package
-    let env_cue_dirs = discover_env_cue_directories(&module_root, package);
+    let env_cue_dirs = env_file::discover_env_cue_directories(&module_root, package);
     if env_cue_dirs.is_empty() {
         return Vec::new();
     }
@@ -59,7 +59,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
     let mut all_projects = Vec::new();
 
     for dir in env_cue_dirs {
-        let dir_rel_path = compute_relative_path(&dir, &module_root);
+        let dir_rel_path = cuenv_core::cue::discovery::compute_relative_path(&dir, &module_root);
         let options = ModuleEvalOptions {
             recursive: false,
             target_dir: Some(dir.to_string_lossy().to_string()),
@@ -97,13 +97,21 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
         return Vec::new();
     }
 
-    let module = ModuleEvaluation::from_raw(module_root.clone(), all_instances, all_projects, None);
+    let module = ModuleEvaluation::from_raw(
+        module_root.clone(),
+        all_instances,
+        cuenv_core::module::ModuleEvaluationOptions {
+            project_paths: all_projects,
+            references: None,
+        },
+    );
 
     // Calculate relative path from module root to target
     let Ok(target_path) = dir_path.canonicalize() else {
         return Vec::new();
     };
-    let relative_path = compute_relative_path(&target_path, &module_root);
+    let relative_path =
+        cuenv_core::cue::discovery::compute_relative_path(&target_path, &module_root);
 
     let Some(instance) = module.get(&PathBuf::from(&relative_path)) else {
         return Vec::new();
@@ -115,7 +123,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
 
     // Build task index with auto-detected workspace tasks injected
     // Best-effort: if injection fails, fall back to basic index
-    let task_index = prepare_task_index(&mut manifest, &target_path).or_else(|_| {
+    let task_index = list_builder::prepare_task_index(&mut manifest, &target_path).or_else(|_| {
         // Fall back to basic index without workspace injection
         cuenv_task_exec::TaskIndex::build(&manifest.tasks)
     });
@@ -146,8 +154,7 @@ pub fn task_completer() -> ArgValueCandidates {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::fs;
+    use std::{env, fs};
 
     #[test]
     fn test_complete_tasks() {
@@ -166,7 +173,8 @@ mod tests {
 
     #[test]
     fn test_find_cue_module_root_nonexistent() {
-        let result = find_cue_module_root(Path::new("/nonexistent/path/that/does/not/exist"));
+        let result =
+            env_file::find_cue_module_root(Path::new("/nonexistent/path/that/does/not/exist"));
         assert!(result.is_none());
     }
 
@@ -174,7 +182,7 @@ mod tests {
     fn test_find_cue_module_root_no_cue_mod() {
         // Use temp directory that definitely doesn't have cue.mod
         let temp = env::temp_dir();
-        let result = find_cue_module_root(&temp);
+        let result = env_file::find_cue_module_root(&temp);
         // May or may not find one depending on system, just verify no panic
         let _ = result;
     }
@@ -187,7 +195,7 @@ mod tests {
         fs::create_dir(&cue_mod).unwrap();
 
         // The module root should be found
-        let result = find_cue_module_root(temp.path());
+        let result = env_file::find_cue_module_root(temp.path());
         assert!(result.is_some());
         assert_eq!(result.unwrap(), temp.path().canonicalize().unwrap());
     }
@@ -203,7 +211,7 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
 
         // Should find root from subdirectory
-        let result = find_cue_module_root(&subdir);
+        let result = env_file::find_cue_module_root(&subdir);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), temp.path().canonicalize().unwrap());
     }

@@ -1,11 +1,11 @@
 //! Integration test for hooks with syntax errors
 
-use super::{ApprovalOutcome, TestResult, approve_config, create_test_dir, run_cuenv};
+use super::TestResult;
 use std::fs;
 
 #[test]
 fn test_hook_with_syntax_error_output() -> TestResult {
-    let temp_dir = create_test_dir("test.example/garbage")?;
+    let temp_dir = super::create_test_dir("test.example/garbage")?;
     let path = temp_dir.path();
 
     // Create env.cue with a hook that outputs a SYNTAX ERROR (unclosed quote)
@@ -29,12 +29,9 @@ hooks: {
 
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
 
-    match approve_config(path, cuenv_bin)? {
-        ApprovalOutcome::Approved => {}
-        ApprovalOutcome::SandboxError => return Ok(()),
-    }
+    super::approve_config(path, cuenv_bin)?;
 
-    let load = run_cuenv(path, cuenv_bin, &["env", "load"])?;
+    let load = super::run_cuenv(path, cuenv_bin, &["env", "load"])?;
     assert!(
         load.status.success(),
         "cuenv env load failed: stdout={}, stderr={}",
@@ -42,7 +39,7 @@ hooks: {
         String::from_utf8_lossy(&load.stderr)
     );
 
-    let status = run_cuenv(
+    let status = super::run_cuenv(
         path,
         cuenv_bin,
         &[
@@ -67,7 +64,7 @@ hooks: {
         "syntax-error hook should fail"
     );
 
-    let export = run_cuenv(path, cuenv_bin, &["export", "--shell", "bash"])?;
+    let export = super::run_cuenv(path, cuenv_bin, &["export", "--shell", "bash"])?;
     assert!(
         export.status.success(),
         "cuenv export failed: stdout={}, stderr={}",

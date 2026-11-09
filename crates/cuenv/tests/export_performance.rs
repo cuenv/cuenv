@@ -9,8 +9,7 @@
 use std::error::Error;
 use std::ffi::OsStr;
 use std::path::Path;
-use std::process::Command;
-use std::process::Output;
+use std::process::{Command, Output};
 use std::time::Instant;
 use tempfile::TempDir;
 

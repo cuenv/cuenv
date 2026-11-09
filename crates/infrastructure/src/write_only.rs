@@ -146,8 +146,16 @@ impl Walk<'_> {
 fn register_strings(value: &Value) {
     match untyped(value) {
         Value::String(value) => cuenv_events::register_secret(value.clone()),
-        Value::List(values) => values.iter().for_each(register_strings),
-        Value::Object(values) => values.values().for_each(register_strings),
+        Value::List(values) => {
+            for value in values {
+                register_strings(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                register_strings(value);
+            }
+        }
         _ => {}
     }
 }

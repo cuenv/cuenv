@@ -8,17 +8,16 @@ use std::path::{Path, PathBuf};
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
     ObjectStateFeatures, ObjectTenant, Plan, RestoreRequest, StateLock, StoredTenant, TenantKey,
-    UnrecordedStore, strip_control_characters,
+    UnrecordedStore,
 };
 
 use super::action::{ConfirmationPolicy, Identity, RenameSource, SourceEnvironment};
-use super::confirm::confirm_operation;
+
 use super::dispatch::CommandContext;
 use super::evaluation::{self, NameCheck, Needs, TargetRequest, TopLevel};
-use super::failure::failure;
-use super::guard::tenant_label;
+
 use super::holder;
-use super::invocation::quote_argument;
+
 use super::output::{Output, Pulled, Renamed};
 use crate::cli::CliError;
 
@@ -41,8 +40,9 @@ fn features<'context>(
 /// from trait reads so it works on every backend.
 pub(super) async fn pull(context: &CommandContext<'_>) -> Result<(), CliError> {
     let tenant = context.tenant;
-    let fail =
-        |error: cuenv_infrastructure::InfrastructureError| failure(&error, context.invocation);
+    let fail = |error: cuenv_infrastructure::InfrastructureError| {
+        super::failure::failure(&error, context.invocation)
+    };
     let records = context
         .interrupts
         .until_interrupted(context.store.list(tenant))
@@ -80,13 +80,14 @@ pub(super) async fn restore(
 ) -> Result<(), CliError> {
     let features = features(context, "state restore")?;
     let tenant = context.tenant;
-    let fail =
-        |error: cuenv_infrastructure::InfrastructureError| failure(&error, context.invocation);
+    let fail = |error: cuenv_infrastructure::InfrastructureError| {
+        super::failure::failure(&error, context.invocation)
+    };
     if request.unrecorded.has_pending(tenant).map_err(fail)? {
         return Err(CliError::config_with_help(
             format!(
                 "{} has unrecorded changes saved on this machine; refusing to restore",
-                tenant_label(tenant)
+                super::guard::tenant_label(tenant)
             ),
             format!(
                 "Record them first with `{}`: a restore rewinds the state they were saved \
@@ -112,7 +113,7 @@ pub(super) async fn restore(
         CliError::config_with_help(
             format!(
                 "{} has no history snapshot{}",
-                tenant_label(tenant),
+                super::guard::tenant_label(tenant),
                 request
                     .serial
                     .map_or_else(String::new, |serial| format!(" with serial {serial}"))
@@ -128,7 +129,7 @@ pub(super) async fn restore(
     })?;
     Output::restore_preview(tenant, entry, context.store.location(tenant).as_deref());
     if request.confirmation == ConfirmationPolicy::Prompt {
-        confirm_operation(
+        super::confirm::confirm_operation(
             context,
             "state restore",
             "Type 'yes' to write this version back as the current state:",
@@ -174,7 +175,7 @@ fn rename_source(
         }
         None => TenantKey::try_new(tenant.module_path(), project),
     }
-    .map_err(|error| failure(&error, context.invocation))?;
+    .map_err(|error| super::failure::failure(&error, context.invocation))?;
     Ok(ObjectTenant {
         package: source
             .package
@@ -189,6 +190,7 @@ fn rename_source(
 pub(super) async fn rename(
     context: &CommandContext<'_>,
     source: &RenameSource,
+    unrecorded: &UnrecordedStore,
 ) -> Result<(), CliError> {
     let features = features(context, "state rename")?;
     let from = rename_source(context, source)?;
@@ -200,18 +202,33 @@ pub(super) async fn rename(
         return Err(CliError::config_with_help(
             format!(
                 "nothing to rename: {} is this run's own identity",
-                tenant_label(context.tenant)
+                super::guard::tenant_label(context.tenant)
             ),
             "Name the identity the state is recorded under with --from-project, \
              --from-package, --from-env or --from-no-env.",
         ));
+    }
+    for tenant in [&from.tenant, &to.tenant] {
+        if unrecorded
+            .has_pending(tenant)
+            .map_err(|error| super::failure::failure(&error, context.invocation))?
+        {
+            return Err(CliError::config_with_help(
+                format!(
+                    "{} has unrecorded changes saved on this machine; refusing to rename",
+                    super::guard::tenant_label(tenant)
+                ),
+                "Record the saved changes for both identities before renaming. Select the \
+                 original project configuration and environment to run `state recover`.",
+            ));
+        }
     }
     let holder = holder::describe("state rename");
     context
         .interrupts
         .until_interrupted(features.rename(&from, &to, &holder))
         .await?
-        .map_err(|error| failure(&error, context.invocation))?;
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     context.output.renamed(&Renamed {
         from: &from,
         to: &to,
@@ -253,8 +270,9 @@ pub(super) async fn check_rename(
         return Ok(());
     };
     let tenant = context.tenant;
-    let fail =
-        |error: cuenv_infrastructure::InfrastructureError| failure(&error, context.invocation);
+    let fail = |error: cuenv_infrastructure::InfrastructureError| {
+        super::failure::failure(&error, context.invocation)
+    };
     // The common case, an existing tenant, costs one read.
     if features.size(tenant).await.map_err(fail)?.is_some() {
         return Ok(());
@@ -295,7 +313,7 @@ pub(super) async fn check_rename(
                 emit_stderr!(format!(
                     "note: probable rename: {}; `apply` will refuse to start {} empty",
                     describe_stored(stored),
-                    tenant_label(tenant)
+                    super::guard::tenant_label(tenant)
                 ));
             }
             Ok(())
@@ -315,13 +333,16 @@ fn describe_stored(stored: &StoredTenant) -> String {
         } else {
             ""
         },
-        strip_control_characters(&stored.project),
-        strip_control_characters(&stored.package),
+        cuenv_infrastructure::strip_control_characters(&stored.project),
+        cuenv_infrastructure::strip_control_characters(&stored.package),
         stored.environment.as_deref().map_or_else(
             || "without --env".to_string(),
-            |environment| format!("environment '{}'", strip_control_characters(environment))
+            |environment| format!(
+                "environment '{}'",
+                cuenv_infrastructure::strip_control_characters(environment)
+            )
         ),
-        strip_control_characters(&stored.location)
+        cuenv_infrastructure::strip_control_characters(&stored.location)
     )
 }
 
@@ -331,19 +352,24 @@ fn rename_refusal(context: &CommandContext<'_>, stored: &StoredTenant, count: us
     if stored.project != context.tenant.project() {
         flags.push(format!(
             "--from-project {}",
-            quote_argument(&stored.project)
+            super::invocation::quote_argument(&stored.project)
         ));
     }
     if stored.package != context.instance.package() {
         flags.push(format!(
             "--from-package {}",
-            quote_argument(&stored.package)
+            super::invocation::quote_argument(&stored.package)
         ));
     }
     if stored.environment.as_deref() != context.tenant.environment() {
         flags.push(stored.environment.as_deref().map_or_else(
             || "--from-no-env".to_string(),
-            |environment| format!("--from-env {}", quote_argument(environment)),
+            |environment| {
+                format!(
+                    "--from-env {}",
+                    super::invocation::quote_argument(environment)
+                )
+            },
         ));
     }
     let rename = context
@@ -358,7 +384,7 @@ fn rename_refusal(context: &CommandContext<'_>, stored: &StoredTenant, count: us
         format!(
             "refusing to start {} empty: this directory's state is recorded under an identity \
              the configuration no longer declares: {}{more}",
-            tenant_label(context.tenant),
+            super::guard::tenant_label(context.tenant),
             describe_stored(stored)
         ),
         format!(
@@ -412,8 +438,8 @@ async fn declared(
             format!(
                 "cannot tell whether package '{}' in this directory still declares project '{}': \
                  it does not evaluate: {}",
-                strip_control_characters(&stored.package),
-                strip_control_characters(&stored.project),
+                cuenv_infrastructure::strip_control_characters(&stored.package),
+                cuenv_infrastructure::strip_control_characters(&stored.project),
                 error.message()
             ),
             "Fix that package, or run once with --new-identity if this project is a separate \
@@ -496,7 +522,7 @@ pub(super) async fn refuse_full_state(
     let Some(size) = features
         .size(context.tenant)
         .await
-        .map_err(|error| failure(&error, context.invocation))?
+        .map_err(|error| super::failure::failure(&error, context.invocation))?
     else {
         return Ok(());
     };
@@ -507,7 +533,7 @@ pub(super) async fn refuse_full_state(
         format!(
             "the state of {} is {} bytes, within 10% of the {}-byte limit; refusing a run that \
              creates resources",
-            tenant_label(context.tenant),
+            super::guard::tenant_label(context.tenant),
             size.bytes,
             size.limit
         ),
@@ -525,14 +551,14 @@ pub(super) async fn refuse_unmigrated(context: &CommandContext<'_>) -> Result<()
     let awaiting = features
         .awaiting_migration(context.tenant)
         .await
-        .map_err(|error| failure(&error, context.invocation))?;
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     if !awaiting {
         return Ok(());
     }
     Err(CliError::config_with_help(
         format!(
             "the state of {} has not been migrated to {} yet",
-            tenant_label(context.tenant),
+            super::guard::tenant_label(context.tenant),
             context
                 .store
                 .location(context.tenant)
@@ -541,7 +567,9 @@ pub(super) async fn refuse_unmigrated(context: &CommandContext<'_>) -> Result<()
         format!(
             "Put the previous backend back in `infrastructure.state`, name this one in \
              `migrateStateTo`, and run `{}`.",
-            context.invocation.command("state migrate")
+            context
+                .invocation
+                .command("state migrate --confirm-maintenance --source-physical-identity <source-uuid> --target-physical-identity <target-uuid>")
         ),
     ))
 }

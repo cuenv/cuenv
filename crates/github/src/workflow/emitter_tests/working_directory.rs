@@ -1,10 +1,12 @@
-use super::*;
-
+use super::{
+    ArtifactAggregationJobOptions, CuenvSetup, GitHubActionsEmitter, MatrixJobOptions,
+    SimpleJobOptions, TaskExecution,
+};
 #[test]
 fn test_build_simple_job_without_working_directory() {
     let emitter = GitHubActionsEmitter::new();
-    let task = make_task("build", &["cargo", "build"]);
-    let ir = make_ir(vec![task.clone()]);
+    let task = super::make_task("build", &["cargo", "build"]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     // project_path = None means root project, no working-directory
     let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
@@ -24,8 +26,8 @@ fn test_build_simple_job_without_working_directory() {
 #[test]
 fn test_build_simple_job_with_nested_working_directory() {
     let emitter = GitHubActionsEmitter::new();
-    let task = make_task("deploy", &["./deploy.sh"]);
-    let ir = make_ir(vec![task.clone()]);
+    let task = super::make_task("deploy", &["./deploy.sh"]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     // Deeply nested project path
     let job = emitter.build_simple_job(
@@ -54,14 +56,14 @@ fn test_build_matrix_jobs_with_working_directory() {
     use cuenv_ci::ir::MatrixConfig;
 
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("release.build", &["cargo", "build"]);
+    let mut task = super::make_task("release.build", &["cargo", "build"]);
     task.matrix = Some(MatrixConfig {
         dimensions: [("arch".to_string(), vec!["linux-x64".to_string()])]
             .into_iter()
             .collect(),
         ..Default::default()
     });
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let jobs = emitter.build_matrix_jobs(
         &task,
@@ -96,14 +98,14 @@ fn test_build_matrix_jobs_without_working_directory() {
     use cuenv_ci::ir::MatrixConfig;
 
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("build", &["cargo", "build"]);
+    let mut task = super::make_task("build", &["cargo", "build"]);
     task.matrix = Some(MatrixConfig {
         dimensions: [("arch".to_string(), vec!["linux-x64".to_string()])]
             .into_iter()
             .collect(),
         ..Default::default()
     });
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     // project_path = None
     let jobs = emitter.build_matrix_jobs(
@@ -137,13 +139,13 @@ fn test_build_artifact_aggregation_job_with_working_directory() {
     use cuenv_ci::ir::ArtifactDownload;
 
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("publish", &["./publish.sh"]);
+    let mut task = super::make_task("publish", &["./publish.sh"]);
     task.artifact_downloads = vec![ArtifactDownload {
         name: "build".to_string(),
         path: "./out".to_string(),
         filter: String::new(),
     }];
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let previous_jobs = vec!["build-linux-x64".to_string()];
     let job = emitter.build_artifact_aggregation_job(
@@ -174,13 +176,13 @@ fn test_build_artifact_aggregation_job_without_working_directory() {
     use cuenv_ci::ir::ArtifactDownload;
 
     let emitter = GitHubActionsEmitter::new();
-    let mut task = make_task("publish", &["./publish.sh"]);
+    let mut task = super::make_task("publish", &["./publish.sh"]);
     task.artifact_downloads = vec![ArtifactDownload {
         name: "build".to_string(),
         path: "./out".to_string(),
         filter: String::new(),
     }];
-    let ir = make_ir(vec![task.clone()]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let previous_jobs = vec!["build-linux-x64".to_string()];
     let job = emitter.build_artifact_aggregation_job(
@@ -209,8 +211,8 @@ fn test_build_artifact_aggregation_job_without_working_directory() {
 #[test]
 fn test_working_directory_yaml_serialization() {
     let emitter = GitHubActionsEmitter::new();
-    let task = make_task("test", &["cargo", "test"]);
-    let ir = make_ir(vec![task.clone()]);
+    let task = super::make_task("test", &["cargo", "test"]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let job = emitter.build_simple_job(
         &task,
@@ -229,8 +231,8 @@ fn test_working_directory_yaml_serialization() {
 #[test]
 fn test_working_directory_not_in_yaml_when_none() {
     let emitter = GitHubActionsEmitter::new();
-    let task = make_task("test", &["cargo", "test"]);
-    let ir = make_ir(vec![task.clone()]);
+    let task = super::make_task("test", &["cargo", "test"]);
+    let ir = super::make_ir(vec![task.clone()]);
 
     let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
 

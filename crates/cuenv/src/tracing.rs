@@ -6,7 +6,9 @@
 use cuenv_events::{CuenvEventLayer, EventBus, EventReceiver, LogFormat, RedactingStderr};
 use std::sync::OnceLock;
 pub use tracing::Level;
-use tracing_subscriber::{filter::EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::filter::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use uuid::Uuid;
 
 /// Global `EventBus` for the application.

@@ -301,8 +301,8 @@ pub(super) enum HoverTarget {
 
 /// The tabs as this draw has them.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct TabPlaces<'a> {
-    pub(super) tabs: &'a [TabId],
+pub(super) struct TabPlaces<'tabs> {
+    pub(super) tabs: &'tabs [TabId],
     pub(super) active: Option<TabId>,
 }
 

@@ -19,14 +19,12 @@ use cuenv_infrastructure::Cancellation;
 use cuenv_infrastructure::cue_types::{
     self, GENERATED_HEADER, GeneratedTypes, PROVIDER_FILE_NAME, ProviderRelease,
 };
-use cuenv_infrastructure::registry::{
-    ProviderInstaller, ProviderSource, current_platform, default_cache_directory,
-};
+use cuenv_infrastructure::registry::{ProviderInstaller, ProviderSource};
 
 use cuenv_ignore::{FileStatus, IgnoreFiles, IgnoreSection};
 
 use crate::cli::CliError;
-use crate::commands::env_file::find_cue_module_root;
+
 use crate::commands::sync::SyncMode;
 
 /// Name of the `.gitignore` section listing generated provider directories.
@@ -42,7 +40,7 @@ pub struct Module {
 impl Module {
     /// The CUE module containing `path` (the nearest `cue.mod` above it).
     pub fn containing(path: &Path) -> Result<Self, CliError> {
-        find_cue_module_root(path)
+        crate::commands::env_file::find_cue_module_root(path)
             .map(|root| Self { root })
             .ok_or_else(|| {
                 CliError::config_with_help(
@@ -83,15 +81,17 @@ impl Generation<'_> {
     /// Install the release (requiring the pinned archive for this platform),
     /// read its schema and render the types.
     pub async fn run(&self) -> Result<Generated, CliError> {
-        let platform = current_platform().map_err(|error| infrastructure_error(&error))?;
+        let platform = cuenv_infrastructure::registry::current_platform()
+            .map_err(|error| infrastructure_error(&error))?;
         let pin = self.platforms.get(&platform.to_string()).ok_or_else(|| {
             CliError::config(format!(
                 "{} {} is not published for {platform}",
                 self.source, self.version
             ))
         })?;
-        let installer = ProviderInstaller::try_new(default_cache_directory())
-            .map_err(|error| infrastructure_error(&error))?;
+        let installer =
+            ProviderInstaller::try_new(cuenv_infrastructure::registry::default_cache_directory())
+                .map_err(|error| infrastructure_error(&error))?;
         let binary = installer
             .ensure_pinned(self.source, self.version, pin)
             .await
@@ -230,8 +230,12 @@ pub fn sync_gitignore(
     }
     let result = IgnoreFiles::builder()
         .directory(&module.root)
-        .require_git_repo(false)
-        .dry_run(mode != &SyncMode::Write)
+        .require_git_repo(cuenv_ignore::GitRequirement::Optional)
+        .dry_run(if mode == &SyncMode::Write {
+            cuenv_ignore::WriteMode::Write
+        } else {
+            cuenv_ignore::WriteMode::DryRun
+        })
         .section(IgnoreSection::new(GITIGNORE_SECTION_NAME).patterns(patterns.iter().cloned()))
         .generate()
         .map_err(|error| CliError::config(format!("cannot update .gitignore: {error}")))?;

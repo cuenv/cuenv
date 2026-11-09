@@ -7,10 +7,7 @@
 //! - Automatic fingerprinting for cache key inclusion
 //! - Secure memory handling via [`SecureSecret`]
 
-use crate::{
-    BatchSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec, compute_secret_fingerprint,
-};
-use futures::future::try_join_all;
+use crate::{BatchSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec};
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 
@@ -44,27 +41,31 @@ impl BatchConfig {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use cuenv_secrets::{BatchResolver, BatchConfig, SaltConfig};
+/// ```
+/// use cuenv_secrets::{BatchResolver, BatchConfig, EnvSecretResolver, SaltConfig, SecretSpec};
+/// use std::collections::HashMap;
 ///
-/// let config = BatchConfig::new(SaltConfig::new(Some("my-salt".to_string())));
+/// let config = BatchConfig::new(SaltConfig::new(None));
 /// let mut resolver = BatchResolver::new(config);
 ///
 /// // Register resolvers
+/// let env_resolver = EnvSecretResolver::new();
 /// resolver.add_resolver(&env_resolver);
-/// resolver.add_resolver(&aws_resolver);
 ///
 /// // Resolve all secrets (groups by provider for optimal batch handling)
-/// let secrets = resolver.resolve(&secret_specs).await?;
+/// let specs = HashMap::from([("tool-path".to_string(), (SecretSpec::new("PATH"), "env"))]);
+/// let secrets = tokio_test::block_on(resolver.resolve_all(&specs))?;
+/// assert!(secrets.get("tool-path").is_some());
+/// # Ok::<(), cuenv_secrets::SecretError>(())
 /// ```
-pub struct BatchResolver<'a> {
+pub struct BatchResolver<'batch_resolver> {
     /// Provider name -> resolver
-    resolvers: HashMap<&'static str, &'a dyn SecretResolver>,
+    resolvers: HashMap<&'static str, &'batch_resolver dyn SecretResolver>,
     /// Configuration for batch resolution
     config: BatchConfig,
 }
 
-impl<'a> BatchResolver<'a> {
+impl<'batch_resolver> BatchResolver<'batch_resolver> {
     /// Create a new batch resolver with the given configuration.
     #[must_use]
     pub fn new(config: BatchConfig) -> Self {
@@ -78,7 +79,7 @@ impl<'a> BatchResolver<'a> {
     ///
     /// The resolver's [`provider_name`](SecretResolver::provider_name) is used
     /// as the key for grouping secrets.
-    pub fn add_resolver(&mut self, resolver: &'a dyn SecretResolver) {
+    pub fn add_resolver(&mut self, resolver: &'batch_resolver dyn SecretResolver) {
         self.resolvers.insert(resolver.provider_name(), resolver);
     }
 
@@ -136,7 +137,7 @@ impl<'a> BatchResolver<'a> {
             })
             .collect();
 
-        let provider_results = try_join_all(provider_futures).await?;
+        let provider_results = futures::future::try_join_all(provider_futures).await?;
 
         // Merge results and compute fingerprints
         let mut batch = BatchSecrets::with_capacity(secrets.len());
@@ -155,7 +156,7 @@ impl<'a> BatchResolver<'a> {
                             "Secret is too short for safe cache key inclusion"
                         );
                     }
-                    Some(compute_secret_fingerprint(
+                    Some(crate::compute_secret_fingerprint(
                         &name,
                         secure_value.expose(),
                         self.config.salt_config.write_salt().unwrap_or(""),
@@ -189,13 +190,17 @@ impl<'a> BatchResolver<'a> {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use cuenv_secrets::{resolve_batch, SaltConfig, EnvSecretResolver};
+/// ```
+/// use cuenv_secrets::{SaltConfig, EnvSecretResolver, SecretSpec};
+/// use std::collections::HashMap;
 ///
 /// let resolver = EnvSecretResolver::new();
-/// let salt = SaltConfig::new(Some("my-salt".to_string()));
+/// let salt = SaltConfig::new(None);
 ///
-/// let secrets = resolve_batch(&resolver, &specs, &salt).await?;
+/// let specs = HashMap::from([("tool-path".to_string(), SecretSpec::new("PATH"))]);
+/// let secrets = tokio_test::block_on(cuenv_secrets::resolve_batch(&resolver, &specs, &salt))?;
+/// assert!(secrets.get("tool-path").is_some());
+/// # Ok::<(), cuenv_secrets::SecretError>(())
 /// ```
 pub async fn resolve_batch<R, S>(
     resolver: &R,
@@ -234,7 +239,7 @@ where
                     "Secret is too short for safe cache key inclusion"
                 );
             }
-            Some(compute_secret_fingerprint(
+            Some(crate::compute_secret_fingerprint(
                 &name,
                 secure_value.expose(),
                 salt_config.write_salt().unwrap_or(""),

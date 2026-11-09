@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use cuenv_ci::context::CIContext;
 use cuenv_ci::provider::CIProvider;
-use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus, markdown::generate_summary};
+use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus, markdown};
 use cuenv_core::Result;
 use octocrab::Octocrab;
 use std::path::PathBuf;
@@ -463,7 +463,7 @@ impl CIProvider for GitHubCIProvider {
             }
         };
 
-        let summary = generate_summary(report);
+        let summary = markdown::generate_summary(report);
 
         octocrab
             .checks(&self.owner, &self.repo)
@@ -496,7 +496,7 @@ impl CIProvider for GitHubCIProvider {
         };
 
         let octocrab = self.octocrab()?;
-        let summary = generate_summary(report);
+        let summary = markdown::generate_summary(report);
 
         let comment = octocrab
             .issues(&self.owner, &self.repo)

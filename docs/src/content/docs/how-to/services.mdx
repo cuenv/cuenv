@@ -128,6 +128,12 @@ cuenv down --path examples/services-readiness --package examples
 
 `cuenv down` signals the running supervisor to shut down gracefully. Omit service names to stop the whole session; name services to stop just those. Pressing `Ctrl+C` in the `cuenv up` terminal does the same thing for the entire session.
 
+On Unix, a persisted controller PID of `0` or one that cannot be represented as
+a positive platform PID is corrupt session metadata. A whole-session `cuenv down`
+reports the error without signalling, and `cuenv up` leaves the session directory
+in place for inspection.
+A confirmed stale controller can still be replaced by a new session.
+
 ## Readiness probes
 
 A service is not "up" until it is *ready*. The `readiness` block tells cuenv how to decide. There is one probe per service in v1, chosen by `kind`. The probe runs repeatedly until it succeeds or the timeout elapses.

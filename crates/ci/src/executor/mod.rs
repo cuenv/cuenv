@@ -2,11 +2,15 @@
 //!
 //! Orchestrates CI pipeline execution with provider integration.
 
+/// Configuration for CI task execution.
 pub mod config;
 mod hook_env;
 mod orchestrator;
+mod pipeline_result;
 mod reporting;
+/// Execute individual IR tasks and capture their output.
 pub mod runner;
+/// Resolve and fingerprint secrets for CI tasks.
 pub mod secrets;
 mod task_env;
 mod task_execution;
@@ -14,21 +18,11 @@ mod tools;
 
 pub use config::CIExecutorConfig;
 pub use orchestrator::{RunCiRequest, TaskSelection, run_ci};
+pub use pipeline_result::PipelineResult;
 pub use runner::TaskOutput;
 pub use secrets::{EnvSecretResolver, MockSecretResolver, SaltConfig, SecretResolver};
 
 pub use crate::error::ExecutorError;
-
-/// Result of pipeline execution
-#[derive(Debug)]
-pub struct PipelineResult {
-    /// Whether all tasks succeeded
-    pub success: bool,
-    /// Results for each task
-    pub tasks: Vec<TaskOutput>,
-    /// Total execution time in milliseconds
-    pub duration_ms: u64,
-}
 
 #[cfg(test)]
 mod tests {

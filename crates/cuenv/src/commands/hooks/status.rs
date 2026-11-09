@@ -9,6 +9,7 @@ pub(super) fn format_status(state: &HookExecutionState, format: StatusFormat) ->
             ExecutionStatus::Running => {
                 format!("[{}/{}]", state.completed_hooks, state.total_hooks)
             }
+            ExecutionStatus::Cancelling => "[cancelling]".to_string(),
             ExecutionStatus::Completed => "[OK]".to_string(),
             ExecutionStatus::Failed => "[ERR]".to_string(),
             ExecutionStatus::Cancelled => "[X]".to_string(),
@@ -37,6 +38,7 @@ fn format_starship_status(state: &HookExecutionState) -> String {
                 format!("🔄 {}/{}", state.completed_hooks, state.total_hooks)
             }
         }
+        ExecutionStatus::Cancelling => "🚫 cancelling".to_string(),
         ExecutionStatus::Completed => {
             // Only show if within display timeout (ensures at least one display)
             if state.should_display_completed() {

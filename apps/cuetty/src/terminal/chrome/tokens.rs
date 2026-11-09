@@ -5,49 +5,49 @@
 //! in a single place.
 
 use crate::integrations::cuenv::TitlebarVisibility;
-use crate::terminal::color::{blend, is_light, with_minimum_contrast};
+use crate::terminal::color;
 use crate::terminal::config::MinimumContrast;
 use crate::terminal::model::Rgb;
-use crate::terminal::presentation::{TerminalTheme, gpui_rgb};
-use gpui::{
-    BoxShadow, Decorations, Pixels, Point, Rgba, Styled, TextSystem, font, hsla, point, px,
-};
+use crate::terminal::presentation;
+use crate::terminal::presentation::TerminalTheme;
+use gpui::{BoxShadow, Decorations, Pixels, Point, Rgba, Styled, TextSystem};
 use std::sync::OnceLock;
 
 /// Spacing scale for padding, gaps, and offsets.
 pub(super) mod space {
-    use gpui::{Pixels, px};
+    use gpui::Pixels;
 
-    pub(in crate::terminal::chrome) const XXS: Pixels = px(2.0);
-    pub(in crate::terminal::chrome) const XS: Pixels = px(4.0);
-    pub(in crate::terminal::chrome) const SM: Pixels = px(6.0);
-    pub(in crate::terminal::chrome) const MD: Pixels = px(8.0);
-    pub(in crate::terminal::chrome) const LG: Pixels = px(12.0);
-    pub(in crate::terminal::chrome) const XL: Pixels = px(16.0);
+    pub(in crate::terminal::chrome) const XXS: Pixels = gpui::px(2.0);
+    pub(in crate::terminal::chrome) const XS: Pixels = gpui::px(4.0);
+    pub(in crate::terminal::chrome) const SM: Pixels = gpui::px(6.0);
+    pub(in crate::terminal::chrome) const MD: Pixels = gpui::px(8.0);
+    pub(in crate::terminal::chrome) const LG: Pixels = gpui::px(12.0);
+    pub(in crate::terminal::chrome) const XL: Pixels = gpui::px(16.0);
 }
 
 /// Corner radii: one for controls and rows, one for floating panels.
 pub(super) mod radius {
-    use gpui::{Pixels, px};
+    use gpui::Pixels;
 
-    pub(in crate::terminal::chrome) const CONTROL: Pixels = px(8.0);
-    pub(in crate::terminal::chrome) const PANEL: Pixels = px(12.0);
+    pub(in crate::terminal::chrome) const CONTROL: Pixels = gpui::px(8.0);
+    pub(in crate::terminal::chrome) const PANEL: Pixels = gpui::px(12.0);
 }
 
 /// Type scale for chrome text. Nothing smaller than `CAPTION` stays legible
 /// at normal viewing distance, so there is no smaller step.
 pub(super) mod text {
-    use gpui::{DefiniteLength, FontWeight, Pixels, px, relative};
+    use gpui::{DefiniteLength, FontWeight, Pixels};
 
-    pub(in crate::terminal::chrome) const CAPTION: Pixels = px(11.0);
-    pub(in crate::terminal::chrome) const LABEL: Pixels = px(12.0);
-    pub(in crate::terminal::chrome) const BODY: Pixels = px(13.0);
-    pub(in crate::terminal::chrome) const TITLE: Pixels = px(14.0);
+    pub(in crate::terminal::chrome) const CAPTION: Pixels = gpui::px(11.0);
+    pub(in crate::terminal::chrome) const LABEL: Pixels = gpui::px(12.0);
+    pub(in crate::terminal::chrome) const BODY: Pixels = gpui::px(13.0);
+    pub(in crate::terminal::chrome) const TITLE: Pixels = gpui::px(14.0);
     /// Line height of panel text as a multiple of its size. GPUI otherwise
     /// inherits phi (1.618), which is loose for chrome and throws off every
     /// height budget.
     pub(in crate::terminal::chrome) const LINE_HEIGHT_RATIO: f32 = 1.4;
-    pub(in crate::terminal::chrome) const LINE_HEIGHT: DefiniteLength = relative(LINE_HEIGHT_RATIO);
+    pub(in crate::terminal::chrome) const LINE_HEIGHT: DefiniteLength =
+        gpui::relative(LINE_HEIGHT_RATIO);
     /// Characters of `LABEL` text that sit comfortably on one tooltip line.
     pub(in crate::terminal::chrome) const TOOLTIP_LINE_CHARS: usize = 56;
     /// A tooltip is a glance: longer text is cut here, counting wrapped and
@@ -107,9 +107,9 @@ pub(in crate::terminal) fn resolve_ui_font(text_system: &TextSystem) {
     } else {
         &[]
     };
-    let fallback = text_system.resolve_font(&font(MISSING_FONT));
+    let fallback = text_system.resolve_font(&gpui::font(MISSING_FONT));
     let family = first_available_family(candidates, |family| {
-        text_system.resolve_font(&font(family.to_string())) != fallback
+        text_system.resolve_font(&gpui::font(family.to_string())) != fallback
     });
     let _ = UI_FONT_FAMILY.set(family);
 }
@@ -121,66 +121,66 @@ pub(super) fn ui_font_family() -> &'static str {
 
 /// Border widths.
 pub(super) mod border {
-    use gpui::{Pixels, px};
+    use gpui::Pixels;
 
-    pub(in crate::terminal::chrome) const HAIRLINE: Pixels = px(1.0);
+    pub(in crate::terminal::chrome) const HAIRLINE: Pixels = gpui::px(1.0);
 }
 
 /// Fixed dimensions of chrome regions and controls.
 pub(super) mod size {
-    use gpui::{Pixels, px};
+    use gpui::Pixels;
 
-    pub(in crate::terminal::chrome) const SIDEBAR_EXPANDED_WIDTH: Pixels = px(200.0);
-    pub(in crate::terminal::chrome) const SIDEBAR_COLLAPSED_WIDTH: Pixels = px(56.0);
-    pub(in crate::terminal::chrome) const TITLEBAR_HEIGHT: Pixels = px(34.0);
+    pub(in crate::terminal::chrome) const SIDEBAR_EXPANDED_WIDTH: Pixels = gpui::px(200.0);
+    pub(in crate::terminal::chrome) const SIDEBAR_COLLAPSED_WIDTH: Pixels = gpui::px(56.0);
+    pub(in crate::terminal::chrome) const TITLEBAR_HEIGHT: Pixels = gpui::px(34.0);
     /// Height of the native macOS window controls.
-    pub(in crate::terminal::chrome) const WINDOW_CONTROLS_HEIGHT: Pixels = px(16.0);
+    pub(in crate::terminal::chrome) const WINDOW_CONTROLS_HEIGHT: Pixels = gpui::px(16.0);
     /// Horizontal room reserved for native window controls.
-    pub(in crate::terminal::chrome) const WINDOW_CONTROLS_WIDTH: Pixels = px(82.0);
-    pub(in crate::terminal::chrome) const CONTROL_HEIGHT: Pixels = px(30.0);
-    pub(in crate::terminal::chrome) const CONTROL_WIDTH: Pixels = px(34.0);
-    pub(in crate::terminal::chrome) const ICON: Pixels = px(16.0);
-    pub(in crate::terminal::chrome) const TAB_ROW_HEIGHT: Pixels = px(32.0);
+    pub(in crate::terminal::chrome) const WINDOW_CONTROLS_WIDTH: Pixels = gpui::px(82.0);
+    pub(in crate::terminal::chrome) const CONTROL_HEIGHT: Pixels = gpui::px(30.0);
+    pub(in crate::terminal::chrome) const CONTROL_WIDTH: Pixels = gpui::px(34.0);
+    pub(in crate::terminal::chrome) const ICON: Pixels = gpui::px(16.0);
+    pub(in crate::terminal::chrome) const TAB_ROW_HEIGHT: Pixels = gpui::px(32.0);
     /// A tab's row in the list, with room for a second line beneath the name, or for an
     /// indicator beneath a collapsed tab's mark. It has this height with or without
     /// them and in both sidebar modes, so neither arriving nor collapsing shifts the list.
-    pub(in crate::terminal::chrome) const TAB_ROW_TWO_LINE_HEIGHT: Pixels = px(44.0);
+    pub(in crate::terminal::chrome) const TAB_ROW_TWO_LINE_HEIGHT: Pixels = gpui::px(44.0);
     /// The most the project panel takes from the tab list, past which it scrolls.
-    pub(in crate::terminal::chrome) const PROJECT_PANEL_MAX_HEIGHT: Pixels = px(240.0);
+    pub(in crate::terminal::chrome) const PROJECT_PANEL_MAX_HEIGHT: Pixels = gpui::px(240.0);
     /// What the tab list keeps for itself when the window is too short for both: two
     /// rows, so the project panel gives way first.
-    pub(in crate::terminal::chrome) const TAB_LIST_MIN_HEIGHT: Pixels = px(112.0);
+    pub(in crate::terminal::chrome) const TAB_LIST_MIN_HEIGHT: Pixels = gpui::px(112.0);
     /// The line a collapsed tab's mark sits on, in the middle of its row.
-    pub(in crate::terminal::chrome) const TAB_MARK_HEIGHT: Pixels = px(16.0);
-    pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = px(3.0);
-    pub(in crate::terminal::chrome) const TAB_MARKER_HEIGHT: Pixels = px(16.0);
-    pub(in crate::terminal::chrome) const PALETTE_WIDTH: Pixels = px(520.0);
-    pub(in crate::terminal::chrome) const PALETTE_ROW_HEIGHT: Pixels = px(44.0);
-    pub(in crate::terminal::chrome) const PALETTE_TOP_OFFSET: Pixels = px(54.0);
-    pub(in crate::terminal::chrome) const PALETTE_FIELD_HEIGHT: Pixels = px(38.0);
-    pub(in crate::terminal::chrome) const PALETTE_KIND_WIDTH: Pixels = px(64.0);
-    pub(in crate::terminal::chrome) const CARET_WIDTH: Pixels = px(2.0);
-    pub(in crate::terminal::chrome) const CARET_HEIGHT: Pixels = px(16.0);
-    pub(in crate::terminal::chrome) const NOTICE_MARK: Pixels = px(6.0);
+    pub(in crate::terminal::chrome) const TAB_MARK_HEIGHT: Pixels = gpui::px(16.0);
+    pub(in crate::terminal::chrome) const TAB_MARKER_WIDTH: Pixels = gpui::px(3.0);
+    pub(in crate::terminal::chrome) const TAB_MARKER_HEIGHT: Pixels = gpui::px(16.0);
+    pub(in crate::terminal::chrome) const PALETTE_WIDTH: Pixels = gpui::px(520.0);
+    pub(in crate::terminal::chrome) const PALETTE_ROW_HEIGHT: Pixels = gpui::px(44.0);
+    pub(in crate::terminal::chrome) const PALETTE_TOP_OFFSET: Pixels = gpui::px(54.0);
+    pub(in crate::terminal::chrome) const PALETTE_FIELD_HEIGHT: Pixels = gpui::px(38.0);
+    pub(in crate::terminal::chrome) const PALETTE_KIND_WIDTH: Pixels = gpui::px(64.0);
+    pub(in crate::terminal::chrome) const CARET_WIDTH: Pixels = gpui::px(2.0);
+    pub(in crate::terminal::chrome) const CARET_HEIGHT: Pixels = gpui::px(16.0);
+    pub(in crate::terminal::chrome) const NOTICE_MARK: Pixels = gpui::px(6.0);
     /// The strip below an exited shell's output.
-    pub(in crate::terminal::chrome) const EXIT_NOTICE_HEIGHT: Pixels = px(28.0);
+    pub(in crate::terminal::chrome) const EXIT_NOTICE_HEIGHT: Pixels = gpui::px(28.0);
     /// A tab's status indicator, small enough to sit beside its name or its mark.
-    pub(in crate::terminal::chrome) const STATUS_ICON: Pixels = px(12.0);
+    pub(in crate::terminal::chrome) const STATUS_ICON: Pixels = gpui::px(12.0);
     /// What a tab keeps free for its close button and its indicator, which share it,
     /// so neither appearing moves the name.
-    pub(in crate::terminal::chrome) const TAB_ACTION: Pixels = px(20.0);
-    pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = px(360.0);
-    pub(in crate::terminal::chrome) const SEARCH_BAR_WIDTH: Pixels = px(360.0);
-    pub(in crate::terminal::chrome) const SEARCH_BUTTON: Pixels = px(26.0);
+    pub(in crate::terminal::chrome) const TAB_ACTION: Pixels = gpui::px(20.0);
+    pub(in crate::terminal::chrome) const TOOLTIP_WRAP_WIDTH: Pixels = gpui::px(360.0);
+    pub(in crate::terminal::chrome) const SEARCH_BAR_WIDTH: Pixels = gpui::px(360.0);
+    pub(in crate::terminal::chrome) const SEARCH_BUTTON: Pixels = gpui::px(26.0);
     /// How much of the terminal's edge answers to the pointer. Within its default padding,
     /// so a selection can still start in the last column.
-    pub(in crate::terminal::chrome) const SCROLLBAR_HIT_WIDTH: Pixels = px(12.0);
-    pub(in crate::terminal::chrome) const SCROLLBAR_THUMB_WIDTH: Pixels = px(5.0);
+    pub(in crate::terminal::chrome) const SCROLLBAR_HIT_WIDTH: Pixels = gpui::px(12.0);
+    pub(in crate::terminal::chrome) const SCROLLBAR_THUMB_WIDTH: Pixels = gpui::px(5.0);
     /// The thumb's gap from the terminal's edge.
-    pub(in crate::terminal::chrome) const SCROLLBAR_INSET: Pixels = px(3.0);
-    pub(in crate::terminal::chrome) const SCROLLBAR_MIN_THUMB: Pixels = px(28.0);
+    pub(in crate::terminal::chrome) const SCROLLBAR_INSET: Pixels = gpui::px(3.0);
+    pub(in crate::terminal::chrome) const SCROLLBAR_MIN_THUMB: Pixels = gpui::px(28.0);
     /// The measure of the message a tab shows in place of its terminal.
-    pub(in crate::terminal::chrome) const SESSION_STATE_WIDTH: Pixels = px(440.0);
+    pub(in crate::terminal::chrome) const SESSION_STATE_WIDTH: Pixels = gpui::px(440.0);
 }
 
 /// How far the terminal's colours move towards its background while its window does
@@ -207,16 +207,16 @@ const LIGHT_THEME_SHADOW_STRENGTH: f32 = 0.5;
 impl Elevation {
     fn shadows(self, strength: f32) -> Vec<BoxShadow> {
         let contact = |alpha: f32| BoxShadow {
-            color: hsla(0.0, 0.0, 0.0, alpha * strength),
-            offset: point(px(0.0), px(2.0)),
-            blur_radius: px(6.0),
-            spread_radius: px(-2.0),
+            color: gpui::hsla(0.0, 0.0, 0.0, alpha * strength),
+            offset: gpui::point(gpui::px(0.0), gpui::px(2.0)),
+            blur_radius: gpui::px(6.0),
+            spread_radius: gpui::px(-2.0),
         };
         let cast = |alpha: f32, offset, blur| BoxShadow {
-            color: hsla(0.0, 0.0, 0.0, alpha * strength),
-            offset: point(px(0.0), px(offset)),
-            blur_radius: px(blur),
-            spread_radius: px(-4.0),
+            color: gpui::hsla(0.0, 0.0, 0.0, alpha * strength),
+            offset: gpui::point(gpui::px(0.0), gpui::px(offset)),
+            blur_radius: gpui::px(blur),
+            spread_radius: gpui::px(-4.0),
         };
         match self {
             Self::Raised => vec![contact(0.24)],
@@ -265,7 +265,7 @@ pub(super) fn tooltip_max_height() -> Pixels {
 /// Where native window controls sit: centred in the title strip, so they follow
 /// its height.
 pub(in crate::terminal) fn traffic_light_position() -> Point<Pixels> {
-    point(
+    gpui::point(
         space::LG,
         (size::TITLEBAR_HEIGHT - size::WINDOW_CONTROLS_HEIGHT) * 0.5,
     )
@@ -320,7 +320,7 @@ pub(super) fn terminal_top_inset(
 }
 
 pub(super) fn opaque(color: Rgb) -> Rgba {
-    gpui::rgb(gpui_rgb(color))
+    gpui::rgb(presentation::gpui_rgb(color))
 }
 
 /// The window's one material: the terminal background and structural chrome
@@ -428,7 +428,7 @@ impl ChromeColors {
             // page stands in for whatever is behind the window's one material.
             [
                 theme.surface,
-                blend(theme.surface, theme.raised_surface, state.a),
+                color::blend(theme.surface, theme.raised_surface, state.a),
             ]
         };
         let mark = |color| mark_on(mark_grounds, color);
@@ -454,7 +454,7 @@ impl ChromeColors {
             scrollbar_active: opaque(theme.muted_text),
             accent: mark(theme.accent),
             danger: mark(theme.ansi[1]),
-            shadow_strength: if is_light(theme.surface) {
+            shadow_strength: if crate::terminal::color::is_light(theme.surface) {
                 LIGHT_THEME_SHADOW_STRENGTH
             } else {
                 1.0
@@ -475,14 +475,13 @@ impl ChromeColors {
 /// side of a mark, so moving for one never undoes the other.
 fn mark_on(grounds: [Rgb; 2], color: Rgb) -> Rgba {
     opaque(grounds.into_iter().fold(color, |color, ground| {
-        with_minimum_contrast(color, ground, MinimumContrast::NON_TEXT)
+        crate::terminal::color::with_minimum_contrast(color, ground, MinimumContrast::NON_TEXT)
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::color::contrast_ratio;
     use crate::terminal::config::{TerminalConfig, ThemeName};
 
     #[test]
@@ -637,7 +636,7 @@ mod tests {
                     ("sidebar", theme.title_surface),
                     ("active row", ink_of(colors.state)),
                 ] {
-                    let contrast = contrast_ratio(ink, ground);
+                    let contrast = color::contrast_ratio(ink, ground);
                     assert!(
                         contrast >= 3.0,
                         "{outsider:?} on {} {fill}: {contrast}",
@@ -657,9 +656,9 @@ mod tests {
             });
             let colors = ChromeColors::from_theme(&theme);
             let ink = ink_of(colors.mark(Rgb(0x66, 0x66, 0x66)));
-            let row = blend(theme.surface, theme.raised_surface, colors.state.a);
+            let row = color::blend(theme.surface, theme.raised_surface, colors.state.a);
             for ground in [theme.surface, row] {
-                let contrast = contrast_ratio(ink, ground);
+                let contrast = color::contrast_ratio(ink, ground);
                 assert!(contrast >= 3.0, "on {}: {contrast}", name.id());
             }
         }

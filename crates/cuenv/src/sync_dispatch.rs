@@ -1,4 +1,4 @@
-use super::{create_executor, warn_for_schema_cli_mismatch};
+use crate::app;
 use cuenv::cli::{self, CliError, OkEnvelope, OutputFormat};
 use cuenv::commands::{self, Command};
 use tracing::instrument;
@@ -51,7 +51,7 @@ struct ExportSyncRequest {
 }
 
 pub fn execute_sync_command(command: Command, json_format: OutputFormat) -> Result<(), CliError> {
-    warn_for_schema_cli_mismatch(&command)?;
+    app::warn_for_schema_cli_mismatch(&command)?;
 
     match command {
         Command::Version { format: _ } => {
@@ -71,6 +71,19 @@ pub fn execute_sync_command(command: Command, json_format: OutputFormat) -> Resu
             json_format,
         ),
         Command::ShellInit { shell } => execute_shell_init_command(shell, json_format),
+        Command::ShellSession { current } => print_enveloped_or_text(
+            JsonEnvelopeField::Result,
+            &if current {
+                commands::hooks::required_hook_session().map_err(CliError::from)?
+            } else {
+                uuid::Uuid::new_v4()
+            }
+            .to_string(),
+            json_format,
+        ),
+        Command::ShellRefresh => Err(CliError::other(
+            "Shell refresh must run through initialized shell integration",
+        )),
         command @ (Command::EnvStatus { wait: false, .. }
         | Command::EnvPrint { .. }
         | Command::EnvList { .. }) => execute_env_command(command, json_format),
@@ -224,9 +237,16 @@ fn execute_env_print_command(request: EnvPrintSyncRequest) -> Result<(), CliErro
         environment,
     } = request;
     current_thread_runtime()?.block_on(async {
-        let executor = create_executor(&package);
-        match commands::env::execute_env_print(&path, &format, environment.as_deref(), &executor)
-            .await
+        let executor = app::create_executor(&package);
+        match commands::env::execute_env_print(
+            &path,
+            commands::env::EnvPrintOptions {
+                format: &format,
+                environment: environment.as_deref(),
+            },
+            &executor,
+        )
+        .await
         {
             Ok(result) => {
                 cuenv_events::println_redacted(&result);
@@ -247,7 +267,7 @@ fn execute_env_list_command(request: EnvListSyncRequest) -> Result<(), CliError>
         format,
     } = request;
     current_thread_runtime()?.block_on(async {
-        let executor = create_executor(&package);
+        let executor = app::create_executor(&package);
         match commands::env::execute_env_list(&path, &format, &executor).await {
             Ok(result) => {
                 cuenv_events::println_redacted(&result);
@@ -271,8 +291,10 @@ fn execute_changeset_command(command: Command, json_format: OutputFormat) -> Res
         } => match commands::release::execute_changeset_add(
             &path,
             &packages,
-            summary.as_deref(),
-            description.as_deref(),
+            commands::release::ChangesetDescription {
+                summary: summary.as_deref(),
+                description: description.as_deref(),
+            },
         ) {
             Ok(output) => print_enveloped_or_text(JsonEnvelopeField::Message, &output, json_format),
             Err(e) => Err(CliError::eval_with_help(
@@ -281,7 +303,11 @@ fn execute_changeset_command(command: Command, json_format: OutputFormat) -> Res
             )),
         },
         Command::ChangesetStatus { path, json } => {
-            let merged_format = OutputFormat::from_json_flag(json || json_format.is_json());
+            let merged_format = if json || json_format.is_json() {
+                OutputFormat::Json
+            } else {
+                OutputFormat::Text
+            };
             match commands::release::execute_changeset_status_with_format(&path, merged_format) {
                 Ok(output) => {
                     cuenv_events::println_redacted(&output);
@@ -375,7 +401,7 @@ fn execute_fmt_command(request: FmtSyncRequest) -> Result<(), CliError> {
     } = request;
     // Formatters run in the project environment, which `cuenv exec` resolves
     // asynchronously (runtime, tools, secrets).
-    let executor = create_executor(&package);
+    let executor = app::create_executor(&package);
     let fmt_request = commands::fmt::FmtRequest {
         path: &path,
         package: &package,
@@ -409,7 +435,16 @@ fn execute_export_command(request: ExportSyncRequest) -> Result<(), CliError> {
             Ok(())
         }
         Ok(None) => current_thread_runtime()?.block_on(async {
-            match commands::export::execute_export(shell.as_deref(), &path, &package, None).await {
+            match commands::export::execute_export(
+                &path,
+                &package,
+                commands::export::ExportOptions {
+                    shell_type: shell.as_deref(),
+                    executor: None,
+                },
+            )
+            .await
+            {
                 Ok(result) => {
                     cuenv_events::print_redacted(&result);
                     Ok(())

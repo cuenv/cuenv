@@ -28,7 +28,7 @@ struct TemporaryFile {
 }
 
 impl TemporaryFile {
-    fn new() -> Result<Self> {
+    fn try_new() -> Result<Self> {
         let path = std::env::temp_dir().join(format!("cuenv-layered-cas-{}.tmp", Uuid::new_v4()));
         std::fs::OpenOptions::new()
             .write(true)
@@ -113,7 +113,7 @@ impl LayeredCas {
     }
 
     async fn fetch_through_file(&self, digest: &Digest, destination: &Path) -> Result<()> {
-        let downloaded = TemporaryFile::new()?;
+        let downloaded = TemporaryFile::try_new()?;
         if let Err(error) = self.remote.get_to_file(digest, downloaded.path()).await {
             debug!(digest = %digest, error = %error, "remote CAS did not serve the blob");
             return self.local.get_to_file(digest, destination).await;
@@ -137,7 +137,7 @@ impl LayeredCas {
     }
 
     async fn push_file_snapshot(&self, digest: &Digest) -> Result<()> {
-        let snapshot = TemporaryFile::new()?;
+        let snapshot = TemporaryFile::try_new()?;
         self.local.get_to_file(digest, snapshot.path()).await?;
         let snapshot_digest = self.local.put_file(snapshot.path()).await?;
         verify_digest(digest, &snapshot_digest)?;
@@ -332,10 +332,8 @@ impl ActionCache for LayeredActionCache {
 mod tests {
     use super::*;
     use cuenv_cas::{LocalActionCache, LocalCas};
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    };
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     /// A store that fails every operation, standing in for an unreachable

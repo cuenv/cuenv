@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// This command is typically invoked by the `#OCIActivate` hook defined in
 /// `schema/oci.cue` to add OCI-managed binaries to the PATH.
 pub async fn run_oci_activate() -> Result<(), CliError> {
-    use cuenv_tools_oci::{OciCache, OciClient, current_platform};
+    use cuenv_tools_oci::{OciCache, OciClient};
 
     let lockfile_path = find_lockfile().ok_or_else(|| {
         CliError::config_with_help(
@@ -33,8 +33,16 @@ pub async fn run_oci_activate() -> Result<(), CliError> {
         .ensure_dirs()
         .map_err(|e| CliError::other(format!("Failed to create cache directories: {e}")))?;
 
-    let platform = current_platform();
-    let bin_dirs = activate_lockfile_artifacts(&lockfile, &client, &cache, &platform).await?;
+    let platform = cuenv_tools_oci::current_platform();
+    let bin_dirs = activate_lockfile_artifacts(
+        &lockfile,
+        OciActivationContext {
+            client: &client,
+            cache: &cache,
+            platform: &platform,
+        },
+    )
+    .await?;
 
     if !bin_dirs.is_empty() {
         let mut path_additions: Vec<String> =
@@ -49,18 +57,26 @@ pub async fn run_oci_activate() -> Result<(), CliError> {
     Ok(())
 }
 
+pub struct OciActivationContext<'context> {
+    pub(super) client: &'context cuenv_tools_oci::OciClient,
+    pub(super) cache: &'context cuenv_tools_oci::OciCache,
+    pub(super) platform: &'context cuenv_tools_oci::Platform,
+}
+
 /// Activate every artifact in the lockfile that matches `platform`, returning
 /// the set of `bin/` directories that should be prepended to PATH.
 pub async fn activate_lockfile_artifacts(
     lockfile: &cuenv_core::lockfile::Lockfile,
-    client: &cuenv_tools_oci::OciClient,
-    cache: &cuenv_tools_oci::OciCache,
-    platform: &cuenv_tools_oci::Platform,
+    context: OciActivationContext<'_>,
 ) -> Result<std::collections::HashSet<PathBuf>, CliError> {
     use cuenv_core::lockfile::ArtifactKind;
-    use cuenv_tools_oci::extract_from_layers;
     use std::collections::HashSet;
 
+    let OciActivationContext {
+        client,
+        cache,
+        platform,
+    } = context;
     let platform_str = platform.to_string();
     let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
 
@@ -84,10 +100,10 @@ pub async fn activate_lockfile_artifacts(
 
         let all_cached = extract
             .iter()
-            .all(|entry| cache.get_binary(digest, &entry.binary_name()).is_some());
+            .all(|entry| cache.binary(digest, &entry.binary_name()).is_some());
         if all_cached {
             for entry in extract {
-                if let Some(cached_path) = cache.get_binary(digest, &entry.binary_name())
+                if let Some(cached_path) = cache.binary(digest, &entry.binary_name())
                     && let Some(parent) = cached_path.parent()
                 {
                     bin_dirs.insert(parent.to_path_buf());
@@ -118,12 +134,14 @@ pub async fn activate_lockfile_artifacts(
             let dest = cache.binary_path(digest, &binary_name);
 
             if !dest.exists() {
-                extract_from_layers(&layer_paths, &entry.path, &dest).map_err(|e| {
-                    CliError::other(format!(
-                        "Failed to extract '{}' from '{}': {}",
-                        entry.path, image, e
-                    ))
-                })?;
+                cuenv_tools_oci::extract_from_layers(&layer_paths, &entry.path, &dest).map_err(
+                    |e| {
+                        CliError::other(format!(
+                            "Failed to extract '{}' from '{}': {}",
+                            entry.path, image, e
+                        ))
+                    },
+                )?;
             }
 
             if !dest.exists() {

@@ -233,14 +233,14 @@ impl VersionCalculator {
             }
 
             // Check if in a fixed group
-            if let Some(group) = self.packages_config.get_fixed_group(package) {
+            if let Some(group) = self.packages_config.fixed_group(package) {
                 self.process_fixed_group(group, bumps, &mut new_versions);
                 for p in group {
                     processed.insert(p.clone());
                 }
             }
             // Check if in a linked group
-            else if let Some(group) = self.packages_config.get_linked_group(package) {
+            else if let Some(group) = self.packages_config.linked_group(package) {
                 self.process_linked_group(group, bumps, &mut new_versions);
                 for p in group {
                     processed.insert(p.clone());

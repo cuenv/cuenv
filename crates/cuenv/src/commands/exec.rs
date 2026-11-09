@@ -8,19 +8,19 @@
 //! 3. **No-module mode**: When outside a CUE module, runs commands with just the runtime
 //!    tools from any available lockfile.
 
-use super::sync::{SyncMode, SyncOptions, default_registry};
-use super::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
-use super::{CommandExecutor, relative_path_from_root};
+use super::sync::{SyncMode, SyncOptions};
+
+use super::CommandExecutor;
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::{Base, Project, Runtime, ToolSpec};
-use cuenv_core::runtime::resolve_runtime_environment;
-use cuenv_task_exec::execute_command_with_redaction;
-use cuenv_tool_runtime::{ResolvedToolActivationStep, apply_resolved_tool_activation};
+
+use cuenv_tool_runtime::ResolvedToolActivationStep;
 use std::path::Path;
 
-use super::export::{StaticEnvConsumer, extract_static_env_vars};
+use super::export;
+use super::export::StaticEnvConsumer;
 use tracing::instrument;
 
 /// Represents the type of manifest found at a path.
@@ -44,17 +44,17 @@ impl ManifestKind {
 
 /// Command execution request for `exec`.
 #[derive(Debug)]
-pub struct ExecRequest<'a> {
+pub struct ExecRequest<'request> {
     /// Path to the CUE module or project directory.
-    pub path: &'a str,
+    pub path: &'request str,
     /// CUE package name to evaluate.
-    pub package: &'a str,
+    pub package: &'request str,
     /// Command to execute.
-    pub command: &'a str,
+    pub command: &'request str,
     /// Arguments to pass to the command.
-    pub args: &'a [String],
+    pub args: &'request [String],
     /// Optional environment name to use for execution.
-    pub environment_override: Option<&'a str>,
+    pub environment_override: Option<&'request str>,
 }
 
 impl ExecRequest<'_> {
@@ -75,13 +75,13 @@ impl ExecRequest<'_> {
 /// (Nix/devenv) variables, lockfile tool activation, and the CUE `env`
 /// block (optionally for a named environment).
 #[derive(Clone, Copy, Debug)]
-pub struct ProjectEnvironmentRequest<'a> {
+pub struct ProjectEnvironmentRequest<'request> {
     /// Path to the CUE module or project directory.
-    pub path: &'a str,
+    pub path: &'request str,
     /// CUE package name to evaluate.
-    pub package: &'a str,
+    pub package: &'request str,
     /// Optional environment name to use.
-    pub environment_override: Option<&'a str>,
+    pub environment_override: Option<&'request str>,
 }
 
 /// The command-independent part of a project's execution environment.
@@ -157,7 +157,9 @@ impl ProjectEnvironment {
             ManifestKind::None => None,
         };
         if let Some(runtime) = runtime {
-            for (key, value) in resolve_runtime_environment(&target_path, runtime).await? {
+            for (key, value) in
+                cuenv_core::runtime::resolve_runtime_environment(&target_path, runtime).await?
+            {
                 runtime_env.set(key, value);
             }
         } else {
@@ -170,8 +172,13 @@ impl ProjectEnvironment {
         // Ensure lockfile is up to date for tools declared in the current project.
         // This keeps `cuenv exec` self-healing when runtime tool definitions change.
         if let Some(project) = manifest_kind.project() {
-            ensure_lockfile_for_runtime_tools(&target_path, request.package, project, executor)
-                .await?;
+            ensure_lockfile_for_runtime_tools(RuntimeToolSync {
+                project_path: &target_path,
+                package: request.package,
+                project,
+                executor,
+            })
+            .await?;
         }
 
         let activation_steps = if should_activate_lockfile_tools(manifest_kind.project()) {
@@ -180,12 +187,12 @@ impl ProjectEnvironment {
             // activation is a controlled, safe operation (just adds paths to the environment).
             // Use the target_path to scope tool activation to this project only.
             // Tool activation failures are fatal - commands require their tools to run.
-            ensure_tools_downloaded(Some(&target_path))
+            super::tools::ensure_tools_downloaded(Some(&target_path))
                 .await
                 .map_err(|e| {
                     cuenv_core::Error::configuration(format!("Failed to download tools: {e}"))
                 })?;
-            resolve_tool_activation_steps(Some(&target_path))
+            super::tools::resolve_tool_activation_steps(Some(&target_path))
                 .map_err(|e| {
                     cuenv_core::Error::configuration(format!(
                         "Failed to resolve tools activation: {e}"
@@ -220,7 +227,7 @@ impl ProjectEnvironment {
         let env_config = match &self.manifest_kind {
             ManifestKind::Project(project) => {
                 let base_env_vars =
-                    extract_static_env_vars(project, StaticEnvConsumer::Exec(command));
+                    export::extract_static_env_vars(project, StaticEnvConsumer::Exec(command));
                 tracing::debug!("Base environment variables for exec: {:?}", base_env_vars);
                 for (key, value) in base_env_vars {
                     environment.set(key, value);
@@ -256,7 +263,9 @@ impl ProjectEnvironment {
         }
         for step in &self.activation_steps {
             let current = environment.get(&step.var);
-            if let Some(new_value) = apply_resolved_tool_activation(current, step) {
+            if let Some(new_value) =
+                cuenv_tool_runtime::apply_resolved_tool_activation(current, step)
+            {
                 environment.set(step.var.clone(), new_value);
             }
         }
@@ -282,10 +291,10 @@ impl ProjectEnvironment {
 }
 
 fn load_manifest_kind(target_path: &Path, executor: &CommandExecutor) -> Result<ManifestKind> {
-    match executor.get_module(target_path) {
+    match executor.module(target_path) {
         Ok(module) => {
             tracing::debug!("Using cached module evaluation from executor");
-            let rel_path = relative_path_from_root(&module.root, target_path);
+            let rel_path = super::relative_path_from_root(&module.root, target_path);
 
             let instance = module.get(&rel_path).ok_or_else(|| {
                 cuenv_core::Error::configuration(format!(
@@ -348,13 +357,14 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
     let resolved_command = prepared.environment().resolve_command(request.command);
 
     // Execute the command with the environment, redacting any secrets from output
-    let exit_code = execute_command_with_redaction(
-        &resolved_command,
-        request.args,
-        prepared.environment(),
-        prepared.secrets_for_redaction(),
-    )
-    .await?;
+    let exit_code =
+        cuenv_task_exec::execute_command_with_redaction(cuenv_task_exec::CommandExecution {
+            command: &resolved_command,
+            args: request.args,
+            environment: prepared.environment(),
+            secrets: prepared.secrets_for_redaction(),
+        })
+        .await?;
 
     Ok(exit_code)
 }
@@ -363,13 +373,22 @@ fn should_activate_lockfile_tools(project: Option<&Project>) -> bool {
     project.is_none_or(|manifest| matches!(manifest.runtime, Some(Runtime::Tools(_))))
 }
 
+#[derive(Clone, Copy)]
+struct RuntimeToolSync<'runtime_tool_sync> {
+    project_path: &'runtime_tool_sync Path,
+    package: &'runtime_tool_sync str,
+    project: &'runtime_tool_sync Project,
+    executor: &'runtime_tool_sync CommandExecutor,
+}
+
 /// Synchronize the lockfile when runtime tools for the current project are missing or stale.
-async fn ensure_lockfile_for_runtime_tools(
-    project_path: &Path,
-    package: &str,
-    project: &Project,
-    executor: &CommandExecutor,
-) -> Result<()> {
+async fn ensure_lockfile_for_runtime_tools(input: RuntimeToolSync<'_>) -> Result<()> {
+    let RuntimeToolSync {
+        project_path,
+        package,
+        project,
+        executor,
+    } = input;
     if !lockfile_needs_runtime_tool_sync(project_path, project)? {
         return Ok(());
     }
@@ -385,7 +404,7 @@ async fn ensure_lockfile_for_runtime_tools(
         ci_provider: None,
         update_tools: None,
     };
-    let registry = default_registry();
+    let registry = super::sync::default_registry();
     registry
         .sync_provider(
             "lock",
@@ -475,10 +494,21 @@ mod tests {
         CommandExecutor::new(package.to_string())
     }
 
+    fn create_test_module(root: &Path) {
+        fs::create_dir_all(root.join("cue.mod")).unwrap();
+        fs::write(
+            root.join("cue.mod/module.cue"),
+            "module: \"test.example/exec@v0\"\nlanguage: version: \"v0.14.1\"\n",
+        )
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn test_execute_command_with_env() {
         let temp_dir = TempDir::new().unwrap();
+        create_test_module(temp_dir.path());
         let cue_content = r#"package test
+name: "test"
 env: {
     TEST_VAR: "test_value"
 }"#;
@@ -486,28 +516,26 @@ env: {
 
         let executor = create_test_executor("test");
 
-        // Test depends on FFI availability
-        let args = vec!["test".to_string()];
+        let args = vec![
+            "-c".to_string(),
+            "[ \"$TEST_VAR\" = test_value ]".to_string(),
+        ];
         let request = ExecRequest {
             path: temp_dir.path().to_str().unwrap(),
             package: "test",
-            command: "echo",
+            command: "sh",
             args: &args,
             environment_override: None,
         };
-        let result = execute_exec(request, &executor).await;
-
-        if let Ok(exit_code) = result {
-            assert_eq!(exit_code, 0);
-        } else {
-            // FFI not available in test environment
-        }
+        assert_eq!(execute_exec(request, &executor).await.unwrap(), 0);
     }
 
     #[tokio::test]
     async fn test_execute_shell_via_exec() {
         let temp_dir = TempDir::new().unwrap();
+        create_test_module(temp_dir.path());
         let cue_content = r#"package test
+name: "test"
 env: {
     NAME: "World"
 }"#;
@@ -516,7 +544,7 @@ env: {
         let executor = create_test_executor("test");
 
         // Test shell execution via execute_exec with shell command
-        let args = vec!["-c".to_string(), "echo Hello".to_string()];
+        let args = vec!["-c".to_string(), "[ \"$NAME\" = World ]".to_string()];
         let request = ExecRequest {
             path: temp_dir.path().to_str().unwrap(),
             package: "test",
@@ -524,13 +552,7 @@ env: {
             args: &args,
             environment_override: None,
         };
-        let result = execute_exec(request, &executor).await;
-
-        if let Ok(exit_code) = result {
-            assert_eq!(exit_code, 0);
-        } else {
-            // FFI not available in test environment
-        }
+        assert_eq!(execute_exec(request, &executor).await.unwrap(), 0);
     }
 
     #[tokio::test]

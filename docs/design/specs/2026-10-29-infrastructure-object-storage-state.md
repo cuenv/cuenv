@@ -184,19 +184,21 @@ Every mutation follows the same steps:
 | --- | --- | --- |
 | 200 | written | record the new ETag |
 | 412 on the first send | someone else wrote | re-read. If our lock is gone: `LockLost`. Otherwise re-derive and retry (bounded). |
-| 412 on a retry, 409 (`ConditionalRequestConflict`), 5xx, timeout, or a connection lost after sending | ambiguous | GET, then decide as below. Never re-send blind. |
+| 412 on a retry, 409 (`ConditionalRequestConflict`), 429, 5xx, timeout, or a connection lost after sending | ambiguous | GET, then decide as below. Never re-send blind. |
 | 404 on `If-Match` (AWS), or the object is absent while we hold a lock | the object vanished | `LockLost` naming the key and pointing to `state restore`. Never re-create. |
-| 429 | not applied | wait for `Retry-After`, then retry |
 | 403 / `ExpiredToken` | permanent | error. `ExpiredToken` names `state recover`. |
 
 Deciding after an ambiguous response, by operation:
 
-- **acquire:** the lock id in the body is ours → acquired. Otherwise report
-  that the lock "may be held as `<id>`", as SQL does.
-- **record write:** our `writer` and `serial` are present → recorded (the
+- **acquire:** the exact write nonce and lock id are present → acquired.
+- **record write:** the exact write nonce is present → recorded (the
   `ConditionalPut::is_recorded` analogue).
-- **release or force-unlock:** `lastReleased` equals the id → released.
+- **release or force-unlock:** the exact write nonce and `lastReleased` id are
+  present and the lock is absent → released.
 - **create with `If-None-Match`:** our `writer` is present → created.
+
+If a readback cannot confirm a mutation, report an unconfirmed outcome rather
+than replaying it. Reads and capability probes may retry rate limits.
 
 ### Pacing
 
@@ -578,6 +580,10 @@ upgrade breaks projects pinned to older cuenv on that database.
   migrates. Turso users can enforce the minimum version in CI.
 
 ### Rollback
+
+The current implementation has concurrency gaps in this planned guarantee;
+see [migration concurrency](2026-11-08-infrastructure-migration-concurrency.md)
+and the [operating precautions](../../src/content/docs/how-to/infrastructure.mdx#migrate-between-backends).
 
 `--rollback` refuses if the target's `serial` or ETag moved since the commit,
 unless `--copy-back` is given, which copies back with the same verification.

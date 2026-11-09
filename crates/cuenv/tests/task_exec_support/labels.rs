@@ -1,7 +1,6 @@
-use super::{TestResult, create_test_dir, init_cue_module, run_cuenv};
-use std::fs;
-use std::io;
+use super::TestResult;
 use std::path::Path;
+use std::{fs, io};
 use tempfile::TempDir;
 
 fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
@@ -23,8 +22,8 @@ fn path_arg(path: &Path) -> TestResult<&str> {
 
 #[test]
 fn test_task_label_execution_is_path_scoped() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
 
     // All projects must use `package cuenv` - this is enforced by cuenv
     let project_a = temp_dir.path().join("project-a");
@@ -65,7 +64,7 @@ tasks: {
 "#,
     )?;
 
-    let (stdout, stderr, success) = run_cuenv(&[
+    let (stdout, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(&project_a)?,
@@ -89,8 +88,8 @@ tasks: {
 
 #[test]
 fn test_task_label_multiple_labels_and_semantics() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
 
     // Create a project with multiple tasks having different label combinations
     write_env(
@@ -122,7 +121,7 @@ tasks: {
     )?;
 
     // Test: Multiple labels with AND semantics - only unit_tests has both "test" AND "unit"
-    let (stdout, stderr, success) = run_cuenv(&[
+    let (stdout, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -157,8 +156,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_conflicting_task_name_and_label() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     write_env(
         &temp_dir,
         r#"package test
@@ -175,7 +174,7 @@ tasks: {
     )?;
 
     // Test: Cannot specify both task name and --label
-    let (_stdout, stderr, success) = run_cuenv(&[
+    let (_stdout, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -200,8 +199,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_trailing_args_become_task_name() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     write_env(
         &temp_dir,
         r#"package test
@@ -218,7 +217,7 @@ tasks: {
 
     // Test: Trailing args after -- are interpreted as task name (first positional)
     // Since task name conflicts with --label, we get the conflict error
-    let (_stdout, stderr, success) = run_cuenv(&[
+    let (_stdout, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -246,8 +245,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_no_matching_tasks() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     write_env(
         &temp_dir,
         r#"package test
@@ -264,7 +263,7 @@ tasks: {
     )?;
 
     // Test: No tasks match the given label
-    let (_stdout, stderr, success) = run_cuenv(&[
+    let (_stdout, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -284,8 +283,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_empty_labels() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     write_env(
         &temp_dir,
         r#"package test
@@ -301,7 +300,7 @@ tasks: {
     )?;
 
     // Test: Empty/whitespace-only labels should error
-    let (_stdout, stderr, success) = run_cuenv(&[
+    let (_stdout, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,

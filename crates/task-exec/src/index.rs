@@ -125,7 +125,12 @@ impl TaskIndex {
             let source_file = extract_source_file(node);
 
             let path = TaskPath::parse(&display_name)?;
-            let _ = canonicalize_node(node, &path, &mut entries, original_name, source_file)?;
+            let origin = NodeOrigin {
+                path: &path,
+                original_name,
+                source_file,
+            };
+            let _ = canonicalize_node(node, &mut entries, origin)?;
         }
 
         Ok(Self { entries })
@@ -197,13 +202,22 @@ fn extract_source_file(node: &TaskNode) -> Option<String> {
     }
 }
 
-fn canonicalize_node(
-    node: &TaskNode,
-    path: &TaskPath,
-    entries: &mut BTreeMap<String, IndexedTask>,
+struct NodeOrigin<'origin> {
+    path: &'origin TaskPath,
     original_name: String,
     source_file: Option<String>,
+}
+
+fn canonicalize_node(
+    node: &TaskNode,
+    entries: &mut BTreeMap<String, IndexedTask>,
+    origin: NodeOrigin<'_>,
 ) -> Result<TaskNode> {
+    let NodeOrigin {
+        path,
+        original_name,
+        source_file,
+    } = origin;
     match node {
         TaskNode::Task(task) => {
             // Inline from canonicalize_task: Tasks resolved from TaskRef placeholders have
@@ -243,10 +257,12 @@ fn canonicalize_node(
                 let child_original = child_name.clone();
                 let canon_child = canonicalize_node(
                     child_node,
-                    &child_path,
                     entries,
-                    child_original,
-                    child_source,
+                    NodeOrigin {
+                        path: &child_path,
+                        original_name: child_original,
+                        source_file: child_source,
+                    },
                 )?;
                 canon_children.insert(child_name.clone(), canon_child);
             }
@@ -280,8 +296,15 @@ fn canonicalize_node(
                 // rewrite names with numeric indices to avoid changing existing graph semantics.
                 // For sequential children, extract their source file
                 let child_source = extract_source_file(child);
-                let canon_child =
-                    canonicalize_node(child, path, entries, original_name.clone(), child_source)?;
+                let canon_child = canonicalize_node(
+                    child,
+                    entries,
+                    NodeOrigin {
+                        path,
+                        original_name: original_name.clone(),
+                        source_file: child_source,
+                    },
+                )?;
                 canon_children.push(canon_child);
             }
 

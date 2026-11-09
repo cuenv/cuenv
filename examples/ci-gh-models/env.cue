@@ -1,6 +1,9 @@
 package examples
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"github.com/cuenv/cuenv/schema"
+	c "github.com/cuenv/cuenv/contrib/contributors"
+)
 
 schema.#Project
 
@@ -10,10 +13,14 @@ name: "ci-gh-models"
 
 // Pipeline that uses GitHub Models CLI for LLM evaluation
 // This triggers the GhModelsContributor to inject extension setup
-ci: pipelines: {
-	eval: {
-		tasks: [_t.evalPrompts]
-		when: branch: "main"
+ci: {
+	providers: ["github"]
+	contributors: [c.#Cuenv, c.#GhModels]
+	pipelines: {
+		eval: {
+			tasks: [_t.evalPrompts]
+			when: branch: "main"
+		}
 	}
 }
 

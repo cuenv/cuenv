@@ -7,7 +7,7 @@
 //! project's `ci` contributors install cuenv and set up secret providers
 //! before the main step runs.
 
-use super::ProjectInfo;
+use super::super::implementation::ProjectInfo;
 use cuenv_core::Result;
 use cuenv_core::ci::{CI, ManualTrigger, Pipeline, PipelineCondition, StringOrVec};
 use cuenv_core::manifest::{
@@ -141,7 +141,7 @@ pub(super) fn stale_workflows(project: &ProjectInfo, package: &str) -> Result<Ve
 fn workflow_filename(project_name: &str, pipeline_name: &str) -> String {
     format!(
         "{}.yml",
-        super::sanitize_workflow_name(&format!("{project_name}-{pipeline_name}"))
+        super::implementation::sanitize_workflow_name(&format!("{project_name}-{pipeline_name}"))
     )
 }
 
@@ -568,16 +568,16 @@ core.exportVariable('REVIEWED_PLAN', match[1]);"
         .with_input("script", serde_yaml::Value::String(script))
 }
 
-struct WorkflowRequest<'a> {
-    project: &'a ProjectInfo,
-    package: &'a str,
-    project_path: Option<&'a str>,
+struct WorkflowRequest<'request> {
+    project: &'request ProjectInfo,
+    package: &'request str,
+    project_path: Option<&'request str>,
     /// Configuration files whose changes trigger the workflow, in addition
     /// to the paths the compiler derives.
-    sources: &'a [String],
-    pipeline_name: &'a str,
+    sources: &'request [String],
+    pipeline_name: &'request str,
     pipeline: Pipeline,
-    command: &'a CommandWorkflow<'a>,
+    command: &'request CommandWorkflow<'request>,
 }
 
 fn generate_workflow(request: &WorkflowRequest<'_>) -> Result<(String, String)> {

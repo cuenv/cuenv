@@ -98,9 +98,7 @@ impl ServiceController {
         services: &HashMap<String, Service>,
         session: Arc<SessionManager>,
     ) -> crate::Result<()> {
-        let parallel_groups = graph
-            .get_parallel_groups()
-            .map_err(cuenv_core::Error::from)?;
+        let parallel_groups = graph.parallel_groups().map_err(cuenv_core::Error::from)?;
         let mut supervisor_handles: JoinSet<(String, SupervisorResult)> = JoinSet::new();
         let mut startup_failures: Vec<(String, String)> = Vec::new();
 
@@ -299,7 +297,7 @@ mod tests {
         services.insert("db".to_string(), Service::default());
 
         let graph = build_service_graph(&services)?;
-        let groups = graph.get_parallel_groups()?;
+        let groups = graph.parallel_groups()?;
 
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0][0].name, "db");
@@ -323,7 +321,7 @@ mod tests {
         );
 
         let graph = build_service_graph(&services)?;
-        let groups = graph.get_parallel_groups()?;
+        let groups = graph.parallel_groups()?;
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0][0].name, "api");

@@ -121,6 +121,20 @@ pub struct TerminalRow {
     pub cells: Vec<TerminalCell>,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RowWrap {
+    Soft,
+    None,
+}
+
+#[cfg(test)]
+impl RowWrap {
+    pub(super) const fn is_soft(self) -> bool {
+        matches!(self, Self::Soft)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalDimensions {
     pub rows: u16,
@@ -156,6 +170,13 @@ pub enum CursorShape {
     Bar,
 }
 
+/// Whether the terminal application requests a blinking or steady cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorBlinkMode {
+    Blinking,
+    Steady,
+}
+
 /// Position is host-known when present. Shape and visibility are independent:
 /// unknown backend state must not be silently rendered as a default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,8 +184,8 @@ pub struct CursorState {
     pub position: Option<(u16, u16)>,
     pub shape: Known<CursorShape>,
     pub visible: Known<bool>,
-    /// Whether the application asked for a blinking cursor.
-    pub blinking: Known<bool>,
+    /// The application's cursor-blink request, when the backend exposes it.
+    pub blinking: Known<CursorBlinkMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,6 +408,12 @@ pub enum TerminalMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalModeState {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModeError {
     NotObservable(TerminalMode),
 }
@@ -396,12 +423,13 @@ impl TerminalModes {
         &mut self,
         capabilities: &TerminalCapabilities,
         mode: TerminalMode,
-        enabled: bool,
+        state: TerminalModeState,
     ) -> Result<(), ModeError> {
         if capabilities.mode_support(mode) != Capability::Supported {
             return Err(ModeError::NotObservable(mode));
         }
-        self.declared.insert(mode, enabled);
+        self.declared
+            .insert(mode, state == TerminalModeState::Enabled);
         Ok(())
     }
     pub fn get(&self, mode: TerminalMode) -> Option<bool> {
@@ -578,7 +606,7 @@ mod tests {
             modes.declare(
                 &TerminalCapabilities::rio_pinned(),
                 TerminalMode::MouseReporting,
-                true
+                TerminalModeState::Enabled
             ),
             Err(ModeError::NotObservable(TerminalMode::MouseReporting))
         );
@@ -592,10 +620,23 @@ mod tests {
         assert_eq!(capabilities.scrollback, Capability::Supported);
         assert_eq!(capabilities.hyperlink_destinations, Capability::Unsupported);
         assert_eq!(
-            modes.declare(&capabilities, TerminalMode::BracketedPaste, true),
+            modes.declare(
+                &capabilities,
+                TerminalMode::BracketedPaste,
+                TerminalModeState::Enabled
+            ),
             Ok(())
         );
         assert_eq!(modes.get(TerminalMode::BracketedPaste), Some(true));
+        assert_eq!(
+            modes.declare(
+                &capabilities,
+                TerminalMode::BracketedPaste,
+                TerminalModeState::Disabled
+            ),
+            Ok(())
+        );
+        assert_eq!(modes.get(TerminalMode::BracketedPaste), Some(false));
     }
 
     #[test]

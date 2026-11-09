@@ -6,8 +6,8 @@
 //! This module owns project-level scheduling and reporting. Per-task DAG
 //! execution lives in `task_execution`.
 
-use crate::affected::compute_affected_tasks;
-use crate::discovery::evaluate_module_from_cwd;
+use crate::affected::{AffectedProjects, ChangedInputs};
+use crate::discovery;
 use crate::provider::CIProvider;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus};
 use chrono::{DateTime, Utc};
@@ -19,15 +19,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::hook_env::build_hook_environment;
-use super::reporting::{
-    cache_policy_override_for, notify_provider, register_ci_secrets, resolve_annotations,
-    write_pipeline_report,
-};
-use super::task_env::resolve_environment;
-use super::task_execution::{
-    PipelineTaskResults, PipelineTasksRequest, execute_pipeline_tasks, project_env_vars,
-};
+use super::task_env;
+use super::task_execution::{PipelineTaskResults, PipelineTasksRequest};
 
 /// Which tasks to select within the requested project and pipeline scope.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -125,7 +118,7 @@ type ProjectConfigMap = HashMap<PathBuf, Project>;
 
 fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProjects>> {
     // Evaluate module and discover projects
-    let module = evaluate_module_from_cwd()?;
+    let module = discovery::evaluate_module_from_cwd()?;
     let project_count = module.project_count();
     if project_count == 0 {
         tracing::info!("No cuenv projects discovered; skipping CI run.");
@@ -190,15 +183,15 @@ fn build_project_lookup(
     (project_map, project_configs)
 }
 
-struct CiProjectRunRequest<'a> {
-    provider: &'a dyn CIProvider,
+struct CiProjectRunRequest<'request> {
+    provider: &'request dyn CIProvider,
     dry_run: DryRun,
     task_selection: TaskSelection,
-    specific_pipeline: Option<&'a str>,
-    environment: Option<&'a str>,
-    context: &'a crate::context::CIContext,
-    changed_files: &'a [PathBuf],
-    discovered: &'a DiscoveredCiProjects,
+    specific_pipeline: Option<&'request str>,
+    environment: Option<&'request str>,
+    context: &'request crate::context::CIContext,
+    changed_files: &'request [PathBuf],
+    discovered: &'request DiscoveredCiProjects,
     max_parallel: usize,
 }
 
@@ -294,7 +287,9 @@ async fn prepare_secret_providers(
 ) -> Result<()> {
     let mut env_vars = HashMap::new();
     for (project_path, config, plan) in plans {
-        for (key, value) in project_env_vars(config, plan.environment.as_deref()) {
+        for (key, value) in
+            super::task_execution::project_env_vars(config, plan.environment.as_deref())
+        {
             // Keys only need to be unique; secrets are grouped by resolver.
             env_vars.insert(format!("{}:{key}", project_path.display()), value);
         }
@@ -303,15 +298,15 @@ async fn prepare_secret_providers(
 }
 
 #[derive(Clone, Copy)]
-struct ProjectPipelinePlanRequest<'a> {
-    project_path: &'a Path,
-    config: &'a Project,
+struct ProjectPipelinePlanRequest<'request> {
+    project_path: &'request Path,
+    config: &'request Project,
     task_selection: TaskSelection,
-    requested_pipeline: Option<&'a str>,
-    requested_environment: Option<&'a str>,
-    context: &'a crate::context::CIContext,
-    changed_files: &'a [PathBuf],
-    project_map: &'a ProjectDependencyMap,
+    requested_pipeline: Option<&'request str>,
+    requested_environment: Option<&'request str>,
+    context: &'request crate::context::CIContext,
+    changed_files: &'request [PathBuf],
+    project_map: &'request ProjectDependencyMap,
 }
 
 #[derive(Debug)]
@@ -353,7 +348,8 @@ fn plan_project_pipeline(
         )));
     };
 
-    let environment = resolve_environment(requested_environment, pipeline.environment.as_deref());
+    let environment =
+        task_env::resolve_environment(requested_environment, pipeline.environment.as_deref());
     let pipeline_task_names: Vec<String> = pipeline
         .tasks
         .iter()
@@ -367,12 +363,16 @@ fn plan_project_pipeline(
     let tasks_to_run = if task_selection == TaskSelection::All || context.event == "release" {
         pipeline_task_names
     } else {
-        compute_affected_tasks(
-            changed_files,
+        crate::affected::compute_affected_tasks(
+            ChangedInputs {
+                files: changed_files,
+                project_root: project_path,
+            },
             &pipeline_task_names,
-            project_path,
-            config,
-            project_map,
+            &AffectedProjects {
+                project: config,
+                all_projects: project_map,
+            },
         )
     };
 
@@ -418,17 +418,17 @@ fn format_pipeline_failures(failures: &[(String, cuenv_core::Error)]) -> String 
 }
 
 /// All parameters needed to execute a project pipeline.
-pub struct PipelineExecutionRequest<'a> {
-    pub project_path: &'a Path,
-    pub config: &'a Project,
-    pub pipeline_name: &'a str,
-    pub tasks_to_run: &'a [String],
-    pub environment: Option<&'a str>,
-    pub context: &'a crate::context::CIContext,
-    pub changed_files: &'a [PathBuf],
-    pub provider: &'a dyn CIProvider,
-    pub project_configs: &'a HashMap<PathBuf, Project>,
-    pub max_parallel: usize,
+struct PipelineExecutionRequest<'request> {
+    project_path: &'request Path,
+    config: &'request Project,
+    pipeline_name: &'request str,
+    tasks_to_run: &'request [String],
+    environment: Option<&'request str>,
+    context: &'request crate::context::CIContext,
+    changed_files: &'request [PathBuf],
+    provider: &'request dyn CIProvider,
+    project_configs: &'request HashMap<PathBuf, Project>,
+    max_parallel: usize,
 }
 
 /// Execute a project's pipeline and handle reporting
@@ -450,14 +450,15 @@ async fn execute_project_pipeline(
 
     let start_time = Utc::now();
     let project_display = project_path.display().to_string();
-    let cache_policy_override = cache_policy_override_for(context);
+    let cache_policy_override = super::reporting::cache_policy_override_for(context);
 
     // Register common CI secret patterns for redaction.
     // These are typically passed via GitHub Actions secrets or similar.
-    register_ci_secrets();
+    super::reporting::register_ci_secrets();
 
     // Merge static + hook-generated environment once per project, then reuse for all tasks.
-    let hook_env = build_hook_environment(project_path, config, project_configs).await?;
+    let hook_env =
+        super::hook_env::build_hook_environment(project_path, config, project_configs).await?;
 
     // Build task index for resolving nested task names (e.g., "deploy.preview")
     let task_index = TaskIndex::build(&config.tasks)?;
@@ -467,7 +468,7 @@ async fn execute_project_pipeline(
         status: pipeline_status,
         errors: task_errors,
         captures: all_captures,
-    } = execute_pipeline_tasks(PipelineTasksRequest {
+    } = super::task_execution::execute_pipeline_tasks(PipelineTasksRequest {
         project_path,
         project_display: &project_display,
         config,
@@ -492,7 +493,7 @@ async fn execute_project_pipeline(
     let resolved_annotations = ci
         .pipelines
         .get(pipeline_name)
-        .map(|p| resolve_annotations(&p.annotations, &all_captures))
+        .map(|p| super::reporting::resolve_annotations(&p.annotations, &all_captures))
         .unwrap_or_default();
 
     // Generate report
@@ -520,8 +521,8 @@ async fn execute_project_pipeline(
     };
 
     // Write reports and notify provider
-    write_pipeline_report(&report, context, project_path);
-    notify_provider(provider, &report, pipeline_name).await;
+    super::reporting::write_pipeline_report(&report, context, project_path);
+    super::reporting::notify_provider(provider, &report, pipeline_name).await;
 
     Ok((pipeline_status, task_errors))
 }

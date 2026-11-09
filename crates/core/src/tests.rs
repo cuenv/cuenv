@@ -1,6 +1,9 @@
-use super::*;
+use super::{
+    ConfigError, Error, EvalError, IoError, Limits, PackageDir, PackageDirError, PackageName,
+    PackageNameError, Result,
+};
 use miette::SourceSpan;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn test_error_configuration() {
@@ -101,9 +104,11 @@ fn test_error_cue_parse_with_source() {
     let err = Error::cue_parse_with_source(
         path,
         "parse error",
-        src,
-        Some(span),
-        Some(suggestions.clone()),
+        crate::error::CueParseSource {
+            text: src.to_string(),
+            span: Some(span),
+            suggestions: Some(suggestions.clone()),
+        },
     );
 
     if let Error::Eval(EvalError::CueParse {
@@ -181,7 +186,7 @@ fn test_error_from_io_error() {
 
 #[test]
 fn test_error_from_utf8_error() {
-    let bytes = vec![0xFF, 0xFE];
+    let bytes = vec![0xff, 0xfe];
     let utf8_err = std::str::from_utf8(&bytes).unwrap_err();
     let err: Error = utf8_err.into();
 

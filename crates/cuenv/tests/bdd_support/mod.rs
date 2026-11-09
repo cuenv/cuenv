@@ -1,3 +1,4 @@
+mod advanced_hook_steps;
 mod env_steps;
 mod hook_steps;
 mod task_steps;

@@ -2,7 +2,6 @@
 
 use crate::core::traits::WorkspaceDiscovery;
 use crate::core::types::{PackageManager, Workspace, WorkspaceMember};
-use crate::discovery::{read_json_file, resolve_glob_patterns};
 use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -24,7 +23,7 @@ impl WorkspaceDiscovery for PackageJsonDiscovery {
             });
         }
 
-        let package_json: PackageJson = read_json_file(&package_json_path)?;
+        let package_json: PackageJson = crate::discovery::read_json_file(&package_json_path)?;
 
         // If no workspaces field, verify it's a valid package but return empty workspace
         // logic could vary, but usually a workspace needs the workspaces field
@@ -53,7 +52,7 @@ impl WorkspaceDiscovery for PackageJsonDiscovery {
 
     fn find_members(&self, root: &Path) -> Result<Vec<WorkspaceMember>> {
         let package_json_path = root.join("package.json");
-        let package_json: PackageJson = read_json_file(&package_json_path)?;
+        let package_json: PackageJson = crate::discovery::read_json_file(&package_json_path)?;
 
         let patterns = match package_json.workspaces {
             Some(WorkspacesField::Array(patterns)) => patterns,
@@ -61,13 +60,13 @@ impl WorkspaceDiscovery for PackageJsonDiscovery {
             None => return Ok(Vec::new()),
         };
 
-        let matched_paths = resolve_glob_patterns(root, &patterns, &[])?;
+        let matched_paths = crate::discovery::resolve_glob_patterns(root, &patterns, &[])?;
         let mut members = Vec::new();
 
         for path in matched_paths {
             if self.validate_member(&path)? {
                 let manifest_path = path.join("package.json");
-                let member_pkg: PackageJson = read_json_file(&manifest_path)?;
+                let member_pkg: PackageJson = crate::discovery::read_json_file(&manifest_path)?;
 
                 if let Some(name) = member_pkg.name {
                     let mut dependencies = Vec::new();
@@ -111,7 +110,7 @@ impl WorkspaceDiscovery for PackageJsonDiscovery {
         }
 
         // Try parsing to ensure it has a name
-        match read_json_file::<PackageJson>(&manifest_path) {
+        match crate::discovery::read_json_file::<PackageJson>(&manifest_path) {
             Ok(pkg) => {
                 if pkg.name.is_some() {
                     Ok(true)

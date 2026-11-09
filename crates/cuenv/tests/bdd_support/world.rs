@@ -3,8 +3,7 @@ use cucumber::World;
 use cucumber::codegen::anyhow::{Context, anyhow};
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::process::Command;
 
@@ -30,6 +29,10 @@ pub struct TestWorld {
     pub(super) hooks_running: bool,
     /// Hook execution state directory
     pub(super) state_dir: PathBuf,
+    /// Unique hook execution session for this scenario.
+    pub(super) hook_session: String,
+    /// Evidence collected by advanced hook scenarios.
+    pub(super) advanced: super::advanced_hook_steps::AdvancedEvidence,
     /// Unique test base directory for this scenario
     pub(super) test_base_dir: Option<PathBuf>,
 }
@@ -67,7 +70,15 @@ impl TestWorld {
         // This ensures the supervisor can write to it
         let state_base = std::env::temp_dir().join(format!("cuenv_test_{}", uuid::Uuid::new_v4()));
         let state_dir = state_base.join(".cuenv/state");
-        std::fs::create_dir_all(&state_dir)
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&state_dir)
             .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
 
         Ok(Self {
@@ -79,6 +90,8 @@ impl TestWorld {
             shell_env: HashMap::new(),
             hooks_running: false,
             state_dir,
+            hook_session: uuid::Uuid::new_v4().to_string(),
+            advanced: super::advanced_hook_steps::AdvancedEvidence::default(),
             test_base_dir: None,
         })
     }
@@ -140,6 +153,7 @@ impl TestWorld {
             .args(args)
             .current_dir(&self.current_dir)
             .env("CUENV_STATE_DIR", &self.state_dir)
+            .env("CUENV_HOOK_SESSION", &self.hook_session)
             .env("CUENV_APPROVAL_FILE", approval_file)
             .env("CUENV_EXECUTABLE", &self.cuenv_binary); // Set path for supervisor spawning
 
@@ -207,55 +221,5 @@ impl TestWorld {
         self.current_dir.clone_from(&test_dir);
 
         Ok(test_dir)
-    }
-
-    /// Check if hooks are complete by examining state files
-    pub(super) async fn check_hooks_complete(&self) -> bool {
-        // List all files in the state directory to see what's there
-        if let Ok(mut entries) = fs::read_dir(&self.state_dir).await {
-            let mut files = Vec::new();
-            while let Some(entry) = entries.next_entry().await.ok().flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                files.push(name.clone());
-
-                // Check if any state file shows completion
-                if std::path::Path::new(&name)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-                    && let Ok(content) = fs::read_to_string(entry.path()).await
-                {
-                    // Log the content for debugging
-                    let _ = fs::write(
-                        format!(
-                            "/tmp/cuenv_state_content_{}.json",
-                            name.replace(".json", "")
-                        ),
-                        &content,
-                    )
-                    .await;
-
-                    if content.contains("\"Completed\"") {
-                        let _ = fs::write(
-                            self.state_root().join("cuenv_found_completed_state.log"),
-                            format!("Found completed state in: {name}"),
-                        )
-                        .await;
-                        return true;
-                    }
-                }
-            }
-            let _ = fs::write(
-                self.state_root().join("cuenv_state_dir_contents.log"),
-                format!("Files in {}: {:?}", self.state_dir.display(), files),
-            )
-            .await;
-        } else {
-            let _ = fs::write(
-                self.state_root().join("cuenv_state_dir_error.log"),
-                format!("Failed to read state dir: {}", self.state_dir.display()),
-            )
-            .await;
-        }
-        false
     }
 }

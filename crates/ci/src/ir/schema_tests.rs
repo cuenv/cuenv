@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    ArtifactDownload, BTreeMap, BuildStage, CachePolicy, IntermediateRepresentation, MatrixConfig,
+    OutputDeclaration, OutputType, PurityMode, ResourceRequirements, Runtime, SecretConfig, Task,
+    TriggerCondition,
+};
 
 #[test]
 fn test_ir_version() {

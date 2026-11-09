@@ -1,6 +1,9 @@
 package examples
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"github.com/cuenv/cuenv/schema"
+	c "github.com/cuenv/cuenv/contrib/contributors"
+)
 
 schema.#Project
 
@@ -16,6 +19,8 @@ runtime: schema.#NixRuntime & {
 
 // CI configuration with Cachix binary caching
 ci: {
+	providers: ["github"]
+	contributors: [c.#Nix, c.#Cuenv, c.#Cachix]
 	provider: github: cachix: {
 		name: "my-project-cache"
 	}

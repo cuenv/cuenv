@@ -1,15 +1,27 @@
 //! Tenant locks: the lock a run holds and what is recorded about it.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::{InfrastructureError, Result};
 use crate::tenant::{ProjectInstance, TenantKey};
 
 /// An acquired state lock. Every write must present it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StateLock {
     /// Lock identifier, needed to write and to release it.
     pub lock_identifier: String,
+}
+
+impl fmt::Debug for StateLock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StateLock")
+            .field("lock_identifier", &"<redacted>")
+            .finish()
+    }
 }
 
 impl StateLock {
@@ -49,7 +61,7 @@ impl StateLock {
 }
 
 /// What [`StateStore::acquire_lock`] needs.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct LockRequest<'request> {
     /// The lock to take, with its identifier already chosen
     /// ([`StateLock::generate`]).
@@ -64,18 +76,101 @@ pub struct LockRequest<'request> {
     pub instance: Option<&'request ProjectInstance>,
 }
 
-/// Who holds a tenant's lock.
+impl fmt::Debug for LockRequest<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LockRequest")
+            .field("lock", &self.lock)
+            .field("holder", &"<redacted>")
+            .field("instance", &self.instance)
+            .finish()
+    }
+}
+
+/// The information about a lock that may be shown to an operator.
+///
+/// Migration lock tokens are never included. An absent operation identifier
+/// means the stored migration metadata cannot be identified safely.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LockIdentity {
+    /// An ordinary lock, including a legacy `migrated-` fence.
+    Ordinary {
+        /// Identifier accepted by the ordinary unlock command.
+        identifier: String,
+    },
+    /// A lock controlled by a migration operation.
+    Migration {
+        /// Public operation identifier, when it can be decoded.
+        operation_id: Option<Uuid>,
+    },
+}
+
+/// Who holds a tenant's lock, without migration lock tokens.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 pub struct LockInformation {
-    /// Lock identifier.
-    pub lock_identifier: String,
+    /// Operator-visible lock identity.
+    pub identity: LockIdentity,
     /// Description of the holder (command, user, host, process).
     pub holder: String,
     /// When the lock was acquired (RFC 3339).
     pub acquired_at: String,
 }
 
+impl fmt::Debug for LockInformation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let holder = if self.identifier().is_some() {
+            self.holder.as_str()
+        } else {
+            "migration"
+        };
+        formatter
+            .debug_struct("LockInformation")
+            .field("identity", &self.identity)
+            .field("holder", &holder)
+            .field("acquired_at", &self.acquired_at)
+            .finish()
+    }
+}
+
+impl Serialize for LockInformation {
+    fn serialize<Serializer: serde::Serializer>(
+        &self,
+        serializer: Serializer,
+    ) -> std::result::Result<Serializer::Ok, Serializer::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("LockInformation", 3)?;
+        value.serialize_field("identity", &self.identity)?;
+        let holder = if self.identifier().is_some() {
+            self.holder.as_str()
+        } else {
+            "migration"
+        };
+        value.serialize_field("holder", holder)?;
+        value.serialize_field("acquired_at", &self.acquired_at)?;
+        value.end()
+    }
+}
+
 impl LockInformation {
+    /// The identifier for an ordinary or legacy lock, if available.
+    #[must_use]
+    pub fn identifier(&self) -> Option<&str> {
+        match &self.identity {
+            LockIdentity::Ordinary { identifier } => Some(identifier),
+            LockIdentity::Migration { .. } => None,
+        }
+    }
+
+    /// The migration operation identifier, if known.
+    #[must_use]
+    pub fn operation_id(&self) -> Option<Uuid> {
+        match self.identity {
+            LockIdentity::Migration { operation_id } => operation_id,
+            LockIdentity::Ordinary { .. } => None,
+        }
+    }
+
     /// How long ago the lock was acquired, as short text (`45s`, `12m`,
     /// `3h 05m`, `2d 4h`), when its timestamp can be read. A lock whose
     /// timestamp lies in the future counts as just acquired.
@@ -92,6 +187,34 @@ impl LockInformation {
             3600..=86_399 => format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60),
             _ => format!("{}d {}h", seconds / 86_400, seconds % 86_400 / 3600),
         })
+    }
+}
+
+impl fmt::Display for LockInformation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.identity {
+            LockIdentity::Ordinary { identifier } => write!(
+                formatter,
+                "by '{}' (lock {identifier}, acquired {})",
+                self.holder, self.acquired_at
+            ),
+            LockIdentity::Migration {
+                operation_id: Some(id),
+            } => {
+                write!(
+                    formatter,
+                    "by migration {id} (acquired {})",
+                    self.acquired_at
+                )
+            }
+            LockIdentity::Migration { operation_id: None } => {
+                write!(
+                    formatter,
+                    "by an unidentified migration (acquired {})",
+                    self.acquired_at
+                )
+            }
+        }
     }
 }
 
@@ -165,6 +288,42 @@ mod tests {
                 .is_err(),
                 "{invalid}"
             );
+        }
+    }
+
+    #[test]
+    fn debug_redacts_the_lock_token() {
+        let lock = StateLock {
+            lock_identifier: "private-lock-token".into(),
+        };
+        let rendered = format!("{lock:?}");
+        assert!(!rendered.contains("private-lock-token"));
+        assert!(rendered.contains("<redacted>"));
+        let request = LockRequest {
+            lock: &lock,
+            holder: "private-holder-token",
+            instance: None,
+        };
+        let rendered = format!("{request:?}");
+        assert!(!rendered.contains("private-lock-token"));
+        assert!(!rendered.contains("private-holder-token"));
+    }
+
+    #[test]
+    fn migration_metadata_redacts_the_holder_in_debug_and_serialization() {
+        let operation = Uuid::new_v4();
+        let lock = LockInformation {
+            identity: LockIdentity::Migration {
+                operation_id: Some(operation),
+            },
+            holder: "private-migration-token".into(),
+            acquired_at: "2026-01-01T00:00:00Z".into(),
+        };
+        assert_eq!(lock.identifier(), None);
+        assert_eq!(lock.operation_id(), Some(operation));
+        for rendered in [format!("{lock:?}"), serde_json::to_string(&lock).unwrap()] {
+            assert!(!rendered.contains("private-migration-token"), "{rendered}");
+            assert!(rendered.contains(&operation.to_string()), "{rendered}");
         }
     }
 }

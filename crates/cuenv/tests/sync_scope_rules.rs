@@ -104,7 +104,7 @@ fn copy_builtin_contributors(root: &Path) -> TestResult {
     )
 }
 
-fn project_env_cue(name: &str, pipeline: &str, task: &str, _owner: &str) -> String {
+fn project_env_cue(name: &str, pipeline: &str, task: &str) -> String {
     format!(
         r#"package cuenv
 
@@ -255,7 +255,7 @@ schema.#Project & {{
     )
 }
 
-fn base_env_cue(_owner: &str, _include_ignore: bool) -> String {
+fn base_env_cue() -> String {
     r#"package cuenv
 
 import "github.com/cuenv/cuenv/schema"
@@ -426,7 +426,7 @@ fn sync_root_project_only_generates_root_ci() -> TestResult {
 
     fs::write(
         root.join("env.cue"),
-        project_env_cue("root", "build", "build", "@root"),
+        project_env_cue("root", "build", "build"),
     )?;
 
     let output = run_cuenv(root, &["sync"])?;
@@ -444,13 +444,13 @@ fn sync_nested_project_only_generates_nested_ci_in_repo_root() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join("env.cue"), base_env_cue())?;
 
     let nested = root.join("apps/service");
     fs::create_dir_all(&nested)?;
     fs::write(
         nested.join("env.cue"),
-        project_env_cue("service", "test", "test", "@service"),
+        project_env_cue("service", "test", "test"),
     )?;
 
     let output = run_cuenv(&nested, &["sync"])?;
@@ -469,7 +469,7 @@ fn sync_nested_project_normalizes_parent_trigger_paths() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join("env.cue"), base_env_cue())?;
     fs::write(root.join("flake.nix"), "{}")?;
     fs::create_dir_all(root.join("infrastructure/waddle.cloud/gitops/waddle-server"))?;
 
@@ -597,20 +597,20 @@ fn sync_all_from_nested_generates_all_ci_in_repo_root() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join("env.cue"), base_env_cue())?;
 
     let nested = root.join("apps/service");
     fs::create_dir_all(&nested)?;
     fs::write(
         nested.join("env.cue"),
-        project_env_cue("service", "test", "test", "@service"),
+        project_env_cue("service", "test", "test"),
     )?;
 
     let other = root.join("apps/api");
     fs::create_dir_all(&other)?;
     fs::write(
         other.join("env.cue"),
-        project_env_cue("api", "build", "build", "@api"),
+        project_env_cue("api", "build", "build"),
     )?;
 
     let output = run_cuenv(&nested, &["sync", "-A"])?;
@@ -629,13 +629,13 @@ fn sync_ci_all_honors_requested_path_from_unrelated_cwd() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join("env.cue"), base_env_cue())?;
 
     let nested = root.join("apps/service");
     fs::create_dir_all(&nested)?;
     fs::write(
         nested.join("env.cue"),
-        project_env_cue("service", "test", "test", "@service"),
+        project_env_cue("service", "test", "test"),
     )?;
 
     // Run from a directory with no cuenv module at all: workspace discovery
@@ -728,18 +728,18 @@ fn sync_outside_project_errors() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join("env.cue"), base_env_cue())?;
 
     let nested = root.join("apps/service");
     fs::create_dir_all(&nested)?;
     fs::write(
         nested.join("env.cue"),
-        project_env_cue("service", "test", "test", "@service"),
+        project_env_cue("service", "test", "test"),
     )?;
 
     let non_project = root.join("shared");
     fs::create_dir_all(&non_project)?;
-    fs::write(non_project.join("env.cue"), base_env_cue("@shared", false))?;
+    fs::write(non_project.join("env.cue"), base_env_cue())?;
 
     let output = run_cuenv(&non_project, &["sync"])?;
     assert!(!output.success, "sync should fail outside a project");
@@ -780,7 +780,7 @@ fn sync_all_creates_lockfile_for_tools_projects() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join("env.cue"), base_env_cue())?;
 
     let nested = root.join("apps/tools");
     fs::create_dir_all(&nested)?;
@@ -890,7 +890,7 @@ fn sync_check_covers_all_rules_outputs() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join("env.cue"), base_env_cue())?;
     fs::write(root.join(".rules.cue"), all_rules_cue())?;
 
     let output = run_cuenv(root, &["sync"])?;
@@ -945,7 +945,7 @@ fn rules_codeowners_order_controls_precedence() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join("env.cue"), base_env_cue())?;
     fs::write(root.join(".rules.cue"), all_rules_cue())?;
 
     let output = run_cuenv(root, &["sync"])?;

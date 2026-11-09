@@ -4,7 +4,7 @@
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use cuenv_task_graph::{Result as GraphResult, TaskGraph, TaskNodeData};
-use std::hint::black_box;
+use std::hint;
 
 /// Simple task type for benchmarking
 #[derive(Debug, Clone)]
@@ -151,13 +151,13 @@ fn generate_reverse_affected_chain(
 }
 
 fn benchmark_get_parallel_groups(c: &mut Criterion) {
-    let mut group = c.benchmark_group("get_parallel_groups");
+    let mut group = c.benchmark_group("parallel_groups");
 
     for count in [50, 100, 200, 500] {
         group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
             b.iter_batched(
                 || generate_wide_graph(count),
-                |graph| black_box(graph.and_then(|graph| graph.get_parallel_groups())),
+                |graph| hint::black_box(graph.and_then(|graph| graph.parallel_groups())),
                 BatchSize::SmallInput,
             );
         });
@@ -173,7 +173,7 @@ fn benchmark_deep_chain(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
             b.iter_batched(
                 || generate_deep_graph(depth),
-                |graph| black_box(graph.and_then(|graph| graph.get_parallel_groups())),
+                |graph| hint::black_box(graph.and_then(|graph| graph.parallel_groups())),
                 BatchSize::SmallInput,
             );
         });
@@ -193,7 +193,7 @@ fn benchmark_diamond_graph(c: &mut Criterion) {
             |b, &(width, depth)| {
                 b.iter_batched(
                     || generate_diamond_graph(width, depth),
-                    |graph| black_box(graph.and_then(|graph| graph.get_parallel_groups())),
+                    |graph| hint::black_box(graph.and_then(|graph| graph.parallel_groups())),
                     BatchSize::SmallInput,
                 );
             },
@@ -210,7 +210,7 @@ fn benchmark_cycle_detection(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
             b.iter_batched(
                 || generate_wide_graph(count),
-                |graph| black_box(graph.map(|graph| graph.has_cycles())),
+                |graph| hint::black_box(graph.map(|graph| graph.has_cycles())),
                 BatchSize::SmallInput,
             );
         });
@@ -226,7 +226,7 @@ fn benchmark_graph_construction(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
             b.iter(|| {
                 let graph = generate_wide_graph(count);
-                black_box(graph)
+                hint::black_box(graph)
             });
         });
     }
@@ -244,7 +244,7 @@ fn benchmark_compute_affected(c: &mut Criterion) {
             &fixture,
             |b, fixture| {
                 b.iter(|| {
-                    black_box(fixture.as_ref().map(|(graph, pipeline_tasks)| {
+                    hint::black_box(fixture.as_ref().map(|(graph, pipeline_tasks)| {
                         graph.compute_affected(pipeline_tasks, |task| task.affected, None)
                     }))
                 });
@@ -265,7 +265,7 @@ fn benchmark_compute_affected_reverse(c: &mut Criterion) {
             &fixture,
             |b, fixture| {
                 b.iter(|| {
-                    black_box(fixture.as_ref().map(|(graph, pipeline_tasks)| {
+                    hint::black_box(fixture.as_ref().map(|(graph, pipeline_tasks)| {
                         graph.compute_affected(pipeline_tasks, |task| task.affected, None)
                     }))
                 });

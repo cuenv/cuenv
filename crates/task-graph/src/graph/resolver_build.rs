@@ -153,10 +153,8 @@ where
         for ordering in &self.sequential_orderings {
             for window in ordering.windows(2) {
                 if let [prev, next] = window
-                    && let (Some(prev_idx), Some(next_idx)) = (
-                        self.graph.get_node_index(prev),
-                        self.graph.get_node_index(next),
-                    )
+                    && let (Some(prev_idx), Some(next_idx)) =
+                        (self.graph.node_index(prev), self.graph.node_index(next))
                 {
                     self.graph.add_edge(prev_idx, next_idx);
                 }

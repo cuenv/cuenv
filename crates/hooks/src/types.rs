@@ -37,7 +37,7 @@ pub struct Hook {
 }
 
 /// Result of executing a single hook
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HookResult {
     /// The hook that was executed
     pub hook: Hook,
@@ -53,6 +53,17 @@ pub struct HookResult {
     pub duration_ms: u64,
     /// Error message if execution failed
     pub error: Option<String>,
+}
+
+impl std::fmt::Debug for HookResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HookResult")
+            .field("success", &self.success)
+            .field("exit_status", &self.exit_status)
+            .field("duration_ms", &self.duration_ms)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Context captured when a hook execution fails.
@@ -72,23 +83,45 @@ pub struct HookFailure {
     pub error: String,
 }
 
+/// Details of a successfully completed hook.
+#[derive(Debug)]
+pub struct HookSuccess {
+    /// The hook that ran.
+    pub hook: Hook,
+    /// Successful process exit status.
+    pub exit_status: ExitStatus,
+    /// Captured standard output.
+    pub stdout: String,
+    /// Captured standard error.
+    pub stderr: String,
+    /// Execution time in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Details of a timed-out hook.
+#[derive(Debug)]
+pub struct HookTimeout {
+    /// The hook that ran.
+    pub hook: Hook,
+    /// Captured standard output.
+    pub stdout: String,
+    /// Captured standard error.
+    pub stderr: String,
+    /// Configured timeout in seconds.
+    pub timeout_seconds: u64,
+}
+
 impl HookResult {
     /// Create a successful hook result
     #[must_use]
-    pub fn success(
-        hook: Hook,
-        exit_status: ExitStatus,
-        stdout: String,
-        stderr: String,
-        duration_ms: u64,
-    ) -> Self {
+    pub fn success(result: HookSuccess) -> Self {
         Self {
-            hook,
+            hook: result.hook,
             success: true,
-            exit_status: exit_status.code(),
-            stdout,
-            stderr,
-            duration_ms,
+            exit_status: result.exit_status.code(),
+            stdout: result.stdout,
+            stderr: result.stderr,
+            duration_ms: result.duration_ms,
             error: None,
         }
     }
@@ -109,17 +142,17 @@ impl HookResult {
 
     /// Create a timeout hook result
     #[must_use]
-    pub fn timeout(hook: Hook, stdout: String, stderr: String, timeout_seconds: u64) -> Self {
+    pub fn timeout(result: HookTimeout) -> Self {
         Self {
-            hook,
+            hook: result.hook,
             success: false,
             exit_status: None,
-            stdout,
-            stderr,
-            duration_ms: timeout_seconds * 1000,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            duration_ms: result.timeout_seconds * 1000,
             error: Some(format!(
                 "Command timed out after {} seconds",
-                timeout_seconds
+                result.timeout_seconds
             )),
         }
     }
@@ -151,6 +184,8 @@ impl Default for HookExecutionConfig {
 pub enum ExecutionStatus {
     /// Hooks are currently being executed
     Running,
+    /// Cancellation was requested; the worker has not yet stopped.
+    Cancelling,
     /// All hooks completed successfully
     Completed,
     /// Hook execution failed
@@ -163,6 +198,7 @@ impl std::fmt::Display for ExecutionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Running => write!(f, "Running"),
+            Self::Cancelling => write!(f, "Cancelling"),
             Self::Completed => write!(f, "Completed"),
             Self::Failed => write!(f, "Failed"),
             Self::Cancelled => write!(f, "Cancelled"),
@@ -247,13 +283,13 @@ mod tests {
             .unwrap()
             .status;
 
-        let result = HookResult::success(
-            hook.clone(),
+        let result = HookResult::success(crate::HookSuccess {
+            hook: hook.clone(),
             exit_status,
-            "test\n".to_string(),
-            String::new(),
-            100,
-        );
+            stdout: "test\n".to_string(),
+            stderr: String::new(),
+            duration_ms: 100,
+        });
 
         assert!(result.success);
         assert_eq!(result.hook, hook);
@@ -321,7 +357,12 @@ mod tests {
             source: None,
         };
 
-        let result = HookResult::timeout(hook.clone(), String::new(), String::new(), 10);
+        let result = HookResult::timeout(crate::HookTimeout {
+            hook: hook.clone(),
+            stdout: String::new(),
+            stderr: String::new(),
+            timeout_seconds: 10,
+        });
 
         assert!(!result.success);
         assert_eq!(result.hook, hook);
@@ -342,6 +383,7 @@ mod tests {
     #[test]
     fn test_execution_status_display() {
         assert_eq!(ExecutionStatus::Running.to_string(), "Running");
+        assert_eq!(ExecutionStatus::Cancelling.to_string(), "Cancelling");
         assert_eq!(ExecutionStatus::Completed.to_string(), "Completed");
         assert_eq!(ExecutionStatus::Failed.to_string(), "Failed");
         assert_eq!(ExecutionStatus::Cancelled.to_string(), "Cancelled");

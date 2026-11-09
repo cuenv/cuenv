@@ -171,7 +171,8 @@ validation and preparation, measured these medians:
 
 The CLI's additional bootstrap inspection was not included in either variant.
 These figures are allocation churn, not peak RSS or end-to-end CLI timing, and
-do not prove linear scaling. Run the opt-in experiment with:
+do not prove linear scaling. The Nix bridge check runs the experiment with its
+default settings. Run a deeper measurement with:
 
 ```sh
 CUENV_FROZEN_SCALING=1 GOMAXPROCS=4 SCALING_LAYERS=32 SCALING_REPETITIONS=3 \

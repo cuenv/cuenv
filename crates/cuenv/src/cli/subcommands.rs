@@ -574,6 +574,21 @@ pub enum InfrastructureStateCommands {
         about = "Copy the project's state to the backend named by `infrastructure.migrateStateTo`"
     )]
     Migrate {
+        /// Confirm that all clients of both stores are stopped for migration.
+        #[arg(
+            long,
+            help = "Confirm that all clients, restores, unlocks and in-flight operations on both stores are stopped through configuration cutover"
+        )]
+        confirm_maintenance: bool,
+        /// Stable identity of the physical source bucket or database.
+        #[arg(
+            long,
+            help = "Stable UUID identifying the physical source bucket or database"
+        )]
+        source_physical_identity: Option<uuid::Uuid>,
+        /// Stable identity of the physical target bucket.
+        #[arg(long, help = "Stable UUID identifying the physical target bucket")]
+        target_physical_identity: Option<uuid::Uuid>,
         /// Migrate every environment the source holds state for.
         #[arg(
             long,
@@ -743,6 +758,25 @@ impl std::fmt::Display for StatusFormat {
 /// Environment variable subcommands.
 #[derive(Subcommand, Debug)]
 pub enum EnvCommands {
+    /// Inspect or recover abandoned hook runs after the operator drains them.
+    #[command(about = "Inspect or recover abandoned hook runs")]
+    Recover {
+        /// List durable reservations, including runs whose project directory no longer exists.
+        #[arg(long, conflicts_with_all = ["directory_key", "instance_hash", "run_id", "drained"])]
+        list: bool,
+        /// Directory identity printed by `recover --list`.
+        #[arg(long, required_unless_present = "list")]
+        directory_key: Option<String>,
+        /// Instance identity printed by `recover --list`.
+        #[arg(long, required_unless_present = "list")]
+        instance_hash: Option<String>,
+        /// Exact run UUID printed by `recover --list`.
+        #[arg(long, required_unless_present = "list")]
+        run_id: Option<String>,
+        /// Attest that the run and any descendants have been stopped externally.
+        #[arg(long, required_unless_present = "list")]
+        drained: bool,
+    },
     /// Print environment variables from CUE package.
     #[command(about = "Print environment variables from CUE package")]
     Print {
@@ -910,6 +944,15 @@ pub enum ShellCommands {
         #[arg(help = "Shell type", value_enum)]
         shell: ShellType,
     },
+    /// Create an independent hook execution session, or show the current one.
+    #[command(about = "Generate a fresh hook execution session ID")]
+    Session {
+        /// Show the session supplied by the current shell integration.
+        #[arg(long)]
+        current: bool,
+    },
+    /// Refresh and apply the environment in the initialized shell.
+    Refresh,
 }
 
 /// Supported shell types for integration.

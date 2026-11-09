@@ -158,13 +158,13 @@ impl FlakeLock {
 
     /// Get an input node by name
     #[must_use]
-    pub fn get_input(&self, name: &str) -> Option<&FlakeNode> {
+    pub fn input(&self, name: &str) -> Option<&FlakeNode> {
         self.nodes.get(name).filter(|node| node.is_input())
     }
 
     /// Get any node by name (root or input)
     #[must_use]
-    pub fn get_node(&self, name: &str) -> Option<&FlakeNode> {
+    pub fn node(&self, name: &str) -> Option<&FlakeNode> {
         self.nodes.get(name)
     }
 }
@@ -216,7 +216,7 @@ mod tests {
         }"#;
 
         let lock = FlakeLock::from_json(json).unwrap();
-        let input = lock.get_input("nixpkgs").unwrap();
+        let input = lock.input("nixpkgs").unwrap();
         assert!(input.locked.is_some());
         let locked = input.locked.as_ref().unwrap();
         assert_eq!(locked.locked_type, "github");
@@ -254,7 +254,7 @@ mod tests {
         }"#;
 
         let lock = FlakeLock::from_json(json).unwrap();
-        let rust_overlay = lock.get_input("rust-overlay").unwrap();
+        let rust_overlay = lock.input("rust-overlay").unwrap();
 
         // Check that rust-overlay follows nixpkgs
         let nixpkgs_ref = rust_overlay.inputs.get("nixpkgs").unwrap();
@@ -281,7 +281,7 @@ mod tests {
         }"#;
 
         let lock = FlakeLock::from_json(json).unwrap();
-        let input = lock.get_input("advisory-db").unwrap();
+        let input = lock.input("advisory-db").unwrap();
         assert_eq!(input.flake, Some(false));
     }
 }

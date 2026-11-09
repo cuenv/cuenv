@@ -6,10 +6,7 @@ use std::path::Path;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    Error, FileResult, FileStatus, Result, determine_dry_run_status, validate_filename,
-    write_ignore_file,
-};
+use crate::{Error, FileResult, FileStatus, Result};
 
 const SECTION_BEGIN_PREFIX: &str = "# BEGIN ";
 const SECTION_END_PREFIX: &str = "# END ";
@@ -111,7 +108,7 @@ pub fn process_ignore_section(
     mode: WriteMode,
 ) -> Result<FileResult> {
     validate_section_name(&section.name)?;
-    validate_filename(&section.filename)?;
+    crate::validate_filename(&section.filename)?;
 
     let filepath = dir.join(&section.filename);
     let (existing, file_missing) = read_optional_ignore_file(&filepath)?;
@@ -123,7 +120,7 @@ pub fn process_ignore_section(
             pattern_count: section.patterns.len(),
         });
     }
-    let status = determine_file_status_for_mode(&filepath, &content, mode)?;
+    let status = crate::determine_file_status(&filepath, &content, mode)?;
 
     tracing::info!(
         filename = %section.filename,
@@ -138,17 +135,6 @@ pub fn process_ignore_section(
         status,
         pattern_count: section.patterns.len(),
     })
-}
-
-fn determine_file_status_for_mode(
-    filepath: &Path,
-    content: &str,
-    mode: WriteMode,
-) -> Result<FileStatus> {
-    match mode {
-        WriteMode::DryRun => determine_dry_run_status(filepath, content),
-        WriteMode::Write => write_ignore_file(filepath, content),
-    }
 }
 
 fn read_optional_ignore_file(filepath: &Path) -> Result<(String, bool)> {

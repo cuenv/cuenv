@@ -1,4 +1,11 @@
-use super::*;
+use crate::redaction;
+use uuid::Uuid;
+
+use super::{
+    CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
+    InteractiveEvent, OutputEvent, RestartReason, ServiceEvent, SkipReason, Stream, SystemEvent,
+    TaskEvent, TaskKind,
+};
 
 #[test]
 fn test_event_creation() {
@@ -601,9 +608,8 @@ fn output_event(content: &str) -> CuenvEvent {
 
 #[test]
 fn output_events_are_redacted_before_any_renderer_sees_them() {
-    use crate::redaction::{register_secret, test_support::with_clean_registry};
-    with_clean_registry(|| {
-        register_secret("output-secret-ABCD");
+    redaction::test_support::with_clean_registry(|| {
+        redaction::register_secret("output-secret-ABCD");
         let event = output_event("value=output-secret-ABCD");
         let redacted = event.redacted();
         let EventCategory::Output(OutputEvent::Stdout { content }) = &redacted.category else {
@@ -617,9 +623,8 @@ fn output_events_are_redacted_before_any_renderer_sees_them() {
 
 #[test]
 fn every_category_is_redacted_not_only_output() {
-    use crate::redaction::{register_secret, test_support::with_clean_registry};
-    with_clean_registry(|| {
-        register_secret("task-secret-ABCD");
+    redaction::test_support::with_clean_registry(|| {
+        redaction::register_secret("task-secret-ABCD");
         let event = CuenvEvent::new(
             Uuid::new_v4(),
             EventSource::new("cuenv::test"),
@@ -638,8 +643,7 @@ fn every_category_is_redacted_not_only_output() {
 
 #[test]
 fn events_without_secrets_are_not_copied() {
-    use crate::redaction::test_support::with_clean_registry;
-    with_clean_registry(|| {
+    redaction::test_support::with_clean_registry(|| {
         let event = output_event("nothing secret");
         assert!(matches!(event.redacted(), std::borrow::Cow::Borrowed(_)));
     });
@@ -647,10 +651,9 @@ fn events_without_secrets_are_not_copied() {
 
 #[test]
 fn a_secret_inside_event_metadata_never_drops_the_event() {
-    use crate::redaction::{register_secret, test_support::with_clean_registry};
-    with_clean_registry(|| {
+    redaction::test_support::with_clean_registry(|| {
         // A short secret can occur in the timestamp or the identifiers.
-        register_secret("2026");
+        redaction::register_secret("2026");
         let event = output_event("plain");
         let redacted = event.redacted();
         assert_eq!(redacted.id, event.id);
@@ -717,15 +720,14 @@ fn one_event_per_category(text: &str) -> Vec<CuenvEvent> {
 
 #[test]
 fn a_secret_that_equals_a_schema_name_changes_no_tag_key_or_variant() {
-    use crate::redaction::{register_secret, test_support::with_clean_registry};
     // Every one of these is a tag, a key or an enumeration value in the
     // serialized form of an event.
     for secret in [
         "data", "type", "event", "content", "Task", "Output", "Stdout", "Stderr", "name", "stream",
         "message", "error",
     ] {
-        with_clean_registry(|| {
-            register_secret(secret);
+        redaction::test_support::with_clean_registry(|| {
+            redaction::register_secret(secret);
             for event in one_event_per_category(secret) {
                 let redacted = event.redacted();
                 let json = serde_json::to_value(redacted.as_ref()).unwrap();
@@ -751,9 +753,8 @@ fn a_secret_that_equals_a_schema_name_changes_no_tag_key_or_variant() {
 
 #[test]
 fn a_secret_named_data_is_replaced_in_content_but_not_in_the_envelope() {
-    use crate::redaction::{register_secret, test_support::with_clean_registry};
-    with_clean_registry(|| {
-        register_secret("data");
+    redaction::test_support::with_clean_registry(|| {
+        redaction::register_secret("data");
         let redacted = output_event("the data and metadata")
             .redacted()
             .into_owned();
@@ -772,9 +773,8 @@ fn a_secret_named_data_is_replaced_in_content_but_not_in_the_envelope() {
 
 #[test]
 fn every_category_variant_text_is_redacted() {
-    use crate::redaction::{register_secret, test_support::with_clean_registry};
-    with_clean_registry(|| {
-        register_secret("sekret-ZZZZ");
+    redaction::test_support::with_clean_registry(|| {
+        redaction::register_secret("sekret-ZZZZ");
         for event in one_event_per_category("has sekret-ZZZZ inside") {
             let json = serde_json::to_string(event.redacted().as_ref()).unwrap();
             assert!(!json.contains("sekret-ZZZZ"), "{json}");

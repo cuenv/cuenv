@@ -9,8 +9,6 @@ use std::io::{self, Write};
 
 use tracing_subscriber::fmt::MakeWriter;
 
-use crate::redaction::{redact, redact_json_text};
-
 /// How the text a [`RedactingWriter`] receives is structured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
@@ -49,10 +47,10 @@ impl<Inner: Write> RedactingWriter<Inner> {
         let text = String::from_utf8_lossy(&self.buffer).into_owned();
         self.buffer.clear();
         let redacted = match self.format {
-            LogFormat::Text => redact(&text),
+            LogFormat::Text => crate::redaction::redact(&text),
             LogFormat::JsonLines => text
                 .split_inclusive('\n')
-                .map(redact_json_text)
+                .map(crate::redaction::redact_json_text)
                 .collect::<String>(),
         };
         self.inner.write_all(redacted.as_bytes())
@@ -104,8 +102,7 @@ impl<'writer> MakeWriter<'writer> for RedactingStderr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::redaction::{register_secret, test_support::with_clean_registry};
-
+    use crate::redaction;
     fn written(format: LogFormat, chunks: &[&str]) -> String {
         let mut output = Vec::new();
         {
@@ -119,8 +116,8 @@ mod tests {
 
     #[test]
     fn a_secret_split_across_writes_is_redacted() {
-        with_clean_registry(|| {
-            register_secret("split-secret-value");
+        redaction::test_support::with_clean_registry(|| {
+            redaction::register_secret("split-secret-value");
             let output = written(LogFormat::Text, &["token=split-sec", "ret-value\n"]);
             assert_eq!(output, "token=*_*\n");
         });
@@ -128,8 +125,8 @@ mod tests {
 
     #[test]
     fn json_log_lines_are_redacted_inside_their_strings() {
-        with_clean_registry(|| {
-            register_secret("quo\"te-QQQQ");
+        redaction::test_support::with_clean_registry(|| {
+            redaction::register_secret("quo\"te-QQQQ");
             let line = serde_json::json!({"fields": {"message": "path /x/quo\"te-QQQQ/y"}});
             let output = written(LogFormat::JsonLines, &[&format!("{line}\n")]);
             assert!(!output.contains("QQQQ"), "{output}");
@@ -141,7 +138,7 @@ mod tests {
 
     #[test]
     fn nothing_is_written_when_nothing_was() {
-        with_clean_registry(|| {
+        redaction::test_support::with_clean_registry(|| {
             assert_eq!(written(LogFormat::Text, &[]), "");
         });
     }

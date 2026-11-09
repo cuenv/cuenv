@@ -1,4 +1,4 @@
-use super::*;
+use super::{Compiler, CompilerOptions, Project, Task, TaskNode};
 
 #[test]
 fn test_derive_trigger_paths_with_project_path() {

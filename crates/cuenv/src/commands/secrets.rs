@@ -1,8 +1,7 @@
 //! Secrets provider setup commands
 
 use crate::cli::{CliError, SecretsProvider};
-use cuenv_core::http::ensure_rustls_crypto_provider;
-use cuenv_events::println_redacted;
+use cuenv_core::http;
 
 /// Default WASM URL for 1Password SDK v0.3.1
 const ONEPASSWORD_WASM_URL: &str =
@@ -42,19 +41,21 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
 
     // Check if already downloaded
     if wasm_path.exists() {
-        println_redacted(&format!(
+        cuenv_events::println_redacted(&format!(
             "1Password WASM SDK already downloaded at: {}",
             wasm_path.display()
         ));
-        println_redacted("To re-download, delete the file and run this command again.");
+        cuenv_events::println_redacted(
+            "To re-download, delete the file and run this command again.",
+        );
         return Ok(());
     }
 
-    println_redacted("Downloading 1Password WASM SDK...");
-    println_redacted(&format!("Source: {url}"));
+    cuenv_events::println_redacted("Downloading 1Password WASM SDK...");
+    cuenv_events::println_redacted(&format!("Source: {url}"));
 
     // Download the WASM file
-    ensure_rustls_crypto_provider();
+    http::ensure_rustls_crypto_provider();
     let response = reqwest::blocking::get(url)
         .map_err(|e| CliError::config(format!("Failed to download WASM: {e}")))?;
 
@@ -74,13 +75,13 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
         .map_err(|e| CliError::config(format!("Failed to write WASM file: {e}")))?;
 
     let size_mb = format_download_size_mb(bytes.len());
-    println_redacted(&format!(
+    cuenv_events::println_redacted(&format!(
         "Downloaded {size_mb} MB to: {}",
         wasm_path.display()
     ));
-    println_redacted("");
-    println_redacted("1Password HTTP mode is now enabled!");
-    println_redacted("Set OP_SERVICE_ACCOUNT_TOKEN to use HTTP mode instead of CLI.");
+    cuenv_events::println_redacted("");
+    cuenv_events::println_redacted("1Password HTTP mode is now enabled!");
+    cuenv_events::println_redacted("Set OP_SERVICE_ACCOUNT_TOKEN to use HTTP mode instead of CLI.");
 
     Ok(())
 }
@@ -94,20 +95,22 @@ fn setup_infisical() -> Result<(), CliError> {
 
     match InfisicalAuthMethod::from_process_env() {
         Ok(InfisicalAuthMethod::Universal) => {
-            println_redacted("Infisical Universal Auth environment detected.");
-            println_redacted("cuenv will use INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET.");
+            cuenv_events::println_redacted("Infisical Universal Auth environment detected.");
+            cuenv_events::println_redacted(
+                "cuenv will use INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET.",
+            );
             Ok(())
         }
         Ok(InfisicalAuthMethod::Oidc) => {
-            println_redacted("Infisical OIDC Auth environment detected.");
-            println_redacted(
+            cuenv_events::println_redacted("Infisical OIDC Auth environment detected.");
+            cuenv_events::println_redacted(
                 "cuenv will use INFISICAL_MACHINE_IDENTITY_ID and INFISICAL_AUTH_JWT.",
             );
             Ok(())
         }
         Ok(InfisicalAuthMethod::Token) => {
-            println_redacted("Infisical token environment detected.");
-            println_redacted("cuenv will use INFISICAL_TOKEN.");
+            cuenv_events::println_redacted("Infisical token environment detected.");
+            cuenv_events::println_redacted("cuenv will use INFISICAL_TOKEN.");
             Ok(())
         }
         Err(error) => Err(CliError::config(format!("{error}."))),

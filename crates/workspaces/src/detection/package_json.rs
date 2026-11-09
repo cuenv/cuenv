@@ -4,8 +4,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use super::is_manager_detected;
-
 pub(super) fn detect_manager_from_package_json(
     root: &Path,
     detected_managers: &HashSet<PackageManager>,
@@ -28,7 +26,7 @@ pub(super) fn detect_manager_from_package_json(
         PackageManager::Npm
     };
 
-    if is_manager_detected(detected_managers, manager) {
+    if super::detector::is_manager_detected(detected_managers, manager) {
         return Ok(None);
     }
 

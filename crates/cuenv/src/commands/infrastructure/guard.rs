@@ -2,12 +2,12 @@
 //! recorded for another instance or environment.
 
 use cuenv_events::emit_stderr;
-use cuenv_infrastructure::{ResourceAddress, TenantKey, strip_control_characters};
+use cuenv_infrastructure::{ResourceAddress, TenantKey};
 
 use super::action::{InfrastructureAction, SeparateState, StateAction};
-use super::dispatch::{CommandContext, EngineInputs, unrecorded_store};
+use super::dispatch::{CommandContext, EngineInputs};
 use super::evaluation::{EnvironmentSelection, Target, TopLevel};
-use super::failure::failure;
+
 use super::{evaluation, invocation};
 use crate::cli::CliError;
 
@@ -30,20 +30,22 @@ pub(super) struct Siblings {
 impl Siblings {
     /// The identities a run without `--env` should mention besides its own:
     /// one per declared environment. A run with `--env` mentions none.
-    pub(super) fn declared(&self) -> Vec<(String, TenantKey)> {
+    pub(super) fn declared(&self) -> Result<Vec<(String, TenantKey)>, CliError> {
         if self.selected.is_some() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         self.declared_environments
             .iter()
-            .filter_map(|name| {
+            .map(|name| {
                 TenantKey::with_environment(
                     self.unselected_tenant.module_path(),
                     self.unselected_tenant.project(),
                     name,
                 )
-                .ok()
                 .map(|tenant| (name.clone(), tenant))
+                .map_err(|_| {
+                    CliError::config("a declared infrastructure environment has an invalid name")
+                })
             })
             .collect()
     }
@@ -125,7 +127,7 @@ pub(super) async fn recorded_addresses(
         .interrupts
         .until_interrupted(context.store.addresses(tenant))
         .await?
-        .map_err(|error| failure(&error, context.invocation))?;
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     addresses.retain(|address| !cuenv_infrastructure::in_flight::is_marker(address));
     Ok(addresses)
 }
@@ -223,7 +225,7 @@ pub(super) async fn guard_environment_claims(
     }
     let own = recorded_addresses(context, context.tenant).await?;
     let mut claims = Vec::new();
-    for (environment, tenant) in context.siblings.declared() {
+    for (environment, tenant) in context.siblings.declared()? {
         let recorded = recorded_addresses(context, &tenant).await?;
         let addresses: Vec<ResourceAddress> = facts
             .configured
@@ -364,7 +366,7 @@ pub(super) fn separate_state_refusal(
     let mut listed: Vec<String> = conflicts
         .iter()
         .take(LISTED_ADDRESSES)
-        .map(|address| strip_control_characters(&address.to_string()))
+        .map(|address| cuenv_infrastructure::strip_control_characters(&address.to_string()))
         .collect();
     if conflicts.len() > LISTED_ADDRESSES {
         listed.push(format!("{} more", conflicts.len() - LISTED_ADDRESSES));
@@ -424,7 +426,7 @@ pub(super) fn environment_claims_refusal(
     let mut listed: Vec<String> = addresses
         .iter()
         .take(LISTED_ADDRESSES)
-        .map(|address| strip_control_characters(&address.to_string()))
+        .map(|address| cuenv_infrastructure::strip_control_characters(&address.to_string()))
         .collect();
     if addresses.len() > LISTED_ADDRESSES {
         listed.push(format!("{} more", addresses.len() - LISTED_ADDRESSES));
@@ -498,16 +500,15 @@ pub(super) async fn guard_environment_known(
         .interrupts
         .until_interrupted(context.store.current_lock(tenant))
         .await?
-        .map_err(|error| failure(&error, context.invocation))?;
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     let writer = context
         .interrupts
         .until_interrupted(context.store.last_writer(tenant))
         .await?
-        .map_err(|error| failure(&error, context.invocation))?;
-    let saved_changes = unrecorded_store(inputs, context)
-        .ok()
-        .and_then(|unrecorded| unrecorded.has_pending(tenant).ok())
-        .unwrap_or(false);
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
+    let saved_changes = super::dispatch::unrecorded_store(inputs, context)?
+        .has_pending(tenant)
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     let environment = evaluation::escape_control_characters(tenant.environment().unwrap_or(""));
     let declared =
         evaluation::declared_environments_phrase(&context.siblings.declared_environments);

@@ -1,7 +1,7 @@
 //! What a tab is called. Everything here is pure, so the naming rules can be
 //! tested without a window or a terminal session.
 
-use super::foreground::{ForegroundProcess, ShellRun, shell_run};
+use super::foreground::{ForegroundProcess, ShellRun};
 use std::borrow::Cow;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -32,25 +32,25 @@ const TASK_START_GRACE: Duration = Duration::from_secs(3);
 
 /// Everything a tab can be named after, in no particular order.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct TabLabelSources<'a> {
-    pub(super) custom_name: Option<&'a str>,
-    pub(super) running_task: Option<&'a str>,
-    pub(super) foreground_program: Option<&'a str>,
-    pub(super) title: Option<&'a str>,
-    pub(super) directory: Option<&'a Path>,
+pub(super) struct TabLabelSources<'label> {
+    pub(super) custom_name: Option<&'label str>,
+    pub(super) running_task: Option<&'label str>,
+    pub(super) foreground_program: Option<&'label str>,
+    pub(super) title: Option<&'label str>,
+    pub(super) directory: Option<&'label Path>,
 }
 
 /// What a terminal title turned out to describe.
-enum TitleName<'a> {
+enum TitleName<'title> {
     /// A program chose this title, so it says more than the process name would.
-    Program(&'a str),
+    Program(&'title str),
     /// A shell prompt's directory, reduced to its last component. It only stands in
     /// for the working directory, which is exact, while that is not known.
-    Directory(&'a str),
+    Directory(&'title str),
 }
 
-impl<'a> TitleName<'a> {
-    fn parse(title: &'a str) -> Option<Self> {
+impl<'title> TitleName<'title> {
+    fn parse(title: &'title str) -> Option<Self> {
         let title = title.trim();
         // A shell naming itself says nothing, and must not outrank what it runs.
         if title.is_empty() || is_shell(title) {
@@ -126,11 +126,11 @@ pub(super) fn resolve_tab_label(sources: TabLabelSources<'_>) -> String {
 
 /// What a collapsed tab's mark is taken from, in no particular order.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct TabMarkSources<'a> {
-    pub(super) custom_name: Option<&'a str>,
-    pub(super) banner: Option<&'a str>,
-    pub(super) directory: Option<&'a Path>,
-    pub(super) label: &'a str,
+pub(super) struct TabMarkSources<'mark> {
+    pub(super) custom_name: Option<&'mark str>,
+    pub(super) banner: Option<&'mark str>,
+    pub(super) directory: Option<&'mark Path>,
+    pub(super) label: &'mark str,
 }
 
 /// The mark of a collapsed tab. A tab's label follows whatever is running, so the
@@ -221,22 +221,26 @@ fn foreground_program(process: &str) -> Option<&str> {
 
 /// What a sampled foreground process comes to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Foreground<'a> {
+enum Foreground<'process> {
     /// A shell reading from the terminal, as far as can be told. A builtin such as
     /// `read`, or a subshell, runs in a process just like it.
     Prompt,
-    Program(&'a str),
+    Program(&'process str),
     /// Nothing could be read, which is not the same as a prompt.
     Unknown,
 }
 
-impl<'a> From<&'a ForegroundProcess> for Foreground<'a> {
-    fn from(process: &'a ForegroundProcess) -> Self {
+impl<'process> From<&'process ForegroundProcess> for Foreground<'process> {
+    fn from(process: &'process ForegroundProcess) -> Self {
         let name = process.name.trim();
         if !is_shell(name) {
             return foreground_program(name).map_or(Self::Unknown, Self::Program);
         }
-        match process.arguments.as_deref().map(shell_run) {
+        match process
+            .arguments
+            .as_deref()
+            .map(super::foreground::shell_run)
+        {
             None => Self::Unknown,
             Some(ShellRun::Interactive) => Self::Prompt,
             Some(ShellRun::Script(script)) => Self::Program(path_basename(script)),

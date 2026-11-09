@@ -200,7 +200,9 @@ mod tests {
 
     fn after(events: &[StatusEvent]) -> TabStatus {
         let mut status = TabStatus::default();
-        events.iter().for_each(|event| status.apply(*event));
+        for event in events {
+            status.apply(*event);
+        }
         status
     }
 

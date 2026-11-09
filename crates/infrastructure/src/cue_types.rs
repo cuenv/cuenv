@@ -32,7 +32,7 @@ use sha2::{Digest, Sha256};
 
 use crate::cancellation::Cancellation;
 use crate::error::{InfrastructureError, Result};
-use crate::plugin::{LaunchOptions, ProviderClient, isolated_withheld_names};
+use crate::plugin::{LaunchOptions, ProviderClient};
 use crate::registry::ProviderSource;
 use crate::schema::{
     Attribute, Block, Documentation, NestedAttributes, NestedBlock, Nesting, Presence,
@@ -228,7 +228,7 @@ pub async fn load_schema(
     cancellation: &Cancellation,
 ) -> Result<(ProviderSchema, Vec<String>)> {
     let ambient: Vec<std::ffi::OsString> = std::env::vars_os().map(|(name, _)| name).collect();
-    let withheld = isolated_withheld_names(ambient, &[]);
+    let withheld = crate::plugin::isolated_withheld_names(ambient, &[]);
     let client = ProviderClient::launch(&LaunchOptions {
         binary,
         withheld_environment_variables: &withheld,

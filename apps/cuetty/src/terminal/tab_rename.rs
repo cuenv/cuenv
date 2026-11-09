@@ -5,11 +5,11 @@ use crate::workspace::TabId;
 
 /// What a key means while a tab's name is being edited.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum RenameKey<'a> {
+pub(super) enum RenameKey<'name> {
     Commit,
     Cancel,
     Backspace,
-    Text(&'a str),
+    Text(&'name str),
     /// Taken so it cannot reach the terminal, but does nothing to the name.
     Ignored,
 }
@@ -190,7 +190,9 @@ mod tests {
         edit.insert("  deploys ");
         assert_eq!(edit.into_name().as_deref(), Some("deploys"));
         let mut blank = rename(Some("deploys"));
-        (0.."deploys".len()).for_each(|_| blank.backspace());
+        for _ in 0.."deploys".len() {
+            blank.backspace();
+        }
         blank.insert("   ");
         assert_eq!(blank.into_name(), None);
     }

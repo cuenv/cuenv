@@ -63,12 +63,12 @@ impl Drop for Permit {
         self.0.active.fetch_sub(1, Ordering::AcqRel);
         // Pair notifications with the admission mutex so a release cannot fall
         // between a waiter's capacity check and its transition into waiting.
-        let _guard = self
-            .0
-            .admission
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        self.0.available.notify_one();
+        match self.0.admission.lock() {
+            Ok(_guard) => self.0.available.notify_one(),
+            // Keep the error's guard until after notification: the lock still
+            // orders this wakeup with waiters entering the condition variable.
+            Err(_poisoned) => self.0.available.notify_all(),
+        }
     }
 }
 
@@ -142,6 +142,97 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn poison_admission(slots: &Arc<Slots>) {
+        let slots = Arc::clone(slots);
+        let poisoner = std::thread::spawn(move || {
+            let _guard = slots.admission.lock().expect("lock admission");
+            panic!("poison admission for the test");
+        });
+        assert!(poisoner.join().is_err(), "the admission lock was poisoned");
+    }
+
+    #[test]
+    fn poisoned_admission_stops_new_callers_after_permit_release() {
+        let slots = Slots::new(1);
+        let permit = slots.acquire().expect("occupy slot");
+        poison_admission(&slots);
+
+        drop(permit);
+
+        assert_eq!(slots.active.load(Ordering::Acquire), 0);
+        assert!(matches!(
+            admit_with_slots(&slots, Duration::from_secs(5)),
+            Err(CueEngineError::FrozenWorker {
+                reason: FrozenWorkerFailure::Stopped
+            })
+        ));
+    }
+
+    #[test]
+    fn releasing_a_permit_wakes_all_waiters_when_admission_is_poisoned() {
+        const WAITERS: usize = 3;
+
+        let slots = Slots::new(1);
+        let permit = slots.acquire().expect("occupy slot");
+        let (ready, waiting) = mpsc::channel();
+        let (finished, results) = mpsc::channel();
+        let mut waiters = Vec::new();
+        for _ in 0..WAITERS {
+            let slots = Arc::clone(&slots);
+            let ready = ready.clone();
+            let finished = finished.clone();
+            waiters.push(std::thread::spawn(move || {
+                let mut guard = slots.admission.lock().expect("lock admission");
+                ready.send(()).expect("announce wait");
+                loop {
+                    if let Ok((next_guard, _)) =
+                        slots.available.wait_timeout(guard, Duration::from_secs(30))
+                    {
+                        guard = next_guard;
+                    } else {
+                        finished.send(()).expect("report poisoned admission");
+                        break;
+                    }
+                }
+            }));
+        }
+        for _ in 0..WAITERS {
+            waiting
+                .recv_timeout(Duration::from_secs(5))
+                .expect("waiter acquired admission");
+        }
+
+        // Acquiring admission to poison it also proves the last waiter has
+        // atomically released the lock and entered the condition-variable wait.
+        poison_admission(&slots);
+        drop(permit);
+
+        for _ in 0..WAITERS {
+            results
+                .recv_timeout(Duration::from_secs(5))
+                .expect("poisoned waiter was woken");
+        }
+        for waiter in waiters {
+            waiter.join().expect("waiter completed");
+        }
+        assert_eq!(slots.active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn permit_release_during_unwinding_does_not_panic_on_poison() {
+        let slots = Slots::new(1);
+        let permit = slots.acquire().expect("occupy slot");
+        poison_admission(&slots);
+
+        let operation = std::thread::spawn(move || {
+            let _permit = permit;
+            panic!("operation failed while holding a permit");
+        });
+
+        assert!(operation.join().is_err(), "the operation panicked");
+        assert_eq!(slots.active.load(Ordering::Acquire), 0);
+    }
 
     #[test]
     fn timeout_retains_capacity_until_late_result_is_dropped() {

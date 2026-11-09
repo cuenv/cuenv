@@ -6,11 +6,10 @@
 #![allow(missing_docs)] // Benchmarks don't need documentation
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use cuengine::{ModuleEvalOptions, ModuleResult, evaluate_cue_package, evaluate_module};
+use cuengine::{ModuleEvalOptions, ModuleResult};
 use std::fmt::Write;
-use std::fs;
-use std::hint::black_box;
 use std::path::{Path, PathBuf};
+use std::{fs, hint};
 use tempfile::TempDir;
 
 type BenchResult<T> = Result<T, String>;
@@ -100,7 +99,8 @@ fn fixture_path(fixture: &FixtureResult) -> BenchResult<&Path> {
 
 fn evaluate_package_fixture(fixture: &FixtureResult) -> BenchResult<String> {
     let path = fixture_path(fixture)?;
-    evaluate_cue_package(black_box(path), black_box("bench")).map_err(|err| err.to_string())
+    cuengine::evaluate_cue_package(hint::black_box(path), hint::black_box("bench"))
+        .map_err(|err| err.to_string())
 }
 
 fn evaluate_module_fixture(
@@ -108,8 +108,12 @@ fn evaluate_module_fixture(
     options: &ModuleEvalOptions,
 ) -> BenchResult<ModuleResult> {
     let path = fixture_path(fixture)?;
-    evaluate_module(black_box(path), black_box("bench"), Some(options))
-        .map_err(|err| err.to_string())
+    cuengine::evaluate_module(
+        hint::black_box(path),
+        hint::black_box("bench"),
+        Some(options),
+    )
+    .map_err(|err| err.to_string())
 }
 
 // ============================================================================
@@ -124,7 +128,7 @@ fn benchmark_evaluation(c: &mut Criterion) {
         let fixture = package_fixture("bench.cue", content);
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
-            b.iter(|| black_box(evaluate_package_fixture(&fixture)));
+            b.iter(|| hint::black_box(evaluate_package_fixture(&fixture)));
         });
     }
     group.finish();
@@ -135,7 +139,7 @@ fn benchmark_memory_usage(c: &mut Criterion) {
     let fixture = package_fixture("large.cue", content);
 
     c.bench_function("large_config_evaluation", |b| {
-        b.iter(|| black_box(evaluate_package_fixture(&fixture)));
+        b.iter(|| hint::black_box(evaluate_package_fixture(&fixture)));
     });
 }
 
@@ -153,7 +157,7 @@ fn benchmark_module_evaluation(c: &mut Criterion) {
         let options = ModuleEvalOptions::default();
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
-            b.iter(|| black_box(evaluate_module_fixture(&fixture, &options)));
+            b.iter(|| hint::black_box(evaluate_module_fixture(&fixture, &options)));
         });
     }
     group.finish();
@@ -177,7 +181,7 @@ fn benchmark_reference_extraction(c: &mut Criterion) {
     };
 
     group.bench_function("without_references", |b| {
-        b.iter(|| black_box(evaluate_module_fixture(&fixture, &options_no_refs)));
+        b.iter(|| hint::black_box(evaluate_module_fixture(&fixture, &options_no_refs)));
     });
 
     // With reference extraction (exercises extractReferencesFromValue)
@@ -187,7 +191,7 @@ fn benchmark_reference_extraction(c: &mut Criterion) {
     };
 
     group.bench_function("with_references", |b| {
-        b.iter(|| black_box(evaluate_module_fixture(&fixture, &options_with_refs)));
+        b.iter(|| hint::black_box(evaluate_module_fixture(&fixture, &options_with_refs)));
     });
 
     group.finish();
@@ -211,7 +215,7 @@ fn benchmark_nested_structures(c: &mut Criterion) {
         };
 
         group.bench_with_input(BenchmarkId::new("no_refs", depth), depth, |b, _| {
-            b.iter(|| black_box(evaluate_module_fixture(&fixture, &options_no_refs)));
+            b.iter(|| hint::black_box(evaluate_module_fixture(&fixture, &options_no_refs)));
         });
 
         // With reference extraction
@@ -221,7 +225,7 @@ fn benchmark_nested_structures(c: &mut Criterion) {
         };
 
         group.bench_with_input(BenchmarkId::new("with_refs", depth), depth, |b, _| {
-            b.iter(|| black_box(evaluate_module_fixture(&fixture, &options_with_refs)));
+            b.iter(|| hint::black_box(evaluate_module_fixture(&fixture, &options_with_refs)));
         });
     }
     group.finish();
@@ -244,7 +248,7 @@ fn benchmark_wide_structures(c: &mut Criterion) {
         };
 
         group.bench_with_input(BenchmarkId::from_parameter(width), width, |b, _| {
-            b.iter(|| black_box(evaluate_module_fixture(&fixture, &options_with_refs)));
+            b.iter(|| hint::black_box(evaluate_module_fixture(&fixture, &options_with_refs)));
         });
     }
     group.finish();
@@ -276,9 +280,9 @@ fn benchmark_real_world(c: &mut Criterion) {
 
     group.bench_function("env_cue_no_refs", |b| {
         b.iter(|| {
-            black_box(evaluate_module(
-                black_box(workspace_root),
-                black_box("cuenv"),
+            hint::black_box(cuengine::evaluate_module(
+                hint::black_box(workspace_root),
+                hint::black_box("cuenv"),
                 Some(&options_no_refs),
             ))
         });
@@ -292,9 +296,9 @@ fn benchmark_real_world(c: &mut Criterion) {
 
     group.bench_function("env_cue_with_refs", |b| {
         b.iter(|| {
-            black_box(evaluate_module(
-                black_box(workspace_root),
-                black_box("cuenv"),
+            hint::black_box(cuengine::evaluate_module(
+                hint::black_box(workspace_root),
+                hint::black_box("cuenv"),
                 Some(&options_with_refs),
             ))
         });

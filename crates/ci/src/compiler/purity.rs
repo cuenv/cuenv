@@ -7,6 +7,19 @@ use crate::ir::{PurityMode, Runtime};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+/// A flake runtime to identify and analyze.
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeSpec<'runtime> {
+    /// Runtime identifier in the compiled IR.
+    pub id: &'runtime str,
+    /// Reference to the flake providing the runtime.
+    pub flake_ref: &'runtime str,
+    /// Flake output selected for the runtime.
+    pub output: &'runtime str,
+    /// Target system for the runtime.
+    pub system: &'runtime str,
+}
+
 impl Compiler {
     /// Analyze flake.lock for purity and compute runtime digest
     ///
@@ -135,13 +148,7 @@ impl Compiler {
     /// # Errors
     ///
     /// Returns `CompilerError` if flake purity analysis fails.
-    pub fn compute_runtime(
-        &self,
-        id: impl Into<String>,
-        flake_ref: impl Into<String>,
-        output: impl Into<String>,
-        system: impl Into<String>,
-    ) -> Result<Runtime, CompilerError> {
+    pub fn compute_runtime(&self, spec: RuntimeSpec<'_>) -> Result<Runtime, CompilerError> {
         let (digest, purity) = match self.analyze_flake_purity() {
             Some(result) => result?,
             None => {
@@ -152,10 +159,10 @@ impl Compiler {
         };
 
         Ok(Runtime {
-            id: id.into(),
-            flake: flake_ref.into(),
-            output: output.into(),
-            system: system.into(),
+            id: spec.id.to_string(),
+            flake: spec.flake_ref.to_string(),
+            output: spec.output.to_string(),
+            system: spec.system.to_string(),
             digest,
             purity,
         })

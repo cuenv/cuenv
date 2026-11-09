@@ -240,7 +240,7 @@ proptest! {
         tasks in dag_strategy(1, 15)
     ) {
         let graph = build_graph(&tasks).expect("Graph should build successfully");
-        let groups = graph.get_parallel_groups().expect("Parallel groups should succeed");
+        let groups = graph.parallel_groups().expect("Parallel groups should succeed");
 
         let mut seen_tasks: HashSet<String> = HashSet::new();
 
@@ -268,7 +268,7 @@ proptest! {
         tasks in dag_strategy(2, 15)
     ) {
         let graph = build_graph(&tasks).expect("Graph should build successfully");
-        let groups = graph.get_parallel_groups().expect("Parallel groups should succeed");
+        let groups = graph.parallel_groups().expect("Parallel groups should succeed");
 
         // Build dependency map for quick lookup
         let dep_map: HashMap<String, HashSet<String>> = tasks
@@ -301,7 +301,7 @@ proptest! {
         tasks in dag_strategy(2, 15)
     ) {
         let graph = build_graph(&tasks).expect("Graph should build successfully");
-        let groups = graph.get_parallel_groups().expect("Parallel groups should succeed");
+        let groups = graph.parallel_groups().expect("Parallel groups should succeed");
 
         // Build task-to-group-index map
         let mut task_group: HashMap<String, usize> = HashMap::new();
@@ -357,23 +357,15 @@ proptest! {
     fn cycle_detection_identifies_cycles(
         tasks in cyclic_graph_strategy()
     ) {
-        let graph_result = build_graph(&tasks);
-
-        // The graph might fail to build if deps reference non-existent tasks,
-        // but if it builds, it should have cycles
-        if let Ok(graph) = graph_result {
-            prop_assert!(
-                graph.has_cycles(),
-                "Cyclic graph should be identified as having cycles"
-            );
-
-            // Topological sort should fail
-            let result = graph.topological_sort();
-            prop_assert!(
-                result.is_err(),
-                "Topological sort should fail for cyclic graph"
-            );
-        }
+        let graph = build_graph(&tasks).expect("generated cycle references known tasks");
+        prop_assert!(
+            graph.has_cycles(),
+            "Cyclic graph should be identified as having cycles"
+        );
+        prop_assert!(
+            graph.topological_sort().is_err(),
+            "Topological sort should fail for cyclic graph"
+        );
     }
 }
 
@@ -392,7 +384,7 @@ proptest! {
         let sorted = graph.topological_sort().expect("Sort should succeed");
         prop_assert!(sorted.is_empty(), "Empty graph produces empty sort");
 
-        let groups = graph.get_parallel_groups().expect("Parallel groups should succeed");
+        let groups = graph.parallel_groups().expect("Parallel groups should succeed");
         prop_assert!(groups.is_empty(), "Empty graph produces no groups");
     }
 
@@ -410,7 +402,7 @@ proptest! {
         prop_assert_eq!(sorted.len(), 1);
         prop_assert_eq!(&sorted[0].name, &name);
 
-        let groups = graph.get_parallel_groups().expect("Groups should succeed");
+        let groups = graph.parallel_groups().expect("Groups should succeed");
         prop_assert_eq!(groups.len(), 1);
         prop_assert_eq!(groups[0].len(), 1);
     }
@@ -465,8 +457,8 @@ proptest! {
         let graph1 = build_graph(&tasks).expect("Graph 1 should build");
         let graph2 = build_graph(&tasks).expect("Graph 2 should build");
 
-        let groups1 = graph1.get_parallel_groups().expect("Groups 1 should succeed");
-        let groups2 = graph2.get_parallel_groups().expect("Groups 2 should succeed");
+        let groups1 = graph1.parallel_groups().expect("Groups 1 should succeed");
+        let groups2 = graph2.parallel_groups().expect("Groups 2 should succeed");
 
         prop_assert_eq!(groups1.len(), groups2.len(), "Group count should match");
 

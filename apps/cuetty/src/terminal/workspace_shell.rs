@@ -2,8 +2,8 @@
 //! pure model so hosts can replace the terminal backend without leaking it.
 
 use crate::workspace::{
-    Error as WorkspaceError, LayoutRect, MinSizePolicy, PaneId, PaneLayout, TabId, Workspace,
-    project_node,
+    Error as WorkspaceError, LayoutRect, MinSizePolicy, PaneId, PaneLayout, ProjectionOptions,
+    TabId, Workspace,
 };
 use std::fmt;
 
@@ -121,7 +121,7 @@ impl WorkspaceShell {
             workspace: Workspace::new(),
         }
     }
-    pub fn new() -> Result<Self, WorkspaceError> {
+    pub fn try_new() -> Result<Self, WorkspaceError> {
         let mut shell = Self::empty();
         shell
             .workspace
@@ -204,7 +204,14 @@ impl WorkspaceShell {
         minimum: MinSizePolicy,
     ) -> Result<Vec<PaneLayout>, crate::workspace::ProjectionError> {
         match self.workspace.active_tab() {
-            Some(tab) => project_node(&tab.root, bounds, Some(tab.focused), minimum),
+            Some(tab) => crate::workspace::project_node(
+                &tab.root,
+                bounds,
+                ProjectionOptions {
+                    focused: Some(tab.focused),
+                    minimum,
+                },
+            ),
             None => Ok(Vec::new()),
         }
     }
@@ -334,7 +341,7 @@ mod tests {
 
     #[test]
     fn close_preflight_is_exact_and_last_policy_is_explicit() {
-        let mut shell = WorkspaceShell::new().unwrap();
+        let mut shell = WorkspaceShell::try_new().unwrap();
         let first = shell.preflight_close_active_tab().unwrap();
         assert!(first.is_last_tab);
         let second = shell.create_tab("Terminal 2").unwrap();
@@ -346,7 +353,7 @@ mod tests {
     }
     #[test]
     fn splits_are_rejected_without_mutation() {
-        let mut shell = WorkspaceShell::new().unwrap();
+        let mut shell = WorkspaceShell::try_new().unwrap();
         let before_tabs = shell.workspace().tabs().to_vec();
         let before_active = shell.active_tab();
         assert_eq!(

@@ -1,14 +1,16 @@
-use super::*;
+use crate::graph::TaskGraph;
+use crate::test_utils;
 
 #[test]
 fn test_workspace_setup_chain() {
     // Test the full workspace setup chain: hooks -> install -> setup -> user_task
     let mut graph = TaskGraph::new();
 
-    let hook1 = create_task("bun.hooks.beforeInstall[0]", vec![], vec![]);
-    let install = create_task("bun.install", vec!["bun.hooks.beforeInstall[0]"], vec![]);
-    let setup = create_task("bun.setup", vec!["bun.install"], vec![]);
-    let user_task = create_task("dev", vec!["bun.setup"], vec!["bun"]);
+    let hook1 = test_utils::create_task("bun.hooks.beforeInstall[0]", vec![], vec![]);
+    let install =
+        test_utils::create_task("bun.install", vec!["bun.hooks.beforeInstall[0]"], vec![]);
+    let setup = test_utils::create_task("bun.setup", vec!["bun.install"], vec![]);
+    let user_task = test_utils::create_task("dev", vec!["bun.setup"], vec!["bun"]);
 
     graph.add_task("bun.hooks.beforeInstall[0]", hook1).unwrap();
     graph.add_task("bun.install", install).unwrap();
@@ -38,15 +40,15 @@ fn test_multiple_workspaces_setup() {
     let mut graph = TaskGraph::new();
 
     // Bun workspace chain
-    let bun_install = create_task("bun.install", vec![], vec![]);
-    let bun_setup = create_task("bun.setup", vec!["bun.install"], vec![]);
+    let bun_install = test_utils::create_task("bun.install", vec![], vec![]);
+    let bun_setup = test_utils::create_task("bun.setup", vec!["bun.install"], vec![]);
 
     // Cargo workspace chain
-    let cargo_install = create_task("cargo.install", vec![], vec![]);
-    let cargo_setup = create_task("cargo.setup", vec!["cargo.install"], vec![]);
+    let cargo_install = test_utils::create_task("cargo.install", vec![], vec![]);
+    let cargo_setup = test_utils::create_task("cargo.setup", vec!["cargo.install"], vec![]);
 
     // Task using both workspaces
-    let build = create_task(
+    let build = test_utils::create_task(
         "build",
         vec!["bun.setup", "cargo.setup"],
         vec!["bun", "cargo"],
@@ -62,7 +64,7 @@ fn test_multiple_workspaces_setup() {
     assert_eq!(graph.task_count(), 5);
     assert!(!graph.has_cycles());
 
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     // Level 0: bun.install, cargo.install (parallel)
     // Level 1: bun.setup, cargo.setup (parallel)
     // Level 2: build

@@ -1,23 +1,27 @@
 //! Task tree widget showing hierarchical task names as an expandable tree
 
 use crate::tui::state::{TaskStatus, TreeNodeType, TreeViewItem, TuiState};
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
-};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 /// Widget for displaying the task tree with expand/collapse functionality
-pub struct TaskTreeWidget<'a> {
-    state: &'a TuiState,
+pub struct TaskTreeWidget<'task_tree_widget> {
+    state: &'task_tree_widget TuiState,
 }
 
-impl<'a> TaskTreeWidget<'a> {
+#[derive(Clone, Copy)]
+struct TreeItemHighlight {
+    cursor: bool,
+    selected: bool,
+}
+
+impl<'task_tree_widget> TaskTreeWidget<'task_tree_widget> {
     /// Create a new task tree widget
     #[must_use]
-    pub const fn new(state: &'a TuiState) -> Self {
+    pub const fn new(state: &'task_tree_widget TuiState) -> Self {
         Self { state }
     }
 
@@ -78,12 +82,7 @@ impl<'a> TaskTreeWidget<'a> {
     }
 
     /// Render a single tree item
-    fn render_tree_item(
-        &self,
-        item: &TreeViewItem,
-        is_cursor: bool,
-        is_selected: bool,
-    ) -> Line<'static> {
+    fn render_tree_item(&self, item: &TreeViewItem, highlight: TreeItemHighlight) -> Line<'static> {
         let prefix = Self::render_tree_prefix(item);
 
         let (status_symbol, status_color, suffix) = match &item.node_type {
@@ -129,12 +128,12 @@ impl<'a> TaskTreeWidget<'a> {
         }
 
         // Cursor highlighting (background)
-        if is_cursor {
+        if highlight.cursor {
             name_style = name_style.bg(Color::DarkGray);
         }
 
         // Selection indicator (reversed)
-        if is_selected {
+        if highlight.selected {
             name_style = name_style.add_modifier(Modifier::REVERSED);
         }
 
@@ -188,7 +187,13 @@ impl Widget for TaskTreeWidget<'_> {
                 TreeNodeType::Task(name) => selected == Some(name.as_str()),
                 TreeNodeType::Group(path) => selected == Some(format!("::group::{path}").as_str()),
             };
-            lines.push(self.render_tree_item(item, is_cursor, is_selected));
+            lines.push(self.render_tree_item(
+                item,
+                TreeItemHighlight {
+                    cursor: is_cursor,
+                    selected: is_selected,
+                },
+            ));
         }
 
         // Handle empty state
@@ -265,6 +270,26 @@ mod tests {
         };
         let prefix = TaskTreeWidget::render_tree_prefix(&item);
         assert_eq!(prefix, "    ▼ ");
+    }
+
+    #[test]
+    fn cursor_and_selection_highlights_are_independent() {
+        let state = TuiState::new();
+        let widget = TaskTreeWidget::new(&state);
+        let item = TreeViewItem {
+            node_type: TreeNodeType::All,
+            display_name: "All".to_string(),
+            depth: 0,
+            is_expanded: false,
+            has_children: false,
+        };
+
+        for (cursor, selected) in [(false, false), (true, false), (false, true), (true, true)] {
+            let line = widget.render_tree_item(&item, TreeItemHighlight { cursor, selected });
+            let style = line.spans.last().unwrap().style;
+            assert_eq!(style.bg, cursor.then_some(Color::DarkGray));
+            assert_eq!(style.add_modifier.contains(Modifier::REVERSED), selected);
+        }
     }
 
     #[test]

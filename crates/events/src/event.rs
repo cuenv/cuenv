@@ -9,8 +9,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::redaction::has_secrets;
-
 /// A structured cuenv event with full metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CuenvEvent {
@@ -52,7 +50,7 @@ impl CuenvEvent {
     /// secret is registered the event is borrowed unchanged.
     #[must_use]
     pub fn redacted(&self) -> Cow<'_, Self> {
-        if !has_secrets() {
+        if !crate::redaction::has_secrets() {
             return Cow::Borrowed(self);
         }
         let mut category = self.category.clone();

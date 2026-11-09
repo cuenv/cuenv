@@ -1,7 +1,6 @@
-use super::{TestResult, create_test_dir, init_cue_module, run_cuenv};
-use std::fs;
-use std::io;
+use super::TestResult;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 use tempfile::TempDir;
 
 fn project_root() -> TestResult<PathBuf> {
@@ -47,7 +46,8 @@ fn test_task_basic_example() -> TestResult {
     let example_path_arg = path_arg(&example_path)?;
 
     // Test listing tasks
-    let (stdout, _, success) = run_cuenv(&["t", "-p", example_path_arg, "--package", "examples"])?;
+    let (stdout, _, success) =
+        super::run_cuenv(&["t", "-p", example_path_arg, "--package", "examples"])?;
 
     assert!(success, "Should list tasks successfully");
     assert!(
@@ -58,7 +58,7 @@ fn test_task_basic_example() -> TestResult {
     assert!(stdout.contains("greetAll"), "Should list greetAll task");
 
     // Test running interpolate task
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "t",
         "-p",
         example_path_arg,
@@ -74,7 +74,7 @@ fn test_task_basic_example() -> TestResult {
     );
 
     // Test running propagate task
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "t",
         "-p",
         example_path_arg,
@@ -90,7 +90,7 @@ fn test_task_basic_example() -> TestResult {
     );
 
     // Test exec with example environment (using 'x' shorthand)
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "x",
         "-p",
         example_path_arg,
@@ -110,8 +110,8 @@ fn test_task_basic_example() -> TestResult {
 
 #[test]
 fn test_complex_task_dependency_chain() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -152,7 +152,7 @@ tasks: {
 
     // Test running the final task should execute all dependencies
     let (stdout, stderr, success) =
-        run_cuenv(&["task", "-p", project_path, "--package", "test", "deploy"])?;
+        super::run_cuenv(&["task", "-p", project_path, "--package", "test", "deploy"])?;
 
     assert!(
         success,
@@ -180,8 +180,8 @@ tasks: {
 
 #[test]
 fn test_task_failure_handling() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -198,7 +198,7 @@ tasks: {
     write_env(&temp_dir, cue_content)?;
 
     // Test that task failure is properly handled
-    let (_, stderr, success) = run_cuenv(&[
+    let (_, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -217,8 +217,8 @@ tasks: {
 
 #[test]
 fn test_mixed_task_types() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -261,7 +261,7 @@ tasks: {
     let project_path = path_arg(temp_dir.path())?;
 
     // Test single task
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         project_path,
@@ -273,7 +273,7 @@ tasks: {
     assert!(stdout.contains("MIX single"));
 
     // Test sequential tasks
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         project_path,
@@ -286,7 +286,7 @@ tasks: {
     assert!(stdout.contains("MIX seq2"));
 
     // Test parallel tasks
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         project_path,
@@ -302,8 +302,8 @@ tasks: {
 
 #[test]
 fn test_special_characters_in_environment() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -335,7 +335,7 @@ tasks: {
     let project_path = path_arg(temp_dir.path())?;
 
     // Test special characters are passed literally
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         project_path,
@@ -347,7 +347,7 @@ tasks: {
     assert!(stdout.contains("Hello $USER & $(whoami)"));
 
     // Test quotes are preserved
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         project_path,
@@ -359,7 +359,7 @@ tasks: {
     assert!(stdout.contains("\"Hello world\""));
 
     // Test spaces work correctly
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         project_path,
@@ -374,8 +374,8 @@ tasks: {
 
 #[test]
 fn test_exec_with_complex_args() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -387,7 +387,7 @@ env: {
     write_env(&temp_dir, cue_content)?;
 
     // Test exec with arguments containing special characters
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "exec",
         "-p",
         path_arg(temp_dir.path())?,

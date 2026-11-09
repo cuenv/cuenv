@@ -148,7 +148,7 @@ impl CIResolvedSecrets {
                 }
 
                 // Use write_salt for computing fingerprints (current salt preferred)
-                let fingerprint = compute_secret_fingerprint(
+                let fingerprint = cuenv_secrets::compute_secret_fingerprint(
                     name,
                     &value,
                     salt_config.write_salt().unwrap_or(""),
@@ -250,38 +250,44 @@ pub fn resolve_all_task_secrets(
 mod tests {
     use super::*;
 
-    fn make_secret_config(source: &str, cache_key: bool) -> SecretConfig {
+    #[derive(Clone, Copy)]
+    enum FingerprintMode {
+        Include,
+        Exclude,
+    }
+
+    fn make_secret_config(source: &str, mode: FingerprintMode) -> SecretConfig {
         SecretConfig {
             source: source.to_string(),
-            cache_key,
+            cache_key: matches!(mode, FingerprintMode::Include),
         }
     }
 
     #[test]
     fn test_fingerprint_deterministic() {
-        let fp1 = compute_secret_fingerprint("API_KEY", "secret123", "salt");
-        let fp2 = compute_secret_fingerprint("API_KEY", "secret123", "salt");
+        let fp1 = cuenv_secrets::compute_secret_fingerprint("API_KEY", "secret123", "salt");
+        let fp2 = cuenv_secrets::compute_secret_fingerprint("API_KEY", "secret123", "salt");
         assert_eq!(fp1, fp2);
     }
 
     #[test]
     fn test_fingerprint_changes_with_value() {
-        let fp1 = compute_secret_fingerprint("API_KEY", "secret123", "salt");
-        let fp2 = compute_secret_fingerprint("API_KEY", "secret456", "salt");
+        let fp1 = cuenv_secrets::compute_secret_fingerprint("API_KEY", "secret123", "salt");
+        let fp2 = cuenv_secrets::compute_secret_fingerprint("API_KEY", "secret456", "salt");
         assert_ne!(fp1, fp2);
     }
 
     #[test]
     fn test_fingerprint_changes_with_salt() {
-        let fp1 = compute_secret_fingerprint("API_KEY", "secret123", "salt1");
-        let fp2 = compute_secret_fingerprint("API_KEY", "secret123", "salt2");
+        let fp1 = cuenv_secrets::compute_secret_fingerprint("API_KEY", "secret123", "salt1");
+        let fp2 = cuenv_secrets::compute_secret_fingerprint("API_KEY", "secret123", "salt2");
         assert_ne!(fp1, fp2);
     }
 
     #[test]
     fn test_fingerprint_changes_with_name() {
-        let fp1 = compute_secret_fingerprint("API_KEY", "secret123", "salt");
-        let fp2 = compute_secret_fingerprint("DB_PASSWORD", "secret123", "salt");
+        let fp1 = cuenv_secrets::compute_secret_fingerprint("API_KEY", "secret123", "salt");
+        let fp2 = cuenv_secrets::compute_secret_fingerprint("DB_PASSWORD", "secret123", "salt");
         assert_ne!(fp1, fp2);
     }
 
@@ -296,11 +302,11 @@ mod tests {
                 let secrets = BTreeMap::from([
                     (
                         "secret1".to_string(),
-                        make_secret_config("TEST_SECRET_1", true),
+                        make_secret_config("TEST_SECRET_1", FingerprintMode::Include),
                     ),
                     (
                         "secret2".to_string(),
-                        make_secret_config("TEST_SECRET_2", false),
+                        make_secret_config("TEST_SECRET_2", FingerprintMode::Exclude),
                     ),
                 ]);
 
@@ -324,7 +330,7 @@ mod tests {
     fn test_missing_secret() {
         let secrets = BTreeMap::from([(
             "missing".to_string(),
-            make_secret_config("NONEXISTENT_VAR", false),
+            make_secret_config("NONEXISTENT_VAR", FingerprintMode::Exclude),
         )]);
 
         let result = CIResolvedSecrets::from_env(&secrets, None);
@@ -336,7 +342,7 @@ mod tests {
         temp_env::with_var("TEST_SALT_CHECK", Some("value"), || {
             let secrets = BTreeMap::from([(
                 "secret".to_string(),
-                make_secret_config("TEST_SALT_CHECK", true),
+                make_secret_config("TEST_SALT_CHECK", FingerprintMode::Include),
             )]);
 
             let result = CIResolvedSecrets::from_env(&secrets, None);
@@ -368,7 +374,7 @@ mod tests {
         temp_env::with_var("TEST_FP_MATCH_1", Some("secret_value"), || {
             let secrets = BTreeMap::from([(
                 "api_key".to_string(),
-                make_secret_config("TEST_FP_MATCH_1", true),
+                make_secret_config("TEST_FP_MATCH_1", FingerprintMode::Include),
             )]);
 
             let salt_config = SaltConfig::with_rotation(
@@ -379,7 +385,11 @@ mod tests {
             let resolved =
                 CIResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
 
-            let cached_fp = compute_secret_fingerprint("api_key", "secret_value", "current-salt");
+            let cached_fp = cuenv_secrets::compute_secret_fingerprint(
+                "api_key",
+                "secret_value",
+                "current-salt",
+            );
             assert!(resolved.fingerprint_matches("api_key", &cached_fp, &salt_config));
         });
     }
@@ -389,7 +399,7 @@ mod tests {
         temp_env::with_var("TEST_FP_MATCH_2", Some("secret_value"), || {
             let secrets = BTreeMap::from([(
                 "api_key".to_string(),
-                make_secret_config("TEST_FP_MATCH_2", true),
+                make_secret_config("TEST_FP_MATCH_2", FingerprintMode::Include),
             )]);
 
             let salt_config = SaltConfig::with_rotation(
@@ -400,7 +410,8 @@ mod tests {
             let resolved =
                 CIResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
 
-            let cached_fp = compute_secret_fingerprint("api_key", "secret_value", "old-salt");
+            let cached_fp =
+                cuenv_secrets::compute_secret_fingerprint("api_key", "secret_value", "old-salt");
             assert!(resolved.fingerprint_matches("api_key", &cached_fp, &salt_config));
         });
     }
@@ -414,11 +425,11 @@ mod tests {
         let secrets = BTreeMap::from([
             (
                 "api_key".to_string(),
-                make_secret_config("API_KEY_SOURCE", true),
+                make_secret_config("API_KEY_SOURCE", FingerprintMode::Include),
             ),
             (
                 "db_password".to_string(),
-                make_secret_config("DB_PASSWORD_SOURCE", false),
+                make_secret_config("DB_PASSWORD_SOURCE", FingerprintMode::Exclude),
             ),
         ]);
 
@@ -445,7 +456,7 @@ mod tests {
 
         let secrets = BTreeMap::from([(
             "missing".to_string(),
-            make_secret_config("NONEXISTENT_SOURCE", false),
+            make_secret_config("NONEXISTENT_SOURCE", FingerprintMode::Exclude),
         )]);
 
         let salt_config = SaltConfig::new(None);

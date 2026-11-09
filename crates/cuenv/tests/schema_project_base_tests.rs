@@ -521,8 +521,10 @@ fn evaluate_project_with_references(root: &Path) -> TestResult<Project> {
     let module = ModuleEvaluation::from_raw(
         root.to_path_buf(),
         raw.instances,
-        raw.projects,
-        Some(references),
+        cuenv_core::module::ModuleEvaluationOptions {
+            project_paths: raw.projects,
+            references: Some(references),
+        },
     );
     Ok(module
         .root_instance()

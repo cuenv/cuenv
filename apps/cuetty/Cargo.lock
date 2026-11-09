@@ -2280,7 +2280,7 @@ dependencies = [
  "slotmap",
  "smallvec",
  "smol",
- "stacksafe",
+ "stacksafe 0.1.4",
  "strum 0.27.2",
  "taffy",
  "thiserror 2.0.20",
@@ -4347,28 +4347,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro-error-attr2"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5"
-dependencies = [
- "proc-macro2",
- "quote",
-]
-
-[[package]]
-name = "proc-macro-error2"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
-dependencies = [
- "proc-macro-error-attr2",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5628,22 +5606,30 @@ dependencies = [
 [[package]]
 name = "stacksafe"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d9c1172965d317e87ddb6d364a040d958b40a1db82b6ef97da26253a8b3d090"
 dependencies = [
+ "stacksafe 1.0.3",
+]
+
+[[package]]
+name = "stacksafe"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95f9c34983ac74195c710c473db6fdf1085f64a47dbaa0090d1bea03be70da66"
+dependencies = [
+ "serde",
  "stacker",
  "stacksafe-macro",
 ]
 
 [[package]]
 name = "stacksafe-macro"
-version = "0.1.4"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "172175341049678163e979d9107ca3508046d4d2a7c6682bee46ac541b17db69"
+checksum = "6feeae42a2d6b0dcb8aeb2f08d9e48cdac600239cf8a20fc59f9e252e86bdfe1"
 dependencies = [
- "proc-macro-error2",
+ "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.4",
 ]
 
 [[package]]

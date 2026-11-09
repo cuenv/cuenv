@@ -24,7 +24,7 @@ Generation rules:
 
 - Use explicit `schema.#Task`, `schema.#TaskGroup`, and `schema.#TaskSequence` in examples.
 - Use CUE references in `dependsOn` instead of stale string examples when possible.
-- Reusable or hidden task definitions preserve referenced task identity through CUE reference metadata; do not recommend JSON value matching as a fallback.
+- Reusable or hidden task definitions preserve referenced task identity through CUE reference metadata, including unambiguous schema conjunctions; do not recommend JSON value matching as a fallback. Ambiguous conjunctions do not identify a task.
 - Explain that output refs imply dependencies. `inputs: [{task: "build"}]` adds the implicit `dependsOn` edge AND expands to `build`'s declared `outputs` as path inputs, so the consumer's key is a function of what the producer built.
 - Hashing the producer's *output content* (not its action key) is deliberate and matches Bazel/buck2: it gives early cutoff, so a producer that reruns and emits identical bytes leaves every consumer hitting. Never propose folding a dependency's action digest into the consumer — that is moon's coarser model and it destroys early cutoff.
 - `dependsOn` alone contributes nothing to the cache key, which is Bazel semantics. Tell users to declare a dependency's output as an input when they consume it; directory isolation prevents a `dependsOn`-only task from reading that undeclared relative path.

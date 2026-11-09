@@ -14,7 +14,7 @@
 //! first element of a module path contains a dot, so `_locks` and `root`
 //! (whose elements may not contain a dot) can never be mistaken for one.
 
-use crate::error::{InfrastructureError, Result, strip_control_characters};
+use crate::error::{InfrastructureError, Result};
 use crate::tenant::TenantKey;
 
 /// The environment segment of the identity without `--env`.
@@ -53,7 +53,7 @@ impl TenantPath {
     ///
     /// Returns [`InfrastructureError::Configuration`] when any segment breaks
     /// the key grammar.
-    pub fn new(root: Option<&str>, package: &str, tenant: &TenantKey) -> Result<Self> {
+    pub fn try_new(root: Option<&str>, package: &str, tenant: &TenantKey) -> Result<Self> {
         if let Some(root) = root {
             validate_root(root)?;
         }
@@ -77,7 +77,7 @@ impl TenantPath {
     /// # Errors
     ///
     /// Returns [`InfrastructureError::Configuration`] when the parts do not
-    /// form a tenant (never for a path built by [`Self::new`] or parsed by
+    /// form a tenant (never for a path built by [`Self::try_new`] or parsed by
     /// [`parse_state_key`]).
     pub fn tenant(&self) -> Result<TenantKey> {
         match &self.environment {
@@ -119,7 +119,7 @@ impl TenantPath {
     /// Returns [`InfrastructureError::Configuration`] when a new segment
     /// breaks the key grammar.
     pub fn with(&self, package: &str, tenant: &TenantKey) -> Result<Self> {
-        Self::new(self.root.as_deref(), package, tenant)
+        Self::try_new(self.root.as_deref(), package, tenant)
     }
 
     fn root_prefix(&self) -> String {
@@ -272,7 +272,7 @@ fn split_tenant(root: Option<&str>, relative: &str) -> Option<(TenantPath, Strin
     if tenant.module_path() != module_path {
         return None;
     }
-    let path = TenantPath::new(root, package, &tenant).ok()?;
+    let path = TenantPath::try_new(root, package, &tenant).ok()?;
     Some((path, rest))
 }
 
@@ -309,19 +309,21 @@ pub fn parse_marker_key(root: Option<&str>, key: &str) -> Option<(TenantPath, St
     Some((path, identifier.to_string()))
 }
 
-/// Parse the serial out of a history snapshot key under `prefix`.
+/// Parse the nonzero serial out of a history snapshot key under `prefix`.
 #[must_use]
 pub fn parse_history_serial(prefix: &str, key: &str) -> Option<u64> {
     let name = key.strip_prefix(prefix)?.strip_suffix(".json")?;
-    (name.len() == SERIAL_DIGITS && name.bytes().all(|byte| byte.is_ascii_digit()))
-        .then(|| name.parse().ok())
-        .flatten()
+    if name.len() != SERIAL_DIGITS || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let serial = name.parse::<u64>().ok()?;
+    (serial > 0).then_some(serial)
 }
 
 fn invalid(segment: &str, value: &str, rule: &str) -> InfrastructureError {
     InfrastructureError::configuration(format!(
         "object-storage state: {segment} '{}' {rule}",
-        strip_control_characters(value)
+        crate::error::strip_control_characters(value)
     ))
 }
 
@@ -478,8 +480,8 @@ pub fn validate_environment_case<'name>(names: impl IntoIterator<Item = &'name s
             return Err(InfrastructureError::configuration(format!(
                 "environments '{}' and '{}' differ only by case; object-storage state keys \
                  would collide on a case-insensitive store, so rename one",
-                strip_control_characters(previous),
-                strip_control_characters(name)
+                crate::error::strip_control_characters(previous),
+                crate::error::strip_control_characters(name)
             )));
         }
     }
@@ -501,7 +503,7 @@ mod tests {
 
     #[test]
     fn keys_follow_the_layout() {
-        let path = TenantPath::new(None, "cuenv", &tenant(None)).unwrap();
+        let path = TenantPath::try_new(None, "cuenv", &tenant(None)).unwrap();
         assert_eq!(
             path.state_key(),
             "github.com/acme/infra/_cuenv/web/_default/state.json"
@@ -518,7 +520,7 @@ mod tests {
             path.marker_key("abc-1"),
             "_locks/github.com/acme/infra/_cuenv/web/_default/abc-1.json"
         );
-        let rooted = TenantPath::new(Some("state/v1"), "ops", &tenant(Some("Prod"))).unwrap();
+        let rooted = TenantPath::try_new(Some("state/v1"), "ops", &tenant(Some("Prod"))).unwrap();
         assert_eq!(
             rooted.state_key(),
             "state/v1/github.com/acme/infra/_ops/web/Prod/state.json"
@@ -539,7 +541,7 @@ mod tests {
         for (root, package, environment) in
             [(None, "cuenv", None), (Some("state"), "ops", Some("Prod"))]
         {
-            let path = TenantPath::new(root, package, &tenant(environment)).unwrap();
+            let path = TenantPath::try_new(root, package, &tenant(environment)).unwrap();
             assert_eq!(parse_state_key(root, &path.state_key()), Some(path.clone()));
             assert_eq!(
                 parse_marker_key(root, &path.marker_key("lock-1")),
@@ -574,17 +576,22 @@ mod tests {
             None,
             "unpadded serials are not ours"
         );
+        assert_eq!(
+            parse_history_serial("p/", "p/00000000000000000000.json"),
+            None,
+            "state documents start at serial one"
+        );
     }
 
     #[test]
     fn a_nested_module_cannot_produce_another_modules_key() {
-        let outer = TenantPath::new(
+        let outer = TenantPath::try_new(
             None,
             "cuenv",
             &TenantKey::try_new("github.com/acme/infra", "web").unwrap(),
         )
         .unwrap();
-        let nested = TenantPath::new(
+        let nested = TenantPath::try_new(
             None,
             "cuenv",
             &TenantKey::try_new("github.com/acme/infra/web", "web").unwrap(),
@@ -630,7 +637,7 @@ mod tests {
             assert!(validate_environment(environment).is_err(), "{environment}");
         }
         validate_environment("Prod-2_x").unwrap();
-        assert!(TenantPath::new(None, "cuenv", &tenant(Some("_default"))).is_err());
+        assert!(TenantPath::try_new(None, "cuenv", &tenant(Some("_default"))).is_err());
     }
 
     #[test]

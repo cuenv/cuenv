@@ -116,16 +116,34 @@ impl Default for DigestBuilder {
     }
 }
 
-/// Compute task runtime digest
+/// Inputs used to calculate a task runtime digest.
+#[derive(Clone, Copy)]
+pub struct TaskDigestInput<'task> {
+    /// Task command and arguments.
+    pub command: &'task [String],
+    /// Task environment.
+    pub env: &'task BTreeMap<String, String>,
+    /// Declared task inputs.
+    pub inputs: &'task [String],
+    /// Digest identifying the runtime, when present.
+    pub runtime_digest: Option<&'task str>,
+    /// Secret fingerprints to include when a system salt is available.
+    pub secret_fingerprints: Option<&'task BTreeMap<String, String>>,
+    /// Salt applied to secret fingerprints.
+    pub system_salt: Option<&'task str>,
+}
+
+/// Compute task runtime digest.
 #[must_use]
-pub fn compute_task_digest(
-    command: &[String],
-    env: &BTreeMap<String, String>,
-    inputs: &[String],
-    runtime_digest: Option<&str>,
-    secret_fingerprints: Option<&BTreeMap<String, String>>,
-    system_salt: Option<&str>,
-) -> String {
+pub fn compute_task_digest(input: TaskDigestInput<'_>) -> String {
+    let TaskDigestInput {
+        command,
+        env,
+        inputs,
+        runtime_digest,
+        secret_fingerprints,
+        system_salt,
+    } = input;
     let mut builder = DigestBuilder::new();
 
     builder.add_command(command);
@@ -155,8 +173,22 @@ mod tests {
         let env = BTreeMap::from([("RUST_LOG".to_string(), "debug".to_string())]);
         let inputs = vec!["src/**/*.rs".to_string()];
 
-        let digest1 = compute_task_digest(&command, &env, &inputs, None, None, None);
-        let digest2 = compute_task_digest(&command, &env, &inputs, None, None, None);
+        let digest1 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: None,
+            system_salt: None,
+        });
+        let digest2 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: None,
+            system_salt: None,
+        });
 
         assert_eq!(digest1, digest2);
         assert!(digest1.starts_with("sha256:"));
@@ -167,8 +199,22 @@ mod tests {
         let env = BTreeMap::new();
         let inputs = vec![];
 
-        let digest1 = compute_task_digest(&["echo".to_string()], &env, &inputs, None, None, None);
-        let digest2 = compute_task_digest(&["ls".to_string()], &env, &inputs, None, None, None);
+        let digest1 = compute_task_digest(TaskDigestInput {
+            command: &["echo".to_string()],
+            env: &env,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: None,
+            system_salt: None,
+        });
+        let digest2 = compute_task_digest(TaskDigestInput {
+            command: &["ls".to_string()],
+            env: &env,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: None,
+            system_salt: None,
+        });
 
         assert_ne!(digest1, digest2);
     }
@@ -181,8 +227,22 @@ mod tests {
         let env1 = BTreeMap::from([("KEY".to_string(), "value1".to_string())]);
         let env2 = BTreeMap::from([("KEY".to_string(), "value2".to_string())]);
 
-        let digest1 = compute_task_digest(&command, &env1, &inputs, None, None, None);
-        let digest2 = compute_task_digest(&command, &env2, &inputs, None, None, None);
+        let digest1 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env1,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: None,
+            system_salt: None,
+        });
+        let digest2 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env2,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: None,
+            system_salt: None,
+        });
 
         assert_ne!(digest1, digest2);
     }
@@ -200,8 +260,22 @@ mod tests {
         env2.insert("B".to_string(), "2".to_string());
         env2.insert("A".to_string(), "1".to_string());
 
-        let digest1 = compute_task_digest(&command, &env1, &inputs, None, None, None);
-        let digest2 = compute_task_digest(&command, &env2, &inputs, None, None, None);
+        let digest1 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env1,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: None,
+            system_salt: None,
+        });
+        let digest2 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env2,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: None,
+            system_salt: None,
+        });
 
         assert_eq!(digest1, digest2);
     }
@@ -215,14 +289,26 @@ mod tests {
         let secrets = BTreeMap::from([("API_KEY".to_string(), "secret123".to_string())]);
         let salt = "system-wide-salt";
 
-        let digest1 =
-            compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
+        let digest1 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: Some(&secrets),
+            system_salt: Some(salt),
+        });
 
         // Change secret value
         let secrets2 = BTreeMap::from([("API_KEY".to_string(), "secret456".to_string())]);
 
-        let digest2 =
-            compute_task_digest(&command, &env, &inputs, None, Some(&secrets2), Some(salt));
+        let digest2 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: Some(&secrets2),
+            system_salt: Some(salt),
+        });
 
         // Digests should differ when secret changes
         assert_ne!(digest1, digest2);
@@ -237,10 +323,22 @@ mod tests {
         let secrets = BTreeMap::from([("API_KEY".to_string(), "secret123".to_string())]);
         let salt = "system-wide-salt";
 
-        let digest1 =
-            compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
-        let digest2 =
-            compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
+        let digest1 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: Some(&secrets),
+            system_salt: Some(salt),
+        });
+        let digest2 = compute_task_digest(TaskDigestInput {
+            command: &command,
+            env: &env,
+            inputs: &inputs,
+            runtime_digest: None,
+            secret_fingerprints: Some(&secrets),
+            system_salt: Some(salt),
+        });
 
         assert_eq!(digest1, digest2);
     }
@@ -277,8 +375,8 @@ mod proptest_tests {
             let env = BTreeMap::from([(key, value)]);
             let inputs: Vec<String> = vec![];
 
-            let digest1 = compute_task_digest(&cmd, &env, &inputs, None, None, None);
-            let digest2 = compute_task_digest(&cmd, &env, &inputs, None, None, None);
+            let digest1 = compute_task_digest(TaskDigestInput { command: &cmd, env: &env, inputs: &inputs, runtime_digest: None, secret_fingerprints: None, system_salt: None });
+            let digest2 = compute_task_digest(TaskDigestInput { command: &cmd, env: &env, inputs: &inputs, runtime_digest: None, secret_fingerprints: None, system_salt: None });
 
             prop_assert_eq!(digest1, digest2);
         }
@@ -294,8 +392,8 @@ mod proptest_tests {
             let env = BTreeMap::new();
             let inputs: Vec<String> = vec![];
 
-            let digest1 = compute_task_digest(&[cmd1], &env, &inputs, None, None, None);
-            let digest2 = compute_task_digest(&[cmd2], &env, &inputs, None, None, None);
+            let digest1 = compute_task_digest(TaskDigestInput { command: &[cmd1], env: &env, inputs: &inputs, runtime_digest: None, secret_fingerprints: None, system_salt: None });
+            let digest2 = compute_task_digest(TaskDigestInput { command: &[cmd2], env: &env, inputs: &inputs, runtime_digest: None, secret_fingerprints: None, system_salt: None });
 
             prop_assert_ne!(digest1, digest2);
         }
@@ -314,8 +412,8 @@ mod proptest_tests {
             let env2 = BTreeMap::from([(key, value2)]);
             let inputs: Vec<String> = vec![];
 
-            let digest1 = compute_task_digest(&cmd, &env1, &inputs, None, None, None);
-            let digest2 = compute_task_digest(&cmd, &env2, &inputs, None, None, None);
+            let digest1 = compute_task_digest(TaskDigestInput { command: &cmd, env: &env1, inputs: &inputs, runtime_digest: None, secret_fingerprints: None, system_salt: None });
+            let digest2 = compute_task_digest(TaskDigestInput { command: &cmd, env: &env2, inputs: &inputs, runtime_digest: None, secret_fingerprints: None, system_salt: None });
 
             prop_assert_ne!(digest1, digest2);
         }
@@ -337,8 +435,8 @@ mod proptest_tests {
             // Create env in reverse order
             let env2: BTreeMap<String, String> = pairs.iter().rev().cloned().collect();
 
-            let digest1 = compute_task_digest(&cmd, &env1, &inputs, None, None, None);
-            let digest2 = compute_task_digest(&cmd, &env2, &inputs, None, None, None);
+            let digest1 = compute_task_digest(TaskDigestInput { command: &cmd, env: &env1, inputs: &inputs, runtime_digest: None, secret_fingerprints: None, system_salt: None });
+            let digest2 = compute_task_digest(TaskDigestInput { command: &cmd, env: &env2, inputs: &inputs, runtime_digest: None, secret_fingerprints: None, system_salt: None });
 
             prop_assert_eq!(digest1, digest2);
         }
@@ -351,7 +449,7 @@ mod proptest_tests {
             let env = BTreeMap::new();
             let inputs: Vec<String> = vec![];
 
-            let digest = compute_task_digest(&cmd, &env, &inputs, None, None, None);
+            let digest = compute_task_digest(TaskDigestInput { command: &cmd, env: &env, inputs: &inputs, runtime_digest: None, secret_fingerprints: None, system_salt: None });
 
             prop_assert!(digest.starts_with("sha256:"));
             // SHA256 produces 64 hex characters

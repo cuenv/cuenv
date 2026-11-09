@@ -141,12 +141,11 @@ pub fn detect_ci_provider(
 mod tests {
     use super::*;
     use std::fs;
-    use tempfile::tempdir;
 
     #[test]
     #[cfg(feature = "github")]
     fn test_detect_github() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join(".github")).unwrap();
 
         let provider = detect_code_owners_provider(temp.path());
@@ -156,7 +155,7 @@ mod tests {
     #[test]
     #[cfg(feature = "gitlab")]
     fn test_detect_gitlab() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join(".gitlab-ci.yml"), "").unwrap();
 
         let provider = detect_code_owners_provider(temp.path());
@@ -170,7 +169,7 @@ mod tests {
     #[test]
     #[cfg(feature = "bitbucket")]
     fn test_detect_bitbucket() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join("bitbucket-pipelines.yml"), "").unwrap();
 
         let provider = detect_code_owners_provider(temp.path());
@@ -184,7 +183,7 @@ mod tests {
     #[test]
     #[cfg(feature = "github")]
     fn test_detect_default_github() {
-        let temp = tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let provider = detect_code_owners_provider(temp.path());
         // Should fall back to GitHub when no platform indicators found
         assert_eq!(provider.output_path(), ".github/CODEOWNERS");

@@ -2,11 +2,16 @@
 
 use crate::error::{Error, Result};
 use cargo_toml::{Error as CargoManifestError, Manifest};
-use glob::{Pattern, glob};
+use glob::Pattern;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub(super) type WorkspaceMembers = HashMap<String, PathBuf>;
+
+struct WorkspaceContext<'context> {
+    root: &'context Path,
+    exclude_patterns: &'context [String],
+}
 
 pub(super) fn load_workspace_members(cargo_toml_path: &Path) -> Result<WorkspaceMembers> {
     let mut manifest = Manifest::from_path(cargo_toml_path)
@@ -22,18 +27,12 @@ pub(super) fn load_workspace_members(cargo_toml_path: &Path) -> Result<Workspace
     let mut members = WorkspaceMembers::new();
 
     if let Some(workspace) = manifest.workspace.as_ref() {
-        collect_members(
-            workspace_root,
-            &workspace.members,
-            &workspace.exclude,
-            &mut members,
-        )?;
-        collect_members(
-            workspace_root,
-            &workspace.default_members,
-            &workspace.exclude,
-            &mut members,
-        )?;
+        let context = WorkspaceContext {
+            root: workspace_root,
+            exclude_patterns: &workspace.exclude,
+        };
+        collect_members(&context, &workspace.members, &mut members)?;
+        collect_members(&context, &workspace.default_members, &mut members)?;
     } else if let Some(package) = manifest.package.take() {
         members.insert(package.name, PathBuf::from("."));
     }
@@ -49,21 +48,15 @@ pub(super) fn load_workspace_members(cargo_toml_path: &Path) -> Result<Workspace
 }
 
 fn collect_members(
-    workspace_root: &Path,
+    context: &WorkspaceContext<'_>,
     member_patterns: &[String],
-    exclude_patterns: &[String],
     members: &mut WorkspaceMembers,
 ) -> Result<()> {
     for pattern in member_patterns {
         if contains_glob(pattern) {
-            collect_glob_members(workspace_root, pattern, exclude_patterns, members)?;
+            collect_glob_members(context, pattern, members)?;
         } else {
-            collect_member_dir(
-                workspace_root,
-                &workspace_root.join(pattern),
-                exclude_patterns,
-                members,
-            )?;
+            collect_member_dir(context, &context.root.join(pattern), members)?;
         }
     }
 
@@ -71,32 +64,31 @@ fn collect_members(
 }
 
 fn collect_glob_members(
-    workspace_root: &Path,
+    context: &WorkspaceContext<'_>,
     pattern: &str,
-    exclude_patterns: &[String],
     members: &mut WorkspaceMembers,
 ) -> Result<()> {
-    let glob_pattern = workspace_root.join(pattern);
+    let glob_pattern = context.root.join(pattern);
     let glob_str = glob_pattern
         .to_str()
         .ok_or_else(|| Error::LockfileParseFailed {
-            path: workspace_root.to_path_buf(),
+            path: context.root.to_path_buf(),
             message: format!("Invalid UTF-8 in glob pattern: {pattern}"),
         })?;
 
-    let entries = glob(glob_str).map_err(|err| Error::LockfileParseFailed {
-        path: workspace_root.to_path_buf(),
+    let entries = glob::glob(glob_str).map_err(|err| Error::LockfileParseFailed {
+        path: context.root.to_path_buf(),
         message: format!("Invalid glob pattern '{pattern}': {err}"),
     })?;
 
     for entry in entries {
         let member_dir = entry.map_err(|err| Error::LockfileParseFailed {
-            path: workspace_root.to_path_buf(),
+            path: context.root.to_path_buf(),
             message: format!("Glob error for pattern '{pattern}': {err}"),
         })?;
 
         if member_dir.is_dir() {
-            collect_member_dir(workspace_root, &member_dir, exclude_patterns, members)?;
+            collect_member_dir(context, &member_dir, members)?;
         }
     }
 
@@ -104,16 +96,15 @@ fn collect_glob_members(
 }
 
 fn collect_member_dir(
-    workspace_root: &Path,
+    context: &WorkspaceContext<'_>,
     member_dir: &Path,
-    exclude_patterns: &[String],
     members: &mut WorkspaceMembers,
 ) -> Result<()> {
-    if should_exclude(workspace_root, member_dir, exclude_patterns) {
+    if should_exclude(context.root, member_dir, context.exclude_patterns) {
         return Ok(());
     }
 
-    process_member_dir(workspace_root, member_dir, members)
+    process_member_dir(context.root, member_dir, members)
 }
 
 fn should_exclude(workspace_root: &Path, member_dir: &Path, exclude_patterns: &[String]) -> bool {

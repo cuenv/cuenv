@@ -1,5 +1,7 @@
-use super::*;
-use temp_env::with_vars;
+use super::{
+    ApiFailure, Arch, Authentication, GitHubToolProvider, Os, Platform, RateLimitInfo, Release,
+    ResolvedTool, ToolExtract, ToolOptions, ToolProvider, ToolSource,
+};
 use tempfile::TempDir;
 
 fn with_token_env<R>(
@@ -7,7 +9,7 @@ fn with_token_env<R>(
     gh_token: Option<&str>,
     test: impl FnOnce() -> R,
 ) -> R {
-    with_vars(
+    temp_env::with_vars(
         [("GITHUB_TOKEN", github_token), ("GH_TOKEN", gh_token)],
         test,
     )
@@ -389,6 +391,18 @@ fn test_rate_limit_info_invalid_header_values() {
 // ==========================================================================
 
 #[test]
+fn authentication_matches_token_presence() {
+    assert!(matches!(
+        Authentication::from_token(None),
+        Authentication::Anonymous
+    ));
+    assert!(matches!(
+        Authentication::from_token(Some("")),
+        Authentication::Authenticated
+    ));
+}
+
+#[test]
 fn test_build_api_error_rate_limit_exceeded_unauthenticated() {
     let rate_limit = RateLimitInfo {
         limit: Some(60),
@@ -397,14 +411,23 @@ fn test_build_api_error_rate_limit_exceeded_unauthenticated() {
     };
 
     let error = GitHubToolProvider::build_api_error(
-        reqwest::StatusCode::FORBIDDEN,
-        &rate_limit,
-        false,
+        &ApiFailure {
+            status: reqwest::StatusCode::FORBIDDEN,
+            rate_limit: &rate_limit,
+            authentication: Authentication::Anonymous,
+        },
         "release owner/repo v1.0.0",
     );
 
     let msg = error.to_string();
     assert!(msg.contains("rate limit exceeded"));
+    let cuenv_core::Error::Tool(cuenv_core::ToolError::Resolution {
+        help: Some(help), ..
+    }) = error
+    else {
+        panic!("expected a tool resolution error with help");
+    };
+    assert!(help.contains("Set GITHUB_TOKEN"));
 }
 
 #[test]
@@ -416,14 +439,23 @@ fn test_build_api_error_rate_limit_exceeded_authenticated() {
     };
 
     let error = GitHubToolProvider::build_api_error(
-        reqwest::StatusCode::FORBIDDEN,
-        &rate_limit,
-        true,
+        &ApiFailure {
+            status: reqwest::StatusCode::FORBIDDEN,
+            rate_limit: &rate_limit,
+            authentication: Authentication::Authenticated,
+        },
         "release owner/repo v1.0.0",
     );
 
     let msg = error.to_string();
     assert!(msg.contains("rate limit exceeded"));
+    let cuenv_core::Error::Tool(cuenv_core::ToolError::Resolution {
+        help: Some(help), ..
+    }) = error
+    else {
+        panic!("expected a tool resolution error with help");
+    };
+    assert!(help.contains("Wait for the rate limit"));
 }
 
 #[test]
@@ -435,9 +467,11 @@ fn test_build_api_error_forbidden_not_rate_limit() {
     };
 
     let error = GitHubToolProvider::build_api_error(
-        reqwest::StatusCode::FORBIDDEN,
-        &rate_limit,
-        false,
+        &ApiFailure {
+            status: reqwest::StatusCode::FORBIDDEN,
+            rate_limit: &rate_limit,
+            authentication: Authentication::Anonymous,
+        },
         "release owner/repo v1.0.0",
     );
 
@@ -450,9 +484,11 @@ fn test_build_api_error_not_found() {
     let rate_limit = RateLimitInfo::default();
 
     let error = GitHubToolProvider::build_api_error(
-        reqwest::StatusCode::NOT_FOUND,
-        &rate_limit,
-        false,
+        &ApiFailure {
+            status: reqwest::StatusCode::NOT_FOUND,
+            rate_limit: &rate_limit,
+            authentication: Authentication::Anonymous,
+        },
         "release owner/repo v999.0.0",
     );
 
@@ -466,9 +502,11 @@ fn test_build_api_error_unauthorized() {
     let rate_limit = RateLimitInfo::default();
 
     let error = GitHubToolProvider::build_api_error(
-        reqwest::StatusCode::UNAUTHORIZED,
-        &rate_limit,
-        true,
+        &ApiFailure {
+            status: reqwest::StatusCode::UNAUTHORIZED,
+            rate_limit: &rate_limit,
+            authentication: Authentication::Authenticated,
+        },
         "release owner/repo v1.0.0",
     );
 
@@ -482,9 +520,11 @@ fn test_build_api_error_server_error() {
     let rate_limit = RateLimitInfo::default();
 
     let error = GitHubToolProvider::build_api_error(
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-        &rate_limit,
-        false,
+        &ApiFailure {
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            rate_limit: &rate_limit,
+            authentication: Authentication::Anonymous,
+        },
         "asset download",
     );
 

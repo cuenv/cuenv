@@ -8,8 +8,7 @@ use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{InfrastructureError, LockRequest, StateLock, StateStore, TenantKey};
 
 use super::dispatch::CommandContext;
-use super::failure::{failure, printable_text};
-use super::guard::tenant_label;
+
 use super::holder;
 use super::interrupts::HeldLock;
 use super::invocation::Invocation;
@@ -36,7 +35,7 @@ where
         .store
         .migrate()
         .await
-        .map_err(|error| failure(&error, context.invocation))?;
+        .map_err(|error| super::failure::failure(&error, context.invocation))?;
     context.interrupts.check()?;
     let lock = StateLock::generate();
     let held = HeldLock {
@@ -65,7 +64,7 @@ where
     emit_stderr!(format!(
         "Acquired lock {} for {}",
         lock.lock_identifier,
-        tenant_label(context.tenant)
+        super::guard::tenant_label(context.tenant)
     ));
 
     let result = match context.interrupts.check() {
@@ -101,7 +100,7 @@ pub(super) fn acquisition_failure(
     lock: &StateLock,
     invocation: &Invocation,
 ) -> CliError {
-    let failure = failure(error, invocation);
+    let failure = super::failure::failure(error, invocation);
     match error {
         InfrastructureError::Locked { .. } => failure,
         _ if error.to_string().contains(&lock.lock_identifier) => failure.with_lock(LockStatus {
@@ -152,7 +151,7 @@ pub(super) fn settle<Outcome>(settlement: Settlement<'_, Outcome>) -> Result<Out
             let error = CliError::infrastructure(
                 format!(
                     "{operation} succeeded but lock {identifier} was NOT released: {}",
-                    printable_text(&release_error.to_string())
+                    super::failure::printable_text(&release_error.to_string())
                 ),
                 Some(unlock_help),
                 InfrastructureFailureKind::Failed,
@@ -166,7 +165,7 @@ pub(super) fn settle<Outcome>(settlement: Settlement<'_, Outcome>) -> Result<Out
         (Err(error), Err(release_error)) => {
             let not_released = format!(
                 "Lock {identifier} was NOT released ({}). {unlock_help}",
-                printable_text(&release_error.to_string())
+                super::failure::printable_text(&release_error.to_string())
             );
             let help = error.help().map_or_else(
                 || not_released.clone(),
@@ -210,13 +209,13 @@ pub(super) fn release_notice(lock: &StateLock, tenant: &TenantKey, release: Rele
         Release::Released => format!(
             "Released lock {} for {}",
             lock.lock_identifier,
-            tenant_label(tenant)
+            super::guard::tenant_label(tenant)
         ),
         Release::NoLongerHeld => format!(
             "warning: lock {} for {} was no longer held when the run ended (another run \
              released or took it); nothing was released",
             lock.lock_identifier,
-            tenant_label(tenant)
+            super::guard::tenant_label(tenant)
         ),
     }
 }

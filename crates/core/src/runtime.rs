@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::manifest::{DevenvRuntime, NixRuntime, Runtime};
-use cuenv_hooks::{Hook, capture_source_environment};
+use cuenv_hooks::Hook;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -43,7 +43,7 @@ async fn resolve_nix_runtime_environment(
         source: Some(true),
     };
 
-    capture_source_environment(hook, &HashMap::new(), RUNTIME_ENV_TIMEOUT_SECONDS)
+    cuenv_hooks::capture_source_environment(hook, &HashMap::new(), RUNTIME_ENV_TIMEOUT_SECONDS)
         .await
         .map_err(|e| {
             crate::Error::configuration(format!("Failed to acquire Nix runtime environment: {e}"))
@@ -72,7 +72,7 @@ async fn resolve_devenv_runtime_environment(
         source: Some(true),
     };
 
-    capture_source_environment(hook, &HashMap::new(), RUNTIME_ENV_TIMEOUT_SECONDS)
+    cuenv_hooks::capture_source_environment(hook, &HashMap::new(), RUNTIME_ENV_TIMEOUT_SECONDS)
         .await
         .map_err(|e| {
             crate::Error::configuration(format!(

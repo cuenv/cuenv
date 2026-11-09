@@ -81,6 +81,10 @@ impl ApprovalManager {
     /// - Windows: `%APPDATA%\cuenv\approved.json`
     ///
     /// Can be overridden with `CUENV_APPROVAL_FILE` environment variable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no platform state or data directory is available.
     pub fn default_approval_file() -> Result<PathBuf> {
         // Check for CUENV_APPROVAL_FILE environment variable first
         if let Ok(approval_file) = std::env::var("CUENV_APPROVAL_FILE")
@@ -97,20 +101,28 @@ impl ApprovalManager {
         Ok(base.join("cuenv").join("approved.json"))
     }
 
-    /// Create an approval manager using the default approval file
+    /// Create an approval manager using the default approval file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the default approval path cannot be determined.
     pub fn with_default_file() -> Result<Self> {
         Ok(Self::new(Self::default_approval_file()?))
     }
 
     /// Get approval for a specific directory
     #[must_use]
-    pub fn get_approval(&self, directory: &str) -> Option<&ApprovalRecord> {
+    pub fn approval(&self, directory: &str) -> Option<&ApprovalRecord> {
         let path = PathBuf::from(directory);
         let dir_key = compute_directory_key(&path);
         self.approvals.get(&dir_key)
     }
 
-    /// Load approvals from disk with file locking
+    /// Load approvals from disk with file locking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be locked, read, or parsed.
     pub async fn load_approvals(&mut self) -> Result<()> {
         if !self.approval_file.exists() {
             debug!("No approval file found at {}", self.approval_file.display());
@@ -155,7 +167,11 @@ impl ApprovalManager {
         Ok(())
     }
 
-    /// Save approvals to disk with file locking
+    /// Save approvals to disk with file locking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path is invalid or the file cannot be written.
     pub async fn save_approvals(&self) -> Result<()> {
         // Validate and canonicalize the approval file path to prevent path traversal
         let canonical_path = validate_and_canonicalize_path(&self.approval_file)?;
@@ -233,7 +249,8 @@ impl ApprovalManager {
     }
 
     /// Check if a configuration is approved for a specific directory
-    pub fn is_approved(&self, directory_path: &Path, config_hash: &str) -> Result<bool> {
+    #[must_use]
+    pub fn is_approved(&self, directory_path: &Path, config_hash: &str) -> bool {
         let dir_key = compute_directory_key(directory_path);
 
         if let Some(approval) = self.approvals.get(&dir_key)
@@ -244,15 +261,19 @@ impl ApprovalManager {
                 && Utc::now() > expires_at
             {
                 warn!("Approval for {} has expired", directory_path.display());
-                return Ok(false);
+                return false;
             }
-            return Ok(true);
+            return true;
         }
 
-        Ok(false)
+        false
     }
 
-    /// Approve a configuration for a specific directory
+    /// Approve a configuration for a specific directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the approval cannot be saved.
     pub async fn approve_config(
         &mut self,
         directory_path: &Path,
@@ -278,7 +299,11 @@ impl ApprovalManager {
         Ok(())
     }
 
-    /// Revoke approval for a directory
+    /// Revoke approval for a directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a changed approval list cannot be saved.
     pub async fn revoke_approval(&mut self, directory_path: &Path) -> Result<bool> {
         let dir_key = compute_directory_key(directory_path);
 
@@ -300,7 +325,11 @@ impl ApprovalManager {
         self.approvals.values().collect()
     }
 
-    /// Clean up expired approvals
+    /// Clean up expired approvals.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the updated approval list cannot be saved.
     pub async fn cleanup_expired(&mut self) -> Result<usize> {
         let now = Utc::now();
         let initial_count = self.approvals.len();
@@ -402,14 +431,14 @@ pub fn check_approval_status(
     manager: &ApprovalManager,
     directory_path: &Path,
     hooks: Option<&Hooks>,
-) -> Result<ApprovalStatus> {
+) -> ApprovalStatus {
     // Auto-approve in CI environments - they are non-interactive and already secured
     if is_ci() {
         debug!(
             "Auto-approving hooks in CI environment for {}",
             directory_path.display()
         );
-        return Ok(ApprovalStatus::Approved);
+        return ApprovalStatus::Approved;
     }
 
     check_approval_status_core(manager, directory_path, hooks)
@@ -423,17 +452,17 @@ fn check_approval_status_core(
     manager: &ApprovalManager,
     directory_path: &Path,
     hooks: Option<&Hooks>,
-) -> Result<ApprovalStatus> {
+) -> ApprovalStatus {
     let current_hash = compute_approval_hash(hooks);
 
-    if manager.is_approved(directory_path, &current_hash)? {
-        Ok(ApprovalStatus::Approved)
+    if manager.is_approved(directory_path, &current_hash) {
+        ApprovalStatus::Approved
     } else {
         // Check if there's an existing approval with a different hash
         if manager.contains_key(directory_path) {
-            Ok(ApprovalStatus::RequiresApproval { current_hash })
+            ApprovalStatus::RequiresApproval { current_hash }
         } else {
-            Ok(ApprovalStatus::NotApproved { current_hash })
+            ApprovalStatus::NotApproved { current_hash }
         }
     }
 }

@@ -1,14 +1,15 @@
 #![allow(clippy::branches_sharing_code, clippy::needless_pass_by_value)]
 
 use super::{StepResult, TestWorld};
-use cucumber::codegen::anyhow::Context;
+use cucumber::codegen::anyhow::{Context, anyhow};
 use cucumber::{given, then, when};
 use std::collections::HashMap;
 use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::time::sleep;
 
 const TEST_CUE_MODULE: &str = "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n";
 
@@ -67,7 +68,8 @@ async fn run_status(world: &mut TestWorld) -> StepResult {
             "--package",
             package,
         ])
-        .await
+        .await?;
+    require_success(world, "env status")
 }
 
 async fn run_status_wait(world: &mut TestWorld) -> StepResult {
@@ -85,11 +87,60 @@ async fn run_status_wait(world: &mut TestWorld) -> StepResult {
             "--timeout",
             "5",
         ])
-        .await
+        .await?;
+    require_success(world, "env status --wait")
 }
 
-async fn write_state_log(world: &TestWorld, name: &str, content: impl AsRef<[u8]>) {
-    let _ = fs::write(world.state_file(name), content).await;
+fn require_success(world: &TestWorld, command: &str) -> StepResult {
+    if world.last_exit_code != 0 {
+        return Err(anyhow!(
+            "{command} failed ({}): {}",
+            world.last_exit_code,
+            world.last_output
+        ));
+    }
+    Ok(())
+}
+
+async fn evaluate_bash_export(world: &TestWorld) -> StepResult<HashMap<String, String>> {
+    let mut shell = Command::new("bash")
+        .args(["-s", "-e"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .envs(&world.shell_env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to start Bash for the exported environment")?;
+    let mut input = shell
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("missing Bash stdin"))?;
+    input.write_all(world.last_output.as_bytes()).await?;
+    input.write_all(b"\nenv -0\n").await?;
+    drop(input);
+    let output = shell.wait_with_output().await?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "exported shell code failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let mut variables = HashMap::new();
+    for entry in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let entry = std::str::from_utf8(entry).context("shell environment is not UTF-8")?;
+        let (name, value) = entry
+            .split_once('=')
+            .ok_or_else(|| anyhow!("invalid shell environment entry"))?;
+        variables.insert(name.to_string(), value.to_string());
+    }
+    Ok(variables)
 }
 
 #[given(expr = "cuenv is installed and available")]
@@ -224,7 +275,8 @@ tasks: {
             package,
             "--yes",
         ])
-        .await
+        .await?;
+    require_success(world, "allow")
 }
 
 #[when(expr = "I change directory to {string}")]
@@ -245,6 +297,7 @@ async fn change_directory(world: &mut TestWorld, dir: String) -> StepResult {
             package,
         ])
         .await?;
+    require_success(world, "env load")?;
 
     // Mark hooks as potentially running
     world.hooks_running = true;
@@ -261,101 +314,62 @@ async fn hooks_spawned(world: &mut TestWorld) -> StepResult {
 
     run_status(world).await?;
 
-    write_state_log(world, "cuenv_hook_spawn_output.log", &world.last_output).await;
-
-    // Hooks are running or completed (status shows something other than "No hook execution")
-    let hooks_active = !world.last_output.contains("No hook execution in progress")
-        && !world.last_output.is_empty();
-
-    assert!(
-        hooks_active,
-        "Hooks were not started in background. Status output: {}",
-        world.last_output
-    );
+    let manager = cuenv_hooks::StateManager::new(world.state_dir.clone());
+    let session = uuid::Uuid::parse_str(&world.hook_session)?;
+    let state = manager
+        .fast_status(&world.current_dir, session)
+        .await?
+        .ok_or_else(|| anyhow!("No background hook state: {}", world.last_output))?;
+    if !matches!(
+        state.status,
+        cuenv_hooks::ExecutionStatus::Running | cuenv_hooks::ExecutionStatus::Completed
+    ) {
+        return Err(anyhow!("Background hook entered {:?}", state.status));
+    }
     Ok(())
 }
 
 #[when(expr = "I wait for hooks to complete")]
 async fn wait_for_hooks(world: &mut TestWorld) -> StepResult {
-    // Wait up to 5 seconds for hooks to complete
-    for i in 0..10 {
-        write_state_log(
-            world,
-            "cuenv_wait_iteration.log",
-            format!("Iteration {i}: Checking for hook completion"),
-        )
-        .await;
-        if world.check_hooks_complete().await {
-            write_state_log(
-                world,
-                "cuenv_hooks_complete.log",
-                format!("Hooks complete at iteration {i}"),
-            )
-            .await;
-            world.hooks_running = false;
-
-            // Run the new env check command to get environment variables
-            let dir_path = world.current_dir_arg()?;
-            let package = package_for_location(&dir_path);
-
-            // Debug: Log what we're about to run
-            write_state_log(
-                world,
-                "cuenv_before_check.log",
-                format!(
-                    "Running env check:\nPath: {}\nPackage: {}\nState dir: {}",
-                    dir_path,
-                    package,
-                    world.state_dir.display()
-                ),
-            )
-            .await;
-
-            // Use 'export' command which outputs shell eval statements
-            world
-                .run_cuenv([
-                    "export",
-                    "--shell",
-                    "bash",
-                    "--path",
-                    dir_path.as_str(),
-                    "--package",
-                    package,
-                ])
-                .await?;
-
-            // Parse the output and load environment variables
-            if world.last_exit_code == 0 {
-                let mut vars = HashMap::new();
-                // Debug to file
-                write_state_log(world, "cuenv_env_check_output.log", &world.last_output).await;
-                for line in world.last_output.lines() {
-                    if let Some(export) = line.strip_prefix("export ")
-                        && let Some((key, value)) = export.split_once('=')
-                    {
-                        let clean_value = value.trim_matches('"');
-                        vars.insert(key.to_string(), clean_value.to_string());
-                    }
-                }
-                write_state_log(
-                    world,
-                    "cuenv_env_vars.log",
-                    format!("Loading {} env vars", vars.len()),
-                )
-                .await;
-                world.load_env_vars(vars);
-            } else {
-                write_state_log(
-                    world,
-                    "cuenv_env_check_failed.log",
-                    format!("env check failed with exit code: {}", world.last_exit_code),
-                )
-                .await;
-            }
-            break;
-        }
-        sleep(Duration::from_millis(500)).await;
+    let dir_path = world.current_dir_arg()?;
+    let package = package_for_location(&dir_path);
+    world
+        .run_cuenv([
+            "env",
+            "status",
+            "--path",
+            dir_path.as_str(),
+            "--package",
+            package,
+            "--wait",
+            "--timeout",
+            "10",
+            "--output",
+            "short",
+        ])
+        .await?;
+    require_success(world, "env status --wait")?;
+    if world.last_output.trim() != "[OK]" {
+        return Err(anyhow!(
+            "Hook execution did not complete: {}",
+            world.last_output
+        ));
     }
+    world.hooks_running = false;
+    world
+        .run_cuenv([
+            "export",
+            "--shell",
+            "bash",
+            "--path",
+            dir_path.as_str(),
+            "--package",
+            package,
+        ])
+        .await?;
+    require_success(world, "export")?;
+    let vars = evaluate_bash_export(world).await?;
+    world.load_env_vars(vars);
     Ok(())
 }
 
@@ -494,33 +508,44 @@ tasks: {}
             package,
             "--yes",
         ])
-        .await
+        .await?;
+    require_success(world, "allow")
 }
 
 #[when(expr = "I wait for hooks to complete or fail")]
 async fn wait_for_hooks_or_failure(world: &mut TestWorld) -> StepResult {
     // Wait for hooks to finish (successfully or with failure)
+    let mut completed = false;
     for _ in 0..10 {
         run_status_wait(world).await?;
 
-        if world.last_output.contains("Completed") || world.last_output.contains("Failed") {
+        let status = world.last_output.to_ascii_lowercase();
+        if status.contains("completed") || status.contains("failed") {
+            completed = true;
             break;
         }
-        sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    if !completed {
+        return Err(anyhow!(
+            "Timed out waiting for hook completion or failure: {}",
+            world.last_output
+        ));
     }
 
-    // Try to load environment (should fail or return empty)
+    // Exercise the shell export path for the failed run.
     let dir_path = world.current_dir_arg()?;
     world
-        .run_cuenv(["env", "check", "--path", dir_path.as_str()])
+        .run_cuenv(["export", "--shell", "bash", "--path", dir_path.as_str()])
         .await?;
-    Ok(())
+    require_success(world, "export")
 }
 
 #[then(expr = "the environment variables should not be loaded")]
 fn env_vars_not_loaded(world: &mut TestWorld) {
     assert!(
-        !world.shell_env.contains_key("SHOULD_NOT_LOAD"),
+        !world.shell_env.contains_key("SHOULD_NOT_LOAD")
+            && !world.last_output.contains("SHOULD_NOT_LOAD="),
         "Failed hook should not load environment variables"
     );
 }
@@ -528,9 +553,6 @@ fn env_vars_not_loaded(world: &mut TestWorld) {
 #[then(expr = "I should see an error message about hook failure")]
 async fn see_hook_failure_message(world: &mut TestWorld) -> StepResult {
     run_status_wait(world).await?;
-
-    // Also write the status to a debug file
-    write_state_log(world, "cuenv_hook_failure_status.log", &world.last_output).await;
 
     assert!(
         world.last_output.contains("Failed")
@@ -542,48 +564,75 @@ async fn see_hook_failure_message(world: &mut TestWorld) -> StepResult {
     Ok(())
 }
 
-// Step definitions for "Changing Away From Directory Preserves State" scenario
-
-#[then(expr = "the environment variables from hooks should still be set")]
-fn env_vars_still_set(world: &mut TestWorld) {
-    assert!(
-        world.shell_env.contains_key("CUENV_TEST"),
-        "CUENV_TEST should still be set after changing directories. Current env: {:?}",
-        world.shell_env
-    );
-    assert_eq!(
-        world.shell_env.get("CUENV_TEST").map(String::as_str),
-        Some("loaded_successfully"),
-        "CUENV_TEST should retain its value"
-    );
+#[then(
+    expr = "leaving a project restores the shell environment and returning reuses its hook result"
+)]
+async fn leaving_restores_environment(world: &mut TestWorld) -> StepResult {
+    let fixture = tempfile::tempdir()?;
+    let project = fixture.path().join("project");
+    create_cue_module(fixture.path()).await?;
+    write_hook_project(
+        &project,
+        r#"package cuenv
+name: "shell-test"
+hooks: onEnter: setup: {
+    command: "sh"
+    args: ["-c", "printf 'ran\\n' >> \"$TEST_ROOT/runs\"; printf 'export CUENV_TEST=loaded_successfully\\n'"]
+    source: true
 }
+"#,
+    )
+    .await?;
 
-#[when(expr = "I change back to {string}")]
-fn change_back_to_directory(world: &mut TestWorld, dir: String) {
-    // Simply update the current directory without triggering hook execution
-    // This simulates going back to a directory where hooks already completed
-    // Use just the last component of the path to avoid doubling "examples"
-    let target = std::path::Path::new(&dir)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(dir.as_str());
-    world.current_dir = world.current_dir.join(target);
-}
-
-#[then(expr = "hooks should not re-execute since configuration hasn't changed")]
-async fn hooks_should_not_reexecute(world: &mut TestWorld) -> StepResult {
-    // Check that no new hook execution is triggered
-    // The hook state should still show the previous completed execution
-    run_status(world).await?;
-
-    // Status should show completed (from before), not running
-    // Since hooks already ran, no new execution should be in progress
-    assert!(
-        !world.last_output.contains("Running") && !world.last_output.contains("in progress")
-            || world.last_output.contains("Completed")
-            || world.last_output.contains("completed"),
-        "Hooks should not be re-executing. Status: {}",
-        world.last_output
-    );
+    let executable_dir = world
+        .cuenv_binary
+        .parent()
+        .ok_or_else(|| anyhow!("cuenv binary has no parent directory"))?;
+    let mut paths = vec![executable_dir.to_path_buf()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(paths)?;
+    let script = r#"
+export CUENV_TEST=ambient
+"$TEST_CUENV" allow --yes || exit 1
+source <("$TEST_CUENV" shell init bash) || exit 2
+cuenv shell refresh || exit 3
+cuenv env status --wait --timeout 30 --output short || exit 4
+cuenv shell refresh || exit 5
+[ "$CUENV_TEST" = loaded_successfully ] || exit 6
+cd "$TEST_ROOT" || exit 7
+cuenv shell refresh || exit 8
+[ "$CUENV_TEST" = ambient ] || exit 9
+cd "$TEST_PROJECT" || exit 10
+cuenv shell refresh || exit 11
+[ "$CUENV_TEST" = loaded_successfully ] || exit 12
+[ "$(cat "$TEST_ROOT/runs")" = ran ] || exit 13
+"#;
+    let output = Command::new("bash")
+        .args(["-c", script])
+        .current_dir(&project)
+        .env_clear()
+        .env("PATH", path)
+        .env("HOME", fixture.path())
+        .env("XDG_STATE_HOME", fixture.path())
+        .env("XDG_CONFIG_HOME", fixture.path())
+        .env("XDG_CACHE_HOME", fixture.path())
+        .env("CUENV_STATE_DIR", &world.state_dir)
+        .env("CUENV_APPROVAL_FILE", fixture.path().join("approvals.json"))
+        .env("CUENV_EXECUTABLE", &world.cuenv_binary)
+        .env("TEST_CUENV", &world.cuenv_binary)
+        .env("TEST_ROOT", fixture.path())
+        .env("TEST_PROJECT", &project)
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "shell environment lifecycle failed ({}): stdout={}, stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
     Ok(())
 }

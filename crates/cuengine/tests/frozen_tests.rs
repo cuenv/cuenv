@@ -5,7 +5,8 @@ use cuengine::frozen::{
     PreparationOptions, PreparedSpecializationOptions, ScalarFill, ScalarValue,
     SpecializationOptions, ValuePath, ValueSelector, VerificationOptions,
 };
-use serde_json::{Value, value::RawValue};
+use serde_json::Value;
+use serde_json::value::RawValue;
 use std::error::Error;
 use std::fs;
 

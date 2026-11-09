@@ -95,15 +95,20 @@ tasks: {
     Ok(())
 }
 
-fn write_proj_a(
-    dir: &Path,
-    mapping_from: &str,
-    mapping_to: &str,
-    external_project: &str,
-) -> TestResult {
+#[derive(Clone, Copy)]
+struct FileMapping<'file_mapping> {
+    from: &'file_mapping str,
+    to: &'file_mapping str,
+}
+
+fn write_proj_a(dir: &Path, mapping: FileMapping<'_>, external_project: &str) -> TestResult {
     let proja = dir.join("projA");
     fs::create_dir_all(&proja)?;
     init_cue_module(&proja, "projA")?;
+    let FileMapping {
+        from: mapping_from,
+        to: mapping_to,
+    } = mapping;
     let cue_a = format!(
         r#"package projA
 
@@ -135,7 +140,14 @@ fn test_external_auto_run_and_materialization() -> TestResult {
     let root = tmp.path();
 
     write_proj_b(root, "v1-auto")?;
-    write_proj_a(root, "app.txt", "vendor/app.txt", "../projB")?;
+    write_proj_a(
+        root,
+        FileMapping {
+            from: "app.txt",
+            to: "vendor/app.txt",
+        },
+        "../projB",
+    )?;
 
     let proja = root.join("projA");
     let output = run_cuenv(&[
@@ -167,7 +179,14 @@ fn test_cache_hits_and_invalidation() -> TestResult {
     let root = tmp.path();
 
     write_proj_b(root, "v1-cache")?;
-    write_proj_a(root, "app.txt", "vendor/app.txt", "../projB")?;
+    write_proj_a(
+        root,
+        FileMapping {
+            from: "app.txt",
+            to: "vendor/app.txt",
+        },
+        "../projB",
+    )?;
     let proja = root.join("projA");
     let proja_path = path_str(&proja)?;
 
@@ -204,7 +223,14 @@ fn test_mapping_error_undeclared_output() -> TestResult {
     let root = tmp.path();
 
     write_proj_b(root, "v1-map")?;
-    write_proj_a(root, "missing.txt", "vendor/app.txt", "../projB")?;
+    write_proj_a(
+        root,
+        FileMapping {
+            from: "missing.txt",
+            to: "vendor/app.txt",
+        },
+        "../projB",
+    )?;
 
     let proja = root.join("projA");
     let output = run_cuenv(&[
@@ -230,7 +256,14 @@ fn test_path_safety_outside_git_root() -> TestResult {
     let root = tmp.path();
 
     // Create projA only
-    write_proj_a(root, "app.txt", "vendor/app.txt", "../../outside")?;
+    write_proj_a(
+        root,
+        FileMapping {
+            from: "app.txt",
+            to: "vendor/app.txt",
+        },
+        "../../outside",
+    )?;
 
     let proja = root.join("projA");
     let output = run_cuenv(&[

@@ -1,7 +1,7 @@
 //! Infisical REST API secret resolver.
 
 use async_trait::async_trait;
-use cuenv_secrets::http::{build_client, env_var, normalize_api_url};
+
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec};
 use reqwest::{Client, StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
@@ -110,8 +110,8 @@ impl InfisicalConfig {
         let configured = self
             .api_url
             .clone()
-            .or_else(|| env_var("INFISICAL_API_URL"));
-        normalize_api_url(configured.as_deref().unwrap_or(DEFAULT_API_URL))
+            .or_else(|| cuenv_secrets::http::env_var("INFISICAL_API_URL"));
+        cuenv_secrets::http::normalize_api_url(configured.as_deref().unwrap_or(DEFAULT_API_URL))
     }
 }
 
@@ -138,7 +138,7 @@ impl InfisicalResolver {
     /// Returns an error if the HTTP client cannot be initialized.
     pub fn try_new() -> Result<Self, SecretError> {
         Ok(Self {
-            client: build_client("infisical")?,
+            client: cuenv_secrets::http::build_client("infisical")?,
             cached_tokens: Mutex::new(HashMap::new()),
         })
     }
@@ -435,9 +435,9 @@ enum AuthMode {
 
 impl AuthMode {
     fn from_env(name: &str, config: &InfisicalConfig) -> Result<Self, SecretError> {
-        let method = InfisicalAuthMethod::detect(env_var)
+        let method = InfisicalAuthMethod::detect(cuenv_secrets::http::env_var)
             .map_err(|e| SecretError::resolution_failed(name, e.to_string()))?;
-        let organization_slug = env_var("INFISICAL_ORGANIZATION_SLUG");
+        let organization_slug = cuenv_secrets::http::env_var("INFISICAL_ORGANIZATION_SLUG");
         let login = |method| {
             Self::Login(LoginCredentials {
                 api_url: config.api_url(),
@@ -461,7 +461,7 @@ impl AuthMode {
 
 /// Read a variable that `InfisicalAuthMethod::detect` has already seen set.
 fn required_env(name: &str) -> String {
-    env_var(name).unwrap_or_default()
+    cuenv_secrets::http::env_var(name).unwrap_or_default()
 }
 
 /// How cuenv authenticates to Infisical, chosen from the environment.
@@ -584,7 +584,7 @@ impl InfisicalAuthMethod {
     ///
     /// See [`InfisicalAuthMethod::detect`].
     pub fn from_process_env() -> Result<Self, InfisicalAuthConfigError> {
-        Self::detect(env_var)
+        Self::detect(cuenv_secrets::http::env_var)
     }
 }
 
@@ -641,20 +641,20 @@ struct CachedToken {
 
 #[derive(Serialize)]
 #[serde(untagged)]
-enum LoginRequest<'a> {
+enum LoginRequest<'request> {
     #[serde(rename_all = "camelCase")]
     Universal {
-        client_id: &'a str,
-        client_secret: &'a str,
+        client_id: &'request str,
+        client_secret: &'request str,
         #[serde(skip_serializing_if = "Option::is_none")]
-        organization_slug: Option<&'a str>,
+        organization_slug: Option<&'request str>,
     },
     #[serde(rename_all = "camelCase")]
     Oidc {
-        identity_id: &'a str,
-        jwt: &'a str,
+        identity_id: &'request str,
+        jwt: &'request str,
         #[serde(skip_serializing_if = "Option::is_none")]
-        organization_slug: Option<&'a str>,
+        organization_slug: Option<&'request str>,
     },
 }
 
@@ -937,8 +937,7 @@ mod tests {
 
     #[test]
     fn auth_method_precedence() {
-        use InfisicalAuthConfigError as E;
-        use InfisicalAuthMethod as M;
+        use {InfisicalAuthConfigError as E, InfisicalAuthMethod as M};
         let universal = [
             ("INFISICAL_CLIENT_ID", "id"),
             ("INFISICAL_CLIENT_SECRET", "secret"),

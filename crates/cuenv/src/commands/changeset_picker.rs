@@ -5,20 +5,16 @@
 //! Phase 2: Enter summary
 //! Phase 3: Optionally enter description
 
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use cuenv_release::BumpType;
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-};
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::{Frame, Terminal};
 use std::collections::HashMap;
 use std::io;
 
@@ -195,7 +191,7 @@ pub fn run_changeset_picker(packages: Vec<PackageInfo>) -> io::Result<ChangesetP
     }
 
     // Setup terminal
-    enable_raw_mode()?;
+    crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
@@ -208,7 +204,7 @@ pub fn run_changeset_picker(packages: Vec<PackageInfo>) -> io::Result<ChangesetP
     let result = run_event_loop(&mut terminal, &mut picker);
 
     // Restore terminal
-    disable_raw_mode()?;
+    crossterm::terminal::disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
     result

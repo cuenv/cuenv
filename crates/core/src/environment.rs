@@ -524,7 +524,10 @@ impl Environment {
     pub async fn resolve_all_with_secrets(
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
-        let all: Vec<_> = env_vars.iter().collect();
+        let all: Vec<_> = env_vars
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
+            .collect();
         Self::resolve_filtered_with_secrets(&all).await
     }
 
@@ -562,6 +565,7 @@ impl Environment {
         let accessible: Vec<_> = env_vars
             .iter()
             .filter(|(_, value)| value.is_accessible_by_task(task_name))
+            .map(|(key, value)| (key.as_str(), value))
             .collect();
 
         Self::resolve_filtered_with_secrets(&accessible).await
@@ -639,7 +643,10 @@ impl Environment {
 
         // Services are not tasks, so allowTasks policies must not filter them out.
         // Include all variables regardless of task-name policies.
-        let accessible: Vec<_> = env_vars.iter().collect();
+        let accessible: Vec<_> = env_vars
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
+            .collect();
 
         Self::resolve_filtered_with_secrets(&accessible).await
     }
@@ -684,6 +691,7 @@ impl Environment {
         let accessible: Vec<_> = env_vars
             .iter()
             .filter(|(_, value)| value.is_accessible_by_exec(command))
+            .map(|(key, value)| (key.as_str(), value))
             .collect();
 
         Self::resolve_filtered_with_secrets(&accessible).await
@@ -701,6 +709,7 @@ impl Environment {
         let accessible: Vec<_> = environment_variables
             .iter()
             .filter(|(_, value)| value.is_accessible_by_infrastructure(action))
+            .map(|(key, value)| (key.as_str(), value))
             .collect();
         Self::resolve_filtered_with_secrets(&accessible).await
     }
@@ -717,15 +726,15 @@ impl Environment {
     /// Phase 3 (Reassemble): Resolved values are grouped by env key and passed
     /// to `reassemble_with_resolved` to rebuild the final string values.
     async fn resolve_filtered_with_secrets(
-        accessible: &[(&String, &EnvValue)],
+        accessible: &[(&str, &EnvValue)],
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
         let mut resolved = HashMap::new();
         let mut all_secrets = Vec::new();
 
         // Phase 1: Separate non-secret vars (instant) from secret vars (need resolution)
-        type SecretVarEntry<'a> = (
-            &'a String,
-            &'a EnvValue,
+        type SecretVarEntry<'environment> = (
+            &'environment str,
+            &'environment EnvValue,
             Vec<(usize, crate::secrets::Secret)>,
         );
         let mut secret_vars: Vec<SecretVarEntry<'_>> = Vec::new();
@@ -734,7 +743,7 @@ impl Environment {
             let collected = value.collect_secrets();
             if collected.is_empty() {
                 // No secrets - resolve immediately (just string conversion)
-                resolved.insert((*key).clone(), value.to_string_value());
+                resolved.insert((*key).to_owned(), value.to_string_value());
             } else {
                 let owned_secrets: Vec<(usize, crate::secrets::Secret)> = collected
                     .into_iter()
@@ -756,7 +765,7 @@ impl Environment {
 
         for (key, _, secrets) in &secret_vars {
             for (part_idx, secret) in secrets {
-                let key = (*key).clone();
+                let key = (*key).to_owned();
                 let part_idx = *part_idx;
                 let secret = secret.clone();
                 join_set.spawn(async move {
@@ -790,7 +799,7 @@ impl Environment {
                 );
             }
             all_secrets.append(&mut value_secrets);
-            resolved.insert((*key).clone(), final_value);
+            resolved.insert((*key).to_owned(), final_value);
         }
 
         Ok((resolved, all_secrets))

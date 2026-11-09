@@ -21,8 +21,10 @@ mod d1;
 #[cfg(test)]
 mod fake_server;
 mod http;
+mod legacy_copy;
 mod lock;
 mod memory;
+mod migration;
 pub mod object;
 mod resource;
 mod sql;
@@ -32,8 +34,14 @@ mod turso;
 mod writer;
 
 pub use d1::{D1Configuration, D1StateStore};
-pub use lock::{LockInformation, LockRequest, StateLock, TenantLock};
+pub use legacy_copy::LegacyMigrationCopyPlan;
+pub use lock::{LockIdentity, LockInformation, LockRequest, StateLock, TenantLock};
 pub use memory::MemoryStateStore;
+pub use migration::{
+    BackendIdentity, LegacyMigrationAccess, LegacyMigrationCopy, LegacyMigrationDeleteRequest,
+    LegacyMigrationRecordRequest, LegacyMigrationSnapshot, LegacyMigrationSnapshotRead,
+    LegacyMigrationSource, LegacyMigrationWriterRequest, MigrationMutation,
+};
 pub use object::{
     AddressingChoice, Credentials, HistoryEntry, LockDetails, ManifestEntry, MigrationManifest,
     ObjectLocation, ObjectStateFeatures, ObjectStateStore, ObjectStoreConfiguration, ObjectTenant,

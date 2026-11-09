@@ -51,7 +51,12 @@ The current usable slice includes:
 
 - A login shell attached to a Rio-backed terminal session. Cuetty resets the
   inherited `SHLVL` base so a new window starts at shell level 1 rather than
-  leaking the launcher's nesting into the prompt.
+  leaking the launcher's nesting into the prompt. Each shell receives
+  `TERM_PROGRAM=cuetty` and `TERM_PROGRAM_VERSION` for its Cuetty version as
+  part of its child environment.
+- If a pane's measurements become unavailable, Cuetty blocks input to that
+  pane and offers to close its tab. If the window's shared measurements fail,
+  it offers to close the window instead.
 - Fixed-width, fixed-row-height GPUI rendering with semantic colours and
   explicit wide-cell and soft-wrap occupancy.
 - Box drawing, block elements, shades, and Powerline separators drawn as shapes on
@@ -306,7 +311,7 @@ transparency: 10
 | `font.calt` | Boolean: the font's contextual alternates, such as Monaspace's texture healing. Standard and contextual ligatures (`liga`, `clig`) stay off either way, and turning this off helps with a font whose `calt` draws ligatures | `true` |
 | `font.boldWeight` | Integer CSS weight for bold text, 100–900. A family without that exact weight uses its nearest | 600 |
 | `padding.top`, `padding.right`, `padding.bottom`, `padding.left` | Per-edge integer pixels, 0–128 | 14 each |
-| `cursor.blink` | `"terminal"` blinks as the running application asks, which leaves the cursor steady at most prompts; `"on"` and `"off"` override it. A blink fades rather than toggles, holds solid for a moment after output, a key press, or a switch of tab, and settles solid after about half a minute of nothing happening | `"terminal"` |
+| `cursor.blink` | `"terminal"` blinks as the running application asks, leaving the cursor steady at most prompts and when the backend cannot report a blink request; `"on"` and `"off"` override it. A blink fades rather than toggles, holds solid for a moment after output, a key press, or a switch of tab, and settles solid after about half a minute of nothing happening | `"terminal"` |
 | `cursor.trail` | Boolean: a short fading trail behind a cursor that jumps, along a row or from one row to another. Moving a single cell, as typing does, leaves none | `false` |
 | `motion` | `"reduced"` makes the chrome's transitions land at once and turns the cursor's trail off; `"full"` always animates; `"system"` follows GNOME's `enable-animations` or macOS's Reduce Motion, read once as a window opens, and animates where neither can be read | `"system"` |
 | `minimumContrast` | Contrast ratio from 1 to 21 that text is kept to against what it is drawn on, including a selection; 1 is off. Colours an application spelled out in 24-bit; graphics characters, meaning box and block elements, Powerline and Powerline Extra separators, Braille, and the legacy computing symbols; and the cursor and search match, which have their own colours, are left alone so image previews and Powerline segments still line up | 1 |
@@ -560,8 +565,8 @@ cd apps/cuetty
 rustc --version # Must report 1.98.1 for this qualification baseline.
 cargo fmt -- --check
 cargo check --locked
-cargo test --locked
-cargo clippy --all-targets --all-features -- -D warnings
+cargo test --locked --workspace -- --include-ignored
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo build --release --locked
 ./script/build_and_run.sh --verify
 ```
@@ -588,4 +593,13 @@ drivers built against recent NixOS releases.
 The Linux `checks.<system>.cuetty` flake output builds that same package and
 checks its executable, desktop launcher, icon, and dynamically loaded library
 paths. The `cuetty-test`, `cuetty-clippy`, and `cuetty-fmt` outputs run the
-app's focused tests and checks.
+workspace's focused tests and checks. The test check includes the 16 PTY tests
+that Cargo ordinarily ignores; they can also be run separately with `cargo test
+--locked --bin cuetty -- --ignored` in the Cuetty shell.
+
+GPUI 0.2 requires stacksafe 0.1. The Cuetty workspace patches that dependency
+with a small adapter to stacksafe 1.0, so GPUI's recursive layout and drop
+paths keep stack protection without depending on the unmaintained
+`proc-macro-error2` crate. The adapter covers GPUI's default-feature use; it
+does not implement the removed `derive-visitor` feature. Its deep-recursion
+and recursive-drop tests run with the Cuetty workspace tests.

@@ -7,16 +7,14 @@
 use std::path::Path;
 
 use cuenv_core::Result;
-use cuenv_core::contributors::{
-    ContributorContext, ContributorEngine, builtin_workspace_contributors,
-};
+use cuenv_core::contributors::{ContributorContext, ContributorEngine};
 use cuenv_core::manifest::Project;
 use cuenv_task_exec::TaskIndex;
 
 /// Apply workspace contributors to inject setup tasks for detected package managers.
 fn apply_workspace_contributors(manifest: &mut Project, project_root: &Path) {
     let context = ContributorContext::detect(project_root).with_task_commands(&manifest.tasks);
-    let contributors = builtin_workspace_contributors();
+    let contributors = cuenv_core::contributors::builtin_workspace_contributors();
     let engine = ContributorEngine::new(&contributors, context);
 
     if let Err(error) = engine.apply(&mut manifest.tasks) {
@@ -48,9 +46,16 @@ fn apply_workspace_contributors(manifest: &mut Project, project_root: &Path) {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let mut manifest = instance.deserialize::<Project>()?;
-/// let task_index = prepare_task_index(&mut manifest, project_root)?;
+/// ```
+/// use cuenv::commands::task::list_builder;
+/// use cuenv_core::manifest::Project;
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let project_root = tempfile::tempdir()?;
+/// let mut manifest = Project::default();
+/// let task_index = list_builder::prepare_task_index(&mut manifest, project_root.path())?;
+/// assert!(task_index.list().is_empty());
+/// # Ok(())
+/// # }
 /// ```
 pub fn prepare_task_index(manifest: &mut Project, project_root: &Path) -> Result<TaskIndex> {
     // 1. Apply workspace contributors (auto-detected from lockfiles)

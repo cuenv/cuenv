@@ -12,11 +12,9 @@ use std::path::Path;
 use cuenv_core::lockfile::{LockedInfrastructureProvider, Lockfile};
 use cuenv_events::{emit_stderr, emit_stdout};
 use cuenv_infrastructure::cue_types::{self, GeneratedTypes};
-use cuenv_infrastructure::registry::{
-    ProviderInstaller, ProviderSource, default_cache_directory, validate_version,
-};
+use cuenv_infrastructure::registry::{ProviderInstaller, ProviderSource};
 
-use super::types::{self, Generation, Module, infrastructure_error};
+use super::types::{self, Generation, Module};
 use crate::cli::CliError;
 use crate::commands::sync::SyncMode;
 
@@ -57,22 +55,25 @@ fn parse_release(release: &str) -> Result<(ProviderSource, String), CliError> {
             "Give an exact version: `cuenv infrastructure provider add hashicorp/random@3.9.1`.",
         )
     })?;
-    let source = ProviderSource::parse(source).map_err(|error| infrastructure_error(&error))?;
-    validate_version(version).map_err(|error| infrastructure_error(&error))?;
+    let source = ProviderSource::parse(source)
+        .map_err(|error| super::types::infrastructure_error(&error))?;
+    cuenv_infrastructure::registry::validate_version(version)
+        .map_err(|error| super::types::infrastructure_error(&error))?;
     // Refuse sources that cannot be import paths before downloading.
-    cue_types::import_path(&source).map_err(|error| infrastructure_error(&error))?;
+    cue_types::import_path(&source).map_err(|error| super::types::infrastructure_error(&error))?;
     Ok((source, version.to_string()))
 }
 
 async fn add(module: &Module, release: &str) -> Result<(), CliError> {
     let (source, version) = parse_release(release)?;
     let mut lockfile = module.lockfile()?;
-    let installer = ProviderInstaller::try_new(default_cache_directory())
-        .map_err(|error| infrastructure_error(&error))?;
+    let installer =
+        ProviderInstaller::try_new(cuenv_infrastructure::registry::default_cache_directory())
+            .map_err(|error| super::types::infrastructure_error(&error))?;
     let platforms = installer
         .archive_checksums(&source, &version)
         .await
-        .map_err(|error| infrastructure_error(&error))?;
+        .map_err(|error| super::types::infrastructure_error(&error))?;
     let generated = Generation {
         source: &source,
         version: &version,
@@ -111,7 +112,8 @@ async fn add(module: &Module, release: &str) -> Result<(), CliError> {
 }
 
 fn remove(module: &Module, source: &str) -> Result<(), CliError> {
-    let source = ProviderSource::parse(source).map_err(|error| infrastructure_error(&error))?;
+    let source = ProviderSource::parse(source)
+        .map_err(|error| super::types::infrastructure_error(&error))?;
     let mut lockfile = module.lockfile()?;
     let pinned = lockfile
         .remove_infrastructure_provider(&source.to_string())

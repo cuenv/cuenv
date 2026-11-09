@@ -1,7 +1,5 @@
-use super::tokens::{
-    ChromeColors, WindowControls, border, drawn_titlebar, size, space, terminal_top_inset, text,
-    ui_font_family,
-};
+use super::tokens;
+use super::tokens::{ChromeColors, WindowControls, border, size, space, text};
 use crate::integrations::cuenv::{SidebarMode, TitlebarVisibility};
 use crate::terminal::engine::TerminalView;
 use crate::terminal::motion::SidebarFrame;
@@ -9,7 +7,7 @@ use crate::terminal::presentation::TerminalTheme;
 use crate::terminal::tab_status::ExitFailure;
 use gpui::{
     Div, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Styled,
-    WindowControlArea, div, px,
+    WindowControlArea,
 };
 
 /// Says below a failed shell's final output why nothing responds to typing any more,
@@ -20,7 +18,7 @@ pub(in crate::terminal) fn render_exit_notice(
     theme: &TerminalTheme,
 ) -> gpui::AnyElement {
     let colors = ChromeColors::from_theme(theme);
-    div()
+    gpui::div()
         .absolute()
         .bottom_0()
         .left_0()
@@ -35,7 +33,7 @@ pub(in crate::terminal) fn render_exit_notice(
         .text_size(text::LABEL)
         .text_color(colors.text_secondary)
         .child(
-            div()
+            gpui::div()
                 .min_w_0()
                 .truncate()
                 .child(format!("{} · Enter closes this tab", failure.summary())),
@@ -45,7 +43,7 @@ pub(in crate::terminal) fn render_exit_notice(
 
 /// The room a tab's exit notice takes from the bottom of its surface.
 pub(in crate::terminal) fn exit_notice_height(failure: Option<ExitFailure>) -> Pixels {
-    failure.map_or(px(0.0), |_| size::EXIT_NOTICE_HEIGHT)
+    failure.map_or(gpui::px(0.0), |_| size::EXIT_NOTICE_HEIGHT)
 }
 
 /// The width the sidebar settles at in a mode, along with the gap between it and the
@@ -77,7 +75,7 @@ fn draggable(this: Div) -> Div {
 
 impl TerminalView {
     fn titlebar_visibility(&self) -> TitlebarVisibility {
-        drawn_titlebar(
+        tokens::drawn_titlebar(
             self.active_state()
                 .map(|state| state.cuenv.presentation.titlebar)
                 .unwrap_or_default(),
@@ -88,7 +86,7 @@ impl TerminalView {
 
     /// Where the terminal starts below the top of its panel.
     pub(in crate::terminal) fn top_inset(&self, padding: Pixels) -> Pixels {
-        terminal_top_inset(
+        tokens::terminal_top_inset(
             padding,
             self.titlebar_visibility(),
             WindowControls::current(),
@@ -107,7 +105,7 @@ impl TerminalView {
         (self.titlebar_visibility() == TitlebarVisibility::Hidden
             && WindowControls::current() == WindowControls::OverContent)
             .then(|| {
-                draggable(div())
+                draggable(gpui::div())
                     .absolute()
                     .top_0()
                     .left_0()
@@ -126,7 +124,7 @@ impl TerminalView {
         let titlebar_visibility = self.titlebar_visibility();
         // The sidebar floats inset from the window's edges, so its corners stay
         // concentric with a rounded window instead of meeting them in a hard line.
-        let inset_above_sidebar = div().w_full().h(space::MD).flex_shrink_0();
+        let inset_above_sidebar = gpui::div().w_full().h(space::MD).flex_shrink_0();
         let ShellPanels {
             sidebar,
             sidebar_frame,
@@ -134,8 +132,8 @@ impl TerminalView {
         // The slot gives the layout the sidebar's room, which moves in one step. The panel
         // travels inside it against the window's edge, where the room it has not reached
         // yet is the same material as everything else.
-        let sidebar_slot = div()
-            .w(px(sidebar_frame.slot))
+        let sidebar_slot = gpui::div()
+            .w(gpui::px(sidebar_frame.slot))
             .flex_shrink_0()
             .flex()
             .flex_col()
@@ -149,27 +147,27 @@ impl TerminalView {
                 inset_above_sidebar
             })
             .child(
-                div()
-                    .w(px(sidebar_frame.panel) - space::MD)
+                gpui::div()
+                    .w(gpui::px(sidebar_frame.panel) - space::MD)
                     .flex_1()
-                    .min_h(px(0.0))
+                    .min_h(gpui::px(0.0))
                     .flex()
                     .flex_col()
                     .child(sidebar),
             );
-        let workspace = div()
+        let workspace = gpui::div()
             .flex_1()
-            .min_h(px(0.0))
+            .min_h(gpui::px(0.0))
             .flex()
             // The content panel must establish a flex formatting context.
             // Otherwise a child's `flex_1` has no parent flex layout during
             // the first window pass and AppKit's white backing surface leaks
             // through until a later resize happens to trigger a relayout.
             .child(
-                div()
+                gpui::div()
                     .flex_1()
-                    .min_w(px(0.0))
-                    .min_h(px(0.0))
+                    .min_w(gpui::px(0.0))
+                    .min_h(gpui::px(0.0))
                     .flex()
                     .child(content),
             )
@@ -178,11 +176,11 @@ impl TerminalView {
         // cells, so padding and whatever is left over past the last row and column
         // read as one continuous canvas with the chrome. Default-background cells
         // never repaint it, and no structural child may, or the alpha would compound.
-        let shell = div()
+        let shell = gpui::div()
             .size_full()
             .flex()
             .flex_col()
-            .font_family(ui_font_family())
+            .font_family(tokens::ui_font_family())
             .bg(colors.material);
         if titlebar_visibility == TitlebarVisibility::Hidden {
             // The terminal grid is resized from its measured bounds, so it reclaims
@@ -192,7 +190,7 @@ impl TerminalView {
         let title = self.registry.active_tab_label();
         // Sits in the margin the title leaves for the window controls' sake, over against
         // them, so it can move neither the title nor the controls.
-        let wordmark = div()
+        let wordmark = gpui::div()
             .absolute()
             .top_0()
             .bottom_0()
@@ -205,7 +203,7 @@ impl TerminalView {
             .child(WORDMARK);
         // No fill and no rule: the strip is the top of the window's one material,
         // holding the window controls and saying which tab is showing.
-        let titlebar = draggable(div())
+        let titlebar = draggable(gpui::div())
             .relative()
             .h(size::TITLEBAR_HEIGHT)
             .w_full()
@@ -217,7 +215,7 @@ impl TerminalView {
             .px(size::WINDOW_CONTROLS_WIDTH)
             .text_size(text::LABEL)
             .text_color(colors.text_secondary)
-            .children(title.map(|title| div().min_w_0().truncate().child(title)))
+            .children(title.map(|title| gpui::div().min_w_0().truncate().child(title)))
             .child(wordmark);
         shell.child(titlebar).child(workspace).into_any_element()
     }

@@ -18,7 +18,7 @@ runtime: schema.#NixRuntime & {
 
 ci: {
 	providers: ["github"]
-	contributors: [c.#Nix, c.#Hestia]
+	contributors: [c.#Nix, c.#Cuenv, c.#Hestia]
 	pipelines: {
 		build: {
 			provider: github: hestia: {}

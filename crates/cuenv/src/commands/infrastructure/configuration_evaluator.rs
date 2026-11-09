@@ -12,19 +12,19 @@ use cuengine::frozen::{
     ScalarFill, ScalarValue, ValuePath, ValueSelector, VerificationOptions,
 };
 use cuenv_core::ModuleEvaluation;
-use cuenv_core::cue::discovery::compute_relative_path;
+
 use cuenv_core::module::DirectReference;
 use cuenv_infrastructure::references::{
     ConfigurationEvaluator, ConfigurationSelector, ConfigurationSpecialization,
     ConfigurationVerification, NativeReference, OutputIdentity, SourceAddress,
     SpecializedConfiguration,
 };
-use cuenv_infrastructure::type_system::{parse_json_preserving_numbers, scan_json_numbers};
+
 use cuenv_infrastructure::{InfrastructureError, ResourceAddress};
 use cuenv_manifest::manifest::InfrastructureOutputType;
 use serde_json::Value as Json;
 
-use super::output_selectors::{OutputSelectors, diagnostic_path, output_type};
+use super::output_selectors::OutputSelectors;
 use crate::cli::CliError;
 
 pub(super) struct SnapshotRequest<'request> {
@@ -103,13 +103,19 @@ pub(super) fn freeze_configuration(
                 "the frozen CUE infrastructure could not be bootstrapped",
             )
         })?;
-    let bootstrap_number_paths: Vec<_> = scan_json_numbers(&bootstrap.value)
-        .map_err(|_| CliError::config("the frozen CUE configuration contains an invalid number"))?
-        .into_iter()
-        .map(|token| token.path)
-        .collect();
-    let bootstrap_value = parse_json_preserving_numbers(&bootstrap.value, &bootstrap_number_paths)
-        .map_err(|_| CliError::config("the frozen CUE configuration could not be inspected"))?;
+    let bootstrap_number_paths: Vec<_> =
+        cuenv_infrastructure::type_system::scan_json_numbers(&bootstrap.value)
+            .map_err(|_| {
+                CliError::config("the frozen CUE configuration contains an invalid number")
+            })?
+            .into_iter()
+            .map(|token| token.path)
+            .collect();
+    let bootstrap_value = cuenv_infrastructure::type_system::parse_json_preserving_numbers(
+        &bootstrap.value,
+        &bootstrap_number_paths,
+    )
+    .map_err(|_| CliError::config("the frozen CUE configuration could not be inspected"))?;
     let source_paths = all_output_paths(&bootstrap_value);
     let inspected = snapshot
         .evaluate(&FrozenEvaluationOptions {
@@ -123,7 +129,8 @@ pub(super) fn freeze_configuration(
                 "the frozen CUE infrastructure could not be inspected",
             )
         })?;
-    let relative = compute_relative_path(request.directory, &module.root);
+    let relative =
+        cuenv_core::cue::discovery::compute_relative_path(request.directory, &module.root);
     let direct = inspected.references.iter().map(direct_reference).collect();
     let reference_map = HashMap::from([(relative.clone(), direct)]);
     let selectors = OutputSelectors {
@@ -144,7 +151,7 @@ pub(super) fn freeze_configuration(
             preserved_numbers.insert(configuration_path(&reference.path)?);
         }
     }
-    for token in scan_json_numbers(&inspected.value)
+    for token in cuenv_infrastructure::type_system::scan_json_numbers(&inspected.value)
         .map_err(|_| CliError::config("the frozen CUE configuration contains an invalid number"))?
     {
         if unselected_number_path(&token.path, request.environment) {
@@ -159,12 +166,15 @@ pub(super) fn freeze_configuration(
         }
     }
     let preserved_numbers: Vec<_> = preserved_numbers.into_iter().collect();
-    let value =
-        parse_json_preserving_numbers(&inspected.value, &preserved_numbers).map_err(|_| {
-            CliError::config(
-                "the frozen CUE configuration could not be decoded without losing precision",
-            )
-        })?;
+    let value = cuenv_infrastructure::type_system::parse_json_preserving_numbers(
+        &inspected.value,
+        &preserved_numbers,
+    )
+    .map_err(|_| {
+        CliError::config(
+            "the frozen CUE configuration could not be decoded without losing precision",
+        )
+    })?;
     let mut references = Vec::new();
     let mut numeric_references = BTreeSet::new();
     let mut deferred = Vec::new();
@@ -217,7 +227,9 @@ pub(super) fn freeze_configuration(
                     .declarations
                     .iter()
                     .find(|declaration| declaration.path == path)
-                    .and_then(|declaration| output_type(&declaration.primitive_type))
+                    .and_then(|declaration| {
+                        super::output_selectors::output_type(&declaration.primitive_type)
+                    })
                 {
                     declared_output_types.insert(identity.clone(), declared);
                 }
@@ -231,12 +243,12 @@ pub(super) fn freeze_configuration(
     }
     // A carried value must equal its output. CUE decides what a computed one is.
     let mut verification_references = Vec::new();
-    for (reference, entry) in inspected
+    let matching_references = inspected
         .references
         .iter()
         .filter(|reference| deferred.iter().any(|entry| reference_is(reference, entry)))
-        .zip(&deferred)
-    {
+        .zip(&deferred);
+    for (reference, entry) in matching_references {
         if reference.computed {
             verification_mutable.push(entry.path.clone());
         } else {
@@ -399,7 +411,7 @@ fn display_configuration_path(path: &[ConfigurationSelector]) -> String {
             ConfigurationSelector::Index(_) => String::new(),
         })
         .collect();
-    diagnostic_path(&labels)
+    super::output_selectors::diagnostic_path(&labels)
 }
 
 fn path_field(path: &ValuePath, index: usize) -> Result<&str, CliError> {
@@ -745,8 +757,11 @@ impl ConfigurationEvaluator for NativeConfigurationEvaluator {
             .map(|reference| reference.destination.clone())
             .collect();
         let Json::Object(configuration) =
-            parse_json_preserving_numbers(&specialized.value, &numeric_paths)
-                .map_err(|_| failure())?
+            cuenv_infrastructure::type_system::parse_json_preserving_numbers(
+                &specialized.value,
+                &numeric_paths,
+            )
+            .map_err(|_| failure())?
         else {
             return Err(failure());
         };

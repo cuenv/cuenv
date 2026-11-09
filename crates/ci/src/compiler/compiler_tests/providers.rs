@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    ActivationCondition, CI, Compiler, CompilerOptions, Contributor, HashMap, Pipeline, Project,
+};
 use serde_json::{Value, json};
 
 fn github_provider_config(config: Value) -> cuenv_core::ci::ProviderConfig {
@@ -42,7 +44,7 @@ fn compiler_with_github_provider_and_environment(global: Value, environment: &st
 }
 
 fn trusted_publishing_contributor() -> Contributor {
-    test_contributor(
+    super::test_contributor(
         "trusted-publishing",
         Some(ActivationCondition {
             provider_config: vec!["github.trustedPublishing.cratesIo".to_string()],
@@ -52,7 +54,7 @@ fn trusted_publishing_contributor() -> Contributor {
 }
 
 fn cue_registry_trusted_publishing_contributor() -> Contributor {
-    test_contributor(
+    super::test_contributor(
         "trusted-publishing.cue-registry",
         Some(ActivationCondition {
             provider_config: vec!["github.trustedPublishing.cueRegistry".to_string()],
@@ -71,10 +73,10 @@ fn test_cue_registry_trusted_publishing_requires_production_environment() {
         "production",
     );
 
-    assert!(
-        production_compiler
-            .cue_contributor_is_active(&cue_registry_trusted_publishing_contributor(), &test_ir())
-    );
+    assert!(production_compiler.cue_contributor_is_active(
+        &cue_registry_trusted_publishing_contributor(),
+        &super::test_ir()
+    ));
 
     let development_compiler = compiler_with_github_provider_and_environment(
         json!({
@@ -82,10 +84,10 @@ fn test_cue_registry_trusted_publishing_requires_production_environment() {
         }),
         "development",
     );
-    assert!(
-        !development_compiler
-            .cue_contributor_is_active(&cue_registry_trusted_publishing_contributor(), &test_ir())
-    );
+    assert!(!development_compiler.cue_contributor_is_active(
+        &cue_registry_trusted_publishing_contributor(),
+        &super::test_ir()
+    ));
 }
 
 #[test]
@@ -97,7 +99,9 @@ fn test_provider_config_false_does_not_activate_contributor() {
         None,
     );
 
-    assert!(!compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+    assert!(
+        !compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &super::test_ir())
+    );
 }
 
 #[test]
@@ -109,7 +113,9 @@ fn test_provider_config_true_activates_contributor() {
         None,
     );
 
-    assert!(compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+    assert!(
+        compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &super::test_ir())
+    );
 }
 
 #[test]
@@ -123,7 +129,9 @@ fn test_pipeline_provider_config_false_overrides_global_true() {
         })),
     );
 
-    assert!(!compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+    assert!(
+        !compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &super::test_ir())
+    );
 }
 
 #[test]
@@ -137,7 +145,9 @@ fn test_pipeline_provider_config_field_owns_missing_nested_value() {
         })),
     );
 
-    assert!(!compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+    assert!(
+        !compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &super::test_ir())
+    );
 }
 
 #[test]
@@ -151,7 +161,9 @@ fn test_pipeline_provider_config_inherits_unowned_global_field() {
         })),
     );
 
-    assert!(compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+    assert!(
+        compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &super::test_ir())
+    );
 }
 
 #[test]

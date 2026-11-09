@@ -17,14 +17,11 @@ use crate::schema::Schema;
 use crate::state::{ManagedResource, ResourceAddress};
 use crate::type_system::{self, Type, Value};
 
-use super::sensitivity::{
-    SensitiveProviderValue, register_typed_attributes, sensitive_provider_value,
-};
+use super::sensitivity::SensitiveProviderValue;
 use super::{
     Action, ApplyEvent, ConfigurationInput, ConfigurationPhase, DataSourceReadContext,
     DigestWriter, InfrastructureEngine, LoadedProvider, OperationFailure, OperationRunner, Plan,
-    ReferenceValueInput, SecretUse, check_diagnostics, declared_resource, masked_attributes,
-    reference_error, register_value_strings, topological_order,
+    ReferenceValueInput, SecretUse,
 };
 
 /// One data source read by this invocation, or deferred until apply.
@@ -81,7 +78,7 @@ pub(super) fn declaration<'declaration>(
         SourceAddress::Resource(_) => &infrastructure.resources,
         SourceAddress::DataSource(_) => &infrastructure.data,
     };
-    declared_resource(declarations, source.address())
+    super::declared_resource(declarations, source.address())
 }
 
 impl DeclarationGraph {
@@ -98,7 +95,7 @@ impl DeclarationGraph {
     ) -> Result<Self> {
         let mut references = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
-        for (source, declared) in infrastructure
+        let declarations = infrastructure
             .resources
             .iter()
             .map(|(name, declared)| {
@@ -112,8 +109,8 @@ impl DeclarationGraph {
                     SourceAddress::DataSource(ResourceAddress::new(&declared.resource_type, name)),
                     declared,
                 )
-            }))
-        {
+            }));
+        for (source, declared) in declarations {
             let parsed = classified.get(&source).cloned().unwrap_or_default();
             let mut prerequisites = BTreeSet::new();
             for name in &declared.depends_on {
@@ -152,7 +149,7 @@ impl DeclarationGraph {
                 )
             })
             .collect();
-        let order = topological_order(&graph)?
+        let order = super::topological_order(&graph)?
             .into_iter()
             .filter_map(|name| names.get(&name).cloned())
             .collect();
@@ -308,8 +305,8 @@ impl InfrastructureEngine {
             )
             .await?;
         let configuration = schema.block.normalize_configuration(configuration);
-        let sensitive = masked_attributes(&schema.block, sensitive_destinations);
-        register_typed_attributes(&configuration, &sensitive, &value_type);
+        let sensitive = super::masked_attributes(&schema.block, sensitive_destinations);
+        super::sensitivity::register_typed_attributes(&configuration, &sensitive, &value_type);
         self.ensure_not_stopped()?;
         let diagnostics = provider
             .client
@@ -318,7 +315,7 @@ impl InfrastructureEngine {
                 type_system::to_message_pack(&configuration, &value_type)?,
             )
             .await?;
-        check_diagnostics(
+        super::check_diagnostics(
             &format!("validate {}", input.source),
             &diagnostics,
             warnings,
@@ -352,7 +349,7 @@ impl InfrastructureEngine {
         let provider = self.loaded(&read.provider)?;
         let schema = data_source_schema(provider, &read.address.resource_type)?;
         let value_type = schema.block.implied_type();
-        register_typed_attributes(configuration, &read.sensitive, &value_type);
+        super::sensitivity::register_typed_attributes(configuration, &read.sensitive, &value_type);
         self.ensure_not_stopped()?;
         let response = provider
             .client
@@ -505,13 +502,13 @@ impl InfrastructureEngine {
                         })
                         .cloned()
                         .ok_or_else(|| {
-                            reference_error(&read.address, reference, "was not resolved")
+                            super::reference_error(&read.address, reference, "was not resolved")
                         })
                 },
             )
             .await?;
         let configuration = schema.block.normalize_configuration(configuration);
-        register_typed_attributes(
+        super::sensitivity::register_typed_attributes(
             &configuration,
             &read.sensitive,
             &schema.block.implied_type(),
@@ -524,7 +521,7 @@ impl InfrastructureEngine {
                 type_system::to_message_pack(&configuration, &schema.block.implied_type())?,
             )
             .await?;
-        check_diagnostics(
+        super::check_diagnostics(
             &format!("validate data.{}", read.address),
             &diagnostics,
             &mut warnings,
@@ -580,7 +577,7 @@ pub(super) fn planned_output(
 pub(super) fn register_attributes(value: &Value, sensitive: &[String]) {
     for name in sensitive {
         if let Some(value) = value.attribute(name) {
-            register_value_strings(value);
+            super::register_value_strings(value);
         }
     }
 }
@@ -622,13 +619,13 @@ pub(super) fn data_source_result(
         response,
     } = input;
     // Register returned secrets before either warnings or errors can echo them.
-    let (value, _) = sensitive_provider_value(SensitiveProviderValue {
+    let (value, _) = super::sensitivity::sensitive_provider_value(SensitiveProviderValue {
         value: response.state.as_ref(),
         value_type,
         sensitive: &read.sensitive,
     })
     .map_err(|error| InfrastructureError::plugin(format!("read data.{}: {error}", read.address)))?;
-    check_diagnostics(
+    super::check_diagnostics(
         &format!("read data.{}", read.address),
         &response.diagnostics,
         warnings,

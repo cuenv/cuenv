@@ -4,7 +4,7 @@
 //! colour of the text around it.
 
 use super::tokens::size;
-use gpui::{AssetSource, Rgba, SharedString, Styled, Svg, svg};
+use gpui::{AssetSource, Rgba, SharedString, Styled, Svg};
 use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,7 +77,7 @@ impl Icon {
 
     /// This icon at the chrome's one icon size.
     pub(super) fn element(self, color: Rgba) -> Svg {
-        svg()
+        gpui::svg()
             .path(self.path())
             .size(size::ICON)
             .flex_none()

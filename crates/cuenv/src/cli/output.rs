@@ -25,11 +25,6 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
-    /// Convert a `--json` CLI flag to an `OutputFormat`.
-    pub const fn from_json_flag(json: bool) -> Self {
-        if json { Self::Json } else { Self::Text }
-    }
-
     /// Check whether output should be JSON-formatted.
     #[must_use]
     pub const fn is_json(self) -> bool {

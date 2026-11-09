@@ -518,8 +518,10 @@ fn installation_failure(error: &std::io::Error) -> CliError {
 impl Signals {
     #[cfg(unix)]
     fn install() -> Result<Self, CliError> {
-        use tokio::signal::unix::{SignalKind, signal};
-        let install = |kind: SignalKind| signal(kind).map_err(|error| installation_failure(&error));
+        use tokio::signal::unix::SignalKind;
+        let install = |kind: SignalKind| {
+            tokio::signal::unix::signal(kind).map_err(|error| installation_failure(&error))
+        };
         Ok(Self {
             interrupt: install(SignalKind::interrupt())?,
             terminate: install(SignalKind::terminate())?,
@@ -530,10 +532,11 @@ impl Signals {
 
     #[cfg(windows)]
     fn install() -> Result<Self, CliError> {
-        use tokio::signal::windows::{ctrl_break, ctrl_c};
         Ok(Self {
-            interrupt: ctrl_c().map_err(|error| installation_failure(&error))?,
-            terminate: ctrl_break().map_err(|error| installation_failure(&error))?,
+            interrupt: tokio::signal::windows::ctrl_c()
+                .map_err(|error| installation_failure(&error))?,
+            terminate: tokio::signal::windows::ctrl_break()
+                .map_err(|error| installation_failure(&error))?,
         })
     }
 }

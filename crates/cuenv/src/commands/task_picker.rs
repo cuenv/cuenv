@@ -2,19 +2,15 @@
 //!
 //! Provides a fuzzy-filtering picker UI for selecting tasks to execute.
 
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::{Frame, Terminal};
 use std::io;
 
 /// A selectable task entry
@@ -156,7 +152,7 @@ pub fn run_picker(tasks: Vec<SelectableTask>) -> io::Result<PickerResult> {
     }
 
     // Setup terminal
-    enable_raw_mode()?;
+    crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
@@ -169,7 +165,7 @@ pub fn run_picker(tasks: Vec<SelectableTask>) -> io::Result<PickerResult> {
     let result = run_event_loop(&mut terminal, &mut picker);
 
     // Restore terminal
-    disable_raw_mode()?;
+    crossterm::terminal::disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
     result

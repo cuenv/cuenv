@@ -1,27 +1,25 @@
 use super::icons::Icon;
-use super::tokens::{
-    ChromeColors, Elevation, border, elevated, faded, radius, size, space, tab_marker_top, text,
-    ui_font_family,
-};
-use super::tooltip::chrome_tooltip;
-use super::{hover_fade, hover_probe};
+use super::tokens;
+use super::tokens::{ChromeColors, Elevation, border, radius, size, space, text};
+
+use super::hover;
 use crate::integrations::cuenv::{RailColor, SidebarMode};
-use crate::terminal::engine::{
-    SIDEBAR_TOGGLE_KEY, TabClick, TerminalView, app_chord_label, tab_number_hint,
-};
+use crate::terminal::engine;
+use crate::terminal::engine::{SIDEBAR_TOGGLE_KEY, TabClick, TerminalView};
 use crate::terminal::model::Rgb;
 use crate::terminal::motion::{HoverTarget, SidebarButton};
 use crate::terminal::palette::Mode as PaletteMode;
 use crate::terminal::presentation::TerminalTheme;
-use crate::terminal::tab_label::{TabMarkSources, tab_mark, tab_subtitle, tab_tooltip};
+use crate::terminal::tab_label::TabMarkSources;
 use crate::terminal::tab_rename::TabRename;
 use crate::terminal::tab_status::TabIndicator;
 use crate::terminal::workspace_shell::TabNumber;
 use crate::workspace::{PaneId, TabId};
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AppContext, ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton,
     ParentElement, Render, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled,
-    Window, div, prelude::FluentBuilder,
+    Window,
 };
 
 /// A tab being dragged to another place in the list, and what follows the pointer.
@@ -34,16 +32,16 @@ struct DraggedTab {
 
 impl Render for DraggedTab {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        elevated(div(), Elevation::Raised, &self.colors)
+        tokens::elevated(gpui::div(), Elevation::Raised, &self.colors)
             .max_w(size::SIDEBAR_EXPANDED_WIDTH)
             .h(size::TAB_ROW_HEIGHT)
             .px(space::LG)
             .flex()
             .items_center()
-            .font_family(ui_font_family())
+            .font_family(tokens::ui_font_family())
             .text_size(text::BODY)
             .text_color(self.colors.text)
-            .child(div().truncate().child(self.label.clone()))
+            .child(gpui::div().truncate().child(self.label.clone()))
     }
 }
 
@@ -112,17 +110,17 @@ impl TerminalView {
                 let banner = cuenv.and_then(|cuenv| cuenv.presentation.banner.as_deref());
                 let state = self.registry.sessions.get(&tab.focused);
                 let indicator = state.and_then(|state| state.status.indicator());
-                let subtitle = tab_subtitle(
+                let subtitle = crate::terminal::tab_label::tab_subtitle(
                     cuenv.and_then(|cuenv| cuenv.cwd.as_deref()),
                     state.and_then(|state| state.branch.branch()),
                     &label,
                 );
-                let tooltip = tab_tooltip(&label, banner);
+                let tooltip = crate::terminal::tab_label::tab_tooltip(&label, banner);
                 let tooltip = match indicator {
                     Some(indicator) => format!("{tooltip}\n{}", indicator.description()),
                     None => tooltip,
                 };
-                let mark = tab_mark(TabMarkSources {
+                let mark = crate::terminal::tab_label::tab_mark(TabMarkSources {
                     custom_name: tab.custom_name.as_deref(),
                     banner,
                     directory: cuenv.and_then(|cuenv| cuenv.cwd.as_deref()),
@@ -160,7 +158,7 @@ impl TerminalView {
                 )
             })
             .collect::<Vec<_>>();
-        let tabs = div()
+        let tabs = gpui::div()
             .id("cuetty-rail-tabs")
             .track_scroll(&self.rail_scroll)
             .overflow_y_scroll()
@@ -175,10 +173,10 @@ impl TerminalView {
             // the list scrolls, being a child of what scrolls, and comes after them so a
             // scroll to a tab's position still counts rows.
             .children(self.motion.marker_place(now).map(|place| {
-                div()
+                gpui::div()
                     .absolute()
                     .left(space::MD + border::HAIRLINE)
-                    .top(tab_marker_top(place))
+                    .top(tokens::tab_marker_top(place))
                     .w(size::TAB_MARKER_WIDTH)
                     .h(size::TAB_MARKER_HEIGHT)
                     .rounded(radius::CONTROL)
@@ -198,9 +196,9 @@ impl TerminalView {
             .or(integration_notice)
             .map(|notice| {
                 self.control(SidebarButton::Notice, &colors, cx)
-                    .tooltip(chrome_tooltip(notice.to_string(), colors))
+                    .tooltip(super::tooltip::chrome_tooltip(notice.to_string(), colors))
                     .child(
-                        div()
+                        gpui::div()
                             .size(size::NOTICE_MARK)
                             .rounded(radius::CONTROL)
                             .bg(colors.accent),
@@ -212,8 +210,8 @@ impl TerminalView {
         let new_tab = self
             .control(SidebarButton::NewTab, &colors, cx)
             .cursor_pointer()
-            .tooltip(chrome_tooltip(
-                format!("New tab · {}", app_chord_label("t")),
+            .tooltip(super::tooltip::chrome_tooltip(
+                format!("New tab · {}", engine::app_chord_label("t")),
                 colors,
             ))
             .on_click(cx.listener(|view, _event, window, cx| {
@@ -229,7 +227,7 @@ impl TerminalView {
                 |this| this.bg(colors.state),
             )
             .cursor_pointer()
-            .tooltip(chrome_tooltip(
+            .tooltip(super::tooltip::chrome_tooltip(
                 format!("Search Cuenv tasks · {palette_chord}, then $"),
                 colors,
             ))
@@ -246,15 +244,18 @@ impl TerminalView {
         let toggle = self
             .control(SidebarButton::Toggle, &colors, cx)
             .cursor_pointer()
-            .tooltip(chrome_tooltip(
-                format!("{toggle_label} · {}", app_chord_label(SIDEBAR_TOGGLE_KEY)),
+            .tooltip(super::tooltip::chrome_tooltip(
+                format!(
+                    "{toggle_label} · {}",
+                    engine::app_chord_label(SIDEBAR_TOGGLE_KEY)
+                ),
                 colors,
             ))
             .on_click(cx.listener(|view, _event, _window, cx| view.toggle_sidebar(cx)))
             .child(toggle_icon.element(colors.text_secondary));
         let palette_hint = (mode == SidebarMode::Expanded).then(|| {
             let target = HoverTarget::Button(SidebarButton::PaletteHint);
-            div()
+            gpui::div()
                 .id("cuetty-palette-hint")
                 .mx(space::SM)
                 .mt(space::SM)
@@ -265,9 +266,9 @@ impl TerminalView {
                 .justify_between()
                 .gap(space::MD)
                 .rounded(radius::CONTROL)
-                .bg(faded(colors.state, self.hover_level(target)))
-                .on_hover(hover_fade(target, cx))
-                .child(hover_probe(target, cx))
+                .bg(tokens::faded(colors.state, self.hover_level(target)))
+                .on_hover(hover::hover_fade(target, cx))
+                .child(hover::hover_probe(target, cx))
                 .cursor_pointer()
                 .text_size(text::CAPTION)
                 .text_color(colors.text_muted)
@@ -276,9 +277,9 @@ impl TerminalView {
                     view.focus_terminal(window);
                     cx.notify();
                 }))
-                .child(div().min_w_0().truncate().child("Commands"))
+                .child(gpui::div().min_w_0().truncate().child("Commands"))
                 .child(
-                    div()
+                    gpui::div()
                         .flex_none()
                         .font_family(self.mono_font_family())
                         .child(palette_chord.clone()),
@@ -288,7 +289,7 @@ impl TerminalView {
         let project_panel = (mode == SidebarMode::Expanded)
             .then(|| self.render_project_panel(&colors))
             .flatten();
-        let footer = div()
+        let footer = gpui::div()
             .w_full()
             .flex_shrink_0()
             .flex()
@@ -304,10 +305,10 @@ impl TerminalView {
             // Expanded, the toggle sits at the far end of the row, where the
             // collapsed sidebar's edge will be.
             .when(mode == SidebarMode::Expanded, |this| {
-                this.child(div().flex_1())
+                this.child(gpui::div().flex_1())
             })
             .child(toggle);
-        div()
+        gpui::div()
             .relative()
             .w_full()
             .flex_1()
@@ -334,7 +335,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let target = HoverTarget::Button(button);
-        div()
+        gpui::div()
             .id(match button {
                 SidebarButton::Notice => "cuetty-notice",
                 SidebarButton::NewTab => "cuetty-new-tab",
@@ -349,16 +350,16 @@ impl TerminalView {
             .items_center()
             .justify_center()
             .rounded(radius::CONTROL)
-            .bg(faded(colors.state, self.hover_level(target)))
-            .on_hover(hover_fade(target, cx))
-            .child(hover_probe(target, cx))
+            .bg(tokens::faded(colors.state, self.hover_level(target)))
+            .on_hover(hover::hover_fade(target, cx))
+            .child(hover::hover_probe(target, cx))
     }
 }
 
 /// A tab's status at a glance. Every state has its own shape, so it reads the same
 /// whatever colours the theme gives it.
 fn render_indicator(indicator: TabIndicator, colors: &ChromeColors) -> Div {
-    let slot = div()
+    let slot = gpui::div()
         .size(size::STATUS_ICON)
         .flex_none()
         .flex()
@@ -371,7 +372,7 @@ fn render_indicator(indicator: TabIndicator, colors: &ChromeColors) -> Div {
         TabIndicator::Running => slot.child(icon(Icon::Running, colors.text_secondary)),
         TabIndicator::Finished => slot.child(icon(Icon::Finished, colors.text_secondary)),
         TabIndicator::Unread => slot.child(
-            div()
+            gpui::div()
                 .size(size::NOTICE_MARK)
                 .rounded(radius::CONTROL)
                 .bg(colors.accent),
@@ -385,13 +386,13 @@ fn render_indicator(indicator: TabIndicator, colors: &ChromeColors) -> Div {
 fn render_name_field(editing: String, label: String, colors: &ChromeColors) -> Div {
     let placeholder = editing.is_empty();
     let caret = || {
-        div()
+        gpui::div()
             .flex_none()
             .w(size::CARET_WIDTH)
             .h(size::CARET_HEIGHT)
             .bg(colors.accent)
     };
-    div()
+    gpui::div()
         .flex()
         .items_center()
         .min_w_0()
@@ -405,13 +406,13 @@ fn render_name_field(editing: String, label: String, colors: &ChromeColors) -> D
         })
         .when(placeholder, |this| this.child(caret()))
         .child(
-            div()
+            gpui::div()
                 .min_w_0()
                 .flex()
                 .justify_end()
                 .overflow_hidden()
                 .child(
-                    div()
+                    gpui::div()
                         .flex_shrink_0()
                         .whitespace_nowrap()
                         .child(if placeholder { label } else { editing }),
@@ -441,7 +442,7 @@ fn render_close_button(button: CloseButton, cx: &mut Context<TerminalView>) -> S
         hover,
         colors,
     } = button;
-    div()
+    gpui::div()
         .id(("cuetty-rail-tab-close", id.get()))
         .flex()
         .items_center()
@@ -449,12 +450,12 @@ fn render_close_button(button: CloseButton, cx: &mut Context<TerminalView>) -> S
         .rounded(radius::CONTROL)
         .opacity(reveal)
         // The row beneath is already filled with `state` while the pointer is on it.
-        .bg(faded(colors.state_on_row, hover))
-        .on_hover(hover_fade(HoverTarget::TabClose(id), cx))
-        .child(hover_probe(HoverTarget::TabClose(id), cx))
+        .bg(tokens::faded(colors.state_on_row, hover))
+        .on_hover(hover::hover_fade(HoverTarget::TabClose(id), cx))
+        .child(hover::hover_probe(HoverTarget::TabClose(id), cx))
         .cursor_pointer()
-        .tooltip(chrome_tooltip(
-            format!("Close tab · {}", app_chord_label("w")),
+        .tooltip(super::tooltip::chrome_tooltip(
+            format!("Close tab · {}", engine::app_chord_label("w")),
             colors,
         ))
         .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
@@ -538,7 +539,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
     } else {
         colors.text_muted
     };
-    div()
+    gpui::div()
         .id(("cuetty-rail-tab", id.get()))
         .relative()
         .w_full()
@@ -547,9 +548,9 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         .flex()
         .items_center()
         .rounded(radius::CONTROL)
-        .bg(faded(colors.state, hover.max(active)))
-        .on_hover(hover_fade(HoverTarget::Tab(id), cx))
-        .child(hover_probe(HoverTarget::Tab(id), cx))
+        .bg(tokens::faded(colors.state, hover.max(active)))
+        .on_hover(hover::hover_fade(HoverTarget::Tab(id), cx))
+        .child(hover::hover_probe(HoverTarget::Tab(id), cx))
         .cursor_pointer()
         .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
             view.tab_row_clicked(
@@ -582,7 +583,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
         .on_drop(cx.listener(move |view, dragged: &DraggedTab, _window, cx| {
             view.move_tab(dragged.id, index, cx);
         }))
-        .tooltip(chrome_tooltip(tooltip, colors))
+        .tooltip(super::tooltip::chrome_tooltip(tooltip, colors))
         .text_size(text::BODY)
         .text_color(text_color)
         .font_weight(if selected {
@@ -595,7 +596,7 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                 .gap(space::MD)
                 .px(space::LG)
                 .child(
-                    div()
+                    gpui::div()
                         .flex_1()
                         .min_w_0()
                         .flex()
@@ -603,11 +604,11 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                         .line_height(text::LINE_HEIGHT)
                         .child(match editing {
                             Some(editing) => render_name_field(editing, label, &colors),
-                            None => div().truncate().child(label),
+                            None => gpui::div().truncate().child(label),
                         })
                         .when(!subtitle.is_empty(), |this| {
                             this.child(
-                                div()
+                                gpui::div()
                                     .truncate()
                                     .text_size(text::CAPTION)
                                     .text_color(subtitle_color)
@@ -617,17 +618,17 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
                         }),
                 )
                 .children(number.map(|number| {
-                    div()
+                    gpui::div()
                         .flex_none()
                         .font_family(mono.clone())
                         .text_size(text::CAPTION)
                         .text_color(colors.text_muted)
                         .font_weight(text::REGULAR)
-                        .child(tab_number_hint(number))
+                        .child(engine::tab_number_hint(number))
                 }))
                 .child(
                     // The button takes over from the indicator while the row is hovered.
-                    div()
+                    gpui::div()
                         .relative()
                         .size(size::TAB_ACTION)
                         .flex_none()
@@ -658,21 +659,21 @@ fn render_tab_row(row: TabRow, cx: &mut Context<TerminalView>) -> Stateful<Div> 
             SidebarMode::Collapsed => this
                 .justify_center()
                 .child(
-                    div()
+                    gpui::div()
                         .h(size::TAB_MARK_HEIGHT)
                         .line_height(size::TAB_MARK_HEIGHT)
                         .child(match number {
-                            Some(number) => div()
+                            Some(number) => gpui::div()
                                 .font_family(mono.clone())
                                 .text_size(text::LABEL)
                                 .text_color(colors.text_muted)
                                 .font_weight(text::REGULAR)
                                 .child(number.digit().to_string()),
-                            None => div().child(mark),
+                            None => gpui::div().child(mark),
                         }),
                 )
                 .children(indicator.map(|indicator| {
-                    div()
+                    gpui::div()
                         .absolute()
                         .bottom_0()
                         .left_0()

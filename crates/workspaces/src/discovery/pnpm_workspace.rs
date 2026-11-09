@@ -2,7 +2,6 @@
 
 use crate::core::traits::WorkspaceDiscovery;
 use crate::core::types::{PackageManager, Workspace, WorkspaceMember};
-use crate::discovery::{read_json_file, read_yaml_file, resolve_glob_patterns};
 use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -21,7 +20,7 @@ impl WorkspaceDiscovery for PnpmWorkspaceDiscovery {
         }
 
         // We don't really need the content here except to validate it parses
-        let _: PnpmWorkspace = read_yaml_file(&workspace_yaml_path)?;
+        let _: PnpmWorkspace = crate::discovery::read_yaml_file(&workspace_yaml_path)?;
 
         let members = self.find_members(root)?;
 
@@ -38,15 +37,17 @@ impl WorkspaceDiscovery for PnpmWorkspaceDiscovery {
 
     fn find_members(&self, root: &Path) -> Result<Vec<WorkspaceMember>> {
         let workspace_yaml_path = root.join("pnpm-workspace.yaml");
-        let workspace_config: PnpmWorkspace = read_yaml_file(&workspace_yaml_path)?;
+        let workspace_config: PnpmWorkspace =
+            crate::discovery::read_yaml_file(&workspace_yaml_path)?;
 
-        let matched_paths = resolve_glob_patterns(root, &workspace_config.packages, &[])?;
+        let matched_paths =
+            crate::discovery::resolve_glob_patterns(root, &workspace_config.packages, &[])?;
         let mut members = Vec::new();
 
         for path in matched_paths {
             if self.validate_member(&path)? {
                 let manifest_path = path.join("package.json");
-                let member_pkg: PackageJson = read_json_file(&manifest_path)?;
+                let member_pkg: PackageJson = crate::discovery::read_json_file(&manifest_path)?;
 
                 if let Some(name) = member_pkg.name {
                     let mut dependencies = Vec::new();
@@ -93,7 +94,7 @@ impl WorkspaceDiscovery for PnpmWorkspaceDiscovery {
         }
 
         // Try parsing to ensure it has a name
-        match read_json_file::<PackageJson>(&manifest_path) {
+        match crate::discovery::read_json_file::<PackageJson>(&manifest_path) {
             Ok(pkg) => {
                 if pkg.name.is_some() {
                     Ok(true)

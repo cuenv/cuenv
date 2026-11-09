@@ -1,4 +1,4 @@
-use super::*;
+use super::{AffectedProjects, ChangedInputs, ExternalDependencyContext, HashMap, Path, PathBuf};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Input, Task, TaskDependency, TaskGroup, TaskNode};
 
@@ -43,7 +43,14 @@ fn test_matched_inputs_for_task_returns_matching_patterns() {
     let changed_files = vec![PathBuf::from("src/lib.rs")];
     let root = Path::new(".");
 
-    let matched = matched_inputs_for_task("build", &project, &changed_files, root);
+    let matched = super::matched_inputs_for_task(
+        "build",
+        &project,
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
+    );
 
     assert_eq!(matched, vec!["src/**".to_string()]);
 }
@@ -55,7 +62,14 @@ fn test_matched_inputs_for_task_no_match() {
     let changed_files = vec![PathBuf::from("tests/test.rs")];
     let root = Path::new(".");
 
-    let matched = matched_inputs_for_task("build", &project, &changed_files, root);
+    let matched = super::matched_inputs_for_task(
+        "build",
+        &project,
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
+    );
 
     assert!(matched.is_empty());
 }
@@ -66,7 +80,14 @@ fn test_matched_inputs_for_task_nonexistent_task() {
     let changed_files = vec![PathBuf::from("src/lib.rs")];
     let root = Path::new(".");
 
-    let matched = matched_inputs_for_task("nonexistent", &project, &changed_files, root);
+    let matched = super::matched_inputs_for_task(
+        "nonexistent",
+        &project,
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
+    );
 
     assert!(matched.is_empty());
 }
@@ -78,7 +99,14 @@ fn test_matched_inputs_for_task_multiple_matches() {
     let changed_files = vec![PathBuf::from("src/lib.rs"), PathBuf::from("lib/util.rs")];
     let root = Path::new(".");
 
-    let matched = matched_inputs_for_task("build", &project, &changed_files, root);
+    let matched = super::matched_inputs_for_task(
+        "build",
+        &project,
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
+    );
 
     assert!(matched.contains(&"src/**".to_string()));
     assert!(matched.contains(&"lib/**".to_string()));
@@ -98,12 +126,16 @@ fn test_compute_affected_tasks_direct_match() {
     let pipeline_tasks = vec!["build".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert_eq!(affected, vec!["build".to_string()]);
@@ -118,12 +150,16 @@ fn test_compute_affected_tasks_no_match() {
     let pipeline_tasks = vec!["build".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert!(affected.is_empty());
@@ -140,12 +176,16 @@ fn test_compute_affected_tasks_transitive_internal_deps() {
     let pipeline_tasks = vec!["build".to_string(), "test".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert!(affected.contains(&"build".to_string()));
@@ -172,12 +212,16 @@ fn test_compute_affected_tasks_preserves_pipeline_order() {
     ];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     // Should be in pipeline order
@@ -196,12 +240,16 @@ fn test_compute_affected_tasks_only_affected_in_pipeline() {
     let pipeline_tasks = vec!["build".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     // Only build should be returned (test not in pipeline)
@@ -244,12 +292,16 @@ fn test_compute_affected_tasks_deploy_pipeline_with_absolute_project_root() {
     let pipeline_tasks = vec!["deploy".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert_eq!(affected, vec!["deploy"]);
@@ -262,7 +314,14 @@ fn test_matched_inputs_for_task_with_absolute_project_root() {
     let changed_files = vec![PathBuf::from("chat/src/components/chat/ChatEditor.vue")];
     let root = Path::new("/repo/chat");
 
-    let matched = matched_inputs_for_task("build", &project, &changed_files, root);
+    let matched = super::matched_inputs_for_task(
+        "build",
+        &project,
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
+    );
 
     assert_eq!(matched, vec!["src/**".to_string()]);
 }
@@ -276,12 +335,16 @@ fn test_compute_affected_tasks_empty_pipeline() {
     let pipeline_tasks: Vec<String> = vec![];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert!(affected.is_empty());
@@ -298,12 +361,16 @@ fn test_compute_affected_tasks_external_dep_not_found() {
     let pipeline_tasks = vec!["deploy".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     // deploy shouldn't be affected because:
@@ -335,12 +402,16 @@ fn test_compute_affected_tasks_external_dep_affected() {
         (PathBuf::from("/repo/external"), external_project),
     );
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert!(affected.contains(&"deploy".to_string()));
@@ -364,12 +435,16 @@ fn test_compute_affected_tasks_external_nested_dep_affected() {
         (PathBuf::from("/repo/external"), external_project),
     );
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert_eq!(affected, vec!["deploy".to_string()]);
@@ -386,12 +461,16 @@ fn test_compute_affected_tasks_malformed_external_dep() {
     let pipeline_tasks = vec!["deploy".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     // deploy shouldn't be affected because:
@@ -411,11 +490,13 @@ fn test_is_task_directly_affected_match() {
     let changed_files = vec![PathBuf::from("src/lib.rs")];
     let root = Path::new(".");
 
-    assert!(is_task_directly_affected(
+    assert!(super::is_task_directly_affected(
         "build",
         &project,
-        &changed_files,
-        root
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root
+        }
     ));
 }
 
@@ -426,11 +507,13 @@ fn test_is_task_directly_affected_no_match() {
     let changed_files = vec![PathBuf::from("docs/readme.md")];
     let root = Path::new(".");
 
-    assert!(!is_task_directly_affected(
+    assert!(!super::is_task_directly_affected(
         "build",
         &project,
-        &changed_files,
-        root
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root
+        }
     ));
 }
 
@@ -440,11 +523,13 @@ fn test_is_task_directly_affected_nonexistent_task() {
     let changed_files = vec![PathBuf::from("src/lib.rs")];
     let root = Path::new(".");
 
-    assert!(!is_task_directly_affected(
+    assert!(!super::is_task_directly_affected(
         "nonexistent",
         &project,
-        &changed_files,
-        root
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root
+        }
     ));
 }
 
@@ -457,11 +542,13 @@ fn test_is_task_directly_affected_task_no_inputs_always_affected() {
     let changed_files = vec![PathBuf::from("src/lib.rs")];
     let root = Path::new(".");
 
-    assert!(is_task_directly_affected(
+    assert!(super::is_task_directly_affected(
         "build",
         &project,
-        &changed_files,
-        root
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root
+        }
     ));
 }
 
@@ -475,12 +562,16 @@ fn test_task_with_no_inputs_always_affected_even_with_no_changes() {
     let pipeline_tasks = vec!["deploy".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert_eq!(
@@ -521,11 +612,13 @@ fn test_parallel_group_one_subtask_affected() {
     let changed_files = vec![PathBuf::from("src/lib.rs")];
     let root = Path::new(".");
 
-    assert!(is_task_directly_affected(
+    assert!(super::is_task_directly_affected(
         "check",
         &project,
-        &changed_files,
-        root
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root
+        }
     ));
 }
 
@@ -556,11 +649,13 @@ fn test_parallel_group_no_subtask_affected() {
     let changed_files = vec![PathBuf::from("docs/readme.md")];
     let root = Path::new(".");
 
-    assert!(!is_task_directly_affected(
+    assert!(!super::is_task_directly_affected(
         "check",
         &project,
-        &changed_files,
-        root
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root
+        }
     ));
 }
 
@@ -581,11 +676,13 @@ fn test_sequential_group_affected() {
     let changed_files = vec![PathBuf::from("src/lib.rs")];
     let root = Path::new(".");
 
-    assert!(is_task_directly_affected(
+    assert!(super::is_task_directly_affected(
         "check",
         &project,
-        &changed_files,
-        root
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root
+        }
     ));
 }
 
@@ -617,12 +714,16 @@ fn test_compute_affected_tasks_with_group() {
     let pipeline_tasks = vec!["check".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     // "check" should be in affected list because its "lint" subtask is affected
@@ -633,17 +734,26 @@ fn test_compute_affected_tasks_with_group() {
 // check_external_dependency tests
 // ==========================================================================
 
-fn check_external_dependency_for_test<S>(
-    dep: &str,
-    all_projects: &HashMap<String, (PathBuf, Project), S>,
-    changed_files: &[PathBuf],
-    cache: &mut HashMap<String, bool>,
-) -> bool
+struct ExternalTestInputs<'fixture, S> {
+    projects: &'fixture HashMap<String, (PathBuf, Project), S>,
+    changed_files: &'fixture [PathBuf],
+    cache: &'fixture mut HashMap<String, bool>,
+}
+
+fn check_external_dependency_for_test<S>(dep: &str, inputs: &mut ExternalTestInputs<'_, S>) -> bool
 where
     S: std::hash::BuildHasher,
 {
     let mut index_cache = HashMap::new();
-    check_external_dependency(dep, all_projects, changed_files, cache, &mut index_cache)
+    super::check_external_dependency(
+        dep,
+        &mut ExternalDependencyContext {
+            projects: inputs.projects,
+            changed_files: inputs.changed_files,
+            cache: inputs.cache,
+            index_cache: &mut index_cache,
+        },
+    )
 }
 
 #[test]
@@ -655,9 +765,11 @@ fn test_check_external_dependency_cache_hit() {
 
     let result = check_external_dependency_for_test(
         "#project:task",
-        &all_projects,
-        &changed_files,
-        &mut cache,
+        &mut ExternalTestInputs {
+            projects: &all_projects,
+            changed_files: &changed_files,
+            cache: &mut cache,
+        },
     );
 
     assert!(result);
@@ -672,9 +784,11 @@ fn test_check_external_dependency_cache_miss_false() {
 
     let result = check_external_dependency_for_test(
         "#project:task",
-        &all_projects,
-        &changed_files,
-        &mut cache,
+        &mut ExternalTestInputs {
+            projects: &all_projects,
+            changed_files: &changed_files,
+            cache: &mut cache,
+        },
     );
 
     assert!(!result);
@@ -688,9 +802,11 @@ fn test_check_external_dependency_project_not_found() {
 
     let result = check_external_dependency_for_test(
         "#missing:task",
-        &all_projects,
-        &changed_files,
-        &mut cache,
+        &mut ExternalTestInputs {
+            projects: &all_projects,
+            changed_files: &changed_files,
+            cache: &mut cache,
+        },
     );
 
     assert!(!result);
@@ -716,9 +832,11 @@ fn test_check_external_dependency_directly_affected() {
 
     let result = check_external_dependency_for_test(
         "#external:build",
-        &all_projects,
-        &changed_files,
-        &mut cache,
+        &mut ExternalTestInputs {
+            projects: &all_projects,
+            changed_files: &changed_files,
+            cache: &mut cache,
+        },
     );
 
     assert!(result);
@@ -751,9 +869,11 @@ fn test_check_external_dependency_transitive_internal() {
 
     let result = check_external_dependency_for_test(
         "#external:test",
-        &all_projects,
-        &changed_files,
-        &mut cache,
+        &mut ExternalTestInputs {
+            projects: &all_projects,
+            changed_files: &changed_files,
+            cache: &mut cache,
+        },
     );
 
     assert!(result);
@@ -779,9 +899,11 @@ fn test_check_external_dependency_circular_prevention() {
     // (inputs don't match and circular dep doesn't cause issues)
     let result = check_external_dependency_for_test(
         "#proj:taskA",
-        &all_projects,
-        &changed_files,
-        &mut cache,
+        &mut ExternalTestInputs {
+            projects: &all_projects,
+            changed_files: &changed_files,
+            cache: &mut cache,
+        },
     );
 
     assert!(!result);
@@ -803,12 +925,16 @@ fn test_compute_affected_tasks_non_pipeline_dep() {
     let pipeline_tasks = vec!["deploy".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert_eq!(
@@ -835,12 +961,16 @@ fn test_compute_affected_tasks_deep_non_pipeline_chain() {
     let pipeline_tasks = vec!["deploy".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert_eq!(
@@ -862,12 +992,16 @@ fn test_compute_affected_tasks_non_pipeline_dep_no_match() {
     let pipeline_tasks = vec!["deploy".to_string()];
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
-    let affected = compute_affected_tasks(
-        &changed_files,
+    let affected = super::compute_affected_tasks(
+        ChangedInputs {
+            files: &changed_files,
+            project_root: root,
+        },
         &pipeline_tasks,
-        root,
-        &project,
-        &all_projects,
+        &AffectedProjects {
+            project: &project,
+            all_projects: &all_projects,
+        },
     );
 
     assert!(

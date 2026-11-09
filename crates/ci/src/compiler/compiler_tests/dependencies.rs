@@ -1,4 +1,4 @@
-use super::*;
+use super::{Compiler, HashMap, Project, Task, TaskDependency, TaskGroup, TaskNode};
 
 #[test]
 fn test_expand_dependency_to_task_group() {

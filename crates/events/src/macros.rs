@@ -217,7 +217,9 @@ macro_rules! emit_task_group_started {
             },
         ));
     }};
-    ($name:expr, $sequential:expr, $task_count:expr, $parent_group:expr, $max_concurrency:expr) => {{
+    (
+        $name:expr, $sequential:expr, $task_count:expr, $parent_group:expr, $max_concurrency:expr
+    ) => {{
         let _ = $crate::emit($crate::EventCategory::Task(
             $crate::TaskEvent::GroupStarted {
                 name: ::std::string::ToString::to_string(&$name),
@@ -246,7 +248,9 @@ macro_rules! emit_task_group_completed {
             },
         ));
     }};
-    ($name:expr, $success:expr, $duration_ms:expr, $succeeded:expr, $failed:expr, $skipped:expr) => {{
+    (
+        $name:expr, $success:expr, $duration_ms:expr, $succeeded:expr, $failed:expr, $skipped:expr
+    ) => {{
         let _ = $crate::emit($crate::EventCategory::Task(
             $crate::TaskEvent::GroupCompleted {
                 name: ::std::string::ToString::to_string(&$name),
@@ -259,7 +263,15 @@ macro_rules! emit_task_group_completed {
             },
         ));
     }};
-    ($name:expr, $success:expr, $duration_ms:expr, $succeeded:expr, $failed:expr, $skipped:expr, $parent_group:expr) => {{
+    (
+        $name:expr,
+        $success:expr,
+        $duration_ms:expr,
+        $succeeded:expr,
+        $failed:expr,
+        $skipped:expr,
+        $parent_group:expr
+    ) => {{
         let _ = $crate::emit($crate::EventCategory::Task(
             $crate::TaskEvent::GroupCompleted {
                 name: ::std::string::ToString::to_string(&$name),

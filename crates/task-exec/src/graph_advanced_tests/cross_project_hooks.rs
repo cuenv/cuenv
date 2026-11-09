@@ -1,4 +1,5 @@
-use super::*;
+use crate::graph::TaskGraph;
+use crate::test_utils;
 
 #[test]
 fn test_hook_with_cross_project_task_ref() {
@@ -6,21 +7,21 @@ fn test_hook_with_cross_project_task_ref() {
     let mut graph = TaskGraph::new();
 
     // External project tasks (would be discovered and added to global DAG)
-    let external_install = create_task("projen-generator::install", vec![], vec![]);
-    let external_types = create_task(
+    let external_install = test_utils::create_task("projen-generator::install", vec![], vec![]);
+    let external_types = test_utils::create_task(
         "projen-generator::types",
         vec!["projen-generator::install"],
         vec![],
     );
 
     // Current project hook referencing external task
-    let hook = create_task(
+    let hook = test_utils::create_task(
         "website.bun.hooks.beforeInstall[0]",
         vec!["projen-generator::types"], // Cross-project dependency
         vec![],
     );
 
-    let install = create_task(
+    let install = test_utils::create_task(
         "website.bun.install",
         vec!["website.bun.hooks.beforeInstall[0]"],
         vec![],
@@ -73,14 +74,14 @@ fn test_transitive_cross_project_dependencies() {
     let mut graph = TaskGraph::new();
 
     // Project C (no dependencies)
-    let c_build = create_task("projectC::build", vec![], vec![]);
+    let c_build = test_utils::create_task("projectC::build", vec![], vec![]);
 
     // Project B depends on C
-    let b_build = create_task("projectB::build", vec!["projectC::build"], vec![]);
+    let b_build = test_utils::create_task("projectB::build", vec!["projectC::build"], vec![]);
 
     // Project A depends on B
-    let a_build = create_task("projectA::build", vec!["projectB::build"], vec![]);
-    let a_deploy = create_task("projectA::deploy", vec!["projectA::build"], vec![]);
+    let a_build = test_utils::create_task("projectA::build", vec!["projectB::build"], vec![]);
+    let a_deploy = test_utils::create_task("projectA::deploy", vec!["projectA::build"], vec![]);
 
     graph.add_task("projectC::build", c_build).unwrap();
     graph.add_task("projectB::build", b_build).unwrap();

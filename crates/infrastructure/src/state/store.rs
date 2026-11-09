@@ -3,6 +3,11 @@
 use async_trait::async_trait;
 
 use super::lock::{LockInformation, LockRequest, StateLock, TenantLock};
+use super::migration::{
+    LegacyMigrationAccess, LegacyMigrationCopy, LegacyMigrationDeleteRequest,
+    LegacyMigrationRecordRequest, LegacyMigrationSnapshotRead, LegacyMigrationSource,
+    LegacyMigrationWriterRequest, MigrationMutation,
+};
 use super::object::ObjectStateFeatures;
 use super::resource::{ConditionalPut, ManagedResource, ResourceAddress};
 use super::writer::LastWriter;
@@ -13,6 +18,9 @@ use crate::tenant::TenantKey;
 ///
 /// Every operation is scoped to a [`TenantKey`]; implementations must never
 /// read or write rows belonging to another tenant.
+///
+/// Legacy migration operations require an externally enforced maintenance
+/// window and atomically compare each mutation with the exact tenant fence.
 #[async_trait]
 pub trait StateStore: Send + Sync {
     /// Non-secret, stable backend identity for binding local recovery files.
@@ -27,6 +35,90 @@ pub trait StateStore: Send + Sync {
     /// `None` for backends whose state every package shares.
     fn recovery_scope(&self) -> Option<String> {
         None
+    }
+
+    /// The actual connected backend and its non-secret migration namespace.
+    /// Stores without a stable identity leave migrations unsupported.
+    fn legacy_migration_source(&self) -> Option<LegacyMigrationSource> {
+        None
+    }
+
+    /// Read a complete, representable source snapshot under the exact legacy
+    /// migration fence. Stores that cannot guarantee a consistent fenced
+    /// snapshot, or that encounter fields the target cannot preserve, refuse.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid data, a lost fence or an unsupported capability.
+    async fn read_legacy_migration_snapshot(
+        &self,
+        _access: &LegacyMigrationAccess<'_>,
+    ) -> Result<LegacyMigrationSnapshotRead> {
+        Err(crate::error::InfrastructureError::state(
+            "this state store does not support a fenced legacy migration snapshot",
+        ))
+    }
+
+    /// Check that a whole legacy copy can be represented and that its exact
+    /// source fence is held before any source mutation is attempted.
+    ///
+    /// The caller must first verify the target's raw snapshot, migration
+    /// receipts and external maintenance freeze. A `migrated-` prefix alone
+    /// does not establish fence provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid data or an unsupported capability.
+    async fn check_legacy_migration_copy(
+        &self,
+        _request: &LegacyMigrationCopy<'_>,
+    ) -> Result<MigrationMutation> {
+        Err(crate::error::InfrastructureError::state(
+            "this state store does not support exact legacy migration copy-back",
+        ))
+    }
+
+    /// Replace a source record with its exact target generation and serial.
+    /// The exact legacy fence comparison and mutation must be atomic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid data or an unsupported capability.
+    async fn replace_legacy_migration_record(
+        &self,
+        _request: &LegacyMigrationRecordRequest<'_>,
+    ) -> Result<MigrationMutation> {
+        Err(crate::error::InfrastructureError::state(
+            "this state store does not support exact legacy migration copy-back",
+        ))
+    }
+
+    /// Delete a source record while atomically comparing the legacy fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid data or an unsupported capability.
+    async fn delete_legacy_migration_record(
+        &self,
+        _request: &LegacyMigrationDeleteRequest<'_>,
+    ) -> Result<MigrationMutation> {
+        Err(crate::error::InfrastructureError::state(
+            "this state store does not support exact legacy migration copy-back",
+        ))
+    }
+
+    /// Replace or clear last-writer metadata while comparing the legacy fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid data or an unsupported capability.
+    async fn set_legacy_migration_writer(
+        &self,
+        _request: &LegacyMigrationWriterRequest<'_>,
+    ) -> Result<MigrationMutation> {
+        Err(crate::error::InfrastructureError::state(
+            "this state store does not support exact legacy migration copy-back",
+        ))
     }
 
     /// Create tables and indexes if they do not exist, and bring the schema

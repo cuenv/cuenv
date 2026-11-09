@@ -1,37 +1,45 @@
 //! Tests for FFI edge cases and error paths
 
-use cuengine::{CStringPtr, evaluate_cue_package};
+use cuengine::CStringPtr;
 use std::error::Error;
 use std::ffi::CString;
+use std::path::Path;
 use tempfile::TempDir;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
+fn create_module(root: &Path) -> TestResult {
+    std::fs::create_dir_all(root.join("cue.mod"))?;
+    std::fs::write(
+        root.join("cue.mod/module.cue"),
+        "module: \"test.example/ffi@v0\"\nlanguage: version: \"v0.14.1\"\n",
+    )?;
+    Ok(())
+}
+
 #[test]
 fn test_cstring_ptr_invalid_utf8() {
-    // This tests the UTF-8 conversion error path
-    // Create a C string with invalid UTF-8 (using Latin-1 encoding)
-    let bytes = [0xFF, 0xFE, 0xFD, 0x00]; // Invalid UTF-8 sequence with null terminator
-
-    // Create a raw pointer from these bytes
-    let ptr = bytes.as_ptr() as *mut std::os::raw::c_char;
-
-    // Create wrapper - this should succeed
+    let bytes = [0xff_u8, 0xfe, 0xfd, 0x00];
+    // SAFETY: bytes is a live, NUL-terminated C string for the duration of
+    // the call. strdup returns an independent C allocation.
+    #[allow(unsafe_code)]
+    let ptr = unsafe { libc::strdup(bytes.as_ptr().cast()) };
+    assert!(!ptr.is_null(), "libc::strdup returned null");
+    // SAFETY: ptr is a C allocation and ownership passes to the wrapper,
+    // whose drop uses the compatible C free function even if the test panics.
     #[allow(unsafe_code)]
     let wrapper = unsafe { CStringPtr::new(ptr) };
 
-    // Conversion to str should fail due to invalid UTF-8
+    // SAFETY: wrapper owns a non-null, unchanged NUL-terminated C string;
+    // `to_str` validates the deliberately invalid UTF-8 before borrowing it.
     #[allow(unsafe_code)]
     let result = unsafe { wrapper.to_str() };
     assert!(result.is_err());
-
-    // Prevent the wrapper from freeing our stack-allocated bytes
-    std::mem::forget(wrapper);
 }
 
 #[test]
 fn test_cstring_ptr_null_handling() {
-    // Test null pointer behavior
+    // SAFETY: CStringPtr accepts null and its destructor does not free it.
     #[allow(unsafe_code)]
     let null_wrapper = unsafe { CStringPtr::new(std::ptr::null_mut()) };
     assert!(null_wrapper.is_null());
@@ -41,65 +49,37 @@ fn test_cstring_ptr_null_handling() {
 
 #[test]
 fn test_evaluate_cue_package_null_bytes_in_path() {
-    // Test path with null bytes (should fail during CString conversion)
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create a path that would have null bytes when converted to string
-    // This is tricky since Path doesn't allow null bytes, so we test the package name instead
-    let result = evaluate_cue_package(temp_dir.path(), "test\0package");
-
+    let result = cuengine::evaluate_cue_package(Path::new("invalid\0path"), "test");
     assert!(result.is_err());
 }
 
 #[test]
-fn test_evaluate_cue_package_error_prefix_response() {
-    // This tests the error: prefix handling from Go
-    // We can't easily mock the FFI response, but we can test with invalid CUE
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create definitely invalid CUE that should trigger an error response
+fn test_evaluate_cue_package_error_prefix_response() -> TestResult {
+    let temp_dir = TempDir::new()?;
+    create_module(temp_dir.path())?;
     std::fs::write(
         temp_dir.path().join("invalid.cue"),
         "package test\n\nthis is { completely invalid CUE syntax @#$%",
-    )
-    .unwrap();
-
-    let result = evaluate_cue_package(temp_dir.path(), "test");
-
-    // The result should be an error (either FFI unavailable or CUE parse error)
-    if let Err(error) = result {
-        let error_str = error.to_string();
-        // Should contain some error indication
-        assert!(!error_str.is_empty());
-    }
+    )?;
+    let error = cuengine::evaluate_cue_package(temp_dir.path(), "test").unwrap_err();
+    assert!(!error.to_string().is_empty());
+    Ok(())
 }
 
 #[test]
-fn test_evaluate_cue_package_various_error_conditions() {
-    // Test multiple error conditions that might occur
-    let temp_dir = TempDir::new().unwrap();
-
-    // Test 1: Directory that exists but has no read permissions
-    // This test is unreliable in different environments, so we'll skip it
-    // The important thing is that the error handling code paths are exercised
-
-    // Test 2: Very long package name (but still valid)
-    let long_name = "a".repeat(1000);
-    let result = evaluate_cue_package(temp_dir.path(), &long_name);
-    // Should process (may fail for other reasons but not the name itself)
-    if let Err(e) = result {
-        // Should not be about the package name being invalid
-        assert!(!e.to_string().contains("Invalid package name"));
+fn test_evaluate_cue_package_various_names() -> TestResult {
+    let temp_dir = TempDir::new()?;
+    create_module(temp_dir.path())?;
+    for name in ["a".repeat(1000), "test_package_123".to_string()] {
+        std::fs::write(
+            temp_dir.path().join("env.cue"),
+            format!("package {name}\nanswer: 42\n"),
+        )?;
+        let json = cuengine::evaluate_cue_package(temp_dir.path(), &name)?;
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        assert_eq!(value["answer"], 42);
     }
-
-    // Test 3: Package name with special but valid characters
-    let special_name = "test_package-123";
-    let result = evaluate_cue_package(temp_dir.path(), special_name);
-    // Should process (may fail for other reasons but not the name itself)
-    if let Err(e) = result {
-        // Should not be about invalid characters
-        assert!(!e.to_string().contains("Invalid package name"));
-    }
+    Ok(())
 }
 
 #[test]
@@ -110,7 +90,8 @@ fn test_cstring_ptr_drop_with_valid_string() -> TestResult {
     for content in &["test", "", "multi\nline\nstring", "unicode: 你好"] {
         let wrapper = c_allocated_cstring_ptr(content)?;
 
-        // Verify we can read it
+        // SAFETY: the helper returns an owned, non-null C string that remains
+        // unchanged for the duration of this borrow.
         #[allow(unsafe_code)]
         let result = unsafe { wrapper.to_str()? };
         assert_eq!(result, *content);
@@ -120,46 +101,35 @@ fn test_cstring_ptr_drop_with_valid_string() -> TestResult {
 
 fn c_allocated_cstring_ptr(value: &str) -> TestResult<CStringPtr> {
     let c_string = CString::new(value)?;
+    // SAFETY: c_string is a valid C string that lives through the call;
+    // strdup returns an independent C allocation.
     #[allow(unsafe_code)]
     let ptr = unsafe { libc::strdup(c_string.as_ptr()) };
     assert!(!ptr.is_null(), "libc::strdup returned null");
+    // SAFETY: the non-null strdup allocation is transferred to the wrapper,
+    // which releases it using the compatible C free function.
     #[allow(unsafe_code)]
     Ok(unsafe { CStringPtr::new(ptr) })
 }
 
 #[test]
-fn test_evaluate_cue_mock_null_response() {
-    // While we can't easily mock the FFI to return null,
-    // we can test the null handling code path exists and compiles
-
-    // This at least ensures the null check code is reachable
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create a scenario that might cause null response
-    // (empty directory, no CUE files)
-    // Just verify it handles the case without crashing. Either success or
-    // expected error is fine for this edge-case test.
-    let _ = evaluate_cue_package(temp_dir.path(), "nonexistent");
+fn test_evaluate_cue_empty_directory_returns_error() -> TestResult {
+    let temp_dir = TempDir::new()?;
+    create_module(temp_dir.path())?;
+    let error = cuengine::evaluate_cue_package(temp_dir.path(), "nonexistent").unwrap_err();
+    assert!(!error.to_string().is_empty());
+    Ok(())
 }
 
 #[test]
-fn test_evaluate_cue_with_error_prefix_simulation() {
-    // Test handling of "error:" prefixed responses
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create a CUE file that might trigger an error response from Go
+fn test_evaluate_cue_with_nonmatching_package() -> TestResult {
+    let temp_dir = TempDir::new()?;
+    create_module(temp_dir.path())?;
     std::fs::write(
         temp_dir.path().join("broken.cue"),
-        "package wrong\n\n// Intentionally wrong package name\nvalue: true",
-    )
-    .unwrap();
-
-    // Try to evaluate with different package name than in file
-    let result = evaluate_cue_package(temp_dir.path(), "different");
-
-    // Should handle the error gracefully
-    if let Err(e) = result {
-        // Error should be meaningful
-        assert!(!e.to_string().is_empty());
-    }
+        "package wrong\nvalue: true\n",
+    )?;
+    let error = cuengine::evaluate_cue_package(temp_dir.path(), "different").unwrap_err();
+    assert!(!error.to_string().is_empty());
+    Ok(())
 }

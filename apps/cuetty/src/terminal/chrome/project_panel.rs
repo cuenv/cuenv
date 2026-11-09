@@ -3,12 +3,13 @@
 //! resolves nothing, so a secret appears as the name of its resolver.
 
 use super::tokens::{ChromeColors, border, size, space, text};
-use super::tooltip::chrome_tooltip;
+
 use crate::integrations::cuenv::{CuenvTask, CuenvTaskKind, EnvVariable};
 use crate::terminal::engine::TerminalView;
+use gpui::prelude::FluentBuilder;
 use gpui::{
     Div, InteractiveElement, IntoElement, ParentElement, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
+    StatefulInteractiveElement, Styled,
 };
 
 /// The muted line under the project's name, such as `nix · 12 tasks`.
@@ -32,7 +33,7 @@ fn project_summary(runtime: Option<&str>, tasks: &[CuenvTask]) -> String {
 
 /// A heading over a group of variables.
 fn group_label(label: &str, colors: &ChromeColors) -> Div {
-    div()
+    gpui::div()
         .mt(space::SM)
         .truncate()
         .text_size(text::CAPTION)
@@ -42,10 +43,10 @@ fn group_label(label: &str, colors: &ChromeColors) -> Div {
 }
 
 /// Where one variable sits in the panel, and how it is drawn.
-struct VariableRow<'a> {
+struct VariableRow<'row> {
     /// Its place among all the panel's variables, which tells GPUI's elements apart.
     place: usize,
-    variable: &'a EnvVariable,
+    variable: &'row EnvVariable,
     colors: ChromeColors,
     mono: SharedString,
 }
@@ -59,7 +60,7 @@ fn render_variable(row: VariableRow<'_>) -> Stateful<Div> {
         colors,
         mono,
     } = row;
-    div()
+    gpui::div()
         .id(("cuetty-project-variable", place))
         .w_full()
         .flex_shrink_0()
@@ -68,18 +69,18 @@ fn render_variable(row: VariableRow<'_>) -> Stateful<Div> {
         .font_family(mono)
         .text_size(text::CAPTION)
         .line_height(text::LINE_HEIGHT)
-        .tooltip(chrome_tooltip(
+        .tooltip(super::tooltip::chrome_tooltip(
             format!("{}\n{}", variable.name, variable.value.detail()),
             colors,
         ))
         .child(
-            div()
+            gpui::div()
                 .truncate()
                 .text_color(colors.text_secondary)
                 .child(variable.name.clone()),
         )
         .child(
-            div()
+            gpui::div()
                 .truncate()
                 .text_color(colors.text_muted)
                 .child(variable.value.summary()),
@@ -122,7 +123,7 @@ impl TerminalView {
             }
         }
         Some(
-            div()
+            gpui::div()
                 .id("cuetty-project-panel")
                 .w_full()
                 .flex()
@@ -137,7 +138,7 @@ impl TerminalView {
                 .border_color(colors.divider)
                 .line_height(text::LINE_HEIGHT)
                 .children(overview.name.clone().map(|name| {
-                    div()
+                    gpui::div()
                         .flex_shrink_0()
                         .truncate()
                         .text_size(text::BODY)
@@ -147,7 +148,7 @@ impl TerminalView {
                 }))
                 .when(!summary.is_empty(), |this| {
                     this.child(
-                        div()
+                        gpui::div()
                             .flex_shrink_0()
                             .truncate()
                             .text_size(text::CAPTION)

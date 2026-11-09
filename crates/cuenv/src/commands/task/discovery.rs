@@ -9,7 +9,8 @@ use cuenv_core::Result;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{TaskNode, Tasks};
 
-use crate::commands::{CommandExecutor, relative_path_from_root};
+use crate::commands;
+use crate::commands::CommandExecutor;
 
 /// Normalize a list of labels by sorting, deduplicating, and filtering empty strings.
 ///
@@ -78,8 +79,8 @@ pub fn evaluate_manifest(dir: &Path, package: &str, executor: &CommandExecutor) 
 
     // Use executor's cached module (single CUE evaluation per process)
     tracing::debug!("Using cached module evaluation from executor");
-    let module = executor.get_module(&target_path)?;
-    let rel_path = relative_path_from_root(&module.root, &target_path);
+    let module = executor.module(&target_path)?;
+    let rel_path = commands::relative_path_from_root(&module.root, &target_path);
 
     let instance = module.get(&rel_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(

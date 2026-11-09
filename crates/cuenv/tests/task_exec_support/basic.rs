@@ -1,8 +1,6 @@
-use super::{TestResult, create_test_dir, init_cue_module, run_cuenv};
-use std::fs;
-use std::io;
-use std::path::Path;
-use std::path::PathBuf;
+use super::TestResult;
+use std::path::{Path, PathBuf};
+use std::{fs, io};
 use tempfile::TempDir;
 
 fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
@@ -63,7 +61,7 @@ fn output_position(output: &str, needle: &'static str) -> TestResult<usize> {
 
 #[test]
 fn test_schema_typed_embedded_script_runs_from_nested_project_directory() -> TestResult {
-    let temp_dir = create_test_dir()?;
+    let temp_dir = super::create_test_dir()?;
     init_local_cuenv_schema_module(temp_dir.path())?;
 
     let project_dir = temp_dir.path().join("nix");
@@ -96,7 +94,7 @@ schema.#Project & {
 "#,
     )?;
 
-    let (stdout, stderr, success) = run_cuenv(&[
+    let (stdout, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(&project_dir)?,
@@ -119,8 +117,8 @@ schema.#Project & {
 #[test]
 fn test_task_list_with_shorthand() -> TestResult {
     // Create a temporary directory with test CUE files
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -144,7 +142,7 @@ tasks: {
 
     // Test listing tasks with 't' shorthand
     let (stdout, _stderr, success) =
-        run_cuenv(&["t", "-p", path_arg(temp_dir.path())?, "--package", "test"])?;
+        super::run_cuenv(&["t", "-p", path_arg(temp_dir.path())?, "--package", "test"])?;
 
     assert!(success, "Command should succeed");
     assert!(stdout.contains("Tasks:"), "Should show tasks header");
@@ -155,8 +153,8 @@ tasks: {
 
 #[test]
 fn test_task_execution() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -176,7 +174,7 @@ tasks: {
     write_env(&temp_dir, cue_content)?;
 
     // Test running a task with 'task' command
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -199,8 +197,8 @@ tasks: {
 
 #[test]
 fn test_imported_task_working_directory_modes() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
 
     let shared_dir = temp_dir.path().join("shared");
     let definition_fixture_dir = shared_dir.join("fixtures");
@@ -284,7 +282,7 @@ tasks: {
         ("moduleRelative", "caller-root"),
     ] {
         let (stdout, stderr, success) =
-            run_cuenv(&["task", "-p", project_path, "--package", "test", task])?;
+            super::run_cuenv(&["task", "-p", project_path, "--package", "test", task])?;
 
         assert!(
             success,
@@ -301,8 +299,8 @@ tasks: {
 
 #[test]
 fn test_task_with_environment_propagation() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -321,7 +319,7 @@ tasks: {
     write_env(&temp_dir, cue_content)?;
 
     // Test that environment variables are propagated to tasks
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "t", // Using shorthand
         "-p",
         path_arg(temp_dir.path())?,
@@ -340,8 +338,8 @@ tasks: {
 
 #[test]
 fn test_task_does_not_run_or_warn_about_unapproved_shell_hooks() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let hook_var_expr = "$".to_owned() + "{HOOK_VAR:-missing}";
     let cue_content = r#"package test
 
@@ -372,7 +370,7 @@ tasks: {
 
     write_env(&temp_dir, &cue_content)?;
 
-    let (stdout, stderr, success) = run_cuenv(&[
+    let (stdout, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -402,8 +400,8 @@ tasks: {
 
 #[test]
 fn test_exec_command_with_shorthand() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -415,7 +413,7 @@ env: {
     write_env(&temp_dir, cue_content)?;
 
     // Test exec with 'x' shorthand (changed from 'e' to avoid conflict with -e global flag)
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "x",
         "-p",
         path_arg(temp_dir.path())?,
@@ -435,8 +433,8 @@ env: {
 
 #[test]
 fn test_exec_with_arguments() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -448,7 +446,7 @@ env: {
     write_env(&temp_dir, cue_content)?;
 
     // Test exec with multiple arguments
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "exec",
         "-p",
         path_arg(temp_dir.path())?,
@@ -470,8 +468,8 @@ env: {
 
 #[test]
 fn test_task_sequential_list() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -500,7 +498,7 @@ tasks: {
     write_env(&temp_dir, cue_content)?;
 
     // Test running a sequential task list
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -526,8 +524,8 @@ tasks: {
 
 #[test]
 fn test_task_nested_groups() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -551,7 +549,7 @@ tasks: {
     write_env(&temp_dir, cue_content)?;
 
     // Test running nested task groups
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -570,8 +568,8 @@ tasks: {
 
 #[test]
 fn test_nested_task_paths_and_aliases() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -599,7 +597,7 @@ tasks: {
     write_env(&temp_dir, cue_content)?;
 
     // Listing should include canonical dotted paths
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -614,7 +612,7 @@ tasks: {
     );
 
     // Execute using dotted path
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -626,7 +624,7 @@ tasks: {
     assert!(stdout.contains("bun install"));
 
     // Execute using colon alias
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -638,7 +636,7 @@ tasks: {
     assert!(stdout.contains("bun install"));
 
     // Dependency should resolve to canonical nested name
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -657,8 +655,8 @@ tasks: {
 
 #[test]
 fn test_nonexistent_task_error() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -675,7 +673,7 @@ tasks: {
     write_env(&temp_dir, cue_content)?;
 
     // Test running a nonexistent task
-    let (_, stderr, success) = run_cuenv(&[
+    let (_, stderr, success) = super::run_cuenv(&[
         "task",
         "-p",
         path_arg(temp_dir.path())?,
@@ -694,8 +692,8 @@ tasks: {
 
 #[test]
 fn test_exec_command_exit_code() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     let cue_content = r"package test
 
 env: {}";
@@ -703,7 +701,7 @@ env: {}";
     write_env(&temp_dir, cue_content)?;
 
     // Test that exec propagates exit codes correctly
-    let (_, _, success) = run_cuenv(&[
+    let (_, _, success) = super::run_cuenv(&[
         "exec",
         "-p",
         path_arg(temp_dir.path())?,
@@ -718,8 +716,8 @@ env: {}";
 
 #[test]
 fn exec_exits_with_the_child_status_and_prints_no_error() -> TestResult {
-    let temp_dir = create_test_dir()?;
-    init_cue_module(temp_dir.path())?;
+    let temp_dir = super::create_test_dir()?;
+    super::init_cue_module(temp_dir.path())?;
     write_env(&temp_dir, "package test\n\nenv: {}")?;
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_cuenv"))

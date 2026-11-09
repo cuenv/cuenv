@@ -17,6 +17,9 @@ use miette::Diagnostic;
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// A CI operation using the shared core error type.
+pub type Result<T> = std::result::Result<T, cuenv_core::Error>;
+
 /// Error types for CI execution
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -39,7 +42,12 @@ pub enum ExecutorError {
 
     /// Pipeline not found
     #[error("Pipeline '{name}' not found. Available: {available}")]
-    PipelineNotFound { name: String, available: String },
+    PipelineNotFound {
+        /// Requested pipeline name.
+        name: String,
+        /// Names of the configured pipelines.
+        available: String,
+    },
 
     /// No CI configuration
     #[error("Project has no CI configuration")]
@@ -67,12 +75,17 @@ impl From<ExecutorError> for cuenv_core::Error {
 pub enum RunnerError {
     /// Task command is empty
     #[error("Task '{task}' has empty command")]
-    EmptyCommand { task: String },
+    EmptyCommand {
+        /// Task whose command is empty.
+        task: String,
+    },
 
     /// Process spawn failed
     #[error("Failed to spawn task '{task}': {source}")]
     SpawnFailed {
+        /// Task whose process could not be started.
         task: String,
+        /// Operating system error returned when starting the process.
         #[source]
         source: std::io::Error,
     },
@@ -80,7 +93,9 @@ pub enum RunnerError {
     /// Process execution failed
     #[error("Task '{task}' execution failed: {source}")]
     ExecutionFailed {
+        /// Task whose process could not be observed to completion.
         task: String,
+        /// Operating system error returned while running the process.
         #[source]
         source: std::io::Error,
     },
@@ -90,18 +105,23 @@ pub enum RunnerError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CompilerError {
+    /// The compiled task graph did not pass validation.
     #[error("Task graph validation failed: {0}")]
     ValidationFailed(String),
 
+    /// A requested task could not be resolved in the project.
     #[error("Task '{0}' not found")]
     TaskNotFound(String),
 
+    /// A shell script cannot be represented as the requested command array.
     #[error("Task '{0}' uses shell script but IR requires command array")]
     ShellScriptNotSupported(String),
 
+    /// A task declaration cannot be lowered to the CI representation.
     #[error("Invalid task structure: {0}")]
     InvalidTaskStructure(String),
 
+    /// Flake lock analysis failed while compiling a runtime.
     #[error("Flake lock error: {0}")]
     FlakeLock(#[from] FlakeLockError),
 }
@@ -194,35 +214,68 @@ impl FlakeLockError {
 #[derive(Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ValidationError {
+    /// The task dependency graph contains a cycle.
     #[error("Task graph contains cycle: {0}")]
     CyclicDependency(String),
 
+    /// A task refers to another task absent from the pipeline.
     #[error("Task '{task}' depends on non-existent task '{dependency}'")]
-    MissingDependency { task: String, dependency: String },
+    MissingDependency {
+        /// Task with the unresolved dependency.
+        task: String,
+        /// Referenced task name.
+        dependency: String,
+    },
 
+    /// A task refers to a runtime absent from the pipeline.
     #[error("Task '{task}' references non-existent runtime '{runtime}'")]
-    MissingRuntime { task: String, runtime: String },
+    MissingRuntime {
+        /// Task with the unresolved runtime.
+        task: String,
+        /// Referenced runtime identifier.
+        runtime: String,
+    },
 
+    /// A deployment task is followed by a non-deployment dependent.
     #[error("Deployment task '{deployment}' has non-deployment dependent '{dependent}'")]
     InvalidDeploymentDependency {
+        /// Deployment task in the invalid dependency edge.
         deployment: String,
+        /// Non-deployment task that depends on it.
         dependent: String,
     },
 
+    /// A non-shell task uses a string command instead of an argument array.
     #[error("Task '{task}' has shell=false with string command (must be array)")]
-    InvalidShellCommand { task: String },
+    InvalidShellCommand {
+        /// Task with the invalid command representation.
+        task: String,
+    },
 
+    /// A task has no command to execute.
     #[error("Task '{task}' has empty command")]
-    EmptyCommand { task: String },
+    EmptyCommand {
+        /// Task with the empty command.
+        task: String,
+    },
 
+    /// A deployment task enables a cache policy.
     #[error("Deployment task '{task}' has cache_policy={policy:?} (must be disabled)")]
     InvalidDeploymentCachePolicy {
+        /// Deployment task with the invalid policy.
         task: String,
+        /// Policy specified for the task.
         policy: crate::ir::CachePolicy,
     },
 
+    /// A declared task input was not found during compilation.
     #[error("Task '{task}' declares input '{input}' that does not exist at compile time")]
-    MissingInput { task: String, input: String },
+    MissingInput {
+        /// Task declaring the missing input.
+        task: String,
+        /// Input path or pattern that could not be found.
+        input: String,
+    },
 }
 
 /// Error types for emitter operations
@@ -240,7 +293,9 @@ pub enum EmitterError {
     /// Unsupported feature in IR for this emitter
     #[error("Unsupported feature '{feature}' for {emitter} emitter")]
     UnsupportedFeature {
+        /// Feature the emitter cannot represent.
         feature: String,
+        /// Emitter that rejected the feature.
         emitter: &'static str,
     },
 
@@ -263,7 +318,9 @@ pub enum DiffError {
     /// Failed to read report
     #[error("Failed to read report '{path}': {source}")]
     ReadError {
+        /// Report path that could not be read.
         path: PathBuf,
+        /// Operating system error returned while reading the report.
         #[source]
         source: std::io::Error,
     },
@@ -271,7 +328,9 @@ pub enum DiffError {
     /// Failed to parse report
     #[error("Failed to parse report '{path}': {source}")]
     ParseError {
+        /// Report path containing invalid JSON.
         path: PathBuf,
+        /// JSON parsing error.
         #[source]
         source: serde_json::Error,
     },

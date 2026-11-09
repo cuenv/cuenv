@@ -1,10 +1,12 @@
-use super::{CIContext, CIProvider};
+use super::CIProvider;
+use crate::context::CIContext;
 use crate::report::{CheckHandle, PipelineReport};
 use async_trait::async_trait;
 use cuenv_core::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// CI provider for local runs, optionally comparing against a Git base ref.
 pub struct LocalProvider {
     context: CIContext,
     base_ref: Option<String>,

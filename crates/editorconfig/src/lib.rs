@@ -5,21 +5,23 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
-//! use cuenv_editorconfig::{EditorConfigFile, EditorConfigSection};
+//! ```rust
+//! use cuenv_editorconfig::{EditorConfigFile, EditorConfigSection, PropertyState, RootMode};
+//! # let directory = tempfile::tempdir()?;
 //!
 //! let result = EditorConfigFile::builder()
-//!     .directory(".")
-//!     .is_root(true)
+//!     .directory(directory.path())
+//!     .is_root(RootMode::Root)
 //!     .section("*", EditorConfigSection::new()
 //!         .indent_style("space")
 //!         .indent_size(4)
 //!         .end_of_line("lf"))
 //!     .section("*.md", EditorConfigSection::new()
-//!         .trim_trailing_whitespace(false))
+//!         .trim_trailing_whitespace(PropertyState::Disabled))
 //!     .generate()?;
 //!
 //! println!("Status: {}", result.status);
+//! assert!(directory.path().join(".editorconfig").exists());
 //! # Ok::<(), cuenv_editorconfig::Error>(())
 //! ```
 //!
@@ -34,10 +36,10 @@ mod error;
 mod result;
 mod section;
 
-pub use builder::{EditorConfigFile, EditorConfigFileBuilder};
+pub use builder::{EditorConfigFile, EditorConfigFileBuilder, RootMode, WriteMode};
 pub use error::{Error, Result};
 pub use result::{FileStatus, SyncResult};
-pub use section::{EditorConfigSection, EditorConfigValue};
+pub use section::{EditorConfigSection, EditorConfigValue, PropertyState};
 
 #[cfg(test)]
 mod tests {
@@ -71,8 +73,8 @@ mod tests {
             .tab_width(4)
             .end_of_line("crlf")
             .charset("utf-8")
-            .trim_trailing_whitespace(true)
-            .insert_final_newline(true)
+            .trim_trailing_whitespace(PropertyState::Enabled)
+            .insert_final_newline(PropertyState::Enabled)
             .max_line_length(120);
 
         let content = section.generate_content();
@@ -96,7 +98,7 @@ mod tests {
     #[test]
     fn test_builder_generate_content_root() {
         let content = EditorConfigFile::builder()
-            .is_root(true)
+            .is_root(RootMode::Root)
             .section(
                 "*",
                 EditorConfigSection::new()
@@ -124,11 +126,11 @@ mod tests {
     #[test]
     fn test_builder_multiple_sections() {
         let content = EditorConfigFile::builder()
-            .is_root(true)
+            .is_root(RootMode::Root)
             .section("*", EditorConfigSection::new().indent_style("space"))
             .section(
                 "*.md",
-                EditorConfigSection::new().trim_trailing_whitespace(false),
+                EditorConfigSection::new().trim_trailing_whitespace(PropertyState::Disabled),
             )
             .section("Makefile", EditorConfigSection::new().indent_style("tab"))
             .generate_content();
@@ -166,8 +168,8 @@ mod tests {
             .tab_width_opt(None)
             .end_of_line_opt(None::<String>)
             .charset_opt(None::<String>)
-            .trim_trailing_whitespace_opt(None)
-            .insert_final_newline_opt(None)
+            .trim_trailing_whitespace(PropertyState::Unset)
+            .insert_final_newline(PropertyState::Unset)
             .max_line_length_opt(None);
 
         assert!(section.is_empty());
@@ -181,12 +183,27 @@ mod tests {
             .tab_width_opt(Some(4))
             .end_of_line_opt(Some("lf"))
             .charset_opt(Some("utf-8"))
-            .trim_trailing_whitespace_opt(Some(true))
-            .insert_final_newline_opt(Some(true))
+            .trim_trailing_whitespace(PropertyState::Enabled)
+            .insert_final_newline(PropertyState::Enabled)
             .max_line_length_opt(Some(EditorConfigValue::Int(120)));
 
         let content = section.generate_content();
         assert_eq!(content.len(), 8);
+    }
+
+    #[test]
+    fn property_states_preserve_enabled_disabled_and_unset_values() {
+        let section = EditorConfigSection::new()
+            .trim_trailing_whitespace(PropertyState::Enabled)
+            .insert_final_newline(PropertyState::Disabled);
+        let content = section.generate_content();
+        assert!(content.contains(&"trim_trailing_whitespace = true".to_string()));
+        assert!(content.contains(&"insert_final_newline = false".to_string()));
+
+        let cleared = section
+            .trim_trailing_whitespace(PropertyState::Unset)
+            .insert_final_newline(PropertyState::Unset);
+        assert!(cleared.is_empty());
     }
 
     #[test]
@@ -240,7 +257,7 @@ mod tests {
             ("*", EditorConfigSection::new().indent_style("space")),
             (
                 "*.md",
-                EditorConfigSection::new().trim_trailing_whitespace(false),
+                EditorConfigSection::new().trim_trailing_whitespace(PropertyState::Disabled),
             ),
         ];
 
@@ -260,7 +277,9 @@ mod tests {
 
     #[test]
     fn test_builder_only_root() {
-        let content = EditorConfigFile::builder().is_root(true).generate_content();
+        let content = EditorConfigFile::builder()
+            .is_root(RootMode::Root)
+            .generate_content();
         assert_eq!(content, "root = true\n");
     }
 
@@ -273,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_builder_dry_run() {
-        let builder = EditorConfigFile::builder().dry_run(true);
+        let builder = EditorConfigFile::builder().dry_run(WriteMode::DryRun);
         let debug = format!("{builder:?}");
         assert!(debug.contains("dry_run: true"));
     }
@@ -340,9 +359,9 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let result = EditorConfigFile::builder()
             .directory(temp.path())
-            .is_root(true)
+            .is_root(RootMode::Root)
             .section("*", EditorConfigSection::new().indent_style("space"))
-            .dry_run(true)
+            .dry_run(WriteMode::DryRun)
             .generate()
             .unwrap();
 
@@ -356,7 +375,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let result = EditorConfigFile::builder()
             .directory(temp.path())
-            .is_root(true)
+            .is_root(RootMode::Root)
             .section("*", EditorConfigSection::new().indent_style("space"))
             .generate()
             .unwrap();
@@ -372,7 +391,7 @@ mod tests {
         // First write
         let _ = EditorConfigFile::builder()
             .directory(temp.path())
-            .is_root(true)
+            .is_root(RootMode::Root)
             .section("*", EditorConfigSection::new().indent_style("space"))
             .generate()
             .unwrap();
@@ -380,7 +399,7 @@ mod tests {
         // Second write with same content
         let result = EditorConfigFile::builder()
             .directory(temp.path())
-            .is_root(true)
+            .is_root(RootMode::Root)
             .section("*", EditorConfigSection::new().indent_style("space"))
             .generate()
             .unwrap();
@@ -395,7 +414,7 @@ mod tests {
         // First write
         let _ = EditorConfigFile::builder()
             .directory(temp.path())
-            .is_root(true)
+            .is_root(RootMode::Root)
             .section("*", EditorConfigSection::new().indent_style("space"))
             .generate()
             .unwrap();
@@ -403,7 +422,7 @@ mod tests {
         // Second write with different content
         let result = EditorConfigFile::builder()
             .directory(temp.path())
-            .is_root(true)
+            .is_root(RootMode::Root)
             .section("*", EditorConfigSection::new().indent_style("tab"))
             .generate()
             .unwrap();

@@ -254,7 +254,14 @@ fn render_source_tasks(tasks: &[&cuenv_task_exec::IndexedTask], output: &mut Str
     // Calculate max width for alignment
     let max_width = calculate_tree_width(&roots, 0);
 
-    print_tree_nodes(&roots, output, max_width, "");
+    print_tree_nodes(
+        &roots,
+        output,
+        TreeLayout {
+            max_width,
+            prefix: "",
+        },
+    );
 }
 
 fn calculate_tree_width(nodes: &BTreeMap<String, TaskTreeNode>, depth: usize) -> usize {
@@ -277,12 +284,18 @@ fn calculate_tree_width(nodes: &BTreeMap<String, TaskTreeNode>, depth: usize) ->
     max
 }
 
+#[derive(Clone, Copy)]
+struct TreeLayout<'tree_layout> {
+    max_width: usize,
+    prefix: &'tree_layout str,
+}
+
 fn print_tree_nodes(
     nodes: &BTreeMap<String, TaskTreeNode>,
     output: &mut String,
-    max_width: usize,
-    prefix: &str,
+    layout: TreeLayout<'_>,
 ) {
+    let TreeLayout { max_width, prefix } = layout;
     let count = nodes.len();
     for (i, (name, node)) in nodes.iter().enumerate() {
         let is_last_item = i == count - 1;
@@ -306,6 +319,13 @@ fn print_tree_nodes(
         let child_prefix = if is_last_item { "   " } else { "│  " };
         let new_prefix = format!("{prefix}{child_prefix}");
 
-        print_tree_nodes(&node.children, output, max_width, &new_prefix);
+        print_tree_nodes(
+            &node.children,
+            output,
+            TreeLayout {
+                max_width,
+                prefix: &new_prefix,
+            },
+        );
     }
 }

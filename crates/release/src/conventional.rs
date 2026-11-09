@@ -49,11 +49,15 @@ impl ConventionalCommit {
 /// Parser for conventional commits from a git repository.
 pub struct CommitParser;
 
-#[derive(Clone, Copy)]
-struct TagSelection<'a> {
-    since_tag: Option<&'a str>,
-    tag_prefix: &'a str,
-    tag_type: TagType,
+/// The tag that bounds a conventional-commit walk.
+#[derive(Clone, Copy, Default)]
+pub struct TagSelection<'tags> {
+    /// An explicit boundary; auto-detect the latest matching tag when absent.
+    pub since_tag: Option<&'tags str>,
+    /// Prefix used to find a boundary when no explicit tag is given.
+    pub tag_prefix: &'tags str,
+    /// Kind of version tag to select.
+    pub tag_type: TagType,
 }
 
 impl CommitParser {
@@ -67,9 +71,7 @@ impl CommitParser {
     /// Returns an error if the repository cannot be opened or commits cannot be read.
     pub fn parse_since_tag(
         root: &Path,
-        since_tag: Option<&str>,
-        tag_prefix: &str,
-        tag_type: TagType,
+        selection: TagSelection<'_>,
     ) -> Result<Vec<ConventionalCommit>> {
         // Use gix::open which handles worktree discovery internally
         let repo =
@@ -88,11 +90,6 @@ impl CommitParser {
             ))
             .all()
             .map_err(|e| Error::git(format!("Failed to create rev walk: {e}")))?;
-        let selection = TagSelection {
-            since_tag,
-            tag_prefix,
-            tag_type,
-        };
         let boundary_oid = resolve_boundary_oid(&repo, selection)?;
 
         let mut commits = Vec::new();
@@ -373,7 +370,7 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 
     let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
 
-    for (i, row) in matrix.iter_mut().enumerate().take(a_len + 1) {
+    for (i, row) in matrix.iter_mut().enumerate() {
         row[0] = i;
     }
     for (j, val) in matrix[0].iter_mut().enumerate() {

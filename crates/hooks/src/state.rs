@@ -1,11 +1,22 @@
 //! State management for hook execution tracking
 
-mod cleanup;
+mod bounded_json;
+mod broker;
+mod coordinator;
 mod execution;
 mod manager;
-mod markers;
+mod persisted;
 
-pub use execution::{HookExecutionState, compute_execution_hash, compute_instance_hash};
+pub use bounded_json::serialize_bounded;
+pub use broker::validate_snapshot;
+pub use coordinator::{HookChildStart, MAX_SUPERVISOR_PAYLOAD, SupervisorPayloadRef};
+pub use coordinator::{
+    HookChildUpdate, HookRecoveryOutcome, HookReservation, HookReservationPhase, HookRunIdentity,
+    HookRunJoin, HookRunStart, HookRunUpdate, HookStartMode, HookWorkerStart,
+};
+pub use execution::{
+    HookExecutionIdentity, HookExecutionState, compute_execution_hash, compute_instance_hash,
+};
 pub use manager::StateManager;
 
 #[cfg(test)]

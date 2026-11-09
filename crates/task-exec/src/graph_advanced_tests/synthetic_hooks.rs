@@ -1,4 +1,5 @@
-use super::*;
+use crate::graph::TaskGraph;
+use crate::test_utils;
 
 #[test]
 fn test_synthetic_hook_task_naming() {
@@ -6,14 +7,15 @@ fn test_synthetic_hook_task_naming() {
     let mut graph = TaskGraph::new();
 
     // Simulating workspace hook structure: ws_name.hooks.beforeInstall[step_idx]
-    let hook_task1 = create_task("bun.hooks.beforeInstall[0]", vec![], vec![]);
-    let hook_task2 = create_task(
+    let hook_task1 = test_utils::create_task("bun.hooks.beforeInstall[0]", vec![], vec![]);
+    let hook_task2 = test_utils::create_task(
         "bun.hooks.beforeInstall[1]",
         vec!["bun.hooks.beforeInstall[0]"],
         vec![],
     );
-    let install_task = create_task("bun.install", vec!["bun.hooks.beforeInstall[1]"], vec![]);
-    let setup_task = create_task("bun.setup", vec!["bun.install"], vec![]);
+    let install_task =
+        test_utils::create_task("bun.install", vec!["bun.hooks.beforeInstall[1]"], vec![]);
+    let setup_task = test_utils::create_task("bun.setup", vec!["bun.install"], vec![]);
 
     graph
         .add_task("bun.hooks.beforeInstall[0]", hook_task1)
@@ -47,11 +49,13 @@ fn test_synthetic_hook_with_named_matcher() {
     let mut graph = TaskGraph::new();
 
     // Named matcher "projen" matching 2 tasks
-    let hook1 = create_task("bun.hooks.beforeInstall.projen[0]", vec![], vec!["projen"]);
-    let hook2 = create_task("bun.hooks.beforeInstall.projen[1]", vec![], vec!["projen"]);
+    let hook1 =
+        test_utils::create_task("bun.hooks.beforeInstall.projen[0]", vec![], vec!["projen"]);
+    let hook2 =
+        test_utils::create_task("bun.hooks.beforeInstall.projen[1]", vec![], vec!["projen"]);
 
     // Install depends on both matched tasks
-    let install = create_task(
+    let install = test_utils::create_task(
         "bun.install",
         vec![
             "bun.hooks.beforeInstall.projen[0]",
@@ -73,7 +77,7 @@ fn test_synthetic_hook_with_named_matcher() {
     assert!(!graph.has_cycles());
 
     // Both hook tasks can run in parallel (parallel: true by default)
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].len(), 2); // Both projen hooks in parallel
     assert_eq!(groups[1].len(), 1); // bun.install
@@ -85,19 +89,19 @@ fn test_synthetic_hook_sequential_matcher() {
     let mut graph = TaskGraph::new();
 
     // Sequential matcher (parallel: false) - tasks chain
-    let hook1 = create_task("bun.hooks.beforeInstall.codegen[0]", vec![], vec![]);
-    let hook2 = create_task(
+    let hook1 = test_utils::create_task("bun.hooks.beforeInstall.codegen[0]", vec![], vec![]);
+    let hook2 = test_utils::create_task(
         "bun.hooks.beforeInstall.codegen[1]",
         vec!["bun.hooks.beforeInstall.codegen[0]"],
         vec![],
     );
-    let hook3 = create_task(
+    let hook3 = test_utils::create_task(
         "bun.hooks.beforeInstall.codegen[2]",
         vec!["bun.hooks.beforeInstall.codegen[1]"],
         vec![],
     );
 
-    let install = create_task(
+    let install = test_utils::create_task(
         "bun.install",
         vec!["bun.hooks.beforeInstall.codegen[2]"],
         vec![],
@@ -119,7 +123,7 @@ fn test_synthetic_hook_sequential_matcher() {
     assert!(!graph.has_cycles());
 
     // All tasks are sequential
-    let groups = graph.get_parallel_groups().unwrap();
+    let groups = graph.parallel_groups().unwrap();
     assert_eq!(groups.len(), 4);
     for group in &groups {
         assert_eq!(group.len(), 1);
@@ -132,22 +136,22 @@ fn test_multiple_hook_steps_in_order() {
     let mut graph = TaskGraph::new();
 
     // Step 0: TaskRef
-    let step0 = create_task_ref("#projen-generator:types", vec![]);
+    let step0 = test_utils::create_task_ref("#projen-generator:types", vec![]);
 
     // Step 1: Match (expands to 2 tasks in parallel)
-    let step1_a = create_task(
+    let step1_a = test_utils::create_task(
         "bun.hooks.beforeInstall.projen[0]",
         vec!["bun.hooks.beforeInstall[0]"],
         vec![],
     );
-    let step1_b = create_task(
+    let step1_b = test_utils::create_task(
         "bun.hooks.beforeInstall.projen[1]",
         vec!["bun.hooks.beforeInstall[0]"],
         vec![],
     );
 
     // Step 2: Inline Task
-    let step2 = create_task(
+    let step2 = test_utils::create_task(
         "bun.hooks.beforeInstall[2]",
         vec![
             "bun.hooks.beforeInstall.projen[0]",
@@ -157,7 +161,7 @@ fn test_multiple_hook_steps_in_order() {
     );
 
     // Install depends on all hooks
-    let install = create_task(
+    let install = test_utils::create_task(
         "bun.install",
         vec![
             "bun.hooks.beforeInstall[0]",

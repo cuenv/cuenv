@@ -1,9 +1,29 @@
-use super::*;
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::fs;
+use std::os::raw::c_char;
+use std::path::Path;
+use std::time::Duration;
+
 use tempfile::TempDir;
 
+use super::{
+    BridgeError, CStringPtr, DEFAULT_MODULE_EVAL_TIMEOUT, ERROR_CODE_BUILD_VALUE,
+    ERROR_CODE_DEPENDENCY_RES, ERROR_CODE_INVALID_INPUT, ERROR_CODE_JSON_MARSHAL,
+    ERROR_CODE_LOAD_INSTANCE, ERROR_CODE_ORDERED_JSON, ERROR_CODE_PANIC_RECOVER,
+    ERROR_CODE_REGISTRY_INIT, EVAL_TIMEOUT_ENV_VAR, ModuleResult, Result,
+};
+use crate::CueEngineError;
+
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn create_test_module(root: &Path) {
+    fs::create_dir_all(root.join("cue.mod")).unwrap();
+    fs::write(
+        root.join("cue.mod/module.cue"),
+        "module: \"test.example/ffi@v0\"\nlanguage: version: \"v0.14.1\"\n",
+    )
+    .unwrap();
+}
 
 #[test]
 fn test_cstring_ptr_creation() -> TestResult {
@@ -43,34 +63,17 @@ fn test_cstring_ptr_empty_string() -> TestResult {
 }
 
 #[test]
-fn test_cstring_ptr_null_to_str_panics_debug() {
+fn test_extract_ffi_string_rejects_null() {
     let null_wrapper = null_cstring_ptr();
-
-    // Test that we correctly identify null pointers
     assert!(null_wrapper.is_null());
-
-    // In debug builds, this should panic. In release builds, it's undefined behavior.
-    // Rather than testing undefined behavior, let's test the null check works
-    if cfg!(debug_assertions) {
-        // In debug mode, we expect a panic
-        std::panic::catch_unwind(|| {
-            let _ = cstring_ptr_to_str(&null_wrapper);
-        })
-        .expect_err("Expected panic in debug mode for null pointer");
-    } else {
-        // In release mode, we just verify the null check works
-        // Don't actually call to_str() with null as it's undefined behavior
-        tracing::info!(
-            "Skipping null pointer dereference test in release mode (undefined behavior)"
-        );
-    }
+    assert!(super::extract_ffi_string(&null_wrapper, "test").is_err());
 }
 
 #[test]
 fn test_evaluate_cue_package_invalid_path() {
     // Test with invalid UTF-8 path (simulated)
     let invalid_path = Path::new("/nonexistent/\u{0000}/invalid");
-    let result = evaluate_cue_package(invalid_path, "test");
+    let result = super::evaluate_cue_package(invalid_path, "test");
 
     // Should fail with configuration error for invalid path
     assert!(result.is_err());
@@ -98,7 +101,10 @@ fn evaluate_cue_file_preserves_module_imports_and_isolates_siblings()
         &file,
         "package cuenv\nimport \"example.org/rules/shared\"\nshared.#Rules\n",
     )?;
-    assert_eq!(evaluate_cue_file(&file)?, serde_json::json!({"answer": 42}));
+    assert_eq!(
+        super::evaluate_cue_file(&file)?,
+        serde_json::json!({"answer": 42})
+    );
     Ok(())
 }
 
@@ -107,7 +113,7 @@ fn test_evaluate_cue_package_invalid_package_name() {
     let temp_dir = TempDir::new().unwrap();
 
     // Package name with null bytes should fail
-    let result = evaluate_cue_package(temp_dir.path(), "test\0package");
+    let result = super::evaluate_cue_package(temp_dir.path(), "test\0package");
 
     assert!(result.is_err());
     let error = result.unwrap_err();
@@ -117,215 +123,91 @@ fn test_evaluate_cue_package_invalid_package_name() {
 #[test]
 fn test_evaluate_cue_package_nonexistent_directory() {
     let nonexistent = Path::new("/definitely/does/not/exist/12345");
-    let result = evaluate_cue_package(nonexistent, "env");
-
-    // The behavior depends on the Go CUE implementation and FFI availability
-    // In CI environments, the FFI bridge may behave differently
-    // We just verify that the function doesn't panic and returns some result
-    match result {
-        Ok(json) => {
-            // If it succeeds unexpectedly, log it but don't fail
-            tracing::info!("FFI succeeded for nonexistent path (CI behavior): {json}");
-            // In some CI environments, this might succeed with empty/default values
-        }
-        Err(error) => {
-            // This is the expected behavior - log the error
-            tracing::info!("Got expected error for nonexistent path: {error}");
-            assert!(!error.to_string().is_empty());
-        }
-    }
+    let error = super::evaluate_cue_package(nonexistent, "env").unwrap_err();
+    assert!(!error.to_string().is_empty());
 }
 
 #[test]
 fn test_evaluate_cue_package_with_valid_setup() {
     let temp_dir = TempDir::new().unwrap();
-
-    // Create a simple valid CUE file
-    let cue_content = r#"package cuenv
-
-env: {
-TEST_VAR: "test_value"
-NUMBER: 42
-}
-"#;
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
-
-    // This test depends on the Go FFI being available
-    // In a real environment, this should work
-    let result = evaluate_cue_package(temp_dir.path(), "cuenv");
-
-    // The result depends on whether the FFI bridge is properly built
-    // In CI this might fail if Go dependencies aren't available
-    match result {
-        Err(error) => {
-            // If FFI isn't available, we should get a specific error
-            tracing::info!("FFI not available in test environment: {error}");
-            // This is acceptable in test environments without Go build
-        }
-        Ok(json) => {
-            // If it works, verify the JSON contains our values
-            // The JSON wraps everything in an "env" object
-            assert!(
-                json.contains("env"),
-                "JSON should contain env field. Got: {json}"
-            );
-            assert!(
-                json.contains("TEST_VAR") || json.contains("test_value"),
-                "JSON should contain test values. Got: {json}"
-            );
-        }
-    }
+    create_test_module(temp_dir.path());
+    fs::write(
+        temp_dir.path().join("env.cue"),
+        "package cuenv\nenv: {TEST_VAR: \"test_value\", NUMBER: 42}\n",
+    )
+    .unwrap();
+    let json = super::evaluate_cue_package(temp_dir.path(), "cuenv").unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["env"]["TEST_VAR"], "test_value");
+    assert_eq!(value["env"]["NUMBER"], 42);
 }
 
 #[test]
 fn test_evaluate_cue_error_handling() {
     let temp_dir = TempDir::new().unwrap();
-
-    // Create an invalid CUE file
-    let invalid_cue = r"package cuenv
-
-this is not valid CUE syntax {
-missing quotes and wrong structure
-";
-    fs::write(temp_dir.path().join("env.cue"), invalid_cue).unwrap();
-
-    let result = evaluate_cue_package(temp_dir.path(), "cuenv");
-
-    // The behavior depends on the Go CUE implementation and FFI availability
-    // In CI environments, the FFI bridge may be more lenient or handle errors differently
-    match result {
-        Ok(json) => {
-            // If it succeeds despite invalid CUE, this might be CI-specific behavior
-            tracing::info!("FFI succeeded with invalid CUE (CI behavior): {json}");
-            // Don't fail the test - just log the unexpected success
-        }
-        Err(error) => {
-            // This is the expected behavior for invalid CUE
-            tracing::info!("Got expected error for invalid CUE: {error}");
-            assert!(!error.to_string().is_empty());
-        }
-    }
+    create_test_module(temp_dir.path());
+    fs::write(
+        temp_dir.path().join("env.cue"),
+        "package cuenv\nthis is not valid CUE syntax {\n",
+    )
+    .unwrap();
+    let error = super::evaluate_cue_package(temp_dir.path(), "cuenv").unwrap_err();
+    assert!(!error.to_string().is_empty());
 }
 
 #[test]
 fn test_path_conversion_edge_cases() {
-    // Test various path edge cases that might cause issues
     let temp_dir = TempDir::new().unwrap();
+    create_test_module(temp_dir.path());
     let path_with_spaces = temp_dir.path().join("dir with spaces");
     fs::create_dir(&path_with_spaces).unwrap();
-
-    // This should handle spaces correctly
-    let result = evaluate_cue_package(&path_with_spaces, "env");
-
-    // The result might be an error due to missing CUE files, but the path handling should work
-    if let Err(e) = result {
-        // Should not be a path conversion error
-        assert!(!e.to_string().contains("Invalid directory path: not UTF-8"));
-    }
+    fs::write(
+        path_with_spaces.join("env.cue"),
+        "package env\nanswer: 42\n",
+    )
+    .unwrap();
+    let json = super::evaluate_cue_package(&path_with_spaces, "env").unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["answer"], 42);
 }
 
-// Integration test to verify memory management doesn't leak
 #[test]
 fn test_ffi_memory_management_stress() {
     let temp_dir = TempDir::new().unwrap();
-
-    // Create a simple CUE file with valid syntax
-    let cue_content = r#"package cuenv
-
-env: {
-TEST: "value"
-}"#;
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
-
-    // Call FFI function multiple times to test memory management
-    for i in 0..100 {
-        let result = evaluate_cue_package(temp_dir.path(), "cuenv");
-
-        // Each call should be independent and not cause memory issues
-        match result {
-            Ok(json) => {
-                // If FFI is available, all calls should succeed
-                // Check for either TEST or env field (JSON structure may vary)
-                // The JSON wraps everything in an "env" object
-                assert!(
-                    json.contains("env"),
-                    "JSON should contain env field. Got: {json}"
-                );
-            }
-            Err(error) => {
-                // If FFI isn't available, error should be consistent
-                let error_msg = error.to_string();
-                tracing::info!("Iteration {i}: {error_msg}");
-
-                // Break early if it's clearly an FFI availability issue
-                if i > 5 {
-                    break;
-                }
-            }
-        }
+    create_test_module(temp_dir.path());
+    fs::write(
+        temp_dir.path().join("env.cue"),
+        "package cuenv\nenv: {TEST: \"value\"}\n",
+    )
+    .unwrap();
+    for _ in 0..100 {
+        let json = super::evaluate_cue_package(temp_dir.path(), "cuenv").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["env"]["TEST"], "value");
     }
-
-    // If we get here without crashes, memory management is working
 }
 
 #[test]
 fn test_get_bridge_version() {
-    let result = get_bridge_version();
-
-    // The behavior depends on whether the Go FFI bridge is available
-    match result {
-        Ok(version) => {
-            // If FFI is available, we should get a version string
-            tracing::info!("Bridge version: {}", version);
-            assert!(!version.is_empty());
-            // Version should start with "bridge/1" according to the envelope format
-            // but we'll be lenient in case the format changes
-            assert!(version.len() > 3); // At least some meaningful content
-        }
-        Err(error) => {
-            // If FFI isn't available, we should get a specific error
-            tracing::info!("FFI not available for bridge version: {}", error);
-            // This is acceptable in test environments without Go build
-            let error_msg = error.to_string();
-            assert!(!error_msg.is_empty());
-            // Should mention the FFI function name
-            assert!(error_msg.contains("cue_bridge_version") || error_msg.contains("FFI"));
-        }
-    }
+    let version = super::get_bridge_version().unwrap();
+    assert!(
+        version.starts_with("bridge/1"),
+        "unexpected bridge version: {version}"
+    );
+    assert!(version.contains("Go "), "missing Go version: {version}");
 }
 
-// Test the error message parsing logic
 #[test]
 fn test_error_message_parsing() {
-    // This tests the logic that parses "error:" prefixed messages
-    // We can't easily mock the FFI call, but we can test the string logic
-
     let temp_dir = TempDir::new().unwrap();
-
-    // The actual test depends on implementation details
-    // For now, just verify the function exists and handles basic cases
-    let result = evaluate_cue_package(temp_dir.path(), "nonexistent_package");
-
-    // The behavior depends on whether the Go FFI bridge is available:
-    // - If available: should return error for nonexistent package
-    // - If not available: may return different error types
-    // Either way, we should get some kind of result (error or success)
-
-    match result {
-        Ok(output) => {
-            // If FFI isn't available or returns empty result, that's acceptable
-            tracing::info!("FFI returned success (possibly unavailable): {output}");
-        }
-        Err(error) => {
-            // Expected case - should get an error for nonexistent package
-            let error_str = error.to_string();
-            assert!(!error_str.is_empty());
-            assert!(error_str.len() > 5); // Should be a meaningful message
-            tracing::info!("Got expected error: {error_str}");
-        }
-    }
-
-    // The main thing is the function doesn't crash/panic
+    create_test_module(temp_dir.path());
+    fs::write(
+        temp_dir.path().join("env.cue"),
+        "package cuenv\nanswer: 42\n",
+    )
+    .unwrap();
+    let error = super::evaluate_cue_package(temp_dir.path(), "nonexistent_package").unwrap_err();
+    assert!(!error.to_string().is_empty());
 }
 
 #[test]
@@ -345,7 +227,7 @@ fn test_bridge_error_constants_consistency() {
 fn test_bridge_envelope_parsing() {
     // Test parsing of valid success envelope
     let success_json = r#"{"version":"bridge/1","ok":{"test":"value"}}"#;
-    let envelope = parse_bridge_envelope(success_json).unwrap();
+    let envelope = super::parse_bridge_envelope(success_json).unwrap();
 
     assert_eq!(envelope.version, "bridge/1");
     assert!(envelope.ok.is_some());
@@ -353,7 +235,7 @@ fn test_bridge_envelope_parsing() {
 
     // Test parsing of valid error envelope
     let error_json = r#"{"version":"bridge/1","error":{"code":"INVALID_INPUT","message":"test error","hint":"test hint"}}"#;
-    let envelope = parse_bridge_envelope(error_json).unwrap();
+    let envelope = super::parse_bridge_envelope(error_json).unwrap();
 
     assert_eq!(envelope.version, "bridge/1");
     assert!(envelope.ok.is_none());
@@ -370,7 +252,7 @@ fn test_bridge_envelope_parsing_minimal_error() {
     // Test parsing of error envelope without hint
     let error_json =
         r#"{"version":"bridge/1","error":{"code":"LOAD_INSTANCE","message":"test error"}}"#;
-    let envelope = parse_bridge_envelope(error_json).unwrap();
+    let envelope = super::parse_bridge_envelope(error_json).unwrap();
 
     let error = envelope.error.unwrap();
     assert_eq!(error.code, "LOAD_INSTANCE");
@@ -400,6 +282,8 @@ fn c_allocated_cstring_ptr(value: &str) -> TestResult<CStringPtr> {
             unsafe_code,
             reason = "Required to allocate a C string fixture freed through CStringPtr"
         )]
+        // SAFETY: c_string stays live and NUL-terminated through the call;
+        // strdup returns an independent C allocation.
         unsafe {
             libc::strdup(c_string.as_ptr())
         }
@@ -417,16 +301,21 @@ fn c_allocated_ptr(ptr: *mut c_char) -> CStringPtr {
         unsafe_code,
         reason = "Required to wrap C string test fixtures in CStringPtr"
     )]
+    // SAFETY: the callers provide either null or an exclusively owned C
+    // allocation from strdup, which the wrapper releases through C free.
     unsafe {
         CStringPtr::new(ptr)
     }
 }
 
 fn cstring_ptr_to_str(wrapper: &CStringPtr) -> Result<&str> {
+    assert!(!wrapper.is_null(), "expected a non-null C string fixture");
     #[expect(
         unsafe_code,
         reason = "Required to exercise CStringPtr string conversion in unit tests"
     )]
+    // SAFETY: fixture wrappers own a non-null, NUL-terminated C string, and
+    // the borrowed contents stay unchanged while the wrapper is borrowed.
     unsafe {
         wrapper.to_str()
     }
@@ -434,47 +323,12 @@ fn cstring_ptr_to_str(wrapper: &CStringPtr) -> Result<&str> {
 
 #[test]
 fn test_get_bridge_version_functionality() {
-    // This test covers the actual bridge version functionality
-    // The behavior will depend on whether the Go bridge is available
-
-    let result = get_bridge_version();
-
-    match result {
-        Ok(version) => {
-            // If the bridge is available, test the version format
-            tracing::info!("Bridge available with version: {}", version);
-
-            // Version should not be empty
-            assert!(!version.is_empty());
-
-            // Version should contain the word "bridge" (case insensitive)
-            assert!(
-                version.to_lowercase().contains("bridge"),
-                "Version should contain 'bridge': {version}"
-            );
-
-            // Should contain some Go version information
-            assert!(
-                version.contains("go") || version.contains("Go"),
-                "Version should contain Go info: {version}"
-            );
-        }
-        Err(error) => {
-            // If the bridge is not available, verify the error is meaningful
-            let error_str = error.to_string();
-
-            // Error should not be empty
-            assert!(!error_str.is_empty());
-
-            // Should be an FFI error or mention the function name
-            assert!(
-                error_str.contains("FFI") || error_str.contains("cue_bridge_version"),
-                "Error should mention FFI or function name: {error_str}"
-            );
-
-            tracing::info!("Bridge not available (expected in test env): {}", error_str);
-        }
-    }
+    let version = super::get_bridge_version().unwrap();
+    assert!(
+        version.starts_with("bridge/1"),
+        "unexpected bridge version: {version}"
+    );
+    assert!(version.contains("Go "), "missing Go version: {version}");
 }
 
 #[test]
@@ -529,31 +383,22 @@ fn test_error_code_mapping() {
 
 #[test]
 fn test_path_edge_cases() {
-    // Test more edge cases for path handling
-
-    // Test with empty package name - should be handled by Go side validation
     let temp_dir = TempDir::new().unwrap();
-    let result = evaluate_cue_package(temp_dir.path(), "");
-
-    // This should either fail with a validation error or succeed (depending on FFI availability)
-    match result {
-        Ok(_) => {
-            // If it succeeds, the FFI might not be available (CI behavior)
-            tracing::info!("FFI not available or handles empty package name gracefully");
-        }
-        Err(error) => {
-            // Should get some meaningful error
-            let error_str = error.to_string();
-            assert!(!error_str.is_empty());
-            tracing::info!("Got expected error for empty package name: {}", error_str);
-        }
-    }
+    create_test_module(temp_dir.path());
+    fs::write(
+        temp_dir.path().join("env.cue"),
+        "package cuenv\nanswer: 42\n",
+    )
+    .unwrap();
+    let json = super::evaluate_cue_package(temp_dir.path(), "").unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["answer"], 42);
 }
 
 #[test]
 fn test_json_envelope_version_mismatch() {
     let incompatible_version_json = r#"{"version":"bridge/2","ok":{"test":"value"}}"#;
-    let error = parse_bridge_envelope(incompatible_version_json).unwrap_err();
+    let error = super::parse_bridge_envelope(incompatible_version_json).unwrap_err();
     let message = error.to_string();
 
     assert!(message.contains("Unsupported CUE bridge protocol version bridge/2"));
@@ -583,15 +428,15 @@ fn test_serialize_import_usage() {
 #[test]
 fn test_module_eval_timeout_defaults_when_unset_or_empty() -> TestResult {
     assert_eq!(
-        parse_module_eval_timeout(None)?,
+        super::parse_module_eval_timeout(None)?,
         DEFAULT_MODULE_EVAL_TIMEOUT
     );
     assert_eq!(
-        parse_module_eval_timeout(Some(OsStr::new("")))?,
+        super::parse_module_eval_timeout(Some(OsStr::new("")))?,
         DEFAULT_MODULE_EVAL_TIMEOUT
     );
     assert_eq!(
-        parse_module_eval_timeout(Some(OsStr::new("  ")))?,
+        super::parse_module_eval_timeout(Some(OsStr::new("  ")))?,
         DEFAULT_MODULE_EVAL_TIMEOUT
     );
     assert_eq!(DEFAULT_MODULE_EVAL_TIMEOUT, Duration::from_secs(60));
@@ -601,11 +446,11 @@ fn test_module_eval_timeout_defaults_when_unset_or_empty() -> TestResult {
 #[test]
 fn test_module_eval_timeout_parses_whole_seconds() -> TestResult {
     assert_eq!(
-        parse_module_eval_timeout(Some(OsStr::new("1")))?,
+        super::parse_module_eval_timeout(Some(OsStr::new("1")))?,
         Duration::from_secs(1)
     );
     assert_eq!(
-        parse_module_eval_timeout(Some(OsStr::new(" 120 ")))?,
+        super::parse_module_eval_timeout(Some(OsStr::new(" 120 ")))?,
         Duration::from_secs(120)
     );
     Ok(())
@@ -614,7 +459,7 @@ fn test_module_eval_timeout_parses_whole_seconds() -> TestResult {
 #[test]
 fn test_module_eval_timeout_rejects_invalid_values() {
     for value in ["0", "-5", "abc", "1.5", "10s", "18446744073709551616"] {
-        let err = parse_module_eval_timeout(Some(OsStr::new(value)))
+        let err = super::parse_module_eval_timeout(Some(OsStr::new(value)))
             .expect_err("invalid timeout value must be rejected");
         let message = err.to_string();
         assert!(
@@ -635,7 +480,7 @@ fn test_module_eval_timeout_rejects_invalid_values() {
 fn test_module_eval_timeout_rejects_non_utf8_value() {
     use std::os::unix::ffi::OsStrExt;
 
-    let err = parse_module_eval_timeout(Some(OsStr::from_bytes(&[0x31, 0xff])))
+    let err = super::parse_module_eval_timeout(Some(OsStr::from_bytes(&[0x31, 0xff])))
         .expect_err("non-UTF-8 timeout value must be rejected");
     assert!(matches!(err, CueEngineError::Configuration { .. }));
     assert!(err.to_string().contains(EVAL_TIMEOUT_ENV_VAR));
@@ -644,11 +489,13 @@ fn test_module_eval_timeout_rejects_non_utf8_value() {
 #[test]
 fn test_module_eval_timeout_error_names_env_var() {
     let (_tx, rx) = std::sync::mpsc::sync_channel::<Result<ModuleResult>>(1);
-    let err = receive_module_eval_result(
+    let err = super::receive_module_eval_result(
         &rx,
-        Path::new("/tmp/module"),
-        "cuenv",
-        Duration::from_millis(1),
+        &super::ModuleEvalWait {
+            module_root: Path::new("/tmp/module"),
+            package_name: "cuenv",
+            timeout: Duration::from_millis(1),
+        },
     )
     .expect_err("an unanswered evaluation must time out");
     let message = err.to_string();

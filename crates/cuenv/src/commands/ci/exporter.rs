@@ -4,14 +4,14 @@
 //! Outputs to stdout by default for dynamic pipeline upload, or to a file with --output.
 
 use super::args::{CiArgs, ExportFormat};
-use crate::providers::detect_ci_provider;
-use cuenv_ci::discovery::evaluate_module_from_cwd;
+use crate::providers;
+
 use cuenv_ci::emitter::Emitter;
 use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
 use cuenv_core::Result;
 use cuenv_core::ci::PipelineMode;
 use cuenv_core::manifest::Project;
-use cuenv_events::println_redacted;
+
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -29,7 +29,7 @@ use std::path::PathBuf;
 /// - Emitter is not available (feature not enabled)
 /// - File write fails (when --output specified)
 pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
-    let provider = detect_ci_provider(args.from.clone());
+    let provider = providers::detect_ci_provider(args.from.clone());
     let context = provider.context();
     let changed_files = provider.changed_files().await?;
 
@@ -42,7 +42,7 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
     );
 
     // Evaluate module and discover projects
-    let module = evaluate_module_from_cwd()?;
+    let module = cuenv_ci::discovery::evaluate_module_from_cwd()?;
     let project_count = module.project_count();
     if project_count == 0 {
         return Err(cuenv_core::Error::configuration(
@@ -254,7 +254,7 @@ fn output_yaml(args: &CiArgs, yaml: &str) -> Result<()> {
         tracing::info!(path = %path.display(), "Wrote pipeline YAML");
         Ok(())
     } else {
-        println_redacted(yaml);
+        cuenv_events::println_redacted(yaml);
         Ok(())
     }
 }

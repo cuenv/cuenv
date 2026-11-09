@@ -39,13 +39,13 @@ impl LockfileParser for NpmLockfileParser {
 
         let mut entries = Vec::new();
         for (pkg_path, pkg_entry) in lockfile.packages.unwrap_or_default() {
-            if let Some(entry) = entry_from_package(
+            let context = PackageContext {
                 lockfile_path,
-                &pkg_path,
-                &pkg_entry,
-                &workspace_name,
-                &workspace_version,
-            )? {
+                package_path: &pkg_path,
+                workspace_name: &workspace_name,
+                workspace_version: &workspace_version,
+            };
+            if let Some(entry) = entry_from_package(&context, &pkg_entry)? {
                 entries.push(entry);
             }
         }
@@ -97,43 +97,45 @@ struct PackageEntry {
     optional_dependencies: BTreeMap<String, String>,
 }
 
+struct PackageContext<'context> {
+    lockfile_path: &'context Path,
+    package_path: &'context str,
+    workspace_name: &'context str,
+    workspace_version: &'context str,
+}
+
 fn entry_from_package(
-    lockfile_path: &Path,
-    pkg_path: &str,
+    context: &PackageContext<'_>,
     pkg_entry: &PackageEntry,
-    workspace_name: &str,
-    workspace_version: &str,
 ) -> Result<Option<LockfileEntry>> {
-    let version = if pkg_path.is_empty() {
+    let version = if context.package_path.is_empty() {
         pkg_entry
             .version
             .clone()
-            .unwrap_or_else(|| workspace_version.to_string())
+            .unwrap_or_else(|| context.workspace_version.to_string())
     } else {
         pkg_entry
             .version
             .clone()
             .ok_or_else(|| Error::LockfileParseFailed {
-                path: lockfile_path.to_path_buf(),
-                message: format!("Missing version for package entry '{pkg_path}': {pkg_entry:?}"),
+                path: context.lockfile_path.to_path_buf(),
+                message: format!(
+                    "Missing version for package entry '{}': {pkg_entry:?}",
+                    context.package_path
+                ),
             })?
     };
 
-    Ok(Some(build_entry(
-        pkg_path,
-        pkg_entry,
-        workspace_name,
-        version,
-    )))
+    Ok(Some(build_entry(context, pkg_entry, version)))
 }
 
 fn build_entry(
-    pkg_path: &str,
+    context: &PackageContext<'_>,
     pkg_entry: &PackageEntry,
-    workspace_name: &str,
     version: String,
 ) -> LockfileEntry {
-    let name = infer_package_name(pkg_path, pkg_entry, workspace_name);
+    let pkg_path = context.package_path;
+    let name = infer_package_name(pkg_path, pkg_entry, context.workspace_name);
 
     // Workspace member detection based on npm lockfile v3 conventions:
     // 1. Empty path "" is always the workspace root

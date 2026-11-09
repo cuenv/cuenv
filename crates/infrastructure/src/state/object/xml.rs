@@ -5,10 +5,11 @@
 //! bounds the body before it gets here. Keys arrive URL-encoded
 //! (`encoding-type=url`) and are decoded here.
 
+use quick_xml::events::Event;
 use serde::Deserialize;
 
 /// One page of a `ListObjectsV2` result.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub struct ListPage {
     /// Object keys, decoded.
     pub keys: Vec<String>,
@@ -17,13 +18,13 @@ pub struct ListPage {
 }
 
 /// The `Code` and `Message` of an S3 error body.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ErrorBody {
     /// The error code (`NoSuchKey`, `PreconditionFailed`, …).
     #[serde(default)]
     pub code: Option<String>,
-    /// The message, never quoted without redaction.
+    /// The provider-supplied message; it must not be included in diagnostics.
     #[serde(default)]
     pub message: Option<String>,
     /// The region a `PermanentRedirect` names, when it does.
@@ -31,20 +32,27 @@ pub struct ErrorBody {
     pub region: Option<String>,
 }
 
+impl std::fmt::Debug for ErrorBody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ErrorBody(<redacted>)")
+    }
+}
+
 /// `<ListBucketResult>`, as far as the store reads it.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ListBucketResult {
     #[serde(default)]
     contents: Vec<Contents>,
-    #[serde(default)]
     is_truncated: bool,
+    #[serde(default)]
+    encoding_type: Option<String>,
     #[serde(default)]
     next_continuation_token: Option<String>,
 }
 
 /// One `<Contents>` entry.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct Contents {
     key: String,
@@ -68,29 +76,84 @@ pub fn percent_decode(text: &str) -> Option<String> {
         .map(std::borrow::Cow::into_owned)
 }
 
-/// Parse a `ListObjectsV2` result whose keys are URL-encoded. A key that
-/// does not decode is dropped (it cannot be one of ours).
+/// Parse a complete `ListObjectsV2` page whose keys are URL-encoded.
 ///
 /// # Errors
 ///
-/// Returns the parser's message when `document` is not a listing.
+/// Returns an error when the page, key encoding, or pagination is invalid.
 pub fn parse_list(document: &str) -> Result<ListPage, String> {
+    if !is_list_document(document) {
+        return Err("invalid ListObjectsV2 document".to_string());
+    }
     let result: ListBucketResult =
-        quick_xml::de::from_str(document).map_err(|error| error.to_string())?;
+        quick_xml::de::from_str(document).map_err(|_| "invalid ListObjectsV2 document")?;
+    if result.encoding_type.as_deref() != Some("url") {
+        return Err("the listing did not confirm URL-encoded keys".to_string());
+    }
     let keys = result
         .contents
         .into_iter()
-        .filter_map(|contents| percent_decode(&contents.key))
-        .collect();
-    let next_continuation_token = result
-        .is_truncated
-        .then_some(result.next_continuation_token)
-        .flatten()
-        .filter(|token| !token.is_empty());
+        .map(|contents| {
+            percent_decode(&contents.key).ok_or_else(|| "invalid listing key encoding".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_continuation_token = if result.is_truncated {
+        Some(
+            result
+                .next_continuation_token
+                .filter(|token| !token.is_empty())
+                .ok_or_else(|| "truncated listing has no continuation token".to_string())?,
+        )
+    } else if result.next_continuation_token.is_some() {
+        return Err("complete listing has a continuation token".to_string());
+    } else {
+        None
+    };
     Ok(ListPage {
         keys,
         next_continuation_token,
     })
+}
+
+fn is_list_document(document: &str) -> bool {
+    let mut reader = quick_xml::Reader::from_str(document);
+    let mut seen_root = false;
+    let mut depth = 0_usize;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) => {
+                if depth == 0 {
+                    if seen_root || element.local_name().as_ref() != "ListBucketResult" {
+                        return false;
+                    }
+                    seen_root = true;
+                }
+                depth += 1;
+            }
+            Ok(Event::Empty(element)) if depth == 0 => {
+                if seen_root || element.local_name().as_ref() != "ListBucketResult" {
+                    return false;
+                }
+                seen_root = true;
+            }
+            Ok(Event::End(_)) => {
+                let Some(remaining) = depth.checked_sub(1) else {
+                    return false;
+                };
+                depth = remaining;
+            }
+            Ok(Event::Text(text)) if depth == 0 => {
+                if !text.as_ref().bytes().all(|byte| byte.is_ascii_whitespace()) {
+                    return false;
+                }
+            }
+            Ok(Event::CData(_) | Event::GeneralRef(_)) if depth == 0 => return false,
+            Ok(Event::DocType(_)) | Err(_) => return false,
+            Ok(Event::Decl(_)) if seen_root => return false,
+            Ok(Event::Eof) => return seen_root && depth == 0,
+            _ => {}
+        }
+    }
 }
 
 /// Parse an S3 error body. Missing fields, and a body that is not an S3
@@ -120,7 +183,7 @@ mod tests {
              <Owner><ID>o</ID></Owner></Contents>\
              <Contents><Key>a+b%26c</Key></Contents>\
              <Contents><Key><![CDATA[c%2Fd]]></Key></Contents>\
-             <Contents><Key>bad%zz</Key></Contents>\
+             <EncodingType>url</EncodingType>\
              <IsTruncated>true</IsTruncated>\
              <NextContinuationToken>1ueGcxLPRx1Tr/XYExHnhbYLgveDs2J/wm36Hy4vbOwM=</NextContinuationToken>\
              </ListBucketResult>",
@@ -132,12 +195,31 @@ mod tests {
             Some("1ueGcxLPRx1Tr/XYExHnhbYLgveDs2J/wm36Hy4vbOwM=")
         );
         let last = parse_list(
-            "<ListBucketResult><IsTruncated>false</IsTruncated>\
-             <NextContinuationToken>ignored</NextContinuationToken></ListBucketResult>",
+            "<ListBucketResult><EncodingType>url</EncodingType>\
+             <IsTruncated>false</IsTruncated></ListBucketResult>",
         )
         .unwrap();
         assert!(last.keys.is_empty());
         assert_eq!(last.next_continuation_token, None);
+    }
+
+    #[test]
+    fn incomplete_or_inconsistent_listings_are_refused() {
+        for document in [
+            "<Error><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated></Error>",
+            "<ListBucketResult><EncodingType>url</EncodingType></ListBucketResult>",
+            "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>",
+            "<ListBucketResult><EncodingType>raw</EncodingType><IsTruncated>false</IsTruncated></ListBucketResult>",
+            "<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>true</IsTruncated></ListBucketResult>",
+            "<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>true</IsTruncated><NextContinuationToken/></ListBucketResult>",
+            "<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><NextContinuationToken>unexpected</NextContinuationToken></ListBucketResult>",
+            "<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><Contents><Key>bad%zz</Key></Contents></ListBucketResult>",
+            "<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><Contents><Key>%FF</Key></Contents></ListBucketResult>",
+            "<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated></ListBucketResult><extra/>",
+            "<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated>",
+        ] {
+            assert!(parse_list(document).is_err(), "accepted {document}");
+        }
     }
 
     #[test]
@@ -155,6 +237,7 @@ mod tests {
         assert_eq!(error.code.as_deref(), Some("PermanentRedirect"));
         assert_eq!(error.message.as_deref(), Some("Use <eu-west-2> A"));
         assert_eq!(error.region.as_deref(), Some("eu-west-2"));
+        assert_eq!(format!("{error:?}"), "ErrorBody(<redacted>)");
         assert_eq!(parse_error("not xml"), ErrorBody::default());
         assert_eq!(
             parse_error("<Error><Code></Code></Error>"),

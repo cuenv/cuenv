@@ -67,33 +67,38 @@
 //!
 //! ## Usage examples
 //!
-//! ```rust,ignore
+//! ```rust
+//! # #[cfg(feature = "discovery-package-json")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use cuenv_workspaces::{PackageJsonDiscovery, WorkspaceDiscovery};
-//! use std::path::Path;
-//!
-//! let root = Path::new(".");
-//! let discovery = PackageJsonDiscovery;
-//!
-//! if let Ok(workspace) = discovery.discover(root) {
-//!     println!("Found workspace with {} members", workspace.member_count());
-//! }
+//! let root = tempfile::tempdir()?;
+//! std::fs::create_dir_all(root.path().join("packages/app"))?;
+//! std::fs::write(root.path().join("package.json"), r#"{"workspaces":["packages/*"]}"#)?;
+//! std::fs::write(root.path().join("packages/app/package.json"), r#"{"name":"app"}"#)?;
+//! let workspace = PackageJsonDiscovery.discover(root.path())?;
+//! assert_eq!(workspace.member_count(), 1);
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "discovery-package-json"))]
+//! # fn main() {}
 //! ```
 //!
 //! # Example
 //!
-//! ```rust,ignore
-//! use cuenv_workspaces::{WorkspaceDiscovery, PackageManager, Workspace};
-//! use std::path::Path;
-//!
-//! // Discover a workspace
-//! let root = Path::new("/path/to/workspace");
-//! let workspace = some_discovery_impl.discover(root)?;
-//!
-//! // Access workspace information
-//! println!("Found {} members", workspace.member_count());
-//! for member in &workspace.members {
-//!     println!("  - {} at {}", member.name, member.path.display());
-//! }
+//! ```rust
+//! # #[cfg(feature = "discovery-package-json")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use cuenv_workspaces::{PackageJsonDiscovery, WorkspaceDiscovery};
+//! let root = tempfile::tempdir()?;
+//! std::fs::create_dir_all(root.path().join("packages/app"))?;
+//! std::fs::write(root.path().join("package.json"), r#"{"workspaces":["packages/*"]}"#)?;
+//! std::fs::write(root.path().join("packages/app/package.json"), r#"{"name":"app"}"#)?;
+//! let workspace = PackageJsonDiscovery.discover(root.path())?;
+//! assert_eq!(workspace.members[0].name, "app");
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "discovery-package-json"))]
+//! # fn main() {}
 //! ```
 //!
 //! # Core Types
@@ -109,26 +114,28 @@
 //! The detection module provides automatic package manager detection by scanning
 //! for lockfiles and workspace configurations:
 //!
-//! ```rust,ignore
-//! use cuenv_workspaces::detect_package_managers;
-//! use std::path::Path;
-//!
-//! let root = Path::new("/path/to/workspace");
-//! let managers = detect_package_managers(root)?;
-//!
-//! for manager in managers {
-//!     println!("Detected: {}", manager);
-//! }
+//! ```rust
+//! # #[cfg(feature = "detection")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use cuenv_workspaces::PackageManager;
+//! let root = tempfile::tempdir()?;
+//! std::fs::write(root.path().join("package-lock.json"), "{}")?;
+//! let managers = cuenv_workspaces::detect_package_managers(root.path())?;
+//! assert!(managers.contains(&PackageManager::Npm));
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "detection"))]
+//! # fn main() {}
 //! ```
 //!
 //! You can also detect package managers from command strings:
 //!
-//! ```rust,ignore
-//! use cuenv_workspaces::detect_from_command;
-//!
-//! if let Some(manager) = detect_from_command("cargo build") {
-//!     println!("Command uses: {}", manager);
-//! }
+//! ```rust
+//! # #[cfg(feature = "detection")]
+//! # {
+//! use cuenv_workspaces::PackageManager;
+//! assert_eq!(cuenv_workspaces::detect_from_command("cargo build"), Some(PackageManager::Cargo));
+//! # }
 //! ```
 //!
 //! # Lockfile Parsers
@@ -156,28 +163,35 @@
 //!
 //! ## Usage examples
 //!
-//! ```rust,ignore
-//! use cuenv_workspaces::{NpmLockfileParser, LockfileParser};
-//! use std::path::Path;
-//!
-//! let parser = NpmLockfileParser;
-//! let entries = parser.parse(Path::new("package-lock.json"))?;
-//!
-//! for entry in entries {
-//!     println!("{} @ {}", entry.name, entry.version);
-//! }
+//! ```rust
+//! # #[cfg(feature = "parser-npm")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use cuenv_workspaces::{LockfileParser, NpmLockfileParser};
+//! let root = tempfile::tempdir()?;
+//! let lockfile = root.path().join("package-lock.json");
+//! std::fs::write(&lockfile, r#"{"lockfileVersion":3,"packages":{"node_modules/lodash":{"version":"4.17.21"}}}"#)?;
+//! let entries = NpmLockfileParser.parse(&lockfile)?;
+//! assert!(entries.iter().any(|entry| entry.name == "lodash"));
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "parser-npm"))]
+//! # fn main() {}
 //! ```
 //!
-//! ```rust,ignore
+//! ```rust
+//! # #[cfg(feature = "parser-cargo")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use cuenv_workspaces::{CargoLockfileParser, LockfileParser};
-//! use std::path::Path;
-//!
-//! let parser = CargoLockfileParser;
-//! let entries = parser.parse(Path::new("Cargo.lock"))?;
-//!
-//! for entry in entries {
-//!     println!("{} @ {}", entry.name, entry.version);
-//! }
+//! let root = tempfile::tempdir()?;
+//! let lockfile = root.path().join("Cargo.lock");
+//! std::fs::write(root.path().join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"1.0.0\"\n")?;
+//! std::fs::write(&lockfile, "version = 3\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\n")?;
+//! let entries = CargoLockfileParser.parse(&lockfile)?;
+//! assert!(entries.iter().any(|entry| entry.name == "demo"));
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "parser-cargo"))]
+//! # fn main() {}
 //! ```
 
 #![warn(missing_docs)]
