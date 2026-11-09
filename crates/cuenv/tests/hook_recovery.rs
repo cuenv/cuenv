@@ -128,7 +128,9 @@ async fn recovery_requires_the_current_run_identity_even_after_directory_removal
     Ok(())
 }
 
-#[cfg(unix)]
+// APFS refuses to create a name that is not valid UTF-8, so the setup
+// itself fails on macOS; the non-UTF-8 path handling is exercised on Linux.
+#[cfg(target_os = "linux")]
 #[test]
 fn background_supervisor_accepts_a_non_utf8_state_directory() -> TestResult {
     use std::ffi::OsString;
