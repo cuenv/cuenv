@@ -1304,7 +1304,6 @@ checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
 name = "cuengine"
 version = "0.71.0"
 dependencies = [
- "cc",
  "libc",
  "serde",
  "serde_json",
