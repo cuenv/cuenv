@@ -1,6 +1,6 @@
 //! POSIX shell-local environment restoration helpers.
 
-pub(super) const RUNTIME: &str = r####"
+pub(super) const RUNTIME: &str = r#"
 __cuenv_error() {
     builtin printf '%s\n' 'cuenv cannot restore this shell environment; start a fresh shell or explicitly clear the inherited environment' >&2
     return 1
@@ -420,4 +420,4 @@ __cuenv_hook() {
     if builtin [ "$__cuenv_allexport" = 1 ]; then builtin set -a; fi
     return "$__cuenv_status"
 }
-"####;
+"#;

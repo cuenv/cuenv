@@ -5,13 +5,12 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-fn create_module(root: &Path) {
-    fs::create_dir_all(root.join("cue.mod")).unwrap();
+fn create_module(root: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(root.join("cue.mod"))?;
     fs::write(
         root.join("cue.mod/module.cue"),
         "module: \"test.example/properties@v0\"\nlanguage: version: \"v0.14.1\"\n",
     )
-    .unwrap();
 }
 
 // Generate random valid CUE content
@@ -28,7 +27,7 @@ proptest! {
     fn test_random_valid_cue(num_fields in 1..20usize) {
         let content = generate_cue_content(num_fields);
         let temp_dir = TempDir::new().unwrap();
-        create_module(temp_dir.path());
+        create_module(temp_dir.path()).unwrap();
         fs::write(temp_dir.path().join("test.cue"), &content).unwrap();
         let json = cuengine::evaluate_cue_package(temp_dir.path(), "testpkg").unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -51,7 +50,7 @@ proptest! {
             path = path.join(segment);
         }
         fs::create_dir_all(&path).unwrap();
-        create_module(&path);
+        create_module(&path).unwrap();
 
         // Create a simple CUE file
         fs::write(path.join("test.cue"), "package test\nenv: {TEST: \"value\"}").unwrap();
@@ -68,7 +67,7 @@ proptest! {
         // The fixed prefix excludes reserved CUE keywords while exercising identifiers.
         let name = format!("pkg_{suffix}");
         let temp_dir = TempDir::new().unwrap();
-        create_module(temp_dir.path());
+        create_module(temp_dir.path()).unwrap();
         let content = format!("package {name}\nenv: {{TEST: \"value\"}}");
         fs::write(temp_dir.path().join("test.cue"), content).unwrap();
 

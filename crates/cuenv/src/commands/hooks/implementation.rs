@@ -311,9 +311,10 @@ pub async fn execute_env_status(
 
     if let StatusWait::UntilComplete { timeout_seconds } = wait {
         // Follow the observed run even when a hook changes one of its inputs.
-        let observed = match hook_executor.fast_status(&directory, session_id).await? {
-            Some(state) => Some(state),
-            None => {
+        let observed =
+            if let Some(state) = hook_executor.fast_status(&directory, session_id).await? {
+                Some(state)
+            } else {
                 let config_hash = get_execution_hash(&directory, package, cmd_executor)?;
                 hook_executor
                     .execution_status_for_instance(HookSessionContext {
@@ -322,8 +323,7 @@ pub async fn execute_env_status(
                         session_id,
                     })
                     .await?
-            }
-        };
+            };
         let Some(observed) = observed else {
             return Ok("No hook execution in progress".to_string());
         };
@@ -727,7 +727,7 @@ pub async fn execute_env_check(
         crate::commands::export::StaticEnvConsumer::Shell,
     );
     if hooks.is_empty() {
-        return crate::commands::export::format_environment(environment, static_env);
+        return crate::commands::export::format_environment(environment, &static_env);
     }
     let mut approval = ApprovalManager::with_default_file()?;
     approval.load_approvals().await?;
@@ -759,7 +759,7 @@ pub async fn execute_env_check(
         for (key, value) in &state.environment_vars {
             all_env_vars.insert(key.clone(), value.clone());
         }
-        return crate::commands::export::format_environment(environment, all_env_vars);
+        return crate::commands::export::format_environment(environment, &all_env_vars);
     }
 
     // No environment to load

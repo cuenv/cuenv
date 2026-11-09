@@ -19,7 +19,7 @@ use super::{async_dispatch, hook_supervisor, process_hardening, sync_dispatch};
 const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full.txt"));
 
 /// Main entry point - determines sync vs async execution path
-pub(super) fn run_main(hardening_error: Option<process_hardening::HardeningError>) {
+pub fn run_main(hardening_error: Option<process_hardening::HardeningError>) {
     if let Some(error) = hardening_error {
         cuenv_events::eprintln_redacted(&format!("cuenv: warning: {error}"));
     }
@@ -302,7 +302,7 @@ fn run_sync(cli: cli::Cli) -> i32 {
     }
 }
 
-pub(super) fn warn_for_schema_cli_mismatch(command: &Command) -> Result<(), CliError> {
+pub fn warn_for_schema_cli_mismatch(command: &Command) -> Result<(), CliError> {
     if !should_precheck_schema_cli_mismatch(command) {
         return Ok(());
     }
@@ -538,7 +538,7 @@ struct InitResult {
 ///
 /// The executor provides centralized module evaluation - commands that need
 /// CUE access can call `executor.module()` to get the cached evaluation.
-pub(super) fn create_executor(package: &str) -> Arc<CommandExecutor> {
+pub fn create_executor(package: &str) -> Arc<CommandExecutor> {
     Arc::new(CommandExecutor::new(package.to_string()))
 }
 

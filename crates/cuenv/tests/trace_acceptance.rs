@@ -225,12 +225,10 @@ fn test_ci_pipeline_test_task_dag() -> TestResult {
 // =============================================================================
 
 #[test]
-fn test_dry_run_with_nonexistent_task_fails() -> TestResult {
+fn test_dry_run_with_nonexistent_task_fails() {
     let result = run_dry_run("task-basic", "nonexistent_task_12345");
 
     assert!(result.is_err(), "dry-run with nonexistent task should fail");
-
-    Ok(())
 }
 
 #[test]

@@ -79,7 +79,7 @@ fi
 "#,
         ),
         "zsh" => script.push_str(
-            r#"
+            r"
 if __cuenv_initialize zsh; then
     autoload -U add-zsh-hook
     add-zsh-hook -d precmd __cuenv_hook 2>/dev/null
@@ -87,7 +87,7 @@ if __cuenv_initialize zsh; then
 else
     false
 fi
-"#,
+",
         ),
         _ => unreachable!("only Bash and Zsh use the POSIX integration"),
     }

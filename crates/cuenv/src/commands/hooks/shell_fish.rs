@@ -1,6 +1,6 @@
 //! Fish shell-local environment restoration helpers.
 
-pub(super) const RUNTIME: &str = r####"
+pub(super) const RUNTIME: &str = r#"
 function __cuenv_error
     builtin printf '%s\n' 'cuenv cannot restore this shell environment; start a fresh shell or explicitly clear the inherited environment' >&2
     return 1
@@ -406,4 +406,4 @@ function __cuenv_hook --on-variable PWD --on-event fish_prompt
     if test $__cuenv_trace_global = 1; set -g fish_trace $__cuenv_trace; else; set -e -g fish_trace; end
     return $__cuenv_result
 end
-"####;
+"#;

@@ -329,7 +329,8 @@ mod tests {
     #[tokio::test]
     async fn test_simple_command() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
+        let runner =
+            IRTaskRunner::new(tmp.path().to_path_buf(), cuenv_core::OutputCapture::Capture);
         let echo_path = if Path::new("/bin/echo").exists() {
             "/bin/echo"
         } else {
@@ -348,7 +349,8 @@ mod tests {
     #[tokio::test]
     async fn test_shell_mode() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
+        let runner =
+            IRTaskRunner::new(tmp.path().to_path_buf(), cuenv_core::OutputCapture::Capture);
         let task = make_task(
             "test",
             &["echo", "hello", "&&", "echo", "world"],
@@ -381,7 +383,8 @@ mod tests {
         let ir = Compiler::new(project).compile().unwrap();
 
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
+        let runner =
+            IRTaskRunner::new(tmp.path().to_path_buf(), cuenv_core::OutputCapture::Capture);
         let result = runner.execute(&ir.tasks[0], BTreeMap::new()).await.unwrap();
 
         assert!(result.success, "{}", result.stderr);
@@ -394,7 +397,8 @@ mod tests {
     #[tokio::test]
     async fn test_env_injection() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
+        let runner =
+            IRTaskRunner::new(tmp.path().to_path_buf(), cuenv_core::OutputCapture::Capture);
         let task = make_task("test", &["printenv", "MY_VAR"], CommandMode::Direct);
 
         let env = BTreeMap::from([("MY_VAR".to_string(), "test_value".to_string())]);
@@ -407,7 +411,8 @@ mod tests {
     #[tokio::test]
     async fn test_failing_command() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
+        let runner =
+            IRTaskRunner::new(tmp.path().to_path_buf(), cuenv_core::OutputCapture::Capture);
         let task = make_task("test", &["false"], CommandMode::Direct);
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
@@ -419,7 +424,8 @@ mod tests {
     #[tokio::test]
     async fn test_empty_command_error() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
+        let runner =
+            IRTaskRunner::new(tmp.path().to_path_buf(), cuenv_core::OutputCapture::Capture);
         let task = make_task("test", &[], CommandMode::Direct);
 
         let result = runner.execute(&task, BTreeMap::new()).await;
@@ -446,7 +452,11 @@ mod tests {
     async fn test_custom_shell() {
         let tmp = TempDir::new().unwrap();
         // The Nix test environment provides bash on PATH, including in sandboxes.
-        let runner = IRTaskRunner::with_shell(tmp.path().to_path_buf(), true.into(), "bash");
+        let runner = IRTaskRunner::with_shell(
+            tmp.path().to_path_buf(),
+            cuenv_core::OutputCapture::Capture,
+            "bash",
+        );
         let task = make_task("test", &["echo", "$BASH_VERSION"], CommandMode::Shell);
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
@@ -461,7 +471,8 @@ mod tests {
     #[test]
     fn test_runner_default_shell() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
+        let runner =
+            IRTaskRunner::new(tmp.path().to_path_buf(), cuenv_core::OutputCapture::Capture);
         assert_eq!(runner.shell_path, "/bin/sh");
     }
 }

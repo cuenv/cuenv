@@ -56,7 +56,7 @@ fn create_registry(flakes: HashMap<String, String>) -> ToolRegistry {
 fn should_update_tool(tool_name: &str, update_tools: Option<&[String]>) -> bool {
     match update_tools {
         None => false,                                       // No -u flag: use cache
-        Some(tools) if tools.is_empty() => true,             // -u alone: update all
+        Some([]) => true,                                    // -u alone: update all
         Some(tools) => tools.iter().any(|t| t == tool_name), // -u <names>: update if listed
     }
 }

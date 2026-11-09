@@ -58,8 +58,8 @@ pub async fn execute_env_recover(request: &HookRecoveryRequest) -> Result<String
         for reservation in reservations {
             writeln!(
                 output,
-                "directory: {:?}\ndirectory-key: {}\ninstance-hash: {}\nrun-id: {}\nphase: {:?}\nworker-pid: {}\nchild-pid: {}\n",
-                reservation.directory,
+                "directory: {}\ndirectory-key: {}\ninstance-hash: {}\nrun-id: {}\nphase: {:?}\nworker-pid: {}\nchild-pid: {}\n",
+                reservation.directory.display(),
                 reservation.identity.directory_key,
                 reservation.identity.instance_hash,
                 reservation.identity.run_id,
