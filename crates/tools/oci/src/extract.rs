@@ -22,6 +22,11 @@ use crate::{Error, Result};
 /// * `layers` - Paths to layer tar.gz files, in order
 /// * `file_path` - Path to extract (e.g., "/usr/bin/nginx")
 /// * `dest` - Destination path for extracted file
+///
+/// # Errors
+///
+/// Returns an error if a layer cannot be read, the file is not present in any
+/// layer, or the destination cannot be written.
 pub fn extract_from_layers(layers: &[PathBuf], file_path: &str, dest: &Path) -> Result<PathBuf> {
     debug!(
         ?file_path,
@@ -110,21 +115,21 @@ mod tests {
         let temp = TempDir::new()?;
 
         // Create two layers
-        let layer1 = create_test_tarball(
+        let base_layer = create_test_tarball(
             temp.path(),
             &[("usr/bin/app", b"version 1"), ("etc/config", b"config 1")],
         );
 
-        // Rename to layer2 path
-        let layer2_path = temp.path().join("layer2.tar.gz");
-        let layer2 = create_test_tarball(
+        // Move the base layer aside so the override layer gets its own file.
+        let base_layer_path = temp.path().join("base.tar.gz");
+        std::fs::rename(&base_layer, &base_layer_path)?;
+        let override_layer = create_test_tarball(
             temp.path(),
             &[("usr/bin/app", b"version 2")], // Override
         );
-        std::fs::rename(&layer2, &layer2_path)?;
 
         let dest = temp.path().join("extracted").join("app");
-        let layers = vec![layer1, layer2_path];
+        let layers = vec![base_layer_path, override_layer];
 
         let result = extract_from_layers(&layers, "/usr/bin/app", &dest)?;
 

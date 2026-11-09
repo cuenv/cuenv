@@ -17,7 +17,6 @@ cuenv-secrets = { workspace = true, features = ["http"] }
 cuenv-tool-runtime = { workspace = true }
 cuenv-tool-archive = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-no-provider"] }
-serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
@@ -26,4 +25,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tempfile = { workspace = true }
+
+[lints]
+workspace = true
