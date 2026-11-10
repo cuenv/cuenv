@@ -50,7 +50,7 @@ Context rules:
 Policy rules:
 
 - A variable with a non-empty `policies` list is available only to the consumers some policy lists: `allowTasks` for tasks, `allowExec` for `cuenv exec`, `allowInfrastructure` for `cuenv infrastructure`. This holds for plain values as well as secrets. The shell integration (`cuenv export`) is named by no policy, so such a variable is never exported to the shell. No policy list (or an empty one) means available everywhere. `extract_static_env_vars` in `crates/cuenv/src/commands/export.rs` takes the consumer (`StaticEnvConsumer`) for this reason, and `shell_env_vars` is what the shell integration uses: it adds the variables of the contexts active for the `shell` consumer.
-- `allowTasks` is checked for each task that runs (`cuenv task` and `cuenv ci`), not for the task that was asked for, so a dependency receives exactly the variables that name it. A group or sequence name covers the tasks under it (`deploy` covers `deploy.staging` and `deploy[0]`).
+- `allowTasks` is checked for each task that runs (`cuenv task` and `cuenv ci`), not for the task that was asked for, so a dependency receives exactly the variables that name it. A group or sequence name covers the tasks under it (`deploy` covers `deploy.staging` and `deploy[0]`). `TaskSelection` in `crates/core/src/context/task_selection.rs` is the one place that decides a task's contexts and allowed variables; use it rather than combining `active_contexts`, `Env::select` and `is_accessible_by_task` again.
 - `schema.#EnvPassthrough` is valid only inside a task's `env`; the project `env` rejects it with an explicit message.
 
 Adversarial prompts:

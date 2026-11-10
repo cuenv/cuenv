@@ -8,12 +8,11 @@
 use async_trait::async_trait;
 use cuenv_ci::context::CIContext;
 use cuenv_ci::provider::CIProvider;
-use cuenv_ci::provider::git::{Checkout, Fetch, Since};
+use cuenv_ci::provider::git::{Fetch, RunCheckout, Since};
 use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus, markdown};
 use cuenv_core::Result;
 use octocrab::Octocrab;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use tracing::{debug, info, warn};
 
 /// GitHub Actions CI provider.
@@ -26,7 +25,7 @@ pub struct GitHubCIProvider {
     repo: String,
     pr_number: Option<u64>,
     is_pr_merge_ref: bool,
-    checkout: OnceLock<Option<Checkout>>,
+    checkout: RunCheckout,
 }
 
 const NULL_SHA: &str = "0000000000000000000000000000000000000000";
@@ -55,49 +54,10 @@ impl GitHubCIProvider {
         }
     }
 
-    /// The checkout the run is in, discovered once: every question about
-    /// the repository is answered from the same one.
-    fn checkout(&self) -> Option<&Checkout> {
-        self.checkout
-            .get_or_init(|| Checkout::discover().map(|checkout| checkout.with_token(&self.token)))
-            .as_ref()
-    }
-
-    fn is_shallow_clone(&self) -> bool {
-        self.checkout().is_some_and(Checkout::is_shallow)
-    }
-
-    fn fetch(&self, fetch: Fetch<'_>) -> bool {
-        debug!("Fetching {fetch:?}");
-        self.checkout().is_some_and(|checkout| {
-            checkout
-                .fetch(fetch)
-                .inspect_err(|error| debug!("Could not fetch {fetch:?}: {error}"))
-                .is_ok()
-        })
-    }
-
-    fn commit_exists(&self, revision: &str) -> bool {
-        self.checkout()
-            .is_some_and(|checkout| checkout.has_commit(revision))
-    }
-
-    fn is_merge_commit(&self) -> bool {
-        self.checkout().is_some_and(Checkout::head_is_merge)
-    }
-
     fn is_synthetic_merge_checkout(&self) -> bool {
-        !self.context.sha.is_empty()
-            && self
-                .checkout()
-                .is_some_and(|checkout| checkout.head_is(&self.context.sha))
+        !self.context.sha.is_empty() && self.checkout.head_is(&self.context.sha)
     }
 
-    /// The commit a push event moved the branch from.
-    ///
-    /// GitHub Actions does not export this as an environment variable; it is
-    /// the `before` field of the push event payload at `GITHUB_EVENT_PATH`.
-    /// An explicit `GITHUB_BEFORE` still takes precedence.
     fn get_before_sha() -> Option<String> {
         let explicit = std::env::var("GITHUB_BEFORE").ok();
         let from_event = || {
@@ -136,17 +96,6 @@ impl GitHubCIProvider {
         let event_path = std::env::var("GITHUB_EVENT_PATH").ok()?;
         let event = serde_json::from_str(&std::fs::read_to_string(event_path).ok()?).ok()?;
         Self::parse_pr_base_sha(&event)
-    }
-
-    fn changed_since(&self, since: Since<'_>) -> Option<Vec<PathBuf>> {
-        debug!("Comparing HEAD with {since:?}");
-        self.checkout()?.changed(since)
-    }
-
-    fn get_all_tracked_files(&self) -> Vec<PathBuf> {
-        self.checkout()
-            .map(Checkout::tracked_files)
-            .unwrap_or_default()
     }
 
     /// Create an octocrab instance authenticated with the GitHub token.
@@ -255,6 +204,8 @@ impl CIProvider for GitHubCIProvider {
         let github_ref = std::env::var("GITHUB_REF").unwrap_or_default();
         let pr_number = Self::parse_pr_number(&github_ref);
         let is_pr_merge_ref = github_ref.ends_with("/merge");
+        let token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
+        let checkout = RunCheckout::with_token(&token);
 
         Some(Self {
             context: CIContext {
@@ -264,12 +215,12 @@ impl CIProvider for GitHubCIProvider {
                 base_ref: std::env::var("GITHUB_BASE_REF").ok(),
                 sha: std::env::var("GITHUB_SHA").unwrap_or_default(),
             },
-            token: std::env::var("GITHUB_TOKEN").unwrap_or_default(),
+            token,
             owner,
             repo,
             pr_number,
             is_pr_merge_ref,
-            checkout: OnceLock::new(),
+            checkout,
         })
     }
 
@@ -285,8 +236,8 @@ impl CIProvider for GitHubCIProvider {
         if let Some(pr_number) = self.pr_number {
             if self.is_pr_merge_ref
                 && self.is_synthetic_merge_checkout()
-                && self.is_merge_commit()
-                && let Some(files) = self.changed_since(Since::Revision("HEAD^1"))
+                && self.checkout.head_is_merge()
+                && let Some(files) = self.checkout.changed(Since::Revision("HEAD^1"))
             {
                 info!(
                     "Got {} changed files from the pull request merge diff",
@@ -300,11 +251,11 @@ impl CIProvider for GitHubCIProvider {
             // moving base branch cannot change the affected-task result.
             if let Some(base_sha) = Self::get_pr_base_sha() {
                 debug!("PR #{pr_number} detected, using base SHA {base_sha}");
-                if !self.commit_exists(&base_sha) {
-                    self.fetch(Fetch::Commit(&base_sha));
+                if !self.checkout.has_commit(&base_sha) {
+                    self.checkout.fetch(Fetch::Commit(&base_sha));
                 }
 
-                if let Some(files) = self.changed_since(Since::Revision(&base_sha)) {
+                if let Some(files) = self.checkout.changed(Since::Revision(&base_sha)) {
                     info!(
                         "Got {} changed files from the pull request base SHA diff",
                         files.len()
@@ -339,7 +290,7 @@ impl CIProvider for GitHubCIProvider {
             }
         }
 
-        let is_shallow = self.is_shallow_clone();
+        let is_shallow = self.checkout.is_shallow();
         debug!("Shallow clone detected: {is_shallow}");
 
         // Strategy 4: Pull Request - use git diff with base_ref (last-resort fallback)
@@ -349,10 +300,12 @@ impl CIProvider for GitHubCIProvider {
             debug!("PR detected, base_ref: {base}");
 
             if is_shallow {
-                self.fetch(Fetch::Branch(base));
+                self.checkout.fetch(Fetch::Branch(base));
             }
 
-            if let Some(files) = self.changed_since(Since::MergeBaseWith(&format!("origin/{base}")))
+            if let Some(files) = self
+                .checkout
+                .changed(Since::MergeBaseWith(&format!("origin/{base}")))
             {
                 return Ok(files);
             }
@@ -363,16 +316,16 @@ impl CIProvider for GitHubCIProvider {
             debug!("Push event git diff fallback, GITHUB_BEFORE: {before_sha}");
 
             if is_shallow {
-                self.fetch(Fetch::Commit(&before_sha));
+                self.checkout.fetch(Fetch::Commit(&before_sha));
             }
 
-            if let Some(files) = self.changed_since(Since::Revision(&before_sha)) {
+            if let Some(files) = self.checkout.changed(Since::Revision(&before_sha)) {
                 return Ok(files);
             }
         }
 
         // Strategy 6: Try comparing against parent commit
-        if let Some(files) = self.changed_since(Since::Revision("HEAD^")) {
+        if let Some(files) = self.checkout.changed(Since::Revision("HEAD^")) {
             debug!("Using HEAD^ comparison");
             return Ok(files);
         }
@@ -385,7 +338,7 @@ impl CIProvider for GitHubCIProvider {
              2) This may be a new branch with no history to compare."
         );
 
-        Ok(self.get_all_tracked_files())
+        Ok(self.checkout.tracked_files())
     }
 
     async fn create_check(&self, name: &str) -> Result<CheckHandle> {

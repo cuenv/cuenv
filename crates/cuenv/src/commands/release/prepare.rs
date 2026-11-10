@@ -506,7 +506,7 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
         // Determine the correct entry kind from the worktree metadata
         let kind = if metadata.is_symlink() {
             EntryKind::Link
-        } else if is_executable(&metadata) {
+        } else if crate::file_mode::is_executable(&metadata) {
             EntryKind::BlobExecutable
         } else {
             EntryKind::Blob
@@ -577,7 +577,7 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
 
         let kind = if metadata.is_symlink() {
             EntryKind::Link
-        } else if is_executable(&metadata) {
+        } else if crate::file_mode::is_executable(&metadata) {
             EntryKind::BlobExecutable
         } else {
             EntryKind::Blob
@@ -669,16 +669,4 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
         .map_err(|error| stale_index(&error))?;
 
     Ok(())
-}
-
-/// Check if file metadata indicates the executable bit is set.
-#[cfg(unix)]
-fn is_executable(metadata: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn is_executable(_metadata: &std::fs::Metadata) -> bool {
-    false
 }

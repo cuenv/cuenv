@@ -10,6 +10,8 @@ pub mod cli;
 pub mod commands;
 /// Shell completion generation.
 pub mod completions;
+/// File modes shared by the commands that write git trees.
+mod file_mode;
 /// CI/CODEOWNERS detection and `.rules.cue` evaluation helpers.
 pub mod providers;
 

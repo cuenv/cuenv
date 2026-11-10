@@ -427,7 +427,7 @@ impl TreeHasher<'_> {
                     None => continue,
                 }
             } else {
-                let mode = if is_executable(&metadata) {
+                let mode = if crate::file_mode::is_executable(&metadata) {
                     EntryKind::BlobExecutable
                 } else {
                     EntryKind::Blob
@@ -514,15 +514,4 @@ fn make_executable(path: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
-}
-
-#[cfg(unix)]
-fn is_executable(metadata: &fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn is_executable(_metadata: &fs::Metadata) -> bool {
-    false
 }

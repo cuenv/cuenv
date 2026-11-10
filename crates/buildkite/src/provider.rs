@@ -6,13 +6,12 @@
 use async_trait::async_trait;
 use cuenv_ci::context::CIContext;
 use cuenv_ci::provider::CIProvider;
-use cuenv_ci::provider::git::{Checkout, Fetch, Since};
+use cuenv_ci::provider::git::{Fetch, RunCheckout, Since};
 use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus};
 use cuenv_core::Result;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Buildkite CI provider.
 ///
@@ -21,7 +20,7 @@ use tracing::{debug, info, warn};
 /// git to determine changed files.
 pub struct BuildkiteCIProvider {
     context: CIContext,
-    checkout: OnceLock<Option<Checkout>>,
+    checkout: RunCheckout,
 }
 
 impl BuildkiteCIProvider {
@@ -40,41 +39,6 @@ impl BuildkiteCIProvider {
 
         // Fall back to pipeline default branch if available
         std::env::var("BUILDKITE_PIPELINE_DEFAULT_BRANCH").ok()
-    }
-
-    /// The checkout the build is in, discovered once: every question about
-    /// the repository is answered from the same one.
-    fn checkout(&self) -> Option<&Checkout> {
-        self.checkout.get_or_init(Checkout::discover).as_ref()
-    }
-
-    /// Fetch from `origin` into a shallow clone.
-    fn fetch(&self, fetch: Fetch<'_>) -> bool {
-        debug!("Fetching {fetch:?}");
-        self.checkout().is_some_and(|checkout| {
-            checkout
-                .fetch(fetch)
-                .inspect_err(|error| debug!("Could not fetch {fetch:?}: {error}"))
-                .is_ok()
-        })
-    }
-
-    /// Check if this is a shallow clone.
-    fn is_shallow_clone(&self) -> bool {
-        self.checkout().is_some_and(Checkout::is_shallow)
-    }
-
-    /// The files that differ between a starting point and `HEAD`.
-    fn changed_since(&self, since: Since<'_>) -> Option<Vec<PathBuf>> {
-        debug!("Comparing HEAD with {since:?}");
-        self.checkout()?.changed(since)
-    }
-
-    /// Get all tracked files as fallback.
-    fn get_all_tracked_files(&self) -> Vec<PathBuf> {
-        self.checkout()
-            .map(Checkout::tracked_files)
-            .unwrap_or_default()
     }
 }
 
@@ -104,7 +68,7 @@ impl CIProvider for BuildkiteCIProvider {
                 base_ref,
                 sha,
             },
-            checkout: OnceLock::new(),
+            checkout: RunCheckout::default(),
         })
     }
 
@@ -113,7 +77,7 @@ impl CIProvider for BuildkiteCIProvider {
     }
 
     async fn changed_files(&self) -> Result<Vec<PathBuf>> {
-        let is_shallow = self.is_shallow_clone();
+        let is_shallow = self.checkout.is_shallow();
         info!(
             "Shallow clone: {is_shallow}, base_ref: {:?}",
             self.context.base_ref
@@ -127,10 +91,12 @@ impl CIProvider for BuildkiteCIProvider {
             info!("PR detected, comparing against base_ref: {base}");
 
             if is_shallow {
-                self.fetch(Fetch::Branch(base));
+                self.checkout.fetch(Fetch::Branch(base));
             }
 
-            if let Some(files) = self.changed_since(Since::MergeBaseWith(&format!("origin/{base}")))
+            if let Some(files) = self
+                .checkout
+                .changed(Since::MergeBaseWith(&format!("origin/{base}")))
             {
                 info!("Found {} changed files via PR comparison", files.len());
                 return Ok(files);
@@ -140,11 +106,11 @@ impl CIProvider for BuildkiteCIProvider {
         // Strategy 2: For shallow clones, fetch one more commit to enable HEAD^ comparison
         if is_shallow {
             info!("Shallow clone detected, fetching additional history for HEAD^ comparison");
-            self.fetch(Fetch::OneMoreCommit);
+            self.checkout.fetch(Fetch::OneMoreCommit);
         }
 
         // Strategy 3: Compare against parent commit
-        if let Some(files) = self.changed_since(Since::Revision("HEAD^")) {
+        if let Some(files) = self.checkout.changed(Since::Revision("HEAD^")) {
             info!("Found {} changed files via HEAD^ comparison", files.len());
             return Ok(files);
         }
@@ -155,7 +121,7 @@ impl CIProvider for BuildkiteCIProvider {
              Running all tasks. For better performance, ensure fetch-depth > 1."
         );
 
-        let files = self.get_all_tracked_files();
+        let files = self.checkout.tracked_files();
         info!("Falling back to all {} tracked files", files.len());
         Ok(files)
     }

@@ -28,6 +28,10 @@ use serde_json::{Map, Value, json};
 
 use crate::{Error, Result};
 
+mod task_selection;
+
+pub use task_selection::{TaskEnv, TaskEnvKey, TaskSelection, TaskSelectionOptions};
+
 /// The outcome of reading a filter, with the problem in words. [`validate`]
 /// names the context when it reports one.
 type Checked<T> = std::result::Result<T, String>;

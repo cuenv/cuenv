@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 
 use gix::bstr::BStr;
@@ -240,6 +241,94 @@ fn answering_with<Failure>(
     token: &str,
 ) -> impl FnMut(Action) -> Result<Option<gix::credentials::protocol::Outcome>, Failure> + '_ {
     move |action| Ok(token_identity(action, token))
+}
+
+/// The checkout a CI run is in, as a provider asks about it.
+///
+/// It is looked for the first time it is needed and kept, so every question
+/// is answered from the same repository. Outside a repository nothing is
+/// known: no commit exists, nothing changed and nothing is tracked.
+#[derive(Debug, Default)]
+pub struct RunCheckout {
+    /// The token to offer `origin` when it asks who is fetching.
+    token: Option<String>,
+    checkout: OnceLock<Option<Checkout>>,
+}
+
+impl RunCheckout {
+    /// The checkout of a run that fetches with an access token.
+    #[must_use]
+    pub fn with_token(token: &str) -> Self {
+        Self {
+            token: Some(token.to_string()),
+            checkout: OnceLock::new(),
+        }
+    }
+
+    fn checkout(&self) -> Option<&Checkout> {
+        self.checkout
+            .get_or_init(|| {
+                let checkout = Checkout::discover()?;
+                Some(match self.token.as_deref() {
+                    Some(token) => checkout.with_token(token),
+                    None => checkout,
+                })
+            })
+            .as_ref()
+    }
+
+    /// Whether history was cut off when the repository was cloned.
+    #[must_use]
+    pub fn is_shallow(&self) -> bool {
+        self.checkout().is_some_and(Checkout::is_shallow)
+    }
+
+    /// Fetch from `origin`, and say whether that worked.
+    pub fn fetch(&self, fetch: Fetch<'_>) -> bool {
+        tracing::debug!("Fetching {fetch:?}");
+        self.checkout().is_some_and(|checkout| {
+            checkout
+                .fetch(fetch)
+                .inspect_err(|error| tracing::debug!("Could not fetch {fetch:?}: {error}"))
+                .is_ok()
+        })
+    }
+
+    /// Whether a revision names a commit the checkout has.
+    #[must_use]
+    pub fn has_commit(&self, revision: &str) -> bool {
+        self.checkout()
+            .is_some_and(|checkout| checkout.has_commit(revision))
+    }
+
+    /// Whether `HEAD` is a merge commit.
+    #[must_use]
+    pub fn head_is_merge(&self) -> bool {
+        self.checkout().is_some_and(Checkout::head_is_merge)
+    }
+
+    /// Whether `HEAD` is the commit with this hash.
+    #[must_use]
+    pub fn head_is(&self, sha: &str) -> bool {
+        self.checkout()
+            .is_some_and(|checkout| checkout.head_is(sha))
+    }
+
+    /// The files that differ between a starting point and `HEAD` (see
+    /// [`Checkout::changed`]).
+    #[must_use]
+    pub fn changed(&self, since: Since<'_>) -> Option<Vec<PathBuf>> {
+        tracing::debug!("Comparing HEAD with {since:?}");
+        self.checkout()?.changed(since)
+    }
+
+    /// Every file the index tracks.
+    #[must_use]
+    pub fn tracked_files(&self) -> Vec<PathBuf> {
+        self.checkout()
+            .map(Checkout::tracked_files)
+            .unwrap_or_default()
+    }
 }
 
 /// Answer a remote that asks for credentials with an access token.
