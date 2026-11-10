@@ -10,10 +10,6 @@ pub mod cli;
 pub mod commands;
 /// Shell completion generation.
 pub mod completions;
-/// Multi-process event coordination.
-/// Event handling and routing.
-/// Performance measurement utilities.
-pub mod performance;
 /// CI/CODEOWNERS detection and `.rules.cue` evaluation helpers.
 pub mod providers;
 

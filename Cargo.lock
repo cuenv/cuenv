@@ -1548,9 +1548,7 @@ dependencies = [
 name = "cuengine"
 version = "0.71.0"
 dependencies = [
- "cc",
  "criterion",
- "cucumber",
  "cuenv-core",
  "libc",
  "proptest",
@@ -1558,7 +1556,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "tokio-test",
  "tracing",
  "uuid",
 ]
@@ -1583,7 +1580,6 @@ dependencies = [
  "cuenv-cas",
  "cuenv-cas-remote",
  "cuenv-ci",
- "cuenv-codegen",
  "cuenv-codeowners",
  "cuenv-core",
  "cuenv-editorconfig",
@@ -1609,9 +1605,7 @@ dependencies = [
  "cuenv-tools-rustup",
  "cuenv-tools-url",
  "cuenv-vcs",
- "cuenv-workspaces",
  "dirs",
- "futures",
  "gix",
  "glob",
  "hex",
@@ -1619,7 +1613,6 @@ dependencies = [
  "indexmap",
  "libc",
  "miette",
- "predicates",
  "ratatui",
  "rayon",
  "reqwest 0.13.4",
@@ -1635,7 +1628,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-test",
  "tokio-util",
  "toml",
  "tracing",
@@ -1657,7 +1649,6 @@ dependencies = [
  "extism",
  "futures",
  "getrandom 0.3.4",
- "once_cell",
  "reqwest 0.13.4",
  "rustls",
  "serde",
@@ -1665,7 +1656,6 @@ dependencies = [
  "temp-env",
  "tempfile",
  "tokio",
- "tokio-test",
  "tracing",
 ]
 
@@ -1688,9 +1678,7 @@ name = "cuenv-bitbucket"
 version = "0.71.0"
 dependencies = [
  "cuenv-codeowners",
- "cuenv-core",
  "tempfile",
- "tracing",
 ]
 
 [[package]]
@@ -1704,8 +1692,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "temp-env",
- "tempfile",
- "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -1728,7 +1714,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "walkdir",
 ]
 
 [[package]]
@@ -1742,7 +1727,6 @@ dependencies = [
  "futures",
  "hex",
  "miette",
- "prost",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.18",
@@ -1773,17 +1757,13 @@ dependencies = [
  "cuenv-tools-rustup",
  "cuenv-tools-url",
  "cuenv-workspaces",
- "dirs",
  "gix",
  "glob",
  "hex",
  "miette",
- "petgraph 0.8.3",
  "proptest",
- "regex",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2 0.11.1",
  "temp-env",
  "tempfile",
@@ -1797,21 +1777,13 @@ dependencies = [
 name = "cuenv-codegen"
 version = "0.71.0"
 dependencies = [
- "clap",
  "cuengine",
  "cuenv-core",
- "cuenv-events",
- "glob",
- "miette",
  "serde",
- "serde-json-fmt",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "tokio",
- "tokio-test",
  "tracing",
- "walkdir",
 ]
 
 [[package]]
@@ -1820,7 +1792,6 @@ version = "0.71.0"
 dependencies = [
  "schemars",
  "serde",
- "tempfile",
 ]
 
 [[package]]
@@ -1828,20 +1799,17 @@ name = "cuenv-core"
 version = "0.71.0"
 dependencies = [
  "async-trait",
- "cucumber",
  "cuenv-hooks",
  "cuenv-manifest",
  "cuenv-secrets",
  "cuenv-task-graph",
  "cuenv-workspaces",
  "dirs",
- "eyre",
  "futures",
  "gix",
  "globset",
  "ignore",
  "miette",
- "proptest",
  "regex",
  "rustix 1.1.4",
  "rustls",
@@ -1852,10 +1820,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-test",
  "toml",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1878,8 +1844,6 @@ dependencies = [
  "indicatif",
  "serde",
  "serde_json",
- "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1898,7 +1862,6 @@ dependencies = [
  "serde_json",
  "temp-env",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -1927,20 +1890,16 @@ name = "cuenv-gitlab"
 version = "0.71.0"
 dependencies = [
  "cuenv-codeowners",
- "cuenv-core",
  "tempfile",
- "tracing",
 ]
 
 [[package]]
 name = "cuenv-homebrew"
 version = "0.71.0"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
  "cuenv-release",
  "octocrab",
- "tempfile",
  "tracing",
 ]
 
@@ -1962,7 +1921,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-test",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1992,7 +1950,6 @@ dependencies = [
  "serde_json",
  "temp-env",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2008,7 +1965,6 @@ dependencies = [
  "cuenv-manifest",
  "dirs",
  "hex",
- "hmac 0.13.0",
  "hyper-util",
  "libc",
  "percent-encoding",
@@ -2053,8 +2009,6 @@ version = "0.71.0"
 dependencies = [
  "chrono",
  "cuenv-core",
- "cuenv-events",
- "cuenv-workspaces",
  "flate2",
  "git-conventional",
  "gix",
@@ -2092,7 +2046,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "temp-env",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
@@ -2120,7 +2073,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-test",
  "tokio-util",
  "tracing",
 ]
@@ -2139,7 +2091,6 @@ dependencies = [
  "cuenv-task-graph",
  "cuenv-vcs",
  "cuenv-workspaces",
- "futures",
  "globset",
  "hex",
  "libc",
@@ -2164,8 +2115,6 @@ dependencies = [
  "criterion",
  "petgraph 0.8.3",
  "proptest",
- "tempfile",
- "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -2195,8 +2144,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2227,10 +2174,8 @@ dependencies = [
  "cuenv-core",
  "cuenv-tool-runtime",
  "hex",
- "serde",
  "serde_json",
  "sha2 0.11.1",
- "tempfile",
  "tokio",
  "tracing",
 ]
@@ -2246,7 +2191,6 @@ dependencies = [
  "flate2",
  "hex",
  "oci-distribution",
- "serde",
  "serde_json",
  "sha2 0.11.1",
  "tar",
@@ -2266,7 +2210,6 @@ dependencies = [
  "cuenv-tool-runtime",
  "dirs",
  "hex",
- "serde",
  "serde_json",
  "sha2 0.11.1",
  "tokio",
@@ -2284,10 +2227,8 @@ dependencies = [
  "cuenv-tool-runtime",
  "hex",
  "reqwest 0.13.4",
- "serde",
  "serde_json",
  "sha2 0.11.1",
- "tempfile",
  "tokio",
  "tracing",
 ]
@@ -2946,16 +2887,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eyre"
-version = "0.6.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cd915d99f24784cdc19fd37ef22b97e3ff0ae756c7e492e9fbfe897d61e2aec"
-dependencies = [
- "indenter",
- "once_cell",
-]
-
-[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3075,15 +3006,6 @@ dependencies = [
  "crc32fast",
  "miniz_oxide",
  "zlib-rs",
-]
-
-[[package]]
-name = "float-cmp"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]
@@ -4723,12 +4645,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "indenter"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "964de6e86d545b246d84badc0fef527924ace5134f30641c203ef52ba83f58d5"
-
-[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5539,12 +5455,6 @@ name = "nonempty"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9737e026353e5cd0736f98eddae28665118eb6f6600902a7f50db585621fecb6"
-
-[[package]]
-name = "normalize-line-endings"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61807f77802ff30975e01f4f071c8ba10c022052f98b3294119f3e615d13e5be"
 
 [[package]]
 name = "notify"
@@ -6375,10 +6285,7 @@ checksum = "ada8f2932f28a27ee7b70dd6c1c39ea0675c55a36879ab92f3a715eaa1e63cfe"
 dependencies = [
  "anstyle",
  "difflib",
- "float-cmp",
- "normalize-line-endings",
  "predicates-core",
- "regex",
 ]
 
 [[package]]
@@ -7372,17 +7279,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde-json-fmt"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a33b7a5f52a26d520099339add40c48baf2e5ada194c8cc1b18cafa2b5e419"
-dependencies = [
- "serde",
- "serde_json",
- "smartstring",
-]
-
-[[package]]
 name = "serde_core"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7674,17 +7570,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "smartstring"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fb72c633efbaa2dd666986505016c32c3044395ceaf881518399d2f4127ee29"
-dependencies = [
- "autocfg",
- "static_assertions",
- "version_check",
 ]
 
 [[package]]

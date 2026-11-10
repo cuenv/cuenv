@@ -8,7 +8,7 @@ This guide covers the development workflow for contributing to cuenv itself.
 ## Prerequisites
 
 - **Rust** 1.90.0+ via [rustup](https://rustup.rs/)
-- **Go** 1.21+ for the CUE evaluation bridge
+- **Go** 1.26+ for the CUE evaluation bridge
 - **Nix** (recommended) for reproducible development environment
 - **Git** for version control
 

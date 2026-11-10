@@ -1,9 +1,11 @@
 use super::{
     ArtifactAggregationJobOptions, BuildStage, CuenvBootstrapJobOptions, CuenvSetup, Emitter,
-    GitHubActionsEmitter, HashMap, IntermediateRepresentation, Job, MatrixJobOptions, OutputType,
-    RunsOn, SimpleJobOptions, Step, TaskExecution,
+    GitHubActionsEmitter, HashMap, IntermediateRepresentation, Job, MatrixJobOptions, RunsOn,
+    SimpleJobOptions, Step, TaskExecution,
 };
-use cuenv_ci::ir::{CachePolicy, PipelineMetadata, ResourceRequirements, Task, TriggerCondition};
+use cuenv_ci::ir::{
+    CachePolicy, OutputType, PipelineMetadata, ResourceRequirements, Task, TriggerCondition,
+};
 use cuenv_core::ci::PipelineMode;
 use std::collections::BTreeMap;
 

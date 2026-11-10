@@ -28,11 +28,12 @@ import "github.com/cuenv/cuenv/schema"
 		priority: 10
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 		script: """
-			arch="$(uname -m)"
-			case "$arch" in
-			  x86_64|amd64) cuenv_asset="cuenv-linux-x64" ;;
-			  aarch64|arm64) cuenv_asset="cuenv-linux-arm64" ;;
-			  *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
+			platform="$(uname -s)-$(uname -m)"
+			case "$platform" in
+			  Linux-x86_64|Linux-amd64) cuenv_asset="cuenv-linux-x64" ;;
+			  Linux-aarch64|Linux-arm64) cuenv_asset="cuenv-linux-arm64" ;;
+			  Darwin-arm64) cuenv_asset="cuenv-darwin-arm64" ;;
+			  *) echo "Unsupported platform: $platform" >&2; exit 1 ;;
 			esac
 			cuenv_version="${CUENV_VERSION}"
 			if [ -z "$cuenv_version" ]; then
@@ -59,11 +60,12 @@ import "github.com/cuenv/cuenv/schema"
 		priority: 10
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 		script: """
-			arch="$(uname -m)"
-			case "$arch" in
-			  x86_64|amd64) cuenv_asset="cuenv-linux-x64" ;;
-			  aarch64|arm64) cuenv_asset="cuenv-linux-arm64" ;;
-			  *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
+			platform="$(uname -s)-$(uname -m)"
+			case "$platform" in
+			  Linux-x86_64|Linux-amd64) cuenv_asset="cuenv-linux-x64" ;;
+			  Linux-aarch64|Linux-arm64) cuenv_asset="cuenv-linux-arm64" ;;
+			  Darwin-arm64) cuenv_asset="cuenv-darwin-arm64" ;;
+			  *) echo "Unsupported platform: $platform" >&2; exit 1 ;;
 			esac
 			cuenv_version="${CUENV_VERSION}"
 			if [ -z "$cuenv_version" ]; then
@@ -123,7 +125,7 @@ import "github.com/cuenv/cuenv/schema"
 			provider: github: {
 				uses: "actions/setup-go@v5"
 				with: {
-					"go-version":            "1.24"
+					"go-version-file":       "crates/cuengine/go.mod"
 					"cache-dependency-path": "crates/cuengine/go.sum"
 				}
 			}

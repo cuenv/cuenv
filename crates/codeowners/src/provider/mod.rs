@@ -275,6 +275,7 @@ fn normalize_content(s: &str) -> String {
 /// assert_eq!(provider::prefix_pattern(Path::new("services/api"), "*.rs"), "/services/api/*.rs");
 /// assert_eq!(provider::prefix_pattern(Path::new("services/api"), "/src/**"), "/services/api/src/**");
 /// ```
+#[must_use]
 pub fn prefix_pattern(project_path: &Path, pattern: &str) -> String {
     let prefix = project_path.to_string_lossy();
 
@@ -300,6 +301,7 @@ pub fn prefix_pattern(project_path: &Path, pattern: &str) -> String {
 ///
 /// This is the core aggregation logic used by all providers. Each provider
 /// specifies their section style for formatting.
+#[must_use]
 pub fn generate_aggregated_content(
     section_style: SectionStyle,
     projects: &[ProjectOwners],
@@ -340,6 +342,11 @@ pub fn generate_aggregated_content(
 /// Write content to a file, creating parent directories as needed.
 ///
 /// Returns the sync status based on whether the file was created, updated, or unchanged.
+///
+/// # Errors
+///
+/// Returns an error if the existing file cannot be read or the new content
+/// cannot be written.
 pub fn write_codeowners_file(path: &Path, content: &str, mode: WriteMode) -> Result<SyncStatus> {
     let exists = path.exists();
     let current_content = if exists {

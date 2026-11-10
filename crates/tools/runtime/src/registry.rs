@@ -113,7 +113,7 @@ mod tests {
             &self,
             _request: &ToolResolveRequest<'_>,
         ) -> cuenv_core::Result<ResolvedTool> {
-            unimplemented!()
+            Err(cuenv_core::Error::tool_resolution("mock provider"))
         }
 
         async fn fetch(
@@ -121,7 +121,7 @@ mod tests {
             _resolved: &ResolvedTool,
             _options: &ToolOptions,
         ) -> cuenv_core::Result<FetchedTool> {
-            unimplemented!()
+            Err(cuenv_core::Error::tool_resolution("mock provider"))
         }
 
         fn is_cached(&self, _resolved: &ResolvedTool, _options: &ToolOptions) -> bool {

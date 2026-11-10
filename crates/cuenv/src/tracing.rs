@@ -353,65 +353,6 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
     Ok(main_receiver)
 }
 
-/// Create a new span for command execution with structured fields
-#[macro_export]
-macro_rules! command_span {
-    ($command:expr) => {
-        tracing::info_span!(
-            "command",
-            command = %$command,
-            correlation_id = %$crate::tracing::correlation_id(),
-            start_time = %chrono::Utc::now().to_rfc3339(),
-        )
-    };
-    ($command:expr, $($key:expr => $value:expr),+ $(,)?) => {
-        tracing::info_span!(
-            "command",
-            command = %$command,
-            correlation_id = %$crate::tracing::correlation_id(),
-            start_time = %chrono::Utc::now().to_rfc3339(),
-            $($key = $value),+
-        )
-    };
-}
-
-/// Instrument a function with tracing span
-pub use tracing::instrument;
-
-/// Create performance measurement span
-#[macro_export]
-macro_rules! perf_span {
-    ($name:expr) => {
-        tracing::debug_span!(
-            "perf",
-            operation = %$name,
-            correlation_id = %$crate::tracing::correlation_id(),
-        )
-    };
-}
-
-/// Log performance metrics
-#[macro_export]
-macro_rules! perf_event {
-    ($operation:expr, $duration:expr) => {
-        tracing::debug!(
-            operation = %$operation,
-            duration_ms = $duration.as_millis(),
-            correlation_id = %$crate::tracing::correlation_id(),
-            "Performance measurement"
-        );
-    };
-    ($operation:expr, $duration:expr, $($key:expr => $value:expr),+ $(,)?) => {
-        tracing::debug!(
-            operation = %$operation,
-            duration_ms = $duration.as_millis(),
-            correlation_id = %$crate::tracing::correlation_id(),
-            $($key = $value),+
-            "Performance measurement"
-        );
-    };
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,20 +476,6 @@ mod tests {
         let id1 = correlation_id();
         let id2 = correlation_id();
         assert_eq!(id1, id2);
-    }
-
-    #[test]
-    fn test_tracing_macros_smoke() {
-        // command_span should create a span without panicking
-        let span = command_span!("unit_test_cmd");
-        let _entered = span.enter();
-
-        // perf_span and perf_event should also be safe to call
-        let pspan = perf_span!("perf_op");
-        let _e2 = pspan.enter();
-        let dur = std::time::Duration::from_millis(1);
-        // smoke test for macro with required args
-        perf_event!("perf_op", dur);
     }
 
     #[test]

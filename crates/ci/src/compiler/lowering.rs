@@ -289,7 +289,7 @@ impl Compiler {
                     // Use the task name to construct artifact name
                     // The path should match where the artifact was uploaded from
                     ArtifactDownload {
-                        name: format!("{}-artifacts", task_name.replace('.', "-")),
+                        name: artifact_name_for_task(task_name),
                         path: task_name.replace('.', "/"),
                         filter: String::new(),
                     }
@@ -356,33 +356,33 @@ impl Compiler {
     /// updates those paths to use the actual output paths from the upstream tasks
     /// (e.g., "docs/dist" if that's what docs.build outputs).
     pub(super) fn fix_artifact_download_paths(ir: &mut IntermediateRepresentation) {
-        // Build a lookup map: task_id → first output path
-        // We use the first output path as the download destination
+        // Build a lookup map: artifact name → first output path. Key by the
+        // same name the download was generated with (`docs.build` →
+        // `docs-build-artifacts`); reversing that mapping is lossy for task
+        // names that contain hyphens.
         let task_outputs: HashMap<String, String> = ir
             .tasks
             .iter()
             .filter_map(|task| {
                 task.outputs
                     .first()
-                    .map(|output| (task.id.clone(), output.path.clone()))
+                    .map(|output| (artifact_name_for_task(&task.id), output.path.clone()))
             })
             .collect();
 
         // Update artifact downloads to use actual upstream output paths
         for task in &mut ir.tasks {
             for download in &mut task.artifact_downloads {
-                // Extract task ID from artifact name (e.g., "docs-build-artifacts" → "docs.build")
-                let upstream_task_id = download
-                    .name
-                    .strip_suffix("-artifacts")
-                    .map(|s| s.replace('-', "."))
-                    .unwrap_or_default();
-
                 // If we have the upstream task's output path, use it
-                if let Some(output_path) = task_outputs.get(&upstream_task_id) {
+                if let Some(output_path) = task_outputs.get(&download.name) {
                     download.path.clone_from(output_path);
                 }
             }
         }
     }
+}
+
+/// Name of the artifact that carries a task's outputs between CI jobs.
+fn artifact_name_for_task(task_id: &str) -> String {
+    format!("{}-artifacts", task_id.replace('.', "-"))
 }

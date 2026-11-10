@@ -1,7 +1,8 @@
 use super::{
-    ApiFailure, Arch, Authentication, GitHubToolProvider, Os, Platform, RateLimitInfo, Release,
-    ResolvedTool, ToolExtract, ToolOptions, ToolProvider, ToolSource,
+    ApiFailure, Authentication, GitHubToolProvider, RateLimitInfo, Release, ResolvedTool,
+    ToolExtract, ToolOptions, ToolProvider, ToolSource,
 };
+use cuenv_tool_runtime::{Arch, Os, Platform};
 use tempfile::TempDir;
 
 fn with_token_env<R>(
@@ -80,69 +81,15 @@ fn test_can_handle_github_with_path() {
 }
 
 // ==========================================================================
-// expand_template tests
-// ==========================================================================
-
-#[test]
-fn test_expand_template() {
-    let provider = GitHubToolProvider::new();
-    let platform = Platform::new(Os::Darwin, Arch::Arm64);
-
-    assert_eq!(
-        provider.expand_template("bun-{os}-{arch}.zip", "1.0.0", &platform),
-        "bun-darwin-aarch64.zip"
-    );
-
-    assert_eq!(
-        provider.expand_template("v{version}", "1.0.0", &platform),
-        "v1.0.0"
-    );
-}
-
-#[test]
-fn test_expand_template_linux_x86_64() {
-    let provider = GitHubToolProvider::new();
-    let platform = Platform::new(Os::Linux, Arch::X86_64);
-
-    assert_eq!(
-        provider.expand_template("{os}-{arch}", "1.0.0", &platform),
-        "linux-x86_64"
-    );
-}
-
-#[test]
-fn test_expand_template_all_placeholders() {
-    let provider = GitHubToolProvider::new();
-    let platform = Platform::new(Os::Darwin, Arch::X86_64);
-
-    assert_eq!(
-        provider.expand_template("tool-{version}-{os}-{arch}.zip", "2.5.1", &platform),
-        "tool-2.5.1-darwin-x86_64.zip"
-    );
-}
-
-#[test]
-fn test_expand_template_no_placeholders() {
-    let provider = GitHubToolProvider::new();
-    let platform = Platform::new(Os::Linux, Arch::Arm64);
-
-    assert_eq!(
-        provider.expand_template("static-name.tar.gz", "1.0.0", &platform),
-        "static-name.tar.gz"
-    );
-}
-
-// ==========================================================================
 // tool_cache_dir tests
 // ==========================================================================
 
 #[test]
 fn test_tool_cache_dir() {
-    let provider = GitHubToolProvider::new();
     let temp_dir = TempDir::new().unwrap();
     let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
 
-    let cache_dir = provider.tool_cache_dir(&options, "mytool", "1.2.3");
+    let cache_dir = GitHubToolProvider::tool_cache_dir(&options, "mytool", "1.2.3");
 
     assert!(cache_dir.ends_with("github/mytool/1.2.3"));
     assert!(cache_dir.starts_with(temp_dir.path()));
@@ -150,12 +97,11 @@ fn test_tool_cache_dir() {
 
 #[test]
 fn test_tool_cache_dir_different_versions() {
-    let provider = GitHubToolProvider::new();
     let temp_dir = TempDir::new().unwrap();
     let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
 
-    let cache_v1 = provider.tool_cache_dir(&options, "tool", "1.0.0");
-    let cache_v2 = provider.tool_cache_dir(&options, "tool", "2.0.0");
+    let cache_v1 = GitHubToolProvider::tool_cache_dir(&options, "tool", "1.0.0");
+    let cache_v2 = GitHubToolProvider::tool_cache_dir(&options, "tool", "2.0.0");
 
     assert_ne!(cache_v1, cache_v2);
     assert!(cache_v1.ends_with("1.0.0"));
@@ -168,7 +114,6 @@ fn test_tool_cache_dir_different_versions() {
 
 #[test]
 fn test_cache_targets_from_source_uses_lib_for_library_extract() {
-    let provider = GitHubToolProvider::new();
     let temp_dir = TempDir::new().unwrap();
     let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
 
@@ -187,8 +132,7 @@ fn test_cache_targets_from_source_uses_lib_for_library_extract() {
         },
     };
 
-    let target = provider
-        .cache_targets_from_source(&resolved, &options)
+    let target = GitHubToolProvider::cache_targets_from_source(&resolved, &options)
         .into_iter()
         .next()
         .unwrap();
@@ -197,7 +141,6 @@ fn test_cache_targets_from_source_uses_lib_for_library_extract() {
 
 #[test]
 fn test_cache_targets_from_source_uses_bin_for_default_extract() {
-    let provider = GitHubToolProvider::new();
     let temp_dir = TempDir::new().unwrap();
     let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
 
@@ -212,8 +155,7 @@ fn test_cache_targets_from_source_uses_bin_for_default_extract() {
             extract: vec![],
         },
     };
-    let target = provider
-        .cache_targets_from_source(&resolved, &options)
+    let target = GitHubToolProvider::cache_targets_from_source(&resolved, &options)
         .into_iter()
         .next()
         .unwrap();
@@ -576,7 +518,7 @@ fn test_is_cached_cached() {
     };
 
     // Create the cached file
-    let cache_dir = provider.tool_cache_dir(&options, "mytool", "1.0.0");
+    let cache_dir = GitHubToolProvider::tool_cache_dir(&options, "mytool", "1.0.0");
     let bin_dir = cache_dir.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     std::fs::write(bin_dir.join("mytool"), b"binary").unwrap();
@@ -605,7 +547,7 @@ fn test_is_cached_library_path_uses_lib_directory() {
         },
     };
 
-    let cache_dir = provider.tool_cache_dir(&options, "foundationdb", "7.3.63");
+    let cache_dir = GitHubToolProvider::tool_cache_dir(&options, "foundationdb", "7.3.63");
     let lib_dir = cache_dir.join("lib");
     std::fs::create_dir_all(&lib_dir).unwrap();
     std::fs::write(lib_dir.join("libfdb_c.dylib"), b"library").unwrap();

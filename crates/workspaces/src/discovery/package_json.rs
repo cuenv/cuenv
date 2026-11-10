@@ -25,15 +25,9 @@ impl WorkspaceDiscovery for PackageJsonDiscovery {
 
         let package_json: PackageJson = crate::discovery::read_json_file(&package_json_path)?;
 
-        // If no workspaces field, verify it's a valid package but return empty workspace
-        // logic could vary, but usually a workspace needs the workspaces field
+        // A package.json without a `workspaces` field is a single-package repo:
+        // return a workspace with no members, still tagged with its manager.
         if package_json.workspaces.is_none() {
-            // It's a valid single package, but treat as empty workspace for now
-            // or potentially a workspace with just the root member?
-            // For now, we'll return a workspace with no members if workspaces field is missing,
-            // unless we want to treat single-repo as a workspace of 1.
-            // The prompt says: "If no workspaces field, return empty workspace (single-package repo)"
-            // We also need to detect the manager.
             let manager = detect_manager(root);
             let mut workspace = Workspace::new(root.to_path_buf(), manager);
             workspace.lockfile = find_lockfile(root, manager);
@@ -144,10 +138,7 @@ fn detect_manager(root: &Path) -> PackageManager {
     if root.join("bun.lock").exists() {
         PackageManager::Bun
     } else if root.join("yarn.lock").exists() {
-        // Could distinguish classic/modern by parsing, but for now default to modern or classic?
-        // The PackageManager enum has both. Let's pick one or check version.
-        // For simplicity, if we can't tell, maybe default to YarnClassic as it's more common in older repos,
-        // or check .yarnrc.yml for modern.
+        // `.yarnrc.yml` only exists for Yarn Berry (modern); otherwise assume classic.
         if root.join(".yarnrc.yml").exists() {
             PackageManager::YarnModern
         } else {

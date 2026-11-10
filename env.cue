@@ -390,9 +390,17 @@ schema.#Project & {
 				inputs: _flakeInputs
 			}
 
+			// The parameter-style check enforces the no-bool / at-most-three
+			// parameter rule; it shares the clippy runner.
 			clippy: schema.#Task & {
 				command: "nix"
-				args: ["build", ".#checks.x86_64-linux.cuenv-clippy", "-L", "--accept-flake-config"]
+				args: [
+					"build",
+					".#checks.x86_64-linux.cuenv-clippy",
+					".#checks.x86_64-linux.cuenv-rust-parameter-style",
+					"-L",
+					"--accept-flake-config",
+				]
 				inputs: _flakeInputs
 			}
 

@@ -264,7 +264,7 @@ impl EventReceiver {
 fn synth_event_gap(skipped: u64) -> CuenvEvent {
     tracing::warn!(skipped, "event receiver lagged; emitting EventGap");
     CuenvEvent::new(
-        Uuid::new_v4(),
+        metadata::correlation_id(),
         EventSource::new("cuenv::events::bus"),
         EventCategory::System(SystemEvent::EventGap { skipped }),
     )

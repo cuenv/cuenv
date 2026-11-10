@@ -7,7 +7,7 @@ use fs4::tokio::AsyncFileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -47,13 +47,17 @@ const CI_VARS: &[&str] = &[
 /// Returns `true` if any of these environment variables are set to a truthy value.
 #[must_use]
 pub fn is_ci() -> bool {
-    // Check for the generic CI variable first (most CI systems set this)
-    if std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false") {
-        return true;
-    }
+    // CI detection auto-approves hooks, so an explicitly falsy value
+    // (`GITHUB_ACTIONS=false`, `CI=0`) must not count as CI.
+    let truthy = |var: &str| {
+        std::env::var(var).is_ok_and(|value| {
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+    };
 
-    // Check for specific CI provider variables
-    CI_VARS.iter().any(|var| std::env::var(var).is_ok())
+    // The generic CI variable first (most CI systems set this), then the
+    // provider-specific ones.
+    truthy("CI") || CI_VARS.iter().any(|var| truthy(var))
 }
 
 /// Manages approval of configurations before hook execution
@@ -509,23 +513,8 @@ pub fn compute_directory_key(path: &Path) -> String {
 
 /// Validate and canonicalize a path to prevent path traversal attacks
 fn validate_and_canonicalize_path(path: &Path) -> Result<PathBuf> {
-    // All path components are allowed - parent directory references and prefixes
-    // are resolved through canonicalization, and we validate the final result
-    for component in path.components() {
-        match component {
-            // All component types are valid for input paths:
-            // - Normal: regular path segments
-            // - RootDir/CurDir: explicit root or current directory
-            // - ParentDir: resolved through canonicalization
-            // - Prefix: Windows drive prefixes
-            Component::Normal(_)
-            | Component::RootDir
-            | Component::CurDir
-            | Component::ParentDir
-            | Component::Prefix(_) => {}
-        }
-    }
-
+    // Every component kind is acceptable: parent directory references and
+    // prefixes are resolved through canonicalization below.
     // If the path exists, canonicalize it
     if path.exists() {
         std::fs::canonicalize(path)

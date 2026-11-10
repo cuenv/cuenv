@@ -33,25 +33,28 @@ impl ServiceLifecycle {
     ///
     /// Valid transitions:
     /// - Pending -> Starting
-    /// - Starting -> Ready | Failed
+    /// - Starting -> Ready | Failed | Restarting | Stopping
     /// - Ready -> Restarting | Stopping
-    /// - Restarting -> Starting
+    /// - Restarting -> Starting | Failed | Stopping
     /// - Stopping -> Stopped
+    ///
+    /// The extra `Starting` and `Restarting` exits cover crashes during
+    /// startup and shutdown requests mid-restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidTransition` for any other transition.
     pub fn transition(self, to: Self, service_name: &str) -> crate::Result<Self> {
         let valid = matches!(
             (self, to),
-            (Self::Pending, Self::Starting)
-                | (Self::Starting, Self::Ready)
-                | (Self::Starting, Self::Failed)
-                | (Self::Ready, Self::Restarting)
-                | (Self::Ready, Self::Stopping)
-                | (Self::Restarting, Self::Starting)
+            (Self::Pending | Self::Restarting, Self::Starting)
+                | (
+                    Self::Starting,
+                    Self::Ready | Self::Failed | Self::Restarting | Self::Stopping
+                )
+                | (Self::Ready, Self::Restarting | Self::Stopping)
                 | (Self::Stopping, Self::Stopped)
-                // Allow direct transitions for crash scenarios
-                | (Self::Starting, Self::Restarting)
-                | (Self::Starting, Self::Stopping)
-                | (Self::Restarting, Self::Failed)
-                | (Self::Restarting, Self::Stopping)
+                | (Self::Restarting, Self::Failed | Self::Stopping)
         );
 
         if valid {

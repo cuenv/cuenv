@@ -18,7 +18,6 @@ cuenv-core = { workspace = true }
 cuenv-tool-runtime = { workspace = true }
 async-trait = { workspace = true }
 dirs = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }

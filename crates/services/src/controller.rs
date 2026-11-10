@@ -162,8 +162,9 @@ impl ServiceController {
                                 startup_failures.push((name.clone(), msg));
                                 break;
                             }
-                            match readiness_rx.borrow().clone() {
-                                ReadinessOutcome::Pending => continue,
+                            let outcome = readiness_rx.borrow().clone();
+                            match outcome {
+                                ReadinessOutcome::Pending => {}
                                 ReadinessOutcome::Ready => {
                                     debug!(service = %name, "Service ready");
                                     break;

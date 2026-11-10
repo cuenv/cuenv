@@ -333,7 +333,6 @@ pub async fn execute_sync_ci_workspace(
 #[instrument(name = "sync_buildkite", skip_all)]
 fn execute_sync_buildkite(request: &BuildkiteSyncRequest<'_>) -> Result<String> {
     let BuildkiteSyncRequest { repo_root, options } = *request;
-    // Note: Using --dynamic instead of --format for the new CLI
     let pipeline_content = r#"# Buildkite bootstrap pipeline for cuenv
 # This installs Nix, builds cuenv, then generates a dynamic pipeline
 steps:
@@ -362,7 +361,7 @@ steps:
 
   - label: ":pipeline: Generate Pipeline"
     depends_on: build-cuenv
-    command: cuenv ci --dynamic buildkite | buildkite-agent pipeline upload
+    command: cuenv ci --export buildkite | buildkite-agent pipeline upload
 "#;
 
     let buildkite_dir = repo_root.join(".buildkite");

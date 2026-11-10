@@ -44,7 +44,7 @@ impl GitHubReleaseConfig {
             token: token.into(),
             draft: false,
             prerelease: false,
-            tag_prefix: "v".to_string(),
+            tag_prefix: String::new(),
         }
     }
 
@@ -143,15 +143,24 @@ impl GitHubReleaseBackend {
         }
     }
 
-    /// Creates a new release.
-    async fn create_release(&self, client: &Octocrab, ctx: &BackendContext) -> Result<u64> {
-        let tag = format!("{}{}", self.config.tag_prefix, ctx.version);
+    /// The release tag: the configured prefix (empty by default) plus version.
+    fn release_tag(&self, ctx: &BackendContext) -> String {
+        format!("{}{}", self.config.tag_prefix, ctx.version)
+    }
+
+    /// Creates a new release for `tag`.
+    async fn create_release(
+        &self,
+        client: &Octocrab,
+        ctx: &BackendContext,
+        tag: &str,
+    ) -> Result<u64> {
         let repos = client.repos(&self.config.owner, &self.config.repo);
         let releases = repos.releases();
 
         let release = releases
-            .create(&tag)
-            .name(&format!("{} v{}", ctx.name, ctx.version))
+            .create(tag)
+            .name(&format!("{} {tag}", ctx.name))
             .draft(self.config.draft)
             .prerelease(self.config.prerelease)
             .send()
@@ -201,7 +210,7 @@ impl ReleaseBackend for GitHubReleaseBackend {
         artifacts: &'a [PackagedArtifact],
     ) -> Pin<Box<dyn Future<Output = Result<PublishResult>> + Send + 'a>> {
         Box::pin(async move {
-            let tag = format!("v{}", ctx.version);
+            let tag = self.release_tag(ctx);
 
             if ctx.dry_run.is_dry_run() {
                 info!(
@@ -231,7 +240,7 @@ impl ReleaseBackend for GitHubReleaseBackend {
                 id
             } else {
                 info!(tag = %tag, "Creating new release");
-                self.create_release(&client, ctx).await?
+                self.create_release(&client, ctx, &tag).await?
             };
 
             // Upload each artifact

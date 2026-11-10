@@ -1,3 +1,5 @@
+//! Integration tests for CUE-defined codegen generation.
+
 use cuenv_codegen::{Codegen, GenerateOptions, Generator};
 use tempfile::TempDir;
 
@@ -6,17 +8,14 @@ use tempfile::TempDir;
 /// CUE's `load.Instances` ignores directories starting with `.` (hidden directories).
 /// The default `TempDir::new()` creates hidden directories like `.tmpXXXXX`, which causes
 /// CUE evaluation to fail with "No instances could be evaluated".
-fn create_test_dir() -> TempDir {
-    tempfile::Builder::new()
-        .prefix("cuenv_test_")
-        .tempdir()
-        .expect("Failed to create temp directory")
+fn create_test_dir() -> std::io::Result<TempDir> {
+    tempfile::Builder::new().prefix("cuenv_test_").tempdir()
 }
 
 #[test]
 fn test_basic_codegen_cue() {
     // Create a simple codegen configuration in CUE format (use non-hidden prefix for CUE compatibility)
-    let temp_dir = create_test_dir();
+    let temp_dir = create_test_dir().unwrap();
 
     // Create CUE module structure (required by evaluate_module)
     let cue_mod_dir = temp_dir.path().join("cue.mod");
@@ -53,7 +52,7 @@ context: null
     let codegen = Codegen::load(&codegen_path).unwrap();
     let generator = Generator::new(codegen);
 
-    let output_dir = create_test_dir();
+    let output_dir = create_test_dir().unwrap();
     let options = GenerateOptions {
         output_dir: output_dir.path().to_path_buf(),
         check: false,

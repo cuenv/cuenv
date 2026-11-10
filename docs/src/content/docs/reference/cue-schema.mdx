@@ -810,7 +810,8 @@ readiness: {
 }
 ```
 
-**HTTP probe** — HTTP request check:
+**HTTP probe** — plaintext HTTP/1.1 request check. `https://` URLs are
+rejected at startup; probe a plain `http://` endpoint or use a command probe:
 
 ```cue
 readiness: {

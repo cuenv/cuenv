@@ -32,7 +32,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # Serialization (for manifest parsing)
-serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Directories
@@ -49,3 +48,6 @@ async-trait = { workspace = true }
 temp-env = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

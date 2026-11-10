@@ -21,5 +21,6 @@ schemars = ["dep:schemars", "serde"]
 serde = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 
-[dev-dependencies]
-tempfile = { workspace = true }
+
+[lints]
+workspace = true

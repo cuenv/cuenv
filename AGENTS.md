@@ -99,27 +99,36 @@ If a change does not match one of the required full-flake triggers, keep the che
 
 ### Crate Structure
 
-| Crate                             | Purpose                                                      |
-| --------------------------------- | ------------------------------------------------------------ |
-| **cuengine**                      | Go-Rust FFI bridge for CUE evaluation                        |
-| **cuenv-manifest**                | Leaf DTO crate: config, env, secret, task, CI, lockfile types |
-| **cuenv-core**                    | Environment resolution, errors, contributors, shared logic   |
-| **cuenv-hooks**                   | Hook execution, state management, and approval system        |
-| **cuenv-cache**                   | Content-addressed task caching infrastructure                |
-| **cuenv-task-graph**              | Task graph DAG algorithms and dependency resolution          |
-| **cuenv-task-exec**               | Task execution engine: scheduling, processes, caching        |
-| **cuenv**                         | CLI binary with TUI (clap + ratatui)                         |
-| **cuenv-events**                  | Event system for UI frontends (CLI/JSON renderers)           |
-| **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.) |
-| **cuenv-ci**                      | CI pipeline integration                                      |
-| **cuenv-release**                 | Version management and publishing                            |
-| **cuenv-codegen**                 | CUE-based code generation                                    |
-| **cuenv-infrastructure**          | Terraform provider plugins over gRPC, Turso resource state   |
-| **cuenv-ignore**                  | .gitignore/.dockerignore generation                          |
-| **cuenv-codeowners**              | CODEOWNERS file generation                                   |
-| **cuenv-github/gitlab/bitbucket** | VCS provider integrations                                    |
-| **cuenv-tool-archive**            | Shared archive extraction for tool providers                 |
-| **cuenv-tool-runtime**            | Tool provider trait, registry, and activation resolution     |
+| Crate                                       | Path                         | Purpose                                                        |
+| ------------------------------------------- | ---------------------------- | -------------------------------------------------------------- |
+| **cuengine**                                | `crates/cuengine`            | Go-Rust FFI bridge for CUE evaluation                          |
+| **cuenv-manifest**                          | `crates/manifest`            | Leaf DTO crate: config, env, secret, task, CI, lockfile types  |
+| **cuenv-core**                              | `crates/core`                | Environment resolution, errors, contributors, shared logic     |
+| **cuenv-secrets**                           | `crates/secrets`             | Secret resolver trait, registry, and redaction                 |
+| **cuenv-hooks**                             | `crates/hooks`               | Hook execution, state management, and approval system          |
+| **cuenv-cas**                               | `crates/cas`                 | Content-addressed store and action cache (Bazel REAPI model)   |
+| **cuenv-cas-remote**                        | `crates/cas-remote`          | Bazel Remote Execution API v2 cache client                     |
+| **cuenv-vcs**                               | `crates/vcs`                 | Input-file hashing (VCS-aware when possible)                   |
+| **cuenv-task-graph**                        | `crates/task-graph`          | Task graph DAG algorithms and dependency resolution            |
+| **cuenv-task-exec**                         | `crates/task-exec`           | Task execution engine: scheduling, processes, caching          |
+| **cuenv-services**                          | `crates/services`            | Service supervision, readiness probes, process management      |
+| **cuenv**                                   | `crates/cuenv`               | CLI binary with TUI (clap + ratatui)                           |
+| **cuenv-events**                            | `crates/events`              | Event system for UI frontends (CLI/JSON renderers)             |
+| **cuenv-workspaces**                        | `crates/workspaces`          | Package manager workspace detection (npm, Cargo, pnpm, etc.)   |
+| **cuenv-ci**                                | `crates/ci`                  | CI pipeline integration                                        |
+| **cuenv-release**                           | `crates/release`             | Version management and publishing                              |
+| **cuenv-codegen**                           | `crates/codegen`             | CUE-based code generation                                      |
+| **cuenv-infrastructure**                    | `crates/infrastructure`      | Terraform provider plugins over gRPC, Turso/D1/S3 state        |
+| **cuenv-ignore**                            | `crates/ignore`              | .gitignore/.dockerignore generation                            |
+| **cuenv-editorconfig**                      | `crates/editorconfig`        | .editorconfig generation                                       |
+| **cuenv-codeowners**                        | `crates/codeowners`          | CODEOWNERS file generation                                     |
+| **cuenv-github/gitlab/bitbucket**           | `crates/{github,gitlab,...}` | VCS provider integrations                                      |
+| **cuenv-buildkite**                         | `crates/buildkite`           | Buildkite CI emitter and provider                              |
+| **cuenv-homebrew**                          | `crates/homebrew`            | Homebrew tap release backend                                   |
+| **cuenv-1password/aws/gcp/infisical**       | `crates/{1password,...}`     | Secret provider integrations                                   |
+| **cuenv-tool-archive**                      | `crates/tools/archive`       | Shared archive extraction for tool providers                   |
+| **cuenv-tool-runtime**                      | `crates/tools/runtime`       | Tool provider trait, registry, and activation resolution       |
+| **cuenv-tools-oci/github/nix/rustup/url**   | `crates/tools/*`             | Tool provider implementations                                  |
 
 ### Key Data Flow
 
@@ -132,12 +141,12 @@ If a change does not match one of the required full-flake triggers, keep the che
 
 ### Contributor Loop
 
-Contributors are CUE-defined task injectors that modify the task DAG before execution. Both CLI (`cuenv task`) and CI (`cuenv ci`) use the same `ContributorEngine`.
+Contributors are CUE-defined task injectors that modify the task DAG before execution. They are applied by two separate implementations that must stay aligned: the CLI (`cuenv task`) uses `ContributorEngine` in `cuenv-core`, and the CI compiler (`cuenv ci`, `cuenv sync ci`) applies `ci.contributors` to its IR in `crates/ci/src/compiler/contributors.rs`.
 
 **Data Flow:**
 
 1. CUE evaluation produces Projects with Tasks (initial DAG).
-2. `ContributorEngine` (in `cuenv-core`) applies contributors:
+2. Contributors are applied (`ContributorEngine` for the CLI, the CI compiler for `cuenv ci`):
    - Evaluates `when` conditions (`workspaceMember`, `taskCommand`, etc.).
    - Injects contributor tasks with `cuenv:contributor:*` prefix.
    - Auto-associates user tasks with contributor setup tasks (by command).
@@ -175,8 +184,9 @@ Per-pipeline `providers` completely overrides global (no merge).
 
 **Key Files:**
 
-- `crates/core/src/contributors.rs` - ContributorEngine implementation.
-- `crates/core/src/ci.rs` - CI configuration and provider resolution.
+- `crates/core/src/contributors/engine.rs` - ContributorEngine implementation (CLI path).
+- `crates/ci/src/compiler/contributors.rs` - CI compiler contributor application.
+- `crates/manifest/src/ci.rs` - CI configuration and provider resolution.
 - `contrib/contributors/*.cue` - CUE contributor definitions.
 - `schema/ci.cue` - CI and contributor schema types.
 
@@ -204,7 +214,7 @@ cuenv exec -- cargo test --test ffi_edge_cases
 cuenv task bench
 
 # BDD tests (cucumber)
-cuenv task test.bdd
+cuenv task tests.bdd
 ```
 
 ### Validation After Changes
@@ -232,7 +242,7 @@ nix flake check -L --accept-flake-config
 ## Requirements
 
 - **Rust**: MSRV 1.90.0 (Edition 2024)
-- **Go**: 1.21+ with CGO enabled (for cuengine FFI)
+- **Go**: 1.26+ with CGO enabled (for cuengine FFI; see `crates/cuengine/go.mod`)
 - **Nix**: Optional but recommended for reproducible builds
 
 ## Key Files
@@ -240,7 +250,7 @@ nix flake check -L --accept-flake-config
 - `Cargo.toml` - Workspace configuration
 - `crates/cuengine/bridge.go` - Go FFI implementation
 - `crates/cuengine/src/lib.rs` - Rust FFI wrapper
-- `crates/core/src/manifest/` - Configuration types
+- `crates/manifest/src/` - Configuration types (re-exported from `cuenv_core::manifest`)
 - `crates/task-exec/src/` - Task graph and execution engine
 - `examples/env-basic/env.cue` - Test configuration
 - `schema/` - CUE schema definitions
@@ -262,5 +272,5 @@ nix flake check -L --accept-flake-config
 
 - **Build appears frozen**: Expected, builds take 90+ seconds initially.
 - **Go FFI tests fail**: Expected without CGO environment.
-- **cargo-audit/cargo-deny not found**: CI-only tools, skip locally.
+- **cargo-audit/cargo-deny not found**: both ship in the Nix devShell (`nix develop`).
 - **Rust edition errors**: Requires Rust 1.90.0+ (Edition 2024).

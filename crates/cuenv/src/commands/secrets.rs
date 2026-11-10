@@ -55,7 +55,7 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
     cuenv_events::println_redacted(&format!("Source: {url}"));
 
     // Download the WASM file
-    http::ensure_rustls_crypto_provider();
+    http::ensure_rustls_crypto_provider().map_err(|e| CliError::config(e.to_string()))?;
     let response = reqwest::blocking::get(url)
         .map_err(|e| CliError::config(format!("Failed to download WASM: {e}")))?;
 

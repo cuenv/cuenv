@@ -17,8 +17,6 @@ workspace = true
 
 [dependencies]
 cuenv-core = { workspace = true }
-cuenv-workspaces = { workspace = true, features = ["discovery-rust", "parsers-rust"] }
-cuenv-events = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }

@@ -102,10 +102,14 @@ impl OciCache {
 
     /// Store a blob in the cache.
     ///
-    /// The blob is moved to the cache location.
+    /// The blob is copied to the cache location.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cache directory cannot be created or the copy fails.
     pub fn store_blob(&self, digest: &str, source: &Path) -> Result<PathBuf> {
         let dest = self.blob_path(digest);
-        self.store_file(source, &dest)?;
+        Self::store_file(source, &dest)?;
         debug!(digest, ?dest, "Stored blob in cache");
         Ok(dest)
     }
@@ -113,15 +117,19 @@ impl OciCache {
     /// Store a binary in the cache.
     ///
     /// The binary is copied to the cache location with its proper name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cache directory cannot be created or the copy fails.
     pub fn store_binary(&self, digest: &str, binary_name: &str, source: &Path) -> Result<PathBuf> {
         let dest = self.binary_path(digest, binary_name);
-        self.store_file(source, &dest)?;
+        Self::store_file(source, &dest)?;
         debug!(digest, binary_name, ?dest, "Stored binary in cache");
         Ok(dest)
     }
 
     /// Store a file in the cache, creating parent directories.
-    fn store_file(&self, source: &Path, dest: &Path) -> Result<()> {
+    fn store_file(source: &Path, dest: &Path) -> Result<()> {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -130,6 +138,10 @@ impl OciCache {
     }
 
     /// Ensure cache directories exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a cache directory cannot be created.
     pub fn ensure_dirs(&self) -> Result<()> {
         std::fs::create_dir_all(self.root.join("blobs").join("sha256"))?;
         std::fs::create_dir_all(self.root.join("bin").join("sha256"))?;

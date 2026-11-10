@@ -173,7 +173,7 @@ mod tests {
         fs::write(temp.path().join("bitbucket-pipelines.yml"), "").unwrap();
 
         let provider = detect_code_owners_provider(temp.path());
-        assert_eq!(provider.output_path(), "CODEOWNERS");
+        assert_eq!(provider.output_path(), ".bitbucket/CODEOWNERS");
         assert_eq!(
             provider.section_style(),
             cuenv_codeowners::SectionStyle::Comment

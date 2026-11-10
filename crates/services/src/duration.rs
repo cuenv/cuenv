@@ -27,7 +27,7 @@ pub fn parse_duration(input: &str) -> crate::Result<Duration> {
         });
     }
 
-    let mut total_ms: u64 = 0;
+    let mut total = Duration::ZERO;
     let mut num_buf = String::new();
     let mut chars = input.chars().peekable();
 
@@ -85,13 +85,27 @@ pub fn parse_duration(input: &str) -> crate::Result<Duration> {
             }
         };
 
-        total_ms += ms as u64;
+        let component =
+            Duration::try_from_secs_f64(ms / 1000.0).map_err(|_| Error::InvalidDuration {
+                input: input.to_string(),
+                message: format!("out of range: {num_buf}{unit}"),
+            })?;
+        total = total
+            .checked_add(component)
+            .ok_or_else(|| Error::InvalidDuration {
+                input: input.to_string(),
+                message: "out of range".to_string(),
+            })?;
     }
 
-    Ok(Duration::from_millis(total_ms))
+    Ok(total)
 }
 
 /// Parse a duration string with a default value if the input is `None`.
+///
+/// # Errors
+///
+/// Returns `Error::InvalidDuration` if `input` is present and cannot be parsed.
 pub fn parse_duration_or(input: Option<&str>, default: Duration) -> crate::Result<Duration> {
     match input {
         Some(s) => parse_duration(s),

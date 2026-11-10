@@ -253,15 +253,9 @@ impl Project {
 
                         // Add implicit dependency
                         implicit_deps.push(format!("#{}:{}", project, task_name));
-                    } else if parts.len() == 2 {
-                        // Handle "#project:task" as pure dependency?
-                        // The prompt says: `["#projectName:taskName"]` for dependsOn
-                        // For inputs, it likely expects a file mapping.
-                        // If user puts `["#p:t"]` in inputs, it's invalid as an input unless it maps something.
-                        // Assuming `#p:t:f` is the requirement for inputs.
-                        // Keeping original if not matching pattern (or maybe warning?)
-                        new_inputs.push(input.clone());
                     } else {
+                        // `#project:task` without a file is a dependency
+                        // reference, not an input mapping: keep it verbatim.
                         new_inputs.push(input.clone());
                     }
                 }

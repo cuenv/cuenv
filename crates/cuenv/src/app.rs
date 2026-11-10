@@ -1,22 +1,20 @@
 //! Command dispatch and application lifecycle.
 
 // Import everything from the library
+use ::tracing::instrument;
 use crossterm::ExecutableCommand;
+use cuenv::LLMS_CONTENT;
 use cuenv::cli::{self, CliError, EXIT_INTERRUPTED, EXIT_OK, OutputFormat};
 use cuenv::commands::{self, Command, CommandExecutor};
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
 use cuenv_events::renderers::{CliRenderer, JsonRenderer};
 use std::sync::Arc;
-use tracing::instrument;
 
 #[cfg(test)]
 use super::oci_activate;
 #[cfg(test)]
 use super::oci_activate::activate_lockfile_artifacts;
 use super::{async_dispatch, hook_supervisor, process_hardening, sync_dispatch};
-
-/// LLM context content (llms.txt + CUE schemas concatenated at build time)
-const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full.txt"));
 
 /// Main entry point - determines sync vs async execution path
 pub fn run_main(hardening_error: Option<process_hardening::HardeningError>) {

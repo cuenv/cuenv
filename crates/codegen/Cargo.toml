@@ -17,23 +17,18 @@ default = []
 
 [dependencies]
 cuenv-core = { workspace = true }
-cuenv-events = { workspace = true }
 cuengine = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-miette = { workspace = true }
-tokio = { workspace = true }
-clap = { workspace = true }
 tracing = { workspace = true }
 
 # File system operations
-walkdir = { workspace = true }
-glob = { workspace = true }
 
 # JSON formatting
-serde-json-fmt = "0.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio-test = { workspace = true }
+
+[lints]
+workspace = true

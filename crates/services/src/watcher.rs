@@ -24,6 +24,7 @@ pub struct ServiceWatcher {
 }
 
 /// Paths and debounce behavior for a service file watcher.
+#[derive(Clone, Copy, Debug)]
 pub struct WatchOptions<'options> {
     /// Glob patterns relative to the service's project root.
     pub watch_paths: &'options [String],

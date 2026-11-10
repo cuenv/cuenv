@@ -17,7 +17,6 @@ cuenv-cas = { workspace = true }
 
 async-trait = { workspace = true }
 bazel-remote-apis = { workspace = true }
-prost = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 tokio-stream = { workspace = true }

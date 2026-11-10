@@ -30,9 +30,9 @@ pub enum SectionStyle {
 impl fmt::Display for SectionStyle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SectionStyle::Comment => write!(f, "comment"),
-            SectionStyle::Bracket => write!(f, "bracket"),
-            SectionStyle::None => write!(f, "none"),
+            Self::Comment => write!(f, "comment"),
+            Self::Bracket => write!(f, "bracket"),
+            Self::None => write!(f, "none"),
         }
     }
 }

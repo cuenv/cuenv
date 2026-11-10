@@ -8,7 +8,7 @@ cuenv can manage real infrastructure with the provider ecosystem you already kno
 :::caution[Experimental]
 `cuenv infrastructure` is **experimental**, and `cuenv infrastructure --help` says so. Its behavior, command line flags, schema and state layout can still change between releases, and it is not covered by the stability promises of the other commands. `#Infrastructure` is **partial**: create, update, replace, delete, refresh, import, scalar output references, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. Read [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, records cannot be moved between state identities yet, and replacements are always destroy-then-create.
 
-Schema version 1 databases migrate in place to version 2. Incompatible earlier development layouts remain unsupported; see [Configure the state database](#configure-the-state-database).
+Schema version 1 databases migrate in place to version 2. Incompatible earlier development layouts remain unsupported; see [Configure the state backend](#configure-the-state-backend).
 :::
 
 ## Commands

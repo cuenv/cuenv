@@ -54,7 +54,6 @@ jobs:
   cargo-build-darwin-arm64:
     permissions:
       contents: read
-      packages: write
     name: cargo.build (darwin-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
     timeout-minutes: 60
@@ -102,7 +101,6 @@ jobs:
   cargo-build-linux-arm64:
     permissions:
       contents: read
-      packages: write
     name: cargo.build (linux-arm64)
     runs-on: namespace-profile-cuenv-linux-x86
     timeout-minutes: 60
@@ -150,7 +148,6 @@ jobs:
   cargo-build-linux-x64:
     permissions:
       contents: read
-      packages: write
     name: cargo.build (linux-x64)
     runs-on: namespace-profile-cuenv-linux-x86
     timeout-minutes: 60
@@ -198,7 +195,6 @@ jobs:
   publish-github:
     permissions:
       contents: write
-      packages: write
     name: publish.github
     runs-on: namespace-profile-cuenv-linux-x86
     needs:
@@ -461,7 +457,6 @@ jobs:
   docs-build:
     permissions:
       contents: read
-      packages: write
     name: docs.build
     runs-on: namespace-profile-cuenv-linux-x86
     needs:

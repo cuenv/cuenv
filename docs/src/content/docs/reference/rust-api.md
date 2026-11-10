@@ -559,8 +559,7 @@ use std::sync::Arc;
 
 use cuenv_infrastructure::{
     ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine,
-    InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, PlanMode, ProjectInstance,
-    StateLock,
+    InfrastructureError, LockRequest, PlanMode, ProjectInstance, StateLock,
 };
 
 let cancellation = Cancellation::default(); // shared with signal handling
@@ -570,7 +569,11 @@ store.migrate().await?; // writes need current tables; reads never create them
 // forced exit during acquisition can name the lock it may hold.
 let lock = StateLock::generate();
 store
-    .acquire_lock(&tenant, &LockRequest { lock: &lock, holder: "my tool" })
+    .acquire_lock(
+        &tenant,
+        // `instance` is recorded as the tenant's last writer with the lock.
+        &LockRequest { lock: &lock, holder: "my tool", instance: Some(&instance) },
+    )
     .await?;
 let mut engine = InfrastructureEngine::new(EngineSetup {
     tenant: tenant.clone(), // TenantKey: module path, project name, optional environment
@@ -585,14 +588,11 @@ let mut engine = InfrastructureEngine::new(EngineSetup {
         provider_environment_variables: BTreeMap::new(),
         unrecorded_directory: None, // the user state directory
         cancellation: cancellation.clone(),
+        // `cuenv.lock` provider pins; registry providers must match them.
+        locked_providers: BTreeMap::new(),
     },
 });
 let outcome = async {
-    // The first lock records the owning instance; another instance is refused.
-    store
-        .claim_owner(&tenant, &lock, &OwnerClaim { instance: &instance, mode: OwnerClaimMode::IfUnowned })
-        .await?
-        .require(&tenant, &instance)?;
     let plan = engine.plan(PlanMode::Apply).await?;
     // Show the plan and ask for confirmation here, still holding the lock.
     if plan.has_work() {
@@ -684,12 +684,10 @@ environment)` repeats the schema's semantic checks and reports **every**
   be recorded is not "deleted and not recreated": it exists, an
   `ApplyEvent::Warning` says so, and the error names the file its record was
   saved to.
-- `StateStore::owner()` names the CUE instance (`ProjectInstance`,
-  `<directory>:<package>`) that owns a tenant's state; `claim_owner()` with
-  `OwnerClaimMode::IfUnowned` records it under the first lock, and
-  `OwnerClaimMode::Transfer` is an explicit adoption
-  (`cuenv infrastructure state adopt`). `TenantOwner::require()` refuses any
-  other instance (`InfrastructureError::OwnedByAnotherInstance`).
+- Taking the lock with `LockRequest::instance` records that CUE instance
+  (`ProjectInstance`, `<directory>:<package>`) as the tenant's last writer,
+  which `StateStore::last_writer()` reports. It is informational: there is no
+  ownership gate, and `cuenv infrastructure state adopt` is a deprecated no-op.
 - A change the store could not record is saved by `UnrecordedStore` in the
   user state directory in one file format (`formatVersion` 1: tenant with its
   environment, generation, serial and backend binding); `engine.plan()` refuses

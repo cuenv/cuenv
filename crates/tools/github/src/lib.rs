@@ -10,22 +10,23 @@ use cuenv_core::{Result, http};
 use cuenv_secrets::http as secret_http;
 use cuenv_tool_archive as archive;
 use cuenv_tool_runtime::{
-    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
-    ToolResolveRequest, ToolSource,
+    FetchedTool, ResolvedTool, ToolExtract, ToolOptions, ToolProvider, ToolResolveRequest,
+    ToolSource,
 };
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Map archive extraction errors into core tool-resolution errors.
-fn archive_err(e: archive::ArchiveError) -> cuenv_core::Error {
+fn archive_err(e: &archive::ArchiveError) -> cuenv_core::Error {
     cuenv_core::Error::tool_resolution(e.to_string())
 }
 
 /// Ensure a file is executable, mapping archive errors into core errors.
 fn ensure_executable_mapped(path: &Path) -> Result<()> {
-    archive::ensure_executable(path).map_err(archive_err)
+    archive::ensure_executable(path).map_err(|e| archive_err(&e))
 }
 
 use std::sync::OnceLock;
@@ -154,7 +155,7 @@ impl Default for GitHubToolProvider {
 
 impl GitHubToolProvider {
     fn build_client() -> std::result::Result<Client, String> {
-        http::ensure_rustls_crypto_provider();
+        http::ensure_rustls_crypto_provider().map_err(|err| err.to_string())?;
 
         secret_http::client_builder()
             .build()
@@ -177,25 +178,8 @@ impl GitHubToolProvider {
     }
 
     /// Get the cache directory for a tool.
-    fn tool_cache_dir(&self, options: &ToolOptions, name: &str, version: &str) -> PathBuf {
+    fn tool_cache_dir(options: &ToolOptions, name: &str, version: &str) -> PathBuf {
         options.cache_dir().join("github").join(name).join(version)
-    }
-
-    /// Expand template variables in a string.
-    fn expand_template(&self, template: &str, version: &str, platform: &Platform) -> String {
-        let os_str = match platform.os {
-            Os::Darwin => "darwin",
-            Os::Linux => "linux",
-        };
-        let arch_str = match platform.arch {
-            Arch::Arm64 => "aarch64",
-            Arch::X86_64 => "x86_64",
-        };
-
-        template
-            .replace("{version}", version)
-            .replace("{os}", os_str)
-            .replace("{arch}", arch_str)
     }
 
     /// Get the effective token: GITHUB_TOKEN > GH_TOKEN > runtime token
@@ -255,10 +239,10 @@ impl GitHubToolProvider {
             let mut message = "GitHub API rate limit exceeded".to_string();
 
             if let Some(status_str) = rate_limit.format_status() {
-                message.push_str(&format!(" ({})", status_str));
+                let _ = write!(message, " ({status_str})");
             }
             if let Some(reset_str) = rate_limit.format_reset_duration() {
-                message.push_str(&format!(". Resets in {}", reset_str));
+                let _ = write!(message, ". Resets in {reset_str}");
             }
 
             let help = if matches!(failure.authentication, Authentication::Authenticated) {
@@ -342,46 +326,10 @@ impl GitHubToolProvider {
             .map_err(|e| cuenv_core::Error::tool_resolution(format!("Failed to read asset: {}", e)))
     }
 
-    fn expand_extract_templates(
-        &self,
-        extract: &[ToolExtract],
-        version: &str,
-        platform: &Platform,
-    ) -> Vec<ToolExtract> {
-        extract
-            .iter()
-            .map(|item| match item {
-                ToolExtract::Bin { path, as_name } => ToolExtract::Bin {
-                    path: self.expand_template(path, version, platform),
-                    as_name: as_name.clone(),
-                },
-                ToolExtract::Lib { path, env } => ToolExtract::Lib {
-                    path: self.expand_template(path, version, platform),
-                    env: env.clone(),
-                },
-                ToolExtract::Include { path } => ToolExtract::Include {
-                    path: self.expand_template(path, version, platform),
-                },
-                ToolExtract::PkgConfig { path } => ToolExtract::PkgConfig {
-                    path: self.expand_template(path, version, platform),
-                },
-                ToolExtract::File { path, env } => ToolExtract::File {
-                    path: self.expand_template(path, version, platform),
-                    env: env.clone(),
-                },
-            })
-            .collect()
-    }
-
-    fn cache_targets_from_source(
-        &self,
-        resolved: &ResolvedTool,
-        options: &ToolOptions,
-    ) -> Vec<PathBuf> {
-        let cache_dir = self.tool_cache_dir(options, &resolved.name, &resolved.version);
-        let extract = match &resolved.source {
-            ToolSource::GitHub { extract, .. } => extract,
-            _ => return vec![cache_dir.join("bin").join(&resolved.name)],
+    fn cache_targets_from_source(resolved: &ResolvedTool, options: &ToolOptions) -> Vec<PathBuf> {
+        let cache_dir = Self::tool_cache_dir(options, &resolved.name, &resolved.version);
+        let ToolSource::GitHub { extract, .. } = &resolved.source else {
+            return vec![cache_dir.join("bin").join(&resolved.name)];
         };
 
         if extract.is_empty() {
@@ -390,55 +338,8 @@ impl GitHubToolProvider {
 
         extract
             .iter()
-            .map(|item| self.cache_target_for_extract(&cache_dir, &resolved.name, item))
+            .map(|item| item.cache_target(&cache_dir, &resolved.name))
             .collect()
-    }
-
-    fn cache_target_for_extract(
-        &self,
-        cache_dir: &Path,
-        tool_name: &str,
-        item: &ToolExtract,
-    ) -> PathBuf {
-        match item {
-            ToolExtract::Bin { path, as_name } => {
-                let name = as_name.as_deref().unwrap_or_else(|| {
-                    Path::new(path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(tool_name)
-                });
-                cache_dir.join("bin").join(name)
-            }
-            ToolExtract::Lib { path, .. } => {
-                let name = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(tool_name);
-                cache_dir.join("lib").join(name)
-            }
-            ToolExtract::Include { path } => {
-                let name = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(tool_name);
-                cache_dir.join("include").join(name)
-            }
-            ToolExtract::PkgConfig { path } => {
-                let name = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(tool_name);
-                cache_dir.join("lib").join("pkgconfig").join(name)
-            }
-            ToolExtract::File { path, .. } => {
-                let name = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(tool_name);
-                cache_dir.join("files").join(name)
-            }
-        }
     }
 
     fn is_executable_extract(item: &ToolExtract) -> bool {
@@ -487,17 +388,16 @@ impl ToolProvider for GitHubToolProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| cuenv_core::Error::tool_resolution("Missing 'asset' in config"))?;
 
-        let tag_template = config
-            .get("tag")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| {
+        let tag_template = config.get("tag").and_then(|v| v.as_str()).map_or_else(
+            || {
                 let prefix = config
                     .get("tagPrefix")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 format!("{prefix}{{version}}")
-            });
+            },
+            String::from,
+        );
 
         let extract: Vec<ToolExtract> = config
             .get("extract")
@@ -519,13 +419,16 @@ impl ToolProvider for GitHubToolProvider {
         info!(%tool_name, %repo, %version, %platform, "Resolving GitHub release");
 
         // Expand templates
-        let tag = self.expand_template(&tag_template, version, platform);
-        let asset = self.expand_template(asset_template, version, platform);
-        let mut expanded_extract = self.expand_extract_templates(&extract, version, platform);
+        let tag = platform.expand_template(&tag_template, version);
+        let asset = platform.expand_template(asset_template, version);
+        let mut expanded_extract = extract
+            .iter()
+            .map(|item| item.expand_template(platform, version))
+            .collect::<Vec<_>>();
         if expanded_extract.is_empty()
             && let Some(path) = path.as_deref()
         {
-            let expanded_path = self.expand_template(path, version, platform);
+            let expanded_path = platform.expand_template(path, version);
             if archive::path_looks_like_library(&expanded_path) {
                 expanded_extract.push(ToolExtract::Lib {
                     path: expanded_path,
@@ -589,8 +492,8 @@ impl ToolProvider for GitHubToolProvider {
         );
 
         // Check cache
-        let cache_dir = self.tool_cache_dir(options, &resolved.name, &resolved.version);
-        let cached_targets = self.cache_targets_from_source(resolved, options);
+        let cache_dir = Self::tool_cache_dir(options, &resolved.name, &resolved.version);
+        let cached_targets = Self::cache_targets_from_source(resolved, options);
         if !options.force_refetch && cached_targets.iter().all(|p| p.exists()) {
             let cached_path = cached_targets
                 .first()
@@ -629,7 +532,7 @@ impl ToolProvider for GitHubToolProvider {
                 },
                 &cache_dir,
             )
-            .map_err(archive_err)?;
+            .map_err(|e| archive_err(&e))?;
             let final_path = if archive::file_looks_like_library(&extracted) {
                 let file_name = extracted
                     .file_name()
@@ -684,8 +587,8 @@ impl ToolProvider for GitHubToolProvider {
                 },
                 &extract_dir,
             )
-            .map_err(archive_err)?;
-            let final_path = self.cache_target_for_extract(&cache_dir, &resolved.name, item);
+            .map_err(|e| archive_err(&e))?;
+            let final_path = item.cache_target(&cache_dir, &resolved.name);
             if let Some(parent) = final_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -722,7 +625,7 @@ impl ToolProvider for GitHubToolProvider {
     }
 
     fn is_cached(&self, resolved: &ResolvedTool, options: &ToolOptions) -> bool {
-        self.cache_targets_from_source(resolved, options)
+        Self::cache_targets_from_source(resolved, options)
             .into_iter()
             .all(|path| path.exists())
     }

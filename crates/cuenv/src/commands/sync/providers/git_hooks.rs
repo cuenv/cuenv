@@ -133,12 +133,22 @@ fn sync_pre_push_hook(git_root: &Path, mode: &SyncMode) -> Result<String> {
         cuenv_core::Error::io_with_path("check pre-push hook", pre_push_path.clone(), e)
     })?;
 
-    // Dry-run mode
+    // Dry-run mode: report what a write would do without touching the hook.
     if *mode == SyncMode::DryRun {
-        if existed {
+        if !existed {
+            return Ok("pre-push: Would create".to_string());
+        }
+        let existing = fs::read_to_string(&pre_push_path).map_err(|e| {
+            cuenv_core::Error::io_with_path("read pre-push hook", pre_push_path.clone(), e)
+        })?;
+        if existing != hook_script {
             return Ok("pre-push: Would update".to_string());
         }
-        return Ok("pre-push: Would create".to_string());
+        #[cfg(unix)]
+        if rustix::fs::access(&pre_push_path, rustix::fs::Access::EXEC_OK).is_err() {
+            return Ok("pre-push: Would update permissions".to_string());
+        }
+        return Ok("pre-push: unchanged".to_string());
     }
 
     if existed {
@@ -195,8 +205,7 @@ fn sync_pre_push_hook(git_root: &Path, mode: &SyncMode) -> Result<String> {
             }
             return Ok(match mode {
                 SyncMode::Check => "pre-push: in sync",
-                SyncMode::Write => "pre-push: unchanged",
-                SyncMode::DryRun => "pre-push: Would update",
+                SyncMode::Write | SyncMode::DryRun => "pre-push: unchanged",
             }
             .to_string());
         }
@@ -391,13 +400,24 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn dry_run_reports_an_identical_executable_hook_as_unchanged() -> TestResult {
+        let (repo, _hook) = matching_hook(0o750)?;
+        assert_eq!(
+            sync_pre_push_hook(repo.path(), &SyncMode::DryRun)?,
+            "pre-push: unchanged"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn dry_run_does_not_repair_permissions_or_rewrite_hook() -> TestResult {
         let (repo, hook) = matching_hook(0o640)?;
         let before = fs::metadata(&hook)?;
 
         assert_eq!(
             sync_pre_push_hook(repo.path(), &SyncMode::DryRun)?,
-            "pre-push: Would update"
+            "pre-push: Would update permissions"
         );
         assert_eq!(fs::read_to_string(&hook)?, generate_pre_push_script());
         let after = fs::metadata(&hook)?;
