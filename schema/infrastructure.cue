@@ -283,6 +283,13 @@ import "strings"
 
 #InfrastructureName: string & =~"^[a-zA-Z][a-zA-Z0-9_-]*$"
 
+// The credentials of an S3 state bucket for one named context.
+#S3StateCredentials: {
+	accessKeyId!:     #InfrastructureStateToken
+	secretAccessKey!: #InfrastructureStateToken
+	sessionToken?:    #InfrastructureStateToken
+}
+
 // Exactly one state backend. Turso and D1 keep the same tables, so a
 // database written through one is never read through the other by accident:
 // each backend names its own database. `s3` keeps one object per project and
@@ -337,6 +344,13 @@ import "strings"
 	accessKeyId!:     #InfrastructureStateToken
 	secretAccessKey!: #InfrastructureStateToken
 	sessionToken?:    #InfrastructureStateToken
+
+	// Credentials for named contexts (see `contexts`): while the context is
+	// active its credentials replace the three above, session token
+	// included. Two contexts that can be active together cannot both be
+	// named here. The credentials above still apply when none is active,
+	// so make them the least privileged.
+	context?: [string]: #S3StateCredentials
 
 	// Least time between two writes of one project's state, such as "1s"
 	// or "250ms". Defaults to "1s" for R2, which accepts about one write

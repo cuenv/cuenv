@@ -1253,6 +1253,7 @@ infrastructure: state: s3: {
 | `accessKeyId`      | `#InfrastructureStateToken` | Yes      | Access key ID |
 | `secretAccessKey`  | `#InfrastructureStateToken` | Yes      | Secret access key |
 | `sessionToken`     | `#InfrastructureStateToken` | No       | Session token of temporary credentials |
+| `context`          | `[string]: #S3StateCredentials` | No   | Credentials that replace the three above while the [named context](/how-to/contexts/#state-credentials) is active |
 | `minWriteInterval` | `string`                    | No       | Least time between writes of one project's state, such as `"1s"` or `"250ms"` (default `"1s"` on R2) |
 | `history`          | `int` (0 to 1000)           | No (default `10`) | Earlier versions of each project's state to keep |
 
@@ -1260,6 +1261,16 @@ Each project and environment is one object,
 `[<root>/]<module>/_<package>/<project>/<env | _default>/state.json`, written
 with conditional requests. See
 [S3-compatible object storage](/how-to/infrastructure/#s3-compatible-object-storage).
+
+### #S3StateCredentials
+
+One set of S3 credentials, selected by `infrastructure.state.s3.context.<name>`.
+
+| Field             | Type                        | Required | Description |
+| ----------------- | --------------------------- | -------- | ----------- |
+| `accessKeyId`     | `#InfrastructureStateToken` | Yes      | Access key ID |
+| `secretAccessKey` | `#InfrastructureStateToken` | Yes      | Secret access key |
+| `sessionToken`    | `#InfrastructureStateToken` | No       | Session token of temporary credentials |
 
 ### #TursoState
 

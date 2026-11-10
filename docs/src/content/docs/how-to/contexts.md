@@ -111,5 +111,33 @@ a privileged credential on `user`.
 fact is the task that was asked for. CI jobs log in to the secret providers of
 every context, since the generator does not predict which will be active.
 
-Services (`cuenv up`), shell hooks, `cuenv export` and infrastructure state
-credentials do not read `env.context` yet: context variables are absent there.
+Services (`cuenv up`), shell hooks and `cuenv export` do not read `env.context`
+yet: context variables are absent there.
+
+## State credentials
+
+S3 infrastructure state takes credentials by context too, so a plan can read
+the state with a key that cannot write it:
+
+```cue
+infrastructure: state: s3: {
+	bucket: "acme-cuenv-state"
+	region: "auto"
+
+	// Used when no context below is active: keep these the weakest.
+	accessKeyId:     _readOnly & {secretName: "STATE_READ_ONLY_ACCESS_KEY_ID"}
+	secretAccessKey: _readOnly & {secretName: "STATE_READ_ONLY_SECRET_ACCESS_KEY"}
+
+	context: apply: {
+		accessKeyId:     _readWrite & {secretName: "STATE_ACCESS_KEY_ID"}
+		secretAccessKey: _readWrite & {secretName: "STATE_SECRET_ACCESS_KEY"}
+	}
+}
+```
+
+While `apply` is active its credentials replace all three base credentials,
+`sessionToken` included. Every other invocation, `state` subcommands among
+them, uses the base credentials: the `infrastructure` fact names each action
+(`"state-list"`, `"state-pull"`, `"unlock"` and so on), so a context can select
+those as well. Two contexts that can be active together cannot both be named
+here, and a name without `contexts.<name>` is an error.

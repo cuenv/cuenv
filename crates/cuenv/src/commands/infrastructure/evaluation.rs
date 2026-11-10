@@ -240,6 +240,13 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             error,
         })
     })?;
+    // Freezing the configuration re-exports the instance without the compiled
+    // `when` matchers, so the contexts of this evaluation are kept.
+    let evaluated_contexts = module
+        .get(Path::new(
+            &cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root),
+        ))
+        .and_then(|instance| instance.value.get(CONTEXTS_PATH).cloned());
     let configuration_evaluator = if request.needs == Needs::Configuration {
         let relative =
             cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root);
@@ -270,6 +277,14 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     };
     let relative_path =
         cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root);
+    if let Some(contexts) = evaluated_contexts
+        && let Some(value) = module
+            .instances
+            .get_mut(Path::new(&relative_path))
+            .and_then(|instance| instance.value.as_object_mut())
+    {
+        value.insert(CONTEXTS_PATH.to_string(), contexts);
+    }
     if let Some(fields) = project_fields {
         let instance = module
             .instances
@@ -278,7 +293,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         let value = instance.value.as_object_mut().ok_or_else(|| {
             CliError::config("the infrastructure package must evaluate to an object")
         })?;
-        for field in ["name", "env", CACHE_PATH] {
+        for field in ["name", "env", CONTEXTS_PATH, CACHE_PATH] {
             value.remove(field);
             if let Some(field_value) = fields.get(field) {
                 value.insert(field.to_string(), field_value.clone());

@@ -381,3 +381,88 @@ fn a_constraint_over_an_unknown_fact_is_an_error() {
         assert!(error.contains(expected), "{error}");
     }
 }
+
+fn override_definitions() -> HashMap<String, ContextDefinition> {
+    HashMap::from([
+        (
+            "plan".to_string(),
+            definition(
+                json!({"fields": {"infrastructure": {"equals": "plan"}}}),
+                &[],
+            ),
+        ),
+        (
+            "apply".to_string(),
+            definition(
+                json!({"fields": {"infrastructure": {"equals": "apply"}}}),
+                &["local"],
+            ),
+        ),
+        (
+            "local".to_string(),
+            definition(json!({"fields": {"ci": {"equals": null}}}), &["apply"]),
+        ),
+    ])
+}
+
+fn infrastructure_document(action: InfrastructurePolicyAction) -> Value {
+    facts(None).document(Consumer::Infrastructure(action))
+}
+
+#[test]
+fn an_override_applies_only_while_its_context_is_active() {
+    let definitions = override_definitions();
+    let overrides = Overrides {
+        field: "infrastructure.state.s3.context",
+        names: &["apply", "plan"],
+        definitions: &definitions,
+    };
+    assert_eq!(
+        overrides
+            .active(&infrastructure_document(InfrastructurePolicyAction::Apply))
+            .unwrap(),
+        Some("apply")
+    );
+    assert_eq!(
+        overrides
+            .active(&infrastructure_document(InfrastructurePolicyAction::Plan))
+            .unwrap(),
+        Some("plan")
+    );
+    assert_eq!(
+        overrides
+            .active(&infrastructure_document(
+                InfrastructurePolicyAction::StateList
+            ))
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn overrides_reject_undefined_and_overlapping_contexts() {
+    let definitions = override_definitions();
+    let document = infrastructure_document(InfrastructurePolicyAction::Plan);
+    let undefined = Overrides {
+        field: "infrastructure.state.s3.context",
+        names: &["deploy"],
+        definitions: &definitions,
+    }
+    .active(&document)
+    .unwrap_err()
+    .to_string();
+    assert!(
+        undefined.contains("define contexts.deploy.when"),
+        "{undefined}"
+    );
+    // Rejected even though only `local` matches this document.
+    let overlapping = Overrides {
+        field: "infrastructure.state.s3.context",
+        names: &["apply", "local"],
+        definitions: &definitions,
+    }
+    .active(&document)
+    .unwrap_err()
+    .to_string();
+    assert!(overlapping.contains("can both be active"), "{overlapping}");
+}

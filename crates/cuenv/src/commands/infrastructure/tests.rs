@@ -333,6 +333,23 @@ fn a_unique_project_evaluates() {
 }
 
 #[test]
+fn contexts_survive_freezing_the_configuration() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        &format!(
+            "package cuenv\n\nname: \"app\"\ncontexts: {{\n  plan: when: infrastructure: \"plan\"\n  apply: when: infrastructure: \"apply\" | \"plan\"\n}}\n{INFRASTRUCTURE}"
+        ),
+    );
+    let target = evaluate(module.path(), NameCheck::WholeModule).unwrap();
+    assert_eq!(target.contexts.len(), 2);
+    // The compiled constraint is kept, not the null a constraint exports as.
+    assert_eq!(target.contexts["plan"].overlaps, vec!["apply".to_string()]);
+}
+
+#[test]
 fn named_environment_selects_only_its_complete_configuration_and_overlay() {
     let module = module_directory();
     write(module.path(), "cue.mod/module.cue", MODULE);

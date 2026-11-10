@@ -1,10 +1,11 @@
 //! Resolving the state store, its credential and the project variables.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cuenv_core::context::{Consumer, Selection};
+use cuenv_core::context::{Consumer, Facts, Overrides, Selection};
 use cuenv_infrastructure::StateStore;
 use cuenv_infrastructure::secrets::{SecretFailure, SecretReference, SecretResolver, Secrets};
 use cuenv_manifest::environment::EnvValue;
@@ -59,11 +60,16 @@ pub(super) async fn resolve(
     } else {
         Vec::new()
     };
-    let state = &target.infrastructure.state;
-    let token_variables: Vec<String> = state
+    let configured_state = &target.infrastructure.state;
+    let state = state_for_contexts(policy_name, target)?;
+    let state = state.as_ref();
+    // The credentials of every context, active or not, stay away from
+    // providers.
+    let token_variables: Vec<String> = configured_state
         .credentials()
         .iter()
         .filter_map(|credential| credential.token)
+        .chain(configured_state.context_tokens())
         .filter_map(StateToken::passthrough_variable)
         .map(str::to_string)
         .collect();
@@ -133,6 +139,39 @@ pub(super) async fn resolve(
         store,
         provider_environment_variables,
         withheld_environment_variables,
+    })
+}
+
+/// The state backend with the credentials `action` uses: those of the active
+/// context when `infrastructure.state.s3.context` names it, the backend's
+/// own otherwise. Facts are detected only when a context has credentials.
+pub(super) fn state_for_contexts(
+    action: InfrastructurePolicyAction,
+    target: &Target,
+) -> Result<Cow<'_, InfrastructureState>, CliError> {
+    let state = &target.infrastructure.state;
+    let InfrastructureState::S3(s3) = state else {
+        return Ok(Cow::Borrowed(state));
+    };
+    if s3.context.is_empty() {
+        return Ok(Cow::Borrowed(state));
+    }
+    let names: Vec<&str> = s3.context.keys().map(String::as_str).collect();
+    let document =
+        Facts::detect(&target.project_directory).document(Consumer::Infrastructure(action));
+    let active = Overrides {
+        field: "infrastructure.state.s3.context",
+        names: &names,
+        definitions: &target.contexts,
+    }
+    .active(&document)
+    .map_err(|error| CliError::config(error.to_string()))?;
+    tracing::debug!(?action, ?active, "State credentials context");
+    Ok(match active {
+        Some(name) => Cow::Owned(InfrastructureState::S3(Box::new(
+            s3.with_credentials(&s3.context[name]),
+        ))),
+        None => Cow::Borrowed(state),
     })
 }
 

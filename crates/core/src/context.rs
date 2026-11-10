@@ -384,6 +384,64 @@ pub fn validate(env: &Env, definitions: &HashMap<String, ContextDefinition>) -> 
     Ok(())
 }
 
+/// A setting outside `env` that names one override per context, such as
+/// `infrastructure.state.s3.context`.
+#[derive(Debug, Clone, Copy)]
+pub struct Overrides<'a> {
+    /// Where the overrides are configured, for messages.
+    pub field: &'a str,
+    /// The contexts that have an override, sorted.
+    pub names: &'a [&'a str],
+    /// The project's `contexts`.
+    pub definitions: &'a HashMap<String, ContextDefinition>,
+}
+
+impl<'a> Overrides<'a> {
+    /// The context whose override applies to a document; `None` when no
+    /// context that has one is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error if an override names an undefined
+    /// context, if a constraint is over an unknown fact, or if two contexts
+    /// that have an override can be active together.
+    pub fn active(&self, document: &Value) -> Result<Option<&'a str>> {
+        let field = self.field;
+        for name in self.names {
+            let Some(definition) = self.definitions.get(*name) else {
+                return Err(Error::configuration(format!(
+                    "{field}.{name} has no matching context: define contexts.{name}.when"
+                )));
+            };
+            check_facts(&definition.when, &mut Vec::new()).map_err(|problem| {
+                Error::configuration(format!("contexts.{name}.when: {problem}"))
+            })?;
+            if let Some(other) = definition
+                .overlaps
+                .iter()
+                .find(|other| other.as_str() > *name && self.names.contains(&other.as_str()))
+            {
+                return Err(Error::configuration(format!(
+                    "{field}.{name} and {field}.{other} can both be active for one \
+                     invocation. Make their `when` constraints exclusive"
+                )));
+            }
+        }
+        let mut active = None;
+        for name in self.names {
+            if matches(&self.definitions[*name].when, document)? {
+                if let Some(first) = active {
+                    return Err(Error::configuration(format!(
+                        "{field}.{first} and {field}.{name} are both active"
+                    )));
+                }
+                active = Some(*name);
+            }
+        }
+        Ok(active)
+    }
+}
+
 /// A request for the variables one consumer may see.
 #[derive(Debug, Clone, Copy)]
 pub struct Selection<'a> {
