@@ -1,4 +1,5 @@
 use super::CIProvider;
+use super::git::{Checkout, Since};
 use crate::context::CIContext;
 use crate::report::{CheckHandle, PipelineReport};
 use async_trait::async_trait;
@@ -51,37 +52,23 @@ impl CIProvider for LocalProvider {
     }
 
     async fn changed_files(&self) -> Result<Vec<PathBuf>> {
-        let mut changed: HashSet<PathBuf> = HashSet::new();
+        let Some(checkout) = Checkout::discover() else {
+            return Ok(Vec::new());
+        };
 
-        // If we have a base_ref, get committed changes since that ref
-        if let Some(ref base_ref) = self.base_ref {
-            // Use three-dot syntax to get changes between base_ref and HEAD
-            // This shows what's in HEAD that isn't in base_ref
-            let output = std::process::Command::new("git")
-                .args(["diff", "--name-only", &format!("{base_ref}...HEAD")])
-                .output()
-                .ok();
+        // Committed changes since the base ref: what is in HEAD that the
+        // base ref does not have.
+        let committed = self
+            .base_ref
+            .as_deref()
+            .and_then(|base_ref| checkout.changed(Since::MergeBaseWith(base_ref)));
 
-            if let Some(output) = output {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    changed.insert(PathBuf::from(line));
-                }
-            }
-        }
-
-        // Always include uncommitted changes (staged + unstaged)
-        let output = std::process::Command::new("git")
-            .args(["diff", "--name-only", "HEAD"])
-            .output()
-            .ok();
-
-        if let Some(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                changed.insert(PathBuf::from(line));
-            }
-        }
+        // Always include uncommitted changes (staged + unstaged).
+        let changed: HashSet<PathBuf> = committed
+            .into_iter()
+            .chain(checkout.uncommitted())
+            .flatten()
+            .collect();
 
         Ok(changed.into_iter().collect())
     }

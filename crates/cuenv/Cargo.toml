@@ -83,7 +83,8 @@ cuenv-release = { workspace = true }
 cuenv-services = { workspace = true }
 cuenv-infrastructure = { workspace = true }
 cuengine = { workspace = true }
-gix = { workspace = true }
+# The HTTP transport takes its TLS from the workspace's reqwest features.
+gix = { workspace = true, features = ["index", "status", "dirwalk", "worktree-mutation", "blocking-network-client", "blocking-http-transport-reqwest"] }
 glob = { workspace = true }
 ignore = { workspace = true }
 # Platform-specific providers (optional)

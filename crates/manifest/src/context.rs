@@ -1,57 +1,52 @@
 //! Named context DTOs.
 //!
-//! A context is a constraint over the facts of an invocation (see `#Context`
-//! in `schema/context.cue`). The CUE bridge exports each constraint as a
-//! [`ContextMatcher`], because a constraint is not data and would otherwise
-//! export as `null`. Matching lives in `cuenv-core` (`context`).
+//! A context is a filter over one invocation of cuenv (see
+//! `schema/context.cue`). A filter is data: a field left out matches anything,
+//! and a string is a regular expression that must match the whole value.
+//! Matching lives in `cuenv-core` (`context`).
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
-/// A named context: when it is active, and which contexts can be active with it.
+/// A named context: what an invocation must look like for it to be active.
+///
+/// The two filters share no field, so the fields of an entry decide which one
+/// it is.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ContextDefinition {
+    /// Matches the tasks cuenv runs (`#TaskFilter`).
+    Task(TaskFilter),
+    /// Matches the facts of an invocation (`#When`).
+    When(When),
+}
+
+/// A filter over the tasks cuenv runs, one task at a time (`#TaskFilter`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ContextDefinition {
-    /// The constraint an invocation's facts must satisfy.
-    pub when: ContextMatcher,
+pub struct TaskFilter {
+    /// The task's full name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 
-    /// The other contexts whose constraint can hold at the same time.
-    #[serde(default)]
-    pub overlaps: Vec<String>,
+    /// The program the task runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+
+    /// Labels the task must carry: each entry must match one of its labels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
 }
 
-/// The kinds a constraint can require without naming a value.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ContextKind {
-    /// Any string.
-    String,
-    /// Any boolean.
-    Bool,
-    /// Any number.
-    Number,
-    /// Any value.
-    Any,
+impl TaskFilter {
+    /// Whether the filter names nothing, and so says nothing about a task.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.command.is_none() && self.labels.is_empty()
+    }
 }
 
-/// A compiled `when` constraint.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum ContextMatcher {
-    /// The fact is exactly this value (`null` included).
-    Equals(serde_json::Value),
-    /// The fact has this value's type and is a different value (`!=`).
-    NotEquals(serde_json::Value),
-    /// The fact has this kind.
-    Kind(ContextKind),
-    /// The fact is a string the regular expression matches (`=~`).
-    Matches(String),
-    /// The fact is a string the regular expression does not match (`!~`).
-    NotMatches(String),
-    /// Some matcher holds (`|`).
-    AnyOf(Vec<Self>),
-    /// Every matcher holds (`&`).
-    AllOf(Vec<Self>),
-    /// The fact is a struct whose named fields match.
-    Fields(BTreeMap<String, Self>),
-}
+/// A filter over the facts of an invocation (`#When`), by fact name. A value
+/// is a string, `null`, or the fields of a fact that has some.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(transparent)]
+pub struct When(pub serde_json::Map<String, serde_json::Value>);

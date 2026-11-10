@@ -16,6 +16,10 @@ Do not infer that a schema definition is fully implemented. Respect `implemented
 
 Schema project/base regression tests should build temporary local modules from the checked-out schema, return `Result` from filesystem, schema-copy, command, and evaluation setup, and avoid file-level unwrap/expect allowances so schema failures stay explicit.
 
+Plain `cue export` must work on every project, example and accept fixture. A regular field of the schema never holds a constraint or any other non-concrete value: express a match as data (see `#When` and `#TaskFilter` in `schema/context.cue`) or put what is not data in a definition or hidden field. Never relax `ci.schema-compat` to accept something `cue export` rejects.
+
+The supported floor is CUE v0.18 and language `v0.18.0` (`AGENTS.md`). Do not add workarounds, fixtures or compat-matrix entries for anything older. The rules below that exist only for older releases stay until the compat matrix, the bridge and the module language version are migrated; remove them with that migration.
+
 Schema authoring rules, enforced by `cuenv task ci.schema-compat` across CUE v0.15.1 (the Nix dev shell), v0.16.1, v0.17.1 and v0.18.0-rc.1:
 
 - Do not wrap definitions in `close({...})`. Definitions are already closed, and `close()` with an embedded definition breaks file-level embedding on CUE v0.17+.

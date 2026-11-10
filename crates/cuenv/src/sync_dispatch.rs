@@ -341,14 +341,12 @@ fn execute_release_command(command: Command, json_format: OutputFormat) -> Resul
             since,
             dry_run,
             branch,
-            no_pr,
         } => {
             let opts = commands::release::ReleasePrepareOptions {
                 path,
                 since,
                 dry_run,
                 branch,
-                no_pr,
             };
             match commands::release::execute_release_prepare(&opts) {
                 Ok(output) => {

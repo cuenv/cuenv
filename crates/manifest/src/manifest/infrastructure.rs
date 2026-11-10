@@ -245,6 +245,23 @@ pub enum InfrastructurePolicyAction {
 }
 
 impl InfrastructurePolicyAction {
+    /// Every action, in declaration order.
+    pub const ALL: [Self; 13] = [
+        Self::Plan,
+        Self::Apply,
+        Self::Import,
+        Self::Destroy,
+        Self::StateList,
+        Self::StateRemove,
+        Self::StateRecover,
+        Self::StateAdopt,
+        Self::StatePull,
+        Self::StateRestore,
+        Self::StateMigrate,
+        Self::StateRename,
+        Self::Unlock,
+    ];
+
     /// The name used in CUE and in messages.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

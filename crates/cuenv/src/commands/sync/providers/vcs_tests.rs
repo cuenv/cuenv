@@ -1,8 +1,8 @@
 use super::{CollectedVcsDependency, VcsSyncRequest, VcsSyncScope, sync_vcs_dependencies};
 use crate::commands::sync::provider::{SyncMode, SyncOptions};
+use crate::test_git::{commit_all, init_repository};
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::VcsDependency;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 
@@ -565,89 +565,28 @@ fn workspace_sync_allows_renamed_dependency_at_same_path() {
 
 fn create_workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    super::run_git(
-        [OsStr::new("init"), OsStr::new("-b"), OsStr::new("main")],
-        Some(dir.path()),
-    )
-    .expect("git init");
+    init_repository(dir.path()).expect("a repository");
     dir
 }
 
 fn create_source_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    super::run_git(
-        [OsStr::new("init"), OsStr::new("-b"), OsStr::new("main")],
-        Some(dir.path()),
-    )
-    .expect("git init");
-    super::run_git(
-        [
-            OsStr::new("config"),
-            OsStr::new("user.email"),
-            OsStr::new("test@example.com"),
-        ],
-        Some(dir.path()),
-    )
-    .expect("git config email");
-    super::run_git(
-        [
-            OsStr::new("config"),
-            OsStr::new("user.name"),
-            OsStr::new("Cuenv Test"),
-        ],
-        Some(dir.path()),
-    )
-    .expect("git config name");
-    super::run_git(
-        [
-            OsStr::new("config"),
-            OsStr::new("commit.gpgsign"),
-            OsStr::new("false"),
-        ],
-        Some(dir.path()),
-    )
-    .expect("git config commit signing");
+    init_repository(dir.path()).expect("a repository");
     let mut file = fs::File::create(dir.path().join("lib.txt")).expect("file");
     writeln!(file, "hello").expect("write");
-    super::run_git([OsStr::new("add"), OsStr::new("lib.txt")], Some(dir.path())).expect("git add");
-    super::run_git(
-        [
-            OsStr::new("commit"),
-            OsStr::new("-m"),
-            OsStr::new("initial"),
-        ],
-        Some(dir.path()),
-    )
-    .expect("git commit");
+    commit_all(dir.path(), "initial").expect("a commit");
     dir
 }
 
 /// Source repo with multiple top-level directories so subdir tests can
-/// verify a sparse checkout extracts only the requested subtree.
+/// verify that only the requested subtree is extracted.
 fn create_source_repo_with_subdirs() -> tempfile::TempDir {
     let dir = create_source_repo();
     let skills = dir.path().join(".agents/skills/example");
     fs::create_dir_all(&skills).expect("create skills subdir");
     fs::write(skills.join("SKILL.md"), "# Example skill\n").expect("write SKILL.md");
     fs::write(dir.path().join("other.txt"), "sibling content\n").expect("write sibling");
-    super::run_git(
-        [
-            OsStr::new("add"),
-            OsStr::new(".agents/skills/example/SKILL.md"),
-            OsStr::new("other.txt"),
-        ],
-        Some(dir.path()),
-    )
-    .expect("git add subdirs");
-    super::run_git(
-        [
-            OsStr::new("commit"),
-            OsStr::new("-m"),
-            OsStr::new("add subdirs"),
-        ],
-        Some(dir.path()),
-    )
-    .expect("git commit subdirs");
+    commit_all(dir.path(), "add subdirs").expect("a commit");
     dir
 }
 
@@ -726,7 +665,7 @@ fn subdir_invalid_values_rejected() {
 }
 
 #[test]
-fn sparse_checkout_extracts_only_subdir() {
+fn subdir_materialization_extracts_only_subdir() {
     let source = create_source_repo_with_subdirs();
     let workspace = create_workspace();
     let dependency = CollectedVcsDependency {
@@ -814,23 +753,7 @@ fn changing_subdir_at_same_path_rematerialises() {
     let other = source.path().join(".agents/skills/other");
     fs::create_dir_all(&other).expect("create other skill dir");
     fs::write(other.join("SKILL.md"), "# Other\n").expect("write other SKILL.md");
-    super::run_git(
-        [
-            OsStr::new("add"),
-            OsStr::new(".agents/skills/other/SKILL.md"),
-        ],
-        Some(source.path()),
-    )
-    .expect("git add other");
-    super::run_git(
-        [
-            OsStr::new("commit"),
-            OsStr::new("-m"),
-            OsStr::new("add other"),
-        ],
-        Some(source.path()),
-    )
-    .expect("git commit other");
+    commit_all(source.path(), "add other").expect("a commit");
 
     let workspace = create_workspace();
     let mut dependency = CollectedVcsDependency {
@@ -903,17 +826,7 @@ fn create_source_repo_with_overlay_children() -> tempfile::TempDir {
         fs::create_dir_all(&skill).expect("create skill dir");
         fs::write(skill.join("SKILL.md"), format!("# {child}\n")).expect("write SKILL.md");
     }
-    super::run_git([OsStr::new("add"), OsStr::new(".agents")], Some(dir.path()))
-        .expect("git add skills");
-    super::run_git(
-        [
-            OsStr::new("commit"),
-            OsStr::new("-m"),
-            OsStr::new("add overlay children"),
-        ],
-        Some(dir.path()),
-    )
-    .expect("git commit skills");
+    commit_all(dir.path(), "add overlay children").expect("a commit");
     dir
 }
 
@@ -1099,17 +1012,7 @@ fn overlay_prunes_dropped_child() {
 
     // Upstream drops the `other` child.
     fs::remove_dir_all(source.path().join(".agents/skills/other")).expect("remove other");
-    super::run_git([OsStr::new("add"), OsStr::new("-A")], Some(source.path()))
-        .expect("git add removal");
-    super::run_git(
-        [
-            OsStr::new("commit"),
-            OsStr::new("-m"),
-            OsStr::new("drop other"),
-        ],
-        Some(source.path()),
-    )
-    .expect("git commit removal");
+    commit_all(source.path(), "drop other").expect("a commit");
 
     let options = SyncOptions {
         update_tools: Some(Vec::new()),
@@ -1168,20 +1071,7 @@ fn overlay_rejects_file_child() {
     let source = create_source_repo_with_overlay_children();
     // Add a loose file directly under the subtree root.
     fs::write(source.path().join(".agents/skills/loose.txt"), "loose\n").expect("write loose");
-    super::run_git(
-        [OsStr::new("add"), OsStr::new(".agents/skills/loose.txt")],
-        Some(source.path()),
-    )
-    .expect("git add loose");
-    super::run_git(
-        [
-            OsStr::new("commit"),
-            OsStr::new("-m"),
-            OsStr::new("add loose file"),
-        ],
-        Some(source.path()),
-    )
-    .expect("git commit loose");
+    commit_all(source.path(), "add loose file").expect("a commit");
 
     let workspace = create_workspace();
     let dependency = overlay_dependency(source.path().display().to_string());
@@ -1204,23 +1094,7 @@ fn overlay_rejects_invalid_child_name_before_materializing() {
     let invalid = source.path().join(".agents/skills/-bad");
     fs::create_dir_all(&invalid).expect("create invalid child");
     fs::write(invalid.join("SKILL.md"), "# Bad\n").expect("write invalid child");
-    super::run_git(
-        [
-            OsStr::new("add"),
-            OsStr::new(".agents/skills/-bad/SKILL.md"),
-        ],
-        Some(source.path()),
-    )
-    .expect("git add invalid child");
-    super::run_git(
-        [
-            OsStr::new("commit"),
-            OsStr::new("-m"),
-            OsStr::new("add invalid overlay child"),
-        ],
-        Some(source.path()),
-    )
-    .expect("git commit invalid child");
+    commit_all(source.path(), "add invalid overlay child").expect("a commit");
 
     let workspace = create_workspace();
     let dependency = overlay_dependency(source.path().display().to_string());

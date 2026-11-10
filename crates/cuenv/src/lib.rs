@@ -18,6 +18,8 @@ pub mod performance;
 pub mod providers;
 
 pub mod secret_registry;
+#[cfg(test)]
+pub(crate) mod test_git;
 /// Tracing and logging configuration.
 pub mod tracing;
 /// Terminal UI components.

@@ -14,7 +14,7 @@ package schema
 	vendor!: bool
 	// Repository-relative materialization path.
 	path!: string
-	// Optional repo-relative subdirectory to materialize via sparse checkout.
+	// Optional repo-relative subdirectory to materialize on its own.
 	// When set, only this subtree is materialized at `path`.
 	// Must be a forward-slash relative path with no ".", "..", or glob characters.
 	subdir?: string

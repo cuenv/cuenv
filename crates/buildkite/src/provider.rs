@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use cuenv_ci::context::CIContext;
 use cuenv_ci::provider::CIProvider;
+use cuenv_ci::provider::git::{Checkout, Fetch, Since};
 use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus};
 use cuenv_core::Result;
 use std::path::PathBuf;
@@ -39,61 +40,33 @@ impl BuildkiteCIProvider {
         std::env::var("BUILDKITE_PIPELINE_DEFAULT_BRANCH").ok()
     }
 
-    /// Fetch a ref if we're in a shallow clone.
-    fn fetch_ref(refspec: &str) -> bool {
-        debug!("Fetching ref: {refspec}");
-        Command::new("git")
-            .args(["fetch", "--depth=1", "origin", refspec])
-            .output()
-            .is_ok_and(|o| o.status.success())
+    /// Fetch from `origin` into a shallow clone.
+    fn fetch(fetch: Fetch<'_>) -> bool {
+        debug!("Fetching {fetch:?}");
+        let Some(checkout) = Checkout::discover() else {
+            return false;
+        };
+        checkout
+            .fetch(fetch)
+            .inspect_err(|error| debug!("Could not fetch {fetch:?}: {error}"))
+            .is_ok()
     }
 
     /// Check if this is a shallow clone.
     fn is_shallow_clone() -> bool {
-        Command::new("git")
-            .args(["rev-parse", "--is-shallow-repository"])
-            .output()
-            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+        Checkout::discover().is_some_and(|checkout| checkout.is_shallow())
     }
 
-    /// Try to get changed files using git diff.
-    fn try_git_diff(range: &str) -> Option<Vec<PathBuf>> {
-        debug!("Trying git diff: {range}");
-        let output = Command::new("git")
-            .args(["diff", "--name-only", range])
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            debug!(
-                "git diff failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return None;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Some(
-            stdout
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(|line| PathBuf::from(line.trim()))
-                .collect(),
-        )
+    /// The files that differ between a starting point and `HEAD`.
+    fn changed_since(since: Since<'_>) -> Option<Vec<PathBuf>> {
+        debug!("Comparing HEAD with {since:?}");
+        Checkout::discover()?.changed(since)
     }
 
     /// Get all tracked files as fallback.
     fn get_all_tracked_files() -> Vec<PathBuf> {
-        Command::new("git")
-            .args(["ls-files"])
-            .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .map(|line| PathBuf::from(line.trim()))
-                    .collect()
-            })
+        Checkout::discover()
+            .map(|checkout| checkout.tracked_files())
             .unwrap_or_default()
     }
 }
@@ -146,10 +119,12 @@ impl CIProvider for BuildkiteCIProvider {
             info!("PR detected, comparing against base_ref: {base}");
 
             if is_shallow {
-                Self::fetch_ref(base);
+                Self::fetch(Fetch::Branch(base));
             }
 
-            if let Some(files) = Self::try_git_diff(&format!("origin/{base}...HEAD")) {
+            if let Some(files) =
+                Self::changed_since(Since::MergeBaseWith(&format!("origin/{base}")))
+            {
                 info!("Found {} changed files via PR comparison", files.len());
                 return Ok(files);
             }
@@ -158,11 +133,11 @@ impl CIProvider for BuildkiteCIProvider {
         // Strategy 2: For shallow clones, fetch one more commit to enable HEAD^ comparison
         if is_shallow {
             info!("Shallow clone detected, fetching additional history for HEAD^ comparison");
-            let _ = Command::new("git").args(["fetch", "--deepen=1"]).output();
+            Self::fetch(Fetch::OneMoreCommit);
         }
 
         // Strategy 3: Compare against parent commit
-        if let Some(files) = Self::try_git_diff("HEAD^..HEAD") {
+        if let Some(files) = Self::changed_since(Since::Revision("HEAD^")) {
             info!("Found {} changed files via HEAD^ comparison", files.len());
             return Ok(files);
         }

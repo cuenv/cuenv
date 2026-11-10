@@ -1,37 +1,95 @@
-//! Named contexts: select environment variables from the facts of an invocation.
+//! Named contexts: select environment variables for each invocation.
 //!
-//! `contexts.<name>.when` is a constraint over a document of facts (`#Context`
-//! in `schema/context.cue`). The CUE bridge exports each constraint as a
-//! [`ContextMatcher`]; this module builds the document, decides which contexts
-//! are active and selects `env.context.<name>` accordingly.
+//! `contexts.<name>` is a filter (see `schema/context.cue`): a [`When`] over
+//! the facts of an invocation, or a [`TaskFilter`] over the task being run.
+//! This module builds the facts, decides which contexts are active and
+//! selects `env.context.<name>` accordingly.
 //!
-//! Every fact is reported by the machine running cuenv, so a context chooses
-//! what an invocation asks for. It never establishes that the invocation is
-//! entitled to it: the secrets backend has to enforce that.
+//! A filter is data. A field left out matches anything, and a string is a
+//! regular expression that must match the whole value, so a string without
+//! regular expression characters matches exactly itself.
+//!
+//! Everything a filter reads is reported by the machine running cuenv, so a
+//! context chooses what an invocation asks for. It never establishes that the
+//! invocation is entitled to it: the secrets backend has to enforce that.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub use cuenv_manifest::context::{ContextDefinition, ContextKind, ContextMatcher};
+pub use cuenv_manifest::context::{ContextDefinition, TaskFilter, When};
 use cuenv_manifest::environment::{Env, EnvSelection, EnvValue};
 use cuenv_manifest::manifest::InfrastructurePolicyAction;
-use serde_json::{Value, json};
+use cuenv_manifest::tasks::Task;
+use serde_json::{Map, Value, json};
 
 use crate::{Error, Result};
+
+/// The outcome of reading a filter, with the problem in words. [`validate`]
+/// names the context when it reports one.
+type Checked<T> = std::result::Result<T, String>;
+
+/// The values of the `consumer` fact.
+const CONSUMERS: [&str; 4] = ["task", "exec", "infrastructure", "shell"];
+
+/// A task about to receive the environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskSubject<'a> {
+    /// The task's full name.
+    pub name: &'a str,
+    /// The program the task runs; `None` for a script.
+    pub command: Option<&'a str>,
+    /// The task's labels.
+    pub labels: &'a [String],
+}
+
+impl<'a> TaskSubject<'a> {
+    /// The subject for a task of the graph.
+    #[must_use]
+    pub fn of(name: &'a str, task: &'a Task) -> Self {
+        Self {
+            name,
+            command: (!task.command.is_empty()).then_some(task.command.as_str()),
+            labels: &task.labels,
+        }
+    }
+
+    /// The subject for a name that is not one task, such as a group.
+    #[must_use]
+    pub const fn named(name: &'a str) -> Self {
+        Self {
+            name,
+            command: None,
+            labels: &[],
+        }
+    }
+}
 
 /// What is about to receive the environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Consumer<'a> {
-    /// A task, by name.
-    Task(&'a str),
-    /// A command run by `cuenv exec`, by program name.
+    /// A task.
+    Task(TaskSubject<'a>),
+    /// A command run by `cuenv exec`: the program as it was written on the
+    /// command line, which is also what an `allowExec` policy names.
     Exec(&'a str),
     /// An infrastructure action.
     Infrastructure(InfrastructurePolicyAction),
     /// The shell, or a command that prints the environment.
     Shell,
+}
+
+impl Consumer<'_> {
+    /// The value of the `consumer` fact.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Task(_) => "task",
+            Self::Exec(_) => "exec",
+            Self::Infrastructure(_) => "infrastructure",
+            Self::Shell => "shell",
+        }
+    }
 }
 
 /// The CI run cuenv is part of.
@@ -115,8 +173,8 @@ pub struct Facts {
 }
 
 impl Facts {
-    /// Detect the facts for a project directory. Detection runs `git` and
-    /// `hostname`, so the result is kept for the life of the process.
+    /// Detect the facts for a project directory. Detection opens the git
+    /// repository, so the result is kept for the life of the process.
     #[must_use]
     pub fn detect(directory: &Path) -> Arc<Self> {
         static DETECTED: OnceLock<Mutex<HashMap<PathBuf, Arc<Facts>>>> = OnceLock::new();
@@ -126,17 +184,19 @@ impl Facts {
         {
             return Arc::clone(facts);
         }
-        let git = |arguments: &[&str]| {
-            command_output(Command::new("git").arg("-C").arg(directory).args(arguments))
+        let repository = gix::discover(directory).ok();
+        let setting = |key: &str| {
+            let value = repository.as_ref()?.config_snapshot().string(key)?;
+            non_empty(&value.to_string())
         };
         let facts = Arc::new(Self {
             ci: CiFacts::from_variables(|name| std::env::var(name).ok()),
-            user_name: git(&["config", "--get", "user.name"]),
-            user_email: git(&["config", "--get", "user.email"]),
+            user_name: setting("user.name"),
+            user_email: setting("user.email"),
             host_os: std::env::consts::OS.to_string(),
             host_arch: std::env::consts::ARCH.to_string(),
-            host_name: command_output(&mut Command::new("hostname")),
-            branch: git(&["symbolic-ref", "--quiet", "--short", "HEAD"]),
+            host_name: host_name(),
+            branch: repository.as_ref().and_then(branch),
         });
         if let Ok(mut known) = detected.lock() {
             known.insert(directory.to_path_buf(), Arc::clone(&facts));
@@ -144,20 +204,17 @@ impl Facts {
         facts
     }
 
-    /// The `#Context` document for one consumer.
+    /// The facts a [`When`] filters, for one consumer. Every fact is present;
+    /// one that does not apply is `null`.
     #[must_use]
     pub fn document(&self, consumer: Consumer<'_>) -> Value {
-        let (command, task, exec, infrastructure) = match consumer {
-            Consumer::Task(name) => ("task", json!(name), Value::Null, Value::Null),
-            Consumer::Exec(program) => ("exec", Value::Null, json!(program), Value::Null),
-            Consumer::Infrastructure(action) => {
-                ("infrastructure", Value::Null, Value::Null, json!(action))
-            }
-            Consumer::Shell => ("shell", Value::Null, Value::Null, Value::Null),
+        let (exec, infrastructure) = match consumer {
+            Consumer::Exec(program) => (json!(program), Value::Null),
+            Consumer::Infrastructure(action) => (Value::Null, json!(action)),
+            Consumer::Task(_) | Consumer::Shell => (Value::Null, Value::Null),
         };
         json!({
-            "command": command,
-            "task": task,
+            "consumer": consumer.name(),
             "exec": exec,
             "infrastructure": infrastructure,
             "ci": self.ci.as_ref().map(|ci| json!({
@@ -173,95 +230,128 @@ impl Facts {
     }
 }
 
-/// The trimmed standard output of a command that succeeded with some.
-fn command_output(command: &mut Command) -> Option<String> {
-    let output = command
-        .output()
-        .ok()
-        .filter(|output| output.status.success())?;
-    let text = String::from_utf8(output.stdout).ok()?;
+/// The trimmed text, unless nothing is left of it.
+fn non_empty(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// Whether a fact satisfies a compiled constraint.
+/// The branch `HEAD` names; `None` when it is detached.
+fn branch(repository: &gix::Repository) -> Option<String> {
+    let name = repository.head_name().ok()??;
+    non_empty(&name.shorten().to_string())
+}
+
+/// The name the operating system has for this host.
+#[cfg(unix)]
+fn host_name() -> Option<String> {
+    non_empty(&rustix::system::uname().nodename().to_string_lossy())
+}
+
+/// The name the operating system has for this host.
+#[cfg(not(unix))]
+fn host_name() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .as_deref()
+        .and_then(non_empty)
+}
+
+/// Compile a filter string: a regular expression that must match the whole
+/// value.
+fn pattern(text: &str) -> Checked<regex::Regex> {
+    let invalid = |error| format!("`{text}` is not a valid regular expression: {error}");
+    // The string must be an expression on its own. Otherwise `a)|(b` would
+    // close the group below and stop being held to the whole value.
+    regex::Regex::new(text).map_err(invalid)?;
+    regex::Regex::new(&format!("^(?:{text})$")).map_err(invalid)
+}
+
+/// Whether a filter string matches exactly itself.
+fn is_literal(text: &str) -> bool {
+    regex::escape(text) == text
+}
+
+/// Whether a fact satisfies its filter.
+fn fact_matches(filter: &Value, fact: &Value) -> Checked<bool> {
+    match (filter, fact) {
+        (Value::Null, fact) => Ok(fact.is_null()),
+        (Value::String(text), Value::String(fact)) => Ok(pattern(text)?.is_match(fact)),
+        (Value::Object(filters), Value::Object(facts)) => facts_match(filters, facts),
+        _ => Ok(false),
+    }
+}
+
+/// Whether every filtered fact is present and satisfies its filter.
+fn facts_match(filters: &Map<String, Value>, facts: &Map<String, Value>) -> Checked<bool> {
+    for (name, filter) in filters {
+        let Some(fact) = facts.get(name) else {
+            return Ok(false);
+        };
+        if !fact_matches(filter, fact)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether a task satisfies a filter.
+fn task_matches(filter: &TaskFilter, task: TaskSubject<'_>) -> Checked<bool> {
+    if let Some(name) = &filter.name
+        && !pattern(name)?.is_match(task.name)
+    {
+        return Ok(false);
+    }
+    if let Some(command) = &filter.command {
+        let Some(program) = task.command else {
+            return Ok(false);
+        };
+        if !pattern(command)?.is_match(program) {
+            return Ok(false);
+        }
+    }
+    for label in &filter.labels {
+        let label = pattern(label)?;
+        if !task.labels.iter().any(|carried| label.is_match(carried)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether a context is active for a consumer whose facts are `document`.
+fn is_active(
+    definition: &ContextDefinition,
+    consumer: Consumer<'_>,
+    document: &Value,
+) -> Checked<bool> {
+    match (definition, consumer) {
+        (ContextDefinition::When(when), _) => Ok(document
+            .as_object()
+            .map(|facts| facts_match(&when.0, facts))
+            .transpose()?
+            .unwrap_or(false)),
+        (ContextDefinition::Task(filter), Consumer::Task(task)) => task_matches(filter, task),
+        (ContextDefinition::Task(_), _) => Ok(false),
+    }
+}
+
+/// The names of the contexts active for a consumer, sorted.
 ///
 /// # Errors
 ///
-/// Returns an error if a regular expression in the constraint is invalid.
-pub fn matches(matcher: &ContextMatcher, fact: &Value) -> Result<bool> {
-    Ok(match matcher {
-        ContextMatcher::Equals(expected) => fact == expected,
-        ContextMatcher::NotEquals(excluded) => {
-            std::mem::discriminant(fact) == std::mem::discriminant(excluded) && fact != excluded
-        }
-        ContextMatcher::Kind(kind) => match kind {
-            ContextKind::String => fact.is_string(),
-            ContextKind::Bool => fact.is_boolean(),
-            ContextKind::Number => fact.is_number(),
-            ContextKind::Any => true,
-        },
-        ContextMatcher::Matches(pattern) => match fact.as_str() {
-            Some(text) => expression(pattern)?.is_match(text),
-            None => false,
-        },
-        ContextMatcher::NotMatches(pattern) => match fact.as_str() {
-            Some(text) => !expression(pattern)?.is_match(text),
-            None => false,
-        },
-        ContextMatcher::AnyOf(matchers) => {
-            for matcher in matchers {
-                if matches(matcher, fact)? {
-                    return Ok(true);
-                }
-            }
-            false
-        }
-        ContextMatcher::AllOf(matchers) => {
-            for matcher in matchers {
-                if !matches(matcher, fact)? {
-                    return Ok(false);
-                }
-            }
-            true
-        }
-        ContextMatcher::Fields(fields) => {
-            let Some(object) = fact.as_object() else {
-                return Ok(false);
-            };
-            for (name, matcher) in fields {
-                let Some(field) = object.get(name) else {
-                    return Ok(false);
-                };
-                if !matches(matcher, field)? {
-                    return Ok(false);
-                }
-            }
-            true
-        }
-    })
-}
-
-fn expression(pattern: &str) -> Result<regex::Regex> {
-    regex::Regex::new(pattern).map_err(|error| {
-        Error::configuration(format!(
-            "context constraint has an invalid regular expression `{pattern}`: {error}"
-        ))
-    })
-}
-
-/// The names of the contexts a document satisfies, sorted.
-///
-/// # Errors
-///
-/// Returns an error if a constraint holds an invalid regular expression.
+/// Returns an error if a filter holds an invalid regular expression.
 pub fn active_contexts(
     definitions: &HashMap<String, ContextDefinition>,
-    document: &Value,
+    facts: &Facts,
+    consumer: Consumer<'_>,
 ) -> Result<Vec<String>> {
+    let document = facts.document(consumer);
     let mut active = Vec::new();
     for (name, definition) in definitions {
-        if matches(&definition.when, document)? {
+        if is_active(definition, consumer, &document)
+            .map_err(|problem| problem_in(name, &problem))?
+        {
             active.push(name.clone());
         }
     }
@@ -269,13 +359,15 @@ pub fn active_contexts(
     Ok(active)
 }
 
-/// The fields of the `#Context` document at a path, or `None` for a fact that
-/// has no fields.
+fn problem_in(name: &str, problem: &str) -> Error {
+    Error::configuration(format!("contexts.{name}: {problem}"))
+}
+
+/// The fields of the facts at a path, or `None` for a fact that has no fields.
 fn document_fields(path: &[&str]) -> Option<&'static [&'static str]> {
     match path {
         [] => Some(&[
-            "command",
-            "task",
+            "consumer",
             "exec",
             "infrastructure",
             "ci",
@@ -291,57 +383,209 @@ fn document_fields(path: &[&str]) -> Option<&'static [&'static str]> {
     }
 }
 
-/// Reject a constraint over a fact the document does not have. CUE does not
-/// do this: a project embeds its schema at the top of the file, which leaves
-/// `when` open, so a misspelt fact would otherwise be a context that never
-/// matches.
-fn check_facts<'matcher>(
-    matcher: &'matcher ContextMatcher,
-    path: &mut Vec<&'matcher str>,
-) -> std::result::Result<(), String> {
-    match matcher {
-        ContextMatcher::AnyOf(matchers) | ContextMatcher::AllOf(matchers) => matchers
-            .iter()
-            .try_for_each(|matcher| check_facts(matcher, path)),
-        ContextMatcher::Fields(fields) => {
-            let known = document_fields(path).unwrap_or_default();
-            for (name, matcher) in fields {
-                path.push(name);
-                if !known.contains(&name.as_str()) {
-                    return Err(format!(
-                        "`{}` is not a fact of an invocation",
-                        path.join(".")
-                    ));
-                }
-                check_facts(matcher, path)?;
-                path.pop();
-            }
-            Ok(())
-        }
-        _ => Ok(()),
+/// Every value of a fact that has a fixed set of them.
+fn known_values(path: &[&str]) -> Option<Vec<&'static str>> {
+    match path {
+        ["consumer"] => Some(CONSUMERS.to_vec()),
+        ["infrastructure"] => Some(
+            InfrastructurePolicyAction::ALL
+                .iter()
+                .map(|action| action.as_str())
+                .collect(),
+        ),
+        _ => None,
     }
 }
 
-/// Check that `env.context` can be selected without ambiguity:
+/// Reject a filter over a fact an invocation does not have: it would be a
+/// context that never matches.
+fn check_facts<'filter>(
+    filters: &'filter Map<String, Value>,
+    path: &mut Vec<&'filter str>,
+) -> Checked<()> {
+    let known = document_fields(path).unwrap_or_default();
+    for (name, filter) in filters {
+        path.push(name);
+        if !known.contains(&name.as_str()) {
+            return Err(format!(
+                "`{}` is not a fact of an invocation",
+                path.join(".")
+            ));
+        }
+        check_fact(filter, path)?;
+        path.pop();
+    }
+    Ok(())
+}
+
+/// Reject a filter that is not a string, `null` or fields, a string that is
+/// not a regular expression, and one that matches none of a fact's values.
+fn check_fact<'filter>(filter: &'filter Value, path: &mut Vec<&'filter str>) -> Checked<()> {
+    match filter {
+        Value::Null => Ok(()),
+        Value::String(text) => {
+            let expression = pattern(text)?;
+            match known_values(path) {
+                Some(values) if !values.iter().any(|value| expression.is_match(value)) => {
+                    Err(format!(
+                        "`{text}` matches no value of `{}` ({})",
+                        path.join("."),
+                        values.join(", ")
+                    ))
+                }
+                _ => Ok(()),
+            }
+        }
+        Value::Object(filters) => check_facts(filters, path),
+        _ => Err(format!(
+            "`{}` must be a string, null or the fields of a fact",
+            path.join(".")
+        )),
+    }
+}
+
+fn check_definition(definition: &ContextDefinition) -> Checked<()> {
+    match definition {
+        ContextDefinition::When(when) => check_facts(&when.0, &mut Vec::new()),
+        ContextDefinition::Task(filter) if filter.is_empty() => Err(
+            "the filter is empty: name a fact (#When) or a task's name, command or labels \
+             (#TaskFilter)"
+                .to_string(),
+        ),
+        ContextDefinition::Task(filter) => filter
+            .name
+            .iter()
+            .chain(&filter.command)
+            .chain(&filter.labels)
+            .try_for_each(|text| pattern(text).map(|_| ())),
+    }
+}
+
+/// The consumers a context can be active for.
+fn consumers(definition: &ContextDefinition) -> Checked<Vec<&'static str>> {
+    let when = match definition {
+        ContextDefinition::Task(_) => return Ok(vec!["task"]),
+        ContextDefinition::When(when) => &when.0,
+    };
+    let mut possible = CONSUMERS.to_vec();
+    if let Some(Value::String(text)) = when.get("consumer") {
+        let expression = pattern(text)?;
+        possible.retain(|consumer| expression.is_match(consumer));
+    }
+    // `exec` and `infrastructure` are null for every other consumer.
+    for fact in ["exec", "infrastructure"] {
+        match when.get(fact) {
+            Some(Value::String(_)) => possible.retain(|consumer| *consumer == fact),
+            Some(Value::Null) => possible.retain(|consumer| *consumer != fact),
+            _ => {}
+        }
+    }
+    Ok(possible)
+}
+
+/// Whether no value satisfies both filter strings. Two expressions that are
+/// not plain values are never proved exclusive.
+fn strings_exclusive(first: &str, second: &str, path: &[&str]) -> Checked<bool> {
+    if let Some(values) = known_values(path) {
+        let (first, second) = (pattern(first)?, pattern(second)?);
+        return Ok(!values
+            .iter()
+            .any(|value| first.is_match(value) && second.is_match(value)));
+    }
+    Ok(match (is_literal(first), is_literal(second)) {
+        (true, _) => !pattern(second)?.is_match(first),
+        (_, true) => !pattern(first)?.is_match(second),
+        _ => false,
+    })
+}
+
+/// Whether no fact satisfies both filters.
+fn fact_filters_exclusive<'filter>(
+    first: &'filter Value,
+    second: &Value,
+    path: &mut Vec<&'filter str>,
+) -> Checked<bool> {
+    match (first, second) {
+        (Value::Null, Value::Null) => Ok(false),
+        (Value::Null, _) | (_, Value::Null) => Ok(true),
+        (Value::String(first), Value::String(second)) => strings_exclusive(first, second, path),
+        (Value::Object(first), Value::Object(second)) => fact_maps_exclusive(first, second, path),
+        _ => Ok(false),
+    }
+}
+
+/// Whether some fact both filters name cannot satisfy both.
+fn fact_maps_exclusive<'filter>(
+    first: &'filter Map<String, Value>,
+    second: &Map<String, Value>,
+    path: &mut Vec<&'filter str>,
+) -> Checked<bool> {
+    for (name, filter) in first {
+        let Some(other) = second.get(name) else {
+            continue;
+        };
+        path.push(name);
+        let exclusive = fact_filters_exclusive(filter, other, path)?;
+        path.pop();
+        if exclusive {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether two contexts are proved never to be active together. `false` means
+/// only that cuenv could not prove it.
+fn exclusive(first: &ContextDefinition, second: &ContextDefinition) -> Checked<bool> {
+    let others = consumers(second)?;
+    if !consumers(first)?
+        .iter()
+        .any(|consumer| others.contains(consumer))
+    {
+        return Ok(true);
+    }
+    match (first, second) {
+        (ContextDefinition::When(first), ContextDefinition::When(second)) => {
+            fact_maps_exclusive(&first.0, &second.0, &mut Vec::new())
+        }
+        (ContextDefinition::Task(first), ContextDefinition::Task(second)) => {
+            for (first, second) in [
+                (&first.name, &second.name),
+                (&first.command, &second.command),
+            ] {
+                if let (Some(first), Some(second)) = (first, second)
+                    && strings_exclusive(first, second, &[])?
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Check that every context is a valid filter (it names facts an invocation
+/// has, and its strings are regular expressions) and that `env.context` can
+/// be selected without ambiguity:
 ///
-/// - every constraint is over facts the document has;
 /// - every context it names is defined;
 /// - a variable set under a context is set nowhere else, so it is withheld
 ///   whenever no context that sets it is active;
-/// - two contexts that can be active together do not set the same variable.
+/// - two contexts that set the same variable are proved never to be active
+///   together.
 ///
 /// # Errors
 ///
 /// Returns a configuration error naming the first violation.
 pub fn validate(env: &Env, definitions: &HashMap<String, ContextDefinition>) -> Result<()> {
+    let sorted_definitions: BTreeMap<_, _> = definitions.iter().collect();
+    for (name, definition) in sorted_definitions {
+        check_definition(definition).map_err(|problem| problem_in(name, &problem))?;
+    }
     let Some(contexts) = &env.context else {
         return Ok(());
     };
-    let sorted_definitions: BTreeMap<_, _> = definitions.iter().collect();
-    for (name, definition) in sorted_definitions {
-        check_facts(&definition.when, &mut Vec::new())
-            .map_err(|problem| Error::configuration(format!("contexts.{name}.when: {problem}")))?;
-    }
     let contexts: BTreeMap<_, _> = contexts.iter().collect();
     let elsewhere: BTreeSet<&String> = env
         .base
@@ -351,7 +595,7 @@ pub fn validate(env: &Env, definitions: &HashMap<String, ContextDefinition>) -> 
     for (name, context) in &contexts {
         let Some(definition) = definitions.get(*name) else {
             return Err(Error::configuration(format!(
-                "env.context.{name} has no matching context: define contexts.{name}.when"
+                "env.context.{name} has no matching context: define contexts.{name}"
             )));
         };
         let variables: BTreeSet<&String> = context.variable_names().collect();
@@ -365,18 +609,23 @@ pub fn validate(env: &Env, definitions: &HashMap<String, ContextDefinition>) -> 
                  it is withheld when none of them is active"
             )));
         }
-        for other in definition.overlaps.iter().filter(|other| *other > *name) {
-            let Some(other_context) = contexts.get(other) else {
-                continue;
-            };
-            if let Some(variable) = other_context
+        for (other, other_context) in contexts.iter().filter(|(other, _)| *other > name) {
+            let Some(variable) = other_context
                 .variable_names()
                 .find(|variable| variables.contains(variable))
+            else {
+                continue;
+            };
+            let Some(other_definition) = definitions.get(*other) else {
+                continue;
+            };
+            if !exclusive(definition, other_definition)
+                .map_err(|problem| problem_in(name, &problem))?
             {
                 return Err(Error::configuration(format!(
                     "{variable} is set under env.context.{name} and env.context.{other}, \
-                     which can both be active for one invocation. Make their `when` \
-                     constraints exclusive or set the variable under one of them"
+                     which can both be active for one invocation. Make contexts.{name} and \
+                     contexts.{other} exclusive or set the variable under one of them"
                 )));
             }
         }
@@ -397,48 +646,46 @@ pub struct Overrides<'a> {
 }
 
 impl<'a> Overrides<'a> {
-    /// The context whose override applies to a document; `None` when no
+    /// The context whose override applies to a consumer; `None` when no
     /// context that has one is active.
     ///
     /// # Errors
     ///
     /// Returns a configuration error if an override names an undefined
-    /// context, if a constraint is over an unknown fact, or if two contexts
-    /// that have an override can be active together.
-    pub fn active(&self, document: &Value) -> Result<Option<&'a str>> {
+    /// context, if a filter is invalid, or if two contexts that have an
+    /// override are not proved exclusive.
+    pub fn active(&self, facts: &Facts, consumer: Consumer<'_>) -> Result<Option<&'a str>> {
         let field = self.field;
-        for name in self.names {
-            let Some(definition) = self.definitions.get(*name) else {
-                return Err(Error::configuration(format!(
-                    "{field}.{name} has no matching context: define contexts.{name}.when"
-                )));
-            };
-            check_facts(&definition.when, &mut Vec::new()).map_err(|problem| {
-                Error::configuration(format!("contexts.{name}.when: {problem}"))
-            })?;
-            if let Some(other) = definition
-                .overlaps
-                .iter()
-                .find(|other| other.as_str() > *name && self.names.contains(&other.as_str()))
-            {
-                return Err(Error::configuration(format!(
-                    "{field}.{name} and {field}.{other} can both be active for one \
-                     invocation. Make their `when` constraints exclusive"
-                )));
-            }
-        }
-        let mut active = None;
-        for name in self.names {
-            if matches(&self.definitions[*name].when, document)? {
-                if let Some(first) = active {
+        let defined = |name: &str| {
+            self.definitions.get(name).ok_or_else(|| {
+                Error::configuration(format!(
+                    "{field}.{name} has no matching context: define contexts.{name}"
+                ))
+            })
+        };
+        for (index, name) in self.names.iter().enumerate() {
+            let definition = defined(name)?;
+            check_definition(definition).map_err(|problem| problem_in(name, &problem))?;
+            for other in &self.names[..index] {
+                if !exclusive(defined(other)?, definition)
+                    .map_err(|problem| problem_in(name, &problem))?
+                {
                     return Err(Error::configuration(format!(
-                        "{field}.{first} and {field}.{name} are both active"
+                        "{field}.{other} and {field}.{name} can both be active for one \
+                         invocation. Make their filters exclusive"
                     )));
                 }
-                active = Some(*name);
             }
         }
-        Ok(active)
+        let document = facts.document(consumer);
+        for name in self.names {
+            if is_active(defined(name)?, consumer, &document)
+                .map_err(|problem| problem_in(name, &problem))?
+            {
+                return Ok(Some(*name));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -458,21 +705,54 @@ pub struct Selection<'a> {
 }
 
 impl Selection<'_> {
+    /// The contexts active for the consumer, sorted. Facts are detected only
+    /// when `env.context` sets something; otherwise no context is reported.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `env.context` is invalid (see [`validate`]).
+    pub fn contexts(&self) -> Result<Vec<String>> {
+        validate(self.env, self.definitions)?;
+        if !self.env.has_context_variables() {
+            return Ok(Vec::new());
+        }
+        self.active(&Facts::detect(self.directory))
+    }
+
+    /// As [`Self::contexts`], for facts the caller supplies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `env.context` is invalid (see [`validate`]).
+    pub fn contexts_with(&self, facts: &Facts) -> Result<Vec<String>> {
+        validate(self.env, self.definitions)?;
+        self.active(facts)
+    }
+
+    fn active(&self, facts: &Facts) -> Result<Vec<String>> {
+        let contexts = active_contexts(self.definitions, facts, self.consumer)?;
+        tracing::debug!(consumer = ?self.consumer, ?contexts, "Active contexts");
+        Ok(contexts)
+    }
+
+    /// The variables while `contexts` are active: the base, the selected
+    /// environment and each of those contexts.
+    #[must_use]
+    pub fn variables_in(&self, contexts: &[String]) -> HashMap<String, EnvValue> {
+        self.env.select(EnvSelection {
+            environment: self.environment,
+            contexts,
+        })
+    }
+
     /// The variables for the consumer: the base, the selected environment and
-    /// every active context. Facts are detected only when `env.context` sets
-    /// something.
+    /// every active context.
     ///
     /// # Errors
     ///
     /// Returns an error if `env.context` is invalid (see [`validate`]).
     pub fn variables(&self) -> Result<HashMap<String, EnvValue>> {
-        if !self.env.has_context_variables() {
-            return Ok(self.env.select(EnvSelection {
-                environment: self.environment,
-                contexts: &[],
-            }));
-        }
-        self.variables_with(&Facts::detect(self.directory))
+        Ok(self.variables_in(&self.contexts()?))
     }
 
     /// As [`Self::variables`], for facts the caller supplies.
@@ -481,14 +761,7 @@ impl Selection<'_> {
     ///
     /// Returns an error if `env.context` is invalid (see [`validate`]).
     pub fn variables_with(&self, facts: &Facts) -> Result<HashMap<String, EnvValue>> {
-        validate(self.env, self.definitions)?;
-        let document = facts.document(self.consumer);
-        let contexts = active_contexts(self.definitions, &document)?;
-        tracing::debug!(consumer = ?self.consumer, ?contexts, "Active contexts");
-        Ok(self.env.select(EnvSelection {
-            environment: self.environment,
-            contexts: &contexts,
-        }))
+        Ok(self.variables_in(&self.contexts_with(facts)?))
     }
 }
 

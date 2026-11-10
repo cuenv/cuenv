@@ -1,63 +1,77 @@
 package schema
 
-// #Context describes one invocation of cuenv: what is being run, where, and
-// by whom. cuenv builds one for every consumer of the environment (each task
-// of `cuenv task`, the command of `cuenv exec`, an infrastructure action).
-// Every field is always present; a fact that does not apply is null.
+// A named context is a filter over one invocation of cuenv. While the filter
+// matches, `env.context.<name>` sets its variables.
 //
-// Every fact is reported by the machine running cuenv. A context chooses what
-// a run asks for. It does not establish that the run is entitled to it: the
-// secrets backend must enforce that from claims it can verify.
-#Context: {
-	// The cuenv command that consumes the environment.
-	command: "task" | "exec" | "infrastructure" | "shell"
+// A filter is data: fields left out match anything, and a string is a regular
+// expression that must match the whole value, so "bun" matches only "bun" and
+// "deploy.*" matches every name that starts with "deploy". Write an entry as
+// `schema.#When & {...}` or `schema.#TaskFilter & {...}`.
+//
+// Everything a filter reads is reported by the machine running cuenv. A
+// context chooses what a run asks for. It does not establish that the run is
+// entitled to it: the secrets backend must enforce that from claims it can
+// verify.
 
-	// The task's name, for `command: "task"`.
-	task: string | null
+// #When matches the facts of an invocation: what consumes the environment,
+// where, and for whom. `null` matches a fact that does not apply.
+#When: {
+	// What consumes the environment: "task", "exec", "infrastructure" or
+	// "shell".
+	consumer?: string
 
-	// The program being run, for `command: "exec"`.
-	exec: string | null
+	// The program being run, for `cuenv exec`, as it is written on the
+	// command line ("terraform" and "/usr/bin/terraform" differ); null for
+	// any other consumer.
+	exec?: string | null
 
-	// The infrastructure action, for `command: "infrastructure"`.
-	infrastructure: #InfrastructureAction | null
+	// The infrastructure action (see #InfrastructureAction), for
+	// `cuenv infrastructure`; null for any other consumer.
+	infrastructure?: string | null
 
 	// The CI run, or null outside CI.
-	ci: null | {
+	ci?: null | {
 		// "github", "gitlab", "buildkite", or "unknown".
-		provider: string
+		provider?: string
 		// The triggering event, such as "pull_request" or "push".
-		event: string | null
-		// The full ref, such as "refs/heads/main".
-		ref: string | null
+		event?: string | null
+		// The ref as the provider names it: the full ref on GitHub
+		// ("refs/heads/main"), the branch or tag name on GitLab and Buildkite.
+		ref?: string | null
 		// Who triggered the run.
-		actor: string | null
+		actor?: string | null
 	}
 
 	// The git identity of the person running cuenv.
-	user: {
-		name:  string | null
-		email: string | null
+	user?: {
+		name?:  string | null
+		email?: string | null
 	}
 
-	host: {
+	host?: {
 		// "linux", "macos", "windows", ...
-		os: string
+		os?: string
 		// "x86_64", "aarch64", ...
-		arch: string
-		name: string | null
+		arch?: string
+		name?: string | null
 	}
 
-	vcs: {
+	vcs?: {
 		// The checked-out branch, or null when detached or outside a repository.
-		branch: string | null
+		branch?: string | null
 	}
 }
 
-// #NamedContext is a constraint over #Context. The context is active for an
-// invocation whose facts satisfy `when`.
-//
-// `when` may use literals, `=~`, `!~`, `!=`, `|` and `&`. Fields left out
-// match anything.
-#NamedContext: {
-	when: #Context
+// #TaskFilter matches the tasks cuenv runs, one task at a time: the context
+// is active for each task of the graph that the filter matches, and for
+// nothing that is not a task.
+#TaskFilter: {
+	// The task's full name, such as "deploy" or "deploy.staging".
+	name?: string
+
+	// The program the task runs. A script task has none and never matches.
+	command?: string
+
+	// Labels the task must carry: each entry must match one of its labels.
+	labels?: [...string]
 }

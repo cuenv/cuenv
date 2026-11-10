@@ -27,9 +27,7 @@ limits](#know-the-limits) and the authoritative
 You need a Cargo workspace whose root `Cargo.toml` carries
 `[workspace.package]` with a `version`, and crates that inherit it via
 `version.workspace = true`. The release commands read and rewrite those
-manifests. A `gh`-authenticated checkout is required only for `release prepare`
-when it opens a pull request, and registry tokens are required only at publish
-time.
+manifests. Registry tokens are required only at publish time.
 
 ## 1. Declare a `release:` block
 
@@ -292,8 +290,8 @@ long-lived CUE Registry token.
 
 `cuenv release prepare` is the unified path: it analyzes commits since the last
 tag, maps them to packages, calculates bumps, updates manifests, regenerates
-changelogs, then creates a `release/next` branch, commits, pushes, and opens a
-PR via the `gh` CLI. It does **not** read your `.changeset/` queue — it derives
+changelogs, then creates a `release/next` branch and commits to it. It does
+**not** push the branch or open the pull request, and it does **not** read your `.changeset/` queue — it derives
 bumps from conventional commits directly.
 
 Preview first:
@@ -329,12 +327,15 @@ Useful flags:
 - `--since <ref>` — analyze commits from a specific tag or ref instead of the
   detected last tag.
 - `--branch <name>` — branch to create (default `release/next`).
-- `--no-pr` — do everything except open the PR (commit and push only).
 - `--dry-run` — summarize without touching anything.
 
-Opening the PR requires an authenticated `gh` CLI (`gh auth login`) and a remote
-`origin`. If PR creation fails, prepare still leaves the branch pushed and tells
-you to open the PR manually.
+cuenv never pushes. When prepare finishes, push the branch and open the pull
+request yourself:
+
+```bash
+git push -u origin release/next
+gh pr create --fill
+```
 
 ## 6. Publish to crates.io
 
@@ -491,7 +492,7 @@ cuenv release publish --dry-run
 cuenv release publish
 ```
 
-For a fully automated, commit-driven release PR, use `cuenv release prepare`
+For a commit-driven release branch, use `cuenv release prepare`
 instead of the changeset steps — but remember it reads conventional commits,
 not your changeset queue.
 

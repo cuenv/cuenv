@@ -8,11 +8,11 @@
 use async_trait::async_trait;
 use cuenv_ci::context::CIContext;
 use cuenv_ci::provider::CIProvider;
+use cuenv_ci::provider::git::{Checkout, Fetch, Since};
 use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus, markdown};
 use cuenv_core::Result;
 use octocrab::Octocrab;
 use std::path::PathBuf;
-use std::process::Command;
 use tracing::{debug, info, warn};
 
 /// GitHub Actions CI provider.
@@ -54,50 +54,32 @@ impl GitHubCIProvider {
     }
 
     fn is_shallow_clone() -> bool {
-        Command::new("git")
-            .args(["rev-parse", "--is-shallow-repository"])
-            .output()
-            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+        Checkout::discover().is_some_and(|checkout| checkout.is_shallow())
     }
 
-    fn fetch_ref(refspec: &str) -> bool {
-        debug!("Fetching ref: {refspec}");
-        Command::new("git")
-            .args(["fetch", "--depth=1", "origin", refspec])
-            .output()
-            .is_ok_and(|o| o.status.success())
+    fn fetch(&self, fetch: Fetch<'_>) -> bool {
+        debug!("Fetching {fetch:?}");
+        let Some(checkout) = Checkout::discover() else {
+            return false;
+        };
+        checkout
+            .with_token(&self.token)
+            .fetch(fetch)
+            .inspect_err(|error| debug!("Could not fetch {fetch:?}: {error}"))
+            .is_ok()
     }
 
     fn commit_exists(revision: &str) -> bool {
-        Command::new("git")
-            .arg("cat-file")
-            .arg("-e")
-            .arg(format!("{revision}^{{commit}}"))
-            .status()
-            .is_ok_and(|status| status.success())
+        Checkout::discover().is_some_and(|checkout| checkout.has_commit(revision))
     }
 
     fn is_merge_commit() -> bool {
-        Command::new("git")
-            .args(["rev-parse", "--verify", "HEAD^2"])
-            .output()
-            .is_ok_and(|output| output.status.success())
+        Checkout::discover().is_some_and(|checkout| checkout.head_is_merge())
     }
 
     fn is_synthetic_merge_checkout(&self) -> bool {
-        if self.context.sha.is_empty() {
-            return false;
-        }
-
-        Command::new("git")
-            .args(["rev-parse", "--verify", "HEAD"])
-            .output()
-            .is_ok_and(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout)
-                        .trim()
-                        .eq_ignore_ascii_case(&self.context.sha)
-            })
+        !self.context.sha.is_empty()
+            && Checkout::discover().is_some_and(|checkout| checkout.head_is(&self.context.sha))
     }
 
     fn get_before_sha() -> Option<String> {
@@ -124,44 +106,14 @@ impl GitHubCIProvider {
         Self::parse_pr_base_sha(&event)
     }
 
-    fn parse_changed_files(stdout: &str) -> Vec<PathBuf> {
-        stdout
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| PathBuf::from(line.trim()))
-            .collect()
-    }
-
-    fn try_git_diff(range: &str) -> Option<Vec<PathBuf>> {
-        debug!("Trying git diff: {range}");
-        let output = Command::new("git")
-            .args(["diff", "--name-only", range])
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            debug!(
-                "git diff failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return None;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Some(Self::parse_changed_files(&stdout))
+    fn changed_since(since: Since<'_>) -> Option<Vec<PathBuf>> {
+        debug!("Comparing HEAD with {since:?}");
+        Checkout::discover()?.changed(since)
     }
 
     fn get_all_tracked_files() -> Vec<PathBuf> {
-        Command::new("git")
-            .args(["ls-files"])
-            .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .map(|line| PathBuf::from(line.trim()))
-                    .collect()
-            })
+        Checkout::discover()
+            .map(|checkout| checkout.tracked_files())
             .unwrap_or_default()
     }
 
@@ -301,7 +253,7 @@ impl CIProvider for GitHubCIProvider {
             if self.is_pr_merge_ref
                 && self.is_synthetic_merge_checkout()
                 && Self::is_merge_commit()
-                && let Some(files) = Self::try_git_diff("HEAD^1..HEAD")
+                && let Some(files) = Self::changed_since(Since::Revision("HEAD^1"))
             {
                 info!(
                     "Got {} changed files from the pull request merge diff",
@@ -316,10 +268,10 @@ impl CIProvider for GitHubCIProvider {
             if let Some(base_sha) = Self::get_pr_base_sha() {
                 debug!("PR #{pr_number} detected, using base SHA {base_sha}");
                 if !Self::commit_exists(&base_sha) {
-                    Self::fetch_ref(&base_sha);
+                    self.fetch(Fetch::Commit(&base_sha));
                 }
 
-                if let Some(files) = Self::try_git_diff(&format!("{base_sha}..HEAD")) {
+                if let Some(files) = Self::changed_since(Since::Revision(&base_sha)) {
                     info!(
                         "Got {} changed files from the pull request base SHA diff",
                         files.len()
@@ -364,10 +316,12 @@ impl CIProvider for GitHubCIProvider {
             debug!("PR detected, base_ref: {base}");
 
             if is_shallow {
-                Self::fetch_ref(base);
+                self.fetch(Fetch::Branch(base));
             }
 
-            if let Some(files) = Self::try_git_diff(&format!("origin/{base}...HEAD")) {
+            if let Some(files) =
+                Self::changed_since(Since::MergeBaseWith(&format!("origin/{base}")))
+            {
                 return Ok(files);
             }
         }
@@ -377,16 +331,16 @@ impl CIProvider for GitHubCIProvider {
             debug!("Push event git diff fallback, GITHUB_BEFORE: {before_sha}");
 
             if is_shallow {
-                Self::fetch_ref(&before_sha);
+                self.fetch(Fetch::Commit(&before_sha));
             }
 
-            if let Some(files) = Self::try_git_diff(&format!("{before_sha}..HEAD")) {
+            if let Some(files) = Self::changed_since(Since::Revision(&before_sha)) {
                 return Ok(files);
             }
         }
 
         // Strategy 6: Try comparing against parent commit
-        if let Some(files) = Self::try_git_diff("HEAD^..HEAD") {
+        if let Some(files) = Self::changed_since(Since::Revision("HEAD^")) {
             debug!("Using HEAD^ comparison");
             return Ok(files);
         }
@@ -694,41 +648,5 @@ mod tests {
             let provider = GitHubCIProvider::detect();
             assert!(provider.is_none());
         });
-    }
-
-    #[test]
-    fn test_try_git_diff_parses_output() {
-        // Test that empty output results in empty vec
-        let empty_lines = "";
-        let files = GitHubCIProvider::parse_changed_files(empty_lines);
-        assert!(files.is_empty());
-
-        // Test that whitespace-only lines are filtered
-        let whitespace_only = "   \n\t\n";
-        let files = GitHubCIProvider::parse_changed_files(whitespace_only);
-        assert!(files.is_empty());
-
-        // Test that valid file paths are parsed
-        let valid_output = "src/main.rs\nCargo.toml\nREADME.md";
-        let files = GitHubCIProvider::parse_changed_files(valid_output);
-        assert_eq!(files.len(), 3);
-        assert_eq!(files[0], PathBuf::from("src/main.rs"));
-        assert_eq!(files[1], PathBuf::from("Cargo.toml"));
-        assert_eq!(files[2], PathBuf::from("README.md"));
-    }
-
-    #[test]
-    fn test_parse_changed_files_does_not_truncate_large_diff() {
-        use std::fmt::Write;
-
-        let mut output = String::new();
-        for index in 0..65 {
-            let _ = writeln!(output, "website/file-{index}.md");
-        }
-
-        let files = GitHubCIProvider::parse_changed_files(&output);
-
-        assert_eq!(files.len(), 65);
-        assert_eq!(files[64], PathBuf::from("website/file-64.md"));
     }
 }

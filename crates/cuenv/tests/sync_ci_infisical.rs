@@ -61,8 +61,7 @@ fn sync_example(
     let source = edit(&source.replacen("package examples", "package cuenv", 1));
     fs::write(root.join("env.cue"), source)?;
 
-    let git = Command::new("git").arg("init").current_dir(root).output()?;
-    assert!(git.status.success(), "git init failed");
+    gix::init(root)?;
 
     let output = Command::new(CUENV_BIN)
         .args(["sync", "ci"])

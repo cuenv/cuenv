@@ -137,8 +137,8 @@ fn validate_path_component(component: &str, original_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate a sparse-checkout `subdir`. Returns the canonical slash-joined
-/// relative path to use with `git sparse-checkout set` and `git cat-file/rev-parse`.
+/// Validate a `subdir`. Returns the canonical slash-joined relative path to
+/// look up in the commit's tree.
 ///
 /// The input is required to be in canonical form: forward-slash separated, no
 /// leading/trailing whitespace, no leading/trailing slashes, no empty

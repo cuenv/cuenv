@@ -57,11 +57,11 @@ vcs: lib: {
 
 Cuenv updates `.gitignore` with a managed block for non-vendored paths.
 
-## Sparse Subdirectories
+## Single Subdirectories
 
-Set `subdir` to materialize a single subdirectory of a remote repo via git's
-sparse-checkout. Only that subtree is fetched and written to `path`. This is
-the recommended way to pull agent skill packs out of a larger repository.
+Set `subdir` to materialize a single subdirectory of a remote repo. cuenv
+fetches the locked commit alone, without its history, and writes only that
+subtree to `path`. This is the recommended way to pull agent skill packs out of a larger repository.
 
 ```cue
 vcs: "cuenv-skills": {
@@ -76,12 +76,21 @@ vcs: "cuenv-skills": {
 Requirements and behavior:
 
 - `vendor: true` makes the subtree a tracked snapshot. `vendor: false` writes the subtree as generated content and adds the target path to `.gitignore`.
-- Sparse subdirectory materialization writes only the selected subtree at `path`; it does not leave a nested `.git` checkout behind.
+- Subdirectory materialization writes only the selected subtree at `path`; it does not leave a nested `.git` checkout behind.
 - The path must be repo-relative, forward-slash separated, in canonical form (no leading/trailing whitespace, no leading/trailing slashes, no `a//b`), and contain no `.`, `..`, glob characters, or path components beginning with `-`.
 - The lockfile records both the resolved commit and the subtree hash, so re-syncs are deterministic and `cuenv sync vcs --check` detects tampering of the materialized content.
-- Requires git ≥ 2.27 (cone-mode sparse-checkout).
+- Files are written byte for byte as the repository stores them; checkout filters such as line-ending conversion are not applied.
 
-The end-to-end sparse-subdirectory regression test keeps this example
+## Git is not required
+
+cuenv reads and fetches repositories in process and never runs `git`. A remote
+is reached over its own transport:
+
+- `https://` remotes are fetched in process. A configured git credential helper is still asked for credentials.
+- SSH remotes (`ssh://` and `git@host:path`) go through your `ssh` program, so your SSH config, agent and keys apply as they do for git.
+- A repository path on disk is served by `git upload-pack`, which is the one case that needs git installed.
+
+The end-to-end subdirectory regression test keeps this example
 network-free by seeding a local git source repository from the checkout's
 `.agents/skills`, rewriting the example remote to that local repository, and
 running `cuenv sync vcs`, `cuenv sync vcs --check`, and `cuenv task inspect`

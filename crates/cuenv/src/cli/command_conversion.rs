@@ -348,7 +348,6 @@ fn release_command(subcommand: ReleaseCommands) -> Command {
             since,
             dry_run,
             branch,
-            no_pr,
         } => Command::ReleasePrepare {
             path,
             since,
@@ -358,7 +357,6 @@ fn release_command(subcommand: ReleaseCommands) -> Command {
                 cuenv_core::DryRun::No
             },
             branch,
-            no_pr,
         },
         ReleaseCommands::Version { path, dry_run } => Command::ReleaseVersion {
             path,

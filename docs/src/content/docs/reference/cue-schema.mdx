@@ -198,17 +198,20 @@ tasks: publish: schema.#Task & {
 
 Task-level environment entries are resolved at execution time. Tasks that define task-local `env`
 entries are therefore excluded from task-result caching.
-### #NamedContext and #Context
+### #When and #TaskFilter
 
-`contexts.<name>.when` is a constraint over `#Context`, the facts of one
-invocation. `env.context.<name>` sets variables that exist only while the
-context is active. See [Contexts](/how-to/contexts/) for the facts, the rules
-and the security model.
+`contexts.<name>` is a filter: `#When` over the facts of one invocation, or
+`#TaskFilter` over each task cuenv runs. `env.context.<name>` sets variables
+that exist only while the context is active. A filter is data: a field left
+out matches anything, and a string is a regular expression that must match the
+whole value. See [Contexts](/how-to/contexts/) for the rules and the security
+model.
 
 ```cue
 contexts: {
-    plan:  when: infrastructure: "plan"
-    apply: when: infrastructure: "apply" | "import" | "destroy"
+    plan:   schema.#When & {infrastructure: "plan"}
+    apply:  schema.#When & {infrastructure: "apply|import|destroy"}
+    deploy: schema.#TaskFilter & {name: "deploy.*"}
 }
 
 env: context: {
@@ -217,16 +220,23 @@ env: context: {
 }
 ```
 
-| Field of `#Context` | Type                                                          |
-| ------------------- | ------------------------------------------------------------- |
-| `command`           | `"task" \| "exec" \| "infrastructure" \| "shell"`             |
-| `task`              | `string \| null`                                              |
-| `exec`              | `string \| null`                                              |
-| `infrastructure`    | `#InfrastructureAction \| null`                               |
-| `ci`                | `null \| {provider: string, event, ref, actor: string \| null}` |
-| `user`              | `{name, email: string \| null}`                               |
-| `host`              | `{os: string, arch: string, name: string \| null}`            |
-| `vcs`               | `{branch: string \| null}`                                    |
+Every field is optional.
+
+| Field of `#When` | Type                                                           | Fact                                                |
+| ---------------- | -------------------------------------------------------------- | --------------------------------------------------- |
+| `consumer`       | `string`                                                       | `"task"`, `"exec"`, `"infrastructure"` or `"shell"` |
+| `exec`           | `string \| null`                                               | The program `cuenv exec` runs                       |
+| `infrastructure` | `string \| null`                                               | The `#InfrastructureAction`                         |
+| `ci`             | `null \| {provider: string, event, ref, actor: string \| null}` | The CI run, `null` outside CI                       |
+| `user`           | `{name, email: string \| null}`                                | The git identity                                    |
+| `host`           | `{os: string, arch: string, name: string \| null}`             | The machine                                         |
+| `vcs`            | `{branch: string \| null}`                                     | The checked-out branch                              |
+
+| Field of `#TaskFilter` | Type          | Matches                                         |
+| ---------------------- | ------------- | ----------------------------------------------- |
+| `name`                 | `string`      | The task's full name                            |
+| `command`              | `string`      | The program the task runs                       |
+| `labels`               | `[...string]` | Each entry must match one of the task's labels  |
 
 ### #Environment
 
@@ -1961,7 +1971,7 @@ VCS dependency names must match `#VcsDependencyName`: ASCII letters, digits, `_`
 | `reference` | `string` | No       | Branch, tag, or commit-ish. Default: `HEAD`      |
 | `vendor`    | `bool`   | Yes      | Track the materialized content (`true`) or ignore generated content (`false`) |
 | `path`      | `string` | Yes      | Repository-relative materialization path         |
-| `subdir`    | `string` | No       | Repo-relative subtree to materialize via sparse checkout |
+| `subdir`    | `string` | No       | Repo-relative subtree to materialize on its own |
 | `overlay`   | `bool`   | No       | Materialize each immediate directory child of `subdir` under `path` while preserving repo-local siblings. Requires `subdir` and `vendor: false` |
 
 ## Runtimes

@@ -1,16 +1,16 @@
 //! VCS dependency checkout and materialization helpers.
 
+use super::git::{Fetch, History};
 use super::paths;
 use super::paths::TempPath;
 use super::vcs_sync_provider::{
-    FETCH_HEAD_COMMIT, FETCH_HEAD_TREE, HEAD_TREE, InstallOverlayDependencyRequest, MARKER_FILE,
-    PrepareDependencyRequest, PrepareSubdirDependencyRequest,
+    InstallOverlayDependencyRequest, MARKER_FILE, PrepareDependencyRequest,
+    PrepareSubdirDependencyRequest,
 };
 use cuenv_core::lockfile::LockedVcsDependency;
 use cuenv_core::manifest::VcsDependency;
 use cuenv_core::{Error, Result};
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -90,80 +90,44 @@ pub(super) fn resolve_dependency(
     let cache_path = cache_root.join(name);
     fs::create_dir_all(cache_root).map_err(|e| Error::configuration(e.to_string()))?;
     paths::ensure_managed_internal_path(cache_root, &cache_path)?;
-    if cache_path.exists() {
+    let repository = if cache_path.exists() {
         ensure_git_dir(&cache_path)?;
-        super::git::run_git(
-            [
-                OsStr::new("remote"),
-                OsStr::new("set-url"),
-                OsStr::new("origin"),
-                OsStr::new(&spec.url),
-            ],
-            Some(&cache_path),
-        )?;
+        super::git::open(&cache_path)?
     } else {
-        super::git::run_git(
-            [
-                OsStr::new("clone"),
-                OsStr::new("--no-checkout"),
-                OsStr::new(&spec.url),
-                cache_path.as_os_str(),
-            ],
-            None,
-        )?;
-    }
-    super::git::run_git(
-        [
-            OsStr::new("fetch"),
-            OsStr::new("--tags"),
-            OsStr::new("origin"),
-            OsStr::new(&spec.reference),
-        ],
-        Some(&cache_path),
+        super::git::clone_without_checkout(&spec.url, &cache_path)?
+    };
+    let commit = super::git::fetch(
+        &repository,
+        Fetch {
+            url: &spec.url,
+            reference: &spec.reference,
+            history: History::Full,
+        },
     )?;
-    let commit = super::git::git_output(
-        [OsStr::new("rev-parse"), OsStr::new(FETCH_HEAD_COMMIT)],
-        Some(&cache_path),
-    )?;
-    let tree = super::git::git_output(
-        [OsStr::new("rev-parse"), OsStr::new(FETCH_HEAD_TREE)],
-        Some(&cache_path),
-    )?;
+    let tree = super::git::tree_of(&repository, &commit)?;
 
     let subtree = if let Some(ref subdir) = normalized_subdir {
-        let object_ref = format!("{}:{}", commit, subdir);
-        let object_type = super::git::git_output(
-            [
-                OsStr::new("cat-file"),
-                OsStr::new("-t"),
-                OsStr::new(&object_ref),
-            ],
-            Some(&cache_path),
-        )
-        .map_err(|_| {
+        let entry = super::git::entry_at(&repository, &commit, subdir)?.ok_or_else(|| {
             Error::configuration(format!(
                 "VCS dependency '{}': subdir '{}' not found at reference '{}'",
                 name, subdir, spec.reference
             ))
         })?;
-        if object_type != "tree" {
+        if entry.kind != "tree" {
             return Err(Error::configuration(format!(
                 "VCS dependency '{}': subdir '{}' must be a tree (directory), got {} at reference '{}'",
-                name, subdir, object_type, spec.reference
+                name, subdir, entry.kind, spec.reference
             )));
         }
-        Some(super::git::git_output(
-            [OsStr::new("rev-parse"), OsStr::new(&object_ref)],
-            Some(&cache_path),
-        )?)
+        Some(entry.id)
     } else {
         None
     };
 
-    let children = match normalized_subdir.as_deref() {
+    let children = match (normalized_subdir.as_deref(), subtree.as_deref()) {
         // Guarded above: overlay implies a subdir, so this branch always runs.
-        Some(subdir) if spec.overlay => {
-            list_subtree_children(&cache_path, &format!("{commit}:{subdir}"), subdir)?
+        (Some(subdir), Some(subtree)) if spec.overlay => {
+            list_subtree_children(&repository, subtree, subdir)?
         }
         _ => BTreeMap::new(),
     };
@@ -208,57 +172,29 @@ fn child_locked(
     }
 }
 
-/// Enumerate the immediate children of a git tree as `name -> tree SHA`, using
-/// a NUL-delimited `git ls-tree` so names with spaces or newlines parse safely.
+/// Enumerate the immediate children of a git tree as `name -> tree SHA`.
 /// Overlay only supports directory children; files and submodules are rejected.
 fn list_subtree_children(
-    repo: &Path,
-    tree_ref: &str,
+    repository: &gix::Repository,
+    tree: &str,
     context: &str,
 ) -> Result<BTreeMap<String, String>> {
-    let raw = super::git::git_output_bytes(
-        [
-            OsStr::new("ls-tree"),
-            OsStr::new("-z"),
-            OsStr::new(tree_ref),
-        ],
-        Some(repo),
-    )?;
-    let text = std::str::from_utf8(&raw).map_err(|e| {
-        Error::configuration(format!(
-            "overlay subtree '{context}': git ls-tree returned non-UTF-8 output: {e}"
-        ))
-    })?;
     let mut children = BTreeMap::new();
-    for record in text.split('\0').filter(|record| !record.is_empty()) {
-        // Each record is "<mode> <type> <oid>\t<name>".
-        let (meta, name) = record.split_once('\t').ok_or_else(|| {
-            Error::configuration(format!(
-                "overlay subtree '{context}': unexpected git ls-tree record"
-            ))
-        })?;
-        let mut fields = meta.split_whitespace();
-        let _mode = fields.next();
-        let kind = fields.next().unwrap_or_default();
-        let oid = fields.next().unwrap_or_default();
-        match kind {
+    for entry in super::git::entries(repository, tree)? {
+        let name = entry.name;
+        match entry.kind {
             "tree" => {
-                paths::validate_overlay_child_name(name, context)?;
-                children.insert(name.to_string(), oid.to_string());
+                paths::validate_overlay_child_name(&name, context)?;
+                children.insert(name, entry.id);
             }
             "blob" => {
                 return Err(Error::configuration(format!(
                     "overlay subtree '{context}' contains file '{name}'; overlay supports directory children only"
                 )));
             }
-            "commit" => {
+            _ => {
                 return Err(Error::configuration(format!(
                     "overlay subtree '{context}' contains submodule '{name}'; overlay supports directory children only"
-                )));
-            }
-            other => {
-                return Err(Error::configuration(format!(
-                    "overlay subtree '{context}' contains entry '{name}' of unsupported type '{other}'"
                 )));
             }
         }
@@ -294,45 +230,43 @@ pub(super) fn prepare_dependency(request: PrepareDependencyRequest<'_>) -> Resul
     let temp_target = paths::temporary_target_path(temp_root, target, "tmp")?;
     let temp_guard = TempPath::new(temp_target);
     let temp_target = temp_guard.path();
-    super::git::run_git(
-        [
-            OsStr::new("clone"),
-            OsStr::new("--no-checkout"),
-            OsStr::new(&locked.url),
-            temp_target.as_os_str(),
-        ],
-        None,
-    )?;
-    super::git::run_git(
-        [
-            OsStr::new("fetch"),
-            OsStr::new("origin"),
-            OsStr::new(&locked.commit),
-        ],
-        Some(temp_target),
-    )?;
-    super::git::run_git(
-        [
-            OsStr::new("checkout"),
-            OsStr::new("--detach"),
-            OsStr::new(&locked.commit),
-        ],
-        Some(temp_target),
-    )?;
-    verify_checked_out_tree(temp_target, locked)?;
-    ensure_dependency_does_not_reserve_marker(temp_target, locked)?;
     if locked.vendor {
-        let git_dir = temp_target.join(".git");
-        if git_dir.exists() {
-            fs::remove_dir_all(&git_dir).map_err(|e| Error::configuration(e.to_string()))?;
-        }
+        // A vendored dependency is its files alone: fetch the one commit into
+        // a scratch repository and write its tree out.
+        let scratch = paths::temporary_target_path(temp_root, target, "clone")?;
+        let scratch_guard = TempPath::new(scratch);
+        let repository = super::git::init(scratch_guard.path())?;
+        super::git::fetch(
+            &repository,
+            Fetch {
+                url: &locked.url,
+                reference: &locked.commit,
+                history: History::TipOnly,
+            },
+        )?;
+        let tree = super::git::tree_of(&repository, &locked.commit)?;
+        ensure_tree_is_locked(&tree, locked)?;
+        super::git::export_tree(&repository, &tree, temp_target)?;
+    } else {
+        let repository = super::git::clone_without_checkout(&locked.url, temp_target)?;
+        super::git::fetch(
+            &repository,
+            Fetch {
+                url: &locked.url,
+                reference: &locked.commit,
+                history: History::Full,
+            },
+        )?;
+        super::git::checkout_detached(&repository, &locked.commit)?;
+        verify_checked_out_tree(temp_target, locked)?;
     }
+    ensure_dependency_does_not_reserve_marker(temp_target, locked)?;
     write_ownership_marker(temp_target, locked)?;
     Ok(temp_guard)
 }
 
-/// Sparse-checkout subdir path: only the requested `subdir` of the repo lands
-/// at `target`, with no `.git` directory.
+/// Subdir path: only the requested `subdir` of the repo lands at `target`,
+/// with no `.git` directory.
 fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Result<TempPath> {
     let PrepareSubdirDependencyRequest {
         temp_root,
@@ -340,89 +274,22 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
         locked,
         subdir,
     } = request;
-    let expected_subtree = locked.subtree.as_deref().ok_or_else(|| {
-        Error::configuration(format!(
-            "VCS dependency '{}': locked entry has subdir but no subtree hash",
-            locked.path
-        ))
-    })?;
     let clone_target = paths::temporary_target_path(temp_root, target, "clone")?;
     let clone_guard = TempPath::new(clone_target);
-    let clone_path = clone_guard.path();
-    super::git::run_git(
-        [
-            OsStr::new("clone"),
-            OsStr::new("--no-checkout"),
-            OsStr::new("--filter=blob:none"),
-            OsStr::new(&locked.url),
-            clone_path.as_os_str(),
-        ],
-        None,
+    let repository = super::git::init(clone_guard.path())?;
+    super::git::fetch(
+        &repository,
+        Fetch {
+            url: &locked.url,
+            reference: &locked.commit,
+            history: History::TipOnly,
+        },
     )?;
-    super::git::run_git(
-        [
-            OsStr::new("sparse-checkout"),
-            OsStr::new("init"),
-            OsStr::new("--cone"),
-        ],
-        Some(clone_path),
-    )?;
-    super::git::run_git(
-        [
-            OsStr::new("sparse-checkout"),
-            OsStr::new("set"),
-            OsStr::new("--"),
-            OsStr::new(subdir),
-        ],
-        Some(clone_path),
-    )?;
-    super::git::run_git(
-        [
-            OsStr::new("fetch"),
-            OsStr::new("origin"),
-            OsStr::new(&locked.commit),
-        ],
-        Some(clone_path),
-    )?;
-    super::git::run_git(
-        [
-            OsStr::new("checkout"),
-            OsStr::new("--detach"),
-            OsStr::new(&locked.commit),
-        ],
-        Some(clone_path),
-    )?;
-    let subtree = super::git::git_output(
-        [
-            OsStr::new("rev-parse"),
-            OsStr::new(&format!("HEAD:{}", subdir)),
-        ],
-        Some(clone_path),
-    )
-    .map_err(|_| {
-        Error::configuration(format!(
-            "VCS dependency '{}': subdir '{}' not present at locked commit",
-            locked.path, subdir
-        ))
-    })?;
-    if subtree != expected_subtree {
-        return Err(Error::configuration(format!(
-            "VCS dependency '{}': subdir tree {} does not match locked subtree {}",
-            locked.path, subtree, expected_subtree
-        )));
-    }
+    let subtree = locked_subtree(&repository, locked, subdir)?;
 
-    let extracted_source = clone_path.join(subdir);
-    if !extracted_source.is_dir() {
-        return Err(Error::configuration(format!(
-            "VCS dependency '{}': sparse checkout did not materialize subdir '{}'",
-            locked.path, subdir
-        )));
-    }
     let extracted_target = paths::temporary_target_path(temp_root, target, "tmp")?;
     let extracted_guard = TempPath::new(extracted_target);
-    fs::rename(&extracted_source, extracted_guard.path())
-        .map_err(|e| Error::configuration(e.to_string()))?;
+    super::git::export_tree(&repository, &subtree, extracted_guard.path())?;
     drop(clone_guard);
 
     ensure_dependency_does_not_reserve_marker(extracted_guard.path(), locked)?;
@@ -430,6 +297,38 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
     Ok(extracted_guard)
 }
 
+/// The tree at `subdir` of the locked commit, which must be the subtree the
+/// lockfile records.
+fn locked_subtree(
+    repository: &gix::Repository,
+    locked: &LockedVcsDependency,
+    subdir: &str,
+) -> Result<String> {
+    let expected_subtree = locked.subtree.as_deref().ok_or_else(|| {
+        Error::configuration(format!(
+            "VCS dependency '{}': locked entry has subdir but no subtree hash",
+            locked.path
+        ))
+    })?;
+    let subtree = super::git::entry_at(repository, &locked.commit, subdir)?
+        .filter(|entry| entry.kind == "tree")
+        .map(|entry| entry.id)
+        .ok_or_else(|| {
+            Error::configuration(format!(
+                "VCS dependency '{}': subdir '{}' not present at locked commit",
+                locked.path, subdir
+            ))
+        })?;
+    if subtree != expected_subtree {
+        return Err(Error::configuration(format!(
+            "VCS dependency '{}': subdir tree {} does not match locked subtree {}",
+            locked.path, subtree, expected_subtree
+        )));
+    }
+    Ok(subtree)
+}
+
+/// Overlay path: materialize each immediate child of the subtree as its own
 /// Overlay path: materialize each immediate child of the subtree as its own
 /// snapshot under `target/<child>`. Returns one prepared temp dir per child;
 /// the caller installs them individually and never replaces `target` wholesale.
@@ -451,13 +350,6 @@ pub(super) fn prepare_overlay_dependency(
             locked.path
         ))
     })?;
-    let expected_subtree = locked.subtree.as_deref().ok_or_else(|| {
-        Error::configuration(format!(
-            "VCS dependency '{}': locked entry has subdir but no subtree hash",
-            locked.path
-        ))
-    })?;
-
     ensure_overlay_parent_target(target)?;
     // Refuse to clobber unmanaged or locally-modified content before touching
     // the filesystem. A previous non-overlay entry owned the whole parent, so a
@@ -479,73 +371,20 @@ pub(super) fn prepare_overlay_dependency(
     fs::create_dir_all(temp_root).map_err(|e| Error::configuration(e.to_string()))?;
     let clone_target = paths::temporary_target_path(temp_root, target, "clone")?;
     let clone_guard = TempPath::new(clone_target);
-    let clone_path = clone_guard.path();
-    super::git::run_git(
-        [
-            OsStr::new("clone"),
-            OsStr::new("--no-checkout"),
-            OsStr::new("--filter=blob:none"),
-            OsStr::new(&locked.url),
-            clone_path.as_os_str(),
-        ],
-        None,
+    let repository = super::git::init(clone_guard.path())?;
+    super::git::fetch(
+        &repository,
+        Fetch {
+            url: &locked.url,
+            reference: &locked.commit,
+            history: History::TipOnly,
+        },
     )?;
-    super::git::run_git(
-        [
-            OsStr::new("sparse-checkout"),
-            OsStr::new("init"),
-            OsStr::new("--cone"),
-        ],
-        Some(clone_path),
-    )?;
-    super::git::run_git(
-        [
-            OsStr::new("sparse-checkout"),
-            OsStr::new("set"),
-            OsStr::new("--"),
-            OsStr::new(subdir),
-        ],
-        Some(clone_path),
-    )?;
-    super::git::run_git(
-        [
-            OsStr::new("fetch"),
-            OsStr::new("origin"),
-            OsStr::new(&locked.commit),
-        ],
-        Some(clone_path),
-    )?;
-    super::git::run_git(
-        [
-            OsStr::new("checkout"),
-            OsStr::new("--detach"),
-            OsStr::new(&locked.commit),
-        ],
-        Some(clone_path),
-    )?;
-    let subtree = super::git::git_output(
-        [
-            OsStr::new("rev-parse"),
-            OsStr::new(&format!("HEAD:{}", subdir)),
-        ],
-        Some(clone_path),
-    )
-    .map_err(|_| {
-        Error::configuration(format!(
-            "VCS dependency '{}': subdir '{}' not present at locked commit",
-            locked.path, subdir
-        ))
-    })?;
-    if subtree != expected_subtree {
-        return Err(Error::configuration(format!(
-            "VCS dependency '{}': subdir tree {} does not match locked subtree {}",
-            locked.path, subtree, expected_subtree
-        )));
-    }
+    let subtree = locked_subtree(&repository, locked, subdir)?;
 
     // Guard against the subtree's children drifting from the lockfile between
     // resolve and prepare.
-    let actual_children = list_subtree_children(clone_path, &format!("HEAD:{}", subdir), subdir)?;
+    let actual_children = list_subtree_children(&repository, &subtree, subdir)?;
     if actual_children != locked.children {
         return Err(Error::configuration(format!(
             "VCS dependency '{}': overlay children at the locked commit differ from cuenv.lock; re-run 'cuenv sync vcs'",
@@ -555,18 +394,10 @@ pub(super) fn prepare_overlay_dependency(
 
     let mut prepared = Vec::new();
     for (child, child_tree) in &locked.children {
-        let extracted_source = clone_path.join(subdir).join(child);
-        if !extracted_source.is_dir() {
-            return Err(Error::configuration(format!(
-                "VCS dependency '{}': sparse checkout did not materialize child '{}'",
-                locked.path, child
-            )));
-        }
         let child_target = target.join(child);
         let extracted_target = paths::temporary_target_path(temp_root, &child_target, "tmp")?;
         let extracted_guard = TempPath::new(extracted_target);
-        fs::rename(&extracted_source, extracted_guard.path())
-            .map_err(|e| Error::configuration(e.to_string()))?;
+        super::git::export_tree(&repository, child_tree, extracted_guard.path())?;
         let child_locked = child_locked(locked, child, child_tree);
         ensure_dependency_does_not_reserve_marker(extracted_guard.path(), &child_locked)?;
         write_ownership_marker(extracted_guard.path(), &child_locked)?;
@@ -767,15 +598,7 @@ fn ensure_replaceable_target(target: &Path, previous: Option<&LockedVcsDependenc
     } else {
         ensure_git_dir(target)?;
         ensure_marker_is_excluded(target)?;
-        let status = super::git::git_output(
-            [
-                OsStr::new("status"),
-                OsStr::new("--porcelain"),
-                OsStr::new("--ignored"),
-            ],
-            Some(target),
-        )?;
-        if !git_status_is_clean_or_marker_only(&status) {
+        if !only_marker_changed(&super::git::changes(&super::git::open(target)?)?) {
             return Err(Error::configuration(format!(
                 "Refusing to overwrite dirty VCS checkout '{}'",
                 target.display()
@@ -892,12 +715,9 @@ fn ensure_marker_is_excluded(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn git_status_is_clean_or_marker_only(status: &str) -> bool {
-    status.lines().all(|line| {
-        line.trim().is_empty()
-            || line == format!("?? {MARKER_FILE}")
-            || line == format!("!! {MARKER_FILE}")
-    })
+/// Whether nothing in a checkout differs from `HEAD` but cuenv's own marker.
+fn only_marker_changed(changes: &[String]) -> bool {
+    changes.iter().all(|path| path == MARKER_FILE)
 }
 
 fn replace_target_with_prepared_checkout(target: &Path, prepared: &Path) -> Result<()> {
@@ -936,8 +756,12 @@ fn replace_target_with_prepared_checkout(target: &Path, prepared: &Path) -> Resu
 }
 
 fn verify_checked_out_tree(path: &Path, locked: &LockedVcsDependency) -> Result<()> {
-    let tree =
-        super::git::git_output([OsStr::new("rev-parse"), OsStr::new(HEAD_TREE)], Some(path))?;
+    let repository = super::git::open(path)?;
+    let head = super::git::head_commit(&repository)?;
+    ensure_tree_is_locked(&super::git::tree_of(&repository, &head)?, locked)
+}
+
+fn ensure_tree_is_locked(tree: &str, locked: &LockedVcsDependency) -> Result<()> {
     if tree != locked.tree {
         return Err(Error::configuration(format!(
             "VCS dependency '{}' resolved tree {}, expected {}",
@@ -1003,7 +827,7 @@ pub(super) fn check_materialized(path: &Path, locked: &LockedVcsDependency) -> R
         }
         return Ok(());
     }
-    let head = super::git::git_output([OsStr::new("rev-parse"), OsStr::new("HEAD")], Some(path))?;
+    let head = super::git::head_commit(&super::git::open(path)?)?;
     if head != locked.commit {
         return Err(Error::configuration(format!(
             "VCS dependency '{}' is checked out at {}, expected {}",
@@ -1011,15 +835,7 @@ pub(super) fn check_materialized(path: &Path, locked: &LockedVcsDependency) -> R
         )));
     }
     verify_checked_out_tree(path, locked)?;
-    let status = super::git::git_output(
-        [
-            OsStr::new("status"),
-            OsStr::new("--porcelain"),
-            OsStr::new("--ignored"),
-        ],
-        Some(path),
-    )?;
-    if !git_status_is_clean_or_marker_only(&status) {
+    if !only_marker_changed(&super::git::changes(&super::git::open(path)?)?) {
         return Err(Error::configuration(format!(
             "VCS dependency '{}' has uncommitted changes",
             locked.path
@@ -1029,63 +845,5 @@ pub(super) fn check_materialized(path: &Path, locked: &LockedVcsDependency) -> R
 }
 
 fn vendored_tree_hash(path: &Path) -> Result<String> {
-    let temp = std::env::temp_dir().join(format!(
-        "cuenv-vcs-tree-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| Error::configuration(e.to_string()))?
-            .as_nanos()
-    ));
-    fs::create_dir_all(&temp).map_err(|e| Error::configuration(e.to_string()))?;
-    let result = vendored_tree_hash_with_git_dir(path, &temp);
-    let cleanup = fs::remove_dir_all(&temp);
-    match (result, cleanup) {
-        (Ok(tree), Ok(())) => Ok(tree),
-        (Ok(_), Err(e)) => Err(Error::configuration(e.to_string())),
-        (Err(e), _) => Err(e),
-    }
-}
-
-fn vendored_tree_hash_with_git_dir(path: &Path, temp: &Path) -> Result<String> {
-    super::git::run_git([OsStr::new("init"), OsStr::new("-q")], Some(temp))?;
-    let git_dir = temp.join(".git");
-    super::git::run_git(
-        [
-            OsStr::new("--git-dir"),
-            git_dir.as_os_str(),
-            OsStr::new("--work-tree"),
-            path.as_os_str(),
-            OsStr::new("add"),
-            OsStr::new("--all"),
-            OsStr::new("--force"),
-            OsStr::new("--"),
-            OsStr::new("."),
-        ],
-        None,
-    )?;
-    super::git::run_git(
-        [
-            OsStr::new("--git-dir"),
-            git_dir.as_os_str(),
-            OsStr::new("--work-tree"),
-            path.as_os_str(),
-            OsStr::new("rm"),
-            OsStr::new("--cached"),
-            OsStr::new("--ignore-unmatch"),
-            OsStr::new("--"),
-            OsStr::new(MARKER_FILE),
-        ],
-        None,
-    )?;
-    super::git::git_output(
-        [
-            OsStr::new("--git-dir"),
-            git_dir.as_os_str(),
-            OsStr::new("--work-tree"),
-            path.as_os_str(),
-            OsStr::new("write-tree"),
-        ],
-        None,
-    )
+    super::git::directory_tree(path, MARKER_FILE)
 }

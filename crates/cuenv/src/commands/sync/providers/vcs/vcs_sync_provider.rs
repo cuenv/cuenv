@@ -16,14 +16,9 @@ use crate::commands::sync::provider::{
 use crate::commands::{CommandExecutor, git_hooks};
 
 #[cfg(test)]
-use super::git::run_git;
-#[cfg(test)]
 use super::paths::validate_subdir;
 
 const GITIGNORE_SECTION_NAME: &str = "cuenv vcs";
-pub(super) const FETCH_HEAD_COMMIT: &str = "FETCH_HEAD^{commit}";
-pub(super) const FETCH_HEAD_TREE: &str = "FETCH_HEAD^{tree}";
-pub(super) const HEAD_TREE: &str = "HEAD^{tree}";
 pub(super) const MARKER_FILE: &str = ".cuenv-vcs";
 
 /// Sync provider for cuenv-managed Git dependencies.

@@ -386,52 +386,74 @@ fn selected_environment(environment: Option<&str>) -> Option<String> {
 /// Which CI task's project environment variables to select.
 pub(super) struct ProjectEnvRequest<'request> {
     pub(super) config: &'request Project,
+    /// The selected environment (see [`selected_environment`]).
     pub(super) environment: Option<&'request str>,
-    pub(super) task_name: &'request str,
+    pub(super) task: cuenv_core::context::TaskSubject<'request>,
     pub(super) project_root: &'request Path,
 }
 
-/// The project environment variables a CI task sees: the base `env` merged
-/// with the selected environment (`environment`, else `CUENV_ENVIRONMENT`)
-/// and the contexts active for the task.
-pub(super) fn project_env_vars(
-    request: &ProjectEnvRequest<'_>,
-) -> cuenv_core::Result<HashMap<String, cuenv_core::environment::EnvValue>> {
-    let env_name = selected_environment(request.environment);
-    let Some(env) = &request.config.env else {
-        return Ok(HashMap::new());
-    };
-    cuenv_core::context::Selection {
-        env,
-        definitions: &request.config.contexts,
-        environment: env_name.as_deref(),
-        consumer: cuenv_core::context::Consumer::Task(request.task_name),
-        directory: request.project_root,
+impl<'request> ProjectEnvRequest<'request> {
+    /// The selection of the project's variables for the task; `None` for a
+    /// project without `env`.
+    pub(super) fn selection(&self) -> Option<cuenv_core::context::Selection<'request>> {
+        Some(cuenv_core::context::Selection {
+            env: self.config.env.as_ref()?,
+            definitions: &self.config.contexts,
+            environment: self.environment,
+            consumer: cuenv_core::context::Consumer::Task(self.task),
+            directory: self.project_root,
+        })
     }
-    .variables()
 }
 
-/// Every variable a pipeline's tasks could see: the selected environment and
-/// all contexts, whichever turn out to be active. Used to log in to secret
-/// providers before any task runs.
-pub(super) fn project_env_vars_in_any_context(
+/// Every value a pipeline's tasks could see: the selected environment and
+/// each context's variables, whichever contexts turn out to be active. Used
+/// to log in to secret providers before any task runs. Two contexts may set
+/// one variable from different providers, so the values are not merged by
+/// name.
+pub(super) fn project_env_values_in_any_context(
     config: &Project,
     environment: Option<&str>,
-) -> HashMap<String, cuenv_core::environment::EnvValue> {
+) -> Vec<cuenv_core::environment::EnvValue> {
     let env_name = selected_environment(environment);
     let Some(env) = &config.env else {
-        return HashMap::new();
+        return Vec::new();
     };
-    let contexts: Vec<String> = env
-        .context
-        .iter()
-        .flatten()
-        .map(|(name, _)| name.clone())
-        .collect();
-    env.select(cuenv_core::environment::EnvSelection {
+    let selected = env.select(cuenv_core::environment::EnvSelection {
         environment: env_name.as_deref(),
-        contexts: &contexts,
-    })
+        contexts: &[],
+    });
+    let in_contexts = env.context.iter().flatten().flat_map(|(_, context)| {
+        let overrides = env_name.as_deref().and_then(|name| {
+            context
+                .environment
+                .as_ref()
+                .and_then(|environments| environments.get(name))
+        });
+        context
+            .base
+            .values()
+            .chain(overrides.into_iter().flat_map(HashMap::values))
+    });
+    selected.values().chain(in_contexts).cloned().collect()
+}
+
+/// What a named context sees of an IR task: the project task it was compiled
+/// from, or its own command when it has none (a contributor's task).
+fn ir_task_subject<'task>(
+    compiler: &'task Compiler,
+    ir_task: &'task crate::ir::Task,
+) -> cuenv_core::context::TaskSubject<'task> {
+    match compiler.find_task(&ir_task.id) {
+        Some(task) => cuenv_core::context::TaskSubject::of(&ir_task.id, task),
+        None => cuenv_core::context::TaskSubject {
+            name: &ir_task.id,
+            command: (!ir_task.shell)
+                .then(|| ir_task.command.first().map(String::as_str))
+                .flatten(),
+            labels: &[],
+        },
+    }
 }
 
 struct IrExecutionRequest<'request> {
@@ -471,22 +493,11 @@ async fn compile_and_execute_ir(
         )));
     }
 
-    let project_env_vars = project_env_vars(&ProjectEnvRequest {
-        config,
-        environment,
-        task_name,
-        project_root,
-    })
-    .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-    let (resolved_env, secrets) =
-        cuenv_core::environment::Environment::resolve_for_task_with_secrets(
-            task_name,
-            &project_env_vars,
-        )
-        .await
-        .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
-
-    cuenv_events::register_secrets(secrets);
+    let env_name = selected_environment(environment);
+    // A named context can select variables for one task of the group and
+    // not for another, so the project variables are resolved per set of
+    // active contexts, the first time a task needs them.
+    let mut resolved_by_contexts: HashMap<Vec<String>, HashMap<String, String>> = HashMap::new();
 
     let runner = IRTaskRunner::new(
         project_root.to_path_buf(),
@@ -518,11 +529,39 @@ async fn compile_and_execute_ir(
     }
 
     for ir_task in &ir.tasks {
+        let selection = ProjectEnvRequest {
+            config,
+            environment: env_name.as_deref(),
+            task: ir_task_subject(&compiler, ir_task),
+            project_root,
+        }
+        .selection();
+        let contexts = selection
+            .map(|selection| selection.contexts())
+            .transpose()
+            .map_err(|e| ExecutorError::Compilation(e.to_string()))?
+            .unwrap_or_default();
+        if !resolved_by_contexts.contains_key(&contexts) {
+            let variables = selection
+                .map(|selection| selection.variables_in(&contexts))
+                .unwrap_or_default();
+            let (resolved, secrets) =
+                cuenv_core::environment::Environment::resolve_for_task_with_secrets(
+                    task_name, &variables,
+                )
+                .await
+                .map_err(|e| {
+                    ExecutorError::Compilation(format!("Secret resolution failed: {e}"))
+                })?;
+            cuenv_events::register_secrets(secrets);
+            resolved_by_contexts.insert(contexts.clone(), resolved);
+        }
+
         let mut env: BTreeMap<String, String> = hook_env.clone();
         for (key, value) in &runtime_env {
             env.insert(key.clone(), value.clone());
         }
-        for (key, value) in &resolved_env {
+        for (key, value) in resolved_by_contexts.get(&contexts).into_iter().flatten() {
             env.insert(key.clone(), value.clone());
         }
         task_env::apply_task_env(&mut env, &ir_task.env);

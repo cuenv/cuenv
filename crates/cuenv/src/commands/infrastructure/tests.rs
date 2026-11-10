@@ -340,13 +340,18 @@ fn contexts_survive_freezing_the_configuration() {
         module.path(),
         "app/env.cue",
         &format!(
-            "package cuenv\n\nname: \"app\"\ncontexts: {{\n  plan: when: infrastructure: \"plan\"\n  apply: when: infrastructure: \"apply\" | \"plan\"\n}}\n{INFRASTRUCTURE}"
+            "package cuenv\n\nname: \"app\"\ncontexts: {{\n  plan: infrastructure: \"plan\"\n  apply: infrastructure: \"apply|import\"\n}}\n{INFRASTRUCTURE}"
         ),
     );
     let target = evaluate(module.path(), NameCheck::WholeModule).unwrap();
-    assert_eq!(target.contexts.len(), 2);
-    // The compiled constraint is kept, not the null a constraint exports as.
-    assert_eq!(target.contexts["plan"].overlaps, vec!["apply".to_string()]);
+    // The frozen configuration is exported without `contexts`.
+    assert_eq!(
+        serde_json::to_value(&target.contexts).unwrap(),
+        serde_json::json!({
+            "plan": {"infrastructure": "plan"},
+            "apply": {"infrastructure": "apply|import"},
+        })
+    );
 }
 
 #[test]

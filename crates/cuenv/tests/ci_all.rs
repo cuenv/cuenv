@@ -1,8 +1,10 @@
 //! End-to-end contracts for complete pipeline execution without event rewriting.
 
+#[path = "../src/test_git.rs"]
+mod test_git;
+
 use std::error::Error;
 use std::fs;
-use std::path::Path;
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
@@ -26,16 +28,10 @@ impl Fixture {
         fs::write(root.join("env.cue"), source)?;
         fs::write(root.join("untouched.txt"), "same")?;
         fs::write(root.join("changed.txt"), "base")?;
-        git(root, &["init", "-q"])?;
-        git(root, &["config", "user.name", "CI contracts"])?;
-        git(root, &["config", "user.email", "ci@example.test"])?;
-        git(root, &["add", "."])?;
-        git(root, &["commit", "-qm", "base"])?;
-        let base = git(root, &["rev-parse", "HEAD"])?;
+        test_git::init_repository(root)?;
+        let base = test_git::commit_all(root, "base")?;
         fs::write(root.join("changed.txt"), "head")?;
-        git(root, &["add", "changed.txt"])?;
-        git(root, &["commit", "-qm", "head"])?;
-        let head = git(root, &["rev-parse", "HEAD"])?;
+        let head = test_git::commit_all(root, "head")?;
         Ok(Self {
             directory,
             base,
@@ -58,25 +54,6 @@ impl Fixture {
     fn run(&self, arguments: &[&str]) -> TestResult<Output> {
         Ok(self.command().args(arguments).output()?)
     }
-}
-
-fn git(root: &Path, arguments: &[&str]) -> TestResult<String> {
-    let output = Command::new("git")
-        .args([
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-        ])
-        .args(arguments)
-        .current_dir(root)
-        .output()?;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
 fn assert_success(output: &Output) {

@@ -240,8 +240,8 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             error,
         })
     })?;
-    // Freezing the configuration re-exports the instance without the compiled
-    // `when` matchers, so the contexts of this evaluation are kept.
+    // Freezing the configuration re-exports the instance without its
+    // `contexts`, so those of this evaluation are kept.
     let evaluated_contexts = module
         .get(Path::new(
             &cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root),

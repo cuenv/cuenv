@@ -12,46 +12,80 @@ yourself (`-e production`). Use a context when the invocation decides.
 
 ## Define a context
 
-A context is a CUE constraint, `when`, over the facts of an invocation:
+A context is a filter. There are two kinds:
 
 ```cue
 contexts: {
-    plan:        when: infrastructure: "plan"
-    apply:       when: infrastructure: "apply" | "import" | "destroy"
-    deploy:      when: task:           =~"^deploy"
-    pullRequest: when: ci: event:      "pull_request"
-    local:       when: ci:             null
-    localPlan:   when: local.when & plan.when
+    plan:        schema.#When & {infrastructure: "plan"}
+    apply:       schema.#When & {infrastructure: "apply|import|destroy"}
+    pullRequest: schema.#When & {ci: event: "pull_request"}
+    local:       schema.#When & {ci: null}
+    deploy:      schema.#TaskFilter & {name: "deploy.*"}
+    bun:         schema.#TaskFilter & {command: "bun"}
 }
 ```
 
-Fields you leave out match anything. `when` may use literals, `=~`, `!~`,
-`!=`, `|` and `&`, and may refer to another context's `when`. Any other
-constraint is an error.
+- `#When` matches the facts of an invocation: what is being run, where, and by
+  whom.
+- `#TaskFilter` matches the tasks cuenv runs, one task at a time.
 
-## The facts
+A filter is data, so `cue export` shows your contexts like any other field.
+Fields you leave out match anything.
+
+### Strings match the whole value
+
+A string in a filter is a regular expression that must match the whole value.
+A string without regular expression characters therefore matches exactly
+itself:
+
+| Filter        | Matches                          |
+| ------------- | -------------------------------- |
+| `"bun"`       | `bun`, and not `bunx`            |
+| `"bun.*"`     | anything that starts with `bun`  |
+| `"bun\|bunx"` | `bun` or `bunx`                  |
+
+This differs from CUE's `=~`, which matches anywhere in the value. Escape a
+character you mean literally: `"g\\+\\+"` for `g++`. CUE's own constraint
+operators (`=~`, `!=`, `|` between values) cannot be used in a filter: they are
+not data, and `cue export` rejects them.
+
+## `#When`: the facts
 
 | Fact             | Value                                                             |
 | ---------------- | ----------------------------------------------------------------- |
-| `command`        | `"task"`, `"exec"`, `"infrastructure"` or `"shell"`               |
-| `task`           | The task's name, otherwise `null`                                 |
-| `exec`           | The program `cuenv exec` runs, otherwise `null`                   |
+| `consumer`       | `"task"`, `"exec"`, `"infrastructure"` or `"shell"`               |
+| `exec`           | The program `cuenv exec` runs, as written, otherwise `null`       |
 | `infrastructure` | The infrastructure action, otherwise `null`                       |
 | `ci`             | `null` outside CI, otherwise `{provider, event, ref, actor}`      |
 | `user`           | `{name, email}` from `git config`                                 |
 | `host`           | `{os, arch, name}`                                                |
 | `vcs`            | `{branch}`                                                        |
 
-Every fact is always present. One that does not apply, or that cuenv could not
-detect, is `null`. `ci.provider` is `"github"`, `"gitlab"`, `"buildkite"` or
-`"unknown"`; `event`, `ref` and `actor` are the provider's own names (on GitHub,
-`GITHUB_EVENT_NAME`, `GITHUB_REF` and `GITHUB_ACTOR`).
+A fact that does not apply, or that cuenv could not detect, is `null`, and
+`null` in a filter matches exactly that. `ci.provider` is `"github"`,
+`"gitlab"`, `"buildkite"` or `"unknown"`; `event`, `ref` and `actor` are the
+provider's own names (on GitHub, `GITHUB_EVENT_NAME`, `GITHUB_REF` and
+`GITHUB_ACTOR`). `ref` is the full ref on GitHub (`refs/heads/main`) and the
+branch or tag name on GitLab and Buildkite. `exec` is the program exactly as
+it is written on the command line, so `terraform` does not match
+`/usr/bin/terraform`; an `allowExec` policy compares the same string.
 
-There is no negation. Write the alternatives, and remember `null`:
+A string for `consumer` or `infrastructure` must match at least one of the
+fact's values, so `infrastructure: "aply"` is an error.
 
-```cue
-contexts: notPullRequest: when: ci: null | {event: !="pull_request"}
-```
+## `#TaskFilter`: the task
+
+| Field     | Matches                                                          |
+| --------- | ---------------------------------------------------------------- |
+| `name`    | The task's full name, such as `deploy` or `deploy.staging`       |
+| `command` | The program the task runs. A script task has none and never matches |
+| `labels`  | Each entry must match one of the task's labels                   |
+
+A task filter is checked for every task cuenv runs. With
+`deploy: schema.#TaskFilter & {name: "deploy"}`, running `cuenv task deploy`
+gives the `deploy` task the context's variables and withholds them from the
+tasks it depends on. A task filter is never active for `cuenv exec`,
+`cuenv infrastructure` or `cuenv env print`.
 
 ## Set variables under a context
 
@@ -79,10 +113,14 @@ resolves the environment, not only in the invocation that would hit it:
 - A variable set under a context must not also be set in the base `env` or
   under an environment. That is what guarantees it is withheld when no context
   matches.
-- Two contexts that can both be active must not set the same variable.
-  `plan` and `apply` never overlap; `plan` and `local` do.
-- `env.context.<name>` needs a `contexts.<name>`, and `when` may only name the
-  facts above.
+- Two contexts that set the same variable must be exclusive, and cuenv has to
+  be able to prove it. It can when they need different consumers, when one
+  needs a fact to be `null` and the other needs a value, and when they name
+  the same fact or task field with values that cannot both match. `plan` and
+  `apply` are exclusive; `plan` and `local` are not. Two expressions such as
+  `"a.*"` and `"b.*"` are never proved exclusive.
+- `env.context.<name>` needs a `contexts.<name>`, and a filter must name
+  something: an empty one is an error.
 
 Precedence is base, then the selected environment, then active contexts, then
 `env.context.<name>.environment.<environment>`.
@@ -107,8 +145,10 @@ a privileged credential on `user`.
 ## Where contexts apply
 
 `cuenv task`, `cuenv exec`, `cuenv infrastructure`, `cuenv env print` and
-`cuenv ci` select context variables. For `cuenv task` and `cuenv ci` the `task`
-fact is the task that was asked for. CI jobs log in to the secret providers of
+`cuenv ci` select context variables. `cuenv task` and `cuenv ci` decide the
+contexts for each task they run, and resolve a context's secrets only once a
+task needs them. [Policies](/reference/cue-schema/#policy) are still checked
+for the task that was asked for. CI jobs log in to the secret providers of
 every context, since the generator does not predict which will be active.
 
 Services (`cuenv up`), shell hooks and `cuenv export` do not read `env.context`

@@ -8,6 +8,7 @@ description: Use for cuenv project configuration, env blocks, environment polici
 Start with `docs/design/specs/schema-coverage-matrix.md`, then read the relevant schema files:
 
 - `schema/core.cue` and `schema/config.cue` for project and command defaults.
+- `schema/context.cue` for named contexts (`contexts.<name>` as `schema.#When & {...}` or `schema.#TaskFilter & {...}`), which select `env.context.<name>`; `crates/core/src/context.rs` decides which are active and `crates/manifest/src/context.rs` holds the DTOs.
 - `schema/env.cue` and `schema/policy.cue` for env values, policies, interpolation, and passthrough. Environment map keys start with an uppercase ASCII letter or underscore and contain only uppercase ASCII letters, digits, and underscores; shell export also validates names captured from hooks.
 - `schema/secrets.cue`, `schema/onepassword.cue`, `schema/infisical.cue`, `schema/aws.cue`, `schema/gcp.cue`, and `schema/vault.cue` for secret shapes.
 - `schema/hooks.cue` and `schema/shell.cue` for hooks and shell command variants.
@@ -38,6 +39,13 @@ Generation rules:
 - Treat `schema.#VaultSecret` as schema-only unless the current matrix changes.
 - Do not generate `schema.#Secret & { command: ... }`, `schema.#AWSSecretRef`, or `schema.#VaultRef`.
 - Do not confuse task `#ScriptShell` with shell command schemas in `schema/shell.cue`.
+
+Context rules:
+
+- A context filter is plain data and must survive `cue export`. A string is a regular expression that must match the whole value (`"bun"` matches only `bun`; `"deploy.*"` is a prefix). Never generate CUE constraint operators (`=~`, `!=`, `"a" | "b"`) inside a filter.
+- `#When` filters facts (`consumer`, `exec`, `infrastructure`, `ci`, `user`, `host`, `vcs`); `#TaskFilter` filters each task by `name`, `command` and `labels` and is active only for tasks. There is no `task` or `command` fact.
+- A variable under `env.context.<name>` must not also be set in the base `env` or an environment, and two contexts that set the same variable must be provably exclusive.
+- Contexts choose a value and never grant access; facts are self-reported.
 
 Policy rules:
 

@@ -1374,7 +1374,7 @@ their built-in defaults.
 
 #### `cuenv release prepare`
 
-Prepare a release end-to-end: analyze commits, bump versions, generate the changelog, and open a pull request.
+Prepare a release: analyze commits, bump versions, generate the changelog, and commit the result to a release branch. cuenv does not push the branch or open the pull request; do that yourself or in your workflow.
 
 ```bash
 cuenv release prepare [OPTIONS]
@@ -1386,7 +1386,6 @@ cuenv release prepare [OPTIONS]
 - `-s, --since <REF>`: Git tag or ref to analyze commits from.
 - `--dry-run`: Preview changes without applying.
 - `--branch <NAME>`: Branch name for the release. Default: `release/next`.
-- `--no-pr`: Skip creating the pull request.
 
 **Example:**
 
@@ -1394,8 +1393,8 @@ cuenv release prepare [OPTIONS]
 # Preview the full prepare flow
 cuenv release prepare --dry-run
 
-# Prepare on a custom branch without opening a PR
-cuenv release prepare --branch release/2026-q2 --no-pr
+# Prepare on a custom branch
+cuenv release prepare --branch release/2026-q2
 ```
 
 #### `cuenv release version`

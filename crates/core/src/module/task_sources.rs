@@ -88,8 +88,8 @@ impl TaskSourceContext<'_> {
             if key.starts_with('_') {
                 continue;
             }
-            // A context constraint names the facts `task`, `exec` and
-            // `command`; it holds no tasks.
+            // A task filter has a `command` like a task does; `contexts`
+            // holds no tasks.
             if field_path.is_empty() && key == "contexts" {
                 continue;
             }

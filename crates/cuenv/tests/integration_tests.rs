@@ -5,7 +5,7 @@
 
 use std::error::Error;
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::{fs, io, str};
 use tempfile::TempDir;
@@ -77,18 +77,6 @@ fn get_testexamples_path() -> TestResult<String> {
         .to_string())
 }
 
-fn run_git_command(path: &Path, args: &[&str]) -> TestResult {
-    let output = Command::new("git").args(args).current_dir(path).output()?;
-    assert!(
-        output.status.success(),
-        "git {} failed\nstdout: {}\nstderr: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
-}
-
 /// Create a temporary directory with git initialized and CUE files for sync testing.
 /// This is needed because `cuenv sync` requires being inside a git repository.
 /// Returns a `TempDir` that will be cleaned up when dropped, and the path as a String.
@@ -99,9 +87,7 @@ fn create_git_test_env() -> TestResult<(TempDir, String)> {
     let temp_dir = tempfile::Builder::new().prefix("cuenv_test_").tempdir()?;
     let temp_path = temp_dir.path();
 
-    run_git_command(temp_path, &["init"])?;
-    run_git_command(temp_path, &["config", "user.email", "test@example.com"])?;
-    run_git_command(temp_path, &["config", "user.name", "Test User"])?;
+    gix::init(temp_path)?;
 
     let cue_mod_dir = temp_path.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir)?;
@@ -626,9 +612,7 @@ fn create_monorepo_test_env() -> TestResult<(TempDir, String)> {
         .tempdir()?;
     let temp_path = temp_dir.path();
 
-    run_git_command(temp_path, &["init"])?;
-    run_git_command(temp_path, &["config", "user.email", "test@example.com"])?;
-    run_git_command(temp_path, &["config", "user.name", "Test User"])?;
+    gix::init(temp_path)?;
 
     let cue_mod_dir = temp_path.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir)?;

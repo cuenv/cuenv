@@ -157,14 +157,15 @@ pub(super) fn state_for_contexts(
         return Ok(Cow::Borrowed(state));
     }
     let names: Vec<&str> = s3.context.keys().map(String::as_str).collect();
-    let document =
-        Facts::detect(&target.project_directory).document(Consumer::Infrastructure(action));
     let active = Overrides {
         field: "infrastructure.state.s3.context",
         names: &names,
         definitions: &target.contexts,
     }
-    .active(&document)
+    .active(
+        &Facts::detect(&target.project_directory),
+        Consumer::Infrastructure(action),
+    )
     .map_err(|error| CliError::config(error.to_string()))?;
     tracing::debug!(?action, ?active, "State credentials context");
     Ok(match active {
