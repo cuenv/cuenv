@@ -168,8 +168,14 @@ impl<'service_process> ServiceProcess<'service_process> {
     }
 }
 
+/// On macOS, run the service under `cuenv __supervise`, which stops it when
+/// cuenv dies (Linux asks the kernel for that instead).
+///
+/// The wrapper is this executable, so it is left out of this crate's own
+/// tests: there the executable is the test harness, which has no
+/// `__supervise` and would run nothing.
 fn wrap_with_supervisor(program: String, args: Vec<String>) -> (String, Vec<String>) {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(test)))]
     {
         if let Ok(exe) = std::env::current_exe() {
             let mut new_args = Vec::with_capacity(args.len() + 2);
