@@ -3,6 +3,7 @@
 use crate::commands::env_file::{self, EnvFileStatus};
 use crate::commands::{CommandExecutor, convert_engine_error};
 use cuengine::ModuleEvalOptions;
+use cuenv_core::context::{Consumer, Selection};
 use cuenv_core::environment::EnvValue;
 use cuenv_core::manifest::Project;
 use cuenv_core::module::{ModuleEvaluationOptions, TASK_FIELD};
@@ -243,7 +244,7 @@ pub async fn execute_export(
 
     let hooks = config.on_enter_hooks();
     if hooks.is_empty() {
-        let env = extract_static_env_vars(&config, StaticEnvConsumer::Shell);
+        let env = shell_env_vars(&config, &directory)?;
         return format_environment(
             EnvironmentContext {
                 directory: &directory,
@@ -447,7 +448,8 @@ fn render_ready_environment(
     context: ExportHookContext<'_>,
     state: &HookExecutionState,
 ) -> Result<String> {
-    let env_vars = collect_all_env_vars(context.config, &state.environment_vars);
+    let env_vars =
+        collect_all_env_vars(context.config, context.directory, &state.environment_vars)?;
     format_environment(
         EnvironmentContext {
             directory: context.directory,
@@ -508,19 +510,49 @@ pub fn extract_static_env_vars(
         .collect()
 }
 
+/// The static variables the interactive shell receives for the project in
+/// `directory`: `env`'s base and the variables of every context active for
+/// the shell, which is what `cuenv env print` reports.
+///
+/// Secrets and values with a policy list are left out, as
+/// [`extract_static_env_vars`] leaves them out.
+///
+/// # Errors
+///
+/// Returns an error if `env.context` is invalid.
+pub fn shell_env_vars(config: &Project, directory: &Path) -> Result<HashMap<String, String>> {
+    let Some(env) = &config.env else {
+        return Ok(HashMap::new());
+    };
+    let variables = Selection {
+        env,
+        definitions: &config.contexts,
+        environment: None,
+        consumer: Consumer::Shell,
+        directory,
+    }
+    .variables()?;
+    Ok(variables
+        .into_iter()
+        .filter(|(_, value)| !value.is_secret() && StaticEnvConsumer::Shell.may_receive(value))
+        .map(|(key, value)| (key, value.to_string_value()))
+        .collect())
+}
+
 /// Collect all environment variables (static + hook-generated)
 pub(super) fn collect_all_env_vars(
     config: &Project,
+    directory: &Path,
     hook_env: &HashMap<String, String>,
-) -> HashMap<String, String> {
-    let mut all_vars = extract_static_env_vars(config, StaticEnvConsumer::Shell);
+) -> Result<HashMap<String, String>> {
+    let mut all_vars = shell_env_vars(config, directory)?;
 
     // Hook environment variables override static ones
     for (key, value) in hook_env {
         all_vars.insert(key.clone(), value.clone());
     }
 
-    all_vars
+    Ok(all_vars)
 }
 
 /// Generate script to print "Loaded" message if entering a new directory

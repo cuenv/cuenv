@@ -37,6 +37,7 @@ fn test_extract_hooks_from_config() {
 
     let config = Project {
         config: None,
+        contexts: std::collections::HashMap::new(),
         env: None,
         hooks: Some(Hooks {
             on_enter: Some(on_enter),
@@ -85,6 +86,7 @@ fn test_extract_hooks_single_hook() {
 
     let config = Project {
         config: None,
+        contexts: std::collections::HashMap::new(),
         env: None,
         hooks: Some(Hooks {
             on_enter: Some(on_enter),
@@ -116,6 +118,7 @@ fn test_extract_hooks_empty_config() {
 
     let config = Project {
         config: None,
+        contexts: std::collections::HashMap::new(),
         env: None,
         hooks: None,
         ci: None,

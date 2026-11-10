@@ -358,11 +358,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         // Initialize git repo so .gitignore is respected
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(temp.path())
-            .output()
-            .ok();
+        gix::init(temp.path()).unwrap();
 
         // Create .gitignore
         std::fs::write(temp.path().join(".gitignore"), "ignored/\n").unwrap();

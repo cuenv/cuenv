@@ -43,6 +43,7 @@ const nimbusConfig = defineNimbusConfig({
           { label: "CODEOWNERS", link: "/how-to/codeowners/" },
           { label: "Generate EditorConfig", link: "/how-to/editorconfig/" },
           { label: "Typed environments", link: "/how-to/typed-environments/" },
+          { label: "Contexts", link: "/how-to/contexts/" },
           { label: "Secrets", link: "/how-to/secrets/" },
           { label: "Build container images", link: "/how-to/container-images/" },
           { label: "Nix", link: "/how-to/nix/" },

@@ -245,6 +245,23 @@ pub enum InfrastructurePolicyAction {
 }
 
 impl InfrastructurePolicyAction {
+    /// Every action, in declaration order.
+    pub const ALL: [Self; 13] = [
+        Self::Plan,
+        Self::Apply,
+        Self::Import,
+        Self::Destroy,
+        Self::StateList,
+        Self::StateRemove,
+        Self::StateRecover,
+        Self::StateAdopt,
+        Self::StatePull,
+        Self::StateRestore,
+        Self::StateMigrate,
+        Self::StateRename,
+        Self::Unlock,
+    ];
+
     /// The name used in CUE and in messages.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -515,6 +532,27 @@ impl InfrastructureState {
         }
     }
 
+    /// The tokens of every per-context credential, whichever context is
+    /// active: none of them may reach a provider.
+    #[must_use]
+    pub fn context_tokens(&self) -> Vec<&StateToken> {
+        match self {
+            Self::S3(s3) => s3
+                .context
+                .values()
+                .flat_map(|credentials| {
+                    [
+                        Some(&credentials.access_key_id),
+                        Some(&credentials.secret_access_key),
+                        credentials.session_token.as_ref(),
+                    ]
+                })
+                .flatten()
+                .collect(),
+            Self::Turso(_) | Self::D1(_) => Vec::new(),
+        }
+    }
+
     /// The backend's name, as it is written in `infrastructure.state`.
     #[must_use]
     pub const fn backend(&self) -> &'static str {
@@ -689,6 +727,11 @@ pub struct S3State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_token: Option<StateToken>,
 
+    /// Credentials that replace the three above while the named context is
+    /// active.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub context: BTreeMap<String, S3StateCredentials>,
+
     /// Least time between two writes of one tenant's state, such as `1s`
     /// or `250ms`. Defaults to `1s` on R2 endpoints and none elsewhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -699,7 +742,37 @@ pub struct S3State {
     pub history: u32,
 }
 
+/// The credentials of an S3 state bucket for one named context.
+///
+/// Based on `#S3StateCredentials` in schema/infrastructure.cue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct S3StateCredentials {
+    /// Access key ID.
+    pub access_key_id: StateToken,
+
+    /// Secret access key.
+    pub secret_access_key: StateToken,
+
+    /// Session token of temporary credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<StateToken>,
+}
+
 impl S3State {
+    /// The same bucket with the credentials of one context, and no
+    /// per-context credentials left to select.
+    #[must_use]
+    pub fn with_credentials(&self, credentials: &S3StateCredentials) -> Self {
+        Self {
+            access_key_id: credentials.access_key_id.clone(),
+            secret_access_key: credentials.secret_access_key.clone(),
+            session_token: credentials.session_token.clone(),
+            context: BTreeMap::new(),
+            ..self.clone()
+        }
+    }
+
     /// Where the access key ID is configured.
     pub const ACCESS_KEY_ID_FIELD: &'static str = "infrastructure.state.s3.accessKeyId";
     /// Where the secret access key is configured.
@@ -848,6 +921,39 @@ mod tests {
         let top = Infrastructure::select(value, None)?;
         assert_eq!(top.data.len(), 1);
         assert!(top.data.contains_key("base"));
+        Ok(())
+    }
+
+    #[test]
+    fn s3_state_credentials_can_be_replaced_by_a_context() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let state: S3State = serde_json::from_value(serde_json::json!({
+            "bucket": "acme-cuenv-state",
+            "region": "auto",
+            "accessKeyId": "base-key",
+            "secretAccessKey": "base-secret",
+            "sessionToken": "base-session",
+            "context": {
+                "apply": {"accessKeyId": "apply-key", "secretAccessKey": "apply-secret"},
+            },
+        }))?;
+        let selected = state.with_credentials(&state.context["apply"]);
+        // All three credentials are replaced, so a base session token never
+        // travels with a context's access key.
+        assert_eq!(selected.access_key_id, state.context["apply"].access_key_id);
+        assert_eq!(
+            selected.secret_access_key,
+            state.context["apply"].secret_access_key
+        );
+        assert_eq!(selected.session_token, None);
+        assert!(selected.context.is_empty());
+        assert_eq!(selected.bucket, state.bucket);
+        assert_eq!(
+            InfrastructureState::S3(Box::new(state))
+                .context_tokens()
+                .len(),
+            2
+        );
         Ok(())
     }
 

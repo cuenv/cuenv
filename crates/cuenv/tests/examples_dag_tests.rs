@@ -82,6 +82,12 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: true,
         },
         ExampleExpectations {
+            name: "env-contexts",
+            min_task_count: 2,
+            has_hooks: false,
+            has_env: true,
+        },
+        ExampleExpectations {
             name: "task-output-ref",
             min_task_count: 4, // tmpdir, work, cleanup, pipeline
             has_hooks: false,

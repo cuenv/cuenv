@@ -428,6 +428,7 @@ fn test_env_for_environment() {
     let env = Env {
         base,
         environment: Some(environments),
+        context: None,
     };
 
     let dev_vars = env.for_environment("development");

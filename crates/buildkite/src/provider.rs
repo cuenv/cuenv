@@ -6,11 +6,12 @@
 use async_trait::async_trait;
 use cuenv_ci::context::CIContext;
 use cuenv_ci::provider::CIProvider;
+use cuenv_ci::provider::git::{Fetch, RunCheckout, Since};
 use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus};
 use cuenv_core::Result;
 use std::path::PathBuf;
 use std::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Buildkite CI provider.
 ///
@@ -19,6 +20,7 @@ use tracing::{debug, info, warn};
 /// git to determine changed files.
 pub struct BuildkiteCIProvider {
     context: CIContext,
+    checkout: RunCheckout,
 }
 
 impl BuildkiteCIProvider {
@@ -37,64 +39,6 @@ impl BuildkiteCIProvider {
 
         // Fall back to pipeline default branch if available
         std::env::var("BUILDKITE_PIPELINE_DEFAULT_BRANCH").ok()
-    }
-
-    /// Fetch a ref if we're in a shallow clone.
-    fn fetch_ref(refspec: &str) -> bool {
-        debug!("Fetching ref: {refspec}");
-        Command::new("git")
-            .args(["fetch", "--depth=1", "origin", refspec])
-            .output()
-            .is_ok_and(|o| o.status.success())
-    }
-
-    /// Check if this is a shallow clone.
-    fn is_shallow_clone() -> bool {
-        Command::new("git")
-            .args(["rev-parse", "--is-shallow-repository"])
-            .output()
-            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
-    }
-
-    /// Try to get changed files using git diff.
-    fn try_git_diff(range: &str) -> Option<Vec<PathBuf>> {
-        debug!("Trying git diff: {range}");
-        let output = Command::new("git")
-            .args(["diff", "--name-only", range])
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            debug!(
-                "git diff failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return None;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Some(
-            stdout
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(|line| PathBuf::from(line.trim()))
-                .collect(),
-        )
-    }
-
-    /// Get all tracked files as fallback.
-    fn get_all_tracked_files() -> Vec<PathBuf> {
-        Command::new("git")
-            .args(["ls-files"])
-            .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .map(|line| PathBuf::from(line.trim()))
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 }
 
@@ -124,6 +68,7 @@ impl CIProvider for BuildkiteCIProvider {
                 base_ref,
                 sha,
             },
+            checkout: RunCheckout::default(),
         })
     }
 
@@ -132,7 +77,7 @@ impl CIProvider for BuildkiteCIProvider {
     }
 
     async fn changed_files(&self) -> Result<Vec<PathBuf>> {
-        let is_shallow = Self::is_shallow_clone();
+        let is_shallow = self.checkout.is_shallow();
         info!(
             "Shallow clone: {is_shallow}, base_ref: {:?}",
             self.context.base_ref
@@ -146,10 +91,13 @@ impl CIProvider for BuildkiteCIProvider {
             info!("PR detected, comparing against base_ref: {base}");
 
             if is_shallow {
-                Self::fetch_ref(base);
+                self.checkout.fetch(Fetch::Branch(base));
             }
 
-            if let Some(files) = Self::try_git_diff(&format!("origin/{base}...HEAD")) {
+            if let Some(files) = self
+                .checkout
+                .changed(Since::MergeBaseWith(&format!("origin/{base}")))
+            {
                 info!("Found {} changed files via PR comparison", files.len());
                 return Ok(files);
             }
@@ -158,11 +106,11 @@ impl CIProvider for BuildkiteCIProvider {
         // Strategy 2: For shallow clones, fetch one more commit to enable HEAD^ comparison
         if is_shallow {
             info!("Shallow clone detected, fetching additional history for HEAD^ comparison");
-            let _ = Command::new("git").args(["fetch", "--deepen=1"]).output();
+            self.checkout.fetch(Fetch::OneMoreCommit);
         }
 
         // Strategy 3: Compare against parent commit
-        if let Some(files) = Self::try_git_diff("HEAD^..HEAD") {
+        if let Some(files) = self.checkout.changed(Since::Revision("HEAD^")) {
             info!("Found {} changed files via HEAD^ comparison", files.len());
             return Ok(files);
         }
@@ -173,7 +121,7 @@ impl CIProvider for BuildkiteCIProvider {
              Running all tasks. For better performance, ensure fetch-depth > 1."
         );
 
-        let files = Self::get_all_tracked_files();
+        let files = self.checkout.tracked_files();
         info!("Falling back to all {} tracked files", files.len());
         Ok(files)
     }

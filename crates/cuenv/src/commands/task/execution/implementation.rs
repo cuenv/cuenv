@@ -8,20 +8,25 @@ use super::super::types::TaskExecutionRequest;
 use super::super::{list_builder, rendering, runner};
 use crate::commands::CommandExecutor;
 
-use crate::commands::export::StaticEnvConsumer;
 use crate::commands::git_hooks;
 
+use cuenv_core::context::{TaskEnv, TaskEnvKey, TaskSelection, TaskSelectionOptions, TaskSubject};
 use cuenv_core::environment::{EnvValue, Environment};
 use cuenv_core::manifest::{Project, Runtime};
 
-use cuenv_core::tasks::{TaskNode, Tasks};
+use cuenv_core::tasks::{Task, TaskNode, Tasks};
 use cuenv_core::{OutputCapture, Result};
 use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::TASK_FAILURE_SNIPPET_LINES;
-use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph};
+use cuenv_task_exec::{
+    ExecutorConfig, TaskEnvironmentFuture, TaskEnvironments, TaskExecutor, TaskGraph,
+};
+use cuenv_tool_runtime::ResolvedToolActivationStep;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::{Mutex, OnceCell};
 
 use super::context::{TaskExecutionContext, TaskExecutionInput};
 use super::selection::TaskResolution;
@@ -29,6 +34,8 @@ use super::{help, listing, picker, selection};
 
 struct PreparedTaskRuntime {
     env: Environment,
+    /// Environments for the tasks a context selects other variables for.
+    task_environments: Option<Arc<dyn TaskEnvironments>>,
     cache: Option<TaskCacheConfig>,
 }
 
@@ -480,24 +487,48 @@ async fn prepare_task_runtime(
     context: &TaskExecutionContext,
     resolution: &TaskResolution,
 ) -> Result<PreparedTaskRuntime> {
-    let base_env_vars = crate::commands::export::extract_static_env_vars(
-        &context.manifest,
-        StaticEnvConsumer::Task(resolution.display_name.as_str()),
-    );
-
-    let mut runtime_env = base_runtime_environment(context).await?;
-    apply_task_environment(TaskEnvironmentApplication {
-        input,
-        context,
-        resolution,
-        runtime_env: &mut runtime_env,
-        base_env_vars,
-    })
-    .await?;
-    activate_lockfile_tools(&context.manifest, &context.project_root, &mut runtime_env).await?;
+    let requested = resolution.display_name.as_str();
+    // The contexts are validated here, once, and not again for each task.
+    let selection = context
+        .manifest
+        .env
+        .clone()
+        .map(|env| {
+            TaskSelection::new(TaskSelectionOptions {
+                env,
+                definitions: context.manifest.contexts.clone(),
+                environment: input.environment.map(str::to_string),
+                directory: context.project_root.clone(),
+            })
+        })
+        .transpose()?;
+    let requested_env = selection
+        .as_ref()
+        .map(|selection| match &resolution.node {
+            TaskNode::Task(task) => selection.for_task(TaskSubject::of(requested, task)),
+            _ => selection.for_group(requested),
+        })
+        .transpose()?;
+    let environments = ProjectTaskEnvironments {
+        runtime_env: base_runtime_environment(context).await?,
+        activation_steps: lockfile_activation_steps(&context.manifest, &context.project_root)
+            .await?,
+        shared: requested_env
+            .as_ref()
+            .map(|env| env.key().clone())
+            .unwrap_or_default(),
+        resolved: Mutex::default(),
+    };
+    let env = environments.build(requested_env.as_ref()).await?;
 
     Ok(PreparedTaskRuntime {
-        env: runtime_env,
+        env,
+        task_environments: selection.map(|selection| {
+            Arc::new(SelectedTaskEnvironments {
+                selection,
+                environments,
+            }) as Arc<dyn TaskEnvironments>
+        }),
         cache: task_cache_for_context(context).await,
     })
 }
@@ -515,89 +546,115 @@ async fn base_runtime_environment(context: &TaskExecutionContext) -> Result<Envi
     Ok(runtime_env)
 }
 
-struct TaskEnvironmentApplication<'execution, 'input> {
-    input: &'execution TaskExecutionInput<'input>,
-    context: &'execution TaskExecutionContext,
-    resolution: &'execution TaskResolution,
-    runtime_env: &'execution mut Environment,
-    base_env_vars: HashMap<String, String>,
+/// An environment that is built once, by whichever task needs it first.
+type BuiltEnvironment = Arc<OnceCell<Environment>>;
+
+/// Builds the environments of a run from the project variables each task
+/// receives (see [`TaskSelection`]). The environment of the requested task
+/// is built up front; any other is built the first time a task needs it, so
+/// a secret no task of the graph may receive is never resolved.
+#[derive(Debug)]
+struct ProjectTaskEnvironments {
+    /// The runtime's environment, before the project's variables.
+    runtime_env: Environment,
+    activation_steps: Vec<ResolvedToolActivationStep>,
+    /// The key of the requested task, whose environment every task runs
+    /// with unless its own key differs.
+    shared: TaskEnvKey,
+    /// The environments built so far. Each is built once; building one does
+    /// not hold up a task that needs another.
+    resolved: Mutex<HashMap<TaskEnvKey, BuiltEnvironment>>,
 }
 
-async fn apply_task_environment(application: TaskEnvironmentApplication<'_, '_>) -> Result<()> {
-    if let Some(env) = &application.context.manifest.env {
-        for (key, value) in &application.base_env_vars {
-            application.runtime_env.set(key.clone(), value.clone());
-        }
+impl ProjectTaskEnvironments {
+    /// The environment with a task's project variables; without any for a
+    /// project that has no `env`.
+    async fn build(&self, task_env: Option<&TaskEnv>) -> Result<Environment> {
+        let mut environment = self.runtime_env.clone();
 
-        let env_vars = if let Some(env_name) = application.input.environment {
-            env.for_environment(env_name)
-        } else {
-            env.base.clone()
-        };
-
-        let (task_env_vars, secrets) =
-            cuenv_core::environment::Environment::resolve_for_task_with_secrets(
-                application.resolution.display_name.as_str(),
-                &env_vars,
-            )
-            .await?;
+        let env_vars = task_env.map(TaskEnv::variables).unwrap_or_default();
+        let (resolved, secrets) = Environment::resolve_all_with_secrets(&env_vars).await?;
 
         cuenv_events::register_secrets(secrets);
 
-        for (key, value) in task_env_vars {
+        for (variable, value) in resolved {
             // Resolution flattens everything to a plain string, so the CUE
             // declaration is the last place that still knows which values are
             // credentials. Carry that through: a secret must be fingerprinted
             // rather than written into the cache key.
-            if env_vars.get(&key).is_some_and(EnvValue::is_secret) {
-                application.runtime_env.set_secret(key, value);
+            if env_vars.get(&variable).is_some_and(EnvValue::is_secret) {
+                environment.set_secret(variable, value);
             } else {
-                application.runtime_env.set(key, value);
+                environment.set(variable, value);
             }
         }
-    } else {
-        for (key, value) in application.base_env_vars {
-            application.runtime_env.set(key, value);
-        }
-    }
 
-    Ok(())
+        for step in &self.activation_steps {
+            let current = environment.get(&step.var);
+            if let Some(new_value) =
+                cuenv_tool_runtime::apply_resolved_tool_activation(current, step)
+            {
+                environment.set(step.var.clone(), new_value);
+            }
+        }
+        Ok(environment)
+    }
 }
 
-async fn activate_lockfile_tools(
+/// The environment of each task of a run, for a project with `env`.
+#[derive(Debug)]
+struct SelectedTaskEnvironments {
+    selection: TaskSelection,
+    environments: ProjectTaskEnvironments,
+}
+
+impl TaskEnvironments for SelectedTaskEnvironments {
+    fn environment_for<'a>(&'a self, name: &'a str, task: &'a Task) -> TaskEnvironmentFuture<'a> {
+        Box::pin(async move {
+            let task_env = self.selection.for_task(TaskSubject::of(name, task))?;
+            let environments = &self.environments;
+            if *task_env.key() == environments.shared {
+                return Ok(None);
+            }
+            let cell = Arc::clone(
+                environments
+                    .resolved
+                    .lock()
+                    .await
+                    .entry(task_env.key().clone())
+                    .or_default(),
+            );
+            let environment = cell
+                .get_or_try_init(|| environments.build(Some(&task_env)))
+                .await?;
+            Ok(Some(environment.clone()))
+        })
+    }
+}
+
+/// The lockfile's tool activation steps, after downloading the tools; none
+/// unless the project uses the tools runtime.
+async fn lockfile_activation_steps(
     manifest: &Project,
     project_root: &Path,
-    runtime_env: &mut Environment,
-) -> Result<()> {
-    if should_activate_lockfile_tools(manifest) {
-        crate::commands::tools::ensure_tools_downloaded(Some(project_root))
-            .await
-            .map_err(|e| {
-                cuenv_core::Error::configuration(format!("Failed to download tools: {e}"))
-            })?;
-        if let Some(activation_steps) = crate::commands::tools::resolve_tool_activation_steps(Some(
-            project_root,
-        ))
-        .map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to resolve tools activation: {e}"))
-        })? {
-            tracing::debug!(
-                steps = activation_steps.len(),
-                "Applying configured tool activation operations for task execution"
-            );
-
-            for step in activation_steps {
-                let current = runtime_env.get(&step.var);
-                if let Some(new_value) =
-                    cuenv_tool_runtime::apply_resolved_tool_activation(current, &step)
-                {
-                    runtime_env.set(step.var.clone(), new_value);
-                }
-            }
-        }
+) -> Result<Vec<ResolvedToolActivationStep>> {
+    if !should_activate_lockfile_tools(manifest) {
+        return Ok(Vec::new());
     }
-
-    Ok(())
+    crate::commands::tools::ensure_tools_downloaded(Some(project_root))
+        .await
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to download tools: {e}")))?;
+    let activation_steps =
+        crate::commands::tools::resolve_tool_activation_steps(Some(project_root))
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to resolve tools activation: {e}"))
+            })?
+            .unwrap_or_default();
+    tracing::debug!(
+        steps = activation_steps.len(),
+        "Applying configured tool activation operations for task execution"
+    );
+    Ok(activation_steps)
 }
 
 fn should_activate_lockfile_tools(project: &Project) -> bool {
@@ -713,6 +770,7 @@ fn task_executor_config(spec: &TaskExecutorConfigSpec<'_, '_>) -> ExecutorConfig
         max_parallel: 0,
         continue_on_error: spec.input.continue_on_error,
         environment: spec.runtime.env.clone(),
+        task_environments: spec.runtime.task_environments.clone(),
         working_dir: None,
         cue_module_root: spec.context.cue_module_root.clone(),
         project_root: spec.context.project_root.clone(),

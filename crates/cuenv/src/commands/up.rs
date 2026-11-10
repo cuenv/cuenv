@@ -397,6 +397,7 @@ async fn execute_service_task_dependencies(
         max_parallel: 0,
         continue_on_error: false,
         environment: task_dependency_environment(context.project_env, context.environment).await?,
+        task_environments: None,
         working_dir: None,
         project_root: context.project_root.to_path_buf(),
         cue_module_root: context.cue_module_root,

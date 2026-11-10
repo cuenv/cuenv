@@ -17,6 +17,8 @@ workspace = true
 
 [dependencies]
 cuenv-core = { workspace = true }
+# The HTTP transport takes its TLS from the workspace's reqwest features.
+gix = { workspace = true, features = ["index", "status", "parallel", "blocking-network-client", "blocking-http-transport-reqwest"] }
 cuenv-manifest = { workspace = true }
 cuenv-tool-runtime = { workspace = true }
 cuenv-task-exec = { workspace = true }
@@ -48,7 +50,3 @@ uuid = { workspace = true }
 tempfile = { workspace = true }
 temp-env = { workspace = true }
 proptest = { workspace = true }
-
-# We'll stick to shelling out to git for now as per spec preference for "native reporting"
-# but we might need git2 later if we want tighter integration.
-# For now, standard process execution is safer/simpler for "git diff" logic.

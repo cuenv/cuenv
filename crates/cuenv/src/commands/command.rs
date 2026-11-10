@@ -227,10 +227,8 @@ pub enum Command {
         since: Option<String>,
         /// Perform a dry run without making changes.
         dry_run: DryRun,
-        /// Branch name for the release PR.
+        /// Branch name for the release.
         branch: String,
-        /// Skip creating a pull request.
-        no_pr: bool,
     },
     /// Update version numbers based on changesets.
     ReleaseVersion {

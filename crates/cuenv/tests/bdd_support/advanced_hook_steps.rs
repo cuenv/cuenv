@@ -81,7 +81,9 @@ fn fixture_project(case: &str) -> StepResult<String> {
         "sessions" => vec![FixtureHook {
             name: "session",
             order: 100,
-            script: "mkdir guard || printf overlap > overlap; printf '%s\\n' \"$BDD_SESSION\" >> runs; : > started; sleep 1; rmdir guard; printf \"export BDD_OWNER='%s'\\n\" \"$BDD_SESSION\"",
+            // The hook holds its run until the scenario has looked at it, so
+            // a slow machine cannot miss the run. It gives up after 30 seconds.
+            script: "mkdir guard || printf overlap > overlap; printf '%s\\n' \"$BDD_SESSION\" >> runs; : > started; i=0; while test ! -e release && test \"$i\" -lt 600; do sleep 0.05; i=$((i + 1)); done; rmdir guard; printf \"export BDD_OWNER='%s'\\n\" \"$BDD_SESSION\"",
             source: true,
         }],
         "priority" => vec![
@@ -576,6 +578,7 @@ async fn run_sessions_case(world: &mut TestWorld) -> StepResult {
         manager.begin_run(&mut competing).await,
         Err(cuenv_hooks::Error::Busy)
     );
+    fs::write(world.current_dir.join("release"), b"release").await?;
     let first = terminal_state(world, first_id, None).await?;
     ensure!(
         first.status == ExecutionStatus::Completed,

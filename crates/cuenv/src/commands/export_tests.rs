@@ -218,9 +218,11 @@ fn test_extract_static_env_vars_skips_secrets() {
     let env_cfg = Env {
         base,
         environment: None,
+        context: None,
     };
     let cfg = Project {
         config: None,
+        contexts: std::collections::HashMap::new(),
         env: Some(env_cfg),
         hooks: None,
         ci: None,
@@ -244,9 +246,11 @@ fn test_extract_static_env_vars_skips_secrets() {
 fn project_with_env(base: HashMap<String, EnvValue>) -> Project {
     Project {
         config: None,
+        contexts: std::collections::HashMap::new(),
         env: Some(Env {
             base,
             environment: None,
+            context: None,
         }),
         hooks: None,
         ci: None,
@@ -357,7 +361,7 @@ fn shell_export_omits_every_value_with_a_policy_list() {
         ),
     ]));
 
-    let merged = super::collect_all_env_vars(&cfg, &HashMap::new());
+    let merged = super::collect_all_env_vars(&cfg, Path::new("."), &HashMap::new()).unwrap();
     assert_eq!(merged.get("OPEN"), Some(&"a".to_string()));
     assert_eq!(merged.get("NO_RESTRICTION"), Some(&"b".to_string()));
     assert!(!merged.contains_key("TASKS"), "{merged:?}");
@@ -378,9 +382,11 @@ fn test_collect_all_env_vars_override() {
 
     let cfg = Project {
         config: None,
+        contexts: std::collections::HashMap::new(),
         env: Some(Env {
             base,
             environment: None,
+            context: None,
         }),
         hooks: None,
         ci: None,
@@ -401,8 +407,39 @@ fn test_collect_all_env_vars_override() {
         ("HOOK_ONLY".to_string(), "x".to_string()),
     ]);
 
-    let merged = super::collect_all_env_vars(&cfg, &hook_env);
+    let merged = super::collect_all_env_vars(&cfg, Path::new("."), &hook_env).unwrap();
     assert_eq!(merged.get("OVERRIDE"), Some(&"hook".to_string()));
     assert_eq!(merged.get("BASE_ONLY"), Some(&"plain".to_string()));
     assert_eq!(merged.get("HOOK_ONLY"), Some(&"x".to_string()));
+}
+
+#[test]
+fn the_shell_receives_the_variables_of_its_active_contexts() {
+    let mut cfg = project_with_env(HashMap::new());
+    cfg.env = Some(
+        serde_json::from_value(serde_json::json!({
+            "BASE": "b",
+            "context": {
+                "interactive": {
+                    "EDITOR_HINT": "hx",
+                    "GUARDED": {"value": "g", "policies": [{"allowTasks": ["build"]}]},
+                },
+                "tasks": {"TASK_ONLY": "t"},
+            },
+        }))
+        .unwrap(),
+    );
+    cfg.contexts = serde_json::from_value(serde_json::json!({
+        "interactive": {"consumer": "shell"},
+        "tasks": {"consumer": "task"},
+    }))
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+
+    let vars = super::shell_env_vars(&cfg, directory.path()).unwrap();
+
+    assert_eq!(vars.get("BASE"), Some(&"b".to_string()));
+    assert_eq!(vars.get("EDITOR_HINT"), Some(&"hx".to_string()));
+    assert!(!vars.contains_key("TASK_ONLY"), "{vars:?}");
+    assert!(!vars.contains_key("GUARDED"), "{vars:?}");
 }

@@ -1,5 +1,8 @@
 //! End-to-end coverage for VCS subdir sync examples.
 
+#[path = "../src/test_git.rs"]
+mod test_git;
+
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs;
@@ -51,35 +54,16 @@ fn copy_dir_recursive(src: &Path, dst: &Path, files: CopyFiles) -> TestResult {
     Ok(())
 }
 
-fn run_git(args: &[&str], cwd: &Path) -> TestResult {
-    let output = Command::new("git").args(args).current_dir(cwd).output()?;
-    assert!(
-        output.status.success(),
-        "git {} failed: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
-}
-
-fn init_git_repo(root: &Path) -> TestResult {
-    run_git(&["init", "-b", "main"], root)?;
-    run_git(&["config", "user.email", "test@example.com"], root)?;
-    run_git(&["config", "user.name", "Cuenv Test"], root)?;
-    run_git(&["config", "commit.gpgsign", "false"], root)
-}
-
 fn create_agent_skills_source_repo() -> TestResult<TempDir> {
     let source = tempfile::Builder::new().prefix("cuenv_source_").tempdir()?;
-    init_git_repo(source.path())?;
+    test_git::init_repository(source.path())?;
 
     copy_dir_recursive(
         &repo_root()?.join(".agents/skills"),
         &source.path().join(".agents/skills"),
         CopyFiles::All,
     )?;
-    run_git(&["add", ".agents/skills"], source.path())?;
-    run_git(&["commit", "-m", "seed agent skills"], source.path())?;
+    test_git::commit_all(source.path(), "seed agent skills")?;
     Ok(source)
 }
 
@@ -103,7 +87,7 @@ fn cue_string(value: &str) -> String {
 
 fn create_example_target_repo(source: &Path) -> TestResult<TempDir> {
     let target = tempfile::Builder::new().prefix("cuenv_target_").tempdir()?;
-    init_git_repo(target.path())?;
+    test_git::init_repository(target.path())?;
     write_local_cuenv_module(target.path())?;
 
     let mut example = fs::read_to_string(repo_root()?.join("examples/vcs-subdir/env.cue"))?
@@ -219,7 +203,7 @@ fn create_overlay_target_repo(source: &Path) -> TestResult<TempDir> {
     let target = tempfile::Builder::new()
         .prefix("cuenv_overlay_target_")
         .tempdir()?;
-    init_git_repo(target.path())?;
+    test_git::init_repository(target.path())?;
     write_local_cuenv_module(target.path())?;
 
     let env_cue = format!(

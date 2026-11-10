@@ -12,6 +12,9 @@
 - Every PR that changes `schema/**`, CLI behavior, sync providers, task execution, CI/release behavior, or examples must update `docs/design/specs/schema-coverage-matrix.md`.
 - Every PR that changes prompts or agent guidance must update the affected docs and skills under `.agents/skills/`. Update the schema coverage matrix only when the change alters schema or CLI support status.
 - Run `cuenv task ci.schema-docs-check` before requesting review when schema, docs, prompts, examples, skills, or CLI surfaces change.
+- Plain `cue export` must work on every cuenv project, example, and accept fixture. A regular field of the schema must never hold a constraint or any other non-concrete value; put what is not data in a definition or hidden field. Never relax `cuenv task ci.schema-compat` to accept something `cue export` rejects.
+- We support CUE v0.18 and module language version `v0.18.0` onwards, nothing earlier. Do not add or keep schema workarounds, fixtures, compat-matrix entries, or docs for older CUE releases or language versions; remove them when you touch the code around them.
+- Never shell out to another program for something Rust code can do in process. Read git repositories with `gix` and the system with `rustix` or the standard library; never run `git`, `hostname`, or the like. A subprocess is only for running what the user asked cuenv to run: tasks, hooks, services, `exec` commands, and provider plugins.
 
 ## Project Overview
 

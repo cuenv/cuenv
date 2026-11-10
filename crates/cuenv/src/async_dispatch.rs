@@ -295,14 +295,12 @@ async fn execute_release_command(
             since,
             dry_run,
             branch,
-            no_pr,
         } => {
             let opts = commands::release::ReleasePrepareOptions {
                 path: path.clone(),
                 since: since.clone(),
                 dry_run: *dry_run,
                 branch: branch.clone(),
-                no_pr: *no_pr,
             };
             execute_release_prepare(&opts, json_format)
         }

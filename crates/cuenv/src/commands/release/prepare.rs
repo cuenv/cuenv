@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Options for the `release prepare` command.
 #[derive(Debug, Clone)]
@@ -21,8 +20,6 @@ pub struct ReleasePrepareOptions {
     pub dry_run: cuenv_core::DryRun,
     /// Branch name for the release.
     pub branch: String,
-    /// Skip creating the pull request.
-    pub no_pr: bool,
 }
 
 /// Information about a package version bump.
@@ -54,13 +51,6 @@ enum ReleasePreparePlan {
     Nothing(String),
 }
 
-struct ReleasePreparePrRequest<'request> {
-    root: &'request Path,
-    bump_infos: &'request [PackageBumpInfo],
-    commits: &'request [ConventionalCommit],
-    output: &'request mut String,
-}
-
 /// Execute the `release prepare` command.
 ///
 /// This unified command orchestrates the release workflow:
@@ -69,8 +59,8 @@ struct ReleasePreparePrRequest<'request> {
 /// 3. Calculate per-package version bumps
 /// 4. Update Cargo.toml versions
 /// 5. Generate/update CHANGELOG.md
-/// 6. Create release branch, commit, and push
-/// 7. Create PR via `gh` CLI
+/// 6. Create release branch and commit; pushing and opening the pull request
+///    are left to the caller
 ///
 /// # Errors
 ///
@@ -325,47 +315,13 @@ fn commit_and_publish_release_prepare(
     );
     create_branch_and_commit(&analysis.root, &opts.branch, &commit_msg)?;
 
-    let _ = writeln!(output, "Pushing branch to origin...");
-    run_git_push(&analysis.root, &opts.branch)?;
-
-    if !opts.no_pr {
-        create_release_prepare_pr(ReleasePreparePrRequest {
-            root: &analysis.root,
-            bump_infos: &analysis.bump_infos,
-            commits: &analysis.commits,
-            output,
-        });
-    }
-
-    Ok(())
-}
-
-fn create_release_prepare_pr(request: ReleasePreparePrRequest<'_>) {
-    let ReleasePreparePrRequest {
-        root,
-        bump_infos,
-        commits,
+    let _ = writeln!(
         output,
-    } = request;
-
-    let _ = writeln!(output, "Creating pull request...");
-    let pr_body = generate_pr_body(bump_infos, commits);
-    let pr_title = format!(
-        "chore(release): prepare release {}",
-        bump_infos
-            .first()
-            .map_or("next", |info| info.new_version.as_str())
+        "\nCommitted the release to branch '{}'. Push it and open a pull request to continue.",
+        opts.branch
     );
 
-    match create_pull_request(root, &pr_title, &pr_body) {
-        Ok(pr_url) => {
-            let _ = writeln!(output, "\nPull request created: {pr_url}");
-        }
-        Err(e) => {
-            let _ = writeln!(output, "\nWarning: Failed to create PR: {e}");
-            let _ = writeln!(output, "You can create the PR manually.");
-        }
-    }
+    Ok(())
 }
 
 /// Update a package's Cargo.toml with new version.
@@ -550,7 +506,7 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
         // Determine the correct entry kind from the worktree metadata
         let kind = if metadata.is_symlink() {
             EntryKind::Link
-        } else if is_executable(&metadata) {
+        } else if crate::file_mode::is_executable(&metadata) {
             EntryKind::BlobExecutable
         } else {
             EntryKind::Blob
@@ -621,7 +577,7 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
 
         let kind = if metadata.is_symlink() {
             EntryKind::Link
-        } else if is_executable(&metadata) {
+        } else if crate::file_mode::is_executable(&metadata) {
             EntryKind::BlobExecutable
         } else {
             EntryKind::Blob
@@ -700,163 +656,17 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
             )
         })?;
 
-    // Refresh the index to match the new commit so `git status` is clean.
-    // We use `git reset` via CLI since gix index-write APIs are complex and
-    // this runs once per release.
-    let workdir_path = workdir.to_path_buf();
-    let output = Command::new("git")
-        .args(["reset", "--mixed", "HEAD"])
-        .current_dir(&workdir_path)
-        .output()
-        .map_err(|e| {
-            cuenv_core::Error::execution_with_help(
-                format!("Failed to refresh index after commit: {e}"),
-                "The commit was created successfully but the index may be stale",
-            )
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(cuenv_core::Error::execution_with_help(
-            format!("Failed to refresh index after commit: {stderr}"),
+    // Rewrite the index from the new commit's tree so `git status` is clean.
+    let stale_index = |error: &dyn std::fmt::Display| {
+        cuenv_core::Error::execution_with_help(
+            format!("Failed to refresh index after commit: {error}"),
             "The commit was created successfully but the index may be stale",
-        ));
-    }
+        )
+    };
+    repo.index_from_tree(&new_tree_id)
+        .map_err(|error| stale_index(&error))?
+        .write(gix::index::write::Options::default())
+        .map_err(|error| stale_index(&error))?;
 
     Ok(())
-}
-
-/// Check if file metadata indicates the executable bit is set.
-#[cfg(unix)]
-fn is_executable(metadata: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn is_executable(_metadata: &std::fs::Metadata) -> bool {
-    false
-}
-
-/// Push a branch to the remote origin via CLI.
-///
-/// Push is kept as a shell command because authentication handling
-/// (SSH agents, credential helpers, etc.) is complex to replicate in-process.
-fn run_git_push(root: &Path, branch: &str) -> cuenv_core::Result<()> {
-    let output = Command::new("git")
-        .args(["push", "-u", "origin", branch])
-        .current_dir(root)
-        .output()
-        .map_err(|e| {
-            cuenv_core::Error::execution_with_help(
-                format!("Failed to run git push: {e}"),
-                "Ensure git is installed and available in PATH",
-            )
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(cuenv_core::Error::execution_with_help(
-            format!("git push failed: {stderr}"),
-            "Check remote access and authentication",
-        ));
-    }
-
-    Ok(())
-}
-
-/// Generate PR body from bump info and commits.
-fn generate_pr_body(bumps: &[PackageBumpInfo], commits: &[ConventionalCommit]) -> String {
-    let mut body = String::new();
-
-    body.push_str("## Summary\n\n");
-
-    // Version table
-    body.push_str("| Package | Current | New | Bump |\n");
-    body.push_str("|---------|---------|-----|------|\n");
-    for info in bumps {
-        let _ = writeln!(
-            body,
-            "| {} | {} | {} | {} |",
-            info.name, info.current_version, info.new_version, info.bump_type
-        );
-    }
-
-    body.push_str("\n## Commits\n\n");
-
-    // Group commits by type
-    let mut features: Vec<&ConventionalCommit> = Vec::new();
-    let mut fixes: Vec<&ConventionalCommit> = Vec::new();
-    let mut others: Vec<&ConventionalCommit> = Vec::new();
-
-    for commit in commits {
-        match commit.commit_type.as_str() {
-            "feat" => features.push(commit),
-            "fix" => fixes.push(commit),
-            _ => others.push(commit),
-        }
-    }
-
-    if !features.is_empty() {
-        body.push_str("### Features\n\n");
-        for c in &features {
-            let scope = c
-                .scope
-                .as_ref()
-                .map_or(String::new(), |s| format!("**{s}**: "));
-            let _ = writeln!(body, "- {}{}", scope, c.description);
-        }
-        body.push('\n');
-    }
-
-    if !fixes.is_empty() {
-        body.push_str("### Bug Fixes\n\n");
-        for c in &fixes {
-            let scope = c
-                .scope
-                .as_ref()
-                .map_or(String::new(), |s| format!("**{s}**: "));
-            let _ = writeln!(body, "- {}{}", scope, c.description);
-        }
-        body.push('\n');
-    }
-
-    if !others.is_empty() {
-        body.push_str("### Other Changes\n\n");
-        for c in &others {
-            let scope = c
-                .scope
-                .as_ref()
-                .map_or(String::new(), |s| format!("**{s}**: "));
-            let _ = writeln!(body, "- {}{}", scope, c.description);
-        }
-    }
-
-    body.push_str("\n---\n\n🤖 Generated with [cuenv](https://github.com/cuenv/cuenv)\n");
-
-    body
-}
-
-/// Create a pull request using gh CLI.
-fn create_pull_request(root: &Path, title: &str, body: &str) -> cuenv_core::Result<String> {
-    let output = Command::new("gh")
-        .args(["pr", "create", "--title", title, "--body", body])
-        .current_dir(root)
-        .output()
-        .map_err(|e| {
-            cuenv_core::Error::execution_with_help(
-                format!("Failed to run gh pr create: {e}"),
-                "Ensure gh CLI is installed and authenticated (gh auth login)",
-            )
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(cuenv_core::Error::execution_with_help(
-            format!("gh pr create failed: {stderr}"),
-            "Ensure gh CLI is authenticated and repository has a remote origin",
-        ));
-    }
-
-    let pr_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(pr_url)
 }

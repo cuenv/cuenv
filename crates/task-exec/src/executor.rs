@@ -20,7 +20,9 @@ use cuenv_core::{Error, OutputCapture, Result};
 #[cfg(test)]
 use cuenv_workspaces::PackageManager;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::process::Command;
@@ -67,6 +69,19 @@ fn emit_group_completion(completion: GroupCompletion<'_>) {
     );
 }
 
+/// The pending answer of [`TaskEnvironments::environment_for`].
+pub type TaskEnvironmentFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Environment>>> + Send + 'a>>;
+
+/// Supplies the environment of the tasks whose variables differ from
+/// [`ExecutorConfig::environment`], such as a task a named context selects
+/// variables for.
+pub trait TaskEnvironments: std::fmt::Debug + Send + Sync {
+    /// The environment for one task, or `None` when it runs with the shared
+    /// one.
+    fn environment_for<'a>(&'a self, name: &'a str, task: &'a Task) -> TaskEnvironmentFuture<'a>;
+}
+
 /// Task executor configuration
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
@@ -82,6 +97,8 @@ pub struct ExecutorConfig {
     pub continue_on_error: bool,
     /// Environment variables to propagate (resolved via policies)
     pub environment: Environment,
+    /// Environments for the tasks that do not run with `environment`.
+    pub task_environments: Option<Arc<dyn TaskEnvironments>>,
     /// Optional working directory override (reserved for future backends)
     pub working_dir: Option<PathBuf>,
     /// Project root for resolving inputs/outputs (env.cue root)
@@ -105,6 +122,7 @@ impl Default for ExecutorConfig {
             max_parallel: 0,
             continue_on_error: false,
             environment: Environment::new(),
+            task_environments: None,
             working_dir: None,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             cue_module_root: None,
@@ -215,7 +233,7 @@ impl TaskExecutor {
             ));
         }
 
-        let task_environment = self.task_environment(task)?;
+        let task_environment = self.task_environment(name, task).await?;
 
         // Input resolution and directory isolation remain available when
         // result caching is disabled. A sandbox-only config supplies the
@@ -455,8 +473,12 @@ impl TaskExecutor {
         Ok(result)
     }
 
-    fn task_environment(&self, task: &Task) -> Result<Environment> {
-        let mut environment = self.config.environment.clone();
+    async fn task_environment(&self, name: &str, task: &Task) -> Result<Environment> {
+        let selected = match &self.config.task_environments {
+            Some(environments) => environments.environment_for(name, task).await?,
+            None => None,
+        };
+        let mut environment = selected.unwrap_or_else(|| self.config.environment.clone());
         if !task.is_hermetic() || environment.get("HOME").is_some() || task.env.contains_key("HOME")
         {
             return Ok(environment);

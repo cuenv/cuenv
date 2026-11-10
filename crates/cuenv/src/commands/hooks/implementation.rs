@@ -722,10 +722,7 @@ pub async fn execute_env_check(
         package,
         shell,
     };
-    let static_env = crate::commands::export::extract_static_env_vars(
-        &config,
-        crate::commands::export::StaticEnvConsumer::Shell,
-    );
+    let static_env = crate::commands::export::shell_env_vars(&config, &directory)?;
     if hooks.is_empty() {
         return crate::commands::export::format_environment(environment, &static_env);
     }

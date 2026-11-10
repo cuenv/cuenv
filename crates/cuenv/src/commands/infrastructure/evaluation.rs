@@ -10,7 +10,7 @@
 //! escape the check). The state store records the last writer for
 //! information only; there is no ownership fence (ADR-0012).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,6 +23,7 @@ use cuenv_core::ModuleEvaluation;
 use cuenv_core::manifest::Project;
 use cuenv_core::module::NamedProject;
 use cuenv_infrastructure::{ProjectInstance, TenantKey};
+use cuenv_manifest::context::ContextDefinition;
 use cuenv_manifest::environment::Env;
 use cuenv_manifest::manifest::{
     Infrastructure, InfrastructureSelectionError, InfrastructureState, ProviderEnvironment,
@@ -139,6 +140,8 @@ pub(super) struct Target {
     pub(super) remote_cache_credential_variables: Vec<String>,
     /// Project environment variables, including only the selected overlay.
     pub(super) project_environment: Option<Env>,
+    /// The project's named contexts, which select `env.context` variables.
+    pub(super) contexts: HashMap<String, ContextDefinition>,
     /// Canonical project directory.
     pub(super) project_directory: PathBuf,
     /// Original CUE instance and native output provenance for provider inputs.
@@ -173,6 +176,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             export_paths: vec![
                 "name".to_string(),
                 "env".to_string(),
+                CONTEXTS_PATH.to_string(),
                 CACHE_PATH.to_string(),
                 "infrastructure".to_string(),
             ],
@@ -236,6 +240,13 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             error,
         })
     })?;
+    // Freezing the configuration re-exports the instance without its
+    // `contexts`, so those of this evaluation are kept.
+    let evaluated_contexts = module
+        .get(Path::new(
+            &cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root),
+        ))
+        .and_then(|instance| instance.value.get(CONTEXTS_PATH).cloned());
     let configuration_evaluator = if request.needs == Needs::Configuration {
         let relative =
             cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root);
@@ -266,6 +277,14 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     };
     let relative_path =
         cuenv_core::cue::discovery::compute_relative_path(&target_path, &module.root);
+    if let Some(contexts) = evaluated_contexts
+        && let Some(value) = module
+            .instances
+            .get_mut(Path::new(&relative_path))
+            .and_then(|instance| instance.value.as_object_mut())
+    {
+        value.insert(CONTEXTS_PATH.to_string(), contexts);
+    }
     if let Some(fields) = project_fields {
         let instance = module
             .instances
@@ -274,7 +293,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         let value = instance.value.as_object_mut().ok_or_else(|| {
             CliError::config("the infrastructure package must evaluate to an object")
         })?;
-        for field in ["name", "env", CACHE_PATH] {
+        for field in ["name", "env", CONTEXTS_PATH, CACHE_PATH] {
             value.remove(field);
             if let Some(field_value) = fields.get(field) {
                 value.insert(field.to_string(), field_value.clone());
@@ -341,6 +360,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         warnings: Vec::new(),
         remote_cache_credential_variables,
         project_environment: project.env,
+        contexts: project.contexts,
         project_directory: project_path,
         configuration_evaluator,
     })
@@ -354,10 +374,14 @@ fn exported_paths(infrastructure_path: &str) -> Vec<String> {
     vec![
         "name".to_string(),
         "env".to_string(),
+        CONTEXTS_PATH.to_string(),
         infrastructure_path.to_string(),
         CACHE_PATH.to_string(),
     ]
 }
+
+/// The field of the project that defines its named contexts.
+const CONTEXTS_PATH: &str = "contexts";
 
 /// The field of the project that configures its caches.
 const CACHE_PATH: &str = "cache";

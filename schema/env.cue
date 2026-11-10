@@ -43,4 +43,16 @@ package schema
 
 	// Environment-specific overrides
 	environment?: [string]: #Environment
+
+	// Overrides applied while the named context is active (see `contexts` on
+	// #Base). A variable set under a context exists only there: it must not
+	// also be set in the base or under `environment`, so it is withheld, and
+	// its secret is never resolved, when no context that sets it is active.
+	// Two contexts that can be active together must not set the same variable.
+	context?: [string]: {
+		#Environment
+
+		// Environment-specific overrides within the context
+		environment?: [string]: #Environment
+	}
 }

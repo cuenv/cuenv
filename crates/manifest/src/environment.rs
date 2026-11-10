@@ -171,13 +171,86 @@ pub struct Env {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<HashMap<String, HashMap<String, EnvValue>>>,
 
+    /// Overrides applied while the named context is active
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<HashMap<String, ContextEnv>>,
+
     /// Base environment variables
     /// Keys must match pattern: ^[A-Z][A-Z0-9_]*$
     #[serde(flatten)]
     pub base: HashMap<String, EnvValue>,
 }
 
+/// The variables one named context sets (`env.context.<name>`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ContextEnv {
+    /// Environment-specific overrides within the context
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HashMap<String, HashMap<String, EnvValue>>>,
+
+    /// Variables set whenever the context is active
+    #[serde(flatten)]
+    pub base: HashMap<String, EnvValue>,
+}
+
+impl ContextEnv {
+    /// Every variable name the context sets, in any environment.
+    pub fn variable_names(&self) -> impl Iterator<Item = &String> {
+        self.base.keys().chain(
+            self.environment
+                .iter()
+                .flatten()
+                .flat_map(|(_, v)| v.keys()),
+        )
+    }
+}
+
+/// Which of an [`Env`]'s variables to select.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnvSelection<'a> {
+    /// The selected environment (`-e`, `CUENV_ENVIRONMENT`).
+    pub environment: Option<&'a str>,
+    /// The names of the active contexts.
+    pub contexts: &'a [String],
+}
+
 impl Env {
+    /// Get the variables for a selection. Later layers win: base, then the
+    /// environment, then each active context, then that context's environment.
+    #[must_use]
+    pub fn select(&self, selection: EnvSelection<'_>) -> HashMap<String, EnvValue> {
+        let mut result = match selection.environment {
+            Some(name) => self.for_environment(name),
+            None => self.base.clone(),
+        };
+        let Some(contexts) = &self.context else {
+            return result;
+        };
+        for name in selection.contexts {
+            let Some(context) = contexts.get(name) else {
+                continue;
+            };
+            result.extend(context.base.clone());
+            if let Some(environment) = selection.environment
+                && let Some(overrides) = context
+                    .environment
+                    .as_ref()
+                    .and_then(|environments| environments.get(environment))
+            {
+                result.extend(overrides.clone());
+            }
+        }
+        result
+    }
+
+    /// Whether any context sets variables.
+    #[must_use]
+    pub fn has_context_variables(&self) -> bool {
+        self.context
+            .as_ref()
+            .is_some_and(|contexts| !contexts.is_empty())
+    }
+
     /// Get environment variables for a specific environment
     #[must_use]
     pub fn for_environment(&self, env_name: &str) -> HashMap<String, EnvValue> {
@@ -193,8 +266,16 @@ impl Env {
     }
 }
 
+/// Whether a name listed under `allowTasks` covers a task: it is the task,
+/// or a group (`name.child`) or sequence (`name[0]`) the task is part of.
+fn names_task(listed: &str, task: &str) -> bool {
+    task.strip_prefix(listed)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+}
+
 impl EnvValue {
-    /// Check if a task has access to this environment variable
+    /// Check if a task has access to this environment variable. A policy
+    /// that lists a group or sequence allows every task under it.
     #[must_use]
     pub fn is_accessible_by_task(&self, task_name: &str) -> bool {
         match self {
@@ -212,10 +293,9 @@ impl EnvValue {
                 Some(policies) => {
                     // Check if any policy allows this task
                     policies.iter().any(|policy| {
-                        policy
-                            .allow_tasks
-                            .as_ref()
-                            .is_some_and(|tasks| tasks.iter().any(|t| t == task_name))
+                        policy.allow_tasks.as_ref().is_some_and(|tasks| {
+                            tasks.iter().any(|listed| names_task(listed, task_name))
+                        })
                     })
                 }
             },

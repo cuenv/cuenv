@@ -585,6 +585,7 @@ cuenv exec -- cargo test -p cuenv-infrastructure --lib -- --ignored lifecycle_ag
 Turso and D1 take one `token`; S3 takes `accessKeyId`, `secretAccessKey` and an optional `sessionToken`. Each is written like a project environment variable: any `#Secret`, a literal, or an interpolation of both. One backend serves the top level and every environment, so credentials do not change with `--env`. Nothing is read from the environment unless the configuration names it: S3 reads no ambient AWS credential chain (no `AWS_*` variables, no `~/.aws`, no instance metadata).
 
 - In CI, where the token arrives as an environment variable, name it explicitly: `token: schema.#EnvPassthrough & {name: "CLOUDFLARE_D1_API_TOKEN"}`. The variable is withheld from provider processes. Do not pass through `CLOUDFLARE_API_TOKEN` if the Cloudflare provider needs it, because the provider would lose its credential.
+- S3 credentials can differ by [named context](/how-to/contexts/#state-credentials): `infrastructure.state.s3.context.<name>` replaces `accessKeyId`, `secretAccessKey` and `sessionToken` while that context is active, so `plan` can hold a key that cannot write. Passthrough variables named by any context are withheld from provider processes, whichever is active. `migrateStateTo.s3` takes no `context`.
 - The token is resolved before anything else (state commands resolve nothing else), redacted from all output, never written to state and never passed to a provider. Integers, booleans and policies are rejected.
 
 ### Turso

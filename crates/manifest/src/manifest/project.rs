@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use super::{CodegenConfig, ContainerImage, Formatters, Runtime, Service, VcsDependency};
 use crate::ci::CI;
 use crate::config::Config;
+use crate::context::ContextDefinition;
 use crate::environment::Env;
 use crate::tasks::{
     Input, MappedInput, Mapping, ProjectReference, Task, TaskDirectoryBase, TaskNode,
@@ -34,6 +35,10 @@ pub struct Project {
     /// Environment variables configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<Env>,
+
+    /// Named contexts, selected from the facts of an invocation
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub contexts: HashMap<String, ContextDefinition>,
 
     /// Hooks configuration
     #[serde(skip_serializing_if = "Option::is_none")]

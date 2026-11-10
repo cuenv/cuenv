@@ -223,6 +223,50 @@ async fn test_task_secret_gh_token_is_available_with_github_token() {
     assert_eq!(result.stdout.trim(), "ok");
 }
 
+/// Gives the task named `selected` its own environment.
+#[derive(Debug)]
+struct OneTaskEnvironment {
+    selected: &'static str,
+    environment: Environment,
+}
+
+impl super::TaskEnvironments for OneTaskEnvironment {
+    fn environment_for<'a>(
+        &'a self,
+        name: &'a str,
+        _task: &'a Task,
+    ) -> super::TaskEnvironmentFuture<'a> {
+        Box::pin(async move { Ok((name == self.selected).then(|| self.environment.clone())) })
+    }
+}
+
+#[tokio::test]
+async fn a_task_runs_with_its_own_environment_when_one_is_supplied() {
+    let mut shared = host_path_environment();
+    shared.set("GREETING".to_string(), "shared".to_string());
+    let mut selected = host_path_environment();
+    selected.set("GREETING".to_string(), "selected".to_string());
+    let executor = TaskExecutor::new(ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        environment: shared,
+        task_environments: Some(Arc::new(OneTaskEnvironment {
+            selected: "deploy",
+            environment: selected,
+        })),
+        ..Default::default()
+    });
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "echo $GREETING".to_string()],
+        ..Default::default()
+    };
+
+    let build = executor.execute_task("build", &task).await.unwrap();
+    assert_eq!(build.stdout.trim(), "shared");
+    let deploy = executor.execute_task("deploy", &task).await.unwrap();
+    assert_eq!(deploy.stdout.trim(), "selected");
+}
+
 #[tokio::test]
 async fn test_execute_failing_task() {
     let config = ExecutorConfig {

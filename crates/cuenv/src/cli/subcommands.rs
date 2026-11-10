@@ -1019,9 +1019,9 @@ pub enum ChangesetCommands {
 /// Release management subcommands.
 #[derive(Subcommand, Debug)]
 pub enum ReleaseCommands {
-    /// Prepare a release: analyze commits, bump versions, generate changelog, create PR.
+    /// Prepare a release: analyze commits, bump versions, generate changelog, commit to a branch.
     #[command(
-        about = "Prepare a release: analyze commits, bump versions, generate changelog, create PR"
+        about = "Prepare a release: analyze commits, bump versions, generate changelog, commit to a branch"
     )]
     Prepare {
         /// Path to project root.
@@ -1040,8 +1040,9 @@ pub enum ReleaseCommands {
             help = "Branch name for the release"
         )]
         branch: String,
-        /// Skip creating the pull request.
-        #[arg(long, help = "Skip creating the pull request")]
+        /// Deprecated and ignored: `prepare` never opens a pull request.
+        /// Accepted so that scripts written for earlier releases still run.
+        #[arg(long, hide = true)]
         no_pr: bool,
     },
     /// Calculate and apply version bumps from changesets.

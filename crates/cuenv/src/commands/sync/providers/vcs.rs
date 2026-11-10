@@ -2,6 +2,7 @@
 
 mod git;
 mod materialization;
+mod partial;
 mod paths;
 mod vcs_sync_provider;
 

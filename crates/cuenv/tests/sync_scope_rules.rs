@@ -69,23 +69,8 @@ fn write_local_cuenv_module(root: &Path) -> TestResult {
     Ok(())
 }
 
-fn run_git(root: &Path, args: &[&str]) -> TestResult {
-    let output = Command::new("git").args(args).current_dir(root).output()?;
-    assert!(
-        output.status.success(),
-        "git {} failed: {}",
-        args.join(" "),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    Ok(())
-}
-
 fn init_git_repo(root: &Path) -> TestResult {
-    run_git(root, &["init"])?;
-    run_git(root, &["config", "user.email", "test@example.com"])?;
-    run_git(root, &["config", "user.name", "Test User"])?;
-
+    gix::init(root)?;
     Ok(())
 }
 

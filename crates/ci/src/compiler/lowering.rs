@@ -54,7 +54,7 @@ impl Compiler {
     }
 
     /// Find a leaf task by name (handles dotted paths for nested tasks)
-    pub(super) fn find_task(&self, name: &str) -> Option<&Task> {
+    pub(crate) fn find_task(&self, name: &str) -> Option<&Task> {
         match self.find_task_node(name) {
             Some(TaskNode::Task(task)) => Some(task),
             _ => None,

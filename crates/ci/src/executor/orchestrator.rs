@@ -287,11 +287,13 @@ async fn prepare_secret_providers(
 ) -> Result<()> {
     let mut env_vars = HashMap::new();
     for (project_path, config, plan) in plans {
-        for (key, value) in
-            super::task_execution::project_env_vars(config, plan.environment.as_deref())
-        {
+        let values = super::task_execution::project_env_values_in_any_context(
+            config,
+            plan.environment.as_deref(),
+        );
+        for (index, value) in values.into_iter().enumerate() {
             // Keys only need to be unique; secrets are grouped by resolver.
-            env_vars.insert(format!("{}:{key}", project_path.display()), value);
+            env_vars.insert(format!("{}:{index}", project_path.display()), value);
         }
     }
     cuenv_core::environment::Environment::prepare_secret_providers(&env_vars).await

@@ -23,6 +23,8 @@
 //! ```
 
 mod ci_provider;
+/// The git checkout a provider runs in, read in process.
+pub mod git;
 /// Fallback provider for running CI pipelines locally.
 pub mod local;
 

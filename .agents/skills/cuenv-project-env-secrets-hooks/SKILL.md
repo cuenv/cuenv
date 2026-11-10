@@ -8,6 +8,7 @@ description: Use for cuenv project configuration, env blocks, environment polici
 Start with `docs/design/specs/schema-coverage-matrix.md`, then read the relevant schema files:
 
 - `schema/core.cue` and `schema/config.cue` for project and command defaults.
+- `schema/context.cue` for named contexts (`contexts.<name>` as `schema.#When & {...}` or `schema.#TaskFilter & {...}`), which select `env.context.<name>`; `crates/core/src/context.rs` decides which are active and `crates/manifest/src/context.rs` holds the DTOs.
 - `schema/env.cue` and `schema/policy.cue` for env values, policies, interpolation, and passthrough. Environment map keys start with an uppercase ASCII letter or underscore and contain only uppercase ASCII letters, digits, and underscores; shell export also validates names captured from hooks.
 - `schema/secrets.cue`, `schema/onepassword.cue`, `schema/infisical.cue`, `schema/aws.cue`, `schema/gcp.cue`, and `schema/vault.cue` for secret shapes.
 - `schema/hooks.cue` and `schema/shell.cue` for hooks and shell command variants.
@@ -39,9 +40,17 @@ Generation rules:
 - Do not generate `schema.#Secret & { command: ... }`, `schema.#AWSSecretRef`, or `schema.#VaultRef`.
 - Do not confuse task `#ScriptShell` with shell command schemas in `schema/shell.cue`.
 
+Context rules:
+
+- A context filter is plain data and must survive `cue export`. A string is a regular expression that must match the whole value (`"bun"` matches only `bun`; `"deploy.*"` is a prefix). Never generate CUE constraint operators (`=~`, `!=`, `"a" | "b"`) inside a filter.
+- `#When` filters facts (`consumer`, `exec`, `infrastructure`, `ci`, `user`, `host`, `vcs`); `#TaskFilter` filters each task by `name`, `command` and `labels` and is active only for tasks. There is no `task` or `command` fact.
+- A variable under `env.context.<name>` must not also be set in the base `env` or an environment, and two contexts that set the same variable must be provably exclusive. Two filter strings are exclusive when no value matches both (`"release-1"` / `"release-2"`, `"a.*"` / `"b.*"`), which cuenv decides from the expressions themselves.
+- Contexts choose a value and never grant access; facts are self-reported.
+
 Policy rules:
 
-- A variable with a non-empty `policies` list is available only to the consumers some policy lists: `allowTasks` for tasks, `allowExec` for `cuenv exec`, `allowInfrastructure` for `cuenv infrastructure`. This holds for plain values as well as secrets. The shell integration (`cuenv export`) is named by no policy, so such a variable is never exported to the shell. No policy list (or an empty one) means available everywhere. `extract_static_env_vars` in `crates/cuenv/src/commands/export.rs` takes the consumer (`StaticEnvConsumer`) for this reason.
+- A variable with a non-empty `policies` list is available only to the consumers some policy lists: `allowTasks` for tasks, `allowExec` for `cuenv exec`, `allowInfrastructure` for `cuenv infrastructure`. This holds for plain values as well as secrets. The shell integration (`cuenv export`) is named by no policy, so such a variable is never exported to the shell. No policy list (or an empty one) means available everywhere. `extract_static_env_vars` in `crates/cuenv/src/commands/export.rs` takes the consumer (`StaticEnvConsumer`) for this reason, and `shell_env_vars` is what the shell integration uses: it adds the variables of the contexts active for the `shell` consumer.
+- `allowTasks` is checked for each task that runs (`cuenv task` and `cuenv ci`), not for the task that was asked for, so a dependency receives exactly the variables that name it. A group or sequence name covers the tasks under it (`deploy` covers `deploy.staging` and `deploy[0]`). `TaskSelection` in `crates/core/src/context/task_selection.rs` is the one place that decides a task's contexts and allowed variables; use it rather than combining `active_contexts`, `Env::select` and `is_accessible_by_task` again.
 - `schema.#EnvPassthrough` is valid only inside a task's `env`; the project `env` rejects it with an explicit message.
 
 Adversarial prompts:

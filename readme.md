@@ -64,7 +64,7 @@ authoritative source.
 | Rules → `.gitignore`, `.dockerignore`, `.editorconfig`, `CODEOWNERS` | Stable | From `.rules.cue` via `cuenv sync` |
 | Multi-source tools (`cuenv tools`) | Stable | Nix, GitHub releases, Rustup, URL, OCI |
 | Lockfile resolution (`cuenv sync lock`) | Stable | Pins OCI image digests into `cuenv.lock` |
-| VCS dependencies (`cuenv sync vcs`) | Stable | Sparse single-subdirectory checkout |
+| VCS dependencies (`cuenv sync vcs`) | Stable | Single-subdirectory materialization |
 | Runtimes: Nix, devenv | Stable | Provision tools for tasks and `exec` |
 | Runtime: OCI binaries | Partial | |
 | Runtime: container | Preview | |

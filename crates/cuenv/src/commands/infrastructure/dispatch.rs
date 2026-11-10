@@ -244,6 +244,12 @@ async fn migrate_state(
             target.backend()
         )));
     };
+    if !s3.context.is_empty() {
+        return Err(CliError::config(
+            "`migrateStateTo.s3.context` is not supported: a migration target takes one set of \
+             credentials",
+        ));
+    }
     let credential =
         super::resolve::resolve_state_token(InfrastructurePolicyAction::StateMigrate, target)
             .await?;

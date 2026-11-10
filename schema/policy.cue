@@ -8,7 +8,9 @@ package schema
 
 // #Policy defines access control for environment variables
 #Policy: {
-	// Allowlist of task names that can access this variable
+	// Allowlist of task names that can access this variable. It is checked
+	// for each task that runs, including dependencies of the task that was
+	// asked for. A group or sequence name covers the tasks under it.
 	allowTasks?: [...string]
 
 	// Allowlist of exec commands that can access this variable

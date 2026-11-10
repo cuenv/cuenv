@@ -333,6 +333,28 @@ fn a_unique_project_evaluates() {
 }
 
 #[test]
+fn contexts_survive_freezing_the_configuration() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        &format!(
+            "package cuenv\n\nname: \"app\"\ncontexts: {{\n  plan: infrastructure: \"plan\"\n  apply: infrastructure: \"apply|import\"\n}}\n{INFRASTRUCTURE}"
+        ),
+    );
+    let target = evaluate(module.path(), NameCheck::WholeModule).unwrap();
+    // The frozen configuration is exported without `contexts`.
+    assert_eq!(
+        serde_json::to_value(&target.contexts).unwrap(),
+        serde_json::json!({
+            "plan": {"infrastructure": "plan"},
+            "apply": {"infrastructure": "apply|import"},
+        })
+    );
+}
+
+#[test]
 fn named_environment_selects_only_its_complete_configuration_and_overlay() {
     let module = module_directory();
     write(module.path(), "cue.mod/module.cue", MODULE);

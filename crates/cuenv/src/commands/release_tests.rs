@@ -2,7 +2,6 @@ use super::{ChangesetDescription, OutputFormat};
 use cuenv_release::{CargoManifest, TagType};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use tempfile::TempDir;
 
 /// Create a test directory with proper prefix (non-hidden) for gix compatibility.
@@ -302,77 +301,12 @@ fn test_release_publish_json() {
 
 /// Helper function to initialize and configure a git repository for testing
 fn init_git_repo(path: &str) {
-    let out = Command::new("git")
-        .args(["init"])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git init failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    // Verify .git directory and HEAD file were created (ensures git init fully completed)
-    let git_dir = std::path::Path::new(path).join(".git");
-    let git_head = git_dir.join("HEAD");
-    assert!(
-        git_dir.exists(),
-        "git init did not create .git directory at {}",
-        git_dir.display()
-    );
-    assert!(
-        git_head.exists(),
-        "git init did not create .git/HEAD at {}",
-        git_head.display()
-    );
-
-    let out = Command::new("git")
-        .args(["config", "user.name", "Test User"])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git config user.name failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let out = Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git config user.email failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    crate::test_git::init_repository(Path::new(path)).unwrap();
 }
 
 /// Helper function to create a git commit
 fn create_git_commit(path: &str, message: &str) {
-    let out = Command::new("git")
-        .args(["add", "."])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git add failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let out = Command::new("git")
-        .args(["commit", "--no-gpg-sign", "-m", message])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git commit failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    crate::test_git::commit_all(Path::new(path), message).unwrap();
 }
 
 #[test]
@@ -424,30 +358,20 @@ fn test_changeset_from_commits_with_since_tag() {
     init_git_repo(&path);
     create_git_commit(&path, "fix: initial fix");
 
-    // Create a tag (use -m to create annotated tag, works with all git configs)
-    let out = std::process::Command::new("git")
-        .args(["tag", "--no-sign", "-m", "Release v0.1.0", "v0.1.0"])
-        .current_dir(&path)
-        .output()
+    // Create an annotated tag at HEAD
+    let repository = gix::open(&path).unwrap();
+    let head = repository.head_id().unwrap();
+    let tagger = repository.committer().unwrap().unwrap();
+    repository
+        .tag(
+            "v0.1.0",
+            head,
+            gix::objs::Kind::Commit,
+            Some(tagger),
+            "Release v0.1.0",
+            gix::refs::transaction::PreviousValue::MustNotExist,
+        )
         .unwrap();
-    assert!(
-        out.status.success(),
-        "git tag failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    // Verify tag was created
-    let out = std::process::Command::new("git")
-        .args(["tag", "-l", "v0.1.0"])
-        .current_dir(&path)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "v0.1.0",
-        "git tag verification failed: stdout={}, stderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
 
     // Create a second commit (after tag) - this should be picked up
     // The file must be in a package directory for per-package analysis to detect it

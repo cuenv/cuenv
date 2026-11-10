@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::context::ContextDefinition;
 use crate::environment::Env;
 use cuenv_hooks::Hooks;
 
@@ -20,6 +21,10 @@ pub struct Base {
     /// Environment variables configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<Env>,
+
+    /// Named contexts, selected from the facts of an invocation
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub contexts: HashMap<String, ContextDefinition>,
 
     /// Formatters configuration
     #[serde(skip_serializing_if = "Option::is_none")]

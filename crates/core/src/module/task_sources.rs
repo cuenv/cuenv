@@ -88,6 +88,11 @@ impl TaskSourceContext<'_> {
             if key.starts_with('_') {
                 continue;
             }
+            // A task filter has a `command` like a task does; `contexts`
+            // holds no tasks.
+            if field_path.is_empty() && key == "contexts" {
+                continue;
+            }
 
             let child_path = if field_path.is_empty() {
                 key.clone()

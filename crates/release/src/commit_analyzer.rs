@@ -9,7 +9,6 @@ use crate::conventional::ConventionalCommit;
 use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// A commit that affected a specific package.
 #[derive(Debug, Clone)]
@@ -66,9 +65,19 @@ impl<'workspace> CommitAnalyzer<'workspace> {
         commits: &'c [ConventionalCommit],
     ) -> Result<HashMap<String, Vec<PackageAffect<'c>>>> {
         let mut package_commits: HashMap<String, Vec<PackageAffect<'c>>> = HashMap::new();
+        if commits.is_empty() {
+            return Ok(package_commits);
+        }
+        // The repository is opened once for every commit.
+        let repository = gix::discover(self.root).map_err(|error| {
+            Error::git(format!(
+                "Failed to open the repository at {}: {error}",
+                self.root.display()
+            ))
+        })?;
 
         for commit in commits {
-            let changed_files = self.get_changed_files(&commit.hash)?;
+            let changed_files = changed_files(&repository, &commit.hash)?;
             let affected = self.map_files_to_packages(&changed_files);
 
             for (pkg_name, pkg_files) in affected {
@@ -110,46 +119,6 @@ impl<'workspace> CommitAnalyzer<'workspace> {
         }
 
         Ok(bumps)
-    }
-
-    /// Get the files changed in a specific commit.
-    ///
-    /// Uses `git diff-tree` to list files changed in the commit.
-    /// For root commits (no parent), uses `--root` flag to show all added files.
-    fn get_changed_files(&self, commit_hash: &str) -> Result<Vec<PathBuf>> {
-        // Use git diff-tree to get changed files
-        // --no-commit-id: Don't print commit hash
-        // --name-only: Only print file names
-        // -r: Recurse into subtrees
-        // --root: For root commits (no parent), show files as additions
-        let output = Command::new("git")
-            .args([
-                "diff-tree",
-                "--no-commit-id",
-                "--name-only",
-                "-r",
-                "--root",
-                commit_hash,
-            ])
-            .current_dir(self.root)
-            .output()
-            .map_err(|e| Error::git(format!("Failed to run git diff-tree: {e}")))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::git(format!(
-                "git diff-tree failed for {commit_hash}: {stderr}"
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let files: Vec<PathBuf> = stdout
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(PathBuf::from)
-            .collect();
-
-        Ok(files)
     }
 
     /// Map changed files to packages.
@@ -202,11 +171,51 @@ impl<'workspace> CommitAnalyzer<'workspace> {
     }
 }
 
+/// Get the files changed in a specific commit.
+///
+/// The commit is compared with its parent, as `git diff-tree -r` does.
+/// A root commit (no parent) changed every file it has; a merge commit
+/// changed none.
+fn changed_files(repository: &gix::Repository, commit_hash: &str) -> Result<Vec<PathBuf>> {
+    let failed = |error: &dyn std::fmt::Display| {
+        Error::git(format!(
+            "Failed to read the files changed by {commit_hash}: {error}"
+        ))
+    };
+    let commit = repository
+        .rev_parse_single(commit_hash)
+        .map_err(|error| failed(&error))?
+        .object()
+        .map_err(|error| failed(&error))?
+        .peel_to_commit()
+        .map_err(|error| failed(&error))?;
+    let mut parents = commit.parent_ids();
+    let parent_tree = match (parents.next(), parents.next()) {
+        (None, _) => repository.empty_tree(),
+        (Some(parent), None) => parent
+            .object()
+            .map_err(|error| failed(&error))?
+            .peel_to_tree()
+            .map_err(|error| failed(&error))?,
+        (Some(_), Some(_)) => return Ok(Vec::new()),
+    };
+    let tree = commit.tree().map_err(|error| failed(&error))?;
+    let options = gix::diff::Options::default().with_rewrites(None);
+    let changes = repository
+        .diff_tree_to_tree(&parent_tree, &tree, options)
+        .map_err(|error| failed(&error))?;
+
+    Ok(changes
+        .iter()
+        .filter(|change| !change.entry_mode().is_tree())
+        .map(|change| gix::path::from_bstr(change.location()).into_owned())
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::process::Command;
     use tempfile::TempDir;
 
     fn create_test_workspace(temp: &TempDir) -> PathBuf {
@@ -246,46 +255,46 @@ version = "1.0.0"
     }
 
     fn init_git_repo(path: &Path) {
-        Command::new("git")
-            .args(["init", "--ref-format=files"])
-            .current_dir(path)
-            .output()
-            .unwrap();
-
-        Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(path)
-            .output()
-            .unwrap();
-
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(path)
-            .output()
-            .unwrap();
+        gix::init(path).unwrap();
+        let config = path.join(".git/config");
+        let mut text = fs::read_to_string(&config).unwrap();
+        text.push_str("[user]\n\tname = Test User\n\temail = test@example.com\n");
+        fs::write(config, text).unwrap();
     }
 
+    /// The files under a directory, leaving out the repository itself.
+    fn files_under(directory: &Path) -> Vec<PathBuf> {
+        fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| !path.ends_with(".git"))
+            .flat_map(|path| {
+                if path.is_dir() {
+                    files_under(&path)
+                } else {
+                    vec![path]
+                }
+            })
+            .collect()
+    }
+
+    /// Commit every file of the worktree on top of `HEAD`.
     fn create_commit(path: &Path, message: &str) -> String {
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(path)
-            .output()
-            .unwrap();
-
-        Command::new("git")
-            .args(["commit", "--no-gpg-sign", "-m", message])
-            .current_dir(path)
-            .output()
-            .unwrap();
-
-        // Get the commit hash
-        let output = Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(path)
-            .output()
-            .unwrap();
-
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
+        let repository = gix::open(path).unwrap();
+        let mut editor = repository.edit_tree(repository.empty_tree().id).unwrap();
+        for file in files_under(path) {
+            let blob = repository.write_blob(fs::read(&file).unwrap()).unwrap();
+            let relative = file.strip_prefix(path).unwrap().to_str().unwrap();
+            editor
+                .upsert(relative, gix::object::tree::EntryKind::Blob, blob)
+                .unwrap();
+        }
+        let tree = editor.write().unwrap();
+        let parents = repository.head_id().ok().map(gix::Id::detach);
+        repository
+            .commit("HEAD", message, tree, parents)
+            .unwrap()
+            .to_string()
     }
 
     #[test]
