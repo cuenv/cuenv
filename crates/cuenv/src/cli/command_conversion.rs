@@ -348,16 +348,25 @@ fn release_command(subcommand: ReleaseCommands) -> Command {
             since,
             dry_run,
             branch,
-        } => Command::ReleasePrepare {
-            path,
-            since,
-            dry_run: if dry_run {
-                cuenv_core::DryRun::Yes
-            } else {
-                cuenv_core::DryRun::No
-            },
-            branch,
-        },
+            no_pr,
+        } => {
+            if no_pr {
+                tracing::warn!(
+                    "`--no-pr` is deprecated and has no effect: `cuenv release prepare` \
+                     commits to the release branch and never opens a pull request"
+                );
+            }
+            Command::ReleasePrepare {
+                path,
+                since,
+                dry_run: if dry_run {
+                    cuenv_core::DryRun::Yes
+                } else {
+                    cuenv_core::DryRun::No
+                },
+                branch,
+            }
+        }
         ReleaseCommands::Version { path, dry_run } => Command::ReleaseVersion {
             path,
             dry_run: if dry_run {

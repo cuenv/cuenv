@@ -1388,6 +1388,7 @@ cuenv release prepare [OPTIONS]
 - `-s, --since <REF>`: Git tag or ref to analyze commits from.
 - `--dry-run`: Preview changes without applying.
 - `--branch <NAME>`: Branch name for the release. Default: `release/next`.
+- `--no-pr`: Deprecated and ignored. `prepare` never opens a pull request; the flag is accepted so that existing scripts still run, and logs a warning.
 
 **Example:**
 

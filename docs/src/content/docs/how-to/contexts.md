@@ -117,8 +117,10 @@ resolves the environment, not only in the invocation that would hit it:
   be able to prove it. It can when they need different consumers, when one
   needs a fact to be `null` and the other needs a value, and when they name
   the same fact or task field with values that cannot both match. `plan` and
-  `apply` are exclusive; `plan` and `local` are not. Two expressions such as
-  `"a.*"` and `"b.*"` are never proved exclusive.
+  `apply` are exclusive; `plan` and `local` are not. Two strings are exclusive
+  when no value can match both: `"release-1"` and `"release-2"` are, and so
+  are `"a.*"` and `"b.*"`, but `"a.*"` and `".*b"` are not (`ab` matches both).
+  An expression too large to analyse is treated as not proved.
 - `env.context.<name>` needs a `contexts.<name>`, and a filter must name
   something: an empty one is an error.
 
@@ -147,12 +149,18 @@ a privileged credential on `user`.
 `cuenv task`, `cuenv exec`, `cuenv infrastructure`, `cuenv env print` and
 `cuenv ci` select context variables. `cuenv task` and `cuenv ci` decide the
 contexts for each task they run, and resolve a context's secrets only once a
-task needs them. [Policies](/reference/cue-schema/#policy) are still checked
-for the task that was asked for. CI jobs log in to the secret providers of
-every context, since the generator does not predict which will be active.
+task needs them. [Policies](/reference/cue-schema/#policy) are checked for
+each task as well: a variable reaches the tasks its `allowTasks` names, whether
+a task was asked for or runs as a dependency. CI jobs log in to the secret
+providers of every context, since the generator does not predict which will be
+active.
 
-Services (`cuenv up`), shell hooks and `cuenv export` do not read `env.context`
-yet: context variables are absent there.
+The shell integration (`cuenv export` and shell hooks) selects the contexts
+active for the `shell` consumer, which is what `cuenv env print` shows. As for
+every shell variable, secrets and values with a policy list are left out.
+
+Services (`cuenv up`) do not read `env.context` yet: context variables are
+absent there.
 
 ## State credentials
 

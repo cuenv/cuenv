@@ -4,21 +4,25 @@
 //! process, SSH through the `ssh` program and a path on disk through
 //! `git upload-pack`, as `gix` reaches them.
 
+use super::partial::Fetched;
 use cuenv_core::{Error, Result};
 use gix::bstr::ByteSlice;
+use gix::filter::plumbing::driver::apply::Delay;
 use gix::object::tree::EntryKind;
 use gix::objs::WriteTo;
 use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit};
 use gix::remote::Direction;
 use gix::remote::fetch::{Shallow, Tags};
+use gix::worktree::stack::state::attributes::Source as AttributeSource;
 use std::fs;
+use std::io::{self, Read};
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 /// A git failure as a configuration error, with every cause it names: the
 /// outermost one alone rarely says what went wrong with a remote.
-fn failed(error: impl std::error::Error) -> Error {
+pub(super) fn failed(error: impl std::error::Error) -> Error {
     let mut message = error.to_string();
     let mut cause = error.source();
     while let Some(error) = cause {
@@ -33,7 +37,7 @@ fn failed(error: impl std::error::Error) -> Error {
 }
 
 /// Something git cannot do for us, in words.
-fn problem(message: impl std::fmt::Display) -> Error {
+pub(super) fn problem(message: impl std::fmt::Display) -> Error {
     Error::configuration(format!("git: {message}"))
 }
 
@@ -124,6 +128,53 @@ pub(super) fn fetch(repository: &gix::Repository, fetch: Fetch<'_>) -> Result<St
         .peel_to_commit()
         .map_err(failed)?;
     Ok(commit.id.to_string())
+}
+
+/// One directory of one commit of a remote.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Directory<'a> {
+    pub url: &'a str,
+    pub commit: &'a str,
+    pub subdir: &'a str,
+}
+
+/// Fetch one commit of a remote for the sake of one of its directories: the
+/// commit's trees, then the files under that directory and nothing else. A
+/// remote that cannot leave files out, or does not hand out single files, is
+/// fetched whole.
+pub(super) fn fetch_directory(
+    repository: &gix::Repository,
+    directory: Directory<'_>,
+) -> Result<()> {
+    let Directory {
+        url,
+        commit,
+        subdir,
+    } = directory;
+    let whole_commit = || {
+        fetch(
+            repository,
+            Fetch {
+                url,
+                reference: commit,
+                history: History::TipOnly,
+            },
+        )
+        .map(|_| ())
+    };
+    if super::partial::fetch_trees(repository, url, commit)? == Fetched::CannotFilter {
+        tracing::debug!(url, "The remote cannot leave files out of a fetch");
+        return whole_commit();
+    }
+    // The caller reports a directory that is not there.
+    let Some(tree) = entry_at(repository, commit, subdir)?.filter(|entry| entry.kind == "tree")
+    else {
+        return Ok(());
+    };
+    super::partial::fetch_files(repository, url, &tree.id).or_else(|error| {
+        tracing::debug!(url, %error, "The remote did not hand out single files");
+        whole_commit()
+    })
 }
 
 /// The commit `HEAD` is at.
@@ -226,8 +277,11 @@ pub(super) fn checkout_detached(repository: &gix::Repository, commit: &str) -> R
     Ok(())
 }
 
-/// Write the files of a tree into a new directory, byte for byte as git
-/// stores them. A submodule is left out, as an unpopulated one is.
+/// Write the files of a tree into a new directory, as a checkout of that
+/// tree would: the filters its `.gitattributes` and the git configuration
+/// ask for are applied (line endings, `ident`, and drivers such as Git LFS).
+/// The tree is its own root, so attributes set above it do not apply. A
+/// submodule is left out, as an unpopulated one is.
 pub(super) fn export_tree(
     repository: &gix::Repository,
     tree: &str,
@@ -236,6 +290,11 @@ pub(super) fn export_tree(
     let tree = find_tree(repository, tree)?;
     // Building the index refuses names that would escape the destination.
     let index = repository.index_from_tree(&tree.id).map_err(failed)?;
+    let attributes = repository
+        .attributes_only(&index, AttributeSource::IdMapping)
+        .map_err(failed)?
+        .detach();
+    let mut filters = gix::filter::Pipeline::new(repository, attributes).map_err(failed)?;
     fs::create_dir(destination).map_err(failed)?;
     for entry in index.entries() {
         let Some(kind) = entry.mode.to_tree_entry_mode().map(|mode| mode.kind()) else {
@@ -244,7 +303,8 @@ pub(super) fn export_tree(
         if kind == EntryKind::Commit {
             continue;
         }
-        let path = destination.join(gix::path::from_bstr(entry.path(&index)));
+        let location = entry.path(&index);
+        let path = destination.join(gix::path::from_bstr(location));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(failed)?;
         }
@@ -252,7 +312,11 @@ pub(super) fn export_tree(
         if kind == EntryKind::Link {
             write_link(&blob.data, &path)?;
         } else {
-            fs::write(&path, &blob.data).map_err(failed)?;
+            let mut content = filters
+                .convert_to_worktree(&blob.data, location, Delay::Forbid)
+                .map_err(failed)?;
+            let mut file = fs::File::create(&path).map_err(failed)?;
+            io::copy(&mut content, &mut file).map_err(failed)?;
             if kind == EntryKind::BlobExecutable {
                 make_executable(&path)?;
             }
@@ -281,61 +345,125 @@ pub(super) fn changes(repository: &gix::Repository) -> Result<Vec<String>> {
 /// The hash of the tree git would store for a directory with every file in
 /// it added, leaving out one name at the top. `.git` and empty directories
 /// are not part of a tree.
+///
+/// Files are hashed as `git add` would store them: the filters that
+/// [`export_tree`] applied on the way out are undone on the way in, so a
+/// directory written from a tree hashes to that tree.
 pub(super) fn directory_tree(directory: &Path, without: &str) -> Result<String> {
-    let kind = gix::hash::Kind::Sha1;
-    let tree = hash_directory(directory, Some(without))?
-        .unwrap_or_else(|| gix::ObjectId::empty_tree(kind));
+    let directory = fs::canonicalize(directory).map_err(failed)?;
+    // The filters are configured by a repository, so the directory is given
+    // one that is empty and lives elsewhere. Only the repository's own
+    // configuration may say where its worktree is.
+    let scratch = tempfile::tempdir().map_err(failed)?;
+    gix::init_bare(scratch.path()).map_err(failed)?;
+    let worktree = directory
+        .to_str()
+        .ok_or_else(|| problem(format!("'{}' is not UTF-8", directory.display())))?
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    fs::write(
+        scratch.path().join("config"),
+        format!(
+            "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = \"{worktree}\"\n"
+        ),
+    )
+    .map_err(failed)?;
+    let repository = gix::open(scratch.path()).map_err(failed)?;
+    let index = gix::index::State::new(repository.object_hash());
+    let attributes = repository
+        .attributes_only(&index, AttributeSource::WorktreeThenIdMapping)
+        .map_err(failed)?
+        .detach();
+    let mut hasher = TreeHasher {
+        root: &directory,
+        filters: gix::filter::Pipeline::new(&repository, attributes).map_err(failed)?,
+        index: &index,
+    };
+    let tree = hasher
+        .tree(Path::new(""), Some(without))?
+        .unwrap_or_else(|| gix::ObjectId::empty_tree(HASH));
     Ok(tree.to_string())
 }
 
-/// The hash of a directory's tree; `None` when it holds no file.
-fn hash_directory(directory: &Path, without: Option<&str>) -> Result<Option<gix::ObjectId>> {
-    let kind = gix::hash::Kind::Sha1;
-    let hash = |object, data: &[u8]| gix::objs::compute_hash(kind, object, data).map_err(failed);
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(directory).map_err(failed)? {
-        let entry = entry.map_err(failed)?;
-        let name = entry.file_name();
-        if name == ".git" || without.is_some_and(|without| name == without) {
-            continue;
-        }
-        let path = entry.path();
-        let metadata = entry.metadata().map_err(failed)?;
-        let (mode, oid) = if metadata.is_symlink() {
-            let target = fs::read_link(&path).map_err(failed)?;
-            let target = gix::path::into_bstr(target);
-            (EntryKind::Link, hash(gix::objs::Kind::Blob, &target)?)
-        } else if metadata.is_dir() {
-            match hash_directory(&path, None)? {
-                Some(tree) => (EntryKind::Tree, tree),
-                None => continue,
+/// The hash every tree is computed with.
+const HASH: gix::hash::Kind = gix::hash::Kind::Sha1;
+
+fn hash_object(kind: gix::objs::Kind, data: &[u8]) -> Result<gix::ObjectId> {
+    gix::objs::compute_hash(HASH, kind, data).map_err(failed)
+}
+
+/// Hashes the directories under a root as git would store them.
+struct TreeHasher<'a> {
+    root: &'a Path,
+    /// What `git add` does to a file before it is stored.
+    filters: gix::filter::Pipeline<'a>,
+    /// Nothing is staged: the filters look here for what a file was.
+    index: &'a gix::index::State,
+}
+
+impl TreeHasher<'_> {
+    /// The hash of the tree of a directory, by its path under the root;
+    /// `None` when it holds no file.
+    fn tree(&mut self, relative: &Path, without: Option<&str>) -> Result<Option<gix::ObjectId>> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(self.root.join(relative)).map_err(failed)? {
+            let entry = entry.map_err(failed)?;
+            let name = entry.file_name();
+            if name == ".git" || without.is_some_and(|without| name == without) {
+                continue;
             }
-        } else {
-            let content = fs::read(&path).map_err(failed)?;
-            let mode = if is_executable(&metadata) {
-                EntryKind::BlobExecutable
+            let relative = relative.join(&name);
+            let metadata = entry.metadata().map_err(failed)?;
+            let (mode, oid) = if metadata.is_symlink() {
+                let target = fs::read_link(entry.path()).map_err(failed)?;
+                let target = gix::path::into_bstr(target);
+                (
+                    EntryKind::Link,
+                    hash_object(gix::objs::Kind::Blob, &target)?,
+                )
+            } else if metadata.is_dir() {
+                match self.tree(&relative, None)? {
+                    Some(tree) => (EntryKind::Tree, tree),
+                    None => continue,
+                }
             } else {
-                EntryKind::Blob
+                let mode = if is_executable(&metadata) {
+                    EntryKind::BlobExecutable
+                } else {
+                    EntryKind::Blob
+                };
+                (mode, self.file(&relative)?)
             };
-            (mode, hash(gix::objs::Kind::Blob, &content)?)
-        };
-        entries.push(gix::objs::tree::Entry {
-            mode: mode.into(),
-            filename: gix::path::os_str_into_bstr(&name)
-                .map_err(failed)?
-                .to_owned(),
-            oid,
-        });
+            entries.push(gix::objs::tree::Entry {
+                mode: mode.into(),
+                filename: gix::path::os_str_into_bstr(&name)
+                    .map_err(failed)?
+                    .to_owned(),
+                oid,
+            });
+        }
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        entries.sort();
+        let mut data = Vec::new();
+        gix::objs::Tree { entries }
+            .write_to(&mut data)
+            .map_err(failed)?;
+        hash_object(gix::objs::Kind::Tree, &data).map(Some)
     }
-    if entries.is_empty() {
-        return Ok(None);
+
+    /// The hash of the blob git would store for a file.
+    fn file(&mut self, relative: &Path) -> Result<gix::ObjectId> {
+        let file = fs::File::open(self.root.join(relative)).map_err(failed)?;
+        let mut stored = Vec::new();
+        self.filters
+            .convert_to_git(file, relative, self.index)
+            .map_err(failed)?
+            .read_to_end(&mut stored)
+            .map_err(failed)?;
+        hash_object(gix::objs::Kind::Blob, &stored)
     }
-    entries.sort();
-    let mut data = Vec::new();
-    gix::objs::Tree { entries }
-        .write_to(&mut data)
-        .map_err(failed)?;
-    hash(gix::objs::Kind::Tree, &data).map(Some)
 }
 
 fn find_commit<'repository>(

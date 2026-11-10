@@ -1853,7 +1853,7 @@ env: {
 
 | Field                 | Type                       | Description                                      |
 | --------------------- | -------------------------- | ------------------------------------------------ |
-| `allowTasks`          | `[...string]`              | Tasks that can access this variable              |
+| `allowTasks`          | `[...string]`              | Tasks that can access this variable; a group or sequence name covers the tasks under it |
 | `allowExec`           | `[...string]`              | Exec commands that can access                    |
 | `allowInfrastructure` | `[...#InfrastructureAction]` | `cuenv infrastructure` actions that can access it |
 
@@ -1865,6 +1865,12 @@ lists it. `allowTasks` grants tasks, `allowExec` grants `cuenv exec`
 commands, and `allowInfrastructure` grants `cuenv infrastructure` actions; one
 does not grant another. A variable with no policies (or an empty `policies: []`)
 is available everywhere.
+
+`allowTasks` is checked for each task that runs, not for the task that was
+asked for: with `allowTasks: ["build"]`, `build` receives the variable when it
+runs as a dependency of `deploy`, and `deploy` does not. Naming a group or a
+sequence (`"deploy"`) covers the tasks under it (`deploy.staging`,
+`deploy[0]`).
 
 Policies apply to every value, secret or not. A plain value that carries a
 policy list, such as `{value: "y", policies: [{allowTasks: ["other"]}]}`, is

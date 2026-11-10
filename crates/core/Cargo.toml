@@ -39,6 +39,7 @@ ignore = { workspace = true }
 cuenv-workspaces = { workspace = true, features = ["detection", "discovery-rust", "discovery-javascript", "parsers-rust", "parsers-javascript"] }
 rustls = { workspace = true }
 regex = { workspace = true }
+regex-automata = { workspace = true }
 gix = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

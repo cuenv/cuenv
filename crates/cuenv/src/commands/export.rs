@@ -13,4 +13,5 @@ pub(super) use implementation::{
 };
 pub use implementation::{
     ExportOptions, StaticEnvConsumer, execute_export, execute_export_sync, extract_static_env_vars,
+    shell_env_vars,
 };

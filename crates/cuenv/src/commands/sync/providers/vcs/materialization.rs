@@ -1,6 +1,6 @@
 //! VCS dependency checkout and materialization helpers.
 
-use super::git::{Fetch, History};
+use super::git::{Directory, Fetch, History};
 use super::paths;
 use super::paths::TempPath;
 use super::vcs_sync_provider::{
@@ -277,12 +277,12 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
     let clone_target = paths::temporary_target_path(temp_root, target, "clone")?;
     let clone_guard = TempPath::new(clone_target);
     let repository = super::git::init(clone_guard.path())?;
-    super::git::fetch(
+    super::git::fetch_directory(
         &repository,
-        Fetch {
+        Directory {
             url: &locked.url,
-            reference: &locked.commit,
-            history: History::TipOnly,
+            commit: &locked.commit,
+            subdir,
         },
     )?;
     let subtree = locked_subtree(&repository, locked, subdir)?;
@@ -372,12 +372,12 @@ pub(super) fn prepare_overlay_dependency(
     let clone_target = paths::temporary_target_path(temp_root, target, "clone")?;
     let clone_guard = TempPath::new(clone_target);
     let repository = super::git::init(clone_guard.path())?;
-    super::git::fetch(
+    super::git::fetch_directory(
         &repository,
-        Fetch {
+        Directory {
             url: &locked.url,
-            reference: &locked.commit,
-            history: History::TipOnly,
+            commit: &locked.commit,
+            subdir,
         },
     )?;
     let subtree = locked_subtree(&repository, locked, subdir)?;

@@ -266,8 +266,16 @@ impl Env {
     }
 }
 
+/// Whether a name listed under `allowTasks` covers a task: it is the task,
+/// or a group (`name.child`) or sequence (`name[0]`) the task is part of.
+fn names_task(listed: &str, task: &str) -> bool {
+    task.strip_prefix(listed)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+}
+
 impl EnvValue {
-    /// Check if a task has access to this environment variable
+    /// Check if a task has access to this environment variable. A policy
+    /// that lists a group or sequence allows every task under it.
     #[must_use]
     pub fn is_accessible_by_task(&self, task_name: &str) -> bool {
         match self {
@@ -285,10 +293,9 @@ impl EnvValue {
                 Some(policies) => {
                     // Check if any policy allows this task
                     policies.iter().any(|policy| {
-                        policy
-                            .allow_tasks
-                            .as_ref()
-                            .is_some_and(|tasks| tasks.iter().any(|t| t == task_name))
+                        policy.allow_tasks.as_ref().is_some_and(|tasks| {
+                            tasks.iter().any(|listed| names_task(listed, task_name))
+                        })
                     })
                 }
             },

@@ -1040,6 +1040,10 @@ pub enum ReleaseCommands {
             help = "Branch name for the release"
         )]
         branch: String,
+        /// Deprecated and ignored: `prepare` never opens a pull request.
+        /// Accepted so that scripts written for earlier releases still run.
+        #[arg(long, hide = true)]
+        no_pr: bool,
     },
     /// Calculate and apply version bumps from changesets.
     #[command(about = "Calculate and apply version bumps from changesets")]

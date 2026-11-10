@@ -196,9 +196,53 @@ fn uncommitted_changes_are_tracked_files_that_differ_from_head() {
     std::fs::write(directory.path().join("untracked.txt"), "new").expect("an untracked file");
     let checkout = Checkout::around(directory.path()).expect("a checkout");
 
-    assert_eq!(checkout.uncommitted(), Some(paths(&["edited.txt"])));
+    assert_eq!(
+        checkout.uncommitted().expect("the status"),
+        paths(&["edited.txt"])
+    );
     assert_eq!(checkout.tracked_files(), paths(&["edited.txt", "kept.txt"]));
     assert!(!checkout.is_shallow());
+}
+
+#[test]
+fn a_staged_rename_is_uncommitted_under_both_names() {
+    let (directory, repository) = repository();
+    let first = commit(
+        &repository,
+        &[],
+        &[Edit::Write("old/file.txt", "the same content")],
+    );
+    let renamed = commit(
+        &repository,
+        &[first],
+        &[
+            Edit::Remove("old/file.txt"),
+            Edit::Write("new/file.txt", "the same content"),
+        ],
+    );
+    // Stage the rename and leave `HEAD` at the commit before it.
+    let staged = repository
+        .find_commit(renamed)
+        .expect("the rename")
+        .tree_id()
+        .expect("its tree");
+    let mut index = repository.index_from_tree(&staged).expect("an index");
+    index
+        .write(gix::index::write::Options::default())
+        .expect("the index on disk");
+    let branch = repository.head_name().expect("HEAD").expect("a branch");
+    repository
+        .reference(branch, first, PreviousValue::Any, "back before the rename")
+        .expect("the branch at the first commit");
+    std::fs::create_dir(directory.path().join("new")).expect("a directory");
+    std::fs::write(directory.path().join("new/file.txt"), "the same content")
+        .expect("the renamed file");
+    let checkout = Checkout::around(directory.path()).expect("a checkout");
+
+    assert_eq!(
+        checkout.uncommitted().expect("the status"),
+        paths(&["new/file.txt", "old/file.txt"])
+    );
 }
 
 #[test]

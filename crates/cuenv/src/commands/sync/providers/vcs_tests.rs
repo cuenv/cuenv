@@ -1,5 +1,6 @@
 use super::{CollectedVcsDependency, VcsSyncRequest, VcsSyncScope, sync_vcs_dependencies};
 use crate::commands::sync::provider::{SyncMode, SyncOptions};
+use crate::commands::sync::providers::vcs::git;
 use crate::test_git::{commit_all, init_repository};
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::VcsDependency;
@@ -1179,4 +1180,153 @@ fn subdir_missing_at_reference_rejected() {
         err.to_string().contains("subdir"),
         "unexpected error: {err}"
     );
+}
+
+/// Let a source repository serve partial fetches, as the hosts that hold
+/// large repositories do.
+fn serve_partial_fetches(source: &std::path::Path) {
+    let config = source.join(".git/config");
+    let mut text = fs::read_to_string(&config).expect("the source's config");
+    text.push_str("[uploadpack]\n\tallowFilter = true\n\tallowAnySHA1InWant = true\n");
+    fs::write(&config, text).expect("the source's config");
+}
+
+#[test]
+fn a_subdir_is_fetched_without_the_files_outside_it() {
+    let source = create_source_repo_with_subdirs();
+    serve_partial_fetches(source.path());
+    let url = source.path().display().to_string();
+    let commit =
+        git::head_commit(&git::open(source.path()).expect("the source")).expect("its HEAD");
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let repository = git::init(scratch.path()).expect("a scratch repository");
+
+    git::fetch_directory(
+        &repository,
+        git::Directory {
+            url: &url,
+            commit: &commit,
+            subdir: ".agents/skills",
+        },
+    )
+    .expect("the subdir");
+
+    let has = |path: &str| {
+        let entry = git::entry_at(&repository, &commit, path)
+            .expect("the commit's tree")
+            .expect("an entry");
+        let id = gix::ObjectId::from_hex(entry.id.as_bytes()).expect("a hash");
+        repository.has_object(id)
+    };
+    assert!(has(".agents/skills/example/SKILL.md"));
+    assert!(!has("other.txt"), "a file outside the subdir was fetched");
+    assert!(!has("lib.txt"), "a file outside the subdir was fetched");
+
+    let subtree = git::entry_at(&repository, &commit, ".agents/skills")
+        .expect("the commit's tree")
+        .expect("the subdir");
+    let exported = scratch.path().join("exported");
+    git::export_tree(&repository, &subtree.id, &exported).expect("the files");
+    assert_eq!(
+        fs::read_to_string(exported.join("example/SKILL.md")).expect("the skill"),
+        "# Example skill\n"
+    );
+}
+
+#[test]
+fn a_subdir_syncs_from_a_source_that_serves_partial_fetches() {
+    let source = create_source_repo_with_subdirs();
+    serve_partial_fetches(source.path());
+    let workspace = create_workspace();
+    let dependency = CollectedVcsDependency {
+        name: "skills".to_string(),
+        spec: VcsDependency {
+            url: source.path().display().to_string(),
+            reference: "main".to_string(),
+            vendor: true,
+            path: ".agents/skills".to_string(),
+            subdir: Some(".agents/skills".to_string()),
+            overlay: false,
+        },
+    };
+
+    sync_vcs!(
+        workspace.path(),
+        vec![dependency.clone()],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect("subdir sync should succeed");
+
+    let target = workspace.path().join(".agents/skills");
+    assert!(target.join("example/SKILL.md").exists());
+    assert!(!target.join("other.txt").exists());
+    let options = SyncOptions {
+        mode: SyncMode::Check,
+        ..SyncOptions::default()
+    };
+    sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &options,
+        VcsSyncScope::Path,
+    )
+    .expect("the materialized subdir matches the lockfile");
+}
+
+#[test]
+fn a_vendored_tree_is_written_and_verified_through_its_filters() {
+    let source = tempfile::tempdir().expect("tempdir");
+    init_repository(source.path()).expect("a repository");
+    fs::write(
+        source.path().join(".gitattributes"),
+        "*.txt text eol=crlf\n",
+    )
+    .expect("the attributes");
+    fs::write(source.path().join("notes.txt"), "one\ntwo\n").expect("a text file");
+    fs::write(source.path().join("data.bin"), "one\ntwo\n").expect("a file without a filter");
+    commit_all(source.path(), "initial").expect("a commit");
+    let workspace = create_workspace();
+    let dependency = CollectedVcsDependency {
+        name: "lib".to_string(),
+        spec: VcsDependency {
+            url: source.path().display().to_string(),
+            reference: "main".to_string(),
+            vendor: true,
+            path: "vendor/lib".to_string(),
+            subdir: None,
+            overlay: false,
+        },
+    };
+
+    sync_vcs!(
+        workspace.path(),
+        vec![dependency.clone()],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect("sync should succeed");
+
+    // The checkout filter ran on the way out.
+    let vendored = workspace.path().join("vendor/lib");
+    assert_eq!(
+        fs::read_to_string(vendored.join("notes.txt")).expect("the text file"),
+        "one\r\ntwo\r\n"
+    );
+    assert_eq!(
+        fs::read_to_string(vendored.join("data.bin")).expect("the other file"),
+        "one\ntwo\n"
+    );
+    // It is undone on the way in, so the directory is still the locked tree.
+    let options = SyncOptions {
+        mode: SyncMode::Check,
+        ..SyncOptions::default()
+    };
+    sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &options,
+        VcsSyncScope::Path,
+    )
+    .expect("the filtered files hash to the locked tree");
 }

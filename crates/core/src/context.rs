@@ -13,7 +13,7 @@
 //! context chooses what an invocation asks for. It never establishes that the
 //! invocation is entitled to it: the secrets backend has to enforce that.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -21,6 +21,9 @@ pub use cuenv_manifest::context::{ContextDefinition, TaskFilter, When};
 use cuenv_manifest::environment::{Env, EnvSelection, EnvValue};
 use cuenv_manifest::manifest::InfrastructurePolicyAction;
 use cuenv_manifest::tasks::Task;
+use regex_automata::Anchored;
+use regex_automata::dfa::{Automaton, StartKind, dense};
+use regex_automata::util::start;
 use serde_json::{Map, Value, json};
 
 use crate::{Error, Result};
@@ -258,18 +261,99 @@ fn host_name() -> Option<String> {
 }
 
 /// Compile a filter string: a regular expression that must match the whole
-/// value.
+/// value. An expression is compiled once for the life of the process: the
+/// contexts are decided again for every task of a graph.
 fn pattern(text: &str) -> Checked<regex::Regex> {
+    static COMPILED: OnceLock<Mutex<HashMap<String, regex::Regex>>> = OnceLock::new();
+    let compiled = COMPILED.get_or_init(Mutex::default);
+    if let Ok(known) = compiled.lock()
+        && let Some(expression) = known.get(text)
+    {
+        return Ok(expression.clone());
+    }
     let invalid = |error| format!("`{text}` is not a valid regular expression: {error}");
     // The string must be an expression on its own. Otherwise `a)|(b` would
     // close the group below and stop being held to the whole value.
     regex::Regex::new(text).map_err(invalid)?;
-    regex::Regex::new(&format!("^(?:{text})$")).map_err(invalid)
+    let expression = regex::Regex::new(&whole_value(text)).map_err(invalid)?;
+    if let Ok(mut known) = compiled.lock() {
+        known.insert(text.to_string(), expression.clone());
+    }
+    Ok(expression)
+}
+
+/// The expression that holds a filter string to the whole value.
+fn whole_value(text: &str) -> String {
+    format!("^(?:{text})$")
 }
 
 /// Whether a filter string matches exactly itself.
 fn is_literal(text: &str) -> bool {
     regex::escape(text) == text
+}
+
+/// The most memory one filter string's automaton may take.
+const AUTOMATON_BYTES: usize = 4 << 20;
+
+/// The most pairs of states [`expressions_exclusive`] visits before it gives
+/// up.
+const AUTOMATON_PAIRS: usize = 1 << 18;
+
+/// The automaton that accepts the values a filter string matches; `None` for
+/// an expression too large to build one for.
+fn automaton(text: &str) -> Option<dense::DFA<Vec<u32>>> {
+    dense::Builder::new()
+        .configure(
+            dense::Config::new()
+                .start_kind(StartKind::Anchored)
+                .dfa_size_limit(Some(AUTOMATON_BYTES))
+                .determinize_size_limit(Some(AUTOMATON_BYTES)),
+        )
+        .build(&whole_value(text))
+        .ok()
+}
+
+/// Whether no value satisfies both filter strings, decided by walking their
+/// automata together: a value both accept is a path that ends in a match in
+/// each. `false` means only that it was not proved.
+fn expressions_exclusive(first: &str, second: &str) -> bool {
+    let (Some(first), Some(second)) = (automaton(first), automaton(second)) else {
+        return false;
+    };
+    let anchored = start::Config::new().anchored(Anchored::Yes);
+    let (Ok(first_start), Ok(second_start)) =
+        (first.start_state(&anchored), second.start_state(&anchored))
+    else {
+        return false;
+    };
+    let mut seen = HashSet::from([(first_start, second_start)]);
+    let mut pending = vec![(first_start, second_start)];
+    while let Some((first_state, second_state)) = pending.pop() {
+        if first.is_match_state(first.next_eoi_state(first_state))
+            && second.is_match_state(second.next_eoi_state(second_state))
+        {
+            return false;
+        }
+        for byte in 0..=u8::MAX {
+            let next = (
+                first.next_state(first_state, byte),
+                second.next_state(second_state, byte),
+            );
+            if first.is_dead_state(next.0) || second.is_dead_state(next.1) {
+                continue;
+            }
+            if first.is_quit_state(next.0)
+                || second.is_quit_state(next.1)
+                || seen.len() >= AUTOMATON_PAIRS
+            {
+                return false;
+            }
+            if seen.insert(next) {
+                pending.push(next);
+            }
+        }
+    }
+    true
 }
 
 /// Whether a fact satisfies its filter.
@@ -483,19 +567,19 @@ fn consumers(definition: &ContextDefinition) -> Checked<Vec<&'static str>> {
     Ok(possible)
 }
 
-/// Whether no value satisfies both filter strings. Two expressions that are
-/// not plain values are never proved exclusive.
+/// Whether no value satisfies both filter strings. `false` means only that
+/// cuenv could not prove it.
 fn strings_exclusive(first: &str, second: &str, path: &[&str]) -> Checked<bool> {
+    let (first_expression, second_expression) = (pattern(first)?, pattern(second)?);
     if let Some(values) = known_values(path) {
-        let (first, second) = (pattern(first)?, pattern(second)?);
         return Ok(!values
             .iter()
-            .any(|value| first.is_match(value) && second.is_match(value)));
+            .any(|value| first_expression.is_match(value) && second_expression.is_match(value)));
     }
     Ok(match (is_literal(first), is_literal(second)) {
-        (true, _) => !pattern(second)?.is_match(first),
-        (_, true) => !pattern(first)?.is_match(second),
-        _ => false,
+        (true, _) => !second_expression.is_match(first),
+        (_, true) => !first_expression.is_match(second),
+        _ => expressions_exclusive(first, second),
     })
 }
 

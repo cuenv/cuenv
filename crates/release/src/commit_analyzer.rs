@@ -65,9 +65,19 @@ impl<'workspace> CommitAnalyzer<'workspace> {
         commits: &'c [ConventionalCommit],
     ) -> Result<HashMap<String, Vec<PackageAffect<'c>>>> {
         let mut package_commits: HashMap<String, Vec<PackageAffect<'c>>> = HashMap::new();
+        if commits.is_empty() {
+            return Ok(package_commits);
+        }
+        // The repository is opened once for every commit.
+        let repository = gix::discover(self.root).map_err(|error| {
+            Error::git(format!(
+                "Failed to open the repository at {}: {error}",
+                self.root.display()
+            ))
+        })?;
 
         for commit in commits {
-            let changed_files = self.get_changed_files(&commit.hash)?;
+            let changed_files = changed_files(&repository, &commit.hash)?;
             let affected = self.map_files_to_packages(&changed_files);
 
             for (pkg_name, pkg_files) in affected {
@@ -109,48 +119,6 @@ impl<'workspace> CommitAnalyzer<'workspace> {
         }
 
         Ok(bumps)
-    }
-
-    /// Get the files changed in a specific commit.
-    ///
-    /// The commit is compared with its parent, as `git diff-tree -r` does.
-    /// A root commit (no parent) changed every file it has; a merge commit
-    /// changed none.
-    fn get_changed_files(&self, commit_hash: &str) -> Result<Vec<PathBuf>> {
-        let failed = |error: &dyn std::fmt::Display| {
-            Error::git(format!(
-                "Failed to read the files changed by {commit_hash}: {error}"
-            ))
-        };
-        let repository = gix::discover(self.root).map_err(|error| failed(&error))?;
-        let commit = repository
-            .rev_parse_single(commit_hash)
-            .map_err(|error| failed(&error))?
-            .object()
-            .map_err(|error| failed(&error))?
-            .peel_to_commit()
-            .map_err(|error| failed(&error))?;
-        let mut parents = commit.parent_ids();
-        let parent_tree = match (parents.next(), parents.next()) {
-            (None, _) => repository.empty_tree(),
-            (Some(parent), None) => parent
-                .object()
-                .map_err(|error| failed(&error))?
-                .peel_to_tree()
-                .map_err(|error| failed(&error))?,
-            (Some(_), Some(_)) => return Ok(Vec::new()),
-        };
-        let tree = commit.tree().map_err(|error| failed(&error))?;
-        let options = gix::diff::Options::default().with_rewrites(None);
-        let changes = repository
-            .diff_tree_to_tree(&parent_tree, &tree, options)
-            .map_err(|error| failed(&error))?;
-
-        Ok(changes
-            .iter()
-            .filter(|change| !change.entry_mode().is_tree())
-            .map(|change| gix::path::from_bstr(change.location()).into_owned())
-            .collect())
     }
 
     /// Map changed files to packages.
@@ -201,6 +169,47 @@ impl<'workspace> CommitAnalyzer<'workspace> {
 
         best_match.map(|(name, _)| name.clone())
     }
+}
+
+/// Get the files changed in a specific commit.
+///
+/// The commit is compared with its parent, as `git diff-tree -r` does.
+/// A root commit (no parent) changed every file it has; a merge commit
+/// changed none.
+fn changed_files(repository: &gix::Repository, commit_hash: &str) -> Result<Vec<PathBuf>> {
+    let failed = |error: &dyn std::fmt::Display| {
+        Error::git(format!(
+            "Failed to read the files changed by {commit_hash}: {error}"
+        ))
+    };
+    let commit = repository
+        .rev_parse_single(commit_hash)
+        .map_err(|error| failed(&error))?
+        .object()
+        .map_err(|error| failed(&error))?
+        .peel_to_commit()
+        .map_err(|error| failed(&error))?;
+    let mut parents = commit.parent_ids();
+    let parent_tree = match (parents.next(), parents.next()) {
+        (None, _) => repository.empty_tree(),
+        (Some(parent), None) => parent
+            .object()
+            .map_err(|error| failed(&error))?
+            .peel_to_tree()
+            .map_err(|error| failed(&error))?,
+        (Some(_), Some(_)) => return Ok(Vec::new()),
+    };
+    let tree = commit.tree().map_err(|error| failed(&error))?;
+    let options = gix::diff::Options::default().with_rewrites(None);
+    let changes = repository
+        .diff_tree_to_tree(&parent_tree, &tree, options)
+        .map_err(|error| failed(&error))?;
+
+    Ok(changes
+        .iter()
+        .filter(|change| !change.entry_mode().is_tree())
+        .map(|change| gix::path::from_bstr(change.location()).into_owned())
+        .collect())
 }
 
 #[cfg(test)]

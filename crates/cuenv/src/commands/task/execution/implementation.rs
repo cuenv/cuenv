@@ -8,10 +8,9 @@ use super::super::types::TaskExecutionRequest;
 use super::super::{list_builder, rendering, runner};
 use crate::commands::CommandExecutor;
 
-use crate::commands::export::StaticEnvConsumer;
 use crate::commands::git_hooks;
 
-use cuenv_core::context::{Consumer, ContextDefinition, Selection, TaskSubject};
+use cuenv_core::context::{Consumer, ContextDefinition, Facts, TaskSubject};
 use cuenv_core::environment::{Env, EnvSelection, EnvValue, Environment};
 use cuenv_core::manifest::{Project, Runtime};
 
@@ -489,23 +488,22 @@ async fn prepare_task_runtime(
     resolution: &TaskResolution,
 ) -> Result<PreparedTaskRuntime> {
     let requested = resolution.display_name.as_str();
+    // The filters are checked here, once, and not again for each task.
+    if let Some(env) = &context.manifest.env {
+        cuenv_core::context::validate(env, &context.manifest.contexts)?;
+    }
     let mut environments = ProjectTaskEnvironments {
         runtime_env: base_runtime_environment(context).await?,
-        base_env_vars: crate::commands::export::extract_static_env_vars(
-            &context.manifest,
-            StaticEnvConsumer::Task(requested),
-        ),
         env: context.manifest.env.clone(),
         definitions: context.manifest.contexts.clone(),
         environment: input.environment.map(str::to_string),
         project_root: context.project_root.clone(),
-        requested_task: requested.to_string(),
         activation_steps: lockfile_activation_steps(&context.manifest, &context.project_root)
             .await?,
-        shared_contexts: Vec::new(),
+        shared: EnvironmentKey::default(),
         resolved: Mutex::default(),
     };
-    environments.shared_contexts = if let TaskNode::Task(task) = &resolution.node {
+    let contexts = if let TaskNode::Task(task) = &resolution.node {
         environments.contexts_for(TaskSubject::of(requested, task))?
     } else {
         // A group or sequence is not a task, so no task filter is active for
@@ -519,15 +517,13 @@ async fn prepare_task_runtime(
         });
         contexts
     };
-    let env = environments.build(&environments.shared_contexts).await?;
-    let selects_by_context = environments
-        .env
-        .as_ref()
-        .is_some_and(Env::has_context_variables);
+    environments.shared = environments.key_for(requested, contexts);
+    let env = environments.build(requested, &environments.shared).await?;
+    let selects_by_task = environments.env.is_some();
 
     Ok(PreparedTaskRuntime {
         env,
-        task_environments: selects_by_context
+        task_environments: selects_by_task
             .then(|| Arc::new(environments) as Arc<dyn TaskEnvironments>),
         cache: task_cache_for_context(context).await,
     })
@@ -549,77 +545,102 @@ async fn base_runtime_environment(context: &TaskExecutionContext) -> Result<Envi
 /// An environment that is built once, by whichever task needs it first.
 type BuiltEnvironment = Arc<OnceCell<Environment>>;
 
+/// What decides the project variables a task receives. Two tasks with the
+/// same key share an environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+struct EnvironmentKey {
+    /// The contexts active for the task, sorted.
+    contexts: Vec<String>,
+    /// The selected variables whose policies allow the task, sorted.
+    variables: Vec<String>,
+}
+
 /// Builds the environment of each task of a run.
 ///
-/// A named context can select variables for one task and not for another, so
-/// the tasks of one graph do not all share an environment. The environment of
+/// A named context can select variables for one task and not for another,
+/// and a variable's policies can allow one task and not another, so the
+/// tasks of one graph do not all share an environment. The environment of
 /// the requested task is built up front; any other is built the first time a
-/// task needs it, so a secret under a context no task activates is never
+/// task needs it, so a secret no task of the graph may receive is never
 /// resolved.
 #[derive(Debug)]
 struct ProjectTaskEnvironments {
     /// The runtime's environment, before the project's variables.
     runtime_env: Environment,
-    /// The project's static variables.
-    base_env_vars: HashMap<String, String>,
     env: Option<Env>,
+    /// The project's `contexts`, which `prepare_task_runtime` has validated.
     definitions: HashMap<String, ContextDefinition>,
     /// The selected environment (`-e`).
     environment: Option<String>,
     project_root: PathBuf,
-    /// The task that was asked for, which variable policies are checked for.
-    requested_task: String,
     activation_steps: Vec<ResolvedToolActivationStep>,
-    /// The contexts active for the requested task.
-    shared_contexts: Vec<String>,
-    /// The environments built so far, by active contexts. Each is built
-    /// once; building one does not hold up a task that needs another.
-    resolved: Mutex<HashMap<Vec<String>, BuiltEnvironment>>,
+    /// The key of the requested task, whose environment every task runs
+    /// with unless its own key differs.
+    shared: EnvironmentKey,
+    /// The environments built so far. Each is built once; building one does
+    /// not hold up a task that needs another.
+    resolved: Mutex<HashMap<EnvironmentKey, BuiltEnvironment>>,
 }
 
 impl ProjectTaskEnvironments {
-    /// The contexts active for a task, sorted.
+    /// The contexts active for a task, sorted. No context is reported, and
+    /// no fact detected, unless `env.context` sets something.
     fn contexts_for(&self, task: TaskSubject<'_>) -> Result<Vec<String>> {
-        let Some(env) = &self.env else {
+        if !self.env.as_ref().is_some_and(Env::has_context_variables) {
             return Ok(Vec::new());
-        };
-        Selection {
-            env,
-            definitions: &self.definitions,
-            environment: self.environment.as_deref(),
-            consumer: Consumer::Task(task),
-            directory: &self.project_root,
         }
-        .contexts()
+        cuenv_core::context::active_contexts(
+            &self.definitions,
+            &Facts::detect(&self.project_root),
+            Consumer::Task(task),
+        )
     }
 
-    /// The environment while `contexts` are active.
-    async fn build(&self, contexts: &[String]) -> Result<Environment> {
-        let mut environment = self.runtime_env.clone();
-        for (key, value) in &self.base_env_vars {
-            environment.set(key.clone(), value.clone());
-        }
-
-        if let Some(env) = &self.env {
-            let env_vars = env.select(EnvSelection {
+    /// The project variables selected while `contexts` are active.
+    fn selected(&self, contexts: &[String]) -> HashMap<String, EnvValue> {
+        self.env.as_ref().map_or_else(HashMap::new, |env| {
+            env.select(EnvSelection {
                 environment: self.environment.as_deref(),
                 contexts,
-            });
-            let (task_env_vars, secrets) =
-                Environment::resolve_for_task_with_secrets(&self.requested_task, &env_vars).await?;
+            })
+        })
+    }
 
-            cuenv_events::register_secrets(secrets);
+    /// The key of the task called `name` while `contexts` are active.
+    fn key_for(&self, name: &str, contexts: Vec<String>) -> EnvironmentKey {
+        let mut variables: Vec<String> = self
+            .selected(&contexts)
+            .into_iter()
+            .filter(|(_, value)| value.is_accessible_by_task(name))
+            .map(|(variable, _)| variable)
+            .collect();
+        variables.sort();
+        EnvironmentKey {
+            contexts,
+            variables,
+        }
+    }
 
-            for (key, value) in task_env_vars {
-                // Resolution flattens everything to a plain string, so the CUE
-                // declaration is the last place that still knows which values are
-                // credentials. Carry that through: a secret must be fingerprinted
-                // rather than written into the cache key.
-                if env_vars.get(&key).is_some_and(EnvValue::is_secret) {
-                    environment.set_secret(key, value);
-                } else {
-                    environment.set(key, value);
-                }
+    /// The environment for a key, resolved on behalf of the task called
+    /// `name`: every task with that key may receive the same variables.
+    async fn build(&self, name: &str, key: &EnvironmentKey) -> Result<Environment> {
+        let mut environment = self.runtime_env.clone();
+
+        let env_vars = self.selected(&key.contexts);
+        let (task_env_vars, secrets) =
+            Environment::resolve_for_task_with_secrets(name, &env_vars).await?;
+
+        cuenv_events::register_secrets(secrets);
+
+        for (variable, value) in task_env_vars {
+            // Resolution flattens everything to a plain string, so the CUE
+            // declaration is the last place that still knows which values are
+            // credentials. Carry that through: a secret must be fingerprinted
+            // rather than written into the cache key.
+            if env_vars.get(&variable).is_some_and(EnvValue::is_secret) {
+                environment.set_secret(variable, value);
+            } else {
+                environment.set(variable, value);
             }
         }
 
@@ -639,17 +660,12 @@ impl TaskEnvironments for ProjectTaskEnvironments {
     fn environment_for<'a>(&'a self, name: &'a str, task: &'a Task) -> TaskEnvironmentFuture<'a> {
         Box::pin(async move {
             let contexts = self.contexts_for(TaskSubject::of(name, task))?;
-            if contexts == self.shared_contexts {
+            let key = self.key_for(name, contexts);
+            if key == self.shared {
                 return Ok(None);
             }
-            let cell = Arc::clone(
-                self.resolved
-                    .lock()
-                    .await
-                    .entry(contexts.clone())
-                    .or_default(),
-            );
-            let environment = cell.get_or_try_init(|| self.build(&contexts)).await?;
+            let cell = Arc::clone(self.resolved.lock().await.entry(key.clone()).or_default());
+            let environment = cell.get_or_try_init(|| self.build(name, &key)).await?;
             Ok(Some(environment.clone()))
         })
     }
@@ -800,5 +816,101 @@ fn task_executor_config(spec: &TaskExecutorConfigSpec<'_, '_>) -> ExecutorConfig
         cache: spec.runtime.cache.clone(),
         sandbox_hasher_root: Some(task_hasher_root(spec.context)),
         sandbox_project_roots: spec.context.project_roots.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn environments(
+        env: serde_json::Value,
+        contexts: serde_json::Value,
+    ) -> ProjectTaskEnvironments {
+        ProjectTaskEnvironments {
+            runtime_env: Environment::new(),
+            env: Some(serde_json::from_value(env).unwrap()),
+            definitions: serde_json::from_value(contexts).unwrap(),
+            environment: None,
+            project_root: std::env::temp_dir(),
+            activation_steps: Vec::new(),
+            shared: EnvironmentKey::default(),
+            resolved: Mutex::default(),
+        }
+    }
+
+    fn task(command: &str) -> Task {
+        Task {
+            command: command.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The variables a task of the graph runs with, when `requested` is the
+    /// task that was asked for.
+    async fn variables_of(
+        mut environments: ProjectTaskEnvironments,
+        requested: &str,
+        name: &str,
+    ) -> Vec<String> {
+        let contexts = environments
+            .contexts_for(TaskSubject::of(requested, &task("true")))
+            .unwrap();
+        environments.shared = environments.key_for(requested, contexts);
+        let shared = environments
+            .build(requested, &environments.shared)
+            .await
+            .unwrap();
+        let environment = environments
+            .environment_for(name, &task("true"))
+            .await
+            .unwrap()
+            .unwrap_or(shared);
+        let mut variables: Vec<String> = environment.iter().map(|(key, _)| key.clone()).collect();
+        variables.sort();
+        variables
+    }
+
+    #[tokio::test]
+    async fn a_policy_is_checked_for_the_task_that_receives_the_variable() {
+        let env = json!({
+            "PLAIN": "x",
+            "FOR_BUILD": {"value": "b", "policies": [{"allowTasks": ["build"]}]},
+            "FOR_DEPLOY": {"value": "d", "policies": [{"allowTasks": ["deploy"]}]},
+        });
+        // `deploy` was asked for and `build` is one of its dependencies.
+        assert_eq!(
+            variables_of(environments(env.clone(), json!({})), "deploy", "build").await,
+            ["FOR_BUILD", "PLAIN"]
+        );
+        assert_eq!(
+            variables_of(environments(env, json!({})), "deploy", "deploy").await,
+            ["FOR_DEPLOY", "PLAIN"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_context_variable_reaches_the_task_its_policy_allows() {
+        let env = json!({
+            "context": {"build": {
+                "TOKEN": {"value": "t", "policies": [{"allowTasks": ["build"]}]},
+            }},
+        });
+        let contexts = json!({"build": {"name": "build"}});
+        assert_eq!(
+            variables_of(
+                environments(env.clone(), contexts.clone()),
+                "deploy",
+                "build"
+            )
+            .await,
+            ["TOKEN"]
+        );
+        assert!(
+            variables_of(environments(env, contexts), "deploy", "deploy")
+                .await
+                .is_empty()
+        );
     }
 }

@@ -190,3 +190,17 @@ fn shell_receives_only_unrestricted_values() {
     assert!(!restricted(&json!([{"allowExec": ["make"]}])).is_accessible_by_shell());
     assert!(!restricted(&json!([{"allowInfrastructure": ["plan"]}])).is_accessible_by_shell());
 }
+
+#[test]
+fn a_policy_allows_the_tasks_under_a_group_it_lists() {
+    let deploy = restricted(&json!([{"allowTasks": ["deploy"]}]));
+    assert!(deploy.is_accessible_by_task("deploy"));
+    assert!(deploy.is_accessible_by_task("deploy.staging"));
+    assert!(deploy.is_accessible_by_task("deploy[0]"));
+    assert!(!deploy.is_accessible_by_task("deployment"));
+    assert!(!deploy.is_accessible_by_task("build"));
+
+    let staging = restricted(&json!([{"allowTasks": ["deploy.staging"]}]));
+    assert!(!staging.is_accessible_by_task("deploy"));
+    assert!(!staging.is_accessible_by_task("deploy.prod"));
+}

@@ -64,11 +64,13 @@ impl CIProvider for LocalProvider {
             .and_then(|base_ref| checkout.changed(Since::MergeBaseWith(base_ref)));
 
         // Always include uncommitted changes (staged + unstaged).
-        let changed: HashSet<PathBuf> = committed
-            .into_iter()
-            .chain(checkout.uncommitted())
-            .flatten()
-            .collect();
+        let uncommitted = checkout.uncommitted().map_err(|error| {
+            cuenv_core::Error::execution(format!(
+                "Could not list the uncommitted changes of this checkout: {error}"
+            ))
+        })?;
+        let changed: HashSet<PathBuf> =
+            committed.into_iter().flatten().chain(uncommitted).collect();
 
         Ok(changed.into_iter().collect())
     }

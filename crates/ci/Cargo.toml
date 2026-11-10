@@ -18,7 +18,7 @@ workspace = true
 [dependencies]
 cuenv-core = { workspace = true }
 # The HTTP transport takes its TLS from the workspace's reqwest features.
-gix = { workspace = true, features = ["index", "status", "blocking-network-client", "blocking-http-transport-reqwest"] }
+gix = { workspace = true, features = ["index", "status", "parallel", "blocking-network-client", "blocking-http-transport-reqwest"] }
 cuenv-manifest = { workspace = true }
 cuenv-tool-runtime = { workspace = true }
 cuenv-task-exec = { workspace = true }

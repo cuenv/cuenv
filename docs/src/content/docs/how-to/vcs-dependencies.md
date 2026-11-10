@@ -79,7 +79,8 @@ Requirements and behavior:
 - Subdirectory materialization writes only the selected subtree at `path`; it does not leave a nested `.git` checkout behind.
 - The path must be repo-relative, forward-slash separated, in canonical form (no leading/trailing whitespace, no leading/trailing slashes, no `a//b`), and contain no `.`, `..`, glob characters, or path components beginning with `-`.
 - The lockfile records both the resolved commit and the subtree hash, so re-syncs are deterministic and `cuenv sync vcs --check` detects tampering of the materialized content.
-- Files are written byte for byte as the repository stores them; checkout filters such as line-ending conversion are not applied.
+- Files are written as a checkout would write them: the filters that the subtree's `.gitattributes` and your git configuration ask for are applied (line endings, `ident`, and drivers such as Git LFS, which runs your configured `git-lfs`). The materialized subtree is its own root, so attributes set above `subdir` do not apply. `cuenv sync vcs --check` undoes the same filters before it compares the content with the locked tree.
+- Only the files under `subdir` are downloaded when the remote supports partial fetches (`filter` and fetching objects by hash, as GitHub and GitLab do). Any other remote is fetched one whole commit deep.
 
 ## Git is not required
 

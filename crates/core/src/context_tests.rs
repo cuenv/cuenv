@@ -437,9 +437,46 @@ fn contexts_are_exclusive_only_when_that_is_proved() {
             json!({"vcs": {"branch": "release-.*"}}),
             true,
         ),
+        // A value with regular expression characters is still a value.
+        (
+            json!({"vcs": {"branch": "release-1"}}),
+            json!({"vcs": {"branch": "release-2"}}),
+            true,
+        ),
+        (
+            json!({"host": {"name": "build-01.example.com"}}),
+            json!({"host": {"name": "build-02.example.com"}}),
+            true,
+        ),
+        (
+            json!({"name": "deploy.staging"}),
+            json!({"name": "deploy.prod"}),
+            true,
+        ),
+        (
+            json!({"name": r"deploy\.staging"}),
+            json!({"name": r"deploy\.prod"}),
+            true,
+        ),
+        // Two expressions are compared by what they can match.
         (
             json!({"vcs": {"branch": "a.*"}}),
             json!({"vcs": {"branch": "b.*"}}),
+            true,
+        ),
+        (
+            json!({"vcs": {"branch": "a.*"}}),
+            json!({"vcs": {"branch": ".*b"}}),
+            false,
+        ),
+        (
+            json!({"vcs": {"branch": "feat/.*"}}),
+            json!({"vcs": {"branch": "(fix|chore)/.*"}}),
+            true,
+        ),
+        (
+            json!({"user": {"email": ".*@example\\.com"}}),
+            json!({"user": {"email": "ci@.*"}}),
             false,
         ),
         (json!({"name": "build"}), json!({"name": "test"}), true),
