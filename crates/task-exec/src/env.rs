@@ -9,7 +9,7 @@ use std::collections::HashMap;
 ///
 /// Task env values arrive as JSON because they may include runtime-only objects
 /// such as output references, host passthrough markers, or secret refs.
-pub(crate) async fn resolve_task_env(
+pub async fn resolve_task_env(
     task_name: &str,
     task_env: &HashMap<String, Value>,
 ) -> Result<(HashMap<String, String>, Vec<String>)> {
