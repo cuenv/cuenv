@@ -556,6 +556,19 @@ async fn compile_and_execute_ir(
         for (key, value) in resolved_by_key.get(&env_key).into_iter().flatten() {
             env.insert(key.clone(), value.clone());
         }
+        // The IR keeps only a task's string variables. Its secrets, numbers
+        // and booleans are resolved from the project task, as `cuenv task`
+        // does, so a task-level secret reaches the task in CI too.
+        if let Some(task) = compiler.find_task(&ir_task.id) {
+            let (resolved, secrets) =
+                cuenv_task_exec::env::resolve_task_env(&ir_task.id, &task.env)
+                    .await
+                    .map_err(|e| {
+                        ExecutorError::Compilation(format!("Secret resolution failed: {e}"))
+                    })?;
+            cuenv_events::register_secrets(secrets);
+            env.extend(resolved);
+        }
         task_env::apply_task_env(&mut env, &ir_task.env);
 
         tools::apply_tool_activation_steps(&mut env, &activation_steps);
@@ -604,6 +617,37 @@ fn ensure_home_env(env: &mut BTreeMap<String, String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_task_level_secret_reaches_the_task() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let task: cuenv_core::tasks::Task = serde_json::from_value(serde_json::json!({
+            "command": "sh",
+            "args": ["-c", "test \"$TOKEN\" = hello && test \"$PLAIN\" = yes"],
+            "hermetic": false,
+            "env": {
+                "TOKEN": {"resolver": "exec", "command": "echo", "args": ["hello"]},
+                "PLAIN": "yes",
+            },
+        }))
+        .expect("task");
+        let mut project = Project::new("test");
+        project.tasks.insert(
+            "probe".to_string(),
+            cuenv_core::tasks::TaskNode::Task(Box::new(task)),
+        );
+        let output = compile_and_execute_ir(IrExecutionRequest {
+            config: &project,
+            task_name: "probe",
+            project_root: directory.path(),
+            cache_policy_override: None,
+            environment: None,
+            hook_env: &BTreeMap::new(),
+        })
+        .await
+        .expect("task runs");
+        assert!(output.success, "{}", output.stderr);
+    }
 
     #[test]
     fn task_walk_policy_uses_requested_parallelism() {

@@ -14,7 +14,7 @@ pub mod cache;
 pub mod captures;
 mod command;
 mod command_ext;
-pub(crate) mod env;
+pub mod env;
 pub mod exec_root;
 pub mod executor;
 pub mod graph;
