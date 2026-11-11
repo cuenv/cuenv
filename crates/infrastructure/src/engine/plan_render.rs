@@ -888,32 +888,43 @@ struct Page {
 }
 
 impl Page {
-    fn push(&mut self, tone: Tone, indent: usize, marker: &str, text: String) {
+    fn blank(&mut self) {
+        self.title(String::new());
+        if let Some(line) = self.lines.last_mut() {
+            line.tone = Tone::Blank;
+        }
+    }
+
+    fn title(&mut self, text: String) {
+        self.lines.push(Line {
+            tone: Tone::Title,
+            indent: 0,
+            marker: String::new(),
+            depth: 0,
+            text,
+        });
+    }
+
+    /// The line naming a data source or resource above its changes.
+    fn heading(&mut self, tone: Tone, marker: &str, text: String) {
         self.lines.push(Line {
             tone,
-            indent,
+            indent: RESOURCE_INDENT,
             marker: marker.to_string(),
             depth: 0,
             text,
         });
     }
 
-    fn blank(&mut self) {
-        self.push(Tone::Blank, 0, "", String::new());
-    }
-
-    fn title(&mut self, text: String) {
-        self.push(Tone::Title, 0, "", text);
-    }
-
-    /// The line naming a data source or resource above its changes.
-    fn heading(&mut self, tone: Tone, marker: &str, text: String) {
-        self.push(tone, RESOURCE_INDENT, marker, text);
-    }
-
     /// A comment about the resource above.
     fn remark(&mut self, text: String) {
-        self.push(Tone::Note, ATTRIBUTE_INDENT, "#", text);
+        self.lines.push(Line {
+            tone: Tone::Note,
+            indent: ATTRIBUTE_INDENT,
+            marker: "#".to_string(),
+            depth: 0,
+            text,
+        });
     }
 
     /// A line of an attribute's value, `depth` levels into it.
