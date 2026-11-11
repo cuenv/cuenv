@@ -63,8 +63,9 @@ needs `--accept-backend` in a package-scoped backend.
 
 ### Reviewed plan digest
 
-`plan` prints a digest of the redacted rendering of every change to real
-infrastructure, bound to the tenant. It excludes record versions, evaluator
+`plan` prints a digest of a redacted, compact rendering of every change to real
+infrastructure, bound to the tenant. That rendering is fixed and separate from
+the diff `plan` displays, so a change to the display never changes a digest. It excludes record versions, evaluator
 bindings and refresh-only work, so it is stable across runs, and it is
 computed from redacted text, so it never fingerprints a secret.
 `apply --expect-plan <digest>` refuses a plan made under the lock with

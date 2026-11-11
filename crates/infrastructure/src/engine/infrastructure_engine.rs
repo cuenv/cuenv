@@ -181,7 +181,7 @@ pub struct ResourceChange {
     /// `type.name` addresses; recorded with the resource.
     pub(super) dependencies: Vec<String>,
     /// Resource outputs used by its configuration.
-    references: ConfigurationReferences,
+    pub(super) references: ConfigurationReferences,
     /// For a resource with references: the planned configuration. Outputs
     /// known while planning are filled in; the rest are typed unknowns that
     /// apply resolves once their producers have been applied.
@@ -362,7 +362,7 @@ impl Plan {
             }
             None => digest.tag(0),
         }
-        digest.field(cuenv_events::redact(&render_plan(&reviewed)).as_bytes());
+        digest.field(cuenv_events::redact(&reviewed_plan_text(&reviewed)).as_bytes());
         ReviewedPlanDigest(format!("sha256:{}", hex::encode(digest.hasher.finalize())))
     }
 
@@ -4864,9 +4864,10 @@ pub(super) fn topological_order(graph: &BTreeMap<String, Vec<String>>) -> Result
     Ok(order)
 }
 
-/// Render a plan as human-readable text.
-#[must_use]
-pub fn render_plan(plan: &Plan) -> String {
+/// The compact text the reviewed plan digest is computed from: every changed
+/// attribute on one line. It is frozen so that digests stay stable; people
+/// read [`super::render_plan`], which lays the same changes out as diffs.
+fn reviewed_plan_text(plan: &Plan) -> String {
     let mut rendered = String::new();
     for read in &plan.data_sources {
         let timing = if read.deferred {
@@ -4943,7 +4944,7 @@ pub fn render_plan(plan: &Plan) -> String {
 /// Describe nested reference locations without exposing their values or map
 /// keys. Ordinary event redaction still applies, including historical secrets
 /// whose text happens to equal a fixed schema field label.
-fn sensitive_reference_paths(
+pub(super) fn sensitive_reference_paths(
     references: &ConfigurationReferences,
     sensitive: &[String],
 ) -> BTreeSet<String> {

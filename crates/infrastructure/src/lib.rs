@@ -37,8 +37,8 @@ mod write_only;
 pub use cancellation::{Cancellation, RecordingGuard};
 pub use engine::{
     Action, ApplyContext, ApplyEvent, DataSourcePlan, EngineOptions, EngineSetup,
-    InfrastructureEngine, Plan, PlanDigest, PlanMode, PlanSummary, ResourceChange,
-    ReviewedPlanDigest, declared_resource, render_plan, validate_configuration,
+    InfrastructureEngine, Plan, PlanDigest, PlanMode, PlanStyle, PlanSummary, ResourceChange,
+    ReviewedPlanDigest, declared_resource, render_plan, render_plan_styled, validate_configuration,
 };
 pub use error::{
     InfrastructureError, Result, UnrecordedFileProblem, failure_category, strip_control_characters,
