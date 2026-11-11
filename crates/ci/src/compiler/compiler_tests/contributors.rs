@@ -947,6 +947,43 @@ fn test_contributor_secrets_provider_uses_base_env_without_pipeline_environment(
 }
 
 #[test]
+fn test_contributor_secrets_provider_counts_context_environments_only_for_the_pipeline() {
+    let mut project = Project::new("test");
+    project.env = Some(cuenv_core::environment::Env {
+        environment: None,
+        context: Some(std::collections::HashMap::from([(
+            "workload".to_string(),
+            cuenv_core::environment::ContextEnv {
+                environment: Some(std::collections::HashMap::from([(
+                    "production".to_string(),
+                    std::collections::HashMap::from([(
+                        "TOKEN".to_string(),
+                        cuenv_core::environment::EnvValue::String(
+                            "op://vault/item/field".to_string(),
+                        ),
+                    )]),
+                )])),
+                base: std::collections::HashMap::new(),
+            },
+        )])),
+        base: std::collections::HashMap::new(),
+    });
+    let compiler = Compiler::new(project);
+    let contributor = super::test_contributor("1password", Some(secrets_provider_condition()));
+    // A pull request pipeline names no environment, so it never needs the
+    // context's production secrets.
+    assert!(!compiler.cue_contributor_is_active(&contributor, &super::test_ir()));
+
+    let mut production = super::test_ir();
+    production.pipeline.environment = Some("production".to_string());
+    assert!(compiler.cue_contributor_is_active(&contributor, &production));
+
+    let mut staging = super::test_ir();
+    staging.pipeline.environment = Some("staging".to_string());
+    assert!(!compiler.cue_contributor_is_active(&contributor, &staging));
+}
+
+#[test]
 fn test_contributor_secrets_provider_uses_infrastructure_secrets() {
     let mut project = Project::new("test");
     project.infrastructure = Some(serde_json::json!({

@@ -4,7 +4,7 @@ use crate::ir::{
     TaskCondition,
 };
 use cuenv_core::ci::{Contributor, ContributorTask, SecretRef, TaskCondition as CueTaskCondition};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CachixSettings {
@@ -203,20 +203,19 @@ impl Compiler {
     /// infrastructure configuration use any of the specified secrets providers.
     fn has_secrets_provider(&self, providers: &[String], ir: &IntermediateRepresentation) -> bool {
         let env_has_provider = self.project.env.as_ref().is_some_and(|env| {
-            let env_vars = ir
-                .pipeline
-                .environment
-                .as_ref()
+            let pipeline_environment = ir.pipeline.environment.as_deref();
+            let env_vars = pipeline_environment
                 .map_or_else(|| env.base.clone(), |name| env.for_environment(name));
             // A context's variables count whichever contexts turn out to be
-            // active: the job has to be able to log in for any of them.
-            let context_values = env.context.iter().flatten().flat_map(|(_, context)| {
+            // active: the job has to be able to log in for any of them. Its
+            // environment-specific variables count only for the pipeline's
+            // environment, as they can be set for no other.
+            let context_values = env.context.iter().flatten().flat_map(move |(_, context)| {
                 context.base.values().chain(
-                    context
-                        .environment
-                        .iter()
-                        .flatten()
-                        .flat_map(|(_, variables)| variables.values()),
+                    pipeline_environment
+                        .and_then(|name| context.environment.as_ref()?.get(name))
+                        .into_iter()
+                        .flat_map(HashMap::values),
                 )
             });
             env_vars
