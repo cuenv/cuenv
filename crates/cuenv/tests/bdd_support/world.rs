@@ -7,6 +7,36 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::process::Command;
 
+/// How long a hook process gets to exit after it is asked to.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ask each process to exit, wait until all are gone, and kill what remains
+/// after [`STOP_GRACE`].
+#[cfg(unix)]
+async fn stop_processes(processes: &[u32]) {
+    use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+
+    let processes: Vec<Pid> = processes
+        .iter()
+        .filter_map(|process| i32::try_from(*process).ok().and_then(Pid::from_raw))
+        .collect();
+    let running =
+        |process: &Pid| !matches!(test_kill_process(*process), Err(rustix::io::Errno::SRCH));
+    for process in &processes {
+        let _ = kill_process(*process, Signal::TERM);
+    }
+    let deadline = tokio::time::Instant::now() + STOP_GRACE;
+    while processes.iter().any(running) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    for process in processes.iter().filter(|process| running(process)) {
+        let _ = kill_process(*process, Signal::KILL);
+    }
+}
+
+#[cfg(not(unix))]
+async fn stop_processes(_processes: &[u32]) {}
+
 const TEST_CUE_MODULE: &str = "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n";
 
 /// The test world holds state across test steps
@@ -94,6 +124,66 @@ impl TestWorld {
             advanced: super::advanced_hook_steps::AdvancedEvidence::default(),
             test_base_dir: None,
         })
+    }
+
+    /// Stop every hook process the scenario left running and remove its
+    /// state.
+    ///
+    /// A supervisor whose hooks completed keeps serving the result until it
+    /// has been idle for minutes. Left alone, those processes outlive the
+    /// test run and keep writing under the temporary directory, which makes
+    /// a sandboxed build fail when it removes that directory.
+    pub async fn tear_down(&self) {
+        let manager = cuenv_hooks::StateManager::new(self.state_dir.clone());
+        let processes: Vec<u32> = manager
+            .reservations()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|reservation| [reservation.worker_pid, reservation.child_pid])
+            .flatten()
+            .collect();
+        stop_processes(&processes).await;
+        self.retire_result_servers().await;
+        // The scenario is over; a directory that cannot be removed is
+        // reported by the build that owns the temporary directory.
+        if let Some(base) = self.state_dir.ancestors().nth(2) {
+            let _ = fs::remove_dir_all(base).await;
+        }
+    }
+
+    /// Make every supervisor serving a completed result stop, and wait
+    /// until each has.
+    ///
+    /// A serving supervisor records no process ID. It stops once the
+    /// generation it serves is no longer the current one, and removes its
+    /// lease as the last thing it does to the state directory.
+    async fn retire_result_servers(&self) {
+        let entries = |suffix: &'static str| {
+            let state_dir = self.state_dir.clone();
+            async move {
+                let mut found = Vec::new();
+                let Ok(mut directory) = fs::read_dir(&state_dir).await else {
+                    return found;
+                };
+                while let Ok(Some(entry)) = directory.next_entry().await {
+                    if entry.file_name().to_string_lossy().ends_with(suffix) {
+                        found.push(entry.path());
+                    }
+                }
+                found
+            }
+        };
+        if entries(".lease").await.is_empty() {
+            return;
+        }
+        for generation in entries(".generation").await {
+            let _ = fs::remove_file(generation).await;
+        }
+        let deadline = tokio::time::Instant::now() + STOP_GRACE;
+        while !entries(".lease").await.is_empty() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     pub(super) fn repo_root() -> StepResult<PathBuf> {
