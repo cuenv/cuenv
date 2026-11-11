@@ -11,9 +11,11 @@ ledger, not a generated claim that source code passes terminal conformance.
 The report retains the original Linux qualification failures against
 `7ae087500bcde5c0c9f09cb9c50382e9220b3360` as historical executions and records
 evidence against fork revision `b0694c0707a90dc93fdf01cbf8a658424be285ee`
-separately. The current pin is upstream commit
-`fb582f066a2df7f95055eedb513752adc8c5f6b8`, which incorporates the fork's
-fixes via [Rio PR #1930](https://github.com/raphamorim/rio/pull/1930).
+separately. The current pin is `200e78994355481c7e06cd840fbcaeb8a1e6b519` of the
+[rawkode/rio](https://github.com/rawkode/rio) fork: upstream commit
+`fb582f066a2df7f95055eedb513752adc8c5f6b8`, which incorporates the earlier fork's
+fixes via [Rio PR #1930](https://github.com/raphamorim/rio/pull/1930), plus one
+`rio-vt` commit that keeps OSC 133 command-output marks.
 Previous passes are historical until repeated against this pin. Every capability
 has a decision outcome of `pass`, `fail`, or `unobservable`; a pass must cite a
 successful execution against the current engine revision.

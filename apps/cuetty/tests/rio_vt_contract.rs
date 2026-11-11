@@ -80,3 +80,37 @@ fn public_cursor_and_alternate_screen_state_are_observable() {
     let text: String = (0..4).map(|column| rows[0][Column(column)].c()).collect();
     assert_eq!(text, "main");
 }
+
+#[test]
+fn public_core_keeps_the_marks_a_shell_leaves_around_command_output() {
+    use rio_vt::crosswords::CommandEnd;
+
+    let mut term = terminal();
+    let mut parser = Processor::default();
+    parser.advance(
+        &mut term,
+        b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07file\r\n",
+    );
+    // Running: the output reaches the cursor, and nothing has ended.
+    assert_eq!(term.last_command_output(), Some(Line(1)..=Line(2)));
+    assert_eq!(term.last_command_end, None);
+
+    parser.advance(&mut term, b"\x1b]133;D;3\x07\x1b]133;A\x07$ ");
+    assert_eq!(term.last_command_output(), Some(Line(1)..=Line(1)));
+    assert_eq!(
+        term.last_command_end,
+        Some(CommandEnd {
+            exit_status: Some(3)
+        })
+    );
+
+    // The marks travel with their rows through a reflow.
+    term.resize(CrosswordsSize::new(3, 6));
+    let rows = term.last_command_output().expect("marked output");
+    let text: String = (rows.start().0..=rows.end().0)
+        .flat_map(|row| (0..3).map(move |column| (row, column)))
+        .map(|(row, column)| term.grid[Line(row)][Column(column)].c())
+        .filter(|character| *character != '\0')
+        .collect();
+    assert_eq!(text, "file");
+}

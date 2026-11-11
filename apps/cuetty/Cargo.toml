@@ -19,8 +19,9 @@ libc = "0.2.189"
 notify = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Public Rust terminal core, pinned to the upstream PTY lifecycle fix.
-rio-vt = { git = "https://github.com/raphamorim/rio", rev = "fb582f066a2df7f95055eedb513752adc8c5f6b8" }
+# Public Rust terminal core: the upstream PTY lifecycle fix plus one commit that keeps
+# the OSC 133 marks around command output. Return to upstream once that is merged there.
+rio-vt = { git = "https://github.com/rawkode/rio", rev = "200e78994355481c7e06cd840fbcaeb8a1e6b519" }
 
 # GPUI 0.2 requires stacksafe 0.1, whose macro depends on an unmaintained crate.
 # The adapter supplies the API GPUI uses through maintained stacksafe 1.x.

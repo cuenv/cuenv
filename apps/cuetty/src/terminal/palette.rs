@@ -12,6 +12,7 @@ pub(super) enum Command {
     PreviousTab,
     ToggleSidebar,
     FindOnScreen,
+    CopyLastOutput,
 }
 
 const COMMANDS: &[Command] = &[
@@ -22,6 +23,7 @@ const COMMANDS: &[Command] = &[
     Command::PreviousTab,
     Command::ToggleSidebar,
     Command::FindOnScreen,
+    Command::CopyLastOutput,
 ];
 
 impl Command {
@@ -34,6 +36,7 @@ impl Command {
             Self::PreviousTab => "Previous tab",
             Self::ToggleSidebar => "Pin or unpin project",
             Self::FindOnScreen => "Find on screen",
+            Self::CopyLastOutput => "Copy last command output",
         }
     }
 
@@ -46,6 +49,7 @@ impl Command {
             Self::PreviousTab => "Switch to the previous tab",
             Self::ToggleSidebar => "Pin the project to a sidebar, or let it float",
             Self::FindOnScreen => "Search the visible terminal",
+            Self::CopyLastOutput => "Copy what the last command printed",
         }
     }
 }
@@ -78,6 +82,8 @@ pub(super) struct Available<'selection> {
     pub(super) tasks: &'selection [CuenvTask],
     pub(super) tab: bool,
     pub(super) screen: bool,
+    /// The shell has marked a last command's output, and there is some.
+    pub(super) output: bool,
 }
 
 /// A leading `$` selects the active pane's tasks; deleting it returns to commands.
@@ -93,6 +99,7 @@ pub(super) fn results(query: &str, available: Available<'_>) -> Vec<Item> {
                     let possible = match command {
                         Command::NewTab | Command::ToggleSidebar => true,
                         Command::FindOnScreen => available.screen,
+                        Command::CopyLastOutput => available.output,
                         _ => available.tab,
                     };
                     possible
@@ -144,6 +151,7 @@ mod tests {
             tasks,
             tab: true,
             screen: true,
+            output: true,
         }
     }
 
@@ -182,6 +190,18 @@ mod tests {
     }
 
     #[test]
+    fn copying_the_last_output_is_offered_only_when_there_is_some() {
+        let copy = vec![Item::Command(Command::CopyLastOutput)];
+        assert_eq!(results("last command output", available(&[])), copy);
+        assert_eq!(results("printed", available(&[])), copy);
+        let nothing_marked = Available {
+            output: false,
+            ..available(&[])
+        };
+        assert!(results("last command output", nothing_marked).is_empty());
+    }
+
+    #[test]
     fn every_matching_task_remains_reachable() {
         let tasks: Vec<_> = (0..15)
             .map(|index| task(&format!("task-{index}"), ""))
@@ -195,6 +215,7 @@ mod tests {
             tasks: &[],
             tab: false,
             screen: false,
+            output: false,
         };
         assert_eq!(
             results("", available),

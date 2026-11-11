@@ -10,15 +10,19 @@ semantic render frames.
 
 The direct-`rio-vt` revision is:
 
-`fb582f066a2df7f95055eedb513752adc8c5f6b8`
+`200e78994355481c7e06cd840fbcaeb8a1e6b519` of the
+[rawkode/rio](https://github.com/rawkode/rio) fork
 
-That pin is intentional. It includes
-[Rio PR #1930](https://github.com/raphamorim/rio/pull/1930), which preserves
-final PTY output under terminal-lock contention and gives Unix child teardown
-an ownership-safe shutdown/reap contract. Cuetty uses public APIs available at
-this revision rather than private renderer or embedding APIs.
-The recorded macOS qualification applies to the previous fork revision;
-qualification of this upstream pin remains pending.
+That pin is intentional. It is upstream
+`fb582f066a2df7f95055eedb513752adc8c5f6b8`, which includes
+[Rio PR #1930](https://github.com/raphamorim/rio/pull/1930) to preserve
+final PTY output under terminal-lock contention and give Unix child teardown
+an ownership-safe shutdown/reap contract, plus one `rio-vt` commit that keeps
+the OSC 133 marks a shell leaves around a command's output and its exit status.
+Cuetty returns to an upstream revision once that commit is merged there. It uses
+public APIs available at this revision rather than private renderer or embedding APIs.
+The recorded macOS qualification applies to an earlier fork revision;
+qualification of this pin remains pending.
 
 The original proof of concept used `librio` at
 `b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1`. The M0 implementation migrates to
@@ -78,6 +82,9 @@ The current usable slice includes:
   copied to the system clipboard on release; an empty click leaves it alone. Holding a selection
   drag on the top or bottom row scrolls through history until the pointer moves away or is released.
   Selection and its copied text use Rio's history; changing column width invalidates the selection.
+- A palette command that copies what the last command printed, without its prompt or command
+  line, in shells that mark output with OSC 133. Fish 4 and Nushell do unaided; the
+  [README](https://github.com/cuenv/cuenv/blob/main/apps/cuetty/README.md) has the lines Bash needs.
 - A thin overlay scrollbar in the terminal's right gutter, where there is history to scroll.
   The command palette covers it while open.
   It shows while the view moves, holds a moment, and fades over 150ms, and comes back when

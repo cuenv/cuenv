@@ -9,8 +9,9 @@ use gpui::{
     Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
 };
 
-fn shortcut(command: Command) -> String {
-    match command {
+/// The chord that runs a command without the palette, for those that have one.
+fn shortcut(command: Command) -> Option<String> {
+    Some(match command {
         Command::NewTab => engine::app_chord_label("t"),
         Command::CloseTab => engine::app_chord_label("w"),
         Command::RenameTab => engine::app_chord_label("r"),
@@ -18,7 +19,8 @@ fn shortcut(command: Command) -> String {
         Command::FindOnScreen => engine::app_chord_label("f"),
         Command::NextTab => "Ctrl+Page Down".into(),
         Command::PreviousTab => "Ctrl+Page Up".into(),
-    }
+        Command::CopyLastOutput => return None,
+    })
 }
 
 impl TerminalView {
@@ -51,7 +53,7 @@ impl TerminalView {
                     None,
                     command.name().to_owned(),
                     command.description().to_owned(),
-                    Some(shortcut(*command)),
+                    shortcut(*command),
                 ),
                 Item::Task(task) => (
                     Some(if task.requires_parameters {
