@@ -23,6 +23,13 @@ async fn main() {
 
     TestWorld::cucumber()
         .fail_on_skipped()
+        .after(|_feature, _rule, _scenario, _finished, world| {
+            Box::pin(async move {
+                if let Some(world) = world {
+                    world.tear_down().await;
+                }
+            })
+        })
         .run_and_exit("tests/bdd/features/")
         .await;
 }
