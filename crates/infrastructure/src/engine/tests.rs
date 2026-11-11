@@ -2141,6 +2141,218 @@ fn referenced_replan_continues_for_provider_failures_but_aborts_storage_and_inte
     assert!(!interrupt.continues());
 }
 
+fn object(fields: &[(&str, Value)]) -> Value {
+    Value::Object(
+        fields
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect(),
+    )
+}
+
+fn text(value: &str) -> Value {
+    Value::String(value.into())
+}
+
+#[test]
+fn render_plan_shows_an_update_as_a_structural_difference() {
+    let permission = |path: &str, actions: &[&str]| {
+        object(&[
+            (
+                "action",
+                Value::List(actions.iter().map(|action| text(action)).collect()),
+            ),
+            (
+                "conditions",
+                text(&format!(
+                    r#"{{"environment":{{"$eq":"production"}},"secretPath":{{"$eq":"{path}"}}}}"#
+                )),
+            ),
+            ("inverted", Value::Boolean(false)),
+            ("subject", text("secrets")),
+        ])
+    };
+    let mut update = change(
+        ResourceAddress::new("infisical_project_role", "ci_role"),
+        Action::Update,
+    );
+    update.before = object(&[
+        ("name", text("ci")),
+        (
+            "permissions_v2",
+            Value::List(vec![
+                permission("/infrastructure", &["describeSecret"]),
+                permission(
+                    "/projects/basin",
+                    &["describeSecret", "readValue", "create", "edit", "delete"],
+                ),
+            ]),
+        ),
+        ("slug", text("old")),
+    ]);
+    update.after = object(&[
+        ("name", text("ci")),
+        (
+            "permissions_v2",
+            Value::List(vec![permission(
+                "/projects/basin",
+                &["describeSecret", "readValue"],
+            )]),
+        ),
+        ("slug", text("new")),
+    ]);
+    let rendered = crate::engine::render_plan(&plan_of(vec![update]));
+    let expected = r#"     Type                    Name     Plan    Info
+ ~   infisical_project_role  ci_role  update  [diff: ~permissions_v2,~slug]
+
+Changes:
+
+  ~ infisical_project_role.ci_role
+      ~ permissions_v2 = [
+      -     {
+      -         action: ["describeSecret"]
+      -         conditions: jsonencode({
+      -             environment: {"$eq": "production"}
+      -             secretPath: {"$eq": "/infrastructure"}
+      -         })
+      -         inverted: false
+      -         subject: "secrets"
+      -     },
+      ~     {
+      ~         action: [
+                    "describeSecret",
+                    "readValue",
+      -             "create",
+      -             "edit",
+      -             "delete",
+                ]
+                # 3 unchanged attributes hidden
+            },
+        ]
+      ~ slug = "old" -> "new"
+
+Resources:
+    ~ 1 to update
+"#;
+    assert_eq!(rendered, expected, "{rendered}");
+}
+
+#[test]
+fn render_plan_compares_json_documents_and_hides_what_is_unset() {
+    let mut update = change(
+        ResourceAddress::new("infisical_identity_oidc_auth", "login"),
+        Action::Update,
+    );
+    update.before = object(&[("policy", text(r#"{"ref":"main","repository":"a/b"}"#))]);
+    update.after = object(&[(
+        "policy",
+        text(r#"{"environment":"production","ref":"main","repository":"a/c"}"#),
+    )]);
+    let mut create = change(
+        ResourceAddress::new("github_repository_ruleset", "main"),
+        Action::Create,
+    );
+    create.after = object(&[
+        ("etag", Value::Unknown),
+        ("id", Value::Unknown),
+        ("name", text("main")),
+        (
+            "rules",
+            Value::List(vec![object(&[
+                ("creation", Value::Null),
+                ("deletion", Value::Boolean(true)),
+                ("merge_queue", Value::List(Vec::new())),
+                ("node", Value::Unknown),
+                (
+                    "pull_request",
+                    Value::List(vec![object(&[(
+                        "required_approving_review_count",
+                        Value::Number("1".parse().unwrap()),
+                    )])]),
+                ),
+            ])]),
+        ),
+    ]);
+    let plan = plan_of(vec![update, create]);
+    let rendered = crate::engine::render_plan(&plan);
+    let expected = r#"     Type                          Name   Plan    Info
+ ~   infisical_identity_oidc_auth  login  update  [diff: ~policy]
+ +   github_repository_ruleset     main   create
+
+Changes:
+
+  ~ infisical_identity_oidc_auth.login
+      ~ policy = jsonencode({
+      +     environment: "production"
+      ~     repository: "a/b" -> "a/c"
+            # 1 unchanged attribute hidden
+        })
+
+  + github_repository_ruleset.main
+      + name = "main"
+      + rules = [
+      +     {
+      +         deletion: true
+      +         pull_request: [{required_approving_review_count: 1}]
+                # 1 known after apply, 2 unset hidden
+      +     },
+      + ]
+      # known after apply: etag, id
+
+Resources:
+    + 1 to create
+    ~ 1 to update
+"#;
+    assert_eq!(rendered, expected, "{rendered}");
+
+    let colored = crate::engine::render_plan_styled(&plan, crate::engine::PlanStyle::Ansi);
+    assert!(
+        colored.contains("      \u{1b}[32m+ name = \"main\"\u{1b}[0m\n"),
+        "{colored}"
+    );
+    assert!(
+        colored.contains("      \u{1b}[33m~\u{1b}[0m     repository: \"a/b\" -> \"a/c\"\n"),
+        "{colored}"
+    );
+    assert!(
+        colored.contains("\u{1b}[1mChanges:\u{1b}[0m\n"),
+        "{colored}"
+    );
+}
+
+#[test]
+fn render_plan_keeps_a_value_holding_a_secret_on_one_line() {
+    let secret = r#"{"plan-render-secret":["f1c2","9ab7"]}"#;
+    cuenv_events::register_secret(secret.to_string());
+    let mut create = change(
+        ResourceAddress::new("example_document", "policy"),
+        Action::Create,
+    );
+    create.after = object(&[("body", text(secret))]);
+    let plan = plan_of(vec![create]);
+    let rendered = cuenv_events::redact(&crate::engine::render_plan(&plan));
+    assert!(!rendered.contains("plan-render-secret"), "{rendered}");
+    assert!(!rendered.contains("9ab7"), "{rendered}");
+}
+
+#[test]
+fn the_reviewed_digest_does_not_depend_on_the_plan_layout() {
+    let mut update = change(ResourceAddress::new("random_pet", "pet"), Action::Update);
+    update.before = object(&[("keepers", object(&[("pet", text("a"))]))]);
+    update.after = object(&[("keepers", object(&[("pet", text("b"))]))]);
+    let plan = plan_of(vec![update]);
+    assert!(
+        super::reviewed_plan_text(&plan).contains(r#"~ keepers: {"pet":"a"} -> {"pet":"b"}"#),
+        "{}",
+        super::reviewed_plan_text(&plan)
+    );
+    assert!(
+        crate::engine::render_plan(&plan).contains(r#"~ keepers = {pet: "a"} -> {pet: "b"}"#),
+        "{}",
+        crate::engine::render_plan(&plan)
+    );
+}
+
 #[test]
 fn render_plan_masks_sensitive_values() {
     let mut after = BTreeMap::new();
@@ -2152,15 +2364,16 @@ fn render_plan_masks_sensitive_values() {
     );
     create.after = Value::Object(after);
     create.sensitive = vec!["secret".into()];
-    let text = super::render_plan(&plan_of(vec![create]));
+    let text = crate::engine::render_plan(&plan_of(vec![create]));
     assert!(
-        text.contains("+ random_password.database (create)"),
+        text.contains(" +   random_password  database  create\n"),
         "{text}"
     );
-    assert!(text.contains("+ id = (known after apply)"), "{text}");
+    assert!(text.contains("\n  + random_password.database\n"), "{text}");
+    assert!(text.contains("# known after apply: id"), "{text}");
     assert!(text.contains("+ secret = (sensitive)"), "{text}");
     assert!(!text.contains("hunter2"), "{text}");
-    assert!(text.contains("Plan: 1 to create"), "{text}");
+    assert!(text.contains("Resources:\n    + 1 to create\n"), "{text}");
 }
 
 #[test]
@@ -2253,7 +2466,7 @@ fn nested_sensitive_annotations_hide_map_keys_for_resources_and_data() {
     read.sensitive = create.sensitive.clone();
     let mut plan = plan_of(vec![create]);
     plan.data_sources.push(read);
-    let text = super::render_plan(&plan);
+    let text = crate::engine::render_plan(&plan);
     assert!(text.contains("+ config = (sensitive)"), "{text}");
     assert_eq!(
         text.matches("# config.token = (sensitive)").count(),
@@ -2365,12 +2578,16 @@ fn refresh_only_records_count_as_work_but_not_as_changes() {
     assert!(!plan.has_changes());
     assert!(plan.has_work());
     assert!(plan.changes[0].refreshes_state());
-    let text = super::render_plan(&plan);
+    let text = crate::engine::render_plan(&plan);
     assert!(
-        text.contains("random_pet.pet (refresh stored state"),
+        text.contains("     random_pet  pet   refresh  stored state only\n"),
         "{text}"
     );
-    assert!(text.contains("1 to refresh, 1 unchanged"), "{text}");
+    assert!(!text.contains("Changes:"), "{text}");
+    assert!(
+        text.contains("Resources:\n      1 to refresh\n      1 unchanged\n"),
+        "{text}"
+    );
 
     let idle = plan_of(vec![change(
         ResourceAddress::new("random_pet", "idle"),
@@ -2568,7 +2785,7 @@ fn masked_replacement_paths_keep_distinct_plan_identities() {
     let mut second = first.clone();
     second.changes[0].replacement_path_identities = vec![changed.identities[1]];
     assert_ne!(first.digest(), second.digest());
-    let text = super::render_plan(&first);
+    let text = crate::engine::render_plan(&first);
     assert!(text.contains("config[<hidden key>]"), "{text}");
     assert!(!text.contains("private-first"), "{text}");
 }
@@ -3857,9 +4074,9 @@ fn arguments_set_from_sensitive_outputs_are_masked_in_plans() {
         Value::String("new-copied-token".into()),
     )]));
     update.sensitive = masked;
-    let text = super::render_plan(&plan_of(vec![update]));
+    let text = crate::engine::render_plan(&plan_of(vec![update]));
     assert!(
-        text.contains("~ value: (sensitive) -> (sensitive)"),
+        text.contains("~ value = (sensitive) -> (sensitive)"),
         "{text}"
     );
     assert!(!text.contains("copied-token"), "{text}");
@@ -4401,7 +4618,7 @@ fn data_results_are_digested_and_sensitive_response_diagnostics_are_redacted() -
     let before = plan.digest();
     plan.data_sources[0].after = Value::Unknown;
     assert_ne!(before, plan.digest());
-    assert!(!super::render_plan(&plan).contains(secret));
+    assert!(!crate::engine::render_plan(&plan).contains(secret));
     Ok(())
 }
 
@@ -4728,7 +4945,7 @@ fn unmapped_stored_sensitivity_masks_current_attributes_without_a_version_change
         Value::String("renamed-stored-secret-f451b28c".to_string()),
     )]));
     deletion.sensitive = sensitive;
-    let rendered = super::render_plan(&plan_of(vec![deletion]));
+    let rendered = crate::engine::render_plan(&plan_of(vec![deletion]));
     assert!(rendered.contains("(sensitive)"), "{rendered}");
     assert!(!rendered.contains("renamed-stored-secret-f451b28c"));
 }

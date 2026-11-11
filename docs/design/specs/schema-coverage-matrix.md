@@ -93,7 +93,13 @@ create an address a declared environment records (`--allow-separate-state`
 overrides both; `plan` warns; `destroy` never refuses), and a no-flag `apply` of a project that declares only environments
 (`destroy` is the way out of an old layout; `state move` is a follow-up). Converging runs lock, plan, confirm
 and apply that same plan with lock-fenced writes, ordered as one dependency
-graph; interrupts finish the resource in flight and release the lock. `--yes`
+graph; interrupts finish the resource in flight and release the lock. Text plans
+open with a table of every resource with work (type, name, action, changed
+attributes), end with per-action totals, and
+show each change as a structural diff (nested values over several lines, only
+what differs in an update, JSON strings compared as documents, colors on a
+terminal unless `NO_COLOR` is set); the reviewed plan digest keeps its own fixed
+compact rendering. `--yes`
 (alias `--auto-approve`) is required without a terminal; exit code 4 means
 locked, 5 other infrastructure failures. Typed provider, resource and data source
 configuration comes from CUE packages that `cuenv infrastructure provider add`

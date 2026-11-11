@@ -11,13 +11,13 @@
 //! characters.
 
 use std::fmt::Write as _;
-use std::io::Write;
+use std::io::{IsTerminal as _, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use cuenv_events::{emit_stderr, emit_stdout};
 use cuenv_infrastructure::{
     HistoryEntry, LastWriter, LockDetails, LockInformation, ManagedResource, ObjectTenant, Plan,
-    PlanMode, PlanSummary, ResourceAddress, TenantKey, TenantLock,
+    PlanMode, PlanStyle, PlanSummary, ResourceAddress, TenantKey, TenantLock,
 };
 
 use super::action::MigrationDirection;
@@ -930,13 +930,23 @@ fn warnings(plan: &Plan) {
     }
 }
 
+/// Colors for a terminal that has not asked for none (`NO_COLOR`); plain
+/// markers for a pipe, a file or a CI log.
+fn plan_style() -> PlanStyle {
+    if std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+        PlanStyle::Ansi
+    } else {
+        PlanStyle::Plain
+    }
+}
+
 fn render_plan_text(plan: &Plan) {
     emit_stdout!(format!(
-        "cuenv infrastructure: {}",
+        "cuenv infrastructure: {}\n",
         super::tenant_label(&plan.tenant)
     ));
     if plan.has_work() || !plan.data_sources.is_empty() {
-        emit_stdout!(cuenv_infrastructure::render_plan(plan));
+        emit_stdout!(cuenv_infrastructure::render_plan_styled(plan, plan_style()));
     } else {
         emit_stdout!("No changes. Infrastructure matches the configuration.");
     }

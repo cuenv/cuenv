@@ -44,6 +44,7 @@ mod data_sources;
 mod evaluation;
 mod identity;
 mod infrastructure_engine;
+mod plan_render;
 mod schedule;
 mod sensitivity;
 mod validation;
@@ -56,7 +57,6 @@ pub(crate) use infrastructure_engine::check_diagnostics;
 pub use infrastructure_engine::{
     Action, ApplyContext, ApplyEvent, EngineOptions, EngineSetup, InfrastructureEngine, Plan,
     PlanDigest, PlanMode, PlanSummary, ResourceChange, ReviewedPlanDigest, declared_resource,
-    render_plan,
 };
 use infrastructure_engine::{
     ApplyStep, ConfigurationInput, ConfigurationPhase, DataSourceReadContext, DigestWriter,
@@ -64,4 +64,5 @@ use infrastructure_engine::{
     applied_value, decode_provider_value, masked_attributes, provider_value, reference_error,
     register_value_strings, remembered_sensitive_attributes, resource_schema, topological_order,
 };
+pub use plan_render::{PlanStyle, render_plan, render_plan_styled};
 pub use validation::validate_configuration;

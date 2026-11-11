@@ -922,16 +922,61 @@ affected pins with the same-version `provider add` command above.
 
 ```text
 cuenv infrastructure: github.com/cuenv/cuenv#infrastructure-random
-  + random_pet.pet (create)
-      + id = (known after apply)
+
+     Type            Name  Plan     Info
+ +   random_pet      pet   create
+ -/+ random_integer  port  replace  [diff: ~keepers]
+
+Changes:
+
+  + random_pet.pet
       + length = 2
       + separator = "-"
-  -/+ random_integer.port (replace)
-      # forced by: keepers
-      ~ keepers: {"pet":"a"} -> {"pet":"b"}
+      # known after apply: id
 
-Plan: 1 to create, 0 to update, 1 to replace, 0 to delete, 0 to refresh, 1 unchanged.
+  -/+ random_integer.port
+      # replacement forced by: keepers
+      ~ keepers = {pet: "a"} -> {pet: "b"}
+
+Resources:
+    +   1 to create
+    -/+ 1 to replace
+        1 unchanged
 ```
+
+The table lists every data source read and every resource with work, and names the attributes an update or replacement touches. A resource whose stored record alone is refreshed appears in the table only. The totals leave out actions that touch nothing.
+
+Each change is a diff. A value too long for one line is laid out over several, with `+`, `-` and `~` in a fixed column, and an update shows only what differs:
+
+```text
+  ~ infisical_project_role.ci_role
+      ~ permissions_v2 = [
+      -     {
+      -         action: ["describeSecret"]
+      -         conditions: jsonencode({
+      -             environment: {"$eq": "production"}
+      -             secretPath: {"$eq": "/infrastructure"}
+      -         })
+      -         inverted: false
+      -         subject: "secrets"
+      -     },
+      ~     {
+      ~         action: [
+                    "describeSecret",
+                    "readValue",
+      -             "create",
+      -             "edit",
+                ]
+                # 3 unchanged attributes hidden
+            },
+        ]
+```
+
+- List elements are matched by likeness, so an element that changed is shown as a change and not as a removal and an addition.
+- A string holding a JSON object or array is shown as `jsonencode(...)` and compared as that document.
+- In a value being created or deleted, nested attributes that are null, empty or computed by the provider are counted (`# 1 known after apply, 2 unset hidden`), not listed. Top-level attributes the provider computes are named on one `# known after apply:` line; one filled by a reference to another resource keeps its own `(known after apply)` line.
+- A value containing a registered secret stays on one line, so redaction always finds it.
+- A terminal gets colors; set `NO_COLOR` to turn them off. Pipes, files and CI logs get plain text.
 
 Every plan ends with its reviewed plan digest:
 
@@ -939,7 +984,7 @@ Every plan ends with its reviewed plan digest:
 Reviewed plan digest: sha256:ff7aa3dbff03c6b9f31b9bcc3084f7f0d0d8de42241453e898b3540ed5b4ccd1
 ```
 
-The digest covers what you review: the redacted rendering of every create, update, replace and delete, and the project and environment. It leaves out refresh-only work, unchanged resources and record versions, so planning the same configuration against the same infrastructure again gives the same digest. `cuenv i apply --expect-plan <digest>` plans under the lock as usual, and refuses (exit `5`, nothing applied) when that plan's digest is not the one given: the configuration, the recorded state or the real objects changed after the plan you approved. It is computed from redacted text, so it never fingerprints a secret's value, and a change to a secret alone does not change it. `--json` plan output carries it as `reviewedPlanDigest`.
+The digest covers what you review: every changed attribute of every create, update, replace and delete, redacted, and the project and environment. It is computed from a fixed compact rendering of those changes and not from the diff layout above, so it also covers the values that layout only counts. It leaves out refresh-only work, unchanged resources and record versions, so planning the same configuration against the same infrastructure again gives the same digest. `cuenv i apply --expect-plan <digest>` plans under the lock as usual, and refuses (exit `5`, nothing applied) when that plan's digest is not the one given: the configuration, the recorded state or the real objects changed after the plan you approved. It is computed from redacted text, so it never fingerprints a secret's value, and a change to a secret alone does not change it. `--json` plan output carries it as `reviewedPlanDigest`.
 
 Values that are sensitive anywhere inside an attribute or nested block are shown as `(sensitive)`. "To refresh" counts resources whose provider-reported state or recorded metadata (dependencies, sensitivity, schema version) changed without any change to the resource itself; `apply` records them under the lock.
 
