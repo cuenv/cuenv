@@ -93,8 +93,8 @@ also titles the window for window switchers and compositors, and signs itself wi
 small muted `cuetty` wordmark at its far end, and a full-bleed terminal surface in
 the chosen theme. The terminal keeps the whole width of the window: the chrome floats
 over it. Tabs are a column of dots centred on the right edge, the active one a ring
-in the marker colour and the rest coloured by status (red for a failure, the accent
-for a bell or unread output). Bringing the pointer within 24px of the column opens
+in the primary text colour and the rest muted, or coloured by status (red for a failure, the accent
+for a bell, the secondary text colour for a running task or unread output). Bringing the pointer within 24px of the column opens
 it into a 220px list of tab names, which closes again when the pointer leaves; number
 hints, a name being edited, and a tab being dragged also hold it open. The project
 in the active tab's directory is a pill at the top right, in the title strip when

@@ -65,13 +65,15 @@ fn rail_scroll_target(
         .and_then(|active| tabs.position(|tab| tab == active))
 }
 
-/// How a closed tab shows: the active one as a ring, the rest as dots coloured by what
-/// they have to say, so a failure or a bell still catches the eye.
+/// How a closed tab shows: the active one as a ring in the primary text colour, the rest
+/// as muted dots, or coloured by what they have to say, so a failure or a bell still
+/// catches the eye. The ring takes no accent, which would read as one more status, and
+/// neither does unread output, which is the quietest thing a tab can say.
 fn render_tab_dot(dot: TabDot, colors: &ChromeColors) -> Div {
     let fill = match dot.indicator {
         Some(TabIndicator::Failed) => Some(colors.danger),
-        Some(TabIndicator::Bell | TabIndicator::Unread) => Some(colors.accent),
-        Some(TabIndicator::Running) => Some(colors.text_secondary),
+        Some(TabIndicator::Bell) => Some(colors.accent),
+        Some(TabIndicator::Running | TabIndicator::Unread) => Some(colors.text_secondary),
         Some(TabIndicator::Finished) | None => None,
     };
     let shape = match dot.ring {
@@ -97,7 +99,7 @@ fn render_tab_dot(dot: TabDot, colors: &ChromeColors) -> Div {
 
 /// One tab in the closed stack.
 struct TabDot {
-    /// The active tab's marker colour, which only it has.
+    /// The active tab's ring colour, which only it has.
     ring: Option<Rgba>,
     indicator: Option<TabIndicator>,
 }
@@ -146,7 +148,6 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let colors = ChromeColors::from_theme(theme);
-        let marker_color = self.tab_marker_color(&colors);
         let stack = if self.tab_stack_open(cx) {
             self.render_tab_list(active_tab, &colors, cx)
                 .into_any_element()
@@ -160,7 +161,7 @@ impl TerminalView {
                 .map(|tab| {
                     render_tab_dot(
                         TabDot {
-                            ring: (active_tab == Some(tab.id)).then_some(marker_color),
+                            ring: (active_tab == Some(tab.id)).then_some(colors.text),
                             indicator: self
                                 .registry
                                 .sessions
@@ -416,7 +417,7 @@ fn render_indicator(indicator: TabIndicator, colors: &ChromeColors) -> Div {
             gpui::div()
                 .size(size::NOTICE_MARK)
                 .rounded(radius::CONTROL)
-                .bg(colors.accent),
+                .bg(colors.text_secondary),
         ),
     }
 }
