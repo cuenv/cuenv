@@ -3092,6 +3092,7 @@ impl TerminalView {
                 tasks: state.map_or(&[][..], PaneState::task_catalogue),
                 tab: self.active_tab().is_some(),
                 screen: state.is_some_and(|state| state.error.is_none()),
+                output: state.is_some_and(|state| state.session.has_last_command_output()),
             },
         )
     }
@@ -3184,6 +3185,14 @@ impl TerminalView {
             PaletteCommand::FindOnScreen => {
                 if let Some(state) = self.active_state_mut() {
                     state.interaction.enter_search(&state.frame);
+                }
+            }
+            PaletteCommand::CopyLastOutput => {
+                if let Some(text) = self
+                    .active_state()
+                    .and_then(|state| state.session.last_command_output())
+                {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
             }
         }
@@ -4385,6 +4394,14 @@ mod tests {
 
         fn selection_text(&self) -> Option<String> {
             None
+        }
+
+        fn last_command_output(&self) -> Option<String> {
+            None
+        }
+
+        fn has_last_command_output(&self) -> bool {
+            false
         }
 
         fn frame(&mut self) -> TerminalFrame {

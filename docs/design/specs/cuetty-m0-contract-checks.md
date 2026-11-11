@@ -62,6 +62,11 @@ Cuetty now pins upstream `fb582f066a2df7f95055eedb513752adc8c5f6b8` from
 the earlier fork's fix. That revision gives
 the PTY owner an idempotent shutdown operation, retires reaped PIDs before any
 signal, escalates from SIGHUP after a bounded grace period, and waits to reap.
+
+The pin has since moved to `200e78994355481c7e06cd840fbcaeb8a1e6b519` of the
+[rawkode/rio](https://github.com/rawkode/rio) fork: that upstream revision plus
+one `rio-vt` commit that keeps the OSC 133 marks around a command's output and
+its exit status. The PTY and teardown code is unchanged from upstream.
 Cuetty requests shutdown and joins the returned machine off the GPUI thread.
 The `real_session_close_eventually_reaps_the_child` fixture observes that the
 owned child disappears within its five-second test bound on the previous fork

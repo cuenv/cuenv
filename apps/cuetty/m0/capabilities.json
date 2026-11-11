@@ -448,8 +448,8 @@
   },
   "engine": {
     "package": "rio-vt",
-    "repository": "https://github.com/raphamorim/rio",
-    "revision": "fb582f066a2df7f95055eedb513752adc8c5f6b8",
+    "repository": "https://github.com/rawkode/rio",
+    "revision": "200e78994355481c7e06cd840fbcaeb8a1e6b519",
     "rust_toolchain": "1.98.1"
   },
   "executions": [

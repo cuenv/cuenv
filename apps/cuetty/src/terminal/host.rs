@@ -92,6 +92,11 @@ pub trait TerminalSession: Send {
     fn clear_selection(&mut self);
     fn visible_selection(&self) -> Option<Selection>;
     fn selection_text(&self) -> Option<String>;
+    /// What the last command printed, running or finished, where its shell marks
+    /// output with OSC 133. `None` without those marks or with nothing printed.
+    fn last_command_output(&self) -> Option<String>;
+    /// Whether there is such output to copy, without copying it.
+    fn has_last_command_output(&self) -> bool;
     fn frame(&mut self) -> TerminalFrame;
     /// The cursor as it is now, without taking the damage a frame collects.
     fn cursor(&self) -> CursorState;
@@ -586,6 +591,14 @@ impl TerminalSession for RioTerminalSession {
             return None;
         }
         rio_selection::selection_text(&self.terminal.lock()).filter(|text| !text.is_empty())
+    }
+
+    fn last_command_output(&self) -> Option<String> {
+        rio_selection::last_command_output_text(&self.terminal.lock())
+    }
+
+    fn has_last_command_output(&self) -> bool {
+        rio_selection::has_last_command_output(&self.terminal.lock())
     }
 
     fn set_palette(&mut self, palette: ThemeColors) {
@@ -1225,6 +1238,33 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_copies_the_output_a_shell_marks_as_its_last_commands() {
+        let _serial = serial_pty_test();
+        // Stands in for a shell with OSC 133 integration, then idles like a prompt.
+        let marked = r"printf '\033]133;A\007$ ls\n\033]133;C\007one\ntwo\n\033]133;D;0\007\033]133;A\007$ READY'; sleep 5";
+        let (mut session, _) = RioTerminalSession::with_options(
+            TerminalSize {
+                cols: 100,
+                rows: 20,
+                pixels_width: 800,
+                pixels_height: 320,
+            },
+            SessionOptions {
+                shell: Some("/bin/sh".into()),
+                args: vec!["-c".into(), marked.into()],
+                working_directory: None,
+                palette: ThemeColors::default(),
+            },
+        )
+        .expect("deterministic child should spawn");
+        wait_for_text(&mut session, "READY");
+        assert!(session.has_last_command_output());
+        assert_eq!(session.last_command_output().as_deref(), Some("one\ntwo"));
     }
 
     #[test]

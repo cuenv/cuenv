@@ -1,13 +1,17 @@
 # Cuetty
 
 Cuetty is a deliberately narrow, usable GPUI terminal host for Cuenv. It is
-built around upstream Rio revision `fb582f066a2df7f95055eedb513752adc8c5f6b8`,
-which includes [Rio PR #1930](https://github.com/raphamorim/rio/pull/1930) for
-final-output draining and ownership-safe Unix PTY teardown.
+built around Rio revision `200e78994355481c7e06cd840fbcaeb8a1e6b519` of the
+[rawkode/rio](https://github.com/rawkode/rio) fork. That is upstream
+`fb582f066a2df7f95055eedb513752adc8c5f6b8`, which includes
+[Rio PR #1930](https://github.com/raphamorim/rio/pull/1930) for final-output
+draining and ownership-safe Unix PTY teardown, plus one `rio-vt` commit that
+keeps the OSC 133 marks a shell leaves around a command's output and its exit
+status. Return to an upstream revision once that commit is merged there.
 
 The pin is intentional. Upgrade it only with a terminal correctness and
 live-interaction validation pass. Existing macOS qualification evidence applies
-to the previous fork revision and must be repeated for the upstream pin.
+to an earlier fork revision and must be repeated for this pin.
 
 ```text
 Rio PTY + VT state
@@ -135,8 +139,9 @@ and typing moves on from a finished task. A shell that exits with a failing stat
 dies on a signal keeps its tab, with a warning triangle and its final output still
 readable above a strip saying how it ended, until Enter, Ctrl-D, or the close chord
 dismisses it, and it offers no tasks in the meantime; one that exits cleanly
-closes its tab at once. A task launched from Cuetty cannot report failure, because it
-runs in the shell and Rio discards the status shells report through OSC 133. Restrained
+closes its tab at once. A task launched from Cuetty cannot report failure yet: it
+runs in the shell, and Cuetty does not read the status shells report through OSC 133,
+which Rio now keeps. Restrained
 active-tab treatment and floating chrome that keeps to the window's edges keep the
 tabs readable without competing with terminal content. By default, the Rio surface sits in a
 14px inset below the title strip. The inset, and any space left
@@ -420,6 +425,25 @@ incompletely. The palette takes pointer input rather than passing it to the
 terminal beneath, and clicking outside closes it. Its results scroll under a
 fixed field and hint, following the keyboard selection, so every match remains
 reachable even when there are more than nine.
+
+**Copy last command output** puts what the last command printed on the clipboard,
+without its prompt or command line: all of it for a finished command, what there is so
+far for a running one. Rows that have scrolled into history are included and
+soft-wrapped rows are joined, as selecting them would. The command is offered only when
+there is such output, which takes a shell that marks it with OSC 133: the palette
+does not list it in a shell that sends no marks, after a command that printed nothing,
+while an application holds the alternate screen, or once the row where the output
+began has left scrollback. Fish 4 and Nushell send the marks unaided. Bash needs them
+added to its prompt, for example in `~/.bashrc`:
+
+```sh
+PROMPT_COMMAND='printf "\033]133;D;%s\a" "$?"'
+PS0='\e]133;C\a'
+PS1='\[\e]133;A\a\]'$PS1
+```
+
+Output that does not end in a newline shares its last row with the next prompt, and
+that row is left out.
 
 The same evaluation fills the project panel, above the
 palette hint: the project's `name`, its `runtime` type and runnable task count, the variables

@@ -1,6 +1,7 @@
 //! Pointer selections in Rio's scrollback, projected onto the visible frame.
 
 use std::cmp::Ordering;
+use std::ops::RangeInclusive;
 
 use rio_vt::crosswords::Crosswords;
 use rio_vt::crosswords::pos::{Column, Line, Pos, Side};
@@ -142,20 +143,57 @@ pub(super) fn visible_selection<T: EventListener>(terminal: &Crosswords<T>) -> O
 /// unoccupied padding at hard line breaks.
 pub(super) fn selection_text<T: EventListener>(terminal: &Crosswords<T>) -> Option<String> {
     let range = terminal.selection.as_ref()?.to_range(terminal)?;
+    text_between(terminal, range.start..=range.end)
+}
+
+/// Where the last command's output starts and where its last occupied cell is,
+/// from the OSC 133 marks its shell left. `None` when the shell left none or the
+/// command printed nothing. Blank cells and rows after the output are not part of
+/// it, which leaves out the cursor's row while a command is between lines.
+fn last_command_output_span<T: EventListener>(
+    terminal: &Crosswords<T>,
+) -> Option<RangeInclusive<Pos>> {
+    let rows = terminal.last_command_output()?;
+    let columns = terminal.columns();
+    let end = (rows.start().0..=rows.end().0).rev().find_map(|row| {
+        let cells = &terminal.grid[Line(row)];
+        (0..columns)
+            .rev()
+            .find(|column| cells[Column(*column)].c() != '\0')
+            .map(|column| Pos::new(Line(row), Column(column)))
+    })?;
+    Some(Pos::new(*rows.start(), Column(0))..=end)
+}
+
+/// Whether the last command left output to copy, without copying it.
+pub(super) fn has_last_command_output<T: EventListener>(terminal: &Crosswords<T>) -> bool {
+    last_command_output_span(terminal).is_some()
+}
+
+/// What the last command printed, running or finished, as selecting it would copy it.
+pub(super) fn last_command_output_text<T: EventListener>(
+    terminal: &Crosswords<T>,
+) -> Option<String> {
+    text_between(terminal, last_command_output_span(terminal)?)
+}
+
+/// Copy the cells from one position through another, keeping explicit spaces and
+/// blank lines while omitting unoccupied padding at hard line breaks.
+fn text_between<T: EventListener>(
+    terminal: &Crosswords<T>,
+    span: RangeInclusive<Pos>,
+) -> Option<String> {
+    let (from, to) = span.into_inner();
     let columns = terminal.columns();
     if columns == 0 {
         return None;
     }
     let mut text = String::new();
-    for row in range.start.row.0..=range.end.row.0 {
+    for row in from.row.0..=to.row.0 {
         let cells = &terminal.grid[Line(row)];
-        let mut first = if row == range.start.row.0 {
-            range.start.col.0
-        } else {
-            0
-        };
-        let mut end = if row == range.end.row.0 {
-            range.end.col.0.saturating_add(1).min(columns)
+        let mut first = if row == from.row.0 { from.col.0 } else { 0 };
+        let mut end = if row == to.row.0 {
+            to.col.0.saturating_add(1).min(columns)
         } else {
             columns
         };
@@ -167,7 +205,7 @@ pub(super) fn selection_text<T: EventListener>(terminal: &Crosswords<T>) -> Opti
             first -= 1;
         }
         let wrapped = cells[Column(columns - 1)].wrapline();
-        if row != range.end.row.0 && !wrapped {
+        if row != to.row.0 && !wrapped {
             while end > first && cells[Column(end - 1)].c() == '\0' {
                 end -= 1;
             }
@@ -195,7 +233,7 @@ pub(super) fn selection_text<T: EventListener>(terminal: &Crosswords<T>) -> Opti
                 text.extend(extras.zerowidth.iter());
             }
         }
-        if row != range.end.row.0 && !wrapped {
+        if row != to.row.0 && !wrapped {
             text.push('\n');
         }
     }
@@ -225,6 +263,93 @@ mod tests {
             b"000\r\n111\r\n222\r\n333\r\n444\r\n555\r\n666",
         );
         terminal
+    }
+
+    /// A 20x4 terminal that has been sent `bytes`.
+    fn session(bytes: &[u8]) -> Crosswords<VoidListener> {
+        let mut terminal = Crosswords::new(
+            CrosswordsSize::new(20, 4),
+            CursorShape::Block,
+            VoidListener,
+            WindowId::from(0),
+            0,
+            64,
+        );
+        Processor::default().advance(&mut terminal, bytes);
+        terminal
+    }
+
+    #[test]
+    fn the_last_output_is_what_the_last_finished_command_printed() {
+        // A prompt of two rows, whose second row carries no mark of its own.
+        let terminal = session(
+            b"\x1b]133;A\x07~/src\r\n> \x1b]133;B\x07ls\r\n\
+              \x1b]133;C\x07first\r\n\
+              \x1b]133;D;0\x07\x1b]133;A\x07~/src\r\n> \x1b]133;B\x07cat notes\r\n\
+              \x1b]133;C\x07one  two\r\n\r\nthree\r\n\
+              \x1b]133;D;0\x07\x1b]133;A\x07~/src\r\n> ",
+        );
+        assert!(has_last_command_output(&terminal));
+        assert_eq!(
+            last_command_output_text(&terminal).as_deref(),
+            Some("one  two\n\nthree"),
+        );
+    }
+
+    #[test]
+    fn the_last_output_of_a_running_command_stops_at_what_it_has_printed() {
+        let terminal = session(
+            b"\x1b]133;A\x07$ \x1b]133;B\x07build\r\n\
+              \x1b]133;C\x07step 1\r\nstep 2\r\n",
+        );
+        assert_eq!(
+            last_command_output_text(&terminal).as_deref(),
+            Some("step 1\nstep 2"),
+        );
+    }
+
+    #[test]
+    fn the_last_output_joins_soft_wrapped_rows_and_reaches_into_history() {
+        let terminal = session(
+            b"\x1b]133;A\x07$ \x1b]133;B\x07seq\r\n\
+              \x1b]133;C\x07a line that wraps past twenty columns\r\n\
+              2\r\n3\r\n4\r\n5\r\n\
+              \x1b]133;D;0\x07\x1b]133;A\x07$ ",
+        );
+        assert!(terminal.history_size() > 0);
+        assert_eq!(
+            last_command_output_text(&terminal).as_deref(),
+            Some("a line that wraps past twenty columns\n2\n3\n4\n5"),
+        );
+    }
+
+    #[test]
+    fn there_is_no_last_output_without_marks_or_without_anything_printed() {
+        let unmarked = session(b"$ ls\r\nfile\r\n$ ");
+        assert!(!has_last_command_output(&unmarked));
+        assert_eq!(last_command_output_text(&unmarked), None);
+
+        let silent = session(
+            b"\x1b]133;A\x07$ \x1b]133;B\x07true\r\n\
+              \x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07$ ",
+        );
+        assert!(!has_last_command_output(&silent));
+        assert_eq!(last_command_output_text(&silent), None);
+
+        // A command that has started and printed nothing yet.
+        let waiting = session(b"\x1b]133;A\x07$ \x1b]133;B\x07sleep 9\r\n\x1b]133;C\x07");
+        assert!(!has_last_command_output(&waiting));
+    }
+
+    #[test]
+    fn the_alternate_screen_has_no_last_output() {
+        let terminal = session(
+            b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\
+              \x1b]133;C\x07file\r\n\
+              \x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07vi\r\n\
+              \x1b]133;C\x07\x1b[?1049hbuffer",
+        );
+        assert!(!has_last_command_output(&terminal));
     }
 
     fn at(line: usize, column: usize) -> LogicalPosition {

@@ -46,7 +46,7 @@ behind replaceable traits.
 | Unicode width/combining | Backend cluster text and wide occupancy preserved; IME/emoji rendering incomplete | Rich render-cell text/width model | Rich render-cell text/width model | P0 |
 | Cursor and terminal modes | Cursor shape/visibility, application cursor keys, and a tested negotiated extended-keyboard subset; mouse/keypad/focus modes incomplete | Cursor styles, keyboard/mouse modes | Cursor/mouse modes and richer metadata | P0 |
 | Damage and render cache | Coalesced wakeups; full-frame paint | Dirty spans and shaped-line cache | Damage-aware batched rendering | P0 |
-| Clipboard and paste | Cmd-V, OSC 52, mouse selection auto-copy and Cmd-C copy | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
+| Clipboard and paste | Cmd-V, OSC 52, mouse selection auto-copy, Cmd-C copy, and a palette command that copies the last command's output where the shell marks it with OSC 133 | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
 | Scrollback and selection | Rio-owned history navigation and selection, including edge scrolling | Present | Present | P1 |
 | Search | Literal visible-frame search live; regex/full history staged | Present | Inline/regex search | P1 |
 | Fonts, themes, configuration | CUE-configurable font family, size, and line height, padding, transparency, keybinding for the palette, and four curated themes with `auto` following the desktop; custom palettes are not offered | Configurable themes, keybindings, fonts | Font family, themes, zoom, shell choice, and additional keybindings | P1 |
@@ -106,8 +106,8 @@ creation is transactional and callbacks are generation-scoped; close first
 removes the exact session then commits the preflighted tab removal. Split actions
 remain rejected with a visible notice. Pane resizing, reopen, detachable
 windows, live restore, and multi-session split allocation remain staged.
-The command palette lists Cuetty actions and searches exact-CWD `package cuenv`
-tasks in `$` mode. The task button opens the same palette; selecting a task
+The command palette lists Cuetty actions, among them copying the last command's
+output, and searches exact-CWD `package cuenv` tasks in `$` mode. The task button opens the same palette; selecting a task
 delegates execution to the canonical CLI in the pane that supplied it. The expanded
 sidebar shows the same directory's declared project name, runtime, variables, and named
 environments, with secrets as their resolver's name; choosing an environment there, or showing

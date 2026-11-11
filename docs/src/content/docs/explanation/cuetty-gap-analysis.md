@@ -5,9 +5,11 @@ description: Gap analysis between Termy, Okena, and Cuetty
 
 This analysis compares Cuetty with the Termy and Okena reference projects.
 They are learning references, not vendored code. Cuetty's terminal engine is
-the pinned upstream Rio revision `fb582f066a2df7f95055eedb513752adc8c5f6b8` from
-[Rio PR #1930](https://github.com/raphamorim/rio/pull/1930), hosted in a
-Rust/GPUI application.
+the pinned Rio revision `200e78994355481c7e06cd840fbcaeb8a1e6b519` of the
+[rawkode/rio](https://github.com/rawkode/rio) fork, which is upstream
+`fb582f066a2df7f95055eedb513752adc8c5f6b8` from
+[Rio PR #1930](https://github.com/raphamorim/rio/pull/1930) plus one commit that
+keeps OSC 133 command-output marks, hosted in a Rust/GPUI application.
 
 For the deliberately narrower macOS path from a vanilla terminal workflow to
 Cuetty as a daily driver, see the [Cuetty daily-driver roadmap](/explanation/cuetty-daily-driver-roadmap/).
@@ -18,7 +20,7 @@ Cuetty as a daily driver, see the [Cuetty daily-driver roadmap](/explanation/cue
 | --- | --- | --- | --- |
 | Terminal core | Mature terminal runtime and renderer with broader protocol coverage. | Rio-backed session, semantic frame adapter, fixed-grid GPUI renderer. | More protocol, Unicode, scrollback, and lifecycle coverage. |
 | Rendering | Fixed cell geometry, shaping, cursor and selection behaviour tuned for daily use. | Fixed-grid rows and cells with wide-cell, soft-wrap, semantic-style, and cursor policies. | Human visual acceptance and broader glyph/IME coverage. |
-| Interaction | Selection, clipboard, search, scrolling, and keyboard modes integrated into the terminal surface. | Input, resize, history selection with auto-copy and edge scrolling, Rio-owned history navigation, visible-frame literal search, and a negotiated Kitty/modifyOtherKeys subset are implemented. | Search across history, regex, keypad/key-release/alternate-key reporting, and IME. |
+| Interaction | Selection, clipboard, search, scrolling, and keyboard modes integrated into the terminal surface. | Input, resize, history selection with auto-copy and edge scrolling, Rio-owned history navigation, visible-frame literal search, copying the last command's output from OSC 133 marks, and a negotiated Kitty/modifyOtherKeys subset are implemented. | Search across history, regex, keypad/key-release/alternate-key reporting, and IME. |
 | Product shell | Mature tabs, panes, commands, settings, persistence, and notifications. | Real GPUI tabs with one independent Rio session per tab; split actions remain rejected until pane/session allocation exists. | Wire splits and the remaining daily-use shell. |
 | Persistence | Saved layouts and richer app state. | Versioned metadata-only workspace codec/storage traits. | Live restore/reconnect and durable file integration. |
 | Extensibility | Project-specific command and integration surfaces. | Capability and session-backend traits with deny-by-default scopes. | Remote, tmux, Wasm, and plugin runtimes. |
