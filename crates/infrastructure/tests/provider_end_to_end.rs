@@ -2724,13 +2724,10 @@ async fn fake_nested_token_reference_renders_exact_unknown_leaf_before_apply() -
     assert_eq!(displayed["config"]["token"], "(known after apply)");
     assert_eq!(displayed["config"]["label"], "ordinary-sibling");
     let rendered = cuenv_infrastructure::render_plan(&plan);
-    let configuration_line = rendered
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("+ config = "))
-        .ok_or("nested configuration absent from rendered plan")?;
-    let configuration: serde_json::Value = serde_json::from_str(configuration_line)?;
-    assert_eq!(configuration["token"], "(known after apply)");
-    assert_eq!(configuration["label"], "ordinary-sibling");
+    assert!(
+        rendered.contains(r#"+ config = {label: "ordinary-sibling", token: (known after apply)}"#),
+        "{rendered}"
+    );
 
     fake.converge(&resources, PlanMode::Apply).await?.applied?;
     let consumer = fake.record("consumer").await?;
@@ -4720,7 +4717,7 @@ async fn fake_write_only_value_lifecycle_and_manual_rotation() -> TestResult {
     assert_eq!(updated.plan.summary().update, 1);
     let text = cuenv_infrastructure::render_plan(&updated.plan);
     assert!(text.contains("value_wo = (write-only)"));
-    assert!(text.contains("value_wo_version: 1 -> 2"), "{text}");
+    assert!(text.contains("value_wo_version = 1 -> 2"), "{text}");
     updated.applied?;
     assert_eq!(fake.record("thing").await?.state["value_wo_version"], 2);
     assert!(fake.journal().contains("write_only: Update received=true"));
