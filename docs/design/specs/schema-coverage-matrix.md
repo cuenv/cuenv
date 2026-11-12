@@ -160,7 +160,8 @@ pipeline compares exec-root and checkout derivations. Nix bootstrap consumers
 realize the checkout's `.#cuenv` package on each runner and put its store path on
 `PATH`; they never compare binaries, because the derivation is not
 bit-reproducible. GitHub's release task builds portable artifacts separately
-from the Nix-native package. Hermetic tasks use cuenv's writable task `HOME`;
+from the Nix-native package; both use `[profile.release]` (thin LTO, 16 codegen
+units, `opt-level = "z"`). Hermetic tasks use cuenv's writable task `HOME`;
 host `HOME` remains excluded. This repository's pull requests run only
 `x86_64-linux` jobs; the `darwin` and `arm` pipelines run on pushes to `main` and
 on demand. `cargo.build` cross-compiles `linux-arm64` on the x86 runner, because

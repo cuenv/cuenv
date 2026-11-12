@@ -261,10 +261,13 @@ opt-level = 2
 # link. Backtraces keep line numbers for workspace code.
 debug = false
 
+# Thin LTO with 16 codegen units builds 2-4x faster than fat LTO with one
+# codegen unit, for a binary about 31% larger. See "Release profile: thin LTO" in
+# docs/design/specs/2026-11-06-ci-performance.md.
 [profile.release]
 opt-level = "z"
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 panic = "abort"
 strip = true
 

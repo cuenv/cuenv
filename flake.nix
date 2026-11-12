@@ -503,7 +503,8 @@
 
         # Test binaries are built with the lightweight `ci` profile (no LTO,
         # default codegen-units) so the workspace-wide nextest compile stays
-        # within CI runner memory. The release binary keeps `[profile.release]`.
+        # within CI runner memory. The release binary keeps `[profile.release]`
+        # (thin LTO).
         workspaceCiCargoArtifacts = buildDepsOnly (depsOnlyCommonArgs // cargoArtifactsArgs // ciBuildArgs // {
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
           # One pass prepares regular and dev dependencies together. Crane's
@@ -573,7 +574,7 @@
           # Hook supervisor tests must exercise the CLI instead of passing when
           # an independently built binary is unavailable. They take the one
           # this check builds for the CLI's own integration tests: depending
-          # on the release package put its link-time-optimized build of the
+          # on the release package put the release profile's LTO build of the
           # whole workspace in front of every test run.
           preCheck = ''
             export CUENV_EXECUTABLE="$PWD/''${CARGO_TARGET_DIR:-target}/ci/cuenv"

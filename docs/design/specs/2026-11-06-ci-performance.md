@@ -503,10 +503,11 @@ build without debug information.
 
 "Before" includes the dependency derivation only that check used, and for
 `cuenv-nextest` the release package (47s of dependencies and 3m 09s for the
-workspace with link-time optimization). "After" excludes the shared dependency
-derivation, which took 82s and is built once for all three. The same 37 doctest
-targets, 4,510 tests and 36 scenarios pass before and after. The root flake now
-has four dependency derivations rather than six.
+workspace with fat link-time optimization, since replaced by thin LTO below).
+"After" excludes the shared dependency derivation, which took 82s and is built
+once for all three. The same 37 doctest targets, 4,510 tests and 36 scenarios
+pass before and after. The root flake now has four dependency derivations rather
+than six.
 
 Two experiments were measured and not adopted:
 
@@ -682,3 +683,49 @@ Wall times are indicative only, because the machine was under unrelated load
 (timing-report total, load average 70). The trade-off: an edit to
 `cuenv-manifest` now also rebuilds `cuenv-hooks` (87 units, 12.81s at load
 average 53).
+
+### Release profile: thin LTO
+
+`[profile.release]` changed from fat LTO with one codegen unit
+(`lto = true`, `codegen-units = 1`) to thin LTO with 16 codegen units
+(`lto = "thin"`, `codegen-units = 16`). `opt-level = "z"`, `panic = "abort"` and
+`strip = true` are unchanged, and there is no separate fat-LTO profile: release
+artifacts built by `.github/scripts/release-build.sh` (`cargo build --release`
+and `cargo zigbuild --release`) and the Nix `cuenv` package all use it. Nothing
+in `.github/` or `env.cue` passes LTO flags or `CARGO_PROFILE_RELEASE_*`
+overrides, and `apps/cuetty` is a separate workspace with its own profiles.
+`contrib/contributors/cuenv.cue` also builds with `cargo build --release -p
+cuenv` and benefits.
+
+Measured on one loaded 32-core x86_64 Linux machine, single runs, sccache
+disabled, `cargo build --release --locked -p cuenv`. The one-minute load average
+ranged from 3 to 119 during these runs and the fat-LTO rebuilds ran under the
+heaviest load, so the rebuild gap is probably overstated.
+
+| | Fat LTO, 1 codegen unit (before) | Thin LTO, 16 codegen units (after) |
+| --- | --- | --- |
+| Cold build | 196s | 86s |
+| Rebuild after touching `crates/cuenv/src/lib.rs` (two runs) | 274s / 252s | 55s / 76s |
+| Binary | 50,252,032 bytes | 65,836,736 bytes |
+| gzip -9 | 20,487,268 bytes | 24,423,591 bytes |
+| `cuenv version`, mean of 200 | 3.7 ms | 4.8 ms |
+| `cuenv env print --output json` on `examples/env-basic`, mean of 50 | about 22 ms | about 23 ms |
+
+The Nix `cuenv` package (`nix build .#checks.x86_64-linux.cuenv`, Cachix
+substituter disabled, load average 43 at the start) took 1m 39s end to end after
+the change, which rebuilt the release dependency derivation because the profile
+changed: cargo reported 44.6s for the dependencies and 43.3s for the workspace,
+against 47s and 3m 09s with fat LTO. The installed binary is 65,989,728 bytes
+against 50,442,336 for 0.73.1, and gzip -9 gives 23,935,643 bytes. After adding
+a comment line to `crates/cuenv/src/lib.rs` the check took 52s (load average 23),
+with the cargo build finishing in 44.4s; no third-party crate recompiled, only
+the 36 workspace crates. The package install check passed.
+
+The cost is a larger binary and download (about 31% larger on disk, about 19%
+larger gzipped) and roughly 1 ms slower startup; commands that evaluate CUE are
+within noise. Two variants were measured and not chosen: thin LTO at
+`opt-level = 3` (87.7 MB, no measurable runtime gain) and no LTO (69.1 MB, with
+rebuilds of 16 to 18s).
+
+The macOS and cross-compiled linux-arm64 release builds have not yet been built
+with thin LTO, so run the `release-dry-run` pipeline before the next release.
