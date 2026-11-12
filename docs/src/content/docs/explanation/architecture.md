@@ -79,7 +79,9 @@ should be fixed or scoped to the module that actually owns the exceptional code.
 - `contributors` - Task contributor evaluation and injection
 
 Manifest schema types live in the `cuenv-manifest` crate and are re-exported
-from `crates/core/src/manifest/mod.rs`. Hooks run in `cuenv-hooks`; task
+from `crates/core/src/manifest/mod.rs`. The `Hook` and `Hooks` definition types live in `cuenv-manifest`
+(`crates/manifest/src/hook.rs`) and are re-exported by `cuenv-hooks`, which depends
+on the manifest crate rather than the reverse; hooks execute in `cuenv-hooks`; task
 execution and caching live in `cuenv-task-exec` and the CAS crates.
 Module-wide CUE evaluation assembly lives in
 `crates/core/src/module/module_evaluation.rs`;

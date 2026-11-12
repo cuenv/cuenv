@@ -372,12 +372,14 @@ schema.#Project & {
 		checks: {
 			type: "group"
 
-			cuenv: schema.#Task & {
-				command: "nix"
-				args: ["build", ".#checks.x86_64-linux.cuenv", "-L", "--accept-flake-config"]
-				inputs: _flakeInputs
-			}
-
+			// There is no `cuenv` check here on purpose. `checks.x86_64-linux.cuenv`
+			// is the same derivation as `packages.x86_64-linux.cuenv`, and the
+			// `sync-check` pipeline's bootstrap (`nix build .#cuenv`, because of
+			// `ci.cuenv.version: "self"`) builds and smoke-tests it on every trigger of
+			// this pipeline except a change to `cuenv-ci.yml` alone. Listing it here
+			// would compile the same derivation twice at once. If `sync-check` is
+			// narrowed or removed, or `ci.cuenv.source` stops being `nix`, list it
+			// here again.
 			audit: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-audit", "-L", "--accept-flake-config"]
@@ -391,13 +393,16 @@ schema.#Project & {
 			}
 
 			// The parameter-style check enforces the no-bool / at-most-three
-			// parameter rule; it shares the clippy runner.
+			// parameter rule; it shares the clippy runner. So does the Go
+			// bridge's `go vet` and test suite: no Rust derivation waits for it,
+			// so it runs beside the Rust build instead of in front of it.
 			clippy: schema.#Task & {
 				command: "nix"
 				args: [
 					"build",
 					".#checks.x86_64-linux.cuenv-clippy",
 					".#checks.x86_64-linux.cuenv-rust-parameter-style",
+					".#checks.x86_64-linux.cuenv-cue-bridge-test",
 					"-L",
 					"--accept-flake-config",
 				]
@@ -466,13 +471,14 @@ schema.#Project & {
 		// The same flake checks built for aarch64-darwin. They run on the macOS
 		// runner only (see the `darwin` pipeline), so platform-specific code paths
 		// (process handling, file systems, the Go bridge) are compiled and tested
-		// on macOS for every push to main, not only at release time.
+		// on macOS for every push to main, not only at release time. The Go
+		// bridge's own tests are a separate flake check, built here too.
 		darwin: {
 			type: "group"
 
 			clippy: schema.#Task & {
 				command: "nix"
-				args: ["build", ".#checks.aarch64-darwin.cuenv-clippy", "-L", "--accept-flake-config"]
+				args: ["build", ".#checks.aarch64-darwin.cuenv-clippy", ".#checks.aarch64-darwin.cuenv-cue-bridge-test", "-L", "--accept-flake-config"]
 				inputs: _flakeInputs
 			}
 
@@ -490,7 +496,7 @@ schema.#Project & {
 
 			cuenv: schema.#Task & {
 				command: "nix"
-				args: ["build", ".#checks.aarch64-linux.cuenv", "-L", "--accept-flake-config"]
+				args: ["build", ".#checks.aarch64-linux.cuenv", ".#checks.aarch64-linux.cuenv-cue-bridge-test", "-L", "--accept-flake-config"]
 				inputs: _flakeInputs
 			}
 		}

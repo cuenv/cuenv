@@ -92,7 +92,7 @@ jobs:
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: darwin.clippy (darwin-arm64)
-      run: nix build .#checks.aarch64-darwin.cuenv-clippy -L --accept-flake-config
+      run: nix build .#checks.aarch64-darwin.cuenv-clippy .#checks.aarch64-darwin.cuenv-cue-bridge-test -L --accept-flake-config
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

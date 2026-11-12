@@ -102,7 +102,7 @@ If a change does not match one of the required full-flake triggers, keep the che
 | Crate                                       | Path                         | Purpose                                                        |
 | ------------------------------------------- | ---------------------------- | -------------------------------------------------------------- |
 | **cuengine**                                | `crates/cuengine`            | Go-Rust FFI bridge for CUE evaluation                          |
-| **cuenv-manifest**                          | `crates/manifest`            | Leaf DTO crate: config, env, secret, task, CI, lockfile types  |
+| **cuenv-manifest**                          | `crates/manifest`            | DTO crate (depends only on cuenv-task-graph): config, env, secret, task, CI, lockfile types  |
 | **cuenv-core**                              | `crates/core`                | Environment resolution, errors, contributors, shared logic     |
 | **cuenv-secrets**                           | `crates/secrets`             | Secret resolver trait, registry, and redaction                 |
 | **cuenv-hooks**                             | `crates/hooks`               | Hook execution, state management, and approval system          |

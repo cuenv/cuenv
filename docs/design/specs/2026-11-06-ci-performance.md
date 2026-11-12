@@ -465,3 +465,305 @@ in one job, so a pull request takes one more runner rather than four.
 because `cuenv-infrastructure-e2e` is built from both; that job now names them, so
 they stay covered if the suite stops using them. macOS still runs only
 `cuenv-clippy` and `cuenv-nextest`.
+
+The `cuenv` check has no job of its own. `checks.x86_64-linux.cuenv` and
+`packages.x86_64-linux.cuenv` are the same derivation, and its smoke test
+(`cuenv --version`, `env print` on `examples/env-basic`) is an install check
+inside it. The `sync-check` pipeline bootstraps this repository's own cuenv
+(`config.ci.cuenv: {source: "nix", version: "self"}`) with `nix build .#cuenv`,
+so that step builds and checks it, and `cuenv-sync-check` triggers on every path
+`cuenv-ci` does (its path list differs only by the workflow's own file, which
+cannot change the package). See the 2026-11-12 follow-up for the cost this
+removes.
+
+## Follow-up: development shell and shared test artifacts (2026-11-12)
+
+Measured at 0.73.1 on one 32-core x86_64 Linux machine. Nix builds ran with only
+`cache.nixos.org` as a substituter, so every cuenv derivation was built locally.
+Each figure is a single run.
+
+### Development shell
+
+`cuenv exec -- true` took 2.5 to 2.8 seconds. The shell hook of the default
+development shell runs on every shell entry and every `cuenv exec`, and it ran
+`chmod -R +w target` to make the copied CUE bridge writable. On a `target/` of
+604,368 files that command alone took about 2 seconds. The hook now copies the
+bridge only when the built bridge changed, a copy is missing, or a Go source is
+newer than the copy, and makes only the copied files writable. The same command
+now takes 0.57 to 0.62 seconds: 0.35 seconds of CUE evaluation and about 0.2
+seconds for the hook.
+
+sccache served 654 of 654 cacheable compilations from its cache in a
+`cargo test -p cuenv --no-run`, but its cache sat at the 10 GiB default limit.
+The shell now defaults `SCCACHE_CACHE_SIZE` to 40G.
+
+The dev profile no longer emits debug information for dependencies. After
+touching `crates/cuenv/src/lib.rs`, `cargo test -p cuenv --no-run` fell from
+5.70s to 4.59s, and the CLI's test binaries from about 506 MB to about 300 MB.
+Backtraces keep line numbers for workspace code only. The Nix checks already
+build without debug information.
+
+### Shared test dependency artifacts
+
+| Check | Before | After | Change |
+| --- | --- | --- | --- |
+| `cuenv-doctest` | 327s | 33s | Uses the `ci` profile and the dependency artifacts of `cuenv-nextest` instead of its own in Crane's default release profile |
+| `cuenv-nextest` | 282s | 39s | Takes `CUENV_EXECUTABLE` from the `ci` binary it builds rather than from the release package |
+| `cuenv-bdd` | 112s | 29s | Workspace scope, so it reuses the same dependency artifacts |
+
+"Before" includes the dependency derivation only that check used, and for
+`cuenv-nextest` the release package (47s of dependencies and 3m 09s for the
+workspace with fat link-time optimization, since replaced by thin LTO below).
+"After" excludes the shared dependency derivation, which took 82s and is built
+once for all three. The same 37 doctest targets, 4,510 tests and 36 scenarios
+pass before and after. The root flake now has four dependency derivations rather
+than six.
+
+Two experiments were measured and not adopted:
+
+- Building `ci` dependencies without optimization (`[profile.ci.package."*"]
+  opt-level = 0`) cut the dependency build from 82s to 44s but raised the
+  nextest check from 39s to 52s, because the tests ran in 16.6s instead of 7.9s.
+  The dependency build is cached and the check runs on every change.
+- Giving `cuenv-infrastructure-e2e` the shared artifacts cut its cold build from
+  119s to 47s, but its package scope resolves features differently, so 13
+  third-party crates recompiled on every run and the check's own compilation
+  rose from 23.5s to 34.7s. It keeps its own dependency derivation.
+
+### Version-independent dependencies and a decoupled Go bridge
+
+A release commit changed the workspace version, and the version reached every
+dependency derivation twice: through the derivation name, and through Crane's dummy
+source, which keeps each workspace member's version in `Cargo.toml` and
+`Cargo.lock`. The release commit for 0.73.1 therefore rebuilt every dependency on
+every platform, and its CI took 14m03s against 1m26s for the commit before it.
+The `libcue-bridge` derivation took the version too.
+
+The four `buildDepsOnly` derivations now build a stand-in workspace that carries
+the constant version `0.0.0`:
+
+- The source passed to them leaves out `Cargo.lock`, because Crane copies the file
+  it finds there into the dummy source, which would bring the release number back.
+  The lockfile is passed as `cargoLock` and `cargoLockContents` instead: the same
+  text with the `version` of every package that has no `source` set to `0.0.0`.
+- Crane's `cleanCargoToml` is overridden in a derived `craneLib` to set the package
+  version, `workspace.package.version` and the version of every dependency that
+  has a `path` to the same constant, so the manifests, the lockfile and the
+  workspace dependencies stay consistent and `cargo --locked` accepts the result.
+- Their `version` is the constant too, so the derivation names no longer change.
+
+Third-party crates keep their fingerprints because those do not include the
+versions of the crates that depend on them; only the workspace's own crates are
+compiled again by the consuming check, as before.
+
+Crane replaces every build script in the dummy source with an empty one (the
+generated `Cargo.toml` points `package.build` at it), so the dependency
+derivations no longer receive `CUE_BRIDGE_PATH`, `ONEPASSWORD_WASM_PATH`, Go, the
+CUE tool, git or Zig. Only `pkg-config` stays, for third-party build scripts.
+
+The bridge had two further problems. Its source was the whole `crates/cuengine`
+directory, so an edit to any Rust file, benchmark or the changelog rebuilt it, and
+its check phase ran `go vet` and the full Go suite, so every Rust derivation waited
+for the Go tests. Now:
+
+- `cue-bridge` has the constant version `0.0.0`, builds from the Go files,
+  `go.mod`, `go.sum`, the C and assembly sources and headers in the module
+  directory, and `testdata/` (the Go tests read only `large_project.json`), and
+  has no check phase. `vendorHash` is unchanged.
+- `go vet ./...` and `CUENV_FROZEN_SCALING=1 GOMAXPROCS=4 go test -timeout 30m
+  ./...` run in the new flake check `cuenv-cue-bridge-test`, which reuses the
+  bridge's vendored modules. Nothing depends on it. It runs on every platform that
+  used to run the suite inside the bridge: the `checks.clippy` job builds it for
+  `x86_64-linux`, `darwin.clippy` for `aarch64-darwin` and `arm.cuenv` for
+  `aarch64-linux`, so every `x86_64-linux` flake check is still covered by a job,
+  the Go suite still runs on macOS and ARM, and no runner was added.
+
+Measured on the same 32-core x86_64 Linux machine as above, single runs, with
+Cachix disabled: after a simulated release bump from 0.73.1 to 0.73.2 the
+dependency and bridge derivation paths were unchanged, and `cuenv-nextest`
+rebuilt alone in 36.7s with 4,510 tests passing. Before the change the same bump
+also rebuilt the shared test dependency derivation (82s) and the bridge together
+with its Go suite (the suite alone ran in 46s).
+
+### Shared dependency artifacts for the cuetty checks
+
+`apps/cuetty` is a separate Cargo workspace of about 790 crates. Its package, test
+and clippy checks were three independent `buildRustPackage` builds that shared
+nothing, so every change under `crates/` (their source held all of it, plus
+`examples`, `contrib` and the agent skills) recompiled every third-party crate
+three times. The Rio git dependency was also cloned while evaluating the flake, on
+every fresh runner. `apps/cuetty/nix.nix` now builds with Crane, as the root
+workspace does:
+
+- Three `buildDepsOnly` derivations compile third-party crates once per profile and
+  command: `cuetty-deps` (release, `--bin cuetty`), `cuetty-test-deps` (dev profile,
+  `cargo test --no-run` plus the doctest pass, with the checks' own flags) and
+  `cuetty-clippy-deps` (the same `cargo clippy` command as the check). The checks
+  reuse them, so a source change recompiles cuetty, the `cuengine` crate and the
+  stacksafe adapter, and nothing else.
+- The dependency derivations are version independent in the way described above,
+  through the same `cleanCargoToml` override and lockfile pinning, now shared with
+  the root flake as `pinDepsVersions` and `pinLockVersions`. Only `cuengine`'s
+  version is pinned: cuetty's own and the stacksafe adapter's stay, because the
+  adapter's `0.1.x` version is what lets the `[patch.crates-io]` entry satisfy
+  GPUI. A simulated release bump left all three dependency derivation paths
+  unchanged.
+- The stacksafe adapter (`apps/cuetty/compat/stacksafe`) is a workspace member that
+  GPUI depends on, so the dependency derivations carry its real manifest and
+  sources instead of Crane's stub. Cargo fingerprints workspace members under the
+  compiler wrapper in use, so the clippy dependency derivation runs `cargo clippy`
+  rather than `cargo check`; with a plain check, the consumer rechecked the
+  adapter, GPUI and `gpui-component`.
+- Cargo runs from the repository root against `apps/cuetty/Cargo.toml` with
+  `CARGO_TARGET_DIR=target`, which is where Crane unpacks the artifacts. The
+  release dependency derivation and the package both run `cargo auditable build
+  --release --target <host triple>`, as nixpkgs' `buildRustPackage` does, so the
+  binary still carries its `.dep-v0` audit section (9,079 bytes, as before) and the
+  two derivations share artifacts; the command must stay identical in both. The
+  package installs `target/<triple>/release/cuetty` itself, because Crane's
+  build-log install runs `cargo metadata` at the root, whose workspace lists crates
+  this source omits. The desktop entry, icon, `patchelf` RPATH, install check and
+  `meta` are unchanged, and the installed file list, RPATH and runtime references
+  match the previous build. The only difference found is the binary's size, 51.57 MB
+  against 51.14 MB, from the Crane vendor paths it embeds.
+- The source of the Rust checks is the app (without `nix.nix`), the root
+  `Cargo.toml` and `clippy.toml`, `crates/cuengine` (manifest, build script, `src`,
+  the declared benchmark file and the non-test Go files the build script
+  fingerprints) and the CUE the repository-catalog test evaluates: `env.cue` and
+  the `nix/source-files.json` it embeds, `cue.mod/module.cue`, `schema/`, and the
+  `codecov`, `contributors` and `nix` packages of `contrib/` that `env.cue`
+  imports. An edit to any other crate, to `examples/`, to the other `contrib/`
+  packages or to the agent skills no longer changes the three derivations
+  (checked with `nix eval`). `cuetty-fmt` keeps every crate's Rust because
+  `cargo fmt --all` follows path dependencies into the root workspace.
+  `nix/source-files.json` and `env.cue` needed no change: every file above is
+  already listed there, and `flake-source-check` passes.
+- Rio is vendored through Crane with an `outputHashes` entry keyed by the lockfile's
+  `source` string, a fixed-output fetch that substitutes from a binary cache,
+  instead of `allowBuiltinFetchGit`. It is the same checkout. Crane itself only
+  warns about a git source with no hash and then clones it while evaluating, so
+  `nix.nix` asserts that every `git+` source in `apps/cuetty/Cargo.lock` has an
+  entry: a new or re-pinned git dependency fails evaluation with a message saying
+  how to obtain the hash. The key is built from the revision in
+  `apps/cuetty/Cargo.toml`, and a stale hash for a new revision is Nix's ordinary
+  hash-mismatch error.
+
+Measured on one 32-core x86_64 Linux machine, single runs, with the Cachix
+substituter disabled. Other projects were building on it throughout (load average
+8 to 23 during the new runs, 3 to 17 during the baseline), so differences of a few
+seconds are noise. "Before" rebuilt the existing derivations with
+`nix build --rebuild`; "cold" built the new ones with the dependency derivations
+absent; "source edit" is a comment in `apps/cuetty/src/main.rs` with the
+dependency derivations present.
+
+| Check | Before (cargo) | Cold, after | Source edit, after |
+| --- | --- | --- | --- |
+| `cuetty` (release package) | 58.6s (54.2s) | 67.3s (deps 51.8s, app 5.7s) | 16.1s (6.3s) |
+| `cuetty-test` | 49.5s (42.0s + 3.3s doctests) | 64.8s (deps 41.5s + 3.5s, tests 7.0s) | 15.9s (6.9s) |
+| `cuetty-clippy` | 31.0s (27.5s) | 37.7s (deps 26.6s, clippy 2.9s) | 8.4s (3.1s) |
+
+Cold builds are slower and source-edit rebuilds are faster. The cold overhead is
+the dependency build followed by compressing the dependency artifacts with zstd and
+decompressing them in the consumer, which the old single build did not do. The
+archives are large (466M + 764M + 368M, about 1.6 GB), and a fresh runner pulls
+them from Cachix, which is a cost of this design. The test check ran 617 tests
+(610 + 5 + 2 in the unit and integration binaries, no doctests) before and after.
+
+Frequency, counted from git history: of 293 commits since 2026-09-01, 281 touched
+the old cuetty source and 242 still touch the narrowed one, while about 23
+non-release commits would change the cuetty dependency derivations. Most commits
+therefore take the faster source-edit path and a minority pay the cold cost. The
+effect on CI is not yet measured: before this change the `checks.cuetty` job, which
+builds all four cuetty checks, took 5m26s on pull request run 43256828942.
+
+### Hook types moved into the manifest crate
+
+`cuenv-manifest` no longer depends on `cuenv-hooks`. The `Hook` and `Hooks`
+definition types moved to `crates/manifest/src/hook.rs`, and `cuenv-hooks` now
+depends on the manifest crate and re-exports them at their old paths, so no
+dependent changed. For an edit to hook execution code, `cuenv-manifest` and
+`cuenv-infrastructure` (lib, lib test and its 2 integration tests) leave the
+rebuild cascade: `cargo test --workspace --no-run` after touching
+`crates/hooks/src/executor/hook_executor.rs` rebuilds 81 units instead of 87.
+`cuenv-core` still rebuilds because it depends on `cuenv-hooks`.
+
+Wall times are indicative only, because the machine was under unrelated load
+(load average 53 to 70 across these runs). The earlier before/after runs took
+15.45s and 8.86s to 9.37s; a later warm re-run of the hook edit took about 10.7s
+(timing-report total, load average 70). The trade-off: an edit to
+`cuenv-manifest` now also rebuilds `cuenv-hooks` (87 units, 12.81s at load
+average 53).
+
+### Release profile: thin LTO
+
+`[profile.release]` changed from fat LTO with one codegen unit
+(`lto = true`, `codegen-units = 1`) to thin LTO with 16 codegen units
+(`lto = "thin"`, `codegen-units = 16`). `opt-level = "z"`, `panic = "abort"` and
+`strip = true` are unchanged, and there is no separate fat-LTO profile: release
+artifacts built by `.github/scripts/release-build.sh` (`cargo build --release`
+and `cargo zigbuild --release`) and the Nix `cuenv` package all use it. Nothing
+in `.github/` or `env.cue` passes LTO flags or `CARGO_PROFILE_RELEASE_*`
+overrides, and `apps/cuetty` is a separate workspace with its own profiles.
+`contrib/contributors/cuenv.cue` also builds with `cargo build --release -p
+cuenv` and benefits.
+
+Measured on one loaded 32-core x86_64 Linux machine, single runs, sccache
+disabled, `cargo build --release --locked -p cuenv`. The one-minute load average
+ranged from 3 to 119 during these runs and the fat-LTO rebuilds ran under the
+heaviest load, so the rebuild gap is probably overstated.
+
+| | Fat LTO, 1 codegen unit (before) | Thin LTO, 16 codegen units (after) |
+| --- | --- | --- |
+| Cold build | 196s | 86s |
+| Rebuild after touching `crates/cuenv/src/lib.rs` (two runs) | 274s / 252s | 55s / 76s |
+| Binary | 50,252,032 bytes | 65,836,736 bytes |
+| gzip -9 | 20,487,268 bytes | 24,423,591 bytes |
+| `cuenv version`, mean of 200 | 3.7 ms | 4.8 ms |
+| `cuenv env print --output json` on `examples/env-basic`, mean of 50 | about 22 ms | about 23 ms |
+
+The Nix `cuenv` package (`nix build .#checks.x86_64-linux.cuenv`, Cachix
+substituter disabled, load average 43 at the start) took 1m 39s end to end after
+the change, which rebuilt the release dependency derivation because the profile
+changed: cargo reported 44.6s for the dependencies and 43.3s for the workspace,
+against 47s and 3m 09s with fat LTO. The installed binary is 65,989,728 bytes
+against 50,442,336 for 0.73.1, and gzip -9 gives 23,935,643 bytes. After adding
+a comment line to `crates/cuenv/src/lib.rs` the check took 52s (load average 23),
+with the cargo build finishing in 44.4s; no third-party crate recompiled, only
+the 36 workspace crates. The package install check passed.
+
+The cost is a larger binary and download (about 31% larger on disk, about 19%
+larger gzipped) and roughly 1 ms slower startup; commands that evaluate CUE are
+within noise. Two variants were measured and not chosen: thin LTO at
+`opt-level = 3` (87.7 MB, no measurable runtime gain) and no LTO (69.1 MB, with
+rebuilds of 16 to 18s).
+
+The macOS and cross-compiled linux-arm64 release builds have not yet been built
+with thin LTO, so run the `release-dry-run` pipeline before the next release.
+
+### One build of the `cuenv` package per pull request
+
+On the thin-LTO commit `c0e00ce2` the package was compiled twice at the same
+moment on separate runners: `checks.cuenv` in `cuenv-ci` took 175s in its step,
+and the "Build cuenv (nix)" bootstrap of `cuenv-sync-check` took 143s (runs
+43282606369 and 43282606387). Neither could substitute the other's result
+because they started together. The `checks.cuenv` job is removed from the `ci`
+pipeline; the bootstrap builds the package, including its install check, on
+every trigger of the `ci` pipeline except a change to `cuenv-ci.yml` alone,
+which cannot change the package. Every `x86_64-linux` flake check is still built
+by some CI job.
+
+Trade-off: a failure to build the package, or to pass its install check, now
+shows as a failed `cuenv-sync-check` rather than a failed `checks.cuenv`. No
+branch protection rule requires `checks.cuenv`. `docs-preview` still builds the
+package separately on pull requests that touch the docs (188s in run
+43282606339); that is not addressed here.
+
+Publishing the `x86_64-linux` package to Cachix now depends on the `sync-check`
+job. On `main` run 43105997270 the `checks.cuenv` job pushed the `cuenv-0.73.1`
+package path, while `cuenv-sync-check` run 43105997318 logged it as skipped. The
+`sync-check` job has the same Cachix setup step, so it is expected to push the
+path from now on, but that has not been observed yet.
+
+Coupling to keep: if the `sync-check` pipeline is narrowed or removed, or
+`ci.cuenv.source` stops being `nix`, the package check must be listed in the
+`ci` pipeline again.

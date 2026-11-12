@@ -45,7 +45,7 @@ Execute the following phases in order. Each phase lands as isolated commits with
 
 ### Phase 2 — `cuenv-manifest` leaf types crate
 
-New crate `crates/manifest` containing serde DTOs only (deps: `serde`, `thiserror`, `cuenv-hooks`): manifest/config/environment DTOs, task types (`Task`, `TaskNode`, dependency/params/inputs/capture/cache-policy/retry types), CI DTOs from `core/src/ci.rs`, and lockfile schema types. `cuenv-core` re-exports during the transition. Concludes with decomposing core's monolithic `Error` enum into per-domain errors.
+New crate `crates/manifest` containing serde DTOs only (deps: `serde`, `thiserror`; the original `cuenv-hooks` dependency was later removed by moving the `Hook`/`Hooks` DTOs into `cuenv_manifest::hook`): manifest/config/environment DTOs, task types (`Task`, `TaskNode`, dependency/params/inputs/capture/cache-policy/retry types), CI DTOs from `core/src/ci.rs`, and lockfile schema types. `cuenv-core` re-exports during the transition. Concludes with decomposing core's monolithic `Error` enum into per-domain errors.
 
 ### Phase 3 — Drain the god-crate
 

@@ -7,10 +7,10 @@ use crate::ci::CI;
 use crate::config::Config;
 use crate::context::ContextDefinition;
 use crate::environment::Env;
+use crate::hook::{Hook, Hooks};
 use crate::tasks::{
     Input, MappedInput, Mapping, ProjectReference, Task, TaskDirectoryBase, TaskNode,
 };
-use cuenv_hooks::{Hook, Hooks};
 
 // ============================================================================
 // Project Type

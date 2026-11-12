@@ -1918,6 +1918,7 @@ name = "cuenv-hooks"
 version = "0.73.1"
 dependencies = [
  "chrono",
+ "cuenv-manifest",
  "dirs",
  "fs4",
  "hex",
@@ -2005,7 +2006,6 @@ dependencies = [
 name = "cuenv-manifest"
 version = "0.73.1"
 dependencies = [
- "cuenv-hooks",
  "cuenv-task-graph",
  "serde",
  "serde_json",

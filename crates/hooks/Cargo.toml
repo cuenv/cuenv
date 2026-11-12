@@ -16,6 +16,9 @@ description = "Hook execution system for cuenv environments"
 default = []
 
 [dependencies]
+# Hook definition DTOs
+cuenv-manifest = { workspace = true }
+
 # Serialization
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
