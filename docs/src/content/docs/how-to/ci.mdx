@@ -188,6 +188,36 @@ always runs** (cuenv cannot prove it is unaffected). If `--from` is omitted,
 cuenv uses the provider's default base (for example, a PR's base branch). Declare
 tight `inputs` on every task to get the most out of affected detection.
 
+Detection **fails closed**: whatever cuenv cannot show to be unaffected runs, and
+a warning says why. That covers:
+
+- a task, or a dependency of it, that does not resolve;
+- a `#project:task` dependency that is malformed, names a project that is not in
+  the module, or names a task that project does not have;
+- a dependency cycle between projects;
+- an input that is not a valid glob;
+- an input with a `..` segment, or an absolute input. Changed files are relative
+  to the repository, so such an input can never be matched and its task runs
+  whenever anything changed. The warning is given once per task. `..` inputs
+  will be rejected once CUE-native cross-project references ship
+  ([#611](https://github.com/cuenv/cuenv/issues/611)).
+
+A group or a sequence is selected as a whole: it is affected when any task
+beneath it is, or when anything beneath it depends on an affected task.
+Dependencies are resolved against every project of the module, so `--path app`
+still sees a task of `app` that depends on a task of another project.
+
+A run without `--path` covers every project of the module and skips the ones
+that have no `ci` block or do not define the requested pipeline. If **no**
+project in scope defines the pipeline, the run fails and lists the pipelines
+that exist, so a mistyped `--pipeline` cannot pass by running nothing. A project
+named with `--path` must define the pipeline.
+
+`--from <ref>` must give a comparison. cuenv reports a ref that is not in the
+repository, a ref that shares no history with `HEAD`, and history that lies past
+the boundary of a shallow checkout as errors; it does not fall back to "nothing
+changed".
+
 For GitHub pull-request workflows, cuenv uses the local checkout first. The
 generated workflow uses `actions/checkout` with `fetch-depth: 2`; GitHub's
 default pull-request ref is a synthetic merge commit, so `HEAD^1..HEAD` contains

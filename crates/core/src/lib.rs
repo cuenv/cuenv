@@ -56,7 +56,7 @@ pub mod tasks;
 pub mod tools;
 
 // Re-export affected detection types
-pub use affected::{AffectedBy, matches_pattern};
+pub use affected::{AffectedBy, UnmatchablePattern, matches_pattern, unmatchable_pattern};
 
 // Re-export the per-domain error types and the top-level composition
 // (see `error` module; RFC-0006 phase 2e)

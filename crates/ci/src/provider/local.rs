@@ -53,15 +53,32 @@ impl CIProvider for LocalProvider {
 
     async fn changed_files(&self) -> Result<Vec<PathBuf>> {
         let Some(checkout) = Checkout::discover() else {
-            return Ok(Vec::new());
+            // Without a repository there is nothing to compare with. Saying
+            // "nothing changed" would skip every task with inputs.
+            return match self.base_ref.as_deref() {
+                Some(base_ref) => Err(cuenv_core::Error::configuration(format!(
+                    "--from {base_ref}: this directory is not inside a git repository, so \
+                     there is nothing to compare with"
+                ))),
+                None => Ok(Vec::new()),
+            };
         };
 
         // Committed changes since the base ref: what is in HEAD that the
-        // base ref does not have.
+        // base ref does not have. A base ref that cannot be compared is an
+        // error: without the comparison only uncommitted changes would be
+        // seen, and a clean checkout would report that nothing is affected.
         let committed = self
             .base_ref
             .as_deref()
-            .and_then(|base_ref| checkout.changed(Since::MergeBaseWith(base_ref)));
+            .map(|base_ref| {
+                checkout
+                    .compare(Since::MergeBaseWith(base_ref))
+                    .map_err(|error| {
+                        cuenv_core::Error::configuration(format!("--from {base_ref}: {error}"))
+                    })
+            })
+            .transpose()?;
 
         // Always include uncommitted changes (staged + unstaged).
         let uncommitted = checkout.uncommitted().map_err(|error| {
@@ -198,11 +215,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_local_provider_with_base_ref_changed_files() {
-        // Test with a base ref that exists
-        let provider = LocalProvider::with_base_ref("HEAD~1".to_string());
-        let result = provider.changed_files().await;
-        // Should succeed even if the range is invalid
-        assert!(result.is_ok());
+    async fn a_base_ref_that_cannot_be_compared_is_an_error() {
+        let provider =
+            LocalProvider::with_base_ref("refs/heads/no-such-branch-for-cuenv".to_string());
+
+        let error = provider
+            .changed_files()
+            .await
+            .expect_err("a base ref that names nothing gives no comparison");
+
+        assert!(
+            error
+                .to_string()
+                .contains("--from refs/heads/no-such-branch-for-cuenv"),
+            "{error}"
+        );
     }
 }

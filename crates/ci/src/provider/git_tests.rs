@@ -155,6 +155,36 @@ fn a_missing_revision_gives_no_answer() {
 }
 
 #[test]
+fn a_comparison_says_why_it_cannot_be_made() {
+    let (directory, repository) = repository();
+    commit(&repository, &[], &[Edit::Write("one.txt", "1")]);
+    let unrelated = repository
+        .new_commit(
+            "an unrelated root",
+            repository.empty_tree().id,
+            gix::commit::NO_PARENT_IDS,
+        )
+        .expect("a commit")
+        .id
+        .to_string();
+    let checkout = Checkout::around(directory.path()).expect("a checkout");
+
+    assert_eq!(
+        checkout.compare(Since::MergeBaseWith("origin/main")),
+        Err(CompareError::RevisionNotFound {
+            revision: "origin/main".to_string()
+        })
+    );
+    assert_eq!(
+        checkout.compare(Since::MergeBaseWith(&unrelated)),
+        Err(CompareError::NoMergeBase {
+            revision: unrelated.clone()
+        })
+    );
+    assert_eq!(checkout.compare(Since::Revision("HEAD")), Ok(Vec::new()));
+}
+
+#[test]
 fn head_is_known_by_its_hash_and_its_parents() {
     let (directory, repository) = repository();
     let first = commit(&repository, &[], &[Edit::Write("one.txt", "1")]);

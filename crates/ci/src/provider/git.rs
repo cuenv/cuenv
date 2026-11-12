@@ -38,6 +38,38 @@ pub enum Since<'a> {
     MergeBaseWith(&'a str),
 }
 
+/// Why `HEAD` could not be compared with a starting point.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CompareError {
+    /// The starting revision names nothing in this repository.
+    #[error("revision '{revision}' was not found in this repository")]
+    RevisionNotFound {
+        /// The revision as it was given.
+        revision: String,
+    },
+    /// The comparison needs history this shallow checkout does not have.
+    #[error(
+        "this checkout is shallow and the comparison with '{revision}' needs history past \
+         its shallow boundary; fetch more history (for example `git fetch --unshallow`)"
+    )]
+    PastShallowBoundary {
+        /// The revision as it was given.
+        revision: String,
+    },
+    /// `HEAD` and the revision share no ancestor.
+    #[error("HEAD and '{revision}' have no merge base")]
+    NoMergeBase {
+        /// The revision as it was given.
+        revision: String,
+    },
+    /// The repository could not be read.
+    #[error("the repository could not be read: {reason}")]
+    Unreadable {
+        /// What failed.
+        reason: String,
+    },
+}
+
 /// Why the uncommitted changes of a checkout could not be listed.
 pub type StatusError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -116,17 +148,65 @@ impl Checkout {
     /// it left and the one it joined have changed.
     #[must_use]
     pub fn changed(&self, since: Since<'_>) -> Option<Vec<PathBuf>> {
+        self.compare(since).ok()
+    }
+
+    /// The files that differ between a starting point and `HEAD`, or why the
+    /// two cannot be compared.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the revision is not in the repository, when it shares no
+    /// history with `HEAD`, when the history needed lies past the boundary of
+    /// a shallow checkout, or when the repository cannot be read.
+    pub fn compare(&self, since: Since<'_>) -> Result<Vec<PathBuf>, CompareError> {
         let repository = self.repository();
-        let head = repository.head_commit().ok()?;
-        let from = match since {
-            Since::Revision(revision) => commit(&repository, revision)?,
-            Since::MergeBaseWith(revision) => {
-                let other = commit(&repository, revision)?;
-                let base = repository.merge_base(other.id, head.id).ok()?;
-                base.object().ok()?.try_into_commit().ok()?
+        let shallow = repository.is_shallow();
+        let unreadable = |reason: String| CompareError::Unreadable { reason };
+        let missing = |revision: &str| {
+            if shallow {
+                CompareError::PastShallowBoundary {
+                    revision: revision.to_string(),
+                }
+            } else {
+                CompareError::RevisionNotFound {
+                    revision: revision.to_string(),
+                }
             }
         };
-        changed_between(&repository, &from.tree().ok()?, &head.tree().ok()?)
+
+        let head = repository
+            .head_commit()
+            .map_err(|error| unreadable(format!("HEAD: {error}")))?;
+        let from = match since {
+            Since::Revision(revision) => {
+                commit(&repository, revision).ok_or_else(|| missing(revision))?
+            }
+            Since::MergeBaseWith(revision) => {
+                let other = commit(&repository, revision).ok_or_else(|| missing(revision))?;
+                let base = repository.merge_base(other.id, head.id).map_err(|_| {
+                    if shallow {
+                        missing(revision)
+                    } else {
+                        CompareError::NoMergeBase {
+                            revision: revision.to_string(),
+                        }
+                    }
+                })?;
+                base.object()
+                    .ok()
+                    .and_then(|object| object.try_into_commit().ok())
+                    .ok_or_else(|| missing(revision))?
+            }
+        };
+        let from_tree = from
+            .tree()
+            .map_err(|error| unreadable(format!("the tree of the starting commit: {error}")))?;
+        let head_tree = head
+            .tree()
+            .map_err(|error| unreadable(format!("the tree of HEAD: {error}")))?;
+        changed_between(&repository, &from_tree, &head_tree)
+            .ok_or_else(|| unreadable("the two trees could not be compared".to_string()))
     }
 
     /// Fetch from `origin` over the remote's own transport. cuenv runs no
