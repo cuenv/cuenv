@@ -355,7 +355,7 @@ Hook execution, state management, and approval system. This crate was extracted 
 
 ### Hooks
 
-Shell hook definitions.
+Shell hook definitions. The `Hook` and `Hooks` types are defined in `cuenv_manifest::hook` and re-exported from `cuenv_hooks`.
 
 ```rust
 use cuenv_hooks::{Hook, Hooks};

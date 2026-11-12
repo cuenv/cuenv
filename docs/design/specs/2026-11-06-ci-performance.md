@@ -664,3 +664,21 @@ non-release commits would change the cuetty dependency derivations. Most commits
 therefore take the faster source-edit path and a minority pay the cold cost. The
 effect on CI is not yet measured: before this change the `checks.cuetty` job, which
 builds all four cuetty checks, took 5m26s on pull request run 43256828942.
+
+### Hook types moved into the manifest crate
+
+`cuenv-manifest` no longer depends on `cuenv-hooks`. The `Hook` and `Hooks`
+definition types moved to `crates/manifest/src/hook.rs`, and `cuenv-hooks` now
+depends on the manifest crate and re-exports them at their old paths, so no
+dependent changed. For an edit to hook execution code, `cuenv-manifest` and
+`cuenv-infrastructure` (lib, lib test and its 2 integration tests) leave the
+rebuild cascade: `cargo test --workspace --no-run` after touching
+`crates/hooks/src/executor/hook_executor.rs` rebuilds 81 units instead of 87.
+`cuenv-core` still rebuilds because it depends on `cuenv-hooks`.
+
+Wall times are indicative only, because the machine was under unrelated load
+(load average 53 to 70 across these runs). The earlier before/after runs took
+15.45s and 8.86s to 9.37s; a later warm re-run of the hook edit took about 10.7s
+(timing-report total, load average 70). The trade-off: an edit to
+`cuenv-manifest` now also rebuilds `cuenv-hooks` (87 units, 12.81s at load
+average 53).

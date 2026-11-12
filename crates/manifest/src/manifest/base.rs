@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::context::ContextDefinition;
 use crate::environment::Env;
-use cuenv_hooks::Hooks;
+use crate::hook::Hooks;
 
 use super::{Formatters, Runtime, VcsDependency};
 

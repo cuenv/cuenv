@@ -16,6 +16,8 @@ pub mod ci;
 pub mod config;
 pub mod context;
 pub mod environment;
+/// Hook definition DTOs (schema/hooks.cue).
+pub mod hook;
 /// Lockfile schema types (cuenv.lock).
 pub mod lockfile;
 pub mod manifest;

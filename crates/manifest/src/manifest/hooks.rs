@@ -1,3 +1,6 @@
+//! Task-dependency hook steps (`HookItem`). These are distinct from the exec
+//! hooks (`onEnter`/`onExit`/`prePush` commands) defined in [`crate::hook`].
+
 use serde::{Deserialize, Serialize};
 
 use crate::tasks::Task;
