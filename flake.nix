@@ -296,6 +296,30 @@
           chmod -R +w target
         '';
 
+        # The development shell hook runs on every shell entry and every
+        # `cuenv exec`, against a target directory that can hold hundreds of
+        # thousands of files. Copy the bridge only when the built one changed
+        # or a Go source is newer than the copy (the build script would
+        # otherwise judge it stale and rebuild it), and make only the copied
+        # files writable.
+        setupDevBridge = ''
+          __bridgeMarker="target/.cue-bridge-source"
+          if [ "$(cat "$__bridgeMarker" 2>/dev/null)" != "${cue-bridge}" ] \
+            || [ ! -f target/debug/libcue_bridge.a ] \
+            || [ ! -f target/release/libcue_bridge.a ] \
+            || [ -n "$(find crates/cuengine -maxdepth 1 \
+                \( -name '*.go' -o -name go.mod -o -name go.sum \) \
+                -newer target/debug/libcue_bridge.a -print -quit)" ]; then
+            mkdir -p target/debug target/release
+            rm -f target/debug/libcue_bridge.* target/release/libcue_bridge.*
+            cp ${cue-bridge}/debug/* target/debug/
+            cp ${cue-bridge}/release/* target/release/
+            chmod +w target/debug/libcue_bridge.* target/release/libcue_bridge.*
+            printf '%s' "${cue-bridge}" > "$__bridgeMarker"
+          fi
+          unset __bridgeMarker
+        '';
+
 
         # Common build configuration
         commonArgs = {
@@ -312,9 +336,11 @@
 
         lockedCargoExtraArgs = "--locked";
         workspaceAllFeaturesCargoExtraArgs = "${lockedCargoExtraArgs} --workspace --all-features";
-        workspaceDocCargoExtraArgs = "${lockedCargoExtraArgs} --workspace --all-features";
         cuenvPackageCargoExtraArgs = "${lockedCargoExtraArgs} --package cuenv";
-        bddCargoExtraArgs = "${cuenvPackageCargoExtraArgs} --test bdd";
+        # The workspace scope keeps Cargo's feature resolution identical to
+        # `cuenv-nextest`, so the BDD runner reuses its dependency artifacts.
+        # The CLI enables every one of its features by default.
+        bddCargoExtraArgs = "${workspaceAllFeaturesCargoExtraArgs} --test bdd";
 
         # Test checks need no debugger payload. Keep dependency and consumer
         # profiles identical so Cargo can reuse every compiled dependency.
@@ -349,26 +375,12 @@
           buildPhaseCargoCommand = "cargoWithProfile test ${workspaceAllFeaturesCargoExtraArgs} --no-run";
         });
 
-        workspaceDocCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
-          cargoExtraArgs = workspaceDocCargoExtraArgs;
-          doCheck = false;
-          buildPhaseCargoCommand = "cargoWithProfile test ${workspaceDocCargoExtraArgs} --lib --no-run";
-        });
-
         cuenvCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = cuenvPackageCargoExtraArgs;
           # The package is smoke-tested after installation; its Rust tests have
           # dedicated checks and do not belong in a bootstrap dependency build.
           doCheck = false;
           buildPhaseCargoCommand = "cargoWithProfile build ${cuenvPackageCargoExtraArgs}";
-        });
-
-        # BDD uses the same package/features as the CLI, with the lightweight
-        # test profile. Keep its dependency build aligned with those settings.
-        cuenvCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
-          cargoExtraArgs = bddCargoExtraArgs;
-          doCheck = false;
-          buildPhaseCargoCommand = "cargoWithProfile test ${bddCargoExtraArgs} --no-run";
         });
 
         workspaceCheckArgs = commonArgs // {
@@ -379,14 +391,8 @@
           doInstallCargoArtifacts = false;
         };
 
-        workspaceDocCheckArgs = commonArgs // {
-          cargoArtifacts = workspaceDocCargoArtifacts;
-          doCheck = true;
-          doInstallCargoArtifacts = false;
-        };
-
         cuenvCheckArgs = commonArgs // ciBuildArgs // {
-          cargoArtifacts = cuenvCiCargoArtifacts;
+          cargoArtifacts = workspaceCiCargoArtifacts;
           doCheck = true;
           doInstallCargoArtifacts = false;
         };
@@ -428,8 +434,13 @@
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.fish pkgs.zsh pkgs.powershell ];
           CUENV_TEST_PWSH = "${pkgs.powershell}/bin/pwsh";
           # Hook supervisor tests must exercise the CLI instead of passing when
-          # an independently built binary is unavailable.
-          CUENV_EXECUTABLE = "${cuenv}/bin/cuenv";
+          # an independently built binary is unavailable. They take the one
+          # this check builds for the CLI's own integration tests: depending
+          # on the release package put its link-time-optimized build of the
+          # whole workspace in front of every test run.
+          preCheck = ''
+            export CUENV_EXECUTABLE="$PWD/''${CARGO_TARGET_DIR:-target}/ci/cuenv"
+          '';
           # HTTP client construction loads native roots, including in mock tests.
           SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         });
@@ -655,8 +666,12 @@
           doInstallCargoArtifacts = false;
         });
 
-        doc-test-check = craneLib.cargoDocTest (workspaceDocCheckArgs // {
-          cargoExtraArgs = workspaceDocCargoExtraArgs;
+        # Documentation tests share the test profile and dependency artifacts
+        # of `cuenv-nextest`. A dependency build of their own, in Crane's
+        # default release profile, compiled every dependency once more.
+        doc-test-check = craneLib.cargoDocTest (workspaceCheckArgs // ciBuildArgs // {
+          cargoArtifacts = workspaceCiCargoArtifacts;
+          cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
         });
 
         bdd-check = craneLib.cargoTest (cuenvCheckArgs // {
@@ -839,11 +854,13 @@
           CUE_BRIDGE_PATH = "${cue-bridge}";
 
           shellHook = ''
-            ${setupBridge}
+            ${setupDevBridge}
 
             # sccache configuration — only set if not already provided (e.g. by CI)
             export RUSTC_WRAPPER="''${RUSTC_WRAPPER:-${pkgs.sccache}/bin/sccache}"
             export SCCACHE_DIR="''${SCCACHE_DIR:-$HOME/.cache/sccache}"
+            # sccache's 10 GiB default evicts continuously for this workspace.
+            export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-40G}"
 
             # Install docs dependencies
             cd docs

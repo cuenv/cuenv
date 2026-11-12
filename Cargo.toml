@@ -257,6 +257,9 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 # Optimize dependencies even in dev mode for faster runtime
 opt-level = 2
+# Their debug information made every test binary about 500 MB and slowed each
+# link. Backtraces keep line numbers for workspace code.
+debug = false
 
 [profile.release]
 opt-level = "z"

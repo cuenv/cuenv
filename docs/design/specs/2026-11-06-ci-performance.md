@@ -465,3 +465,56 @@ in one job, so a pull request takes one more runner rather than four.
 because `cuenv-infrastructure-e2e` is built from both; that job now names them, so
 they stay covered if the suite stops using them. macOS still runs only
 `cuenv-clippy` and `cuenv-nextest`.
+
+## Follow-up: development shell and shared test artifacts (2026-11-12)
+
+Measured at 0.73.1 on one 32-core x86_64 Linux machine. Nix builds ran with only
+`cache.nixos.org` as a substituter, so every cuenv derivation was built locally.
+Each figure is a single run.
+
+### Development shell
+
+`cuenv exec -- true` took 2.5 to 2.8 seconds. The shell hook of the default
+development shell runs on every shell entry and every `cuenv exec`, and it ran
+`chmod -R +w target` to make the copied CUE bridge writable. On a `target/` of
+604,368 files that command alone took about 2 seconds. The hook now copies the
+bridge only when the built bridge changed, a copy is missing, or a Go source is
+newer than the copy, and makes only the copied files writable. The same command
+now takes 0.57 to 0.62 seconds: 0.35 seconds of CUE evaluation and about 0.2
+seconds for the hook.
+
+sccache served 654 of 654 cacheable compilations from its cache in a
+`cargo test -p cuenv --no-run`, but its cache sat at the 10 GiB default limit.
+The shell now defaults `SCCACHE_CACHE_SIZE` to 40G.
+
+The dev profile no longer emits debug information for dependencies. After
+touching `crates/cuenv/src/lib.rs`, `cargo test -p cuenv --no-run` fell from
+5.70s to 4.59s, and the CLI's test binaries from about 506 MB to about 300 MB.
+Backtraces keep line numbers for workspace code only. The Nix checks already
+build without debug information.
+
+### Shared test dependency artifacts
+
+| Check | Before | After | Change |
+| --- | --- | --- | --- |
+| `cuenv-doctest` | 327s | 33s | Uses the `ci` profile and the dependency artifacts of `cuenv-nextest` instead of its own in Crane's default release profile |
+| `cuenv-nextest` | 282s | 39s | Takes `CUENV_EXECUTABLE` from the `ci` binary it builds rather than from the release package |
+| `cuenv-bdd` | 112s | 29s | Workspace scope, so it reuses the same dependency artifacts |
+
+"Before" includes the dependency derivation only that check used, and for
+`cuenv-nextest` the release package (47s of dependencies and 3m 09s for the
+workspace with link-time optimization). "After" excludes the shared dependency
+derivation, which took 82s and is built once for all three. The same 37 doctest
+targets, 4,510 tests and 36 scenarios pass before and after. The root flake now
+has four dependency derivations rather than six.
+
+Two experiments were measured and not adopted:
+
+- Building `ci` dependencies without optimization (`[profile.ci.package."*"]
+  opt-level = 0`) cut the dependency build from 82s to 44s but raised the
+  nextest check from 39s to 52s, because the tests ran in 16.6s instead of 7.9s.
+  The dependency build is cached and the check runs on every change.
+- Giving `cuenv-infrastructure-e2e` the shared artifacts cut its cold build from
+  119s to 47s, but its package scope resolves features differently, so 13
+  third-party crates recompiled on every run and the check's own compilation
+  rose from 23.5s to 34.7s. It keeps its own dependency derivation.
