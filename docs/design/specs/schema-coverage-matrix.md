@@ -169,7 +169,9 @@ hardware. `ci.github.execution: "direct"` runs a task without `cuenv task`, whic
 `cargo.build` uses so its jobs need no `build.cuenv` or 1Password token. The manual
 `release-dry-run` pipeline runs those builds without publishing. The `checks`
 group covers every `x86_64-linux` flake check: `checks.cuetty` builds the four
-cuetty checks in one job, and `checks.infrastructure-e2e` also names
+cuetty checks in one job (their third-party crates compile once per profile and
+their source is limited to the app, `crates/cuengine` and the CUE files the
+catalog test reads), and `checks.infrastructure-e2e` also names
 `cuenv-fake-terraform-provider` and `cuenv-numeric-interop`, which its suite is
 built from. `cuenv-cue-bridge-test`, the Go bridge's `go vet` and test
 suite, runs in `checks.clippy` (x86_64-linux), `darwin.clippy` (aarch64-darwin)

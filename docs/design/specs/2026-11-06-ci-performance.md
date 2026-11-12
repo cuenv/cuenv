@@ -573,3 +573,94 @@ dependency and bridge derivation paths were unchanged, and `cuenv-nextest`
 rebuilt alone in 36.7s with 4,510 tests passing. Before the change the same bump
 also rebuilt the shared test dependency derivation (82s) and the bridge together
 with its Go suite (the suite alone ran in 46s).
+
+### Shared dependency artifacts for the cuetty checks
+
+`apps/cuetty` is a separate Cargo workspace of about 790 crates. Its package, test
+and clippy checks were three independent `buildRustPackage` builds that shared
+nothing, so every change under `crates/` (their source held all of it, plus
+`examples`, `contrib` and the agent skills) recompiled every third-party crate
+three times. The Rio git dependency was also cloned while evaluating the flake, on
+every fresh runner. `apps/cuetty/nix.nix` now builds with Crane, as the root
+workspace does:
+
+- Three `buildDepsOnly` derivations compile third-party crates once per profile and
+  command: `cuetty-deps` (release, `--bin cuetty`), `cuetty-test-deps` (dev profile,
+  `cargo test --no-run` plus the doctest pass, with the checks' own flags) and
+  `cuetty-clippy-deps` (the same `cargo clippy` command as the check). The checks
+  reuse them, so a source change recompiles cuetty, the `cuengine` crate and the
+  stacksafe adapter, and nothing else.
+- The dependency derivations are version independent in the way described above,
+  through the same `cleanCargoToml` override and lockfile pinning, now shared with
+  the root flake as `pinDepsVersions` and `pinLockVersions`. Only `cuengine`'s
+  version is pinned: cuetty's own and the stacksafe adapter's stay, because the
+  adapter's `0.1.x` version is what lets the `[patch.crates-io]` entry satisfy
+  GPUI. A simulated release bump left all three dependency derivation paths
+  unchanged.
+- The stacksafe adapter (`apps/cuetty/compat/stacksafe`) is a workspace member that
+  GPUI depends on, so the dependency derivations carry its real manifest and
+  sources instead of Crane's stub. Cargo fingerprints workspace members under the
+  compiler wrapper in use, so the clippy dependency derivation runs `cargo clippy`
+  rather than `cargo check`; with a plain check, the consumer rechecked the
+  adapter, GPUI and `gpui-component`.
+- Cargo runs from the repository root against `apps/cuetty/Cargo.toml` with
+  `CARGO_TARGET_DIR=target`, which is where Crane unpacks the artifacts. The
+  release dependency derivation and the package both run `cargo auditable build
+  --release --target <host triple>`, as nixpkgs' `buildRustPackage` does, so the
+  binary still carries its `.dep-v0` audit section (9,079 bytes, as before) and the
+  two derivations share artifacts; the command must stay identical in both. The
+  package installs `target/<triple>/release/cuetty` itself, because Crane's
+  build-log install runs `cargo metadata` at the root, whose workspace lists crates
+  this source omits. The desktop entry, icon, `patchelf` RPATH, install check and
+  `meta` are unchanged, and the installed file list, RPATH and runtime references
+  match the previous build. The only difference found is the binary's size, 51.57 MB
+  against 51.14 MB, from the Crane vendor paths it embeds.
+- The source of the Rust checks is the app (without `nix.nix`), the root
+  `Cargo.toml` and `clippy.toml`, `crates/cuengine` (manifest, build script, `src`,
+  the declared benchmark file and the non-test Go files the build script
+  fingerprints) and the CUE the repository-catalog test evaluates: `env.cue` and
+  the `nix/source-files.json` it embeds, `cue.mod/module.cue`, `schema/`, and the
+  `codecov`, `contributors` and `nix` packages of `contrib/` that `env.cue`
+  imports. An edit to any other crate, to `examples/`, to the other `contrib/`
+  packages or to the agent skills no longer changes the three derivations
+  (checked with `nix eval`). `cuetty-fmt` keeps every crate's Rust because
+  `cargo fmt --all` follows path dependencies into the root workspace.
+  `nix/source-files.json` and `env.cue` needed no change: every file above is
+  already listed there, and `flake-source-check` passes.
+- Rio is vendored through Crane with an `outputHashes` entry keyed by the lockfile's
+  `source` string, a fixed-output fetch that substitutes from a binary cache,
+  instead of `allowBuiltinFetchGit`. It is the same checkout. Crane itself only
+  warns about a git source with no hash and then clones it while evaluating, so
+  `nix.nix` asserts that every `git+` source in `apps/cuetty/Cargo.lock` has an
+  entry: a new or re-pinned git dependency fails evaluation with a message saying
+  how to obtain the hash. The key is built from the revision in
+  `apps/cuetty/Cargo.toml`, and a stale hash for a new revision is Nix's ordinary
+  hash-mismatch error.
+
+Measured on one 32-core x86_64 Linux machine, single runs, with the Cachix
+substituter disabled. Other projects were building on it throughout (load average
+8 to 23 during the new runs, 3 to 17 during the baseline), so differences of a few
+seconds are noise. "Before" rebuilt the existing derivations with
+`nix build --rebuild`; "cold" built the new ones with the dependency derivations
+absent; "source edit" is a comment in `apps/cuetty/src/main.rs` with the
+dependency derivations present.
+
+| Check | Before (cargo) | Cold, after | Source edit, after |
+| --- | --- | --- | --- |
+| `cuetty` (release package) | 58.6s (54.2s) | 67.3s (deps 51.8s, app 5.7s) | 16.1s (6.3s) |
+| `cuetty-test` | 49.5s (42.0s + 3.3s doctests) | 64.8s (deps 41.5s + 3.5s, tests 7.0s) | 15.9s (6.9s) |
+| `cuetty-clippy` | 31.0s (27.5s) | 37.7s (deps 26.6s, clippy 2.9s) | 8.4s (3.1s) |
+
+Cold builds are slower and source-edit rebuilds are faster. The cold overhead is
+the dependency build followed by compressing the dependency artifacts with zstd and
+decompressing them in the consumer, which the old single build did not do. The
+archives are large (466M + 764M + 368M, about 1.6 GB), and a fresh runner pulls
+them from Cachix, which is a cost of this design. The test check ran 617 tests
+(610 + 5 + 2 in the unit and integration binaries, no doctests) before and after.
+
+Frequency, counted from git history: of 293 commits since 2026-09-01, 281 touched
+the old cuetty source and 242 still touch the narrowed one, while about 23
+non-release commits would change the cuetty dependency derivations. Most commits
+therefore take the faster source-edit path and a minority pay the cold cost. The
+effect on CI is not yet measured: before this change the `checks.cuetty` job, which
+builds all four cuetty checks, took 5m26s on pull request run 43256828942.

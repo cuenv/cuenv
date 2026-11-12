@@ -80,7 +80,7 @@
         '';
         cuetty = import ./apps/cuetty/nix.nix {
           pkgs = cuettyPkgs;
-          inherit cue-bridge rustfmtOptions rustfmtProbe sourceFilter;
+          inherit crane cue-bridge pinDepsVersions pinLockVersions rustfmtOptions rustfmtProbe sourceFilter;
         };
 
         # Native packages and checks need the compiler and lint/format tools,
@@ -336,25 +336,35 @@
         # of every member and every `path` dependency's version requirement, so
         # the dummy source carried the release number. Pin both here. Nothing is
         # compiled from them but empty stand-ins for the workspace's own crates.
-        depsCraneLib = craneLib.overrideScope (_final: prev: {
+        #
+        # `shouldPin` says which packages' own versions to pin. The workspace's
+        # members all do; a standalone workspace that also carries a crate whose
+        # version matters (cuetty's patched stacksafe) names the ones to move.
+        pinDepsVersions = { shouldPin ? _name: true }: baseLib: baseLib.overrideScope (_final: prev: {
           cleanCargoToml = args:
             let
-              pinPathDependencies = pkgs.lib.mapAttrs (_: dependency:
+              pinPathDependencies = wanted: pkgs.lib.mapAttrs (name: dependency:
                 if builtins.isAttrs dependency && dependency ? path && dependency ? version
+                  && wanted (dependency.package or name)
                 then dependency // { version = depsWorkspaceVersion; }
                 else dependency);
-              pinSection = name: toml:
-                if toml ? ${name} then { ${name} = pinPathDependencies toml.${name}; } else { };
-              pinTables = toml: toml
-                // pinSection "dependencies" toml
-                // pinSection "dev-dependencies" toml
-                // pinSection "build-dependencies" toml;
+              pinSection = wanted: name: toml:
+                if toml ? ${name} then { ${name} = pinPathDependencies wanted toml.${name}; } else { };
+              pinTablesFor = wanted: toml: toml
+                // pinSection wanted "dependencies" toml
+                // pinSection wanted "dev-dependencies" toml
+                // pinSection wanted "build-dependencies" toml;
+              # A member's own tables honour the predicate. The root manifest's
+              # `[workspace.dependencies]` lists the release's crates with the
+              # release's version, so it always pins.
+              pinTables = pinTablesFor shouldPin;
               cleaned = prev.cleanCargoToml args;
               pinnedPackage = if cleaned ? package && !(cleaned.package.version or { } ? workspace)
+                  && shouldPin (cleaned.package.name or "")
                 then { package = cleaned.package // { version = depsWorkspaceVersion; }; }
                 else { };
               pinnedWorkspace = if cleaned ? workspace then {
-                workspace = pinTables cleaned.workspace
+                workspace = pinTablesFor (_: true) cleaned.workspace
                   // pkgs.lib.optionalAttrs (cleaned.workspace ? package && cleaned.workspace.package ? version) {
                     package = cleaned.workspace.package // { version = depsWorkspaceVersion; };
                   };
@@ -365,16 +375,23 @@
             in
             pinTables cleaned // pinnedPackage // pinnedWorkspace // pinnedTargets;
         });
+        depsCraneLib = pinDepsVersions { } craneLib;
 
         # The lockfile of that stand-in workspace: the same file with the
         # version of every package that does not come from a registry or git
         # pinned. `cargo --locked` accepts it because those packages are
         # exactly the workspace members the manifests above describe.
-        depsCargoLockContents =
+        pinLockVersions = { shouldPin ? _name: true }: lockContents:
           let
-            blocks = pkgs.lib.splitString "[[package]]\n" (builtins.readFile ./Cargo.lock);
+            blocks = pkgs.lib.splitString "[[package]]\n" lockContents;
+            blockName = block:
+              let
+                nameLines = builtins.filter (pkgs.lib.hasPrefix "name = \"") (pkgs.lib.splitString "\n" block);
+              in
+              if nameLines == [ ] then ""
+              else pkgs.lib.removeSuffix "\"" (pkgs.lib.removePrefix "name = \"" (builtins.head nameLines));
             pinBlock = block:
-              if pkgs.lib.hasInfix "\nsource = " block then block
+              if pkgs.lib.hasInfix "\nsource = " block || !(shouldPin (blockName block)) then block
               else pkgs.lib.concatStringsSep "\n" (map
                 (line: if pkgs.lib.hasPrefix "version = \"" line
                   then "version = \"${depsWorkspaceVersion}\""
@@ -383,6 +400,7 @@
           in
           builtins.head blocks
           + pkgs.lib.concatMapStrings (block: "[[package]]\n" + pinBlock block) (builtins.tail blocks);
+        depsCargoLockContents = pinLockVersions { } (builtins.readFile ./Cargo.lock);
 
         # Bridge setup helper
         setupBridge = ''
