@@ -106,6 +106,12 @@
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
         version = cargoToml.workspace.package.version;
 
+        # Dependency-only derivations must not change with the release number,
+        # or every release rebuilds every dependency on every platform. They
+        # build a stand-in workspace whose members all carry this version, in
+        # the manifests (below) and in the lockfile (`depsCargoLockContents`).
+        depsWorkspaceVersion = "0.0.0";
+
         # Platform-specific build inputs
         # Note: darwin frameworks (CoreFoundation, Security, etc.) are now provided
         # automatically by the default SDK - no explicit references needed
@@ -132,18 +138,38 @@
           done < <(find "$out" -name '*.md' -print0)
         '';
 
-        # CUE bridge builder
-        cue-bridge = (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) {
+        # CUE bridge builder. The sources are the Go files, the module files, the
+        # checked-in header and the one fixture the Go tests read, so an edit to
+        # the crate's Rust code, changelog or benches leaves the bridge alone. The
+        # version is a constant for the same reason: a release must not rebuild it.
+        cueBridgeSource = builtins.path {
+          name = "cue-bridge-source";
+          path = fs.toSource {
+            root = ./crates/cuengine;
+            fileset = fs.intersection targetFreeFileset (fs.unions [
+              (fs.fileFilter (file: file.hasExt "go") ./crates/cuengine)
+              ./crates/cuengine/go.mod
+              ./crates/cuengine/go.sum
+              ./crates/cuengine/testdata
+              (fs.fileFilter (file: file.hasExt "c" || file.hasExt "h" || file.hasExt "s" || file.hasExt "S") ./crates/cuengine)
+            ]);
+          };
+        };
+        cueBridgeArgs = {
           pname = "libcue-bridge";
-          inherit version;
-          src = filteredSource ./crates/cuengine;
+          version = "0.0.0";
+          src = cueBridgeSource;
           vendorHash = "sha256-2127EeuvrvXzjJQNgN3yVd7il9PCISlS+8+N1sUlYPQ=";
           nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.hostPlatform.isDarwin) [ pkgs.binutils ];
+        };
+        buildGoModule126 = pkgs.buildGoModule.override { go = pkgs.go_1_26; };
 
-          # buildGoModule's default checkPhase calls `getGoDirs`, which only its own
-          # buildPhase defines. Overriding buildPhase therefore made the inherited
-          # checkPhase fail silently and skip every Go test, so the check phase is
-          # explicit and uses the same native CGO toolchain as the build.
+        # The archives alone. Every Rust derivation depends on this one, so it
+        # runs no tests: they are `cue-bridge-test`, a flake check of its own.
+        cue-bridge = buildGoModule126 (cueBridgeArgs // {
+          # buildGoModule's default buildPhase would not produce a C archive, and
+          # overriding it leaves `getGoDirs` undefined, so the build is explicit
+          # and uses the same native CGO toolchain as the tests.
           buildPhase = ''
             runHook preBuild
 
@@ -158,6 +184,33 @@
             CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a $go_sources
             cp libcue_bridge.h $out/release/
 
+            runHook postBuild
+          '';
+
+          doCheck = false;
+
+          installPhase = ''
+            runHook preInstall
+            runHook postInstall
+          '';
+
+          meta = with pkgs.lib; {
+            description = "Go CUE bridge library for cuenv";
+            license = with licenses; [ mit asl20 ];
+            platforms = platforms.unix ++ platforms.windows;
+          };
+        });
+
+        # `go vet` and the full Go test suite, including the scaling experiment
+        # that is otherwise skipped. Nothing depends on this derivation, so Rust
+        # builds start without waiting for it.
+        cue-bridge-test = cue-bridge.overrideAttrs (_: {
+          # Only the derivation's own name changes: the vendored modules stay
+          # the bridge's, rather than a second download of the same files.
+          name = "libcue-bridge-test-0.0.0";
+          inherit (cue-bridge) goModules;
+          buildPhase = ''
+            runHook preBuild
             runHook postBuild
           '';
 
@@ -176,15 +229,10 @@
 
           installPhase = ''
             runHook preInstall
+            mkdir -p $out
             runHook postInstall
           '';
-
-          meta = with pkgs.lib; {
-            description = "Go CUE bridge library for cuenv";
-            license = with licenses; [ mit asl20 ];
-            platforms = platforms.unix ++ platforms.windows;
-          };
-        };
+        });
 
         # The files every Rust derivation builds from, as an explicit fileset.
         # Membership depends only on nix/source-files.json, never on what else
@@ -283,6 +331,59 @@
         # source code changes.
         src = toCraneSource sourceFileset;
 
+        # Crane builds dependencies from a dummy source made of the workspace's
+        # manifests with their targets stubbed. Those manifests keep the version
+        # of every member and every `path` dependency's version requirement, so
+        # the dummy source carried the release number. Pin both here. Nothing is
+        # compiled from them but empty stand-ins for the workspace's own crates.
+        depsCraneLib = craneLib.overrideScope (_final: prev: {
+          cleanCargoToml = args:
+            let
+              pinPathDependencies = pkgs.lib.mapAttrs (_: dependency:
+                if builtins.isAttrs dependency && dependency ? path && dependency ? version
+                then dependency // { version = depsWorkspaceVersion; }
+                else dependency);
+              pinSection = name: toml:
+                if toml ? ${name} then { ${name} = pinPathDependencies toml.${name}; } else { };
+              pinTables = toml: toml
+                // pinSection "dependencies" toml
+                // pinSection "dev-dependencies" toml
+                // pinSection "build-dependencies" toml;
+              cleaned = prev.cleanCargoToml args;
+              pinnedPackage = if cleaned ? package && !(cleaned.package.version or { } ? workspace)
+                then { package = cleaned.package // { version = depsWorkspaceVersion; }; }
+                else { };
+              pinnedWorkspace = if cleaned ? workspace then {
+                workspace = pinTables cleaned.workspace
+                  // pkgs.lib.optionalAttrs (cleaned.workspace ? package && cleaned.workspace.package ? version) {
+                    package = cleaned.workspace.package // { version = depsWorkspaceVersion; };
+                  };
+              } else { };
+              pinnedTargets = if cleaned ? target then {
+                target = pkgs.lib.mapAttrs (_: pinTables) cleaned.target;
+              } else { };
+            in
+            pinTables cleaned // pinnedPackage // pinnedWorkspace // pinnedTargets;
+        });
+
+        # The lockfile of that stand-in workspace: the same file with the
+        # version of every package that does not come from a registry or git
+        # pinned. `cargo --locked` accepts it because those packages are
+        # exactly the workspace members the manifests above describe.
+        depsCargoLockContents =
+          let
+            blocks = pkgs.lib.splitString "[[package]]\n" (builtins.readFile ./Cargo.lock);
+            pinBlock = block:
+              if pkgs.lib.hasInfix "\nsource = " block then block
+              else pkgs.lib.concatStringsSep "\n" (map
+                (line: if pkgs.lib.hasPrefix "version = \"" line
+                  then "version = \"${depsWorkspaceVersion}\""
+                  else line)
+                (pkgs.lib.splitString "\n" block));
+          in
+          builtins.head blocks
+          + pkgs.lib.concatMapStrings (block: "[[package]]\n" + pinBlock block) (builtins.tail blocks);
+
         # Bridge setup helper
         setupBridge = ''
           mkdir -p target/debug target/release
@@ -351,12 +452,30 @@
 
         # Keep dependency-only derivations aligned with downstream cargo flags.
         # Mixing workspace-wide and package-specific scopes forces Cargo to rebuild.
+        #
+        # They also depend on nothing that changes with a release or with the
+        # bridge. Crane replaces every build script with an empty one in the
+        # dummy source (`package.build` points at it), so the Go bridge, the
+        # 1Password SDK and the tools only the bridge's and the CLI's own build
+        # scripts use are not needed to compile dependencies.
+        # The source leaves out Cargo.lock: Crane copies the file it finds in the
+        # source into the dummy one, so the release number would leak back in.
+        depsOnlySource = toCraneSource (fs.difference sourceFileset ./Cargo.lock);
         cargoArtifactsArgs = {
+          src = depsOnlySource;
+          version = depsWorkspaceVersion;
+          cargoLock = builtins.toFile "Cargo.lock" depsCargoLockContents;
           preBuild = "";
           buildInputs = platformBuildInputs;
+          nativeBuildInputs = [ pkgs.pkg-config ];
         };
+        depsOnlyCommonArgs = builtins.removeAttrs commonArgs [
+          "CUE_BRIDGE_PATH"
+          "ONEPASSWORD_WASM_PATH"
+        ];
+        buildDepsOnly = depsCraneLib.buildDepsOnly;
 
-        workspaceCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
+        workspaceCargoArtifacts = buildDepsOnly (depsOnlyCommonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
           # Clippy consumes metadata, so building and linking release binaries
           # and test executables here only wastes compilation and cache space.
@@ -367,7 +486,7 @@
         # Test binaries are built with the lightweight `ci` profile (no LTO,
         # default codegen-units) so the workspace-wide nextest compile stays
         # within CI runner memory. The release binary keeps `[profile.release]`.
-        workspaceCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
+        workspaceCiCargoArtifacts = buildDepsOnly (depsOnlyCommonArgs // cargoArtifactsArgs // ciBuildArgs // {
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
           # One pass prepares regular and dev dependencies together. Crane's
           # default check/build/test sequence compiles them three times.
@@ -375,7 +494,7 @@
           buildPhaseCargoCommand = "cargoWithProfile test ${workspaceAllFeaturesCargoExtraArgs} --no-run";
         });
 
-        cuenvCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
+        cuenvCargoArtifacts = buildDepsOnly (depsOnlyCommonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = cuenvPackageCargoExtraArgs;
           # The package is smoke-tested after installation; its Rust tests have
           # dedicated checks and do not belong in a bootstrap dependency build.
@@ -534,7 +653,7 @@
           '';
         };
 
-        infrastructureE2eCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // ciBuildArgs // {
+        infrastructureE2eCargoArtifacts = buildDepsOnly (depsOnlyCommonArgs // cargoArtifactsArgs // ciBuildArgs // {
           pname = "cuenv-infrastructure-e2e";
           cargoExtraArgs = infrastructureE2eCargoExtraArgs;
           doCheck = false;
@@ -821,6 +940,7 @@
           inherit (cuetty) cuetty-test cuetty-clippy cuetty-fmt;
           cuenv-audit = audit-check;
           cuenv-bdd = bdd-check;
+          cuenv-cue-bridge-test = cue-bridge-test;
           cuenv-clippy = clippy-check;
           cuenv-deny = deny-check;
           cuenv-doctest = doc-test-check;

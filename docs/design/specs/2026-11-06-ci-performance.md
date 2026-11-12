@@ -518,3 +518,58 @@ Two experiments were measured and not adopted:
   119s to 47s, but its package scope resolves features differently, so 13
   third-party crates recompiled on every run and the check's own compilation
   rose from 23.5s to 34.7s. It keeps its own dependency derivation.
+
+### Version-independent dependencies and a decoupled Go bridge
+
+A release commit changed the workspace version, and the version reached every
+dependency derivation twice: through the derivation name, and through Crane's dummy
+source, which keeps each workspace member's version in `Cargo.toml` and
+`Cargo.lock`. The release commit for 0.73.1 therefore rebuilt every dependency on
+every platform, and its CI took 14m03s against 1m26s for the commit before it.
+The `libcue-bridge` derivation took the version too.
+
+The four `buildDepsOnly` derivations now build a stand-in workspace that carries
+the constant version `0.0.0`:
+
+- The source passed to them leaves out `Cargo.lock`, because Crane copies the file
+  it finds there into the dummy source, which would bring the release number back.
+  The lockfile is passed as `cargoLock` and `cargoLockContents` instead: the same
+  text with the `version` of every package that has no `source` set to `0.0.0`.
+- Crane's `cleanCargoToml` is overridden in a derived `craneLib` to set the package
+  version, `workspace.package.version` and the version of every dependency that
+  has a `path` to the same constant, so the manifests, the lockfile and the
+  workspace dependencies stay consistent and `cargo --locked` accepts the result.
+- Their `version` is the constant too, so the derivation names no longer change.
+
+Third-party crates keep their fingerprints because those do not include the
+versions of the crates that depend on them; only the workspace's own crates are
+compiled again by the consuming check, as before.
+
+Crane replaces every build script in the dummy source with an empty one (the
+generated `Cargo.toml` points `package.build` at it), so the dependency
+derivations no longer receive `CUE_BRIDGE_PATH`, `ONEPASSWORD_WASM_PATH`, Go, the
+CUE tool, git or Zig. Only `pkg-config` stays, for third-party build scripts.
+
+The bridge had two further problems. Its source was the whole `crates/cuengine`
+directory, so an edit to any Rust file, benchmark or the changelog rebuilt it, and
+its check phase ran `go vet` and the full Go suite, so every Rust derivation waited
+for the Go tests. Now:
+
+- `cue-bridge` has the constant version `0.0.0`, builds from the Go files,
+  `go.mod`, `go.sum`, the C and assembly sources and headers in the module
+  directory, and `testdata/` (the Go tests read only `large_project.json`), and
+  has no check phase. `vendorHash` is unchanged.
+- `go vet ./...` and `CUENV_FROZEN_SCALING=1 GOMAXPROCS=4 go test -timeout 30m
+  ./...` run in the new flake check `cuenv-cue-bridge-test`, which reuses the
+  bridge's vendored modules. Nothing depends on it. It runs on every platform that
+  used to run the suite inside the bridge: the `checks.clippy` job builds it for
+  `x86_64-linux`, `darwin.clippy` for `aarch64-darwin` and `arm.cuenv` for
+  `aarch64-linux`, so every `x86_64-linux` flake check is still covered by a job,
+  the Go suite still runs on macOS and ARM, and no runner was added.
+
+Measured on the same 32-core x86_64 Linux machine as above, single runs, with
+Cachix disabled: after a simulated release bump from 0.73.1 to 0.73.2 the
+dependency and bridge derivation paths were unchanged, and `cuenv-nextest`
+rebuilt alone in 36.7s with 4,510 tests passing. Before the change the same bump
+also rebuilt the shared test dependency derivation (82s) and the bridge together
+with its Go suite (the suite alone ran in 46s).

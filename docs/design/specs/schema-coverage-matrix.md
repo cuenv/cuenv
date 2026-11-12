@@ -171,7 +171,10 @@ hardware. `ci.github.execution: "direct"` runs a task without `cuenv task`, whic
 group covers every `x86_64-linux` flake check: `checks.cuetty` builds the four
 cuetty checks in one job, and `checks.infrastructure-e2e` also names
 `cuenv-fake-terraform-provider` and `cuenv-numeric-interop`, which its suite is
-built from. Dependabot pull requests do not rebase automatically, so release
+built from. `cuenv-cue-bridge-test`, the Go bridge's `go vet` and test
+suite, runs in `checks.clippy` (x86_64-linux), `darwin.clippy` (aarch64-darwin)
+and `arm.cuenv` (aarch64-linux). Dependabot pull requests do not rebase
+automatically, so release
 commits do not start their CI while release binaries wait for x86 runners.
 
 Flake source filters exclude Cargo `target` directories, including under the
@@ -210,7 +213,10 @@ release application.
 Nix-backed source installs and bootstrap package realization support
 both daemon profiles and the upstream single-user profile. Infrastructure
 dependency preparation explicitly stubs its auto-discovered integration test
-targets before compiling them with Crane's dummy source.
+targets before compiling them with Crane's dummy source. The four dependency
+derivations are version independent: their dummy source pins every workspace
+member's version, so a release does not rebuild any dependency. The Go bridge is
+built from its Go sources alone with no tests, and its tests are a flake check.
 
 CLI note: project discovery (`cuenv ci`, `cuenv sync`) accepts file attributes
 such as `@extern(embed)` or `@if(tag)` before an `env.cue` package clause.

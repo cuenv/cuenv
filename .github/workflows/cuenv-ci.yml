@@ -218,7 +218,7 @@ jobs:
         installCommand: nix profile install --option flake-registry '' --inputs-from . nixpkgs#cachix
         name: cuenv
     - name: checks.clippy
-      run: nix build .#checks.x86_64-linux.cuenv-clippy .#checks.x86_64-linux.cuenv-rust-parameter-style -L --accept-flake-config
+      run: nix build .#checks.x86_64-linux.cuenv-clippy .#checks.x86_64-linux.cuenv-rust-parameter-style .#checks.x86_64-linux.cuenv-cue-bridge-test -L --accept-flake-config
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
