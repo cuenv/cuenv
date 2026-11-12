@@ -466,6 +466,16 @@ because `cuenv-infrastructure-e2e` is built from both; that job now names them, 
 they stay covered if the suite stops using them. macOS still runs only
 `cuenv-clippy` and `cuenv-nextest`.
 
+The `cuenv` check has no job of its own. `checks.x86_64-linux.cuenv` and
+`packages.x86_64-linux.cuenv` are the same derivation, and its smoke test
+(`cuenv --version`, `env print` on `examples/env-basic`) is an install check
+inside it. The `sync-check` pipeline bootstraps this repository's own cuenv
+(`config.ci.cuenv: {source: "nix", version: "self"}`) with `nix build .#cuenv`,
+so that step builds and checks it, and `cuenv-sync-check` triggers on every path
+`cuenv-ci` does (its path list differs only by the workflow's own file, which
+cannot change the package). See the 2026-11-12 follow-up for the cost this
+removes.
+
 ## Follow-up: development shell and shared test artifacts (2026-11-12)
 
 Measured at 0.73.1 on one 32-core x86_64 Linux machine. Nix builds ran with only
@@ -729,3 +739,31 @@ rebuilds of 16 to 18s).
 
 The macOS and cross-compiled linux-arm64 release builds have not yet been built
 with thin LTO, so run the `release-dry-run` pipeline before the next release.
+
+### One build of the `cuenv` package per pull request
+
+On the thin-LTO commit `c0e00ce2` the package was compiled twice at the same
+moment on separate runners: `checks.cuenv` in `cuenv-ci` took 175s in its step,
+and the "Build cuenv (nix)" bootstrap of `cuenv-sync-check` took 143s (runs
+43282606369 and 43282606387). Neither could substitute the other's result
+because they started together. The `checks.cuenv` job is removed from the `ci`
+pipeline; the bootstrap builds the package, including its install check, on
+every trigger of the `ci` pipeline except a change to `cuenv-ci.yml` alone,
+which cannot change the package. Every `x86_64-linux` flake check is still built
+by some CI job.
+
+Trade-off: a failure to build the package, or to pass its install check, now
+shows as a failed `cuenv-sync-check` rather than a failed `checks.cuenv`. No
+branch protection rule requires `checks.cuenv`. `docs-preview` still builds the
+package separately on pull requests that touch the docs (188s in run
+43282606339); that is not addressed here.
+
+Publishing the `x86_64-linux` package to Cachix now depends on the `sync-check`
+job. On `main` run 43105997270 the `checks.cuenv` job pushed the `cuenv-0.73.1`
+package path, while `cuenv-sync-check` run 43105997318 logged it as skipped. The
+`sync-check` job has the same Cachix setup step, so it is expected to push the
+path from now on, but that has not been observed yet.
+
+Coupling to keep: if the `sync-check` pipeline is narrowed or removed, or
+`ci.cuenv.source` stops being `nix`, the package check must be listed in the
+`ci` pipeline again.

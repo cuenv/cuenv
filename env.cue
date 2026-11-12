@@ -372,12 +372,14 @@ schema.#Project & {
 		checks: {
 			type: "group"
 
-			cuenv: schema.#Task & {
-				command: "nix"
-				args: ["build", ".#checks.x86_64-linux.cuenv", "-L", "--accept-flake-config"]
-				inputs: _flakeInputs
-			}
-
+			// There is no `cuenv` check here on purpose. `checks.x86_64-linux.cuenv`
+			// is the same derivation as `packages.x86_64-linux.cuenv`, and the
+			// `sync-check` pipeline's bootstrap (`nix build .#cuenv`, because of
+			// `ci.cuenv.version: "self"`) builds and smoke-tests it on every trigger of
+			// this pipeline except a change to `cuenv-ci.yml` alone. Listing it here
+			// would compile the same derivation twice at once. If `sync-check` is
+			// narrowed or removed, or `ci.cuenv.source` stops being `nix`, list it
+			// here again.
 			audit: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-audit", "-L", "--accept-flake-config"]

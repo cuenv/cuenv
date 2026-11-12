@@ -169,7 +169,11 @@ a `runners.arch` entry names the job's runner, not necessarily its target's
 hardware. `ci.github.execution: "direct"` runs a task without `cuenv task`, which
 `cargo.build` uses so its jobs need no `build.cuenv` or 1Password token. The manual
 `release-dry-run` pipeline runs those builds without publishing. The `checks`
-group covers every `x86_64-linux` flake check: `checks.cuetty` builds the four
+group covers every `x86_64-linux` flake check except `cuenv`, which is the same
+derivation as the package and is built, with its install-check smoke test, by the
+`sync-check` pipeline's `nix build .#cuenv` bootstrap on every trigger of the `ci`
+pipeline except a change to `cuenv-ci.yml` alone (a package build failure
+surfaces as a failed `cuenv-sync-check`). `checks.cuetty` builds the four
 cuetty checks in one job (their third-party crates compile once per profile and
 their source is limited to the app, `crates/cuengine` and the CUE files the
 catalog test reads), and `checks.infrastructure-e2e` also names
