@@ -1299,7 +1299,7 @@ mod tests {
             bootstrap
                 .steps
                 .iter()
-                .all(|step| step.uses.as_deref() != Some("actions/upload-artifact@v4"))
+                .all(|step| step.uses.as_deref() != Some("actions/upload-artifact@v7"))
         );
     }
 

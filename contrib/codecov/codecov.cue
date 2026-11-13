@@ -36,7 +36,7 @@ import "github.com/cuenv/cuenv/schema"
 			CODECOV_TOKEN: "${CODECOV_TOKEN}"
 		}
 		provider: github: {
-			uses: "codecov/codecov-action@v5"
+			uses: "codecov/codecov-action@v7"
 			with: {
 				"token":            "${CODECOV_TOKEN}"
 				"fail_ci_if_error": "false"
@@ -73,7 +73,7 @@ import "github.com/cuenv/cuenv/schema"
 		command:   "codecov"
 		args: ["upload-process", "--auto-detect"]
 		provider: github: {
-			uses: "codecov/codecov-action@v5"
+			uses: "codecov/codecov-action@v7"
 			with: {
 				"use_oidc":         "true"
 				"fail_ci_if_error": "false"

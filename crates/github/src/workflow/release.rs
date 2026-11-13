@@ -181,7 +181,7 @@ impl ReleaseWorkflowBuilder {
         );
         steps.push(Step::run(&build_cmd).with_name("Build for ${{ matrix.target }}"));
 
-        let mut upload_step = Step::uses("actions/upload-artifact@v4")
+        let mut upload_step = Step::uses("actions/upload-artifact@v7")
             .with_name("Upload binary")
             .with_input(
                 "name",
@@ -255,7 +255,7 @@ impl ReleaseWorkflowBuilder {
         }
 
         for target in &self.targets {
-            let mut download_step = Step::uses("actions/download-artifact@v4")
+            let mut download_step = Step::uses("actions/download-artifact@v8")
                 .with_name(format!("Download {}", target.id))
                 .with_input(
                     "name",

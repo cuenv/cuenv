@@ -36,7 +36,7 @@ import "github.com/cuenv/cuenv/schema"
 				RUSTC_WRAPPER: "sccache"
 				SCCACHE_DIR:   "${{ runner.temp }}/sccache"
 			}
-			provider: github: uses: "mozilla-actions/sccache-action@v0.0.9"
+			provider: github: uses: "mozilla-actions/sccache-action@v0.0.11"
 		},
 		{
 			id:        "export-sccache-env"

@@ -276,7 +276,7 @@ fn test_build_cuenv_bootstrap_job_includes_cuenv_and_prereqs_but_not_dependents(
     assert!(
         job.steps
             .iter()
-            .all(|step| step.uses.as_deref() != Some("actions/upload-artifact@v4"))
+            .all(|step| step.uses.as_deref() != Some("actions/upload-artifact@v7"))
     );
 }
 

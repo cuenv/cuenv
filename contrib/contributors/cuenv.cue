@@ -123,7 +123,7 @@ import "github.com/cuenv/cuenv/schema"
 			label:    "Setup Go"
 			priority: 6
 			provider: github: {
-				uses: "actions/setup-go@v5"
+				uses: "actions/setup-go@v7"
 				with: {
 					"go-version-file":       "crates/cuengine/go.mod"
 					"cache-dependency-path": "crates/cuengine/go.sum"
