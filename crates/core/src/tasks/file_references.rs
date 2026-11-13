@@ -59,6 +59,17 @@ impl ReferenceChecks {
         }
     }
 
+    /// Never look into `directory` while matching a glob: the result
+    /// cache's store when it lies in the repository, which hashing leaves out
+    /// of every input the same way (see [`WalkHasher::excluding`]). A glob
+    /// that matches only files of the store then matches nothing here
+    /// either.
+    #[must_use]
+    pub fn excluding(mut self, directory: impl AsRef<Path>) -> Self {
+        self.walker = self.walker.excluding(directory);
+        self
+    }
+
     /// The root every bound path is placed under.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -230,6 +241,29 @@ mod tests {
             }),
             Ok(())
         );
+    }
+
+    #[test]
+    fn a_glob_never_matches_the_cache_store_hashing_leaves_out() {
+        let directory = repository();
+        let root = directory.path();
+        let store = root.join("content/.cuenv-cache");
+        fs::create_dir_all(store.join("cas")).expect("a directory");
+        fs::write(store.join("cas/blob.json"), "{}").expect("a file");
+        let content = FilesAnchor::Project("content".to_string());
+        let content_directory = root.join("content");
+        let bound = BoundPath {
+            anchor: &content,
+            directory: &content_directory,
+            path: "**/*.json",
+        };
+
+        assert_eq!(ReferenceChecks::new(root).check(bound), Ok(()));
+        let error = ReferenceChecks::new(root)
+            .excluding(&store)
+            .check(bound)
+            .expect_err("only the store holds a JSON file");
+        assert!(error.contains("matches nothing"), "{error}");
     }
 
     #[test]

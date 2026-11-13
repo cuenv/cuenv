@@ -217,6 +217,9 @@ pub struct TaskScope {
     /// Checks of file reference paths against the repository each lies in,
     /// by its root, remembered for the run.
     reference_checks: BTreeMap<PathBuf, ReferenceChecks>,
+    /// The result cache's store, which no file reference matches into (see
+    /// [`Self::excluding_cache_store`]).
+    cache_store: Option<PathBuf>,
 }
 
 impl TaskScope {
@@ -247,6 +250,7 @@ impl TaskScope {
             resolved: BTreeSet::new(),
             file_problems: BTreeMap::new(),
             reference_checks: BTreeMap::new(),
+            cache_store: None,
         };
         if let Some(workspace) = contributor_workspace(&scope.root.root) {
             for name in scope.local.tasks.keys().filter(|name| is_contributor(name)) {
@@ -256,6 +260,16 @@ impl TaskScope {
             }
         }
         scope
+    }
+
+    /// Leave the result cache's store at `store` out of what the file
+    /// references of this run match, as hashing leaves it out of their
+    /// inputs: a glob that would select only the store's own files is a
+    /// reference that matches nothing.
+    #[must_use]
+    pub fn excluding_cache_store(mut self, store: PathBuf) -> Self {
+        self.cache_store = Some(store);
+        self
     }
 
     /// Follow the dependencies of the tasks named `names`, loading every
@@ -321,9 +335,13 @@ impl TaskScope {
         let workspace =
             (!anchors.is_empty()).then(|| canonical(source.workspace_root(&owner.root)));
         let mut checks = workspace.as_ref().map(|workspace| {
-            self.reference_checks
-                .remove(workspace)
-                .unwrap_or_else(|| ReferenceChecks::new(workspace))
+            self.reference_checks.remove(workspace).unwrap_or_else(|| {
+                let checks = ReferenceChecks::new(workspace);
+                match &self.cache_store {
+                    Some(store) => checks.excluding(store),
+                    None => checks,
+                }
+            })
         });
         let mut file_problems = BTreeMap::new();
         if let Some(node) = self.node_mut(name) {

@@ -923,6 +923,34 @@ fn a_file_reference_that_does_not_bind_fails_only_the_graphs_that_reach_it() {
 }
 
 #[test]
+fn a_file_reference_never_matches_into_the_cache_store() {
+    // The store lies in the repository, as `<project>/.cuenv-cache` does
+    // without a platform cache directory, and holds the only JSON file.
+    let module = reading_files(json!([
+        {"cuenvFiles": "project", "cuenvProject": "content", "paths": ["**/*.json"]},
+    ]));
+    let store = module.directory("content/.cuenv-cache");
+    fs::create_dir_all(store.join("cas")).unwrap();
+    fs::write(store.join("cas/blob.json"), "{}").unwrap();
+
+    let mut plain = module.scope("app");
+    plain.reach(["build"], &module);
+    assert!(plain.graph(["build"]).is_ok());
+
+    let mut scope = module.scope("app").excluding_cache_store(store);
+    scope.reach(["build"], &module);
+    let Err(error) = scope.graph(["build"]) else {
+        panic!("a reference that matches only the store");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("`**/*.json` matches nothing in content/"),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_problem_recorded_against_a_reached_node_fails_the_graph() {
     let mut module = reading_files(json!(["src/**"]));
     if let Some(app) = module.projects.get_mut("app") {
