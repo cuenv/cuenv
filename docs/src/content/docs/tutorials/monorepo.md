@@ -89,6 +89,39 @@ cuenv task dev -p services/api
 cuenv task dev -p services/web
 ```
 
+## 5) Read files of another service, or of the repository
+
+A task that reads files outside its own service names them through a file
+reference instead of a `../` path, so caching and `cuenv ci` know which changes
+matter. Import the other service by its directory and the package `cuenv`, and
+say which of its files the task reads; name files at the module root, such as a
+lockfile, from there:
+
+```cue
+// services/web/env.cue — any language version
+import (
+  "github.com/cuenv/cuenv/schema"
+  api "my-monorepo/services/api:cuenv"
+)
+
+tasks: {
+  build: schema.#Task & {
+    command: "bun"
+    args: ["run", "build"]
+    inputs: [
+      "src/**",
+      api.#Files & {paths: ["openapi.yaml"]},
+      schema.#ModuleFiles & {paths: ["bun.lock"]},
+    ]
+  }
+}
+```
+
+`api` declares nothing about the files `web` reads, and no task of `api` runs.
+Every path must match at least one file, so renaming `openapi.yaml` in `api` is
+an error for `web` rather than a silently smaller input set. See
+[Files of another project, or of the module](/how-to/run-tasks/#files-of-another-project-or-of-the-module).
+
 ## Next steps
 
 - [Configure a project](/how-to/configure-a-project/)

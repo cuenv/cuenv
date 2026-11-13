@@ -22,6 +22,7 @@ Add `stdout`, `stderr`, and `exitCode` fields to `#Task` that evaluate to a **ty
 ```cue
 #TaskOutputRef: {
 	cuenvOutputRef: true
+	cuenvProject:   string
 	cuenvTask:      string
 	cuenvOutput:    "stdout" | "stderr" | "exitCode"
 }
@@ -29,10 +30,12 @@ Add `stdout`, `stderr`, and `exitCode` fields to `#Task` that evaluate to a **ty
 #Task: {
 	// Injected by Go bridge via FillPath; default empty string for standalone CUE usage
 	_name: string | *""
+	// Stamped by #Project with the project's name
+	_cuenvProject: string | *""
 
-	stdout:   #TaskOutputRef & { cuenvTask: _name, cuenvOutput: "stdout" }
-	stderr:   #TaskOutputRef & { cuenvTask: _name, cuenvOutput: "stderr" }
-	exitCode: #TaskOutputRef & { cuenvTask: _name, cuenvOutput: "exitCode" }
+	stdout:   #TaskOutputRef & { cuenvProject: _cuenvProject, cuenvTask: _name, cuenvOutput: "stdout" }
+	stderr:   #TaskOutputRef & { cuenvProject: _cuenvProject, cuenvTask: _name, cuenvOutput: "stderr" }
+	exitCode: #TaskOutputRef & { cuenvProject: _cuenvProject, cuenvTask: _name, cuenvOutput: "exitCode" }
 
 	args?: [...(string | #TaskOutputRef)]
 	env?:  [string]: #EnvironmentVariable | #TaskOutputRef
@@ -80,7 +83,7 @@ tasks: {
 
 The implementation uses a **two-phase placeholder approach** instead of extending `Task.args` to a union type. This avoids breaking the existing `Vec<String>` API.
 
-1. **CUE eval time**: `tasks.tmpdir.stdout` → `{ cuenvOutputRef: true, cuenvTask: "tmpdir", cuenvOutput: "stdout" }`
+1. **CUE eval time**: `tasks.tmpdir.stdout` → `{ cuenvOutputRef: true, cuenvProject: "app", cuenvTask: "tmpdir", cuenvOutput: "stdout" }`. A reference whose `cuenvProject` is another project's (reached through an import) is recorded as a problem of the task that holds it, raised where a graph reaches that task: output references do not cross projects yet (#611).
 2. **`process_output_refs` (JSON pre-processing)**: Ref objects replaced with `"cuenv:ref:tmpdir:stdout"` placeholder strings; `stdout`/`stderr`/`exitCode` fields stripped from task objects; dependency pairs collected
 3. **Task deserialization**: Sees plain strings in `args`/`env` — no API change needed
 4. **FQDN rewriting (workspace layer)**: Bare names transformed to FQDNs for multi-project support

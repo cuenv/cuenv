@@ -199,9 +199,29 @@ a warning says why. That covers:
 - an input that is not a valid glob;
 - an input with a `..` segment, or an absolute input. Changed files are relative
   to the repository, so such an input can never be matched and its task runs
-  whenever anything changed. The warning is given once per task. `..` inputs
-  will be rejected once CUE-native cross-project references ship
-  ([#611](https://github.com/cuenv/cuenv/issues/611)).
+  whenever anything changed. The warning is given once per task, and for a `..`
+  input it gives the file reference to write instead: `content.#Files & {paths:
+  [...]}` when the path lies in another project, `schema.#ModuleFiles & {paths:
+  [...]}` otherwise. `..` inputs will be rejected once CUE-native cross-project
+  task references ship ([#611](https://github.com/cuenv/cuenv/issues/611)).
+
+A [file reference](/how-to/run-tasks/#files-of-another-project-or-of-the-module)
+is compared from its anchor: `content.#Files & {paths: ["articles/**"]}` selects
+its task when a file under `content/articles/` changed, whichever project runs
+the pipeline and whether or not `content` is under `--path`; `schema.#ModuleFiles
+& {paths: ["bun.lock"]}` selects it when the module's root `bun.lock` changed. A
+task whose only inputs are file references is compared like any other, not run
+on every change. A dependency's file references keep their own anchors.
+
+Before any task is selected — for an affected run, `--all`, and a run with
+nothing to compare alike — `cuenv ci` binds every file reference the pipeline
+reaches, through dependencies on other projects too, and checks that each path
+matches at least one file. It also raises the problems recorded against the
+nodes the pipeline reaches (another project's task in `dependsOn` or in the
+pipeline's `tasks`, a reference without `paths`). Any of them fails that
+pipeline, naming the project, the pipeline and the task; a problem in a node the
+pipeline does not reach never fails it. A run without `--path` plans every
+project first, so such a problem aborts the run.
 
 An input is read the same way wherever cuenv reads it: when it hashes inputs
 for the cache, when it compares them with changed files, and when it derives
@@ -218,11 +238,13 @@ always has been:
 
 - If the pattern selects no file under its project (`shared/**` in `app`, where
   the only `shared/` is at the repository root), the task still runs and cuenv
-  warns that this root-relative reading is going away.
+  warns that this root-relative reading is going away, and how to read the file
+  on purpose: `schema.#ModuleFiles & {paths: ["shared/**"]}`.
 - If the pattern does select files under its project and the root happens to
-  have files of the same name (`package.json`, `src/**`), the task still runs
-  and nothing is said: the configuration is correct. These extra runs stop when
-  the root-relative reading is removed.
+  have files of the same name (`package.json`, `src/**`), the task still runs.
+  The configuration is correct, so this is never a warning: one note says the
+  root file also matched, that this stops when the root-relative reading is
+  removed, and to add `schema.#ModuleFiles` if the task does read that file.
 
 A change to the CUE a project is built from selects **every** task of the
 project's pipeline. A task's command, inputs and dependencies are computed from

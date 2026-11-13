@@ -320,6 +320,115 @@ and materialized results.
 - **Cache policy**: Use `cache: {mode: "read-write"}` for ordinary read/write caching.
 - **Limitations**: Tasks with task-local runtime `env` entries may skip the task-result cache because cuenv cannot derive a stable key.
 
+### Files of another project, or of the module
+
+A path in `inputs` starts from one of three places, and the input says which:
+
+```cue
+// app/env.cue — any language version
+package cuenv
+
+import (
+	"github.com/cuenv/cuenv/schema"
+	content "github.com/acme/site/content:cuenv"
+)
+
+schema.#Project
+name: "app"
+
+tasks: build: {
+	command: "astro"
+	args: ["build"]
+	inputs: [
+		"src/**",                                                           // this project
+		content.#Files & {paths: ["articles/**"]},                          // another project, by import
+		schema.#ModuleFiles & {paths: ["bun.lock", "services/shared/**"]},  // the module root
+	]
+}
+```
+
+- A **plain string** is a path or glob relative to the task's own project.
+- **`<pkg>.#Files & {paths: [...]}`** names files of the project you import as
+  `<pkg>`, relative to that project's directory. Import a project by its
+  directory and the package `cuenv`: `content "<module>/content:cuenv"`.
+- **`schema.#ModuleFiles & {paths: [...]}`** names files anywhere in the CUE
+  module, relative to the module root: lockfiles at the root, a directory that
+  several projects share, files beside a `#Base`.
+
+The task that reads the files chooses them; the project that holds them
+declares nothing. A file reference is a plain set of inputs: no task of the
+other project runs, and no dependency is added. It is hashed for the cache key,
+staged where it lies under the directory sandbox, compared with changed files
+by `cuenv ci`, and turned into workflow path filters by `cuenv sync ci`, exactly
+as the task's own paths are.
+
+**Every path must match at least one file.** cuenv checks it whenever it builds
+a graph that reaches the task (`cuenv task`, `cuenv ci`, `cuenv up`) and when
+`cuenv ci` selects affected tasks, including `--all` and runs with nothing to
+compare. A rename in the other project is then an error for the task that reads
+it, naming the task, the directory and the path — never a silently smaller set
+of inputs. The check reads the working tree, ignores `.gitignore`, and counts
+untracked and ignored files. `cuenv sync ci` does not check it: generating
+workflows must not depend on a working tree. A reference cannot be optional; a
+glob that is legitimately empty at times (`.cuenv/changesets/*.md` after a
+release) fails its readers then.
+
+Paths of a reference are relative to their anchor and stay inside it: no `..`,
+`.` or empty segment, no leading `/`, no surrounding whitespace. The schema
+rejects these, and cuenv checks them again on every path it binds.
+`.github/**`, `a..b/x` and `src/**/*.{ts,tsx}` are fine.
+
+A file reference stays in the real directories of its repository. Under a glob,
+a symbolic link (to a file or a directory) and a nested repository (a
+submodule, a worktree, an embedded checkout) are left out, and so is `.git`; a
+path whose literal part goes through or ends at one is an error — name the link's
+target instead. The files a glob selects are then the same locally and in a
+clean CI checkout. A submodule's own files cannot be referenced.
+
+Things to know:
+
+- `#Files` comes with the imported project. It is not in scope unqualified in a
+  project's own file — the project's own files are plain strings — and it is a
+  reserved definition on every project: a project that defines its own
+  `#Files` fails to evaluate. `#ProjectFiles` is the shape underneath it, not
+  something to write by hand.
+- A `#Base` has no `#Files`: it is merged into every project below it and owns
+  no directory. Files beside a base are module files. A base, or any file of a
+  package above a project, cannot import that project either (an import
+  cycle), so it names such files with `schema.#ModuleFiles`.
+- A reference can be stored and passed around — in a `let`, or as a field of a
+  shared package — and keeps its anchor. Never spread or iterate its `paths`
+  (`[for p in ref.paths {p}]`): that copies bare strings, which are then paths
+  of the consuming project. `["src/**", ...content.#Files & {paths: [...]}]` is
+  valid CUE and silently drops the reference.
+- A project cannot import a project in a directory above it. Two projects that
+  read each other's files cannot both import the other: one side uses
+  `schema.#ModuleFiles` with the module-relative path. References name files of
+  the same CUE module only, and nothing above the module root.
+- The CUE bridge evaluates an imported project once per importer, so importing
+  a large project only to read its files costs evaluation time.
+
+The schema also stamps every task, group, service and image with the project it
+belongs to (a reserved `cuenvRef` field), and every output reference with its
+project. A task of another project reached through an import is therefore
+never mistaken for a task of yours with the same name. Depending on it
+(`dependsOn: [content.tasks.build]`) is an error for the task that does so,
+until cross-project task references through imports arrive in a later release;
+so is another project's task in a pipeline's `tasks`, in a matrix entry's
+`task`, in a service's `watch.rebuild`, in a service's or image's `dependsOn`,
+or in an output reference (`content.tasks.build.stdout`). Each is raised only
+where a graph, affected detection or CI compilation reaches the node that holds
+it. One case is not caught yet: a dependency on another project's sequence
+whose members are all nested sequences carries no project stamp and is still
+bound by its bare name. Re-labelling another project's task
+(`tasks: articles: content.tasks.articles`) conflicts on the stamp; put
+reusable task bodies in a definition of a package that is not a project.
+
+At language version `v0.18.0` a base is written `schema.#Base...`: embedding
+`schema.#Base` there closes the package and rejects every child's `name`. Below
+`v0.18.0` that spelling does not parse and plain `schema.#Base` works as
+before; a base that embeds no schema works at every version.
+
 ### Inputs from another project
 
 An input may name another project's task instead of a path. cuenv hashes the
