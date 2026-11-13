@@ -92,6 +92,15 @@ supports_language() {
 	! version_lt "$1" "$2"
 }
 
+# --- The module as a release publishes it ------------------------------------
+
+# A release publishes every tracked file, tests included, and `cue mod publish`
+# refuses a module that imports a package none of its dependencies provides.
+# The copy published below leaves tests out, so check the module itself.
+if ! CUE_REGISTRY=none "${cue[$newest]}" mod tidy --check >"$work/tidy.err" 2>&1; then
+	record_failure "the module is not tidy, so a release cannot publish it: $(head -n2 "$work/tidy.err" | tr '\n' ' ')"
+fi
+
 # --- Publish the working tree to an in-memory registry ----------------------
 
 # Create the log first: the background job opens it asynchronously.
@@ -311,7 +320,9 @@ done
 # a directory whose files carry a `// want: TEXT` line must fail with it.
 # The files of both are not named env.cue: cuenv discovers every env.cue of
 # this repository as a project of its own module, and these are written for
-# language v0.18.0 or meant not to evaluate.
+# language v0.18.0 or meant not to evaluate. Each fixture has its own
+# cue.mod/module.cue, so that its imports of `example.com/consumer` are never
+# part of this module; the copy evaluated here gets the module written below.
 
 module_language="v0.18.0"
 
