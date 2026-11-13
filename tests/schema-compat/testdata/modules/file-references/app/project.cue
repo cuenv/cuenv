@@ -12,6 +12,10 @@ name: "app"
 // The three places a path can start from. A reference kept in a `let`
 // keeps its anchor.
 let _articles = content.#Files & {paths: ["articles/**"]}
+let _tasks = tasks
+
+// A pipeline lists the task that reads them.
+ci: pipelines: default: tasks: [_tasks.build]
 
 tasks: build: {
 	command: "true"

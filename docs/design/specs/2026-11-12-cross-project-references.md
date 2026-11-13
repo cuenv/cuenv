@@ -376,10 +376,17 @@ flake check once, when it leaves draft; draft commits use the focused gates abov
    _cuenvProject, name: _name}` on `#Task`, `#TaskGroup`, `#Service`, `#ContainerImage`, with
    hidden `_cuenvProject: string | *""`.
    - `#Project` stamps `_cuenvProject: name` on `tasks`, `services` and `images` entries, and on
-     sequence elements via `| [...((#Task | #TaskGroup) & {_cuenvProject: name}) | #TaskSequence]`.
+     sequence elements via `| (#TaskSequence & [...({_cuenvProject: name, ...} | [...])])`: the
+     sequence is checked as a `#TaskSequence` and its members only stamped. Spelling the members
+     out as a fresh `[...((#Task | #TaskGroup) & {...}) | #TaskSequence]` in a group's child
+     pattern made every task with a struct input (a file reference, `{task: "x"}`) cost minutes
+     under CUE v0.17.1 and seconds under v0.18.0-rc.1 wherever it met `#TaskNode`: a pipeline
+     entry, a `dependsOn` entry, a matrix entry's `task`
+     (`tests/schema-compat/testdata/accept/pipeline-file-references`).
    - `#TaskGroup`: `let _groupProject = _cuenvProject`; children get
-     `_cuenvProject: _groupProject`. Child-label regex excludes `cuenvRef`; Rust `TaskGroup` gets
-     an explicit `cuenvRef` field ahead of the flattened children.
+     `_cuenvProject: _groupProject`, a sequence child as `#Project` stamps one. Child-label
+     regex excludes `cuenvRef`; Rust `TaskGroup` gets an explicit `cuenvRef` field ahead of the
+     flattened children.
 2. **Output files reference.** `#TaskOutputFilesRef: {cuenvOutputFilesRef: true, cuenvProject:
    string, cuenvTask: string}` (closed, discriminated). `#Task.outputFiles: #TaskOutputFilesRef &
    {cuenvProject: _cuenvProject, cuenvTask: _name}`. Meaning: all declared `outputs` of that

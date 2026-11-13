@@ -23,7 +23,10 @@
 # CUE releases come from CUENV_SCHEMA_COMPAT_CUE (space separated). Missing
 # binaries are installed with `go install` into CUENV_SCHEMA_COMPAT_CACHE.
 # Set CUENV_SCHEMA_COMPAT_KEEP to a directory to keep mismatching exports.
-# Requires go and jq.
+# Every evaluation is stopped after CUENV_SCHEMA_COMPAT_TIMEOUT seconds
+# (default 60) and reported as a failure: a schema change can make
+# evaluation explode instead of fail, which must not hang the check.
+# Requires go, jq and coreutils' timeout.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -33,6 +36,7 @@ repo="$(pwd)"
 cue_versions="${CUENV_SCHEMA_COMPAT_CUE:-v0.15.1 v0.16.1 v0.17.1 v0.18.0-rc.1}"
 language_versions="v0.9.0 v0.14.1 v0.16.0 v0.17.0 v0.18.0"
 cache="${CUENV_SCHEMA_COMPAT_CACHE:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/cuenv/schema-compat}"
+eval_timeout="${CUENV_SCHEMA_COMPAT_TIMEOUT:-60}"
 
 work="$(mktemp -d -t cuenv-schema-compat.XXXXXX)"
 registry_pid=""
@@ -168,17 +172,28 @@ consumer() {
 # Exports are compared by value. CUE releases differ in the order they emit
 # fields that come from imported definitions, and cuenv deserialises objects
 # by key, so field order is not part of the schema contract.
+#
+# An evaluation that outlives eval_timeout fails with that said in its
+# error, so a fixture the schema makes explode (a task with file references
+# in a pipeline once took minutes under CUE v0.17) is reported, never waited
+# for.
 evaluate() {
-	local bin="$1" dir="$2" file="$3" out="$4"
+	local bin="$1" dir="$2" file="$3" out="$4" status=0
 	(
 		cd "$dir"
 		if [[ -n "$file" ]]; then
 			cp rules.cue.txt rules.cue
-			"$bin" export --out json rules.cue
+			exec timeout "$eval_timeout" "$bin" export --out json rules.cue
 		else
-			"$bin" export --out json .
+			exec timeout "$eval_timeout" "$bin" export --out json .
 		fi
-	) >"$out.raw" 2>"$out.err" || return 1
+	) >"$out.raw" 2>"$out.err" || status=$?
+	if [[ "$status" -eq 124 ]]; then
+		printf 'timed out after %ss (CUENV_SCHEMA_COMPAT_TIMEOUT): the schema makes this evaluation explode\n' \
+			"$eval_timeout" >"$out.err"
+		return 1
+	fi
+	[[ "$status" -eq 0 ]] || return 1
 	jq -S . <"$out.raw" >"$out"
 }
 

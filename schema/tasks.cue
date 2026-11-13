@@ -272,6 +272,11 @@ package schema
 	// Select child validation from the group's existing type discriminator.
 	// This avoids applying the recursive group pattern to every task-shaped
 	// object while preserving the public task fields and flat child syntax.
+	// A sequence child is checked as a #TaskSequence and only stamped with the
+	// project here. Spelling its members out as a fresh `#Task | #TaskGroup`
+	// disjunction made every task with a struct input (a file reference)
+	// cost minutes under CUE v0.17 wherever it met #TaskNode: a pipeline
+	// entry, a dependsOn entry, a matrix entry's task.
 	let _childrenByType = {
 		group: {
 			// `cuenvRef` is reserved for what cuenv writes on a group.
@@ -279,7 +284,7 @@ package schema
 				_cuenvPrefix:  _name + "."
 				_cuenvSelf:    childName
 				_cuenvProject: _groupProject
-			}) | [...((#Task | #TaskGroup) & {_cuenvProject: _groupProject}) | #TaskSequence]
+			}) | (#TaskSequence & [...({_cuenvProject: _groupProject, ...} | [...])])
 			}
 		}
 	}

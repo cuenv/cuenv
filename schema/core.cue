@@ -61,7 +61,7 @@ package schema
 		_cuenvPrefix:  ""
 		_cuenvSelf:    taskName
 		_cuenvProject: name
-	}) | [...((#Task | #TaskGroup) & {_cuenvProject: name}) | #TaskSequence]
+	}) | (#TaskSequence & [...({_cuenvProject: name, ...} | [...])])
 	// Services live in their own field but share the project DAG.
 	// Services may depend on tasks (build → run); tasks may depend on
 	// services (db ready → seed task). Cycles forbidden as with tasks.
