@@ -10,10 +10,11 @@ pub mod frozen;
 mod frozen_worker;
 
 pub use bridge::{
-    CStringPtr, DEFAULT_MODULE_EVAL_TIMEOUT, EVAL_TIMEOUT_ENV_VAR, FieldMeta, InstanceFailures,
-    InstanceSources, ModuleDependencyVersion, ModuleEvalOptions, ModuleResult, PackageScope,
-    SkippedDirectories, SkippedDirectory, SkippedReason, UnifySource, evaluate_cue_file,
-    evaluate_cue_package, evaluate_cue_package_typed, evaluate_module, evaluation_timeout,
-    get_bridge_version, instance_sources, module_dependency_version,
+    AncestorInstance, CStringPtr, DEFAULT_MODULE_EVAL_TIMEOUT, EVAL_TIMEOUT_ENV_VAR, FieldMeta,
+    ImportedInstance, InstanceFailures, InstanceSources, ModuleDependencyVersion,
+    ModuleEvalOptions, ModuleResult, PackageScope, SkippedDirectories, SkippedDirectory,
+    SkippedReason, SourcesRequest, UnifySource, evaluate_cue_file, evaluate_cue_package,
+    evaluate_cue_package_typed, evaluate_module, evaluation_timeout, get_bridge_version,
+    instance_sources, instance_sources_with, module_dependency_version,
 };
 pub use error::{CueEngineError, FrozenWorkerFailure, Result};
