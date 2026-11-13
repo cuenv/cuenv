@@ -230,7 +230,13 @@ where
                     .find(|dep_name| {
                         if dep_name.starts_with('#') {
                             check_external_dependency(
-                                dep_name,
+                                &named_dependency(
+                                    dep_name,
+                                    DependencyOrigin {
+                                        project_root,
+                                        projects: all_projects,
+                                    },
+                                ),
                                 &mut ExternalDependencyContext {
                                     projects: all_projects,
                                     checkout_root: *checkout_root,
@@ -425,7 +431,8 @@ where
         return true;
     };
 
-    let Some((project_path, project_config)) = context.projects.get(project_name) else {
+    let projects = context.projects;
+    let Some((project_path, project_config)) = projects.get(project_name) else {
         warn_once(&format!(
             "dependency '{dep}' names project '{project_name}', which is not in this module, \
              so it cannot be shown to be unaffected and counts as affected"
@@ -481,12 +488,110 @@ where
 
     dependency_names.into_iter().any(|sub_dep_name| {
         let dependency_ref = if sub_dep_name.starts_with('#') {
-            sub_dep_name
+            // A path is relative to the project that writes it: this one.
+            named_dependency(
+                &sub_dep_name,
+                DependencyOrigin {
+                    project_root: project_path,
+                    projects,
+                },
+            )
         } else {
             format!("#{project_name}:{sub_dep_name}")
         };
         check_external_dependency(&dependency_ref, context)
     })
+}
+
+/// Where a dependency on another project is written, and the projects it
+/// can name.
+struct DependencyOrigin<'origin, S> {
+    /// The directory of the project that declares the dependency, relative
+    /// to the root of the checkout.
+    project_root: &'origin Path,
+    /// The projects of the module by name, each with its directory relative
+    /// to the root of the checkout.
+    projects: &'origin HashMap<String, (PathBuf, Project), S>,
+}
+
+// Derived, these would require `S: Copy`; only references are copied.
+impl<S> Clone for DependencyOrigin<'_, S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for DependencyOrigin<'_, S> {}
+
+/// Spell a dependency on another project by that project's name.
+///
+/// `#project:task` may spell its project as a path instead: relative to the
+/// project that writes it (`#../content:articles`), or from the root of the
+/// checkout (`#/content:articles`). The projects of a run are known by name,
+/// each with its directory in the checkout, so a path to one of those
+/// directories is the dependency on that project, and is compared with
+/// changed files like any other.
+///
+/// Anything else is returned as written and counts as affected where it
+/// does not resolve: a name no project has, a path that leaves the checkout,
+/// and a path to a directory that only inherits a project's name.
+fn named_dependency<S>(dep: &str, origin: DependencyOrigin<'_, S>) -> String
+where
+    S: BuildHasher,
+{
+    let DependencyOrigin {
+        project_root,
+        projects,
+    } = origin;
+    let Some((project, task)) = dep
+        .strip_prefix('#')
+        .and_then(|reference| reference.split_once(':'))
+    else {
+        return dep.to_string();
+    };
+    // A name is looked up as a name before anything else, as it is where
+    // the dependency runs.
+    if projects.contains_key(project) {
+        return dep.to_string();
+    }
+    let Some(directory) = placed_reference(project, project_root) else {
+        return dep.to_string();
+    };
+    projects
+        .iter()
+        .filter(|(_, (placed, _))| placed_reference(".", placed).as_ref() == Some(&directory))
+        .map(|(name, _)| name)
+        .min()
+        .map_or_else(|| dep.to_string(), |name| format!("#{name}:{task}"))
+}
+
+/// The directory a path-shaped project reference names, relative to the
+/// root of the checkout: from that root when the reference starts with `/`,
+/// and from the project that writes it otherwise. `None` when it leaves the
+/// checkout.
+fn placed_reference(reference: &str, project_root: &Path) -> Option<PathBuf> {
+    let reference = Path::new(reference);
+    let joined = if reference.has_root() {
+        reference.to_path_buf()
+    } else {
+        project_root.join(reference)
+    };
+    joined
+        .components()
+        .try_fold(PathBuf::new(), |mut placed, component| {
+            match component {
+                std::path::Component::Normal(part) => placed.push(part),
+                std::path::Component::ParentDir => {
+                    if !placed.pop() {
+                        return None;
+                    }
+                }
+                std::path::Component::CurDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_) => {}
+            }
+            Some(placed)
+        })
 }
 
 fn cached_task_index<'a>(

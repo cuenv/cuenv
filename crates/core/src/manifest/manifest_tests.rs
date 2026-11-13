@@ -5,6 +5,7 @@ use crate::tasks::{
 use crate::test_utils;
 use cuenv_hooks::Hooks;
 use std::collections::HashMap;
+use std::path::Path;
 
 #[test]
 fn test_vcs_dependency_deserializes_subdir() {
@@ -87,7 +88,7 @@ fn test_expand_cross_project_references() {
         .tasks
         .insert("deploy".into(), TaskNode::Task(Box::new(task)));
 
-    cuenv.expand_cross_project_references();
+    cuenv.expand_cross_project_references(Path::new(""));
 
     let task_def = cuenv.tasks.get("deploy").unwrap();
     let task = task_def.as_task().unwrap();
@@ -368,7 +369,7 @@ fn test_expand_multiple_cross_project_references() {
         .tasks
         .insert("bundle".into(), TaskNode::Task(Box::new(task)));
 
-    cuenv.expand_cross_project_references();
+    cuenv.expand_cross_project_references(Path::new(""));
 
     let task_def = cuenv.tasks.get("bundle").unwrap();
     let task = task_def.as_task().unwrap();
@@ -413,7 +414,7 @@ fn test_expand_cross_project_in_task_group() {
         ]),
     );
 
-    cuenv.expand_cross_project_references();
+    cuenv.expand_cross_project_references(Path::new(""));
 
     // Verify expansion happened in both tasks
     match cuenv.tasks.get("pipeline").unwrap() {
@@ -473,7 +474,7 @@ fn test_expand_cross_project_in_parallel_group() {
         }),
     );
 
-    cuenv.expand_cross_project_references();
+    cuenv.expand_cross_project_references(Path::new(""));
 
     // Verify expansion happened in both parallel tasks
     match cuenv.tasks.get("parallel").unwrap() {
@@ -517,7 +518,7 @@ fn test_no_duplicate_implicit_dependencies() {
         .tasks
         .insert("deploy".into(), TaskNode::Task(Box::new(task)));
 
-    cuenv.expand_cross_project_references();
+    cuenv.expand_cross_project_references(Path::new(""));
 
     let task_def = cuenv.tasks.get("deploy").unwrap();
     let task = task_def.as_task().unwrap();
@@ -729,7 +730,7 @@ fn project_with_producer_and_consumer(consumer_input: Input) -> Project {
     project
         .tasks
         .insert("test".into(), TaskNode::Task(Box::new(test)));
-    project.expand_cross_project_references();
+    project.expand_cross_project_references(Path::new(""));
     project
 }
 
@@ -804,7 +805,7 @@ fn implicit_glob_output_mapping_uses_the_literal_prefix() {
         .tasks
         .insert("test".into(), TaskNode::Task(Box::new(test)));
 
-    project.expand_cross_project_references();
+    project.expand_cross_project_references(Path::new(""));
 
     assert_eq!(
         mapped_inputs(consumer_of(&project)),
@@ -859,7 +860,7 @@ fn a_mapping_reads_from_the_producers_working_directory() {
         .tasks
         .insert("test".into(), TaskNode::Task(Box::new(test)));
 
-    project.expand_cross_project_references();
+    project.expand_cross_project_references(Path::new(""));
 
     assert_eq!(
         mapped_inputs(consumer_of(&project)),
@@ -917,7 +918,7 @@ fn a_nested_producer_is_resolved_by_its_dotted_path() {
     project
         .tasks
         .insert("deploy".into(), TaskNode::Task(Box::new(consumer)));
-    project.expand_cross_project_references();
+    project.expand_cross_project_references(Path::new(""));
 
     let deploy = project.tasks.get("deploy").unwrap().as_task().unwrap();
     assert_eq!(mapped_inputs(deploy), vec![("docs/site", "docs/site")]);
@@ -947,7 +948,140 @@ fn an_existing_dependency_is_not_duplicated_by_the_reference() {
     project
         .tasks
         .insert("test".into(), TaskNode::Task(Box::new(test)));
-    project.expand_cross_project_references();
+    project.expand_cross_project_references(Path::new(""));
 
     assert_eq!(consumer_of(&project).depends_on.len(), 1);
+}
+
+// =============================================================================
+// One path frame: both sides of a mapping are relative to the module root
+// =============================================================================
+
+/// A project in `apps/api` whose `test` consumes `build`, which is defined
+/// in `apps/web/env.cue` and so runs in `apps/web`.
+fn project_below_the_module_root(map: Option<Vec<Mapping>>) -> Project {
+    let build = Task {
+        command: "make".to_string(),
+        outputs: vec!["dist/app.js".to_string(), "dist/assets/**".to_string()],
+        source: Some(SourceLocation {
+            file: "apps/web/env.cue".to_string(),
+            line: 1,
+            column: 1,
+        }),
+        ..Default::default()
+    };
+    let test = Task {
+        command: "jest".to_string(),
+        inputs: vec![Input::Task(TaskOutput {
+            task: "build".to_string(),
+            map,
+        })],
+        ..Default::default()
+    };
+    let mut project = Project::new("api");
+    project
+        .tasks
+        .insert("build".into(), TaskNode::Task(Box::new(build)));
+    project
+        .tasks
+        .insert("test".into(), TaskNode::Task(Box::new(test)));
+    project.expand_cross_project_references(Path::new("apps/api"));
+    project
+}
+
+#[test]
+fn an_output_without_a_mapping_is_staged_where_its_producer_writes_it() {
+    let project = project_below_the_module_root(None);
+
+    assert_eq!(
+        mapped_inputs(consumer_of(&project)),
+        vec![
+            ("apps/web/dist/app.js", "apps/web/dist/app.js"),
+            ("apps/web/dist/assets/**", "apps/web/dist/assets"),
+        ]
+    );
+    assert!(
+        consumer_of(&project)
+            .inputs
+            .iter()
+            .all(|input| matches!(input, Input::Mapped(mapping) if !mapping.relocates()))
+    );
+}
+
+#[test]
+fn an_explicit_mapping_is_staged_below_the_consumers_project() {
+    let project = project_below_the_module_root(Some(vec![Mapping {
+        from: "dist/app.js".to_string(),
+        to: "vendor/app.js".to_string(),
+    }]));
+
+    assert_eq!(
+        mapped_inputs(consumer_of(&project)),
+        vec![("apps/web/dist/app.js", "apps/api/vendor/app.js")]
+    );
+    assert!(
+        consumer_of(&project)
+            .inputs
+            .iter()
+            .all(|input| matches!(input, Input::Mapped(mapping) if mapping.relocates()))
+    );
+}
+
+#[test]
+fn a_producer_without_source_metadata_runs_in_its_project() {
+    // Evaluation without field metadata reports no source file. The task
+    // then runs in the project directory, never in the module root.
+    let build = Task {
+        command: "make".to_string(),
+        outputs: vec!["dist/app.js".to_string()],
+        ..Default::default()
+    };
+    let test = Task {
+        command: "jest".to_string(),
+        inputs: vec![Input::Task(TaskOutput {
+            task: "build".to_string(),
+            map: None,
+        })],
+        ..Default::default()
+    };
+    let mut project = Project::new("api");
+    project
+        .tasks
+        .insert("build".into(), TaskNode::Task(Box::new(build)));
+    project
+        .tasks
+        .insert("test".into(), TaskNode::Task(Box::new(test)));
+
+    project.expand_cross_project_references(Path::new("apps/api"));
+
+    assert_eq!(
+        mapped_inputs(consumer_of(&project)),
+        vec![("apps/api/dist/app.js", "apps/api/dist/app.js")]
+    );
+}
+
+#[test]
+fn the_module_root_is_spelled_as_a_dot_or_left_empty() {
+    for root in [".", ""] {
+        let mut project = project_below_the_module_root(None);
+        project.tasks.get_mut("test").into_iter().for_each(|node| {
+            if let TaskNode::Task(task) = node {
+                task.inputs = vec![Input::Task(TaskOutput {
+                    task: "build".to_string(),
+                    map: Some(vec![Mapping {
+                        from: "dist/app.js".to_string(),
+                        to: "vendor/app.js".to_string(),
+                    }]),
+                })];
+            }
+        });
+
+        project.expand_cross_project_references(Path::new(root));
+
+        assert_eq!(
+            mapped_inputs(consumer_of(&project)),
+            vec![("apps/web/dist/app.js", "vendor/app.js")],
+            "root spelled {root:?}"
+        );
+    }
 }

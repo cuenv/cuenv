@@ -305,6 +305,10 @@ In the example above:
 2. `build` waits for both `lint` and `test` to complete successfully.
 3. If either fails, `build` is skipped.
 
+A group or a sequence runs its own children, in parallel or in order. Whatever
+those children depend on outside it, in the same project or another, runs
+first.
+
 ## Caching
 
 cuenv supports task-result caching. Caching is opt-in per task through
@@ -340,32 +344,93 @@ tasks: {
 }
 ```
 
-The reference is also an implicit dependency. cuenv loads the referenced
-project's task graph, runs that producer in its own project root, and only then
-hashes and materializes the mapped output for the consumer. A clean checkout
-therefore does not require the producer's output to exist before the task run
-starts.
+The reference is also an implicit dependency, named `#design-system:build` in
+the task graph. cuenv follows it when the task that declares it is about to
+run: it loads the referenced project, runs the producer, and only then hashes
+and stages the mapped output for the consumer. A clean checkout therefore does
+not require the producer's output to exist before the task run starts.
+`cuenv task`, `cuenv ci` and `cuenv up` all follow the dependency the same way.
 
-The key is a function of the referenced files' **content**, not of the
-producing task's own key. That is what gives early cutoff: a producer that
-reruns and emits identical bytes leaves every consumer's key unchanged, so the
-consumers stay cached. `project` may be written as the other project's `name`
-or as a path relative to the consuming project (for example `../design-system`).
-A leading `/` is VCS-workspace-relative, not host-root-relative. Path references
-are canonicalized and must remain inside the VCS workspace.
+#### How a `#project:task` dependency runs
 
-Two rules follow from recording files at their `to` path:
+A task of another project runs **in its own project**, exactly as it would if
+you had asked for it there:
+
+- **Directory.** It runs where its own project would run it, reads its inputs
+  relative to its own project and leaves its declared outputs there.
+- **Environment.** It receives its own project's `env`, selected by its own
+  project's contexts and policies (which match the task by its name within that
+  project), its own runtime and its own tools. It never receives the variables
+  or secrets of the project you ran the command in, and that project's tasks
+  never receive its. `-e <environment>` applies to every project of the run; a
+  project that does not define the environment uses its base variables.
+- **Cache identity.** Its results are keyed with its own project's runtime, so
+  they are shared with runs started in that project.
+- **Graph only.** It runs as a dependency and nothing else. It is not listed by
+  `cuenv task`, and cannot be asked for by name (`cuenv task '#design-system:build'`)
+  or by `--label` from another project.
+
+`project` may be written as the other project's `name`, or as a path: relative
+to the consuming project (`../design-system`), or with a leading `/`, which is
+VCS-workspace-relative, not host-root-relative. A name means the shallowest
+directory that carries it. Path references are canonicalized and must remain
+inside the VCS workspace. However a project is spelled, its tasks are one set of
+nodes in the graph, shown under the project's name (`#design-system:build`).
+A project reached only by a path, in a run that never had to list the module's
+names, is shown by its path from the workspace root instead
+(`#/packages/design-system:build`), as is a directory that only inherits its
+project's name.
+
+Looking a project up **by name** needs every directory of the module to
+evaluate, because a directory that does not could be the one that carries the
+name. When one does not, the task that refers to a project by name fails and
+says which directory is at fault; tasks that reach no other project, and
+references written as paths, are unaffected. A reference that cannot be followed
+never fails a task that does not use it.
+
+Outputs referenced through `tasks.<name>.stdout` and the like stay within their
+project: a task of `design-system` that reads another of its tasks' output reads
+that task's, never a task of the same name in the consuming project.
+
+#### Where consumed files are staged
+
+A task under the default directory sandbox runs in an execution root that holds
+its declared inputs at the paths they have in the repository. Consumed task
+outputs are placed in that same frame:
+
+- **Without `map`** (`inputs: [{task: "generate"}]`), every declared output of
+  the producer is staged **where the producer writes it**. A producer that runs
+  in `tools/` and declares `outputs: ["data.txt"]` is read at `tools/data.txt`
+  below its project. When the producer runs in the consumer's own directory,
+  which is the usual case, that is the path the consumer already expects.
+- **With `map`**, each `from` is read below the producer's working directory
+  (for a `project` reference, below that project's directory) and staged at
+  `to` **below the consuming task's project**.
+
+Both rules hold whether or not the CUE module is the root of its repository.
+
+Two rules follow from recording files at their staged path:
 
 - `from` bounds what is hashed. A directory or glob keeps its internal
   structure below `to`; a single file lands exactly on `to`.
-- Two inputs may not claim the same workspace path or a file/directory prefix
-  of one another. This remains an error when the bytes are identical: ownership
-  and executable mode can still differ, so accepting it would make precedence
-  an ordering accident.
+- Two inputs may not claim the same path, or a file/directory prefix of one
+  another, unless they are the same file: identical path, content and
+  executable mode are one input. A glob such as `src/**` may therefore cover a
+  file that a task output also stages at that path. Different content or a
+  different mode at one path is still an error, because which one the task
+  would read would be an ordering accident.
 
-A reference that resolves to neither a discovered project nor a safe workspace
-path has nothing honest to hash. Under the default directory sandbox, cuenv
-reports that configuration error instead of exposing the live checkout. Input
+`map` relocates a file, and only an execution root can do that. A task that
+runs directly in the workspace (`hermetic: false` or
+`hermetic: sandbox: "none"`) and declares a mapping that moves a file is
+refused with an error: it would otherwise run without the file while its
+declaration, and its cache key, said it had read it. Drop the mapping and read
+the file where its task produces it, or run the task under the directory
+sandbox.
+
+A reference that resolves to neither a project nor a safe workspace path has
+nothing honest to hash. cuenv reports that configuration error, with the reason
+the project could not be loaded, instead of exposing the live checkout. Input
 hash failures include the underlying path or pattern error so the declaration
 can be corrected directly.
 

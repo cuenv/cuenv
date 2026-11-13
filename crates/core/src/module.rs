@@ -11,5 +11,6 @@ pub use module_evaluation::{
     ModuleEvaluationMetadata, ModuleEvaluationOptions, ReferenceMap, SourceMap, TASK_FIELD,
 };
 pub use unique_names::{
-    DuplicateProjectName, NamedProject, duplicate_names_error, duplicate_project_names,
+    DuplicateProjectName, NamedProject, declaring_directories, duplicate_names_error,
+    duplicate_project_names,
 };

@@ -12,7 +12,8 @@ pub use super::result::{TASK_FAILURE_SNIPPET_LINES, TaskResult, summarize_task_f
 use super::result::{format_failure_streams, summarize_stream};
 
 use super::{
-    Task, TaskCommandExt, TaskDirectory, TaskDirectoryBase, TaskGraph, TaskGroup, TaskNode, Tasks,
+    ExternalTaskName, Input, Task, TaskCommandExt, TaskDirectory, TaskDirectoryBase, TaskGraph,
+    TaskGroup, TaskNode, Tasks,
 };
 use async_recursion::async_recursion;
 use cuenv_core::environment::Environment;
@@ -82,6 +83,23 @@ pub trait TaskEnvironments: std::fmt::Debug + Send + Sync {
     fn environment_for<'a>(&'a self, name: &'a str, task: &'a Task) -> TaskEnvironmentFuture<'a>;
 }
 
+/// What a task of another project runs with in place of the run's own
+/// project: that project's directory, CUE module and cache identity.
+///
+/// A task named `#project:task` is a dependency from another project. It
+/// reads its inputs, writes its outputs and keys its results as it would in
+/// a run of its own project. Its environment comes from
+/// [`ExecutorConfig::task_environments`].
+#[derive(Debug, Clone)]
+pub struct ProjectExecution {
+    /// The project's directory, which its inputs and outputs are relative to.
+    pub project_root: PathBuf,
+    /// Root of the CUE module the project was evaluated in.
+    pub cue_module_root: Option<PathBuf>,
+    /// Caching infrastructure carrying the project's own runtime identity.
+    pub cache: Option<TaskCacheConfig>,
+}
+
 /// Task executor configuration
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
@@ -113,6 +131,12 @@ pub struct ExecutorConfig {
     pub sandbox_hasher_root: Option<PathBuf>,
     /// Project roots retained for sandbox-only cross-project input resolution.
     pub sandbox_project_roots: BTreeMap<String, PathBuf>,
+    /// The projects whose tasks run as dependencies of this run, by what
+    /// their tasks are qualified with (`#project:task`). A qualified task
+    /// whose project is missing here does not run. This supplies where such
+    /// a task runs and what it is keyed with; `task_environments` has to
+    /// supply its environment, or it runs with `environment`.
+    pub external_projects: BTreeMap<String, ProjectExecution>,
 }
 
 impl Default for ExecutorConfig {
@@ -129,6 +153,7 @@ impl Default for ExecutorConfig {
             cache: None,
             sandbox_hasher_root: None,
             sandbox_project_roots: BTreeMap::new(),
+            external_projects: BTreeMap::new(),
         }
     }
 }
@@ -233,25 +258,31 @@ impl TaskExecutor {
             ));
         }
 
+        // The project that owns the task decides where it runs and what it
+        // is keyed on. A task of another project never borrows this run's.
+        let frame = self.frame_for(name, task)?;
+        reject_unmaterialized_mapping(name, task)?;
+
         let task_environment = self.task_environment(name, task).await?;
 
         // Input resolution and directory isolation remain available when
         // result caching is disabled. A sandbox-only config supplies the
         // hasher and execution-root location without permitting cache I/O.
-        let cache = match self.config.cache.clone() {
+        let cache = match frame.cache.cloned() {
             Some(cache) => Some(cache),
             None if task.sandbox().uses_exec_root() => Some(self.sandbox_only_cache()?),
             None => None,
         };
         let mut cache_handle: Option<CacheHandle> = if let Some(cache) = cache {
-            let workdir = self.workdir_for_task(task)?;
+            let workdir = self.workdir_in(frame, task)?;
             let outcome = super::cache::build_action(BuildActionInput {
                 task,
                 task_name: name,
                 environment: &task_environment,
                 cache: &cache,
                 workdir: &workdir,
-                project_root: self.project_root_for_task(task),
+                project_root: frame.project_root,
+                module_root: frame.module_root,
             })
             .await?;
             match outcome {
@@ -645,109 +676,89 @@ impl TaskExecutor {
         })
     }
 
+    /// The project a task belongs to: the run's own, or, for a task named
+    /// `#project:task`, the project it was loaded from.
+    fn frame_for<'frame>(
+        &'frame self,
+        name: &str,
+        task: &'frame Task,
+    ) -> Result<TaskFrame<'frame>> {
+        let Some(external) = ExternalTaskName::parse(name) else {
+            return Ok(self.own_frame(task));
+        };
+        let project = self
+            .config
+            .external_projects
+            .get(external.project)
+            .ok_or_else(|| {
+                Error::configuration(format!(
+                    "Task '{name}' belongs to project '{}', which this run has not loaded. It \
+                     is not run with another project's directory or environment",
+                    external.project
+                ))
+            })?;
+        Ok(TaskFrame {
+            project_root: &project.project_root,
+            module_root: project
+                .cue_module_root
+                .as_deref()
+                .unwrap_or(&project.project_root),
+            cache: project.cache.as_ref(),
+        })
+    }
+
+    /// The frame of a task of the run's own project.
+    fn own_frame<'frame>(&'frame self, task: &'frame Task) -> TaskFrame<'frame> {
+        TaskFrame {
+            project_root: task
+                .project_root
+                .as_deref()
+                .unwrap_or(&self.config.project_root),
+            module_root: self
+                .config
+                .cue_module_root
+                .as_deref()
+                .unwrap_or(&self.config.project_root),
+            cache: self.config.cache.as_ref(),
+        }
+    }
+
+    /// Compute the working directory the executor would use for a task of
+    /// the run's own project.
+    #[cfg(test)]
+    fn workdir_for_task(&self, task: &Task) -> Result<PathBuf> {
+        self.workdir_in(self.own_frame(task), task)
+    }
+
     /// Compute the working directory the executor would use for a task.
     ///
     /// Extracted from `execute_task_non_hermetic` so that the cache wrapper
     /// in `execute_task` can resolve outputs against the same path the
     /// task itself ran in.
-    fn workdir_for_task(&self, task: &Task) -> Result<PathBuf> {
+    ///
+    /// A task runs in its `dir`, else in the directory of the file that
+    /// defines it, else in its project. That is the same directory whether
+    /// the task is run in its own project or as a dependency of another's.
+    fn workdir_in(&self, frame: TaskFrame<'_>, task: &Task) -> Result<PathBuf> {
         if let Some(ref dir) = task.directory {
-            self.resolve_task_directory(task, dir)
-        } else if let Some(ref project_root) = task.project_root {
-            Ok(project_root.clone())
-        } else if let Some(ref source) = task.source {
-            if let Some(dir) = source.directory() {
-                Ok(self
-                    .config
-                    .cue_module_root
-                    .as_ref()
-                    .unwrap_or(&self.config.project_root)
-                    .join(dir))
-            } else if let Some(ref project_root) = task.project_root {
-                Ok(project_root.clone())
-            } else {
-                Ok(self
-                    .config
-                    .cue_module_root
-                    .clone()
-                    .unwrap_or_else(|| self.config.project_root.clone()))
-            }
-        } else if !task.is_hermetic() {
-            if let Some(manager) = cuenv_workspaces::detect_from_command(&task.command) {
-                Ok(super::workspace::find_workspace_root(
-                    manager,
-                    &self.config.project_root,
-                ))
-            } else {
-                Ok(self.config.project_root.clone())
-            }
-        } else {
-            Ok(self.config.project_root.clone())
+            return resolve_task_directory(frame.module_root, task, dir);
         }
-    }
-
-    fn resolve_task_directory(&self, task: &Task, directory: &TaskDirectory) -> Result<PathBuf> {
-        let module_root = self
-            .config
-            .cue_module_root
-            .as_ref()
-            .unwrap_or(&self.config.project_root);
-
-        let base = match directory.from {
-            TaskDirectoryBase::Definition => {
-                self.source_base(task.source.as_ref(), "definition")?
-            }
-            TaskDirectoryBase::Caller => self.source_base(task.caller_source.as_ref(), "caller")?,
-            TaskDirectoryBase::Module => module_root.clone(),
-        };
-
-        self.resolve_directory_path(module_root, &base, &directory.path)
-    }
-
-    fn source_base(
-        &self,
-        source: Option<&super::SourceLocation>,
-        base_name: &str,
-    ) -> Result<PathBuf> {
-        let module_root = self
-            .config
-            .cue_module_root
-            .as_ref()
-            .unwrap_or(&self.config.project_root);
-
-        let source = source.ok_or_else(|| {
-            Error::configuration(format!(
-                "Task dir from '{base_name}' requires source metadata"
-            ))
-        })?;
-
-        Ok(source
-            .directory()
-            .map_or_else(|| module_root.clone(), |dir| module_root.join(dir)))
-    }
-
-    fn resolve_directory_path(
-        &self,
-        module_root: &Path,
-        base: &Path,
-        path: &str,
-    ) -> Result<PathBuf> {
-        let resolved = super::workspace::normalize_join(base, path);
-        if resolved.starts_with(module_root) {
-            Ok(resolved)
-        } else {
-            Err(Error::configuration(format!(
-                "Task dir '{}' resolves outside the CUE module root '{}'",
-                path,
-                module_root.display()
-            )))
+        if let Some(ref source) = task.source {
+            return Ok(source.directory().map_or_else(
+                || frame.module_root.to_path_buf(),
+                |dir| frame.module_root.join(dir),
+            ));
         }
-    }
-
-    fn project_root_for_task<'a>(&'a self, task: &'a Task) -> &'a Path {
-        task.project_root
-            .as_deref()
-            .unwrap_or(&self.config.project_root)
+        if task.project_root.is_none()
+            && !task.is_hermetic()
+            && let Some(manager) = cuenv_workspaces::detect_from_command(&task.command)
+        {
+            return Ok(super::workspace::find_workspace_root(
+                manager,
+                frame.project_root,
+            ));
+        }
+        Ok(frame.project_root.to_path_buf())
     }
 
     /// Execute a task non-hermetically (directly in workspace/project root)
@@ -782,10 +793,10 @@ impl TaskExecutor {
         }
 
         // A sandboxed task's exec root wins; everything else resolves the
-        // working directory the usual way (see `workdir_for_task`).
+        // working directory the usual way (see `workdir_in`).
         let workdir = match workdir_override {
             Some(path) => path.to_path_buf(),
-            None => self.workdir_for_task(task)?,
+            None => self.workdir_in(self.frame_for(name, task)?, task)?,
         };
 
         tracing::info!(
@@ -830,7 +841,9 @@ impl TaskExecutor {
         }
 
         // Apply task-level env vars, including secrets resolved at execution time.
-        let (task_env, secrets) = super::env::resolve_task_env(name, &task.env).await?;
+        // A policy on one of them names the task as its own project does.
+        let own_name = ExternalTaskName::parse(name).map_or(name, |external| external.task);
+        let (task_env, secrets) = super::env::resolve_task_env(own_name, &task.env).await?;
         cuenv_events::register_secrets(secrets);
         for (key, value) in task_env {
             cmd.env(key, value);
@@ -1205,6 +1218,81 @@ impl super::graph_walk::WalkOutcome for TaskWalkOutcome {
     fn continue_on_error(&self) -> bool {
         self.continue_on_error
     }
+}
+
+/// Where a task's project lies and what its results are keyed with.
+#[derive(Clone, Copy)]
+struct TaskFrame<'frame> {
+    /// The project's directory: path inputs are relative to it.
+    project_root: &'frame Path,
+    /// Root of the project's CUE module: source files, `dir` and mapped
+    /// inputs are relative to it.
+    module_root: &'frame Path,
+    /// The project's caching infrastructure, when it has one.
+    cache: Option<&'frame TaskCacheConfig>,
+}
+
+fn resolve_task_directory(
+    module_root: &Path,
+    task: &Task,
+    directory: &TaskDirectory,
+) -> Result<PathBuf> {
+    let source_base = |source: Option<&super::SourceLocation>, base_name: &str| {
+        let source = source.ok_or_else(|| {
+            Error::configuration(format!(
+                "Task dir from '{base_name}' requires source metadata"
+            ))
+        })?;
+        Ok::<_, Error>(
+            source
+                .directory()
+                .map_or_else(|| module_root.to_path_buf(), |dir| module_root.join(dir)),
+        )
+    };
+    let base = match directory.from {
+        TaskDirectoryBase::Definition => source_base(task.source.as_ref(), "definition")?,
+        TaskDirectoryBase::Caller => source_base(task.caller_source.as_ref(), "caller")?,
+        TaskDirectoryBase::Module => module_root.to_path_buf(),
+    };
+
+    let resolved = super::workspace::normalize_join(&base, &directory.path);
+    if resolved.starts_with(module_root) {
+        Ok(resolved)
+    } else {
+        Err(Error::configuration(format!(
+            "Task dir '{}' resolves outside the CUE module root '{}'",
+            directory.path,
+            module_root.display()
+        )))
+    }
+}
+
+/// Refuse a task that maps an input to a path nothing will put it at.
+///
+/// A mapping is honoured by staging the file in the task's execution root.
+/// A task that runs directly in the workspace (`hermetic: false` or
+/// `hermetic.sandbox: "none"`) has none, so it would run without the file
+/// while its declaration, and its cache key, say it read it.
+fn reject_unmaterialized_mapping(name: &str, task: &Task) -> Result<()> {
+    if task.sandbox().uses_exec_root() {
+        return Ok(());
+    }
+    let relocated = task.inputs.iter().find_map(|input| match input {
+        Input::Mapped(mapping) if mapping.relocates() => {
+            Some((mapping.source.clone(), mapping.destination.clone()))
+        }
+        Input::Project(reference) => reference
+            .map
+            .first()
+            .map(|mapping| (mapping.from.clone(), mapping.to.clone())),
+        _ => None,
+    });
+    let Some((from, to)) = relocated else {
+        return Ok(());
+    };
+    Err(Error::configuration(format!(
+        "Task '{name}' maps the input '{from}' to '{to}', but it runs directly in the workspace          (hermetic: false or hermetic.sandbox: \"none\"), where nothing is staged. Read the          file where its task produces it and drop the mapping, or run the task under          hermetic.sandbox: \"dir\""
+    )))
 }
 
 #[derive(Clone, Copy)]

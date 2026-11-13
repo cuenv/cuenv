@@ -247,6 +247,39 @@ beneath it is, or when anything beneath it depends on an affected task.
 Dependencies are resolved against every project of the module, so `--path app`
 still sees a task of `app` that depends on a task of another project.
 
+### Dependencies on another project
+
+A pipeline task may depend on a task of another project: a
+`{project, task, map}` input implies the dependency `#project:task`.
+`cuenv ci` runs that task before the task that needs it, whether or not the
+other project is under `--path`, and runs it **in its own project**:
+
+- in that project's directory, with that project's configuration;
+- with the environment that project's own hooks and `env` provide, selected by
+  its own contexts and policies. Its hooks run once per run. It receives none of
+  the variables or secrets of the project whose pipeline needs it, and that
+  project's tasks receive none of its;
+- with the run's environment (`-e`/`--env`, `CUENV_ENVIRONMENT`, or the
+  pipeline's `environment`) applied to it too. A project that does not define
+  that environment uses its base variables.
+
+A dependency that cannot be loaded (an unknown project, a missing task) fails the
+pipeline task that needs it, with the reason. It is never skipped and never run
+in the consuming project. [Run Tasks](/how-to/run-tasks/#inputs-from-another-project)
+describes the same rules for `cuenv task`.
+
+`cuenv ci` runs tasks in the checkout, where a task's output is already where
+that task wrote it. An input that `map`s a file to another path needs the file
+staged there, so a task that declares one runs as `cuenv task` runs it: in an
+execution root holding its declared inputs, with each mapped file at its `to`
+path, and with its declared `outputs` copied back into the project. Such a task
+must declare what it reads and writes; nothing is staged into the checkout. A
+mapping on a task that opted out of the directory sandbox is an error.
+
+`cuenv sync ci` still rejects `#project:task` dependencies in generated
+workflows: run those pipelines with `cuenv ci`
+([#611](https://github.com/cuenv/cuenv/issues/611)).
+
 A run without `--path` covers every project of the module and skips the ones
 that have no `ci` block or do not define the requested pipeline. If **no**
 project in scope defines the pipeline, the run fails and lists the pipelines

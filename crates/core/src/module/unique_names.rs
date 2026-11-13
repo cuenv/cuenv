@@ -73,6 +73,37 @@ pub fn duplicate_project_names<'project>(
         .collect()
 }
 
+/// The directory each project name means: the shallowest one that carries
+/// it.
+///
+/// A directory below a project, in the same package, inherits the project's
+/// `name` and is part of that project, so one name can be carried by several
+/// directories. The name means the directory that declares it. Every command
+/// that resolves a `#project:task` reference reads it here, so they agree on
+/// the directory whatever order the module's directories were visited in.
+/// Two directories at one depth are a duplicate name, which is an error
+/// wherever the whole module is evaluated; the first by path is returned.
+#[must_use]
+pub fn declaring_directories<'project>(
+    projects: impl IntoIterator<Item = NamedProject<'project>>,
+) -> BTreeMap<&'project str, &'project Path> {
+    let depth = |path: &Path| ancestors(path).count();
+    let mut declaring: BTreeMap<&'project str, &'project Path> = BTreeMap::new();
+    for project in projects {
+        let name = project.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let shallower = declaring
+            .get(name)
+            .is_none_or(|known| (depth(project.path), project.path) < (depth(known), *known));
+        if shallower {
+            declaring.insert(name, project.path);
+        }
+    }
+    declaring
+}
+
 /// The directories above `path`, nearest first, ending with the module root
 /// `.`; none for the root itself.
 fn ancestors(path: &Path) -> impl Iterator<Item = &Path> {
@@ -187,6 +218,26 @@ mod tests {
             .len(),
             1
         );
+    }
+
+    #[test]
+    fn a_name_means_the_shallowest_directory_that_carries_it() {
+        let projects = [
+            named("content/drafts/deep", "content"),
+            named("content", "content"),
+            named("content/drafts", "content"),
+            named(".", "root"),
+            named("services", "root"),
+            named("app", " "),
+        ];
+        for rotation in 0..projects.len() {
+            let mut rotated = projects;
+            rotated.rotate_left(rotation);
+            let declaring = declaring_directories(rotated);
+            assert_eq!(declaring["content"], Path::new("content"));
+            assert_eq!(declaring["root"], Path::new("."));
+            assert_eq!(declaring.len(), 2, "a blank name names nothing");
+        }
     }
 
     #[test]

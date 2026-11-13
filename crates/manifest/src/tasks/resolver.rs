@@ -5,8 +5,8 @@ use cuenv_task_graph::{TaskResolution, TaskResolver};
 
 impl TaskResolver<Task> for Tasks {
     fn resolve(&self, name: &str) -> Option<TaskResolution<Task>> {
-        let node = self.resolve_path(name)?;
-        Some(node_to_resolution(name, node))
+        let node = self.node(name)?;
+        Some(node.resolution(name))
     }
 }
 
@@ -21,7 +21,8 @@ impl Tasks {
     /// - `"build.frontend"` -> first tries `tasks["build.frontend"]`, then `tasks["build"].parallel["frontend"]`
     /// - `"build[0]"` -> first tries `tasks["build[0]"]`, then `tasks["build"].steps[0]`
     /// - `"build.frontend[0]"` -> nested: parallel then sequential
-    fn resolve_path(&self, path: &str) -> Option<&TaskNode> {
+    #[must_use]
+    pub fn node(&self, path: &str) -> Option<&TaskNode> {
         if let Some(task) = self.tasks.get(path) {
             return Some(task);
         }
@@ -43,6 +44,42 @@ impl Tasks {
         }
 
         Some(current)
+    }
+
+    /// The node [`Self::node`] finds for `path`, to change in place.
+    pub fn node_mut(&mut self, path: &str) -> Option<&mut TaskNode> {
+        if self.tasks.contains_key(path) {
+            return self.tasks.get_mut(path);
+        }
+
+        let segments = parse_path_segments(path);
+        let root_segment = match segments.first()? {
+            PathSegment::Name(name) => name.as_str(),
+            PathSegment::Index(_) => return None,
+        };
+
+        let mut current = self.tasks.get_mut(root_segment)?;
+
+        for segment in &segments[1..] {
+            current = match (current, segment) {
+                (TaskNode::Group(group), PathSegment::Name(name)) => {
+                    group.children.get_mut(name)?
+                }
+                (TaskNode::Sequence(steps), PathSegment::Index(idx)) => steps.get_mut(*idx)?,
+                _ => return None,
+            };
+        }
+
+        Some(current)
+    }
+}
+
+impl TaskNode {
+    /// How this node, found under `name`, takes part in a task graph: as one
+    /// task, or as the named children of a sequence or group.
+    #[must_use]
+    pub fn resolution(&self, name: &str) -> TaskResolution<Task> {
+        node_to_resolution(name, self)
     }
 }
 

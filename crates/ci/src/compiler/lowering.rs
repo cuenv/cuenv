@@ -216,8 +216,11 @@ impl Compiler {
         })
     }
 
-    /// Compile a single task to IR format
-    pub(super) fn compile_single_task(
+    /// Compile a single task to IR format.
+    ///
+    /// `id` need not name the task in this compiler's project: a node of a
+    /// task graph is compiled under the name the graph gives it.
+    pub(crate) fn compile_single_task(
         &self,
         id: &str,
         task: &Task,

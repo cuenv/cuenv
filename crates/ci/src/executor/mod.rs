@@ -7,6 +7,7 @@ pub mod config;
 mod hook_env;
 mod orchestrator;
 mod pipeline_result;
+mod projects;
 mod reporting;
 /// Execute individual IR tasks and capture their output.
 pub mod runner;

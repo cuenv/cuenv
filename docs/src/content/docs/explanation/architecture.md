@@ -111,6 +111,16 @@ construction lives in `crates/task-exec/src/graph/build.rs`, task output-ref
 dependency edge materialization lives in
 `crates/task-exec/src/graph/output_refs.rs`, and task path resolution for
 dotted/bracketed CUE task nodes lives in `crates/manifest/src/tasks/resolver.rs`.
+A dependency on a task of another project (`#project:task`) is followed by the
+task scope in `crates/task-exec/src/scope.rs`, which `cuenv task`, `cuenv ci`
+and `cuenv up` all build their graphs from. It loads the other project when a
+selected task reaches it, qualifies every name inside it, and keeps its tasks
+out of what a run can select. Each command supplies where the projects come
+from (`ProjectSource`) and what each project's tasks run with: the executor
+reads a qualified task's directory, CUE module and cache identity from
+`ExecutorConfig::external_projects`, and its environment from
+`TaskEnvironments`, so a task of another project never runs with the consuming
+project's.
 Advanced graph regression coverage is grouped under
 `crates/task-exec/src/graph_advanced_tests/` by cross-project references,
 synthetic hooks, workspace setup, cross-project hooks, error/label/build-for-task

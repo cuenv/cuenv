@@ -6,7 +6,7 @@ use crate::{Input, Sandbox, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{LocalActionCache, LocalCas, OutputDirectory};
 use cuenv_core::environment::Environment;
 use cuenv_manifest::tasks::{MappedInput, Mapping, ProjectReference};
-use cuenv_vcs::WalkHasher;
+use cuenv_vcs::{HashedInput, WalkHasher};
 use std::fs;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -83,6 +83,7 @@ async fn build_action_returns_none_when_no_inputs() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await;
     assert!(result.is_none());
@@ -110,6 +111,7 @@ async fn build_action_is_deterministic() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -120,6 +122,7 @@ async fn build_action_is_deterministic() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -148,6 +151,7 @@ async fn build_action_changes_when_input_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -160,6 +164,7 @@ async fn build_action_changes_when_input_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -190,6 +195,7 @@ async fn build_action_changes_when_timeout_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -202,6 +208,7 @@ async fn build_action_changes_when_timeout_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -243,6 +250,7 @@ async fn build_action_returns_none_when_task_has_task_level_env() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await;
 
@@ -275,6 +283,7 @@ async fn runtime_env_skip_keeps_resolved_inputs_for_sandboxing() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -312,6 +321,7 @@ async fn input_resolution_failure_precedes_runtime_env_cache_skip() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -353,6 +363,7 @@ async fn build_action_hashes_inputs_relative_to_task_project_root() {
         cache: &cache,
         workdir: &nested_project_root,
         project_root: &nested_project_root,
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -369,6 +380,7 @@ async fn build_action_hashes_inputs_relative_to_task_project_root() {
         cache: &cache,
         workdir: &nested_project_root,
         project_root: &nested_project_root,
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -387,6 +399,7 @@ async fn build_action_hashes_inputs_relative_to_task_project_root() {
         cache: &cache,
         workdir: &nested_project_root,
         project_root: &nested_project_root,
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -425,6 +438,7 @@ async fn build_action_changes_when_command_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -435,6 +449,7 @@ async fn build_action_changes_when_command_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -474,6 +489,7 @@ async fn build_action_changes_when_script_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -484,6 +500,7 @@ async fn build_action_changes_when_script_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -518,6 +535,7 @@ async fn sandbox_tier_changes_action_digest() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -528,6 +546,7 @@ async fn sandbox_tier_changes_action_digest() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -561,6 +580,7 @@ async fn record_then_lookup_roundtrips() {
         cache: &cache,
         workdir: &workdir,
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -697,6 +717,7 @@ async fn record_and_materialize_preserve_executable_outputs() {
         cache: &cache,
         workdir: &workdir,
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -762,6 +783,7 @@ async fn build_action_returns_none_when_cache_mode_never() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await;
     assert!(result.is_none());
@@ -788,6 +810,7 @@ async fn build_action_returns_none_when_explicit_input_is_missing() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await;
 
@@ -823,6 +846,7 @@ async fn lookup_respects_max_age() {
         cache: &cache,
         workdir: &workdir,
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -870,6 +894,7 @@ async fn record_skips_non_zero_exit_codes() {
         cache: &cache,
         workdir: &workdir,
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -939,6 +964,7 @@ async fn build_action_skips_non_hermetic_tasks() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await;
 
@@ -975,6 +1001,7 @@ async fn build_action_skips_workdir_outside_project_and_module_roots() {
         // path into the key.
         workdir: &elsewhere,
         project_root: &project,
+        module_root: &cache.vcs_hasher_root,
     })
     .await;
 
@@ -1004,6 +1031,7 @@ async fn action_environment_is_declared_only() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -1071,6 +1099,7 @@ async fn build_action_stores_action_and_command_blobs() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -1461,6 +1490,7 @@ async fn a_resolved_secret_is_never_written_into_the_stored_command_blob() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -1501,6 +1531,7 @@ async fn a_task_with_secrets_and_no_salt_is_not_cached() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
+        module_root: &cache.vcs_hasher_root,
     })
     .await;
 
@@ -1535,6 +1566,7 @@ async fn rotating_a_secret_changes_the_action_digest() {
                 cache,
                 workdir: tmp.path(),
                 project_root: tmp.path(),
+                module_root: &cache.vcs_hasher_root,
             })
             .await
             .unwrap()
@@ -1836,6 +1868,7 @@ async fn cross_project_digest(module: &CrossProjectModule, task: &Task) -> Optio
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
     })
     .await
     .map(|(_, digest)| digest)
@@ -1855,6 +1888,7 @@ async fn a_relative_project_path_resolves_within_the_hasher_workspace() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -1897,6 +1931,7 @@ async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -1946,7 +1981,7 @@ async fn an_expanded_task_output_keeps_its_destination_mapping() {
     );
     task.inputs = vec![Input::Mapped(MappedInput {
         source: "producer/dist/app.js".to_string(),
-        destination: "vendor/app.js".to_string(),
+        destination: "consumer/vendor/app.js".to_string(),
         producer_task: None,
     })];
     let env = Environment::new();
@@ -1958,6 +1993,7 @@ async fn an_expanded_task_output_keeps_its_destination_mapping() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
     })
     .await
     .unwrap();
@@ -1968,14 +2004,247 @@ async fn an_expanded_task_output_keeps_its_destination_mapping() {
     assert_eq!(eligible.inputs.len(), 1);
     assert_eq!(
         eligible.inputs[0].relative_path,
-        // Destinations are consumer-relative; the action frame is the
-        // workspace, where the consumer lives at `consumer/`.
+        // Both sides of a mapping are module-relative. The destination
+        // already says where the consumer lives, so the consumer's project
+        // is not prefixed to it a second time.
         PathBuf::from("consumer/vendor/app.js")
     );
     assert_eq!(
         eligible.inputs[0].absolute_path,
         module.module_root.join("producer/dist/app.js")
     );
+}
+
+/// A module that is not the root of its repository: the hasher is rooted at
+/// the repository, and the module lies in `services/` below it.
+struct NestedModule {
+    _tmp: TempDir,
+    module_root: PathBuf,
+    consumer_root: PathBuf,
+    cache: TaskCacheConfig,
+}
+
+fn nested_module() -> NestedModule {
+    let tmp = TempDir::new().unwrap();
+    let repository = tmp.path().canonicalize().unwrap();
+    let module_root = repository.join("services");
+    let consumer_root = module_root.join("consumer");
+    fs::create_dir_all(module_root.join("producer/dist/nested")).unwrap();
+    fs::create_dir_all(consumer_root.join("src")).unwrap();
+    fs::write(module_root.join("producer/dist/app.js"), "built").unwrap();
+    fs::write(module_root.join("producer/dist/nested/lib.js"), "nested").unwrap();
+    fs::write(consumer_root.join("src/main.ts"), "local").unwrap();
+    // A file the repository holds at the path the module-relative source
+    // spells: reading it would be hashing the wrong file.
+    fs::create_dir_all(repository.join("producer/dist")).unwrap();
+    fs::write(repository.join("producer/dist/app.js"), "not the module's").unwrap();
+    let cache = make_cache(&repository);
+    NestedModule {
+        _tmp: tmp,
+        module_root,
+        consumer_root,
+        cache,
+    }
+}
+
+async fn nested_module_inputs(module: &NestedModule, inputs: Vec<Input>) -> CacheOutcome {
+    let mut task = make_task(
+        "bundle",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &[],
+        },
+    );
+    task.inputs = inputs;
+    let env = Environment::new();
+    super::build_action(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.module_root,
+    })
+    .await
+    .unwrap()
+}
+
+fn staged(outcome: CacheOutcome) -> Vec<(String, PathBuf)> {
+    let CacheOutcome::Eligible(eligible) = outcome else {
+        panic!("expected an eligible action, got {outcome:?}");
+    };
+    eligible
+        .inputs
+        .into_iter()
+        .map(|input| {
+            (
+                input.relative_path.to_string_lossy().into_owned(),
+                input.absolute_path,
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_mapped_input_is_rebased_by_where_the_module_lies_in_the_repository() {
+    let module = nested_module();
+
+    let inputs = staged(
+        nested_module_inputs(
+            &module,
+            vec![Input::Mapped(MappedInput {
+                source: "producer/dist/app.js".to_string(),
+                destination: "consumer/vendor/app.js".to_string(),
+                producer_task: Some("build".to_string()),
+            })],
+        )
+        .await,
+    );
+
+    assert_eq!(
+        inputs,
+        [(
+            "services/consumer/vendor/app.js".to_string(),
+            module.module_root.join("producer/dist/app.js")
+        )]
+    );
+}
+
+#[tokio::test]
+async fn an_output_staged_where_it_is_produced_keeps_its_structure() {
+    let module = nested_module();
+
+    let inputs = staged(
+        nested_module_inputs(
+            &module,
+            vec![Input::Mapped(MappedInput {
+                source: "producer/dist/**".to_string(),
+                destination: "producer/dist".to_string(),
+                producer_task: Some("build".to_string()),
+            })],
+        )
+        .await,
+    );
+
+    let paths: Vec<&str> = inputs.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "services/producer/dist/app.js",
+            "services/producer/dist/nested/lib.js"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_glob_and_a_task_output_naming_one_file_are_one_input() {
+    // The consumer declares `**` and also consumes an output a task of its
+    // own project wrote into its directory. The file is one input, staged
+    // once: a second copy would be written over a read-only first.
+    let module = nested_module();
+    fs::write(module.consumer_root.join("src/generated.ts"), "generated").unwrap();
+
+    let inputs = staged(
+        nested_module_inputs(
+            &module,
+            vec![
+                Input::Path("src/**".to_string()),
+                Input::Mapped(MappedInput {
+                    source: "consumer/src/generated.ts".to_string(),
+                    destination: "consumer/src/generated.ts".to_string(),
+                    producer_task: Some("generate".to_string()),
+                }),
+            ],
+        )
+        .await,
+    );
+
+    let paths: Vec<&str> = inputs.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "services/consumer/src/generated.ts",
+            "services/consumer/src/main.ts"
+        ]
+    );
+    let root = TempDir::new().unwrap();
+    let eligible_inputs: Vec<HashedInput> = match nested_module_inputs(
+        &module,
+        vec![
+            Input::Path("src/**".to_string()),
+            Input::Mapped(MappedInput {
+                source: "consumer/src/generated.ts".to_string(),
+                destination: "consumer/src/generated.ts".to_string(),
+                producer_task: Some("generate".to_string()),
+            }),
+        ],
+    )
+    .await
+    {
+        CacheOutcome::Eligible(eligible) => eligible.inputs,
+        other => panic!("expected an eligible action, got {other:?}"),
+    };
+    crate::exec_root::prepare(root.path(), "action", &eligible_inputs)
+        .expect("each input is staged once");
+}
+
+#[tokio::test]
+async fn a_mapped_input_the_hasher_cannot_see_is_reported_not_dropped() {
+    let module = nested_module();
+    let mapped = |source: &str, destination: &str| {
+        vec![Input::Mapped(MappedInput {
+            source: source.to_string(),
+            destination: destination.to_string(),
+            producer_task: Some("build".to_string()),
+        })]
+    };
+
+    // A source that climbs out of the repository.
+    let escaping = nested_module_inputs(
+        &module,
+        mapped("../../outside/app.js", "consumer/vendor/app.js"),
+    )
+    .await;
+    assert!(matches!(
+        escaping,
+        CacheOutcome::Skipped {
+            reason: CacheSkipReason::HasherRootMismatch,
+            execution: None,
+        }
+    ));
+
+    // A module the hasher is not rooted above.
+    let elsewhere = TempDir::new().unwrap();
+    let mut task = make_task(
+        "bundle",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &[],
+        },
+    );
+    task.inputs = mapped("producer/dist/app.js", "consumer/vendor/app.js");
+    let env = Environment::new();
+    let unseen = super::build_action(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: elsewhere.path(),
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        unseen,
+        CacheOutcome::Skipped {
+            reason: CacheSkipReason::HasherRootMismatch,
+            execution: None,
+        }
+    ));
 }
 
 #[tokio::test]
@@ -2035,6 +2304,7 @@ async fn an_unknown_project_reference_is_not_cached() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
     })
     .await;
 
@@ -2067,6 +2337,7 @@ async fn two_inputs_claiming_one_workspace_path_are_not_cached() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
     })
     .await;
 
@@ -2079,13 +2350,56 @@ async fn two_inputs_claiming_one_workspace_path_are_not_cached() {
 }
 
 #[tokio::test]
-async fn identical_inputs_claiming_one_workspace_path_are_not_cached() {
+async fn identical_inputs_claiming_one_workspace_path_are_one_input() {
+    // Same place, same bytes, same mode: the action reads one file whichever
+    // declaration it is taken from, so there is nothing to disambiguate.
     let module = cross_project_module();
     fs::write(
         module.module_root.join("producer/dist/nested/lib.js"),
         "built",
     )
     .unwrap();
+    let task = consuming_task(
+        "producer",
+        &[
+            ("dist/app.js", "vendor.js"),
+            ("dist/nested/lib.js", "vendor.js"),
+        ],
+    );
+    let env = Environment::new();
+
+    let outcome = super::build_action(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
+    })
+    .await
+    .unwrap();
+
+    let CacheOutcome::Eligible(eligible) = outcome else {
+        panic!("identical inputs should merge, got {outcome:?}");
+    };
+    let paths: Vec<&Path> = eligible
+        .inputs
+        .iter()
+        .map(|input| input.relative_path.as_path())
+        .collect();
+    assert_eq!(paths, [Path::new("consumer/vendor.js")]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn inputs_differing_only_in_mode_still_collide() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let module = cross_project_module();
+    let library = module.module_root.join("producer/dist/nested/lib.js");
+    fs::write(&library, "built").unwrap();
+    fs::set_permissions(&library, fs::Permissions::from_mode(0o755)).unwrap();
     let task = consuming_task(
         "producer",
         &[
@@ -2102,6 +2416,7 @@ async fn identical_inputs_claiming_one_workspace_path_are_not_cached() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
     })
     .await;
 
@@ -2132,6 +2447,7 @@ async fn file_and_directory_prefix_inputs_are_not_cached() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
     })
     .await;
 

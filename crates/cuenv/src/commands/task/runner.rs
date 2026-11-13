@@ -6,7 +6,7 @@ use std::fmt::Write;
 use cuenv_core::Result;
 use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_task_exec::executor::TASK_FAILURE_SNIPPET_LINES;
-use cuenv_task_exec::{TaskExecutor, TaskGraph};
+use cuenv_task_exec::{TaskExecutor, TaskGraph, TaskScope};
 
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
@@ -142,7 +142,41 @@ pub(super) struct StrategyInput<'input> {
     pub(super) task_name: &'input str,
     pub(super) task_node: &'input TaskNode,
     pub(super) task_graph: &'input TaskGraph,
+    /// What a group or sequence depends on outside itself, to run first.
+    pub(super) prerequisites: Option<&'input TaskGraph>,
     pub(super) all_tasks: &'input Tasks,
+}
+
+/// The graph of everything a group or sequence depends on outside itself;
+/// `None` for a single task, or when there is nothing.
+///
+/// A group or sequence runs its own children, in parallel or in order, and
+/// follows no dependency while it does. A child that depends on a task
+/// outside it, in this project or another, needs that task to have run.
+pub(super) fn prerequisites_outside(
+    node: &TaskNode,
+    name: &str,
+    scope: &TaskScope,
+) -> Result<Option<TaskGraph>> {
+    if matches!(node, TaskNode::Task(_)) {
+        return Ok(None);
+    }
+    let is_member = |candidate: &str| {
+        candidate
+            .strip_prefix(name)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+    };
+    let outside: Vec<String> = scope
+        .graph([name])?
+        .topological_sort()?
+        .into_iter()
+        .map(|node| node.name)
+        .filter(|candidate| !is_member(candidate))
+        .collect();
+    if outside.is_empty() {
+        return Ok(None);
+    }
+    scope.graph(outside.iter().map(String::as_str)).map(Some)
 }
 
 /// Execute a task using the appropriate strategy based on task type and dependencies.
@@ -154,12 +188,23 @@ pub(super) async fn execute_task_with_strategy(
         task_name,
         task_node,
         task_graph,
+        prerequisites,
         all_tasks,
     } = input;
     match task_node {
         TaskNode::Group(_) | TaskNode::Sequence(_) => {
-            // For groups (parallel) and lists (sequential), use the original execution
-            executor.execute_node(task_name, task_node, all_tasks).await
+            // Groups (parallel) and lists (sequential) run their own
+            // children, after whatever those depend on outside them.
+            let mut results = match prerequisites {
+                Some(prerequisites) => executor.execute_graph(prerequisites).await?,
+                None => Vec::new(),
+            };
+            results.extend(
+                executor
+                    .execute_node(task_name, task_node, all_tasks)
+                    .await?,
+            );
+            Ok(results)
         }
         TaskNode::Task(_) => {
             // The task graph is built from `all_tasks` and is the authoritative

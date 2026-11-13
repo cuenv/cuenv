@@ -81,7 +81,7 @@ fn expanded_task_output_still_compiles_to_an_artifact_download() {
             ..Default::default()
         })),
     );
-    project.expand_cross_project_references();
+    project.expand_cross_project_references(std::path::Path::new(""));
 
     let compiler = Compiler::with_options(
         project,
@@ -124,7 +124,7 @@ fn hyphenated_task_output_resolves_its_artifact_download_path() {
             ..Default::default()
         })),
     );
-    project.expand_cross_project_references();
+    project.expand_cross_project_references(std::path::Path::new(""));
 
     let compiler = Compiler::with_options(
         project,

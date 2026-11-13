@@ -31,7 +31,7 @@ pub use group::TaskGroup;
 pub use hermetic::{Hermetic, HermeticOptions, Sandbox};
 pub use inputs::{
     Input, MappedInput, Mapping, ProjectReference, SourceLocation, TaskDirectory,
-    TaskDirectoryBase, TaskOutput,
+    TaskDirectoryBase, TaskOutput, literal_path_prefix,
 };
 pub use node::{TaskNode, Tasks};
 pub use params::{ParamDef, ParamType, ResolvedArgs, TaskParams};

@@ -1,6 +1,7 @@
 //! Task selection and execution.
 
 mod context;
+mod environments;
 mod help;
 mod implementation;
 mod listing;
