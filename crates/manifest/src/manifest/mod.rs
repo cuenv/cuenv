@@ -5,6 +5,7 @@
 mod base;
 mod cache;
 mod codegen;
+mod diagnostics;
 mod formatters;
 mod hooks;
 mod infrastructure;
@@ -17,6 +18,7 @@ mod vcs;
 pub use base::Base;
 pub use cache::{Cache, CacheAuth, CacheAuthHeader, RemoteCache};
 pub use codegen::*;
+pub use diagnostics::NodeDiagnostics;
 pub use formatters::*;
 pub use hooks::*;
 pub use infrastructure::{

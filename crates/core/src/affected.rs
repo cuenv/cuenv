@@ -9,6 +9,7 @@
 //! - Tasks with NO inputs are always considered affected (we can't determine what affects them)
 //! - This is the safe behavior - if we can't determine, we run the task
 
+use cuenv_manifest::tasks::{FilesAnchor, InputPattern, anchored_path_problem};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::path::{Path, PathBuf};
 
@@ -215,6 +216,92 @@ fn within_project<'file>(file: &'file Path, project_root: &Path) -> Option<&'fil
     file.strip_prefix(project_root).ok()
 }
 
+/// Where the anchors of file references lie, in the frame changed files are
+/// reported in: relative to the root of the checkout.
+pub trait PlaceAnchor {
+    /// The directory `anchor` means, relative to the root of the checkout
+    /// (empty for the root itself); `None` when it cannot be placed there.
+    fn place(&self, anchor: &FilesAnchor) -> Option<PathBuf>;
+
+    /// The project whose directory holds `path`, which is relative to the
+    /// root of the checkout: its name and directory. The deepest such
+    /// project; `None` when no known project holds it.
+    fn holder(&self, _path: &Path) -> Option<(String, PathBuf)> {
+        None
+    }
+}
+
+/// Anchors no file reference can be placed by: every reference then
+/// counts as matching whenever anything changed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoAnchors;
+
+impl PlaceAnchor for NoAnchors {
+    fn place(&self, _anchor: &FilesAnchor) -> Option<PathBuf> {
+        None
+    }
+}
+
+/// Where the inputs of one project's tasks start from, in the frame of the
+/// changed files.
+#[derive(Clone, Copy)]
+pub struct InputFrame<'frame> {
+    /// The project's directory, relative to the root of the checkout; `.`
+    /// or empty for a project at that root.
+    pub project_root: &'frame Path,
+    /// Where the anchors of file references lie.
+    pub anchors: &'frame dyn PlaceAnchor,
+}
+
+/// Compare the changed files with one input pattern of a task, read from
+/// where it starts.
+///
+/// A path of the project is read by [`match_pattern`]. A path of a file
+/// reference is read from its anchor, and only files beneath the anchor are
+/// compared: no other reading of it exists. A reference whose anchor cannot
+/// be placed, or whose path breaks the rules every reference path follows,
+/// cannot be shown to be unaffected and matches whenever anything changed;
+/// the caller has bound the reference and reported why.
+#[must_use]
+pub fn match_input(
+    files: &[PathBuf],
+    frame: InputFrame<'_>,
+    pattern: InputPattern<'_>,
+) -> PatternMatch {
+    match pattern {
+        InputPattern::Project(path) => match_pattern(files, frame.project_root, path),
+        InputPattern::Anchored { anchor, path } => {
+            let placed = frame
+                .anchors
+                .place(anchor)
+                .filter(|_| anchored_path_problem(path).is_none());
+            let matched = match placed {
+                Some(directory) => matches_anchored(files, &directory, path),
+                None => !files.is_empty(),
+            };
+            if matched {
+                PatternMatch::Matched
+            } else {
+                PatternMatch::None
+            }
+        }
+    }
+}
+
+/// Whether a changed file beneath `anchor` matches `path`, read from the
+/// anchor. An invalid glob cannot be compared and matches whenever anything
+/// changed.
+fn matches_anchored(files: &[PathBuf], anchor: &Path, path: &str) -> bool {
+    let normal = cuenv_vcs::pattern::normalize(path);
+    if cuenv_vcs::pattern::is_glob(&normal) && Glob::new(&normal).is_err() {
+        return !files.is_empty();
+    }
+    let reader = PatternReader::new(&normal);
+    files
+        .iter()
+        .any(|file| within_project(file, anchor).is_some_and(|relative| reader.matches(relative)))
+}
+
 /// Trait for types that can determine if they are affected by file changes.
 ///
 /// Implement this trait on task types to enable affected detection in
@@ -222,20 +309,14 @@ fn within_project<'file>(file: &'file Path, project_root: &Path) -> Option<&'fil
 pub trait AffectedBy {
     /// Returns true if this item is affected by the given file changes.
     ///
-    /// # Arguments
-    ///
-    /// * `changed_files` - Paths of files that have changed (typically repo-relative)
-    /// * `project_root` - Root path of the project containing this item
-    ///
-    /// # Returns
-    ///
-    /// `true` if the item should be considered affected and needs to run
-    fn is_affected_by(&self, changed_files: &[PathBuf], project_root: &Path) -> bool;
+    /// `changed_files` are relative to the root of the checkout, and
+    /// `frame` says where the item's inputs start from in that frame.
+    fn is_affected_by(&self, changed_files: &[PathBuf], frame: InputFrame<'_>) -> bool;
 
     /// Returns the input patterns that determine what affects this item.
     ///
     /// Used for debugging and reporting which patterns matched.
-    fn input_patterns(&self) -> Vec<&str>;
+    fn input_patterns(&self) -> Vec<InputPattern<'_>>;
 }
 
 #[cfg(test)]
@@ -487,5 +568,117 @@ mod tests {
         let patterns: [&str; 0] = [];
         let set = build_glob_set(patterns.iter().copied());
         assert!(set.is_none());
+    }
+
+    /// `content` lives in `content/`, the module at the checkout root.
+    struct Anchors;
+
+    impl PlaceAnchor for Anchors {
+        fn place(&self, anchor: &FilesAnchor) -> Option<PathBuf> {
+            match anchor {
+                FilesAnchor::Project(name) if name == "content" => Some(PathBuf::from("content")),
+                FilesAnchor::Project(_) => None,
+                FilesAnchor::Module => Some(PathBuf::new()),
+            }
+        }
+    }
+
+    fn anchored<'a>(anchor: &'a FilesAnchor, path: &'a str) -> InputPattern<'a> {
+        InputPattern::Anchored { anchor, path }
+    }
+
+    #[test]
+    fn a_file_reference_is_read_from_its_anchor() {
+        let frame = InputFrame {
+            project_root: Path::new("app"),
+            anchors: &Anchors,
+        };
+        let content = FilesAnchor::Project("content".to_string());
+        let article = vec![PathBuf::from("content/articles/one.md")];
+
+        assert_eq!(
+            match_input(&article, frame, anchored(&content, "articles/**")),
+            PatternMatch::Matched
+        );
+        assert_eq!(
+            match_input(&article, frame, anchored(&content, "articles")),
+            PatternMatch::Matched
+        );
+        assert_eq!(
+            match_input(&article, frame, anchored(&content, "drafts/**")),
+            PatternMatch::None
+        );
+        // The same path of the consumer's own project is another file.
+        assert_eq!(
+            match_input(&article, frame, InputPattern::Project("articles/**")),
+            PatternMatch::None
+        );
+        // A first-segment glob stays beneath its anchor.
+        assert_eq!(
+            match_input(
+                &[PathBuf::from("docs/one.md")],
+                frame,
+                anchored(&content, "*/one.md")
+            ),
+            PatternMatch::None
+        );
+    }
+
+    #[test]
+    fn a_module_reference_is_read_from_the_module_root() {
+        let frame = InputFrame {
+            project_root: Path::new("services/api"),
+            anchors: &Anchors,
+        };
+        let module = FilesAnchor::Module;
+
+        for (changed, path, expected) in [
+            ("bun.lock", "bun.lock", PatternMatch::Matched),
+            (
+                "services/shared/a.ts",
+                "services/shared/**",
+                PatternMatch::Matched,
+            ),
+            ("protos/a/b.proto", "**/*.proto", PatternMatch::Matched),
+            ("services/api/bun.lock", "bun.lock", PatternMatch::None),
+        ] {
+            assert_eq!(
+                match_input(&[PathBuf::from(changed)], frame, anchored(&module, path)),
+                expected,
+                "{changed} against {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reference_that_cannot_be_placed_matches_whenever_anything_changed() {
+        let frame = InputFrame {
+            project_root: Path::new("app"),
+            anchors: &Anchors,
+        };
+        let unknown = FilesAnchor::Project("elsewhere".to_string());
+        let content = FilesAnchor::Project("content".to_string());
+        let unrelated = vec![PathBuf::from("docs/readme.md")];
+
+        assert_eq!(
+            match_input(&unrelated, frame, anchored(&unknown, "articles/**")),
+            PatternMatch::Matched
+        );
+        assert_eq!(
+            match_input(&unrelated, frame, anchored(&content, "../docs/**")),
+            PatternMatch::Matched
+        );
+        assert_eq!(
+            match_input(&[], frame, anchored(&unknown, "articles/**")),
+            PatternMatch::None
+        );
+        let nowhere = InputFrame {
+            project_root: Path::new("app"),
+            anchors: &NoAnchors,
+        };
+        assert_eq!(
+            match_input(&unrelated, nowhere, anchored(&content, "articles/**")),
+            PatternMatch::Matched
+        );
     }
 }

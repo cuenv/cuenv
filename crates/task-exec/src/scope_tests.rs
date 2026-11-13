@@ -244,6 +244,7 @@ fn a_project_reference_becomes_module_relative_mapped_inputs() {
                 source: "content/out/one.md".to_string(),
                 destination: "app/vendor/one.md".to_string(),
                 producer_task: Some("#content:articles".to_string()),
+                anchor: None,
             }),
         ]
     );
@@ -414,6 +415,7 @@ fn names_inside_another_project_never_mean_a_task_of_this_one() {
             source: "content/raw/**".to_string(),
             destination: "content/raw".to_string(),
             producer_task: Some("#content:fetch".to_string()),
+            anchor: None,
         })]
     );
     assert_eq!(
@@ -496,6 +498,7 @@ fn mapped_from_content(task: &Task) -> bool {
             source: "content/out/one.md".to_string(),
             destination: "app/vendor/one.md".to_string(),
             producer_task: Some("#content:articles".to_string()),
+            anchor: None,
         })]
         && dependencies(task) == ["#content:articles"]
 }
@@ -586,6 +589,7 @@ fn a_dependency_chain_across_three_projects_is_followed() {
             source: "sources/raw.json".to_string(),
             destination: "content/in/raw.json".to_string(),
             producer_task: Some("#sources:pull".to_string()),
+            anchor: None,
         })]
     );
 }
@@ -797,8 +801,120 @@ fn a_module_below_its_workspace_and_a_project_beside_it_share_one_frame() {
             source: "../tools/out".to_string(),
             destination: "app/generated".to_string(),
             producer_task: Some("#tools:generate".to_string()),
+            anchor: None,
         })]
     );
+}
+
+/// `app` reads `inputs` in its task `build`; `content` holds an article
+/// and the module root a lockfile.
+fn reading_files(inputs: serde_json::Value) -> Module {
+    let module = Module::new()
+        .project(
+            "app",
+            json!({"name": "app", "tasks": {
+                "build": {"command": "make", "inputs": inputs},
+                "lint": {"command": "make", "inputs": ["src/**"]},
+            }}),
+        )
+        .project(
+            "content",
+            json!({"name": "content", "tasks": {"build": {"command": "make"}}}),
+        );
+    fs::create_dir_all(module.directory("content/articles")).unwrap();
+    fs::write(module.directory("content/articles/one.md"), "one").unwrap();
+    fs::write(module.directory("bun.lock"), "lock").unwrap();
+    module
+}
+
+#[test]
+fn a_file_reference_is_bound_to_its_anchor_and_loads_no_project() {
+    let module = reading_files(json!([
+        "src/**",
+        {"cuenvFiles": "project", "cuenvProject": "content", "paths": ["articles/**"]},
+        {"cuenvFiles": "module", "paths": ["bun.lock"]},
+    ]));
+    let mut scope = module.scope("app");
+
+    scope.reach(["build"], &module);
+
+    assert_eq!(order(&scope.graph(["build"]).unwrap()), ["build"]);
+    assert_eq!(
+        module.evaluations.get(),
+        0,
+        "no project is loaded for its files"
+    );
+    assert_eq!(
+        task(&scope, "build").inputs,
+        vec![
+            Input::Path("src/**".to_string()),
+            Input::Mapped(MappedInput {
+                source: "content/articles/**".to_string(),
+                destination: "content/articles".to_string(),
+                producer_task: None,
+                anchor: Some("content".to_string()),
+            }),
+            Input::Mapped(MappedInput {
+                source: "bun.lock".to_string(),
+                destination: "bun.lock".to_string(),
+                producer_task: None,
+                anchor: Some(String::new()),
+            }),
+        ]
+    );
+}
+
+#[test]
+fn a_file_reference_that_does_not_bind_fails_only_the_graphs_that_reach_it() {
+    for (reference, expected) in [
+        (
+            json!({"cuenvFiles": "project", "cuenvProject": "missing", "paths": ["a/**"]}),
+            "no project of this module is named 'missing'",
+        ),
+        (
+            json!({"cuenvFiles": "project", "cuenvProject": "content", "paths": ["posts/**"]}),
+            "`posts/**` matches nothing in content/",
+        ),
+        (
+            json!({"cuenvFiles": "module", "paths": ["../outside"]}),
+            "is not a path inside the module root",
+        ),
+    ] {
+        let module = reading_files(json!([reference]));
+        let mut scope = module.scope("app");
+
+        scope.reach(["build", "lint"], &module);
+
+        let Err(error) = scope.graph(["build"]) else {
+            panic!("an unbound reference");
+        };
+        assert!(error.to_string().contains("task 'build'"), "{error}");
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(scope.graph(["lint"]).is_ok(), "lint does not reach it");
+    }
+}
+
+#[test]
+fn a_problem_recorded_against_a_reached_node_fails_the_graph() {
+    let mut module = reading_files(json!(["src/**"]));
+    if let Some(app) = module.projects.get_mut("app") {
+        app.diagnostics.tasks.insert(
+            "build".to_string(),
+            vec!["task 'build': broken".to_string()],
+        );
+    }
+    let mut scope = module.scope("app");
+
+    scope.reach(["build", "lint"], &module);
+
+    let Err(error) = scope.graph(["build"]) else {
+        panic!("a reached problem");
+    };
+    assert!(
+        error.to_string().contains("task 'build': broken"),
+        "{error}"
+    );
+    assert!(scope.graph(["lint"]).is_ok());
 }
 
 #[test]
@@ -822,6 +938,7 @@ fn a_project_whose_name_is_not_known_is_qualified_with_its_path() {
             source: "content/out/one.md".to_string(),
             destination: "app/vendor/one.md".to_string(),
             producer_task: Some("#/content:articles".to_string()),
+            anchor: None,
         }))
     );
 }

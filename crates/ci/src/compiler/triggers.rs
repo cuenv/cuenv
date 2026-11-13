@@ -1,31 +1,74 @@
 //! CI trigger condition and path derivation.
 
-use super::Compiler;
+use super::{Compiler, CompilerError};
 use crate::configuration::{directory_filter, is_special_in_github_filter};
 use crate::ir::{ManualTriggerConfig, TriggerCondition, WorkflowDispatchInputDef};
-use cuenv_core::ci::{CI, ManualTrigger, Pipeline};
-use cuenv_core::tasks::TaskNode;
+use cuenv_core::ci::{ManualTrigger, Pipeline};
+use cuenv_core::tasks::file_references::{for_task, path_problem, unknown_project};
+use cuenv_core::tasks::{FilesAnchor, InputPattern, TaskNode, anchored_path_problem};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 /// What the tasks a pipeline reaches read, as trigger derivation sees it.
 #[derive(Default)]
-struct PipelineInputs {
-    /// Every path input of every reached task.
+pub(super) struct PipelineInputs {
+    /// Every path input of every reached task, relative to the project.
     patterns: HashSet<String>,
-    /// A reached task has no path inputs, or does not resolve. Such a task
+    /// Every path of a file reference of every reached task: its anchor's
+    /// directory relative to the module root (empty for the root), and the
+    /// path relative to that directory.
+    anchored: HashSet<(String, String)>,
+    /// A reached task has no inputs, or does not resolve. Such a task
     /// always runs, so any file of the project can affect the pipeline.
     whole_project: bool,
     /// Tasks already walked, so a dependency cycle ends.
     visited: HashSet<String>,
+    /// Why a reached node cannot run: problems recorded against it when the
+    /// project's value was read, and file references that do not bind.
+    problems: Vec<String>,
 }
 
 impl Compiler {
+    /// Walk what `pipeline` reaches: the inputs trigger derivation reads,
+    /// with every file reference bound to its anchor's directory.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a reached node cannot run: the pipeline or a reached task
+    /// has a problem recorded when the project's value was read, or a file
+    /// reference names a project the module does not have or a path that
+    /// breaks the rules every reference path follows. Whether a path
+    /// matches any file is not checked: `cuenv sync ci` must not depend on
+    /// a working tree.
+    pub(super) fn reached_inputs(
+        &self,
+        pipeline: &Pipeline,
+    ) -> Result<PipelineInputs, CompilerError> {
+        let mut inputs = PipelineInputs::default();
+        let pipeline_name = self.options.pipeline_name.as_deref().unwrap_or_default();
+        if !pipeline_name.is_empty() {
+            inputs
+                .problems
+                .extend_from_slice(self.project.diagnostics.pipeline(pipeline_name));
+        }
+        for task in &pipeline.tasks {
+            self.collect_task_inputs(task.task_name(), &mut inputs);
+        }
+        if inputs.problems.is_empty() {
+            Ok(inputs)
+        } else {
+            Err(CompilerError::UnrunnableNodes {
+                pipeline: pipeline_name.to_string(),
+                problems: std::mem::take(&mut inputs.problems),
+            })
+        }
+    }
+
     /// Build trigger condition for a pipeline from its configuration.
     pub(super) fn build_trigger_condition(
         &self,
         pipeline: &Pipeline,
-        _ci_config: &CI,
+        inputs: &PipelineInputs,
     ) -> TriggerCondition {
         let when = pipeline.when.as_ref();
 
@@ -78,7 +121,7 @@ impl Compiler {
             .unwrap_or_else(|| !branches.is_empty() || pull_request.is_some());
 
         let paths = if should_derive_paths {
-            self.derive_trigger_paths(pipeline)
+            self.derive_trigger_paths(inputs)
         } else {
             Vec::new()
         };
@@ -107,15 +150,19 @@ impl Compiler {
     /// prefix, and `cuenv ci` does the precise selection once the workflow
     /// has started. A workflow that starts too often costs a run that
     /// selects nothing; one that does not start skips work silently.
-    fn derive_trigger_paths(&self, pipeline: &Pipeline) -> Vec<String> {
-        let mut inputs = PipelineInputs::default();
-
-        for task in &pipeline.tasks {
-            self.collect_task_inputs(task.task_name(), &mut inputs);
-        }
-
+    fn derive_trigger_paths(&self, inputs: &PipelineInputs) -> Vec<String> {
         let project_path = self.options.project_path.as_deref();
         let mut paths = HashSet::new();
+        // A file reference's paths start from its anchor, in the same
+        // module-relative frame as every other path here, and take the same
+        // two shapes; a glob with no literal prefix falls back to the
+        // anchor's own directory.
+        for (anchor, path) in &inputs.anchored {
+            paths.extend(
+                trigger_paths_for_input(Some(anchor), path)
+                    .unwrap_or_else(|| vec![directory_filter(&[])]),
+            );
+        }
         for input in &inputs.patterns {
             // `cuenv ci` selects a task with an absolute input or an invalid
             // glob on any change, and no narrower filter covers what such an
@@ -135,7 +182,7 @@ impl Compiler {
             }
         }
 
-        if inputs.whole_project || inputs.patterns.is_empty() {
+        if inputs.whole_project || (inputs.patterns.is_empty() && inputs.anchored.is_empty()) {
             add_project_fallback_path(project_path, &mut paths);
         }
 
@@ -259,40 +306,75 @@ impl Compiler {
             return;
         }
         match self.find_task_node(task_name) {
-            Some(node) => self.collect_inputs_from_node(node, inputs),
+            Some(node) => self.collect_inputs_from_node(task_name, node, inputs),
             // Nothing is known about what an unresolved task reads.
             None => inputs.whole_project = true,
         }
     }
 
-    fn collect_inputs_from_node(&self, node: &TaskNode, inputs: &mut PipelineInputs) {
+    fn collect_inputs_from_node(&self, name: &str, node: &TaskNode, inputs: &mut PipelineInputs) {
+        inputs
+            .problems
+            .extend_from_slice(self.project.diagnostics.task(name));
         for dep in node.depends_on() {
             self.collect_task_inputs(dep.task_name(), inputs);
         }
         match node {
             TaskNode::Task(task) => {
-                let before = inputs.patterns.len();
                 let mut declared = 0_usize;
-                for input in task.iter_path_inputs() {
+                for pattern in task.input_patterns() {
                     declared += 1;
-                    inputs.patterns.insert(input.to_owned());
+                    match pattern {
+                        InputPattern::Project(path) => {
+                            inputs.patterns.insert(path.to_owned());
+                        }
+                        InputPattern::Anchored { anchor, path } => match self.bind(anchor, path) {
+                            Ok(directory) => {
+                                inputs.anchored.insert((directory, path.to_owned()));
+                            }
+                            Err(problem) => {
+                                inputs.problems.push(for_task(
+                                    name,
+                                    task.source.as_ref(),
+                                    &problem,
+                                ));
+                            }
+                        },
+                    }
                 }
-                // A task without path inputs always runs.
+                // A task without inputs always runs.
                 if declared == 0 {
                     inputs.whole_project = true;
                 }
-                debug_assert!(inputs.patterns.len() >= before);
             }
             TaskNode::Group(group) => {
-                for child_node in group.children.values() {
-                    self.collect_inputs_from_node(child_node, inputs);
+                for (child, child_node) in &group.children {
+                    self.collect_inputs_from_node(&format!("{name}.{child}"), child_node, inputs);
                 }
             }
             TaskNode::Sequence(steps) => {
-                for child_node in steps {
-                    self.collect_inputs_from_node(child_node, inputs);
+                for (index, child_node) in steps.iter().enumerate() {
+                    self.collect_inputs_from_node(&format!("{name}[{index}]"), child_node, inputs);
                 }
             }
+        }
+    }
+
+    /// The module-relative directory one path of a file reference starts
+    /// from, once the path is known to follow the rules every reference
+    /// path follows.
+    fn bind(&self, anchor: &FilesAnchor, path: &str) -> Result<String, String> {
+        if let Some(problem) = anchored_path_problem(path) {
+            return Err(path_problem(anchor, path, problem));
+        }
+        match anchor {
+            FilesAnchor::Module => Ok(String::new()),
+            FilesAnchor::Project(name) => self
+                .options
+                .file_anchors
+                .get(name)
+                .cloned()
+                .ok_or_else(|| unknown_project(name)),
         }
     }
 }

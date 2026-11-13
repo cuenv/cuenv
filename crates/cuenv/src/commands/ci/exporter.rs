@@ -73,8 +73,16 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
 
     let pipeline_name = args.pipeline_name();
 
-    // Collect all tasks for export
-    let collected = collect_tasks_for_export(&projects, pipeline_name)?;
+    // Collect all tasks for export. File references name projects by name,
+    // which means a directory of the whole module, not only of `--path`.
+    let file_anchors = cuenv_ci::compiler::module_file_anchors(&module);
+    let collected = collect_tasks_for_export(
+        &projects,
+        ExportPipeline {
+            name: pipeline_name,
+            file_anchors: &file_anchors,
+        },
+    )?;
 
     if collected.tasks.is_empty() {
         tracing::info!("No tasks to export");
@@ -120,16 +128,26 @@ struct CollectedTasks {
     environment: Option<String>,
 }
 
+/// The pipeline an export is for.
+#[derive(Clone, Copy)]
+struct ExportPipeline<'pipeline> {
+    name: &'pipeline str,
+    /// The directory each project name of the module means, relative to
+    /// the module root.
+    file_anchors: &'pipeline std::collections::BTreeMap<String, String>,
+}
+
 /// Collect all IR tasks from all projects for a given pipeline.
 ///
 /// For export mode, we collect ALL tasks defined in the pipeline rather than
 /// filtering by affected files. The CI orchestrator handles trigger logic.
 fn collect_tasks_for_export(
     projects: &[(PathBuf, Project)],
-    pipeline_name: &str,
+    pipeline: ExportPipeline<'_>,
 ) -> Result<CollectedTasks> {
     use cuenv_ci::compiler::{Compiler, CompilerOptions};
 
+    let pipeline_name = pipeline.name;
     let mut all_ir_tasks = Vec::new();
     let mut pipeline_environment: Option<String> = None;
     let mut compiled_runtimes = Vec::new();
@@ -168,7 +186,9 @@ fn collect_tasks_for_export(
 
         // Compile with pipeline context
         let options = CompilerOptions {
+            pipeline_name: Some(pipeline_name.to_string()),
             pipeline: Some(ci_pipeline.clone()),
+            file_anchors: pipeline.file_anchors.clone(),
             ..Default::default()
         };
         let compiler = Compiler::with_options(config.clone(), options);

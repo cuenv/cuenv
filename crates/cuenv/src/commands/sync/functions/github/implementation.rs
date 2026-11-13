@@ -341,6 +341,7 @@ fn build_project_pipeline_context(
         pipeline: Some(pipeline.clone()),
         ci_mode: true,
         module_root: Some(project.module_root.clone()),
+        file_anchors: project.file_anchors.as_ref().clone(),
         project_path: project_path_for_compiler.clone(),
         ..Default::default()
     };

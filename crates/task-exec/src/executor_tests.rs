@@ -1618,6 +1618,42 @@ fn a_task_runs_where_it_is_defined_whichever_project_asks_for_it() {
 }
 
 #[tokio::test]
+async fn an_unbound_file_reference_is_refused_whatever_the_isolation() {
+    let tmp = TempDir::new().unwrap();
+    let module_root = tmp.path().canonicalize().unwrap();
+    let executor = executor_with_another_project(&module_root);
+    let reading = |hermetic: Hermetic| Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "printf ran > ran.txt".to_string()],
+        hermetic,
+        inputs: vec![cuenv_manifest::tasks::Input::Files(
+            cuenv_manifest::tasks::FilesReference {
+                anchor: cuenv_manifest::tasks::FilesAnchor::Project("content".to_string()),
+                paths: vec!["articles/**".to_string()],
+            },
+        )],
+        ..Default::default()
+    };
+
+    for hermetic in [
+        Hermetic::Enabled(false),
+        Hermetic::Enabled(true),
+        unisolated_hermeticity(),
+    ] {
+        let error = executor
+            .execute_task("build", &reading(hermetic))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("reads `content.#Files & {paths: [...]}`"),
+            "{error}"
+        );
+        assert!(!module_root.join("ran.txt").exists());
+    }
+}
+
+#[tokio::test]
 async fn a_mapping_is_refused_where_nothing_would_stage_it() {
     let tmp = TempDir::new().unwrap();
     let module_root = tmp.path().canonicalize().unwrap();
@@ -1632,6 +1668,7 @@ async fn a_mapping_is_refused_where_nothing_would_stage_it() {
                 source: "content/out/one.md".to_string(),
                 destination: destination.to_string(),
                 producer_task: Some("#content:articles".to_string()),
+                anchor: None,
             },
         )],
         ..Default::default()

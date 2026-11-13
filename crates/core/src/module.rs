@@ -2,6 +2,7 @@
 
 mod deserialize;
 mod module_evaluation;
+mod node_checks;
 mod task_refs;
 mod task_sources;
 mod unique_names;

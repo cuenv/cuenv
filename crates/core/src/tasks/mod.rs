@@ -11,6 +11,7 @@
 //! crate).
 
 pub mod error;
+pub mod file_references;
 pub mod output_refs;
 
 // Re-export the task DTOs from the leaf manifest crate.

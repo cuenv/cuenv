@@ -5,7 +5,7 @@ use crate::ir::{
     ArtifactDownload, CachePolicy, IntermediateRepresentation, OutputDeclaration, OutputType,
     SecretConfig, Task as IrTask,
 };
-use cuenv_core::tasks::{Task, TaskGroup, TaskNode};
+use cuenv_core::tasks::{InputPattern, Task, TaskGroup, TaskNode};
 use cuenv_task_exec::TaskCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -265,8 +265,17 @@ impl Compiler {
         // Extract secrets (simplified - would integrate with secret resolver)
         let secrets: BTreeMap<String, SecretConfig> = BTreeMap::new();
 
-        // Convert inputs (path globs only for now)
-        let inputs: Vec<String> = task.iter_path_inputs().map(str::to_owned).collect();
+        // The IR lists the paths of the task's own project. A file
+        // reference starts from another directory, which trigger derivation
+        // binds and checks; it is never lowered to a string here, where it
+        // would read as a path of this project.
+        let inputs: Vec<String> = task
+            .input_patterns()
+            .filter_map(|pattern| match pattern {
+                InputPattern::Project(path) => Some(path.to_owned()),
+                InputPattern::Anchored { .. } => None,
+            })
+            .collect();
 
         // Convert outputs - use Orchestrator in CI mode for cross-job artifact sharing
         let output_type = if self.options.ci_mode {

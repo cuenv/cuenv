@@ -1,6 +1,7 @@
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::TaskNode;
-use cuenv_core::{AffectedBy, PatternMatch, UnmatchablePattern};
+use cuenv_core::tasks::file_references::{BoundPath, ReferenceChecks, for_task, unknown_project};
+use cuenv_core::tasks::{FilesAnchor, Input, InputPattern, TaskNode};
+use cuenv_core::{AffectedBy, InputFrame, PatternMatch, PlaceAnchor, UnmatchablePattern};
 use cuenv_task_exec::TaskIndex;
 use cuenv_vcs::WalkHasher;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -71,6 +72,102 @@ pub struct ChangedInputs<'changes> {
     /// The project's directory (see [`CheckoutFrame::place`]); `.` or empty
     /// for a project at the root of the checkout.
     pub project_root: &'changes Path,
+    /// Where the anchors of file references lie in the checkout (see
+    /// [`CheckoutAnchors`]).
+    pub anchors: &'changes dyn PlaceAnchor,
+}
+
+impl<'changes> ChangedInputs<'changes> {
+    /// The frame the inputs of the project are read in.
+    #[must_use]
+    pub fn frame(&self) -> InputFrame<'changes> {
+        InputFrame {
+            project_root: self.project_root,
+            anchors: self.anchors,
+        }
+    }
+
+    /// The same changes compared with the project in `project_root`.
+    #[must_use]
+    pub fn for_project(&self, project_root: &'changes Path) -> Self {
+        Self {
+            project_root,
+            ..*self
+        }
+    }
+}
+
+/// Where the anchors of file references lie in a checkout: each project
+/// name means its declaring directory, and the module root means itself.
+pub struct CheckoutAnchors<'anchors, S> {
+    /// The projects of the module by name, each with its directory relative
+    /// to the root of the checkout.
+    pub projects: &'anchors HashMap<String, (PathBuf, Project), S>,
+    /// The root of the CUE module relative to the root of the checkout;
+    /// `None` when it is not inside the checkout.
+    pub module_root: Option<&'anchors Path>,
+}
+
+impl<S: BuildHasher> PlaceAnchor for CheckoutAnchors<'_, S> {
+    fn place(&self, anchor: &FilesAnchor) -> Option<PathBuf> {
+        match anchor {
+            FilesAnchor::Project(name) => self.projects.get(name).map(|(path, _)| path.clone()),
+            FilesAnchor::Module => self.module_root.map(Path::to_path_buf),
+        }
+    }
+
+    fn holder(&self, path: &Path) -> Option<(String, PathBuf)> {
+        self.projects
+            .iter()
+            .filter(|(_, (directory, _))| path.starts_with(directory))
+            .max_by_key(|(name, (directory, _))| (directory.components().count(), *name))
+            .map(|(name, (directory, _))| (name.clone(), directory.clone()))
+    }
+}
+
+/// How a path read from the root of the checkout is written as a file
+/// reference: through the project whose directory holds it, else from the
+/// module root. `consumer` is the project the path is an input of, whose
+/// own files are plain strings.
+fn reference_spelling(anchors: &dyn PlaceAnchor, consumer: &Path, path: &Path) -> String {
+    // A project cannot import the project of a directory above it, or
+    // itself: that would be an import cycle.
+    let holder = anchors
+        .holder(path)
+        .filter(|(_, directory)| !consumer.starts_with(directory));
+    if let Some((name, directory)) = holder {
+        let rest = path
+            .strip_prefix(&directory)
+            .map(|rest| rest.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let rest = if rest.is_empty() {
+            "**".to_string()
+        } else {
+            rest
+        };
+        return format!(
+            "import the project in {} and write `{name}.#Files & {{paths: [\"{rest}\"]}}`",
+            display_project(&directory)
+        );
+    }
+    let module = anchors.place(&FilesAnchor::Module);
+    match module.and_then(|module| path.strip_prefix(&module).ok().map(Path::to_path_buf)) {
+        Some(relative) if !relative.as_os_str().is_empty() => format!(
+            "write `schema.#ModuleFiles & {{paths: [\"{}\"]}}`",
+            relative.to_string_lossy().replace('\\', "/")
+        ),
+        Some(_) | None => "no file reference can name it: it lies outside the CUE module's \
+                           root"
+            .to_string(),
+    }
+}
+
+/// `pattern`, written relative to the project in `project_root`, as a path
+/// from the root of the checkout, with `..` resolved; `None` when it leaves
+/// the checkout or is absolute.
+fn from_checkout_root(project_root: &Path, pattern: &str) -> Option<PathBuf> {
+    let pattern = cuenv_vcs::pattern::normalize(pattern);
+    placed_reference(&pattern, project_root).filter(|_| !Path::new(&pattern).has_root())
 }
 
 /// Project data used to resolve direct and cross-project dependencies.
@@ -92,6 +189,7 @@ pub struct AffectedProjects<'projects, S> {
 
 struct ExternalDependencyContext<'context, S> {
     projects: &'context HashMap<String, (PathBuf, Project), S>,
+    anchors: &'context dyn PlaceAnchor,
     checkout_root: Option<&'context Path>,
     changed_configuration: Option<&'context HashSet<PathBuf>>,
     changed_files: &'context [PathBuf],
@@ -120,6 +218,7 @@ where
     let ChangedInputs {
         files: changed_files,
         project_root,
+        anchors,
     } = changed;
     let AffectedProjects {
         project: config,
@@ -181,7 +280,7 @@ where
     // 1. Identify directly affected tasks across the entire DAG
     for task_name in &all_dag_tasks {
         let directly_affected = if let Ok(entry) = index.resolve(task_name) {
-            warn_about_unmatchable_inputs(project_root, task_name, &entry.node);
+            warn_about_unmatchable_inputs(changed, task_name, &entry.node);
             warn_about_root_relative_inputs(
                 changed,
                 warning_root,
@@ -190,7 +289,7 @@ where
                     node: &entry.node,
                 },
             );
-            entry.node.is_affected_by(changed_files, project_root)
+            entry.node.is_affected_by(changed_files, changed.frame())
         } else {
             // The executor reports the missing task; selecting it here is
             // what lets that error surface.
@@ -239,6 +338,7 @@ where
                                 ),
                                 &mut ExternalDependencyContext {
                                     projects: all_projects,
+                                    anchors,
                                     checkout_root: *checkout_root,
                                     changed_configuration: *changed_configuration,
                                     changed_files,
@@ -273,6 +373,200 @@ where
         .collect();
     tracing::trace!(affected_tasks = ?result, "Affected task computation complete");
     result
+}
+
+/// A pipeline of one project, and every project its tasks can depend on.
+pub struct PipelineReach<'reach, S> {
+    /// The project whose pipeline it is.
+    pub project: &'reach Project,
+    /// The project's directory relative to the root of the checkout.
+    pub project_root: &'reach Path,
+    /// The pipeline's name.
+    pub pipeline: &'reach str,
+    /// The pipeline's tasks.
+    pub pipeline_tasks: &'reach [String],
+    /// The projects of the module by name, each with its directory relative
+    /// to the root of the checkout.
+    pub all_projects: &'reach HashMap<String, (PathBuf, Project), S>,
+}
+
+/// Why the nodes a pipeline reaches cannot run: problems found in them when
+/// their project's value was read, and file references of theirs that do
+/// not bind or name no file.
+///
+/// Every node the pipeline reaches is looked at, through dependencies on
+/// other projects too, and nothing else: a problem in a node no pipeline
+/// task reaches never fails this pipeline. File references are bound
+/// against the checkout `checks` reads, each path checked to match at least
+/// one file, before any task is selected: a run of every task and a run
+/// with nothing to compare with check them as well.
+pub fn reached_problems<S>(
+    reach: &PipelineReach<'_, S>,
+    anchors: &dyn PlaceAnchor,
+    checks: &mut ReferenceChecks,
+) -> Vec<String>
+where
+    S: BuildHasher,
+{
+    let mut walk = ReachWalk {
+        anchors,
+        checks,
+        all_projects: reach.all_projects,
+        problems: reach.project.diagnostics.pipeline(reach.pipeline).to_vec(),
+        external: HashSet::new(),
+    };
+    let Ok(index) = TaskIndex::build(&reach.project.tasks) else {
+        // Selection fails closed without an index, and the executor
+        // reports why it cannot be built.
+        return walk.problems;
+    };
+    for name in collect_dag_tasks(reach.pipeline_tasks, &index) {
+        let Ok(entry) = index.resolve(&name) else {
+            continue;
+        };
+        let owner = ReachedProject {
+            project: reach.project,
+            project_root: reach.project_root,
+            name: None,
+        };
+        walk.node(owner, &entry.name, &entry.node);
+    }
+    walk.problems
+}
+
+/// The project that owns the nodes being walked.
+#[derive(Clone, Copy)]
+struct ReachedProject<'project> {
+    project: &'project Project,
+    /// Its directory relative to the root of the checkout.
+    project_root: &'project Path,
+    /// What its tasks are called from another project; `None` for the
+    /// project whose pipeline it is.
+    name: Option<&'project str>,
+}
+
+struct ReachWalk<'walk, S> {
+    anchors: &'walk dyn PlaceAnchor,
+    checks: &'walk mut ReferenceChecks,
+    all_projects: &'walk HashMap<String, (PathBuf, Project), S>,
+    problems: Vec<String>,
+    /// Dependencies on other projects already walked.
+    external: HashSet<String>,
+}
+
+impl<S: BuildHasher> ReachWalk<'_, S> {
+    /// Look at the node called `name`, everything beneath it, and the
+    /// nodes of other projects it depends on.
+    fn node(&mut self, owner: ReachedProject<'_>, name: &str, node: &TaskNode) {
+        let problems = owner.project.diagnostics.task(name);
+        self.problems
+            .extend(problems.iter().map(|problem| match owner.name {
+                Some(project) => format!("project '{project}': {problem}"),
+                None => problem.clone(),
+            }));
+        match node {
+            TaskNode::Task(task) => {
+                for reference in task.inputs.iter().filter_map(Input::as_files) {
+                    for path in &reference.paths {
+                        if let Err(problem) = self.bind(&reference.anchor, path) {
+                            self.problems
+                                .push(for_task(name, task.source.as_ref(), &problem));
+                        }
+                    }
+                }
+            }
+            TaskNode::Group(group) => {
+                for (child, child_node) in &group.children {
+                    self.node(owner, &format!("{name}.{child}"), child_node);
+                }
+            }
+            TaskNode::Sequence(steps) => {
+                for (index, step) in steps.iter().enumerate() {
+                    self.node(owner, &format!("{name}[{index}]"), step);
+                }
+            }
+        }
+        let external: Vec<String> = node
+            .depends_on()
+            .iter()
+            .map(|dependency| dependency.task_name())
+            .filter(|dependency| dependency.starts_with('#'))
+            .map(|dependency| {
+                named_dependency(
+                    dependency,
+                    DependencyOrigin {
+                        project_root: owner.project_root,
+                        projects: self.all_projects,
+                    },
+                )
+            })
+            .collect();
+        for dependency in external {
+            self.external_node(&dependency);
+        }
+    }
+
+    /// Look at the task of another project a dependency names, and what it
+    /// depends on in turn. One that does not resolve is selected and
+    /// reported where affected tasks are computed.
+    fn external_node(&mut self, dependency: &str) {
+        if !self.external.insert(dependency.to_string()) {
+            return;
+        }
+        let all_projects = self.all_projects;
+        let Some((project_name, task_name)) = dependency
+            .strip_prefix('#')
+            .and_then(|reference| reference.split_once(':'))
+        else {
+            return;
+        };
+        let Some((project_name, (project_root, project))) =
+            all_projects.get_key_value(project_name)
+        else {
+            return;
+        };
+        let Ok(index) = TaskIndex::build(&project.tasks) else {
+            return;
+        };
+        let Ok(entry) = index.resolve(task_name) else {
+            return;
+        };
+        let owner = ReachedProject {
+            project,
+            project_root,
+            name: Some(project_name),
+        };
+        self.node(owner, &entry.name, &entry.node);
+        // A dependency within that project is that project's task.
+        let local: Vec<String> = node_dependency_names(&entry.node)
+            .into_iter()
+            .filter(|name| !name.starts_with('#'))
+            .collect();
+        for name in local {
+            self.external_node(&format!("#{project_name}:{name}"));
+        }
+    }
+
+    /// Bind one path of a file reference and check it against the files of
+    /// the checkout.
+    fn bind(&mut self, anchor: &FilesAnchor, path: &str) -> Result<(), String> {
+        let Some(placed) = self.anchors.place(anchor) else {
+            return Err(match anchor {
+                FilesAnchor::Project(name) => unknown_project(name),
+                FilesAnchor::Module => {
+                    "the CUE module's root is not inside the checkout, so its files cannot be \
+                     compared with changes"
+                        .to_string()
+                }
+            });
+        };
+        let directory = self.checks.root().join(placed);
+        self.checks.check(BoundPath {
+            anchor,
+            directory: &directory,
+            path,
+        })
+    }
 }
 
 /// Every dependency a node declares, on itself or on anything beneath it.
@@ -343,10 +637,11 @@ pub fn matched_inputs_for_task(
 
     let mut matched: Vec<String> = Vec::new();
     for pattern in entry.node.input_patterns() {
-        if cuenv_core::matches_pattern(changed.files, changed.project_root, pattern)
-            && !matched.iter().any(|seen| seen == pattern)
+        let written = pattern.to_string();
+        if cuenv_core::match_input(changed.files, changed.frame(), pattern) != PatternMatch::None
+            && !matched.contains(&written)
         {
-            matched.push(pattern.to_owned());
+            matched.push(written);
         }
     }
     matched
@@ -372,11 +667,9 @@ fn is_task_directly_affected(
         return false;
     };
 
-    index.resolve(task_name).is_ok_and(|entry| {
-        entry
-            .node
-            .is_affected_by(changed.files, changed.project_root)
-    })
+    index
+        .resolve(task_name)
+        .is_ok_and(|entry| entry.node.is_affected_by(changed.files, changed.frame()))
 }
 
 /// Check if an external dependency (cross-project task) is affected by file changes.
@@ -464,21 +757,25 @@ where
             return true;
         };
 
-        warn_about_unmatchable_inputs(project_path, task_name, &entry.node);
+        let changed = ChangedInputs {
+            files: context.changed_files,
+            project_root: project_path,
+            anchors: context.anchors,
+        };
+        warn_about_unmatchable_inputs(changed, task_name, &entry.node);
         warn_about_root_relative_inputs(
-            ChangedInputs {
-                files: context.changed_files,
-                project_root: project_path,
-            },
+            changed,
             context.checkout_root,
             NamedNode {
                 name: task_name,
                 node: &entry.node,
             },
         );
+        // A producer's file references keep their own anchors: they are
+        // read from the directory they name, whoever depends on it.
         if entry
             .node
-            .is_affected_by(context.changed_files, project_path)
+            .is_affected_by(context.changed_files, changed.frame())
         {
             return true;
         }
@@ -609,24 +906,37 @@ fn cached_task_index<'a>(
 ///
 /// Such an input makes its task run whenever anything changed, which is
 /// correct and may be slow, so the user is told why and what to expect.
-fn warn_about_unmatchable_inputs(project_root: &Path, task_name: &str, node: &TaskNode) {
+fn warn_about_unmatchable_inputs(changed: ChangedInputs<'_>, task_name: &str, node: &TaskNode) {
+    let project_root = changed.project_root;
     for pattern in node.input_patterns() {
+        // A file reference's paths are checked when the reference is bound.
+        let InputPattern::Project(pattern) = pattern else {
+            continue;
+        };
         let Some(reason) = cuenv_core::unmatchable_pattern(pattern) else {
             continue;
         };
         let explanation = match reason {
             UnmatchablePattern::ParentSegment => {
-                "`..` inputs cannot be matched against changes, so this task always runs; they \
-                 will be rejected once CUE-native cross-project references ship (#611)"
+                let rewrite = from_checkout_root(project_root, pattern).map_or_else(
+                    || "it leaves the repository, and no file reference can name it".to_string(),
+                    |path| reference_spelling(changed.anchors, project_root, &path),
+                );
+                format!(
+                    "`..` inputs cannot be matched against changes, so this task always runs; \
+                     they will be rejected once CUE-native cross-project task references ship \
+                     (#611). Read the files through a file reference instead: {rewrite} (run \
+                     `cue mod get github.com/cuenv/cuenv` first if the pinned schema has no \
+                     `#Files`)"
+                )
             }
-            UnmatchablePattern::Absolute => {
-                "absolute inputs cannot be matched against changes, which are relative to the \
-                 repository, so this task always runs"
-            }
-            UnmatchablePattern::InvalidGlob => {
-                "this input is not a valid glob, so it cannot be matched against changes and \
-                 this task always runs"
-            }
+            UnmatchablePattern::Absolute => "absolute inputs cannot be matched against changes, \
+                                             which are relative to the repository, so this task \
+                                             always runs"
+                .to_string(),
+            UnmatchablePattern::InvalidGlob => "this input is not a valid glob, so it cannot be \
+                                                matched against changes and this task always runs"
+                .to_string(),
         };
         let task = WarnedTask {
             project_root,
@@ -653,8 +963,10 @@ fn warn_about_unmatchable_inputs(project_root: &Path, task_name: &str, node: &Ta
 ///   is what the user relies on, and it is going away, so they are told.
 /// - The pattern does select files under its project, and the root happens
 ///   to have files of the same name (`package.json`, `src/**`). The
-///   configuration is correct and the extra run is an accident. Nothing is
-///   said.
+///   configuration is correct and the extra run is an accident. It is never
+///   a warning: one note says the root file also matched, that this stops
+///   when the root-relative reading goes away, and how to read that file on
+///   purpose.
 ///
 /// Changed files alone cannot tell the two apart; the files of the project
 /// can. Without a checkout to look at, nothing is said.
@@ -674,37 +986,80 @@ fn warn_about_root_relative_inputs(
         project_root: changed.project_root,
         task_name,
     };
-    for pattern in root_relative_inputs(changed, checkout_root, node) {
+    let project = display_project(changed.project_root);
+    let RootRelative {
+        relied_on,
+        namesakes,
+    } = root_relative_inputs(changed, checkout_root, node);
+    for pattern in relied_on {
         warn_once_per_task(warned, "root-relative", || {
+            let rewrite =
+                reference_spelling(changed.anchors, changed.project_root, Path::new(pattern));
             format!(
                 "task '{task_name}' of project {project} has input '{pattern}', which selects \
                  nothing under {project} and matched a changed file only when read from the \
                  root of the repository. Inputs are relative to their project; this \
-                 root-relative reading still selects the task for now and is going away (#611)",
-                project = display_project(changed.project_root)
+                 root-relative reading still selects the task for now and is going away \
+                 (#611). To read that file on purpose, {rewrite}"
             )
         });
     }
+    for pattern in namesakes {
+        let key = format!("{project}\0{task_name}\0namesake");
+        if first_time(key) {
+            cuenv_events::emit_stderr!(format!(
+                "note: task '{task_name}' of project {project} was also selected because a \
+                 file at the root of the repository matches its input '{pattern}' when read \
+                 from there. Inputs are relative to their project, and this extra match stops \
+                 once the root-relative reading goes away (#611); if the task does read that \
+                 file, add `schema.#ModuleFiles & {{paths: [\"{pattern}\"]}}`"
+            ));
+        }
+    }
+}
+
+/// The inputs of a node that matched a changed file only when read from
+/// the root of the checkout.
+struct RootRelative<'node> {
+    /// Those that select no file under their own project: the root-relative
+    /// reading is what the user relies on.
+    relied_on: Vec<&'node str>,
+    /// Those that do select files under their project: the root file is a
+    /// namesake.
+    namesakes: Vec<&'node str>,
 }
 
 /// The inputs of `node` that matched a changed file only when read from the
-/// root of the checkout and that select no file under their own project.
+/// root of the checkout, told apart by whether they select files under
+/// their own project.
 fn root_relative_inputs<'node>(
     changed: ChangedInputs<'_>,
     checkout_root: &Path,
     node: &'node TaskNode,
-) -> Vec<&'node str> {
+) -> RootRelative<'node> {
     let project_directory = checkout_root.join(changed.project_root);
     let walker = WalkHasher::new(&project_directory);
-    node.input_patterns()
+    let matched_from_root: Vec<&'node str> = node
+        .input_patterns()
         .into_iter()
+        .filter_map(|pattern| match pattern {
+            InputPattern::Project(path) => Some(path),
+            // A file reference is read from its anchor only.
+            InputPattern::Anchored { .. } => None,
+        })
         .filter(|pattern| {
             cuenv_core::match_pattern(changed.files, changed.project_root, pattern)
                 == PatternMatch::OnlyFromCheckoutRoot
         })
-        // A pattern the walker cannot read selects nothing under the project.
-        .filter(|pattern| !walker.selects_any(pattern).unwrap_or(false))
-        .collect()
+        .collect();
+    // A pattern the walker cannot read selects nothing under the project.
+    let (namesakes, relied_on) = matched_from_root
+        .into_iter()
+        .partition(|pattern| walker.selects_any(pattern).unwrap_or(false));
+    RootRelative {
+        relied_on,
+        namesakes,
+    }
 }
 
 /// Whether a changed file can change the CUE configuration of the project

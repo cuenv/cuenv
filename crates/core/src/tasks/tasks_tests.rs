@@ -1,6 +1,7 @@
 use super::{
-    Input, Mapping, ParamDef, ParamType, ProjectReference, ResolvedArgs, ScriptShell,
-    ShellOptionToggle, ShellOptions, Task, TaskCacheMode, TaskGroup, TaskNode, TaskParams, Tasks,
+    FilesAnchor, FilesReference, Input, InputPattern, Mapping, ParamDef, ParamType,
+    ProjectReference, ResolvedArgs, ScriptShell, ShellOptionToggle, ShellOptions, Task,
+    TaskCacheMode, TaskGroup, TaskNode, TaskParams, Tasks,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -419,8 +420,8 @@ fn test_task_input_helpers_collect() {
         ..Default::default()
     };
 
-    let path_inputs: Vec<String> = task.iter_path_inputs().map(str::to_owned).collect();
-    assert_eq!(path_inputs, vec!["src".to_string()]);
+    let path_inputs: Vec<InputPattern<'_>> = task.input_patterns().collect();
+    assert_eq!(path_inputs, vec![InputPattern::Project("src")]);
 
     let project_refs: Vec<&ProjectReference> = task.iter_project_refs().collect();
     assert_eq!(project_refs.len(), 1);
@@ -552,8 +553,68 @@ fn test_param_def_defaults() {
 
 mod affected_tests {
     use super::*;
-    use crate::AffectedBy;
+    use crate::{AffectedBy, InputFrame, NoAnchors, PlaceAnchor};
     use std::path::PathBuf;
+
+    /// The inputs of a project at `root`, with no file reference placed.
+    fn frame(root: &Path) -> InputFrame<'_> {
+        InputFrame {
+            project_root: root,
+            anchors: &NoAnchors,
+        }
+    }
+
+    /// `content` lives in `content/`.
+    struct Content;
+
+    impl PlaceAnchor for Content {
+        fn place(&self, anchor: &FilesAnchor) -> Option<PathBuf> {
+            match anchor {
+                FilesAnchor::Project(name) if name == "content" => Some(PathBuf::from("content")),
+                FilesAnchor::Project(_) | FilesAnchor::Module => None,
+            }
+        }
+    }
+
+    fn reading_articles() -> Task {
+        Task {
+            inputs: vec![Input::Files(FilesReference {
+                anchor: FilesAnchor::Project("content".to_string()),
+                paths: vec!["articles/**".to_string()],
+            })],
+            command: "echo test".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_task_whose_only_inputs_are_file_references_is_matched_by_them() {
+        let task = reading_articles();
+        let frame = InputFrame {
+            project_root: Path::new("app"),
+            anchors: &Content,
+        };
+
+        assert!(task.is_affected_by(&[PathBuf::from("content/articles/one.md")], frame));
+        assert!(
+            !task.is_affected_by(&[PathBuf::from("app/README.md")], frame),
+            "a file reference is an input: the task is not affected by every change"
+        );
+        assert_eq!(
+            AffectedBy::input_patterns(&task),
+            [InputPattern::Anchored {
+                anchor: &FilesAnchor::Project("content".to_string()),
+                path: "articles/**"
+            }]
+        );
+    }
+
+    #[test]
+    fn a_file_reference_that_cannot_be_placed_fails_closed() {
+        let task = reading_articles();
+
+        assert!(task.is_affected_by(&[PathBuf::from("app/README.md")], frame(Path::new("app"))));
+    }
 
     fn make_task(inputs: Vec<&str>) -> Task {
         Task {
@@ -573,7 +634,7 @@ mod affected_tests {
         let root = Path::new(".");
 
         // Task with no inputs should always be affected
-        assert!(task.is_affected_by(&changed_files, root));
+        assert!(task.is_affected_by(&changed_files, frame(root)));
     }
 
     #[test]
@@ -582,7 +643,7 @@ mod affected_tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
 
-        assert!(task.is_affected_by(&changed_files, root));
+        assert!(task.is_affected_by(&changed_files, frame(root)));
     }
 
     #[test]
@@ -591,7 +652,7 @@ mod affected_tests {
         let changed_files = vec![PathBuf::from("docs/readme.md")];
         let root = Path::new(".");
 
-        assert!(!task.is_affected_by(&changed_files, root));
+        assert!(!task.is_affected_by(&changed_files, frame(root)));
     }
 
     #[test]
@@ -601,7 +662,7 @@ mod affected_tests {
         let changed_files = vec![PathBuf::from("projects/website/src/app.rs")];
         let root = Path::new("projects/website");
 
-        assert!(task.is_affected_by(&changed_files, root));
+        assert!(task.is_affected_by(&changed_files, frame(root)));
     }
 
     #[test]
@@ -611,7 +672,7 @@ mod affected_tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
 
-        assert!(node.is_affected_by(&changed_files, root));
+        assert!(node.is_affected_by(&changed_files, frame(root)));
     }
 
     #[test]
@@ -635,7 +696,7 @@ mod affected_tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
 
-        assert!(group.is_affected_by(&changed_files, root));
+        assert!(group.is_affected_by(&changed_files, frame(root)));
     }
 
     #[test]
@@ -659,7 +720,7 @@ mod affected_tests {
         let changed_files = vec![PathBuf::from("docs/readme.md")];
         let root = Path::new(".");
 
-        assert!(!group.is_affected_by(&changed_files, root));
+        assert!(!group.is_affected_by(&changed_files, frame(root)));
     }
 
     #[test]
@@ -676,16 +737,16 @@ mod affected_tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
 
-        assert!(sequence.is_affected_by(&changed_files, root));
+        assert!(sequence.is_affected_by(&changed_files, frame(root)));
     }
 
     #[test]
     fn test_input_patterns_returns_patterns() {
         let task = make_task(vec!["src/**", "Cargo.toml"]);
-        let patterns = task.input_patterns();
+        let patterns = AffectedBy::input_patterns(&task);
 
         assert_eq!(patterns.len(), 2);
-        assert!(patterns.contains(&"src/**"));
-        assert!(patterns.contains(&"Cargo.toml"));
+        assert!(patterns.contains(&InputPattern::Project("src/**")));
+        assert!(patterns.contains(&InputPattern::Project("Cargo.toml")));
     }
 }

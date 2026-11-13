@@ -608,6 +608,7 @@ fn generate_workflow(request: &WorkflowRequest<'_>) -> Result<(String, String)> 
         pipeline: Some(pipeline.clone()),
         ci_mode: true,
         module_root: Some(project.module_root.clone()),
+        file_anchors: project.file_anchors.as_ref().clone(),
         project_path: project_path.map(str::to_string),
         ..Default::default()
     };
@@ -695,6 +696,7 @@ mod tests {
             project_path: module.path().join("infrastructure/dns"),
             relative_path: PathBuf::from("infrastructure/dns"),
             module_root: module.path().to_path_buf(),
+            file_anchors: std::sync::Arc::default(),
             config,
         };
         Fixture {

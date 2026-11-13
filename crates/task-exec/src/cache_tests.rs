@@ -1983,6 +1983,7 @@ async fn an_expanded_task_output_keeps_its_destination_mapping() {
         source: "producer/dist/app.js".to_string(),
         destination: "consumer/vendor/app.js".to_string(),
         producer_task: None,
+        anchor: None,
     })];
     let env = Environment::new();
 
@@ -2013,6 +2014,103 @@ async fn an_expanded_task_output_keeps_its_destination_mapping() {
         eligible.inputs[0].absolute_path,
         module.module_root.join("producer/dist/app.js")
     );
+}
+
+/// The outcome of hashing a task of `consumer` that reads one bound path
+/// of a file reference anchored at `producer`.
+async fn reading_producer_files(
+    module: &CrossProjectModule,
+    source: &str,
+) -> cuenv_core::Result<CacheOutcome> {
+    let mut task = make_task(
+        "bundle",
+        &[],
+        TaskPaths {
+            inputs: &[],
+            outputs: &[],
+        },
+    );
+    task.inputs = vec![Input::Mapped(MappedInput {
+        source: source.to_string(),
+        destination: cuenv_vcs::pattern::literal_prefix(source),
+        producer_task: None,
+        anchor: Some("producer".to_string()),
+    })];
+    let env = Environment::new();
+    super::build_action(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.cache.vcs_hasher_root,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_file_reference_is_hashed_where_it_lies() {
+    let module = cross_project_module();
+
+    let outcome = reading_producer_files(&module, "producer/dist/**")
+        .await
+        .unwrap();
+    let CacheOutcome::Eligible(eligible) = outcome else {
+        panic!("a file reference is cache eligible");
+    };
+
+    let staged: Vec<PathBuf> = eligible
+        .inputs
+        .iter()
+        .map(|input| input.relative_path.clone())
+        .collect();
+    assert_eq!(
+        staged,
+        [
+            PathBuf::from("producer/dist/app.js"),
+            PathBuf::from("producer/dist/nested/lib.js")
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_file_reference_leaves_links_out_of_its_inputs() {
+    let module = cross_project_module();
+    fs::write(module.module_root.join("outside.js"), "outside").unwrap();
+    std::os::unix::fs::symlink(
+        "../../outside.js",
+        module.module_root.join("producer/dist/link.js"),
+    )
+    .unwrap();
+
+    let outcome = reading_producer_files(&module, "producer/dist/**")
+        .await
+        .unwrap();
+    let CacheOutcome::Eligible(eligible) = outcome else {
+        panic!("a file reference is cache eligible");
+    };
+
+    assert!(
+        eligible
+            .inputs
+            .iter()
+            .all(|input| !input.relative_path.ends_with("link.js")),
+        "{:?}",
+        eligible.inputs
+    );
+}
+
+#[tokio::test]
+async fn a_file_reference_that_matches_nothing_when_hashed_is_an_error() {
+    let module = cross_project_module();
+
+    let error = reading_producer_files(&module, "producer/missing/**")
+        .await
+        .expect_err("a file reference that names no file");
+
+    assert!(error.to_string().contains("matches no file"), "{error}");
 }
 
 /// A module that is not the root of its repository: the hasher is rooted at
@@ -2098,6 +2196,7 @@ async fn a_mapped_input_is_rebased_by_where_the_module_lies_in_the_repository() 
                 source: "producer/dist/app.js".to_string(),
                 destination: "consumer/vendor/app.js".to_string(),
                 producer_task: Some("build".to_string()),
+                anchor: None,
             })],
         )
         .await,
@@ -2123,6 +2222,7 @@ async fn an_output_staged_where_it_is_produced_keeps_its_structure() {
                 source: "producer/dist/**".to_string(),
                 destination: "producer/dist".to_string(),
                 producer_task: Some("build".to_string()),
+                anchor: None,
             })],
         )
         .await,
@@ -2155,6 +2255,7 @@ async fn a_glob_and_a_task_output_naming_one_file_are_one_input() {
                     source: "consumer/src/generated.ts".to_string(),
                     destination: "consumer/src/generated.ts".to_string(),
                     producer_task: Some("generate".to_string()),
+                    anchor: None,
                 }),
             ],
         )
@@ -2178,6 +2279,7 @@ async fn a_glob_and_a_task_output_naming_one_file_are_one_input() {
                 source: "consumer/src/generated.ts".to_string(),
                 destination: "consumer/src/generated.ts".to_string(),
                 producer_task: Some("generate".to_string()),
+                anchor: None,
             }),
         ],
     )
@@ -2198,6 +2300,7 @@ async fn a_mapped_input_the_hasher_cannot_see_is_reported_not_dropped() {
             source: source.to_string(),
             destination: destination.to_string(),
             producer_task: Some("build".to_string()),
+            anchor: None,
         })]
     };
 

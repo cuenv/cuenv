@@ -2,7 +2,7 @@
 
 use crate::ir::{CachePolicy, PurityMode};
 use cuenv_core::ci::Pipeline;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 /// Compiler configuration options
@@ -57,6 +57,41 @@ pub struct CompilerOptions {
     /// For example, if a project is at `projects/rawkode.academy/api`, this would
     /// be `"projects/rawkode.academy/api"`.
     pub project_path: Option<String>,
+
+    /// The directory each project name of the module means, relative to the
+    /// module root (empty for the root): where the paths of a
+    /// `<pkg>.#Files` reference start. See [`file_anchors`].
+    pub file_anchors: BTreeMap<String, String>,
+}
+
+/// The directory each project name of a module means, as
+/// [`CompilerOptions::file_anchors`] holds it: the shallowest directory
+/// that carries the name, relative to the module root.
+#[must_use]
+pub fn file_anchors<'project>(
+    projects: impl IntoIterator<Item = cuenv_core::module::NamedProject<'project>>,
+) -> BTreeMap<String, String> {
+    cuenv_core::module::declaring_directories(projects)
+        .into_iter()
+        .map(|(name, path)| {
+            let path = path.to_string_lossy().replace('\\', "/");
+            let path = if path == "." { String::new() } else { path };
+            (name.to_string(), path)
+        })
+        .collect()
+}
+
+/// [`file_anchors`] for every project of an evaluated module.
+#[must_use]
+pub fn module_file_anchors(module: &cuenv_core::ModuleEvaluation) -> BTreeMap<String, String> {
+    file_anchors(module.projects().filter_map(|instance| {
+        instance
+            .project_name()
+            .map(|name| cuenv_core::module::NamedProject {
+                path: instance.path.as_path(),
+                name,
+            })
+    }))
 }
 
 impl std::fmt::Debug for CompilerOptions {
@@ -73,6 +108,7 @@ impl std::fmt::Debug for CompilerOptions {
             .field("ci_mode", &self.ci_mode)
             .field("module_root", &self.module_root)
             .field("project_path", &self.project_path)
+            .field("file_anchors", &self.file_anchors)
             .finish()
     }
 }

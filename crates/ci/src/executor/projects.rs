@@ -124,6 +124,19 @@ pub(super) struct HookProject<'project> {
     pub(super) ancestor_configs: &'project HashMap<PathBuf, Project>,
 }
 
+impl cuenv_core::PlaceAnchor for CiProjects {
+    fn place(&self, anchor: &cuenv_core::tasks::FilesAnchor) -> Option<PathBuf> {
+        let directory = match anchor {
+            cuenv_core::tasks::FilesAnchor::Project(name) => self.by_name.get(name)?,
+            cuenv_core::tasks::FilesAnchor::Module => &self.module_root,
+        };
+        directory
+            .strip_prefix(&self.checkout_root)
+            .ok()
+            .map(Path::to_path_buf)
+    }
+}
+
 impl ProjectSource for CiProjects {
     fn directory_of(&self, _origin: &Path, name: &str) -> Result<Option<PathBuf>> {
         // Every project a CI run knows lies in the one module it runs in.

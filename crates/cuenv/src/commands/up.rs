@@ -135,6 +135,7 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
         let dependency_plan =
             DependencyPlanner::new(&project.tasks, &project.images, &project.services)
                 .plan(&filtered_services)?;
+        reject_reached_problems(&project, &filtered_services, &dependency_plan)?;
 
         let graph =
             cuenv_services::controller::build_service_graph(&filtered_services).map_err(|e| {
@@ -241,6 +242,35 @@ struct ServiceDependencyPlan {
 /// task root (executed before startup) or an image root, recursing into image
 /// task dependencies. The task index is built once and reused for existence
 /// probes instead of re-cloning per dependency.
+/// Fail when a service about to start, or an image it depends on, has a
+/// problem recorded when the project's value was read: a dependency on
+/// another project's task or image, which is not supported yet. The tasks
+/// they depend on are checked when their graph is built.
+fn reject_reached_problems(
+    project: &Project,
+    services: &HashMap<String, Service>,
+    plan: &ServiceDependencyPlan,
+) -> cuenv_core::Result<()> {
+    let mut problems: Vec<&String> = services
+        .keys()
+        .flat_map(|name| project.diagnostics.service(name))
+        .collect();
+    problems.extend(
+        plan.image_roots
+            .iter()
+            .flat_map(|name| project.diagnostics.image(name)),
+    );
+    if problems.is_empty() {
+        return Ok(());
+    }
+    problems.sort();
+    let listed: Vec<&str> = problems.into_iter().map(String::as_str).collect();
+    Err(cuenv_core::Error::configuration(format!(
+        "cuenv up: the services cannot start:\n  {}",
+        listed.join("\n  ")
+    )))
+}
+
 struct DependencyPlanner<'dependency_planner> {
     tasks: &'dependency_planner HashMap<String, TaskNode>,
     images: &'dependency_planner HashMap<String, ContainerImage>,
@@ -711,6 +741,36 @@ mod tests {
         assert_eq!(result.task_roots, vec!["build"]);
         assert_eq!(result.image_roots, vec!["api-image"]);
         Ok(())
+    }
+
+    #[test]
+    fn a_problem_of_a_service_about_to_start_stops_cuenv_up() {
+        let mut project = Project::new("app");
+        project.diagnostics.services.insert(
+            "api".to_string(),
+            vec!["service 'api': dependsOn[0] is task 'build' of project 'content'".to_string()],
+        );
+        project.diagnostics.images.insert(
+            "web".to_string(),
+            vec!["image 'web': dependsOn[0] is image 'base' of project 'content'".to_string()],
+        );
+        let services = |name: &str| HashMap::from([(name.to_string(), Service::default())]);
+        let plan = ServiceDependencyPlan::default();
+
+        assert!(reject_reached_problems(&project, &services("db"), &plan).is_ok());
+        let Err(error) = reject_reached_problems(&project, &services("api"), &plan) else {
+            panic!("a service with a problem");
+        };
+        assert!(error.to_string().contains("service 'api'"), "{error}");
+
+        let reaching_image = ServiceDependencyPlan {
+            image_roots: vec!["web".to_string()],
+            ..ServiceDependencyPlan::default()
+        };
+        let Err(error) = reject_reached_problems(&project, &services("db"), &reaching_image) else {
+            panic!("an image with a problem");
+        };
+        assert!(error.to_string().contains("image 'web'"), "{error}");
     }
 
     #[test]

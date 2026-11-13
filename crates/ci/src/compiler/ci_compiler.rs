@@ -52,11 +52,14 @@ impl Compiler {
             ir.pipeline.pipeline_task_defs.clone_from(&pipeline.tasks);
         }
 
-        // Set up trigger conditions from CI configuration using the pipeline from options
-        if let Some(ref pipeline) = self.options.pipeline
-            && let Some(ci_config) = &self.project.ci
-        {
-            ir.pipeline.trigger = Some(self.build_trigger_condition(pipeline, ci_config));
+        // Everything the pipeline reaches must be able to run, with its file
+        // references bound; trigger conditions are derived from the same
+        // walk.
+        if let Some(ref pipeline) = self.options.pipeline {
+            let inputs = self.reached_inputs(pipeline)?;
+            if self.project.ci.is_some() {
+                ir.pipeline.trigger = Some(self.build_trigger_condition(pipeline, &inputs));
+            }
         }
 
         // Compile tasks

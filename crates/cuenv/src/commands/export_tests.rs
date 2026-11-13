@@ -236,6 +236,7 @@ fn test_extract_static_env_vars_skips_secrets() {
         images: HashMap::new(),
         vcs: HashMap::new(),
         infrastructure: None,
+        diagnostics: cuenv_core::manifest::NodeDiagnostics::default(),
     };
 
     let vars = super::extract_static_env_vars(&cfg, StaticEnvConsumer::Shell);
@@ -264,6 +265,7 @@ fn project_with_env(base: HashMap<String, EnvValue>) -> Project {
         images: HashMap::new(),
         vcs: HashMap::new(),
         infrastructure: None,
+        diagnostics: cuenv_core::manifest::NodeDiagnostics::default(),
     }
 }
 
@@ -400,6 +402,7 @@ fn test_collect_all_env_vars_override() {
         images: HashMap::new(),
         vcs: HashMap::new(),
         infrastructure: None,
+        diagnostics: cuenv_core::manifest::NodeDiagnostics::default(),
     };
 
     let hook_env = HashMap::from([

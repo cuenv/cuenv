@@ -3,7 +3,9 @@
 use crate::commands::CommandExecutor;
 use cuenv_core::manifest::Project;
 use cuenv_core::{DryRun, ModuleEvaluation, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::instrument;
 
 use super::github::GithubSyncRequest;
@@ -21,11 +23,15 @@ pub(super) struct ProjectInfo {
     pub(super) module_root: PathBuf,
     /// Parsed project configuration.
     pub(super) config: Project,
+    /// The directory each project name of the module means, relative to the
+    /// module root: where a `<pkg>.#Files` reference's paths start.
+    pub(super) file_anchors: Arc<BTreeMap<String, String>>,
 }
 
 impl ProjectInfo {
     /// Collect all projects from a module evaluation.
     fn collect_from_module(module: &ModuleEvaluation) -> Result<Vec<Self>> {
+        let file_anchors = Arc::new(cuenv_ci::compiler::module_file_anchors(module));
         let mut projects = Vec::new();
         for instance in module.projects() {
             let config = instance.to_project()?;
@@ -37,6 +43,7 @@ impl ProjectInfo {
                 relative_path,
                 module_root: module.root.clone(),
                 config,
+                file_anchors: Arc::clone(&file_anchors),
             });
         }
         Ok(projects)

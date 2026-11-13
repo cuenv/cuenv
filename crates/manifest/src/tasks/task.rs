@@ -9,7 +9,9 @@ use super::cache_policy::TaskCachePolicy;
 use super::capture_types::TaskCapture;
 use super::dependency::TaskDependency;
 use super::hermetic::{Hermetic, Sandbox};
-use super::inputs::{Input, ProjectReference, SourceLocation, TaskDirectory, TaskOutput};
+use super::inputs::{
+    Input, InputPattern, ProjectReference, SourceLocation, TaskDirectory, TaskOutput,
+};
 use super::params::TaskParams;
 use super::retry::RetryConfig;
 use super::shell::{ScriptShell, Shell, ShellOptions};
@@ -402,9 +404,17 @@ impl Task {
             .unwrap_or("No description provided")
     }
 
-    /// Returns an iterator over local path/glob inputs.
-    pub fn iter_path_inputs(&self) -> impl Iterator<Item = &str> {
-        self.inputs.iter().filter_map(Input::as_path)
+    /// Every file pattern of this task's inputs, each with where it starts:
+    /// its own project's paths and the paths of its file references (see
+    /// [`Input::patterns`]).
+    pub fn input_patterns(&self) -> impl Iterator<Item = InputPattern<'_>> {
+        self.inputs.iter().flat_map(Input::patterns)
+    }
+
+    /// Whether any input is a file reference.
+    #[must_use]
+    pub fn has_file_references(&self) -> bool {
+        self.inputs.iter().any(|input| input.as_files().is_some())
     }
 
     /// Returns an iterator over project references.
@@ -425,7 +435,9 @@ impl Task {
     /// Collects path/glob inputs applying an optional prefix (for workspace roots).
     #[must_use]
     pub fn collect_path_inputs_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
-        self.iter_path_inputs()
+        self.inputs
+            .iter()
+            .filter_map(Input::as_path)
             .map(|path| apply_prefix(prefix, path))
             .collect()
     }
