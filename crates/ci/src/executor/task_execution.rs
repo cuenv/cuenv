@@ -162,6 +162,7 @@ async fn execute_pipeline_task(request: PipelineTaskRequest<'_>) -> PipelineTask
                 ChangedInputs {
                     files: pipeline.changed_files,
                     project_root: &project_root,
+                    anchors: pipeline.projects.as_ref(),
                 },
             )
         })
@@ -717,7 +718,8 @@ fn relocates_an_input(task: &Task) -> bool {
     task.inputs.iter().any(|input| match input {
         Input::Mapped(mapping) => mapping.relocates(),
         Input::Project(reference) => !reference.map.is_empty(),
-        Input::Path(_) | Input::Task(_) => false,
+        // A file reference is read where it lies, in the checkout.
+        Input::Path(_) | Input::Task(_) | Input::Files(_) => false,
     })
 }
 
@@ -884,6 +886,7 @@ mod tests {
                 source: "built/one.md".to_string(),
                 destination: "vendor/one.md".to_string(),
                 producer_task: Some("produce".to_string()),
+                anchor: None,
             })];
         }
 
@@ -921,6 +924,7 @@ mod tests {
                 source: "built/one.md".to_string(),
                 destination: "vendor/one.md".to_string(),
                 producer_task: Some("produce".to_string()),
+                anchor: None,
             })];
         }
 

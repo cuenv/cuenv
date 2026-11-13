@@ -14,4 +14,4 @@ pub mod walker;
 
 pub use error::{Error, Result};
 pub use hasher::{HashedInput, VcsHasher};
-pub use walker::{SCRATCH_PREFIX, WalkHasher, is_scratch_dir};
+pub use walker::{Obstacle, Reach, SCRATCH_PREFIX, WalkHasher, WalkOptions, is_scratch_dir};

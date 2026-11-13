@@ -261,6 +261,7 @@ impl TaskExecutor {
         // The project that owns the task decides where it runs and what it
         // is keyed on. A task of another project never borrows this run's.
         let frame = self.frame_for(name, task)?;
+        reject_unbound_file_references(name, task)?;
         reject_unmaterialized_mapping(name, task)?;
 
         let task_environment = self.task_environment(name, task).await?;
@@ -1267,6 +1268,22 @@ fn resolve_task_directory(
     }
 }
 
+/// A file reference is bound to the directory it names when a graph is
+/// built. One that reaches the executor unbound names files nothing can
+/// find, whatever the task's isolation: hashing it would leave inputs out,
+/// and a task run in the workspace would read undeclared files.
+fn reject_unbound_file_references(name: &str, task: &Task) -> Result<()> {
+    let Some(reference) = task.inputs.iter().find_map(Input::as_files) else {
+        return Ok(());
+    };
+    Err(Error::configuration(format!(
+        "Task '{name}' reads `{} & {{paths: [...]}}`, which was not bound to the directory it \
+         names; run it through `cuenv task`, `cuenv ci` or `cuenv up`, which bind file \
+         references when they build the task graph",
+        reference.anchor.spelling()
+    )))
+}
+
 /// Refuse a task that maps an input to a path nothing will put it at.
 ///
 /// A mapping is honoured by staging the file in the task's execution root.
@@ -1291,7 +1308,10 @@ fn reject_unmaterialized_mapping(name: &str, task: &Task) -> Result<()> {
         return Ok(());
     };
     Err(Error::configuration(format!(
-        "Task '{name}' maps the input '{from}' to '{to}', but it runs directly in the workspace          (hermetic: false or hermetic.sandbox: \"none\"), where nothing is staged. Read the          file where its task produces it and drop the mapping, or run the task under          hermetic.sandbox: \"dir\""
+        "Task '{name}' maps the input '{from}' to '{to}', but it runs directly in the workspace \
+         (hermetic: false or hermetic.sandbox: \"none\"), where nothing is staged. Read the \
+         file where its task produces it and drop the mapping, or run the task under \
+         hermetic.sandbox: \"dir\""
     )))
 }
 

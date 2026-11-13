@@ -57,8 +57,8 @@ pub mod tools;
 
 // Re-export affected detection types
 pub use affected::{
-    AffectedBy, PatternMatch, UnmatchablePattern, match_pattern, matches_pattern,
-    unmatchable_pattern,
+    AffectedBy, InputFrame, NoAnchors, PatternMatch, PlaceAnchor, UnmatchablePattern, match_input,
+    match_pattern, matches_pattern, unmatchable_pattern,
 };
 
 // Re-export the per-domain error types and the top-level composition

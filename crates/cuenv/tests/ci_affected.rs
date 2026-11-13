@@ -229,6 +229,13 @@ fn an_input_outside_the_project_runs_its_task_when_only_that_file_changed() -> T
         printed.contains("`..` inputs cannot be matched against changes"),
         "{printed}"
     );
+    // The warning gives the file reference to write instead.
+    assert!(
+        printed.contains(
+            r#"import the project in content and write `content.#Files & {paths: ["articles/**"]}`"#
+        ),
+        "{printed}"
+    );
     assert_eq!(
         printed
             .matches("has input '../content/articles/**'")
@@ -721,24 +728,60 @@ fn an_input_that_only_matches_from_the_repository_root_still_runs_and_says_so() 
         printed.contains("has input 'shared/**', which selects nothing under app"),
         "{printed}"
     );
+    assert!(
+        printed.contains(r#"write `schema.#ModuleFiles & {paths: ["shared/**"]}`"#),
+        "{printed}"
+    );
     Ok(())
 }
+
+/// An `app` whose two pipeline tasks both read its own `package.json`.
+const APP_WITH_TWO_PACKAGE_READERS_CUE: &str = r#"package cuenv
+name: "app"
+let _tasks = tasks
+ci: pipelines: default: tasks: [_tasks.build, _tasks.lint]
+tasks: build: {
+	command: "sh"
+	args: ["-c", "printf ran > ran"]
+	inputs: ["package.json", "src/**"]
+	hermetic: sandbox: "dir"
+}
+tasks: lint: {
+	command: "true"
+	inputs: ["package.json"]
+}
+"#;
 
 #[test]
 fn a_correct_project_is_not_warned_about_files_of_the_same_name_at_the_root() -> TestResult {
     let repository = Monorepo::changing(
-        &app_reading(r#"["package.json", "src/**"]"#),
+        APP_WITH_TWO_PACKAGE_READERS_CUE,
         &[("app/package.json", "{}"), ("package.json", "{}")],
         &[("package.json", "{ }")],
     )?;
 
     let output = repository.ci(&["--path", "app"])?;
 
-    // The root file still selects the task for now, and nothing is said:
-    // the configuration is correct.
+    // The root file still selects both tasks for now, and nothing is warned
+    // about: the configuration is correct. One note for the run says so and
+    // lists every task it selected.
     assert_success(&output);
     assert!(repository.root().join("app/ran").exists());
-    assert!(!text(&output).contains("warning:"), "{}", text(&output));
+    let printed = text(&output);
+    assert!(!printed.contains("warning:"), "{printed}");
+    assert_eq!(printed.matches("note:").count(), 1, "{printed}");
+    for task in ["build", "lint"] {
+        assert_eq!(
+            printed
+                .matches(&format!(
+                    "task '{task}' of project app, input 'package.json': to read the root \
+                     file, add `schema.#ModuleFiles & {{paths: [\"package.json\"]}}`"
+                ))
+                .count(),
+            1,
+            "{printed}"
+        );
+    }
     Ok(())
 }
 

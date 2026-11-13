@@ -126,6 +126,17 @@ pub enum CompilerError {
     #[error("Invalid task structure: {0}")]
     InvalidTaskStructure(String),
 
+    /// The pipeline reaches a node that cannot run: a problem recorded
+    /// against it when the project's value was read, or a file reference
+    /// that does not bind.
+    #[error("Pipeline '{pipeline}' reaches what cannot run:\n  {}", problems.join("\n  "))]
+    UnrunnableNodes {
+        /// The pipeline being compiled.
+        pipeline: String,
+        /// One line per problem, naming the node.
+        problems: Vec<String>,
+    },
+
     /// Flake lock analysis failed while compiling a runtime.
     #[error("Flake lock error: {0}")]
     FlakeLock(#[from] FlakeLockError),

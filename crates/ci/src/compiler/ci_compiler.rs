@@ -4,7 +4,9 @@ use crate::ir::{IntermediateRepresentation, IrValidator};
 use cuenv_core::ci::PipelineTask;
 use cuenv_core::manifest::Project;
 
-use super::{CompilerError, CompilerOptions};
+use super::{CompilerError, CompilerOptions, FileAnchors};
+use cuenv_core::module::ImportedProjects;
+use std::sync::OnceLock;
 
 /// Compiler for transforming cuenv tasks to IR
 pub struct Compiler {
@@ -13,22 +15,54 @@ pub struct Compiler {
 
     /// Compiler options
     pub(super) options: CompilerOptions,
+
+    /// The packages the project imports, read the first time a file
+    /// reference is bound (see [`CompilerOptions::file_anchors`]).
+    pub(super) imports: OnceLock<Result<ImportedProjects, String>>,
 }
 
 impl Compiler {
     /// Create a new compiler for the given project
     #[must_use]
     pub fn new(project: Project) -> Self {
-        Self {
-            project,
-            options: CompilerOptions::default(),
-        }
+        Self::with_options(project, CompilerOptions::default())
     }
 
     /// Create a compiler with custom options
     #[must_use]
     pub const fn with_options(project: Project, options: CompilerOptions) -> Self {
-        Self { project, options }
+        Self {
+            project,
+            options,
+            imports: OnceLock::new(),
+        }
+    }
+
+    /// The packages the project imports, where its file references bind.
+    pub(super) fn imported_projects(&self) -> Result<&ImportedProjects, String> {
+        const PACKAGE: &str = crate::imports::PROJECT_PACKAGE;
+        self.imports
+            .get_or_init(|| match &self.options.file_anchors {
+                Some(FileAnchors::Known(imported)) => Ok(imported.clone()),
+                Some(FileAnchors::Instance {
+                    module_root,
+                    directory,
+                }) => crate::imports::imported_projects(module_root, directory, PACKAGE),
+                None => {
+                    let module_root = self.options.module_root.as_ref().ok_or_else(|| {
+                        "this compilation does not know where the project lies, so it cannot \
+                         read which projects it imports"
+                            .to_string()
+                    })?;
+                    let directory = match self.options.project_path.as_deref() {
+                        Some(path) if !path.is_empty() && path != "." => module_root.join(path),
+                        _ => module_root.clone(),
+                    };
+                    crate::imports::imported_projects(module_root, &directory, PACKAGE)
+                }
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     /// Compile project tasks to IR
@@ -52,11 +86,14 @@ impl Compiler {
             ir.pipeline.pipeline_task_defs.clone_from(&pipeline.tasks);
         }
 
-        // Set up trigger conditions from CI configuration using the pipeline from options
-        if let Some(ref pipeline) = self.options.pipeline
-            && let Some(ci_config) = &self.project.ci
-        {
-            ir.pipeline.trigger = Some(self.build_trigger_condition(pipeline, ci_config));
+        // Everything the pipeline reaches must be able to run, with its file
+        // references bound; trigger conditions are derived from the same
+        // walk.
+        if let Some(ref pipeline) = self.options.pipeline {
+            let inputs = self.reached_inputs(pipeline)?;
+            if self.project.ci.is_some() {
+                ir.pipeline.trigger = Some(self.build_trigger_condition(pipeline, &inputs));
+            }
         }
 
         // Compile tasks

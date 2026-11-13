@@ -16,6 +16,10 @@ struct Module {
     lists_projects: bool,
     lookups: Cell<usize>,
     evaluations: Cell<usize>,
+    /// How often a file reference's project was bound.
+    files_lookups: Cell<usize>,
+    /// Names a file reference cannot bind, and why.
+    unbindable: BTreeMap<String, String>,
 }
 
 impl Module {
@@ -30,6 +34,8 @@ impl Module {
             lists_projects: true,
             lookups: Cell::new(0),
             evaluations: Cell::new(0),
+            files_lookups: Cell::new(0),
+            unbindable: BTreeMap::new(),
         }
     }
 
@@ -77,6 +83,23 @@ impl ProjectSource for Module {
             .iter()
             .find(|(_, project)| project.name == name)
             .map(|(directory, _)| self.directory(directory)))
+    }
+
+    fn files_anchor(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String> {
+        // Every project imports every other here, so the name binds to the
+        // project's own directory, unless the origin "imports" it from a
+        // child directory that only inherits the name.
+        self.files_lookups.set(self.files_lookups.get() + 1);
+        if let Some(problem) = self.unbindable.get(name) {
+            return Err(problem.clone());
+        }
+        self.projects
+            .iter()
+            .find(|(directory, project)| {
+                project.name == name && self.directory(directory).as_path() != origin
+            })
+            .map(|(directory, _)| self.directory(directory))
+            .ok_or_else(|| format!("project '{name}' is not imported here"))
     }
 
     fn name_of(&self, root: &Path) -> Option<String> {
@@ -244,6 +267,7 @@ fn a_project_reference_becomes_module_relative_mapped_inputs() {
                 source: "content/out/one.md".to_string(),
                 destination: "app/vendor/one.md".to_string(),
                 producer_task: Some("#content:articles".to_string()),
+                anchor: None,
             }),
         ]
     );
@@ -414,6 +438,7 @@ fn names_inside_another_project_never_mean_a_task_of_this_one() {
             source: "content/raw/**".to_string(),
             destination: "content/raw".to_string(),
             producer_task: Some("#content:fetch".to_string()),
+            anchor: None,
         })]
     );
     assert_eq!(
@@ -496,6 +521,7 @@ fn mapped_from_content(task: &Task) -> bool {
             source: "content/out/one.md".to_string(),
             destination: "app/vendor/one.md".to_string(),
             producer_task: Some("#content:articles".to_string()),
+            anchor: None,
         })]
         && dependencies(task) == ["#content:articles"]
 }
@@ -586,6 +612,7 @@ fn a_dependency_chain_across_three_projects_is_followed() {
             source: "sources/raw.json".to_string(),
             destination: "content/in/raw.json".to_string(),
             producer_task: Some("#sources:pull".to_string()),
+            anchor: None,
         })]
     );
 }
@@ -797,8 +824,153 @@ fn a_module_below_its_workspace_and_a_project_beside_it_share_one_frame() {
             source: "../tools/out".to_string(),
             destination: "app/generated".to_string(),
             producer_task: Some("#tools:generate".to_string()),
+            anchor: None,
         })]
     );
+}
+
+/// `app` reads `inputs` in its task `build`; `content` holds an article
+/// and the module root a lockfile.
+fn reading_files(inputs: serde_json::Value) -> Module {
+    let module = Module::new()
+        .project(
+            "app",
+            json!({"name": "app", "tasks": {
+                "build": {"command": "make", "inputs": inputs},
+                "lint": {"command": "make", "inputs": ["src/**"]},
+            }}),
+        )
+        .project(
+            "content",
+            json!({"name": "content", "tasks": {"build": {"command": "make"}}}),
+        );
+    fs::create_dir_all(module.directory("content/articles")).unwrap();
+    fs::write(module.directory("content/articles/one.md"), "one").unwrap();
+    fs::write(module.directory("bun.lock"), "lock").unwrap();
+    module
+}
+
+#[test]
+fn a_file_reference_is_bound_to_its_anchor_and_loads_no_project() {
+    let module = reading_files(json!([
+        "src/**",
+        {"cuenvFiles": "project", "cuenvProject": "content", "paths": ["articles/**"]},
+        {"cuenvFiles": "module", "paths": ["bun.lock"]},
+    ]));
+    let mut scope = module.scope("app");
+
+    scope.reach(["build"], &module);
+
+    assert_eq!(order(&scope.graph(["build"]).unwrap()), ["build"]);
+    assert_eq!(
+        module.evaluations.get(),
+        0,
+        "no project is loaded for its files"
+    );
+    assert_eq!(
+        (module.lookups.get(), module.files_lookups.get()),
+        (0, 1),
+        "the name is bound among the imports, never by listing the module"
+    );
+    assert_eq!(
+        task(&scope, "build").inputs,
+        vec![
+            Input::Path("src/**".to_string()),
+            Input::Mapped(MappedInput {
+                source: "content/articles/**".to_string(),
+                destination: "content/articles".to_string(),
+                producer_task: None,
+                anchor: Some("content".to_string()),
+            }),
+            Input::Mapped(MappedInput {
+                source: "bun.lock".to_string(),
+                destination: "bun.lock".to_string(),
+                producer_task: None,
+                anchor: Some(String::new()),
+            }),
+        ]
+    );
+}
+
+#[test]
+fn a_file_reference_that_does_not_bind_fails_only_the_graphs_that_reach_it() {
+    for (reference, expected) in [
+        (
+            json!({"cuenvFiles": "project", "cuenvProject": "missing", "paths": ["a/**"]}),
+            "project 'missing' is not imported here",
+        ),
+        (
+            json!({"cuenvFiles": "project", "cuenvProject": "content", "paths": ["posts/**"]}),
+            "`posts/**` matches nothing in content/",
+        ),
+        (
+            json!({"cuenvFiles": "module", "paths": ["../outside"]}),
+            "is not a path inside the module root",
+        ),
+    ] {
+        let module = reading_files(json!([reference]));
+        let mut scope = module.scope("app");
+
+        scope.reach(["build", "lint"], &module);
+
+        let Err(error) = scope.graph(["build"]) else {
+            panic!("an unbound reference");
+        };
+        assert!(error.to_string().contains("task 'build'"), "{error}");
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(scope.graph(["lint"]).is_ok(), "lint does not reach it");
+    }
+}
+
+#[test]
+fn a_file_reference_never_matches_into_the_cache_store() {
+    // The store lies in the repository, as `<project>/.cuenv-cache` does
+    // without a platform cache directory, and holds the only JSON file.
+    let module = reading_files(json!([
+        {"cuenvFiles": "project", "cuenvProject": "content", "paths": ["**/*.json"]},
+    ]));
+    let store = module.directory("content/.cuenv-cache");
+    fs::create_dir_all(store.join("cas")).unwrap();
+    fs::write(store.join("cas/blob.json"), "{}").unwrap();
+
+    let mut plain = module.scope("app");
+    plain.reach(["build"], &module);
+    assert!(plain.graph(["build"]).is_ok());
+
+    let mut scope = module.scope("app").excluding_cache_store(store);
+    scope.reach(["build"], &module);
+    let Err(error) = scope.graph(["build"]) else {
+        panic!("a reference that matches only the store");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("`**/*.json` matches nothing in content/"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_problem_recorded_against_a_reached_node_fails_the_graph() {
+    let mut module = reading_files(json!(["src/**"]));
+    if let Some(app) = module.projects.get_mut("app") {
+        app.diagnostics.tasks.insert(
+            "build".to_string(),
+            vec!["task 'build': broken".to_string()],
+        );
+    }
+    let mut scope = module.scope("app");
+
+    scope.reach(["build", "lint"], &module);
+
+    let Err(error) = scope.graph(["build"]) else {
+        panic!("a reached problem");
+    };
+    assert!(
+        error.to_string().contains("task 'build': broken"),
+        "{error}"
+    );
+    assert!(scope.graph(["lint"]).is_ok());
 }
 
 #[test]
@@ -822,6 +994,7 @@ fn a_project_whose_name_is_not_known_is_qualified_with_its_path() {
             source: "content/out/one.md".to_string(),
             destination: "app/vendor/one.md".to_string(),
             producer_task: Some("#/content:articles".to_string()),
+            anchor: None,
         }))
     );
 }

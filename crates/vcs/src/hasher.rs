@@ -1,6 +1,7 @@
 //! The [`VcsHasher`] trait.
 
 use crate::error::Result;
+use crate::walker::WalkOptions;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -40,6 +41,20 @@ pub trait VcsHasher: Send + Sync {
     /// Returns an error if a pattern is invalid or if any filesystem
     /// operation fails.
     async fn resolve_and_hash(&self, patterns: &[String]) -> Result<Vec<HashedInput>>;
+
+    /// Resolve and hash `patterns` as [`Self::resolve_and_hash`] does, with
+    /// a walk that `options` may confine, such as to the real directories
+    /// of the repository for the paths of a file reference.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::resolve_and_hash`], and when a pattern cannot be resolved
+    /// within what `options` allows.
+    async fn resolve_and_hash_with(
+        &self,
+        patterns: &[String],
+        options: WalkOptions,
+    ) -> Result<Vec<HashedInput>>;
 
     /// Short, stable identifier for this implementation (e.g. `"walk"`,
     /// `"git"`). Useful for diagnostics and metrics.

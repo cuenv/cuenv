@@ -135,7 +135,7 @@ extern char* cue_prepare_frozen(char* snapshot, char* options);
 extern char* cue_specialize_prepared(char* snapshot, char* capability, char* options);
 extern char* cue_validate_frozen(char* snapshot, char* options);
 extern char* cue_specialize_frozen(char* snapshot, char* options);
-extern char* cue_instance_sources(char* moduleRootPath, char* directoryPath, char* packageName);
+extern char* cue_instance_sources(char* moduleRootPath, char* directoryPath, char* packageName, char* optionsJSON);
 
 #ifdef __cplusplus
 }

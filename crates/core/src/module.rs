@@ -1,11 +1,14 @@
 //! Module-wide CUE evaluation types.
 
 mod deserialize;
+mod imported_projects;
 mod module_evaluation;
+mod node_checks;
 mod task_refs;
 mod task_sources;
 mod unique_names;
 
+pub use imported_projects::{ImportRecord, ImportedProjects};
 pub use module_evaluation::{
     DirectReference, Instance, InstanceKind, ModuleEvaluation, ModuleEvaluationInput,
     ModuleEvaluationMetadata, ModuleEvaluationOptions, ReferenceMap, SourceMap, TASK_FIELD,

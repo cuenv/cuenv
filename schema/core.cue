@@ -42,29 +42,41 @@ package schema
 #Project: {
 	#Base
 	name!: #ProjectName
+	// Files of this project, chosen by whoever imports it:
+	// `<pkg>.#Files & {paths: ["articles/**"]}`. Paths are relative to this
+	// project's directory. A #Base has no #Files: it is merged into every
+	// project below it and owns no directory of its own; files beside one are
+	// named with #ModuleFiles.
+	#Files: {#ProjectFiles, cuenvProject: name}
 	ci?: {#CI}
 	cache?: {#Cache}
 	release?: {#Release}
 	// Named tasks and groups derive fully-qualified runtime names from their
 	// field labels. Sequences are handled by the Go bridge because list element
 	// aliases are not implemented in CUE yet.
+	// Every task, group, service and image is stamped with the project it
+	// belongs to, so a reference to one from another project carries where it
+	// came from in its value.
 	tasks?: [taskName=string]: ((#Task | #TaskGroup) & {
-		_cuenvPrefix: ""
-		_cuenvSelf:   taskName
-	}) | #TaskSequence
+		_cuenvPrefix:  ""
+		_cuenvSelf:    taskName
+		_cuenvProject: name
+	}) | (#TaskSequence & [...({_cuenvProject: name, ...} | [...])])
 	// Services live in their own field but share the project DAG.
 	// Services may depend on tasks (build → run); tasks may depend on
 	// services (db ready → seed task). Cycles forbidden as with tasks.
 	services?: [svcName=string]: #Service & {
-		_cuenvPrefix: ""
-		_cuenvSelf:   svcName
+		_cuenvPrefix:  ""
+		_cuenvSelf:    svcName
+		_cuenvProject: name
 	}
 	// Container image builds — declarative image definitions that
 	// participate in the task DAG and produce output references
 	// (ref, digest) consumable by tasks and other images.
 	images?: [imageName=string]: #ContainerImage & {
-		_cuenvPrefix: ""
-		_cuenvSelf:   imageName
+		_cuenvPrefix:  ""
+		_cuenvSelf:    imageName
+		_cuenvProject: name
 	}
 	codegen?: {#Codegen}
 	// Infrastructure managed through Terraform provider plugins.

@@ -44,6 +44,9 @@ pub(super) struct CiProjects {
     by_name: BTreeMap<String, PathBuf>,
     /// Hook environments built so far in this run, by project directory.
     hook_environments: Mutex<HashMap<PathBuf, Arc<OnceCell<HookEnvironment>>>>,
+    /// What the project in each directory imports, read the first time a
+    /// file reference of it is bound in this run.
+    imports: crate::imports::ImportsByDirectory,
 }
 
 impl CiProjects {
@@ -67,6 +70,7 @@ impl CiProjects {
                 .map(|(name, (path, _))| (name.clone(), canonical(path)))
                 .collect(),
             hook_environments: Mutex::default(),
+            imports: crate::imports::ImportsByDirectory::default(),
         }
     }
 
@@ -124,10 +128,89 @@ pub(super) struct HookProject<'project> {
     pub(super) ancestor_configs: &'project HashMap<PathBuf, Project>,
 }
 
+impl cuenv_core::PlaceAnchor for CiProjects {
+    fn place(&self, anchor: &cuenv_core::tasks::FilesAnchor) -> Option<PathBuf> {
+        let directory = match anchor {
+            cuenv_core::tasks::FilesAnchor::Project(name) => self.by_name.get(name)?,
+            cuenv_core::tasks::FilesAnchor::Module => &self.module_root,
+        };
+        directory
+            .strip_prefix(&self.checkout_root)
+            .ok()
+            .map(Path::to_path_buf)
+    }
+}
+
+impl crate::affected::BindFiles for CiProjects {
+    fn bind(
+        &self,
+        project_root: &Path,
+        anchor: &cuenv_core::tasks::FilesAnchor,
+    ) -> std::result::Result<PathBuf, String> {
+        let directory = match anchor {
+            cuenv_core::tasks::FilesAnchor::Module => self.module_root.clone(),
+            cuenv_core::tasks::FilesAnchor::Project(name) => {
+                let bound = ProjectSource::files_anchor(
+                    self,
+                    &self.checkout_root.join(project_root),
+                    name,
+                )?;
+                let bound = canonical(bound);
+                // Changes are compared with the directory the module's name
+                // rule gives. Both rules pick a name's declaring directory,
+                // so they agree whenever a reference binds; a disagreement
+                // is never matched silently.
+                match self.by_name.get(name) {
+                    Some(placed) if *placed == bound => bound,
+                    Some(placed) => {
+                        return Err(format!(
+                            "project '{name}' binds to `{}`, but its changes are compared in \
+                             `{}`",
+                            bound.display(),
+                            placed.display()
+                        ));
+                    }
+                    None => {
+                        return Err(format!(
+                            "project '{name}' at `{}` is not among the projects this run \
+                             compares with changes",
+                            bound.display()
+                        ));
+                    }
+                }
+            }
+        };
+        directory
+            .strip_prefix(&self.checkout_root)
+            .map(Path::to_path_buf)
+            .map_err(|_| {
+                format!(
+                    "{anchor} lies at `{}`, outside the checkout at `{}`, so its files cannot be \
+                     compared with changes",
+                    directory.display(),
+                    self.checkout_root.display()
+                )
+            })
+    }
+}
+
 impl ProjectSource for CiProjects {
     fn directory_of(&self, _origin: &Path, name: &str) -> Result<Option<PathBuf>> {
         // Every project a CI run knows lies in the one module it runs in.
         Ok(self.by_name.get(name).cloned())
+    }
+
+    fn files_anchor(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String> {
+        self.imports
+            .bind(
+                crate::imports::FilesOwner {
+                    module_root: &self.module_root,
+                    directory: origin,
+                    package: crate::imports::PROJECT_PACKAGE,
+                },
+                name,
+            )
+            .map(|directory| self.module_root.join(directory))
     }
 
     fn name_of(&self, root: &Path) -> Option<String> {

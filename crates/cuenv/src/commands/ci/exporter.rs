@@ -73,8 +73,15 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
 
     let pipeline_name = args.pipeline_name();
 
-    // Collect all tasks for export
-    let collected = collect_tasks_for_export(&projects, pipeline_name)?;
+    // Collect all tasks for export. A project's file references bind among
+    // what that project imports, read from its instance in the module.
+    let collected = collect_tasks_for_export(
+        &projects,
+        ExportPipeline {
+            name: pipeline_name,
+            module_root: &module.root,
+        },
+    )?;
 
     if collected.tasks.is_empty() {
         tracing::info!("No tasks to export");
@@ -120,16 +127,25 @@ struct CollectedTasks {
     environment: Option<String>,
 }
 
+/// The pipeline an export is for.
+#[derive(Clone, Copy)]
+struct ExportPipeline<'pipeline> {
+    name: &'pipeline str,
+    /// The root of the CUE module the projects belong to.
+    module_root: &'pipeline std::path::Path,
+}
+
 /// Collect all IR tasks from all projects for a given pipeline.
 ///
 /// For export mode, we collect ALL tasks defined in the pipeline rather than
 /// filtering by affected files. The CI orchestrator handles trigger logic.
 fn collect_tasks_for_export(
     projects: &[(PathBuf, Project)],
-    pipeline_name: &str,
+    pipeline: ExportPipeline<'_>,
 ) -> Result<CollectedTasks> {
-    use cuenv_ci::compiler::{Compiler, CompilerOptions};
+    use cuenv_ci::compiler::{Compiler, CompilerOptions, FileAnchors};
 
+    let pipeline_name = pipeline.name;
     let mut all_ir_tasks = Vec::new();
     let mut pipeline_environment: Option<String> = None;
     let mut compiled_runtimes = Vec::new();
@@ -168,7 +184,12 @@ fn collect_tasks_for_export(
 
         // Compile with pipeline context
         let options = CompilerOptions {
+            pipeline_name: Some(pipeline_name.to_string()),
             pipeline: Some(ci_pipeline.clone()),
+            file_anchors: Some(FileAnchors::Instance {
+                module_root: pipeline.module_root.to_path_buf(),
+                directory: project_path.clone(),
+            }),
             ..Default::default()
         };
         let compiler = Compiler::with_options(config.clone(), options);

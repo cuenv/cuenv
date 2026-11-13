@@ -16,6 +16,7 @@ package schema
 
 #ImageOutputRef: {
 	cuenvOutputRef: true
+	cuenvProject:   string
 	cuenvImage:     string
 	cuenvOutput:    "ref" | "digest"
 }
@@ -41,16 +42,19 @@ package schema
 //   }
 
 #ContainerImage: {
-	_cuenvPrefix: string | *""
-	_cuenvSelf:   string | *""
-	_name:        string | *(_cuenvPrefix + _cuenvSelf)
+	_cuenvPrefix:  string | *""
+	_cuenvSelf:    string | *""
+	_name:         string | *(_cuenvPrefix + _cuenvSelf)
+	_cuenvProject: string | *""
+	// What this image is and which project it belongs to. Reserved.
+	cuenvRef: {kind: "image", project: _cuenvProject, name: _name}
 
 	// Type discriminator
 	type: "image"
 
 	// Runtime output references — resolved after build
-	ref: #ImageOutputRef & {cuenvImage: _name, cuenvOutput: "ref"}
-	digest: #ImageOutputRef & {cuenvImage: _name, cuenvOutput: "digest"}
+	ref: #ImageOutputRef & {cuenvProject: _cuenvProject, cuenvImage: _name, cuenvOutput: "ref"}
+	digest: #ImageOutputRef & {cuenvProject: _cuenvProject, cuenvImage: _name, cuenvOutput: "digest"}
 
 	// Build source — set EITHER context (Dockerfile) OR installable (Nix).
 	context?:     string                 // Build context directory (Dockerfile image)

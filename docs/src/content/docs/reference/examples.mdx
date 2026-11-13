@@ -207,6 +207,42 @@ tasks: {
 cuenv task work --path examples/task-output-ref --package examples
 ```
 
+## File references
+
+[`examples/file-references`](https://github.com/cuenv/cuenv/tree/main/examples/file-references)
+reads files of another project through its import, and a file at the module
+root. The project that holds the files declares nothing; every path must match
+at least one file. Language: any version.
+
+```cue
+package examples
+
+import (
+	"github.com/cuenv/cuenv/schema"
+	content "github.com/cuenv/cuenv/examples/file-references/content:examples"
+)
+
+schema.#Project
+
+name: "file-references-app"
+
+tasks: {
+	render: schema.#Task & {
+		command: "cat"
+		args: ["../content/articles/hello.md"]
+		inputs: [
+			"env.cue",
+			content.#Files & {paths: ["articles/**"]},
+			schema.#ModuleFiles & {paths: ["flake.lock"]},
+		]
+	}
+}
+```
+
+```bash
+cuenv task render --path examples/file-references/app --package examples
+```
+
 ## Hooks
 
 [`examples/hook`](https://github.com/cuenv/cuenv/tree/main/examples/hook) runs a

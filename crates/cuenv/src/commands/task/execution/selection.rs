@@ -39,7 +39,12 @@ fn task_scope(
         },
         tasks,
         output_ref_deps: projects::instance_output_ref_deps(input.executor, &context.project_root)?,
-    });
+    })
+    // The store hashing leaves out, so a file reference cannot match
+    // into it either.
+    .excluding_cache_store(super::super::cache::resolve_cache_root(
+        &context.project_root,
+    ));
     scope.reach(
         [root],
         &ModuleProjects::new(input.executor, WorkspaceContributors::Inject),

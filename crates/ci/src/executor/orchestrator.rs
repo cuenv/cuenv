@@ -10,7 +10,9 @@
 //! This module owns project-level scheduling and reporting. Per-task DAG
 //! execution lives in `task_execution`.
 
-use crate::affected::{AffectedProjects, ChangedInputs, CheckoutFrame};
+use crate::affected::{
+    AffectedProjects, ChangedInputs, CheckoutAnchors, CheckoutFrame, PipelineReach,
+};
 use crate::configuration::{ConfigurationSources, ProjectInstance};
 use crate::discovery;
 use crate::provider::{CIProvider, ChangedFiles};
@@ -18,6 +20,7 @@ use crate::report::{ContextReport, PipelineReport, PipelineStatus};
 use chrono::{DateTime, Utc};
 use cuenv_core::ci::PipelineTask;
 use cuenv_core::manifest::Project;
+use cuenv_core::tasks::file_references::ReferenceChecks;
 use cuenv_core::{DryRun, Result};
 use cuenv_task_exec::TaskIndex;
 use std::collections::{HashMap, HashSet};
@@ -304,6 +307,7 @@ async fn run_ci_projects(
     // A run with no base compared nothing, so no configuration is known to
     // have changed; it selects every task anyway.
     let changed_configuration = changed_configurations(discovered, changes.files());
+    let module_prefix = discovered.frame.place(&discovered.module_root);
 
     let mut plans = Vec::new();
     let mut pipeline_defined = false;
@@ -323,6 +327,8 @@ async fn run_ci_projects(
             changes,
             project_map: &discovered.project_map,
             frame: &discovered.frame,
+            module_prefix: module_prefix.as_deref(),
+            projects: &discovered.all_projects,
             changed_configuration: &changed_configuration,
         })? {
             ProjectPlan::Run(plan) => {
@@ -333,6 +339,7 @@ async fn run_ci_projects(
             ProjectPlan::NoSuchPipeline => {}
         }
     }
+    crate::affected::note_root_namesakes();
 
     if !pipeline_defined {
         return Err(no_project_defines_pipeline(
@@ -480,6 +487,12 @@ struct ProjectPipelinePlanRequest<'request> {
     changes: &'request ChangedFiles,
     project_map: &'request ProjectDependencyMap,
     frame: &'request CheckoutFrame,
+    /// The root of the CUE module relative to the root of the checkout,
+    /// where `schema.#ModuleFiles` paths start; `None` outside it.
+    module_prefix: Option<&'request Path>,
+    /// Every project of the module, which binds file references through
+    /// what each project imports.
+    projects: &'request CiProjects,
     /// The checkout-relative directories of the projects whose CUE
     /// configuration a changed file can change.
     changed_configuration: &'request HashSet<PathBuf>,
@@ -545,6 +558,8 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
         changes,
         project_map,
         frame,
+        module_prefix,
+        projects,
         changed_configuration,
     } = request;
 
@@ -597,6 +612,34 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
         validate_all_pipeline_tasks(pipeline, config)?;
     }
 
+    // Bind the file references of everything the pipeline reaches, and
+    // raise the problems recorded against those nodes, before any task is
+    // selected: whichever tasks run, a reference that names no file or a
+    // node that cannot run fails the pipeline that reaches it.
+    let anchors = CheckoutAnchors {
+        projects: project_map,
+        module_root: module_prefix,
+    };
+    let project_root = frame.place(project_path).unwrap_or_default();
+    let problems = crate::affected::reached_problems(
+        &PipelineReach {
+            project: config,
+            project_root: &project_root,
+            pipeline: &pipeline_name,
+            pipeline_tasks: &pipeline_task_names,
+            all_projects: project_map,
+        },
+        projects,
+        &mut ReferenceChecks::new(frame.root()),
+    );
+    if !problems.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "Pipeline '{pipeline_name}' of project {} reaches what cannot run:\n  {}",
+            project_path.display(),
+            problems.join("\n  ")
+        )));
+    }
+
     let tasks_to_run = match (task_selection, changes) {
         // `--all` asks for every task. A run with no base gets every task
         // too: without a comparison none of them can be shown to be
@@ -611,6 +654,7 @@ fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<Proj
                     ChangedInputs {
                         files: changed_files,
                         project_root: &project_root,
+                        anchors: &anchors,
                     },
                     &pipeline_task_names,
                     &AffectedProjects {
@@ -868,6 +912,13 @@ mod tests {
             changes,
             project_map: &HashMap::new(),
             frame: &CheckoutFrame::at(Path::new("/workspace")),
+            module_prefix: Some(Path::new("")),
+            projects: &CiProjects::new(CiModule {
+                module_root: Path::new("/workspace"),
+                checkout_root: Path::new("/workspace"),
+                projects: &[],
+                named: &HashMap::new(),
+            }),
             changed_configuration: &HashSet::new(),
         })
     }
@@ -890,6 +941,13 @@ mod tests {
             changes: &one_changed_file(),
             project_map: &HashMap::new(),
             frame: &CheckoutFrame::at(Path::new("/workspace")),
+            module_prefix: Some(Path::new("")),
+            projects: &CiProjects::new(CiModule {
+                module_root: Path::new("/workspace"),
+                checkout_root: Path::new("/workspace"),
+                projects: &[],
+                named: &HashMap::new(),
+            }),
             changed_configuration: &HashSet::new(),
         })
     }

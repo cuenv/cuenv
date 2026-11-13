@@ -23,7 +23,10 @@
 # CUE releases come from CUENV_SCHEMA_COMPAT_CUE (space separated). Missing
 # binaries are installed with `go install` into CUENV_SCHEMA_COMPAT_CACHE.
 # Set CUENV_SCHEMA_COMPAT_KEEP to a directory to keep mismatching exports.
-# Requires go and jq.
+# Every evaluation is stopped after CUENV_SCHEMA_COMPAT_TIMEOUT seconds
+# (default 60) and reported as a failure: a schema change can make
+# evaluation explode instead of fail, which must not hang the check.
+# Requires go, jq and coreutils' timeout.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -33,6 +36,7 @@ repo="$(pwd)"
 cue_versions="${CUENV_SCHEMA_COMPAT_CUE:-v0.15.1 v0.16.1 v0.17.1 v0.18.0-rc.1}"
 language_versions="v0.9.0 v0.14.1 v0.16.0 v0.17.0 v0.18.0"
 cache="${CUENV_SCHEMA_COMPAT_CACHE:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/cuenv/schema-compat}"
+eval_timeout="${CUENV_SCHEMA_COMPAT_TIMEOUT:-60}"
 
 work="$(mktemp -d -t cuenv-schema-compat.XXXXXX)"
 registry_pid=""
@@ -168,17 +172,28 @@ consumer() {
 # Exports are compared by value. CUE releases differ in the order they emit
 # fields that come from imported definitions, and cuenv deserialises objects
 # by key, so field order is not part of the schema contract.
+#
+# An evaluation that outlives eval_timeout fails with that said in its
+# error, so a fixture the schema makes explode (a task with file references
+# in a pipeline once took minutes under CUE v0.17) is reported, never waited
+# for.
 evaluate() {
-	local bin="$1" dir="$2" file="$3" out="$4"
+	local bin="$1" dir="$2" file="$3" out="$4" status=0
 	(
 		cd "$dir"
 		if [[ -n "$file" ]]; then
 			cp rules.cue.txt rules.cue
-			"$bin" export --out json rules.cue
+			exec timeout "$eval_timeout" "$bin" export --out json rules.cue
 		else
-			"$bin" export --out json .
+			exec timeout "$eval_timeout" "$bin" export --out json .
 		fi
-	) >"$out.raw" 2>"$out.err" || return 1
+	) >"$out.raw" 2>"$out.err" || status=$?
+	if [[ "$status" -eq 124 ]]; then
+		printf 'timed out after %ss (CUENV_SCHEMA_COMPAT_TIMEOUT): the schema makes this evaluation explode\n' \
+			"$eval_timeout" >"$out.err"
+		return 1
+	fi
+	[[ "$status" -eq 0 ]] || return 1
 	jq -S . <"$out.raw" >"$out"
 }
 
@@ -284,8 +299,80 @@ for dir in tests/schema-compat/testdata/reject/*/; do
 	done
 done
 
+# --- Multi-directory consumer modules ---------------------------------------
+#
+# tests/schema-compat/testdata/modules/NAME/ is the tree of a whole consumer
+# module: several projects, bases, and imports between them
+# (`example.com/consumer/<dir>:cuenv`). It is written for language
+# v0.18.0 (a base is `schema.#Base...`, which does not parse before), so it
+# runs under every CUE release that supports that version. Every directory
+# holding CUE files must export, and export the same under every release.
+# tests/schema-compat/testdata/modules-reject/NAME/ is the same, except that
+# a directory whose files carry a `// want: TEXT` line must fail with it.
+# The files of both are not named env.cue: cuenv discovers every env.cue of
+# this repository as a project of its own module, and these are written for
+# language v0.18.0 or meant not to evaluate.
+
+module_language="v0.18.0"
+
+module_fixture() {
+	local dest="$1" src="$2"
+	rm -rf "$dest"
+	mkdir -p "$dest/cue.mod"
+	while IFS= read -r file; do
+		mkdir -p "$dest/$(dirname "$file")"
+		cp "$repo/$src/$file" "$dest/$file"
+	done < <(cd "$repo/$src" && find . -name '*.cue' -not -name '.*' | sed 's|^\./||')
+	write_module "$dest" "$module_language"
+}
+
+# The directories of a module fixture that hold CUE files, `.` for the root.
+module_directories() {
+	(cd "$1" && find . -name '*.cue' -not -path './cue.mod/*' -exec dirname {} \; | sed 's|^\./||' | sort -u)
+}
+
+module_fixtures=0
+for dir in tests/schema-compat/testdata/modules/*/ tests/schema-compat/testdata/modules-reject/*/; do
+	[[ -d "$dir" ]] || continue
+	module_fixtures=$((module_fixtures + 1))
+	name="${dir%/}"
+	if [[ "$name" == *modules-reject/* ]] && ! grep -rqs '^// want: ' "$dir"; then
+		record_failure "$name: a rejected module needs a '// want:' line"
+		continue
+	fi
+	declare -A module_baselines=()
+	for version in $cue_versions; do
+		supports_language "$version" "$module_language" || continue
+		fixture="$work/module-fixture"
+		module_fixture "$fixture" "$name"
+		while IFS= read -r sub; do
+			out="$work/out.json"
+			want="$(sed -n 's|^// want: ||p' "$fixture/$sub"/*.cue | head -n1)"
+			if [[ -n "$want" ]]; then
+				if evaluate "${cue[$version]}" "$fixture/$sub" "" "$out"; then
+					record_failure "$name/$sub: accepted under CUE $version, language $module_language; want error containing '$want'"
+				elif ! grep -qF -- "$want" "$out.err"; then
+					record_failure "$name/$sub: CUE $version, language $module_language failed without '$want': $(head -n2 "$out.err" | tr '\n' ' ')"
+				fi
+				continue
+			fi
+			if ! evaluate "${cue[$version]}" "$fixture/$sub" "" "$out"; then
+				record_failure "$name/$sub: CUE $version, language $module_language: $(head -n3 "$out.err" | tr '\n' ' ')"
+				continue
+			fi
+			if [[ -z "${module_baselines[$sub]:-}" ]]; then
+				module_baselines[$sub]="$work/module-baseline-${#module_baselines[@]}.json"
+				cp "$out" "${module_baselines[$sub]}"
+			elif ! cmp -s "${module_baselines[$sub]}" "$out"; then
+				record_failure "$name/$sub: export under CUE $version, language $module_language differs from an earlier release"
+			fi
+		done < <(module_directories "$fixture")
+	done
+	unset module_baselines
+done
+
 if [[ "$fail" -ne 0 ]]; then
 	exit 1
 fi
-printf 'schema-compat: %d fixtures accepted and %d rejected under CUE %s\n' \
-	"${#fixtures[@]}" "$rejected" "$cue_versions"
+printf 'schema-compat: %d fixtures accepted, %d rejected and %d modules checked under CUE %s\n' \
+	"${#fixtures[@]}" "$rejected" "$module_fixtures" "$cue_versions"

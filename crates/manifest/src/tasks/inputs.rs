@@ -31,6 +31,13 @@ pub struct MappedInput {
     /// Retained after expansion so CI compilation can still create the
     /// orchestrator artifact handoff.
     pub producer_task: Option<String>,
+    /// For a path of a file reference (`<pkg>.#Files`, `schema.#ModuleFiles`):
+    /// the directory its paths start from, relative to the CUE module root,
+    /// empty for the module root itself. No task produces these files. They
+    /// are read where they lie, never through a symbolic link or inside a
+    /// nested repository, and every one of them lies beneath this directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 
 impl MappedInput {
@@ -61,12 +68,174 @@ pub fn literal_path_prefix(pattern: &str) -> String {
         .join("/")
 }
 
+/// Where the paths of a [`FilesReference`] start from.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FilesAnchor {
+    /// The directory of the project with this name: `<pkg>.#Files`.
+    Project(String),
+    /// The root of the CUE module: `schema.#ModuleFiles`.
+    Module,
+}
+
+impl std::fmt::Display for FilesAnchor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Project(name) => write!(formatter, "project '{name}'"),
+            Self::Module => formatter.write_str("the module root"),
+        }
+    }
+}
+
+impl FilesAnchor {
+    /// How a reference to this anchor is written in CUE, for messages.
+    #[must_use]
+    pub fn spelling(&self) -> String {
+        match self {
+            Self::Project(name) => format!("{name}.#Files"),
+            Self::Module => "schema.#ModuleFiles".to_string(),
+        }
+    }
+}
+
+/// Why `path` cannot be a path of a file reference, if it cannot.
+///
+/// These are the rules of the schema's `#AnchoredPath`: a path is relative
+/// to its anchor and stays inside it, never reads the repository's `.git`
+/// (in any letter case), and every reader of inputs sees the same string. They are checked again on every path bound to an anchor,
+/// because a value the schema never checked (an old pinned schema,
+/// hand-written JSON) can still arrive, and joining an absolute path to an
+/// anchor would replace the anchor.
+///
+/// ```
+/// use cuenv_manifest::tasks::anchored_path_problem;
+///
+/// assert_eq!(anchored_path_problem("articles/**"), None);
+/// assert_eq!(anchored_path_problem(".github/**"), None);
+/// assert!(anchored_path_problem("../shared/**").is_some());
+/// assert!(anchored_path_problem("/etc/hosts").is_some());
+/// assert!(anchored_path_problem("./bun.lock").is_some());
+/// assert!(anchored_path_problem("articles/** ").is_some());
+/// assert!(anchored_path_problem(".git/config").is_some());
+/// assert!(anchored_path_problem("vendor/.GIT/HEAD").is_some());
+/// ```
+#[must_use]
+pub fn anchored_path_problem(path: &str) -> Option<&'static str> {
+    if path.is_empty() {
+        return Some("it is empty");
+    }
+    if path.trim() != path {
+        return Some("it starts or ends with whitespace");
+    }
+    if path.starts_with(['/', '\\']) {
+        return Some("it starts with `/`");
+    }
+    if path.contains("//") {
+        return Some("it has an empty segment");
+    }
+    if path
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return Some("it has a `.` or `..` segment");
+    }
+    if path
+        .split('/')
+        .any(|segment| segment.eq_ignore_ascii_case(".git"))
+    {
+        return Some("it has a `.git` segment");
+    }
+    None
+}
+
+/// Files a task reads from outside its own project, chosen by the task that
+/// reads them. The project that holds the files declares nothing.
+///
+/// The paths are globs or paths relative to the anchor. Reading them adds no
+/// dependency on any task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilesReference {
+    /// Where the paths start from.
+    pub anchor: FilesAnchor,
+    /// Paths and globs relative to the anchor; at least one.
+    pub paths: Vec<String>,
+}
+
+/// A [`FilesReference`] as the schema exports it.
+#[derive(Serialize, Deserialize)]
+struct FilesReferenceShape {
+    /// `project` or `module`. Its presence is what makes an input a file
+    /// reference.
+    #[serde(rename = "cuenvFiles")]
+    kind: String,
+    #[serde(
+        rename = "cuenvProject",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    project: Option<String>,
+    paths: Vec<String>,
+}
+
+impl Serialize for FilesReference {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (kind, project) = match &self.anchor {
+            FilesAnchor::Project(project) => ("project", Some(project.clone())),
+            FilesAnchor::Module => ("module", None),
+        };
+        FilesReferenceShape {
+            kind: kind.to_string(),
+            project,
+            paths: self.paths.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for FilesReference {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        let shape = FilesReferenceShape::deserialize(deserializer)?;
+        let anchor = match (shape.kind.as_str(), shape.project) {
+            ("project", Some(project)) if !project.is_empty() => FilesAnchor::Project(project),
+            ("project", _) => {
+                return Err(D::Error::custom(
+                    "a project file reference names no project (cuenvProject is empty)",
+                ));
+            }
+            ("module", None) => FilesAnchor::Module,
+            ("module", Some(_)) => {
+                return Err(D::Error::custom(
+                    "a module file reference cannot name a project",
+                ));
+            }
+            (other, _) => {
+                return Err(D::Error::custom(format!(
+                    "unknown kind of file reference '{other}'"
+                )));
+            }
+        };
+        if shape.paths.is_empty() {
+            return Err(D::Error::custom("a file reference needs at least one path"));
+        }
+        Ok(Self {
+            anchor,
+            paths: shape.paths,
+        })
+    }
+}
+
 /// A single task input definition
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Input {
     /// Local path/glob input
     Path(String),
+    /// Files outside the project, chosen by this task: of another project
+    /// (`<pkg>.#Files`) or of the module (`schema.#ModuleFiles`). It is
+    /// tried before the other object shapes and needs the `cuenvFiles`
+    /// field, which no other input has.
+    Files(FilesReference),
     /// Cross-project reference
     Project(ProjectReference),
     /// Same-project task output reference
@@ -79,13 +248,80 @@ pub enum Input {
     Mapped(MappedInput),
 }
 
+/// One pattern an input asks a reader of files to compare, and the
+/// directory it starts from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputPattern<'input> {
+    /// A path or glob relative to the directory of the task's own project.
+    Project(&'input str),
+    /// A path or glob of a file reference, relative to its anchor.
+    Anchored {
+        /// Where the path starts from.
+        anchor: &'input FilesAnchor,
+        /// The path or glob, as written.
+        path: &'input str,
+    },
+}
+
+impl InputPattern<'_> {
+    /// The path or glob, as written.
+    #[must_use]
+    pub const fn path(&self) -> &str {
+        match self {
+            Self::Project(path) | Self::Anchored { path, .. } => path,
+        }
+    }
+}
+
+impl std::fmt::Display for InputPattern<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Project(path) => formatter.write_str(path),
+            Self::Anchored { anchor, path } => {
+                write!(formatter, "{} & {{paths: [\"{path}\"]}}", anchor.spelling())
+            }
+        }
+    }
+}
+
 impl Input {
+    /// The file patterns this input names, each with where it starts.
+    ///
+    /// Every reader that compares inputs with files (affected detection,
+    /// trigger derivation) reads them here, and this decides for every kind
+    /// of input. A cross-project reference and a task output name the files
+    /// of a task, which those readers follow through the task instead.
+    #[must_use]
+    pub fn patterns(&self) -> Vec<InputPattern<'_>> {
+        match self {
+            Self::Path(path) => vec![InputPattern::Project(path)],
+            Self::Files(reference) => reference
+                .paths
+                .iter()
+                .map(|path| InputPattern::Anchored {
+                    anchor: &reference.anchor,
+                    path,
+                })
+                .collect(),
+            Self::Project(_) | Self::Task(_) | Self::Mapped(_) => Vec::new(),
+        }
+    }
+
+    /// The file reference, if this input is one.
+    #[must_use]
+    pub const fn as_files(&self) -> Option<&FilesReference> {
+        match self {
+            Self::Files(reference) => Some(reference),
+            Self::Path(_) | Self::Project(_) | Self::Task(_) | Self::Mapped(_) => None,
+        }
+    }
+
     /// Return the path/glob pattern if this input is a local path.
     #[must_use]
     pub fn as_path(&self) -> Option<&str> {
         match self {
             Self::Path(path) => Some(path.as_str()),
-            Self::Project(_) | Self::Task(_) | Self::Mapped(_) => None,
+            Self::Files(_) | Self::Project(_) | Self::Task(_) | Self::Mapped(_) => None,
         }
     }
 
@@ -94,7 +330,7 @@ impl Input {
     pub fn as_project(&self) -> Option<&ProjectReference> {
         match self {
             Self::Project(reference) => Some(reference),
-            Self::Path(_) | Self::Task(_) | Self::Mapped(_) => None,
+            Self::Path(_) | Self::Files(_) | Self::Task(_) | Self::Mapped(_) => None,
         }
     }
 
@@ -103,7 +339,7 @@ impl Input {
     pub fn as_task_output(&self) -> Option<&TaskOutput> {
         match self {
             Self::Task(output) => Some(output),
-            Self::Path(_) | Self::Project(_) | Self::Mapped(_) => None,
+            Self::Path(_) | Self::Files(_) | Self::Project(_) | Self::Mapped(_) => None,
         }
     }
 
@@ -114,7 +350,7 @@ impl Input {
         match self {
             Self::Task(output) => Some(&output.task),
             Self::Mapped(mapping) => mapping.producer_task.as_deref(),
-            Self::Path(_) | Self::Project(_) => None,
+            Self::Path(_) | Self::Files(_) | Self::Project(_) => None,
         }
     }
 }
@@ -203,6 +439,7 @@ mod tests {
             source: "web/dist/**".to_string(),
             destination: "dist".to_string(),
             producer_task: Some("build".to_string()),
+            anchor: None,
         });
 
         let json = serde_json::to_value(&input).unwrap();

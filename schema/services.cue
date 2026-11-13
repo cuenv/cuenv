@@ -9,9 +9,12 @@ package schema
 // session, restart according to policy, and tear down on `cuenv down`.
 
 #Service: {
-	_cuenvPrefix: string | *""
-	_cuenvSelf:   string | *""
-	_name:        string | *(_cuenvPrefix + _cuenvSelf)
+	_cuenvPrefix:  string | *""
+	_cuenvSelf:    string | *""
+	_name:         string | *(_cuenvPrefix + _cuenvSelf)
+	_cuenvProject: string | *""
+	// What this service is and which project it belongs to. Reserved.
+	cuenvRef: {kind: "service", project: _cuenvProject, name: _name}
 
 	// Type discriminator — provided by #Service, users should not need
 	// to repeat this field in each service block.

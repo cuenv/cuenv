@@ -98,15 +98,89 @@ impl WalkHasher {
     /// Fails when the pattern is not a valid glob, leaves the workspace, or
     /// the workspace cannot be read.
     pub fn selects_any(&self, pattern: &str) -> Result<bool> {
-        let found = self.resolve(&[pattern.to_string()], Collect::FirstMatch)?;
+        self.selects_any_with(pattern, WalkOptions::default())
+    }
+
+    /// Whether `pattern` selects at least one file of the workspace when it
+    /// is resolved with `options`: [`Self::selects_any`] for a walk that may
+    /// be told to stay in the real directories of the repository.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::selects_any`]; with [`Reach::RealDirectories`], also when
+    /// the pattern's literal prefix passes through or ends at a symbolic link
+    /// or a nested repository (see [`Self::obstacle`]).
+    pub fn selects_any_with(&self, pattern: &str, options: WalkOptions) -> Result<bool> {
+        let found = self.resolve(
+            &[pattern.to_string()],
+            Resolution {
+                collect: Collect::FirstMatch,
+                options,
+            },
+        )?;
         Ok(!found.is_empty())
     }
 
-    fn resolve_sync(&self, patterns: &[String]) -> Result<Vec<HashedInput>> {
-        self.resolve(patterns, Collect::Hash)
+    /// What lies in the way of `pattern` staying in the real directories of
+    /// the repository: the first `.git`, symbolic link or nested repository
+    /// its literal prefix passes through or ends at, looked at from the
+    /// workspace root down and never above it. Nothing is resolved or
+    /// followed to answer, so a link is reported whatever it points at.
+    ///
+    /// A `.git` segment is an obstacle in any letter case and whether or not
+    /// it exists: a walk never enters `.git`, and naming it must not read
+    /// the repository's metadata either, on a file system that ignores
+    /// case included.
+    ///
+    /// A nested repository is a directory other than the workspace root
+    /// that holds a `.git` file or directory: a submodule, a worktree or an
+    /// embedded checkout.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the pattern leaves the workspace or a directory on the way
+    /// cannot be read.
+    pub fn obstacle(&self, pattern: &str) -> Result<Option<Obstacle>> {
+        let normal = pattern::normalize(pattern);
+        validate_pattern(&normal)?;
+        let prefix = pattern::literal_prefix(&normal);
+        let mut current = self.workspace_root.clone();
+        let mut relative = PathBuf::new();
+        for segment in prefix.split('/').filter(|segment| !segment.is_empty()) {
+            current.push(segment);
+            relative.push(segment);
+            if segment.eq_ignore_ascii_case(".git") {
+                return Ok(Some(Obstacle::RepositoryMetadata(relative)));
+            }
+            let metadata = match fs::symlink_metadata(&current) {
+                Ok(metadata) => metadata,
+                // What does not exist selects nothing; that is for the
+                // caller to report, not an obstacle.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(Error::io(error, &current, "inspect input path")),
+            };
+            if metadata.file_type().is_symlink() {
+                return Ok(Some(Obstacle::Link(relative)));
+            }
+            if metadata.is_dir() && holds_repository(&current) {
+                return Ok(Some(Obstacle::NestedRepository(relative)));
+            }
+        }
+        Ok(None)
     }
 
-    fn resolve(&self, patterns: &[String], collect: Collect) -> Result<Vec<HashedInput>> {
+    fn resolve_sync(&self, patterns: &[String]) -> Result<Vec<HashedInput>> {
+        self.resolve(
+            patterns,
+            Resolution {
+                collect: Collect::Hash,
+                options: WalkOptions::default(),
+            },
+        )
+    }
+
+    fn resolve(&self, patterns: &[String], resolution: Resolution) -> Result<Vec<HashedInput>> {
+        let Resolution { collect, options } = resolution;
         let mut explicit_files: Vec<String> = Vec::new();
         let mut dirs_to_walk: Vec<(String, GlobSet)> = Vec::new();
 
@@ -116,6 +190,14 @@ impl WalkHasher {
             let normal = pattern::normalize(pat);
             validate_pattern(&normal)?;
             let abs = self.workspace_root.join(&normal);
+
+            if options.reach == Reach::RealDirectories
+                && let Some(obstacle) = self.obstacle(&normal)?
+            {
+                return Err(Error::pattern(format!(
+                    "input pattern `{normal}` {obstacle}"
+                )));
+            }
 
             if pattern::is_glob(&normal) {
                 let base_dir = pattern::literal_prefix(&normal);
@@ -176,6 +258,7 @@ impl WalkHasher {
                 globset,
                 workspace: &workspace,
                 excluded: &excluded,
+                reach: options.reach,
                 descent: Vec::new(),
             };
             walk.directory(
@@ -201,6 +284,20 @@ impl VcsHasher for WalkHasher {
         // callers typically already wrap us in a spawn_blocking or a parallel
         // task executor.
         self.resolve_sync(patterns)
+    }
+
+    async fn resolve_and_hash_with(
+        &self,
+        patterns: &[String],
+        options: WalkOptions,
+    ) -> Result<Vec<HashedInput>> {
+        self.resolve(
+            patterns,
+            Resolution {
+                collect: Collect::Hash,
+                options,
+            },
+        )
     }
 
     fn name(&self) -> &'static str {
@@ -242,6 +339,89 @@ fn single_glob(glob: &str) -> Result<GlobSet> {
         .add(compiled)
         .build()
         .map_err(|e| Error::pattern(format!("failed to build globset: {e}")))
+}
+
+/// What a walk may pass through on its way to files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reach {
+    /// Follow symbolic links, as a plain input always has: a linked file
+    /// stands for what it points at, and a linked directory inside the
+    /// workspace is descended into.
+    #[default]
+    ThroughLinks,
+    /// Stay in the real directories of this repository. A symbolic link,
+    /// to a file or to a directory, and a nested repository (a directory
+    /// other than the workspace root holding `.git`) are neither entered
+    /// nor included, and neither is the repository's own `.git`. A pattern
+    /// whose literal prefix passes through or ends at one of them is an
+    /// error. The files selected are then the same in any checkout of the
+    /// repository, whatever untracked links it holds.
+    RealDirectories,
+}
+
+/// How [`WalkHasher`] resolves patterns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WalkOptions {
+    /// What the walk may pass through.
+    pub reach: Reach,
+}
+
+impl WalkOptions {
+    /// The options for the paths of a file reference: stay in the real
+    /// directories of the repository.
+    #[must_use]
+    pub const fn real_directories() -> Self {
+        Self {
+            reach: Reach::RealDirectories,
+        }
+    }
+}
+
+/// What keeps a pattern from staying in the real directories of the
+/// repository (see [`WalkHasher::obstacle`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Obstacle {
+    /// A symbolic link, relative to the workspace root.
+    Link(PathBuf),
+    /// A nested repository, relative to the workspace root.
+    NestedRepository(PathBuf),
+    /// A `.git` file or directory, relative to the workspace root.
+    RepositoryMetadata(PathBuf),
+}
+
+impl std::fmt::Display for Obstacle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Link(path) => write!(
+                formatter,
+                "goes through the symbolic link `{}`; reference the target directly",
+                path.display()
+            ),
+            Self::NestedRepository(path) => write!(
+                formatter,
+                "reaches into the nested repository `{}`; a file reference cannot reach into a \
+                 submodule",
+                path.display()
+            ),
+            Self::RepositoryMetadata(path) => write!(
+                formatter,
+                "reads the repository metadata `{}`; a file reference cannot read `.git`",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// Whether `directory` is the root of a repository of its own.
+fn holds_repository(directory: &Path) -> bool {
+    fs::symlink_metadata(directory.join(".git")).is_ok()
+}
+
+/// What one resolution collects, and how it walks.
+#[derive(Debug, Clone, Copy)]
+struct Resolution {
+    collect: Collect,
+    options: WalkOptions,
 }
 
 /// What a resolution is for.
@@ -315,6 +495,8 @@ struct Walk<'walk> {
     workspace: &'walk Path,
     /// Canonical directories never descended into.
     excluded: &'walk [PathBuf],
+    /// What the walk may pass through.
+    reach: Reach,
     /// Canonical directories on the current descent, so a symlink back to an
     /// ancestor is not followed forever.
     descent: Vec<PathBuf>,
@@ -355,6 +537,10 @@ impl Walk<'_> {
             let file_type = entry
                 .file_type()
                 .map_err(|e| Error::io(e, &path, "walk directory"))?;
+            if self.reach == Reach::RealDirectories && self.leaves_repository(&entry, file_type) {
+                trace!(path = %logical_child.display(), "not entering what lies outside the repository's real directories");
+                continue;
+            }
             if file_type.is_symlink() {
                 self.symlink(collected, &path, &logical_child)?;
             } else if file_type.is_dir() {
@@ -366,6 +552,18 @@ impl Walk<'_> {
 
         self.descent.pop();
         Ok(())
+    }
+
+    /// Whether `entry` lies outside the real directories of the repository:
+    /// a symbolic link, the repository's `.git`, or a nested repository.
+    fn leaves_repository(&self, entry: &fs::DirEntry, file_type: fs::FileType) -> bool {
+        if file_type.is_symlink() || entry.file_name() == ".git" {
+            return true;
+        }
+        file_type.is_dir() && {
+            let path = entry.path();
+            path != self.workspace && holds_repository(&path)
+        }
     }
 
     fn symlink(&mut self, collected: &mut Collected, link: &Path, logical: &Path) -> Result<()> {
@@ -540,6 +738,144 @@ mod tests {
             assert!(!hasher.selects_any(nothing).unwrap(), "{nothing:?}");
         }
         assert!(hasher.selects_any("../outside").is_err());
+    }
+
+    /// The paths `patterns` select in the real directories of the repository
+    /// at `root`.
+    fn resolved_in_real_directories(root: &Path, patterns: &[&str]) -> Result<Vec<String>> {
+        let patterns: Vec<String> = patterns.iter().map(ToString::to_string).collect();
+        let inputs = WalkHasher::new(root).resolve(
+            &patterns,
+            Resolution {
+                collect: Collect::Hash,
+                options: WalkOptions::real_directories(),
+            },
+        )?;
+        Ok(inputs
+            .iter()
+            .map(|input| input.relative_path.to_string_lossy().into_owned())
+            .collect())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_walk_in_real_directories_leaves_out_links_nested_repositories_and_git() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/HEAD"), "ref").unwrap();
+        fs::create_dir_all(root.join("shared")).unwrap();
+        fs::write(root.join("shared/a.txt"), "a").unwrap();
+        fs::create_dir_all(root.join("content/articles")).unwrap();
+        fs::write(root.join("content/articles/one.md"), "one").unwrap();
+        std::os::unix::fs::symlink("../../shared", root.join("content/articles/vendor")).unwrap();
+        std::os::unix::fs::symlink("one.md", root.join("content/articles/current.md")).unwrap();
+        fs::create_dir_all(root.join("content/themes/.git")).unwrap();
+        fs::write(root.join("content/themes/theme.css"), "css").unwrap();
+        fs::write(root.join("content/drafts.git"), "not a repository").unwrap();
+
+        assert_eq!(
+            resolved_in_real_directories(root, &["content/**"]).unwrap(),
+            ["content/articles/one.md", "content/drafts.git"]
+        );
+        assert_eq!(
+            resolved_in_real_directories(root, &["**"]).unwrap(),
+            [
+                "content/articles/one.md",
+                "content/drafts.git",
+                "shared/a.txt"
+            ],
+            "no file of .git is an input"
+        );
+        // A plain input still follows them.
+        let followed: Vec<PathBuf> = resolved(root, &["content/articles/**"])
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        assert_eq!(
+            followed,
+            [
+                PathBuf::from("content/articles/current.md"),
+                PathBuf::from("content/articles/one.md"),
+                PathBuf::from("content/articles/vendor/a.txt")
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pattern_through_a_link_or_into_a_nested_repository_is_an_obstacle() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("shared")).unwrap();
+        fs::write(root.join("shared/a.txt"), "a").unwrap();
+        fs::create_dir_all(root.join("content")).unwrap();
+        std::os::unix::fs::symlink("../shared", root.join("content/vendor")).unwrap();
+        std::os::unix::fs::symlink("../shared/a.txt", root.join("content/a.txt")).unwrap();
+        fs::create_dir_all(root.join("content/themes")).unwrap();
+        fs::write(root.join("content/themes/.git"), "gitdir: elsewhere").unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), "[remote]").unwrap();
+        let hasher = WalkHasher::new(root);
+
+        for (pattern, obstacle) in [
+            (
+                ".git/config",
+                Obstacle::RepositoryMetadata(PathBuf::from(".git")),
+            ),
+            (
+                ".git/**",
+                Obstacle::RepositoryMetadata(PathBuf::from(".git")),
+            ),
+            (
+                ".GIT/config",
+                Obstacle::RepositoryMetadata(PathBuf::from(".GIT")),
+            ),
+            (
+                "shared/.git/config",
+                Obstacle::RepositoryMetadata(PathBuf::from("shared/.git")),
+            ),
+            (
+                "content/vendor/**",
+                Obstacle::Link(PathBuf::from("content/vendor")),
+            ),
+            (
+                "content/vendor/a.txt",
+                Obstacle::Link(PathBuf::from("content/vendor")),
+            ),
+            (
+                "content/a.txt",
+                Obstacle::Link(PathBuf::from("content/a.txt")),
+            ),
+            (
+                "content/themes/**",
+                Obstacle::NestedRepository(PathBuf::from("content/themes")),
+            ),
+        ] {
+            assert_eq!(
+                hasher.obstacle(pattern).unwrap(),
+                Some(obstacle),
+                "{pattern}"
+            );
+            let error = resolved_in_real_directories(root, &[pattern]).unwrap_err();
+            assert!(error.to_string().contains(pattern), "{error}");
+        }
+        for clear in [
+            "content/**",
+            "shared/a.txt",
+            "missing/**",
+            "**/*.txt",
+            ".github/**",
+            "drafts.git",
+        ] {
+            assert_eq!(hasher.obstacle(clear).unwrap(), None, "{clear}");
+        }
+        assert!(
+            !hasher
+                .selects_any_with("content/**", WalkOptions::real_directories())
+                .unwrap(),
+            "only links and a nested repository lie below content"
+        );
     }
 
     #[test]

@@ -46,6 +46,7 @@ package schema
 
 #TaskOutputRef: {
 	cuenvOutputRef: true
+	cuenvProject:   string
 	cuenvTask:      string
 	cuenvOutput:    "stdout" | "stderr" | "exitCode"
 }
@@ -142,9 +143,12 @@ package schema
 // elements.
 #Task: {
 	// GitHub token requirements for the job executing this task.
-	ci?:          #TaskCI
-	_cuenvPrefix: string | *""
-	_cuenvSelf:   string | *""
+	ci?:           #TaskCI
+	_cuenvPrefix:  string | *""
+	_cuenvSelf:    string | *""
+	_cuenvProject: string | *""
+	// What this task is and which project it belongs to. Reserved.
+	cuenvRef: {kind: "task", project: _cuenvProject, name: _name}
 
 	// Executable tasks use command/script; task groups use type: "group".
 	type?: _|_
@@ -158,9 +162,9 @@ package schema
 	// Runtime output references - resolve to #TaskOutputRef structs.
 	// Other tasks can reference these (e.g., tasks.tmpdir.stdout) to pass
 	// runtime outputs between tasks. Resolved by Rust executor, not CUE.
-	stdout: #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "stdout"}
-	stderr: #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "stderr"}
-	exitCode: #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "exitCode"}
+	stdout: #TaskOutputRef & {cuenvProject: _cuenvProject, cuenvTask: _name, cuenvOutput: "stdout"}
+	stderr: #TaskOutputRef & {cuenvProject: _cuenvProject, cuenvTask: _name, cuenvOutput: "stderr"}
+	exitCode: #TaskOutputRef & {cuenvProject: _cuenvProject, cuenvTask: _name, cuenvOutput: "exitCode"}
 
 	// Command-based execution
 	command?: string
@@ -238,8 +242,13 @@ package schema
 // =============================================================================
 
 #TaskGroup: {
-	_cuenvPrefix: string | *""
-	_cuenvSelf:   string | *""
+	_cuenvPrefix:  string | *""
+	_cuenvSelf:    string | *""
+	_cuenvProject: string | *""
+	let _groupProject = _cuenvProject
+	// What this group is and which project it belongs to. Reserved: a group
+	// cannot have a child named `cuenvRef`.
+	cuenvRef: {kind: "group", project: _cuenvProject, name: _name}
 
 	// Fully-qualified group path used to derive child task names.
 	_name: string | *(_cuenvPrefix + _cuenvSelf)
@@ -263,13 +272,19 @@ package schema
 	// Select child validation from the group's existing type discriminator.
 	// This avoids applying the recursive group pattern to every task-shaped
 	// object while preserving the public task fields and flat child syntax.
+	// A sequence child is checked as a #TaskSequence and only stamped with the
+	// project here. Spelling its members out as a fresh `#Task | #TaskGroup`
+	// disjunction made every task with a struct input (a file reference)
+	// cost minutes under CUE v0.17 wherever it met #TaskNode: a pipeline
+	// entry, a dependsOn entry, a matrix entry's task.
 	let _childrenByType = {
 		group: {
 			// `cuenvRef` is reserved for what cuenv writes on a group.
 			{[childName= !~"^(type|dependsOn|maxConcurrency|description|cuenvRef)$"]: ((#Task | #TaskGroup) & {
-				_cuenvPrefix: _name + "."
-				_cuenvSelf:   childName
-			}) | #TaskSequence
+				_cuenvPrefix:  _name + "."
+				_cuenvSelf:    childName
+				_cuenvProject: _groupProject
+			}) | (#TaskSequence & [...({_cuenvProject: _groupProject, ...} | [...])])
 			}
 		}
 	}
@@ -310,7 +325,34 @@ package schema
 // - string: File path, directory, or glob pattern
 // - #ProjectReference: Cross-project task outputs
 // - #TaskOutput: Same-project task outputs
-#Input: string | #ProjectReference | *#TaskOutput
+// - #ProjectFiles: Files of another project, by import (`<pkg>.#Files`)
+// - #ModuleFiles: Files anywhere in the module, from the module root
+#Input: string | #ProjectReference | *#TaskOutput | #ProjectFiles | #ModuleFiles
+
+// One path of a file reference: relative to its anchor and inside it, and
+// never into the repository's metadata. Every reader of inputs sees the same
+// string: no empty path, no leading "/", no "." or ".." segment, no ".git"
+// segment in any letter case, no empty segment, no whitespace at either end.
+#AnchoredPath: string & !="" & !~"^/" & !~"//" & !~"(^|/)\\.\\.?(/|$)" & !~"(^|/)\\.(?i:git)(/|$)" & !~"^[\\s\\v\\pZ\\x{85}]|[\\s\\v\\pZ\\x{85}]$"
+
+// Files another project holds, chosen by the caller. Written through the
+// project's import: `content.#Files & {paths: ["articles/**"]}`. Paths (globs
+// allowed) are relative to that project's directory. Reading them adds no
+// dependency on any task of that project, and every path must match at least
+// one file.
+#ProjectFiles: {
+	cuenvFiles:   "project"
+	cuenvProject: string
+	paths!: [#AnchoredPath, ...#AnchoredPath]
+}
+
+// Files anywhere in the CUE module that no project import reaches: lockfiles
+// at the root, a directory several projects share. Paths (globs allowed) are
+// relative to the module root, and every path must match at least one file.
+#ModuleFiles: {
+	cuenvFiles: "module"
+	paths!: [#AnchoredPath, ...#AnchoredPath]
+}
 
 // Reference to another project's task within the same Git root
 #ProjectReference: {

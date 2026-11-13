@@ -2,6 +2,7 @@
 
 use crate::ir::{CachePolicy, PurityMode};
 use cuenv_core::ci::Pipeline;
+use cuenv_core::module::ImportedProjects;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -57,6 +58,27 @@ pub struct CompilerOptions {
     /// For example, if a project is at `projects/rawkode.academy/api`, this would
     /// be `"projects/rawkode.academy/api"`.
     pub project_path: Option<String>,
+
+    /// Where the packages the project imports are read from, which is where
+    /// the project name of a `<pkg>.#Files` reference is bound. `None` reads
+    /// them from the project's instance at `module_root` and
+    /// `project_path`, when a module root is set.
+    pub file_anchors: Option<FileAnchors>,
+}
+
+/// Where a compilation reads the packages its project imports.
+#[derive(Debug, Clone)]
+pub enum FileAnchors {
+    /// Read from the project's CUE instance in `directory`, of the module
+    /// at `module_root`, the first time a file reference needs them.
+    Instance {
+        /// The root of the CUE module.
+        module_root: PathBuf,
+        /// The project's directory.
+        directory: PathBuf,
+    },
+    /// Known already.
+    Known(ImportedProjects),
 }
 
 impl std::fmt::Debug for CompilerOptions {
@@ -73,6 +95,7 @@ impl std::fmt::Debug for CompilerOptions {
             .field("ci_mode", &self.ci_mode)
             .field("module_root", &self.module_root)
             .field("project_path", &self.project_path)
+            .field("file_anchors", &self.file_anchors)
             .finish()
     }
 }

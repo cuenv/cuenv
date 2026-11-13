@@ -185,6 +185,7 @@ unsafe extern "C" {
         module_root: *const c_char,
         directory: *const c_char,
         package_name: *const c_char,
+        options_json: *const c_char,
     ) -> *mut c_char;
     fn cue_free_string(s: *mut c_char);
     fn cue_bridge_version() -> *mut c_char;
@@ -206,8 +207,10 @@ unsafe fn cue_module_dependency_version(_: *const c_char, _: *const c_char) -> *
     panic!("FFI not available in documentation builds")
 }
 
+// The C ABI of the bridge function it stands in for.
 #[cfg(docsrs)]
-unsafe fn cue_instance_sources(
+unsafe extern "C" fn cue_instance_sources(
+    _: *const c_char,
     _: *const c_char,
     _: *const c_char,
     _: *const c_char,
@@ -482,6 +485,65 @@ pub struct InstanceSources {
     /// whether or not it exists.
     #[serde(default)]
     pub embeds: Vec<String>,
+    /// The path of the module the instance belongs to.
+    #[serde(default)]
+    pub module: String,
+    /// One record per package the instance imports, transitively, sorted by
+    /// import path. Listed only when [`SourcesRequest::fields`] asks for
+    /// fields.
+    #[serde(default)]
+    pub imports: Vec<ImportedInstance>,
+}
+
+/// What [`instance_sources_with`] is asked for.
+#[derive(Debug, Clone, Copy)]
+pub struct SourcesRequest<'request> {
+    /// The CUE package of the instance.
+    pub package_name: &'request str,
+    /// CUE paths whose concrete values are read from every imported package,
+    /// and from the instance of the same package in each directory above
+    /// it. Empty to list no imports.
+    pub fields: &'request [String],
+}
+
+/// One package an instance imports.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedInstance {
+    /// The import path, as written by the package that imports it.
+    pub import_path: String,
+    /// The import path of the package that imports it first; empty when the
+    /// instance itself does.
+    #[serde(default)]
+    pub imported_by: String,
+    /// The package's directory: relative to the module root when it lies
+    /// inside it, absolute otherwise.
+    pub directory: String,
+    /// The package name.
+    pub package: String,
+    /// The path of the module the package belongs to.
+    #[serde(default)]
+    pub module: String,
+    /// The concrete values of the requested fields, by field path. A field
+    /// that is absent, incomplete or in error is left out; defaults are
+    /// resolved.
+    #[serde(default)]
+    pub fields: std::collections::BTreeMap<String, serde_json::Value>,
+    /// The same fields read from the instance of the same package in each
+    /// directory above the package that holds files of it, nearest first.
+    #[serde(default)]
+    pub ancestors: Vec<AncestorInstance>,
+}
+
+/// The instance of an imported package's own package in a directory above
+/// it.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct AncestorInstance {
+    /// The directory, relative to the module root (`.` for the root).
+    pub directory: String,
+    /// The concrete values of the requested fields.
+    #[serde(default)]
+    pub fields: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 struct ModuleEvalWorker {
@@ -1047,10 +1109,45 @@ pub fn instance_sources(
     directory: &Path,
     package_name: &str,
 ) -> Result<InstanceSources> {
+    instance_sources_with(
+        module_root,
+        directory,
+        SourcesRequest {
+            package_name,
+            fields: &[],
+        },
+    )
+}
+
+/// List the files the CUE instance in `directory` is built from, and
+/// describe the packages it imports when `request` asks for fields.
+///
+/// Each imported package is described by its import path, directory,
+/// package, module and the concrete values of the requested fields, read on
+/// the package and on the instances of its package in the directories above
+/// it. The instance itself is never built or evaluated. Each imported package is
+/// built on its own to look the fields up, so one whose root is in error
+/// still yields the fields that are not.
+///
+/// # Errors
+///
+/// Returns an error if an argument is not a valid C string, a field path is
+/// not a CUE path, or the instance cannot be loaded.
+pub fn instance_sources_with(
+    module_root: &Path,
+    directory: &Path,
+    request: SourcesRequest<'_>,
+) -> Result<InstanceSources> {
     const FUNCTION_NAME: &str = "cue_instance_sources";
     let c_module_root = path_to_cstring(module_root, FUNCTION_NAME, "module root")?;
     let c_directory = path_to_cstring(directory, FUNCTION_NAME, "directory")?;
-    let c_package_name = str_to_cstring(package_name, FUNCTION_NAME, "package name")?;
+    let c_package_name = str_to_cstring(request.package_name, FUNCTION_NAME, "package name")?;
+    let options = if request.fields.is_empty() {
+        String::new()
+    } else {
+        serde_json::json!({ "fields": request.fields }).to_string()
+    };
+    let c_options = str_to_cstring(&options, FUNCTION_NAME, "options")?;
 
     let result_ptr = {
         #[expect(
@@ -1064,6 +1161,7 @@ pub fn instance_sources(
                 c_module_root.as_ptr(),
                 c_directory.as_ptr(),
                 c_package_name.as_ptr(),
+                c_options.as_ptr(),
             )
         }
     };

@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use super::{CodegenConfig, ContainerImage, Formatters, Runtime, Service, VcsDependency};
+use super::{
+    CodegenConfig, ContainerImage, Formatters, NodeDiagnostics, Runtime, Service, VcsDependency,
+};
 use crate::ci::CI;
 use crate::config::Config;
 use crate::context::ContextDefinition;
@@ -86,6 +88,16 @@ pub struct Project {
     /// Infrastructure commands decode the selected configuration strictly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub infrastructure: Option<serde_json::Value>,
+
+    /// Problems found in single nodes while the evaluated value was read,
+    /// raised where a graph, affected detection or CI compilation reaches
+    /// the node (see [`NodeDiagnostics`]). Written by cuenv, never by CUE.
+    #[serde(
+        default,
+        rename = "_cuenvDiagnostics",
+        skip_serializing_if = "NodeDiagnostics::is_empty"
+    )]
+    pub diagnostics: NodeDiagnostics,
 }
 
 impl Project {
@@ -334,8 +346,13 @@ impl TaskExpansion<'_> {
                         None => new_inputs.push(input.clone()),
                     }
                 }
-                // An ordinary path input, already concrete.
-                Input::Path(_) | Input::Mapped(_) => new_inputs.push(input.clone()),
+                // An ordinary path input, already concrete. Files of another
+                // project or of the module are no task's output, so they add
+                // no dependency; they are bound to a directory once the
+                // projects they name are known.
+                Input::Path(_) | Input::Mapped(_) | Input::Files(_) => {
+                    new_inputs.push(input.clone());
+                }
             }
         }
 
@@ -368,6 +385,7 @@ impl TaskExpansion<'_> {
             source: path_to_forward_slashes(&base.join(source)),
             destination: path_to_forward_slashes(&destination),
             producer_task: Some(task_output.task.clone()),
+            anchor: None,
         };
         Some(match &task_output.map {
             Some(mappings) => mappings

@@ -15,10 +15,12 @@
 
 use crate::workspace::find_workspace_root;
 use crate::{
-    Input, MappedInput, ProjectReference, Task, TaskGraph, TaskIndex, TaskNode, TaskPath, Tasks,
+    FilesAnchor, FilesReference, Input, MappedInput, ProjectReference, SourceLocation, Task,
+    TaskGraph, TaskIndex, TaskNode, TaskPath, Tasks,
 };
 use cuenv_core::contributors::CONTRIBUTOR_TASK_PREFIX;
 use cuenv_core::manifest::Project;
+use cuenv_core::tasks::file_references::{BoundPath, ReferenceChecks, anchored_pattern, for_task};
 use cuenv_core::tasks::output_refs::{OutputRefDep, TaskOutputRef};
 use cuenv_core::{Error, Result};
 use cuenv_task_graph::{TaskResolution, TaskResolver};
@@ -107,6 +109,21 @@ pub trait ProjectSource {
     /// it cannot say whether one of them carries the name.
     fn directory_of(&self, origin: &Path, name: &str) -> Result<Option<PathBuf>>;
 
+    /// The directory a file reference to the project called `name`, in a
+    /// task of the project in `origin`, starts from: the directory that
+    /// declares that name among the packages the project in `origin`
+    /// imports. Only an import can stamp a reference with a project's name,
+    /// so the module's other projects are never looked at, and no project is
+    /// evaluated to answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns what to do when the name binds to no directory: the project
+    /// is not imported, is imported from a directory that only inherits its
+    /// name, lies in another package or module, or the imports cannot be
+    /// listed.
+    fn files_anchor(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String>;
+
     /// The name that means the project in the directory `root`, when the
     /// source already knows it: the name [`Self::directory_of`] would lead
     /// back to `root` from. `None` when it would have to list projects to
@@ -194,6 +211,15 @@ pub struct TaskScope {
     /// or with the group or sequence that holds it. A node is resolved
     /// once, while every reference in it is still as its project wrote it.
     resolved: BTreeSet<String>,
+    /// Why file references of a task could not be bound, by the task's
+    /// name in the graph. A graph that reaches the task fails with them.
+    file_problems: BTreeMap<String, Vec<String>>,
+    /// Checks of file reference paths against the repository each lies in,
+    /// by its root, remembered for the run.
+    reference_checks: BTreeMap<PathBuf, ReferenceChecks>,
+    /// The result cache's store, which no file reference matches into (see
+    /// [`Self::excluding_cache_store`]).
+    cache_store: Option<PathBuf>,
 }
 
 impl TaskScope {
@@ -222,6 +248,9 @@ impl TaskScope {
             contributors: BTreeMap::new(),
             walked: BTreeSet::new(),
             resolved: BTreeSet::new(),
+            file_problems: BTreeMap::new(),
+            reference_checks: BTreeMap::new(),
+            cache_store: None,
         };
         if let Some(workspace) = contributor_workspace(&scope.root.root) {
             for name in scope.local.tasks.keys().filter(|name| is_contributor(name)) {
@@ -231,6 +260,16 @@ impl TaskScope {
             }
         }
         scope
+    }
+
+    /// Leave the result cache's store at `store` out of what the file
+    /// references of this run match, as hashing leaves it out of their
+    /// inputs: a glob that would select only the store's own files is a
+    /// reference that matches nothing.
+    #[must_use]
+    pub fn excluding_cache_store(mut self, store: PathBuf) -> Self {
+        self.cache_store = Some(store);
+        self
     }
 
     /// Follow the dependencies of the tasks named `names`, loading every
@@ -284,16 +323,47 @@ impl TaskScope {
                 Some((project.clone(), target))
             })
             .collect();
-        let Some(node) = self.node_mut(name) else {
-            return;
-        };
-        Rewrite {
-            owner: &owner,
-            projects: &projects,
-            resolved: &survey.resolved,
+        // A file reference needs only the directory its anchor means: the
+        // project it names is not loaded, and no task of it runs.
+        let anchors: BTreeMap<FilesAnchor, std::result::Result<PathBuf, String>> = survey
+            .anchors
+            .iter()
+            .map(|anchor| (anchor.clone(), bind_anchor(&owner, anchor, source)))
+            .collect();
+        // Paths are checked against the repository they lie in, which is
+        // only looked up for a node that reads files through a reference.
+        let workspace =
+            (!anchors.is_empty()).then(|| canonical(source.workspace_root(&owner.root)));
+        let mut checks = workspace.as_ref().map(|workspace| {
+            self.reference_checks.remove(workspace).unwrap_or_else(|| {
+                let checks = ReferenceChecks::new(workspace);
+                match &self.cache_store {
+                    Some(store) => checks.excluding(store),
+                    None => checks,
+                }
+            })
+        });
+        let mut file_problems = BTreeMap::new();
+        if let Some(node) = self.node_mut(name) {
+            Rewrite {
+                owner: &owner,
+                projects: &projects,
+                resolved: &survey.resolved,
+                files: FileBinding {
+                    anchors: &anchors,
+                    checks: checks.as_mut(),
+                    problems: &mut file_problems,
+                },
+            }
+            .node(name, node);
+            self.resolved.extend(survey.resolving);
         }
-        .node(name, node);
-        self.resolved.extend(survey.resolving);
+        if let (Some(workspace), Some(checks)) = (workspace, checks) {
+            self.reference_checks.insert(workspace, checks);
+        }
+        for (task, problems) in file_problems {
+            self.file_problems.entry(task).or_default().extend(problems);
+        }
     }
 
     /// What resolving the node called `name` has to do: which nodes below
@@ -351,6 +421,12 @@ impl TaskScope {
                     task.iter_project_refs()
                         .map(|reference| reference.project.clone()),
                 );
+                survey.anchors.extend(
+                    task.inputs
+                        .iter()
+                        .filter_map(Input::as_files)
+                        .map(|reference| reference.anchor.clone()),
+                );
             }
             TaskNode::Group(group) => {
                 survey
@@ -377,6 +453,11 @@ impl TaskScope {
     /// name was never passed to [`Self::reach`]. A dependency on a project
     /// that could not be loaded is reported with the reason.
     pub fn graph<'name>(&self, names: impl IntoIterator<Item = &'name str>) -> Result<TaskGraph> {
+        let names: Vec<&str> = names.into_iter().collect();
+        let problems = self.reached_problems(&names);
+        if !problems.is_empty() {
+            return Err(Error::configuration(problems.join("\n")));
+        }
         let mut graph = TaskGraph::new();
         for name in names {
             // Only a task the walk reached has its dependencies spelled the
@@ -394,6 +475,37 @@ impl TaskScope {
             .add_output_ref_deps(&self.output_ref_deps, self)
             .map_err(|error| self.explain(error))?;
         Ok(graph)
+    }
+
+    /// Why the nodes a graph of `names` reaches cannot run: the problems
+    /// found in them when their project's value was read, and the file
+    /// references of theirs that could not be bound. Nodes no graph of
+    /// `names` reaches never fail it.
+    fn reached_problems(&self, names: &[&str]) -> Vec<String> {
+        let mut pending: Vec<String> = names.iter().map(ToString::to_string).collect();
+        let mut seen = BTreeSet::new();
+        let mut problems = Vec::new();
+        while let Some(name) = pending.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if let Some(owner) = self.owner(&name) {
+                problems.extend_from_slice(owner.project.manifest.diagnostics.task(owner.task));
+            }
+            if let Some(found) = self.file_problems.get(&name) {
+                problems.extend_from_slice(found);
+            }
+            if let Some(node) = self.node(&name) {
+                pending.extend(next_names(node, &name));
+            }
+            pending.extend(
+                self.output_ref_deps
+                    .iter()
+                    .filter(|dependency| dependency.task == name)
+                    .map(|dependency| dependency.depends_on.clone()),
+            );
+        }
+        problems
     }
 
     /// The tasks of the project the run was asked for: the only ones a run
@@ -688,6 +800,8 @@ impl OwnerFrame {
 struct Survey {
     /// The projects the nodes still as written refer to.
     declared: BTreeSet<String>,
+    /// Where the file references of those nodes start from.
+    anchors: BTreeSet<FilesAnchor>,
     /// Nodes below the surveyed one that are already resolved.
     resolved: BTreeSet<String>,
     /// Names that mean a node this resolves.
@@ -828,6 +942,20 @@ fn locate_by_path(
     }))
 }
 
+/// The directory a file reference's anchor means for a task of `owner`:
+/// the directory that declares the named project among what the owner
+/// imports, or the root of the owner's CUE module.
+fn bind_anchor(
+    owner: &OwnerFrame,
+    anchor: &FilesAnchor,
+    source: &dyn ProjectSource,
+) -> std::result::Result<PathBuf, String> {
+    match anchor {
+        FilesAnchor::Module => Ok(owner.module_root.clone()),
+        FilesAnchor::Project(name) => source.files_anchor(&owner.root, name).map(canonical),
+    }
+}
+
 /// The projects a list of dependencies names (`#project:task`).
 fn projects_in_dependencies(dependencies: &[crate::TaskDependency]) -> Vec<String> {
     dependencies
@@ -861,15 +989,37 @@ struct Rewrite<'rewrite> {
     projects: &'rewrite BTreeMap<String, ResolvedProject>,
     /// Nodes that are already resolved, by their name in the graph.
     resolved: &'rewrite BTreeSet<String>,
+    /// How the nodes' file references are bound.
+    files: FileBinding<'rewrite>,
+}
+
+/// What binding the file references of the nodes being resolved needs.
+struct FileBinding<'binding> {
+    /// The directory each anchor the nodes use means, or why it means none.
+    anchors: &'binding BTreeMap<FilesAnchor, std::result::Result<PathBuf, String>>,
+    /// Checks every bound path against the files of its repository; `None`
+    /// when the nodes read no file reference.
+    checks: Option<&'binding mut ReferenceChecks>,
+    /// Why a reference could not be bound, by the task's name in the graph.
+    problems: &'binding mut BTreeMap<String, Vec<String>>,
+}
+
+/// A task whose file references are being bound.
+#[derive(Clone, Copy)]
+struct BindingTask<'task> {
+    /// Its name in the graph.
+    name: &'task str,
+    /// Where it is declared.
+    source: Option<&'task SourceLocation>,
 }
 
 impl Rewrite<'_> {
-    fn node(&self, name: &str, node: &mut TaskNode) {
+    fn node(&mut self, name: &str, node: &mut TaskNode) {
         if self.resolved.contains(name) {
             return;
         }
         match node {
-            TaskNode::Task(task) => self.task(task),
+            TaskNode::Task(task) => self.task(name, task),
             TaskNode::Group(group) => {
                 self.dependencies(&mut group.depends_on);
                 for (child_name, child) in &mut group.children {
@@ -884,15 +1034,110 @@ impl Rewrite<'_> {
         }
     }
 
-    fn task(&self, task: &mut Task) {
+    fn task(&mut self, name: &str, task: &mut Task) {
         self.dependencies(&mut task.depends_on);
-        task.inputs = std::mem::take(&mut task.inputs)
-            .into_iter()
-            .flat_map(|input| match input {
-                Input::Project(reference) => self.mapped(reference),
-                other => vec![other],
-            })
-            .collect();
+        let source = task.source.clone();
+        let binding = BindingTask {
+            name,
+            source: source.as_ref(),
+        };
+        let mut inputs = Vec::with_capacity(task.inputs.len());
+        for input in std::mem::take(&mut task.inputs) {
+            match input {
+                Input::Project(reference) => inputs.extend(self.mapped(reference)),
+                Input::Files(reference) => inputs.extend(self.files(binding, reference)),
+                other @ (Input::Path(_) | Input::Task(_) | Input::Mapped(_)) => inputs.push(other),
+            }
+        }
+        task.inputs = inputs;
+    }
+
+    /// The files a file reference names, each path bound to its anchor's
+    /// directory and staged where it lies. A reference that cannot be bound
+    /// is left as written, and the task fails when a graph reaches it.
+    fn files(&mut self, task: BindingTask<'_>, reference: FilesReference) -> Vec<Input> {
+        match self.bind_files(task, &reference) {
+            Ok(bound) => bound,
+            Err(problems) => {
+                let worded = problems
+                    .iter()
+                    .map(|problem| for_task(task.name, task.source, problem));
+                self.files
+                    .problems
+                    .entry(task.name.to_string())
+                    .or_default()
+                    .extend(worded);
+                vec![Input::Files(reference)]
+            }
+        }
+    }
+
+    fn bind_files(
+        &mut self,
+        task: BindingTask<'_>,
+        reference: &FilesReference,
+    ) -> std::result::Result<Vec<Input>, Vec<String>> {
+        let anchor = &reference.anchor;
+        let anchors = self.files.anchors;
+        let directory = match anchors.get(anchor) {
+            Some(Ok(directory)) => directory,
+            Some(Err(problem)) => return Err(vec![problem.clone()]),
+            None => {
+                return Err(vec![format!(
+                    "{anchor} was not looked up for task '{}'",
+                    task.name
+                )]);
+            }
+        };
+        // Mapped inputs are relative to the root of the owner's module, and
+        // a file reference names files of that module only.
+        let relative = relative_from(&self.owner.module_root, directory);
+        if relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(vec![format!(
+                "{anchor} lies at {}, outside the CUE module at {}: file references name files \
+                 of the same module only",
+                directory.display(),
+                self.owner.module_root.display()
+            )]);
+        }
+        let relative = forward_slashes(&relative);
+        let Some(checks) = self.files.checks.as_deref_mut() else {
+            return Err(vec![format!(
+                "{anchor} was not looked up for task '{}'",
+                task.name
+            )]);
+        };
+        let mut bound = Vec::with_capacity(reference.paths.len());
+        let mut problems = Vec::new();
+        for path in &reference.paths {
+            let checked = checks.check(BoundPath {
+                anchor,
+                directory,
+                path,
+            });
+            if let Err(problem) = checked {
+                problems.push(problem);
+                continue;
+            }
+            let normal = cuenv_vcs::pattern::normalize(path);
+            bound.push(Input::Mapped(MappedInput {
+                source: anchored_pattern(Path::new(&relative), &normal),
+                destination: anchored_pattern(
+                    Path::new(&relative),
+                    &cuenv_vcs::pattern::literal_prefix(&normal),
+                ),
+                producer_task: None,
+                anchor: Some(relative.clone()),
+            }));
+        }
+        if problems.is_empty() {
+            Ok(bound)
+        } else {
+            Err(problems)
+        }
     }
 
     /// Spell every dependency the one way the graph knows it: a task of
@@ -934,6 +1179,7 @@ impl Rewrite<'_> {
                     source: forward_slashes(&source.join(&mapping.from)),
                     destination: forward_slashes(&destination.join(&mapping.to)),
                     producer_task: Some(producer.clone()),
+                    anchor: None,
                 })
             })
             .collect()

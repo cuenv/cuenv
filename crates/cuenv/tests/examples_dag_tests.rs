@@ -106,6 +106,12 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: false,
         },
         ExampleExpectations {
+            name: "file-references/app",
+            min_task_count: 1, // render, reading another project's and the module's files
+            has_hooks: false,
+            has_env: false,
+        },
+        ExampleExpectations {
             name: "contrib-rust-task",
             min_task_count: 1, // fmt
             has_hooks: false,
@@ -430,8 +436,11 @@ fn test_no_unexpected_example_directories() -> TestResult {
                 continue;
             }
 
+            // An example of several projects lists each as `<example>/<project>`.
             assert!(
-                expected_names.contains(&dir_name),
+                expected_names
+                    .iter()
+                    .any(|name| name.split('/').next() == Some(dir_name)),
                 "Found unexpected example directory '{dir_name}'. Add it to get_example_expectations() (Project examples) or RULES_ONLY_EXAMPLES (.rules.cue examples), or remove it.",
             );
         }

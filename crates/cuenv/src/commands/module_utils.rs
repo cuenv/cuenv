@@ -106,16 +106,53 @@ fn byte_offset_of_line(src: &str, line: usize) -> Option<usize> {
 pub fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core::Error {
     match err {
         cuengine::CueEngineError::Configuration { message } => {
-            cuenv_core::Error::configuration(message)
+            cuenv_core::Error::configuration(with_input_hints(message))
         }
         cuengine::CueEngineError::Ffi { function, message } => {
             cuenv_core::Error::ffi(function, message)
         }
         cuengine::CueEngineError::CueParse { path, message } => {
-            annotate_cue_parse_error(&path, message)
+            annotate_cue_parse_error(&path, with_input_hints(message))
         }
-        other => cuenv_core::Error::configuration(other.to_string()),
+        other => cuenv_core::Error::configuration(with_input_hints(other.to_string())),
     }
+}
+
+/// What to do about a path of a file reference the schema rejected.
+const REFERENCE_PATH_HINT: &str = "hint: paths are relative to the project (for \
+    `schema.#ModuleFiles`, the module root): no `..`, `.`, `.git` or empty segment, no leading \
+    `/`, no surrounding space; for files outside the project use `schema.#ModuleFiles`";
+
+/// Append what to do to a CUE error that says what is wrong with an input.
+///
+/// The hint is keyed on the field path in the raw error, never on the
+/// wording of the message, which differs between CUE releases: a path of a
+/// file reference fails at `…inputs.<n>.paths.<m>: invalid value`, and the
+/// raw text of that check is a regular expression.
+fn with_input_hints(message: String) -> String {
+    if message.lines().any(rejects_a_reference_path) {
+        format!("{message}\n{REFERENCE_PATH_HINT}")
+    } else {
+        message
+    }
+}
+
+/// Whether a line of a CUE error is the schema rejecting one path of a file
+/// reference: `<…>.inputs.<n>.paths.<m>: invalid value …`.
+fn rejects_a_reference_path(line: &str) -> bool {
+    let Some((field, _)) = line.split_once(": invalid value") else {
+        return false;
+    };
+    let Some(field) = field.split_whitespace().last() else {
+        return false;
+    };
+    let segments: Vec<&str> = field.split('.').collect();
+    let is_index =
+        |segment: &str| !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_digit());
+    matches!(
+        segments.as_slice(),
+        [.., "inputs", input, "paths", path] if is_index(input) && is_index(path)
+    )
 }
 
 /// Build a `CueParse` error, populating source context when possible.
@@ -213,5 +250,47 @@ impl std::ops::Deref for ModuleGuard<'_> {
         self.guard.get(&self.key).unwrap_or_else(|| {
             unreachable!("ModuleGuard invariant violated: module should be loaded")
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rejected_reference_path_gets_the_rules_appended() {
+        // The raw CUE text of the schema's path check, before cuenv wraps it.
+        let raw = "tasks.build: 4 errors in empty disjunction:\n    \
+                   tasks.build.inputs.1.paths.0: invalid value \"../shared/**\" (out of bound \
+                   !~\"(^|/)\\\\.\\\\.?(/|$)\"):\n        ./schema/tasks.cue:330:50";
+
+        let hinted = with_input_hints(raw.to_string());
+
+        assert!(hinted.starts_with(raw));
+        assert!(hinted.ends_with(REFERENCE_PATH_HINT), "{hinted}");
+    }
+
+    #[test]
+    fn other_invalid_values_get_no_reference_hint() {
+        for raw in [
+            "tasks.build.args.0: invalid value \"x\"",
+            "tasks.build.inputs.0: invalid value \"x\"",
+            "tasks.build.inputs.paths.0: invalid value \"x\"",
+            "tasks.build.inputs.0.paths: incompatible list lengths (0 and 1)",
+            "ci.pipelines.default.paths.0: invalid value \"x\"",
+        ] {
+            assert_eq!(with_input_hints(raw.to_string()), raw, "{raw}");
+        }
+    }
+
+    #[test]
+    fn an_engine_error_carries_the_hint() {
+        let error = convert_engine_error(cuengine::CueEngineError::configuration(
+            "tasks.a.inputs.2.paths.1: invalid value \"/etc\"",
+        ));
+        assert!(
+            error.to_string().contains("for files outside the project"),
+            "{error}"
+        );
     }
 }

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::Error;
 use crate::tasks::SourceLocation;
 
-use super::{deserialize, task_refs, task_sources};
+use super::{deserialize, node_checks, task_refs, task_sources};
 
 /// The top-level field of a cuenv project that holds its task graph.
 ///
@@ -137,6 +137,11 @@ impl ModuleEvaluation {
                     InstanceKind::Base
                 };
 
+                // A node another project stamped is never named by bare
+                // reference metadata: inspect the stamps before any name is
+                // assigned, while whole sequences still carry theirs.
+                let diagnostics = node_checks::check_identities(&mut value);
+
                 // Enrich task references with _name using CUE reference metadata.
                 if let Some(ref refs) = metadata.references {
                     task_refs::enrich_task_refs(&mut value, &path, refs);
@@ -153,6 +158,11 @@ impl ModuleEvaluation {
                         },
                     );
                 }
+
+                // Remove what the identity checks marked, and inputs a
+                // lenient export lets through that would fail the whole
+                // project; record each against its node.
+                node_checks::check_inputs(&mut value, diagnostics);
 
                 // Process task output references: replace ref objects with
                 // placeholder strings and collect auto-dependency pairs.

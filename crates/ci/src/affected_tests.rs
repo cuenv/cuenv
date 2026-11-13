@@ -1,4 +1,5 @@
 use super::{AffectedProjects, ChangedInputs, ExternalDependencyContext, HashMap, Path, PathBuf};
+use cuenv_core::NoAnchors;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Input, Task, TaskDependency, TaskGroup, TaskNode};
 
@@ -49,6 +50,7 @@ fn test_matched_inputs_for_task_returns_matching_patterns() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
     );
 
@@ -68,6 +70,7 @@ fn test_matched_inputs_for_task_no_match() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
     );
 
@@ -86,6 +89,7 @@ fn test_matched_inputs_for_task_nonexistent_task() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
     );
 
@@ -105,6 +109,7 @@ fn test_matched_inputs_for_task_multiple_matches() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
     );
 
@@ -130,6 +135,7 @@ fn test_compute_affected_tasks_direct_match() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -156,6 +162,7 @@ fn test_compute_affected_tasks_no_match() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -184,6 +191,7 @@ fn test_compute_affected_tasks_transitive_internal_deps() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -222,6 +230,7 @@ fn test_compute_affected_tasks_preserves_pipeline_order() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -252,6 +261,7 @@ fn test_compute_affected_tasks_only_affected_in_pipeline() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -306,6 +316,7 @@ fn test_compute_affected_tasks_deploy_pipeline_with_absolute_project_root() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -332,6 +343,7 @@ fn test_matched_inputs_for_task_with_absolute_project_root() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
     );
 
@@ -351,6 +363,7 @@ fn test_compute_affected_tasks_empty_pipeline() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -380,6 +393,7 @@ fn test_compute_affected_tasks_external_dep_not_found() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -420,6 +434,7 @@ fn test_compute_affected_tasks_external_dep_affected() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -455,6 +470,7 @@ fn test_compute_affected_tasks_external_nested_dep_affected() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -484,6 +500,7 @@ fn test_compute_affected_tasks_malformed_external_dep() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -513,7 +530,8 @@ fn test_is_task_directly_affected_match() {
         &project,
         ChangedInputs {
             files: &changed_files,
-            project_root: root
+            project_root: root,
+            anchors: &NoAnchors
         }
     ));
 }
@@ -530,7 +548,8 @@ fn test_is_task_directly_affected_no_match() {
         &project,
         ChangedInputs {
             files: &changed_files,
-            project_root: root
+            project_root: root,
+            anchors: &NoAnchors
         }
     ));
 }
@@ -546,7 +565,8 @@ fn test_is_task_directly_affected_nonexistent_task() {
         &project,
         ChangedInputs {
             files: &changed_files,
-            project_root: root
+            project_root: root,
+            anchors: &NoAnchors
         }
     ));
 }
@@ -565,7 +585,8 @@ fn test_is_task_directly_affected_task_no_inputs_always_affected() {
         &project,
         ChangedInputs {
             files: &changed_files,
-            project_root: root
+            project_root: root,
+            anchors: &NoAnchors
         }
     ));
 }
@@ -584,6 +605,7 @@ fn test_task_with_no_inputs_always_affected_even_with_no_changes() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -637,7 +659,8 @@ fn test_parallel_group_one_subtask_affected() {
         &project,
         ChangedInputs {
             files: &changed_files,
-            project_root: root
+            project_root: root,
+            anchors: &NoAnchors
         }
     ));
 }
@@ -674,7 +697,8 @@ fn test_parallel_group_no_subtask_affected() {
         &project,
         ChangedInputs {
             files: &changed_files,
-            project_root: root
+            project_root: root,
+            anchors: &NoAnchors
         }
     ));
 }
@@ -701,7 +725,8 @@ fn test_sequential_group_affected() {
         &project,
         ChangedInputs {
             files: &changed_files,
-            project_root: root
+            project_root: root,
+            anchors: &NoAnchors
         }
     ));
 }
@@ -738,6 +763,7 @@ fn test_compute_affected_tasks_with_group() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -772,6 +798,7 @@ where
         dep,
         &mut ExternalDependencyContext {
             projects: inputs.projects,
+            anchors: &NoAnchors,
             checkout_root: None,
             changed_configuration: None,
             changed_files: inputs.changed_files,
@@ -955,6 +982,7 @@ fn test_compute_affected_tasks_non_pipeline_dep() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -993,6 +1021,7 @@ fn test_compute_affected_tasks_deep_non_pipeline_chain() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -1026,6 +1055,7 @@ fn test_compute_affected_tasks_non_pipeline_dep_no_match() {
         ChangedInputs {
             files: &changed_files,
             project_root: root,
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -1059,6 +1089,7 @@ fn affected_in(change: &Change<'_>, pipeline_tasks: &[&str]) -> Vec<String> {
         ChangedInputs {
             files: change.files,
             project_root: Path::new("app"),
+            anchors: &NoAnchors,
         },
         &pipeline_tasks,
         &AffectedProjects {
@@ -1288,6 +1319,7 @@ fn a_parent_directory_input_selects_its_task_whenever_anything_changed() {
             ChangedInputs {
                 files: &changed,
                 project_root: Path::new("app"),
+                anchors: &NoAnchors,
             },
         ),
         ["../content/articles/**"]
@@ -1377,6 +1409,7 @@ fn an_input_read_only_from_the_checkout_root_keeps_its_task_affected_and_is_repo
     let inputs = ChangedInputs {
         files: &changed,
         project_root: Path::new("app"),
+        anchors: &NoAnchors,
     };
 
     let affected = super::compute_affected_tasks(
@@ -1391,10 +1424,9 @@ fn an_input_read_only_from_the_checkout_root_keeps_its_task_affected_and_is_repo
     );
 
     assert_eq!(affected, ["build"]);
-    assert_eq!(
-        super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"]),
-        ["shared/**"]
-    );
+    let found = super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"]);
+    assert_eq!(found.relied_on, ["shared/**"]);
+    assert!(found.namesakes.is_empty());
 }
 
 #[test]
@@ -1418,6 +1450,7 @@ fn a_correct_project_whose_root_has_files_of_the_same_name_is_not_reported() {
         let inputs = ChangedInputs {
             files: &changed,
             project_root: Path::new("app"),
+            anchors: &NoAnchors,
         };
         let affected = super::compute_affected_tasks(
             inputs,
@@ -1431,10 +1464,9 @@ fn a_correct_project_whose_root_has_files_of_the_same_name_is_not_reported() {
         );
 
         assert_eq!(affected, ["build"]);
-        assert!(
-            super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"])
-                .is_empty()
-        );
+        let found = super::root_relative_inputs(inputs, checkout.path(), &project.tasks["build"]);
+        assert!(found.relied_on.is_empty(), "never a warning");
+        assert_eq!(found.namesakes.len(), 1, "one note names the namesake");
     }
 }
 
@@ -1455,6 +1487,7 @@ fn a_checkout_named_like_one_of_its_projects_still_matches() {
         ChangedInputs {
             files: &changed,
             project_root: &project_root,
+            anchors: &NoAnchors,
         },
         &["lint".to_string()],
         &AffectedProjects {
@@ -1487,6 +1520,7 @@ fn a_project_whose_configuration_changed_has_every_pipeline_task_selected() {
             ChangedInputs {
                 files: &changed,
                 project_root: Path::new("app"),
+                anchors: &NoAnchors,
             },
             &pipeline,
             &AffectedProjects {
@@ -1515,6 +1549,7 @@ fn a_root_project_whose_configuration_changed_is_found_under_either_spelling_of_
             ChangedInputs {
                 files: &changed,
                 project_root: Path::new(root),
+                anchors: &NoAnchors,
             },
             &["build".to_string()],
             &AffectedProjects {
@@ -1541,6 +1576,7 @@ fn a_producer_whose_configuration_changed_affects_its_consumers() {
         ChangedInputs {
             files: &changed,
             project_root: Path::new("app"),
+            anchors: &NoAnchors,
         },
         &["build".to_string()],
         &AffectedProjects {
@@ -1665,4 +1701,312 @@ fn a_path_that_names_no_project_counts_as_affected() {
 
         assert_eq!(affected, ["build"], "{spelling}");
     }
+}
+
+// ==========================================================================
+// File references
+// ==========================================================================
+
+fn reading(inputs: Vec<Input>, depends_on: Vec<&str>) -> Task {
+    Task {
+        inputs,
+        ..make_task(vec![], depends_on)
+    }
+}
+
+fn project_files(name: &str, paths: &[&str]) -> Input {
+    Input::Files(cuenv_core::tasks::FilesReference {
+        anchor: cuenv_core::tasks::FilesAnchor::Project(name.to_string()),
+        paths: paths.iter().map(ToString::to_string).collect(),
+    })
+}
+
+fn module_files(paths: &[&str]) -> Input {
+    Input::Files(cuenv_core::tasks::FilesReference {
+        anchor: cuenv_core::tasks::FilesAnchor::Module,
+        paths: paths.iter().map(ToString::to_string).collect(),
+    })
+}
+
+/// `content` builds from the lockfile at the module root and the API docs
+/// of `docs`; `app` depends on that build, and `docs` holds the API docs.
+fn content_reading_files() -> HashMap<String, (PathBuf, Project)> {
+    let build = reading(
+        vec![
+            module_files(&["bun.lock"]),
+            project_files("docs", &["api/**"]),
+        ],
+        vec![],
+    );
+    let mut content = make_project(vec![("build", build)]);
+    content.name = "content".to_string();
+    let mut docs = make_project(vec![]);
+    docs.name = "docs".to_string();
+    HashMap::from([
+        ("content".to_string(), (PathBuf::from("content"), content)),
+        ("docs".to_string(), (PathBuf::from("docs"), docs)),
+    ])
+}
+
+fn affected_reading_files(
+    project: &Project,
+    all_projects: &HashMap<String, (PathBuf, Project)>,
+    changed: &str,
+) -> Vec<String> {
+    let anchors = super::CheckoutAnchors {
+        projects: all_projects,
+        module_root: Some(Path::new("")),
+    };
+    super::compute_affected_tasks(
+        ChangedInputs {
+            files: &[PathBuf::from(changed)],
+            project_root: Path::new("app"),
+            anchors: &anchors,
+        },
+        &["build".to_string()],
+        &AffectedProjects {
+            project,
+            all_projects,
+            checkout_root: None,
+            changed_configuration: None,
+        },
+    )
+}
+
+#[test]
+fn a_file_reference_selects_its_task_for_a_change_beneath_its_anchor() {
+    let all_projects = content_reading_files();
+    let consumer = reading(
+        vec![
+            Input::Path("src/**".to_string()),
+            project_files("docs", &["guides/**"]),
+        ],
+        vec![],
+    );
+    let project = make_project(vec![("build", consumer)]);
+
+    assert_eq!(
+        affected_reading_files(&project, &all_projects, "docs/guides/a.md"),
+        ["build"]
+    );
+    assert!(affected_reading_files(&project, &all_projects, "docs/api/a.md").is_empty());
+    // The same path in the consumer's own directory is another file.
+    assert!(affected_reading_files(&project, &all_projects, "app/guides/a.md").is_empty());
+}
+
+#[test]
+fn a_producers_file_references_keep_their_own_anchors() {
+    let all_projects = content_reading_files();
+    let consumer = reading(
+        vec![Input::Path("src/**".to_string())],
+        vec!["#content:build"],
+    );
+    let project = make_project(vec![("build", consumer)]);
+
+    for changed in ["bun.lock", "docs/api/x.md"] {
+        assert_eq!(
+            affected_reading_files(&project, &all_projects, changed),
+            ["build"],
+            "{changed}"
+        );
+    }
+    for unrelated in ["app/bun.lock", "content/bun.lock", "content/api/x.md"] {
+        assert!(
+            affected_reading_files(&project, &all_projects, unrelated).is_empty(),
+            "{unrelated}"
+        );
+    }
+}
+
+#[test]
+fn matched_inputs_name_the_file_reference_that_matched() {
+    let all_projects = content_reading_files();
+    let consumer = reading(
+        vec![
+            Input::Path("src/**".to_string()),
+            project_files("docs", &["api/**"]),
+        ],
+        vec![],
+    );
+    let project = make_project(vec![("build", consumer)]);
+    let anchors = super::CheckoutAnchors {
+        projects: &all_projects,
+        module_root: Some(Path::new("")),
+    };
+
+    let matched = super::matched_inputs_for_task(
+        "build",
+        &project,
+        ChangedInputs {
+            files: &[PathBuf::from("docs/api/x.md")],
+            project_root: Path::new("app"),
+            anchors: &anchors,
+        },
+    );
+
+    assert_eq!(matched, [r#"docs.#Files & {paths: ["api/**"]}"#]);
+}
+
+/// Binds the projects of [`content_reading_files`] as if every project
+/// imported every other, and records which project wrote each reference.
+struct ImportingEverything<'anchors> {
+    anchors: super::CheckoutAnchors<'anchors, std::hash::RandomState>,
+    owners: std::sync::Mutex<Vec<PathBuf>>,
+}
+
+impl super::BindFiles for ImportingEverything<'_> {
+    fn bind(
+        &self,
+        project_root: &Path,
+        anchor: &cuenv_core::tasks::FilesAnchor,
+    ) -> Result<PathBuf, String> {
+        if let Ok(mut owners) = self.owners.lock() {
+            owners.push(project_root.to_path_buf());
+        }
+        cuenv_core::PlaceAnchor::place(&self.anchors, anchor)
+            .ok_or_else(|| format!("{anchor} is not imported here"))
+    }
+}
+
+/// The problems a pipeline of `app`'s `build` reaches, against a checkout
+/// holding `files`.
+fn problems_reached(project: &Project, files: &[&str]) -> Vec<String> {
+    problems_and_owners(project, files).0
+}
+
+/// The problems a pipeline of `app`'s `build` reaches, and the directory of
+/// the project each reference it bound belongs to.
+fn problems_and_owners(project: &Project, files: &[&str]) -> (Vec<String>, Vec<PathBuf>) {
+    let checkout = checkout_with(files);
+    let all_projects = content_reading_files();
+    let binder = ImportingEverything {
+        anchors: super::CheckoutAnchors {
+            projects: &all_projects,
+            module_root: Some(Path::new("")),
+        },
+        owners: std::sync::Mutex::default(),
+    };
+    let problems = super::reached_problems(
+        &super::PipelineReach {
+            project,
+            project_root: Path::new("app"),
+            pipeline: "default",
+            pipeline_tasks: &["build".to_string()],
+            all_projects: &all_projects,
+        },
+        &binder,
+        &mut cuenv_core::tasks::file_references::ReferenceChecks::new(checkout.path()),
+    );
+    let owners = binder.owners.into_inner().unwrap_or_default();
+    (problems, owners)
+}
+
+#[test]
+fn every_path_a_reached_reference_names_must_match_a_file() {
+    let consumer = reading(
+        vec![
+            project_files("docs", &["guides/**"]),
+            module_files(&["bun.lock"]),
+        ],
+        vec![],
+    );
+    let project = make_project(vec![("build", consumer)]);
+
+    assert!(problems_reached(&project, &["docs/guides/a.md", "bun.lock"]).is_empty());
+
+    let problems = problems_reached(&project, &["docs/api/a.md", "bun.lock"]);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("`guides/**` matches nothing in docs/"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_producers_references_are_checked_where_a_pipeline_reaches_them() {
+    let consumer = reading(
+        vec![Input::Path("src/**".to_string())],
+        vec!["#content:build"],
+    );
+    let project = make_project(vec![("build", consumer)]);
+
+    let (problems, owners) = problems_and_owners(&project, &["docs/api/x.md"]);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("`bun.lock` matches nothing in the module root"),
+        "{problems:?}"
+    );
+    // The producer's references are bound among what the producer imports.
+    assert_eq!(owners, [PathBuf::from("content"), PathBuf::from("content")]);
+}
+
+#[test]
+fn only_what_the_pipeline_reaches_is_checked() {
+    let lint = reading(vec![project_files("elsewhere", &["a/**"])], vec![]);
+    let build = reading(vec![Input::Path("src/**".to_string())], vec![]);
+    let mut project = make_project(vec![("build", build), ("lint", lint)]);
+    project
+        .diagnostics
+        .tasks
+        .insert("lint".to_string(), vec!["task 'lint': broken".to_string()]);
+
+    assert!(problems_reached(&project, &[]).is_empty());
+
+    project.diagnostics.pipelines.insert(
+        "default".to_string(),
+        vec!["pipeline 'default' entry tasks[1] is foreign".to_string()],
+    );
+    assert_eq!(
+        problems_reached(&project, &[]),
+        ["pipeline 'default' entry tasks[1] is foreign"]
+    );
+}
+
+#[test]
+fn a_reference_to_an_unknown_project_is_a_problem() {
+    let consumer = reading(vec![project_files("elsewhere", &["a/**"])], vec![]);
+    let project = make_project(vec![("build", consumer)]);
+
+    let problems = problems_reached(&project, &[]);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("project 'elsewhere' is not imported here"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_parent_input_warning_names_the_reference_to_write_instead() {
+    let all_projects = content_reading_files();
+    let anchors = super::CheckoutAnchors {
+        projects: &all_projects,
+        module_root: Some(Path::new("")),
+    };
+
+    assert_eq!(
+        super::reference_spelling(&anchors, Path::new("app"), Path::new("docs/api/**")),
+        r#"import the project in docs and write `docs.#Files & {paths: ["api/**"]}`"#
+    );
+    assert_eq!(
+        super::reference_spelling(&anchors, Path::new("app"), Path::new("shared/**")),
+        r#"write `schema.#ModuleFiles & {paths: ["shared/**"]}`"#
+    );
+    // A project cannot import itself or a project above it.
+    assert_eq!(
+        super::reference_spelling(&anchors, Path::new("docs/site"), Path::new("docs/api/**")),
+        r#"write `schema.#ModuleFiles & {paths: ["docs/api/**"]}`"#
+    );
+    let nested = super::CheckoutAnchors {
+        projects: &all_projects,
+        module_root: Some(Path::new("module")),
+    };
+    assert!(
+        super::reference_spelling(&nested, Path::new("module/app"), Path::new("shared/**"))
+            .contains("no file reference can name it"),
+    );
+    assert_eq!(
+        super::from_checkout_root(Path::new("app"), "../content/articles/**"),
+        Some(PathBuf::from("content/articles/**"))
+    );
+    assert_eq!(super::from_checkout_root(Path::new("app"), "../../x"), None);
 }

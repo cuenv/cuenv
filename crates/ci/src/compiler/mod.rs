@@ -26,7 +26,7 @@ mod triggers;
 
 pub use crate::error::CompilerError;
 pub use ci_compiler::Compiler;
-pub use options::CompilerOptions;
+pub use options::{CompilerOptions, FileAnchors};
 pub use purity::RuntimeSpec;
 
 #[cfg(test)]

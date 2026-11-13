@@ -15,11 +15,11 @@ use cuenv_cas::{
     Action, ActionCache, ActionResult, CanonicalMessage, Cas, Command, Digest, Directory,
     DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform,
 };
-use cuenv_core::Result;
 use cuenv_core::environment::{ActionEnvironment, Environment};
 use cuenv_core::tasks::{Input, MappedInput, ProjectReference};
+use cuenv_core::{Error, Result};
 use cuenv_events::CacheSkipReason;
-use cuenv_vcs::{HashedInput, VcsHasher};
+use cuenv_vcs::{HashedInput, VcsHasher, WalkOptions};
 use globset::{Glob, GlobSetBuilder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -243,6 +243,16 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
                 );
                 return Ok(skipped(CacheSkipReason::NonPathRef, None));
             }
+            // A file reference is bound to the directory its anchor means
+            // when a graph is built, and the executor refuses one that was
+            // not. One that survives to here has no files to hash.
+            Input::Files(_) => {
+                tracing::debug!(
+                    task = %task_name,
+                    "skipping cache: task has a file reference no graph bound"
+                );
+                return Ok(skipped(CacheSkipReason::NonPathRef, None));
+            }
         }
     }
 
@@ -276,7 +286,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         task_name,
     };
     for mapping in local_mappings {
-        match mapped_frame.resolve(mapping).await {
+        match mapped_frame.resolve(mapping).await? {
             ResolveOutcome::Resolved(mapped) => hashed.extend(mapped),
             ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
         }
@@ -638,7 +648,14 @@ impl MappedFrame<'_> {
     /// the hasher cannot see, or a path that leaves the hasher root, has no
     /// place in the frame: the input is reported as unresolvable and never
     /// dropped.
-    async fn resolve(&self, mapping: &MappedInput) -> ResolveOutcome {
+    ///
+    /// The path of a file reference (one with an `anchor`) is resolved in
+    /// the real directories of the repository only, must select at least
+    /// one file, and every file it selects must lie beneath its anchor. A
+    /// graph checked all of that when it bound the reference; a file
+    /// reference that no longer holds is an error, not a cache skip,
+    /// because the files the task reads are not the ones it declared.
+    async fn resolve(&self, mapping: &MappedInput) -> Result<ResolveOutcome> {
         let hasher_root = &self.cache.vcs_hasher_root;
         let placed = self
             .module_root
@@ -648,9 +665,13 @@ impl MappedFrame<'_> {
                 Some((
                     frame_path(&module.join(&mapping.source))?,
                     frame_path(&module.join(&mapping.destination))?,
+                    match &mapping.anchor {
+                        Some(anchor) => Some(frame_path(&module.join(anchor))?),
+                        None => None,
+                    },
                 ))
             });
-        let Some((source, destination)) = placed else {
+        let Some((source, destination, anchor)) = placed else {
             tracing::warn!(
                 task = %self.task_name,
                 source = mapping.source,
@@ -659,26 +680,50 @@ impl MappedFrame<'_> {
                 hasher_root = %hasher_root.display(),
                 "skipping cache: a mapped input lies outside the cache hasher root"
             );
-            return ResolveOutcome::Skipped(CacheSkipReason::HasherRootMismatch);
+            return Ok(ResolveOutcome::Skipped(CacheSkipReason::HasherRootMismatch));
         };
 
         let pattern = path_to_forward_slashes(&source);
-        let hashed = match self.cache.vcs_hasher.resolve_and_hash(&[pattern]).await {
+        let walk = if anchor.is_some() {
+            WalkOptions::real_directories()
+        } else {
+            WalkOptions::default()
+        };
+        let hashed = match self
+            .cache
+            .vcs_hasher
+            .resolve_and_hash_with(std::slice::from_ref(&pattern), walk)
+            .await
+        {
             Ok(hashed) => hashed,
+            Err(error) if anchor.is_some() => {
+                return Err(Error::configuration(format!(
+                    "Task '{}' cannot read the file reference path '{pattern}': {error}",
+                    self.task_name
+                )));
+            }
             Err(error) => {
                 tracing::warn!(
                     task = %self.task_name,
                     error = %error,
                     "skipping cache: input hashing failed"
                 );
-                return ResolveOutcome::Skipped(CacheSkipReason::HashFailed {
+                return Ok(ResolveOutcome::Skipped(CacheSkipReason::HashFailed {
                     reason: error.to_string(),
-                });
+                }));
             }
         };
+        if let Some(anchor) = &anchor {
+            check_anchored_files(AnchoredFiles {
+                task_name: self.task_name,
+                pattern: &pattern,
+                anchor,
+                hashed: &hashed,
+            })?;
+        }
 
         let base = literal_prefix(&path_to_forward_slashes(&source));
-        ResolveOutcome::Resolved(
+        Ok(ResolveOutcome::Resolved(
             hashed
                 .into_iter()
                 .map(|input| {
@@ -697,8 +742,52 @@ impl MappedFrame<'_> {
                     }
                 })
                 .collect(),
-        )
+        ))
     }
+}
+
+/// The files one path of a file reference resolved to.
+struct AnchoredFiles<'files> {
+    task_name: &'files str,
+    /// The path, in the frame of the action.
+    pattern: &'files str,
+    /// The anchor's directory, in the frame of the action.
+    anchor: &'files Path,
+    hashed: &'files [HashedInput],
+}
+
+/// Every path of a file reference selects at least one file, and every
+/// file it selects lies beneath its anchor: a glob can expand to an escape
+/// no pattern check sees (`{..,x}/y`).
+fn check_anchored_files(files: AnchoredFiles<'_>) -> Result<()> {
+    let AnchoredFiles {
+        task_name,
+        pattern,
+        anchor,
+        hashed,
+    } = files;
+    if hashed.is_empty() {
+        return Err(Error::configuration(format!(
+            "Task '{task_name}' reads '{pattern}' through a file reference, and it matches no \
+             file: fix or remove the path"
+        )));
+    }
+    let escaped = hashed.iter().find(|input| {
+        !input.relative_path.starts_with(anchor)
+            || input
+                .relative_path
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+    });
+    if let Some(escaped) = escaped {
+        return Err(Error::configuration(format!(
+            "Task '{task_name}' reads '{pattern}' through a file reference, which resolves to \
+             '{}' outside '{}'",
+            escaped.relative_path.display(),
+            anchor.display()
+        )));
+    }
+    Ok(())
 }
 
 /// A path in the frame of an action, without `.` and `..`; `None` when it
