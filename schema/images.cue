@@ -1,7 +1,5 @@
 package schema
 
-import "strings"
-
 // =============================================================================
 // Container Image Output References
 // =============================================================================
@@ -87,7 +85,7 @@ import "strings"
 	// A string input is a path of this project and cannot leave it (see
 	// #Task).
 	_cuenvInputCheck: {
-		if inputs != _|_ for v in inputs if (v & string) != _|_ if strings.Contains("/"+(v & string)+"/", "/../") {
+		if inputs != _|_ for v in inputs if (v & =~"(^|/)\\.\\.(/|$)") != _|_ {
 			(v & string): v & error(_cuenvLeavesProject)
 		}
 	}

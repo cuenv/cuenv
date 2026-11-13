@@ -1,7 +1,5 @@
 package schema
 
-import "strings"
-
 // =============================================================================
 // Task API v2 - Explicit Types
 // =============================================================================
@@ -221,7 +219,7 @@ import "strings"
 	// error is keyed on the input as written and unified with it, so the
 	// user's own line is reported.
 	_cuenvInputCheck: {
-		if inputs != _|_ for v in inputs if (v & string) != _|_ if strings.Contains("/"+(v & string)+"/", "/../") {
+		if inputs != _|_ for v in inputs if (v & =~"(^|/)\\.\\.(/|$)") != _|_ {
 			(v & string): v & error(_cuenvLeavesProject)
 		}
 	}
