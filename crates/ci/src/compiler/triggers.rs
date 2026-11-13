@@ -6,6 +6,7 @@ use crate::ir::{ManualTriggerConfig, TriggerCondition, WorkflowDispatchInputDef}
 use cuenv_core::ci::{ManualTrigger, Pipeline};
 use cuenv_core::tasks::file_references::{for_task, path_problem};
 use cuenv_core::tasks::{FilesAnchor, InputPattern, TaskNode, anchored_path_problem};
+use cuenv_task_exec::TaskIndex;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
@@ -153,33 +154,14 @@ impl Compiler {
     fn derive_trigger_paths(&self, inputs: &PipelineInputs) -> Vec<String> {
         let project_path = self.options.project_path.as_deref();
         let mut paths = HashSet::new();
-        // A file reference's paths start from its anchor, in the same
-        // module-relative frame as every other path here, and take the same
-        // two shapes; a glob with no literal prefix falls back to the
-        // anchor's own directory.
-        for (anchor, path) in &inputs.anchored {
-            paths.extend(
-                trigger_paths_for_input(Some(anchor), path)
-                    .unwrap_or_else(|| vec![directory_filter(&[])]),
-            );
+        // A file reference's paths, and the inputs of another project's
+        // task, start from their directory, in the same module-relative
+        // frame as every other path here, and are read the same way.
+        for (directory, path) in &inputs.anchored {
+            paths.extend(input_filters(Some(directory), path));
         }
         for input in &inputs.patterns {
-            // `cuenv ci` selects a task with an absolute input or an invalid
-            // glob on any change, and no narrower filter covers what such an
-            // input reads.
-            let matches_anything = matches!(
-                cuenv_core::unmatchable_pattern(input),
-                Some(
-                    cuenv_core::UnmatchablePattern::Absolute
-                        | cuenv_core::UnmatchablePattern::InvalidGlob
-                )
-            );
-            match trigger_paths_for_input(project_path, input) {
-                Some(derived) if !matches_anything => paths.extend(derived),
-                _ => {
-                    paths.insert(directory_filter(&[]));
-                }
-            }
+            paths.extend(input_filters(project_path, input));
         }
 
         if inputs.whole_project || (inputs.patterns.is_empty() && inputs.anchored.is_empty()) {
@@ -302,68 +284,238 @@ impl Compiler {
     }
 
     fn collect_task_inputs(&self, task_name: &str, inputs: &mut PipelineInputs) {
+        if task_name.starts_with('#') {
+            self.collect_external_inputs(None, task_name, inputs);
+            return;
+        }
         if !inputs.visited.insert(task_name.to_string()) {
             return;
         }
         match self.find_task_node(task_name) {
-            Some(node) => self.collect_inputs_from_node(task_name, node, inputs),
+            Some(node) => self.collect_inputs_from_node(
+                WalkedNode {
+                    owner: &WalkOwner::Compiled,
+                    name: task_name,
+                    node,
+                },
+                inputs,
+            ),
             // Nothing is known about what an unresolved task reads.
             None => inputs.whole_project = true,
         }
     }
 
-    fn collect_inputs_from_node(&self, name: &str, node: &TaskNode, inputs: &mut PipelineInputs) {
-        inputs
-            .problems
-            .extend_from_slice(self.project.diagnostics.task(name));
+    /// Follow a dependency on a task of another project (`#project:task`),
+    /// written in the project at `from` (`None` for the project being
+    /// compiled), into that project: what it reads triggers the pipeline as
+    /// it would select the task at runtime. The project's name is bound
+    /// among what the project at `from` imports.
+    fn collect_external_inputs(
+        &self,
+        from: Option<&Path>,
+        dependency: &str,
+        inputs: &mut PipelineInputs,
+    ) {
+        let Some((project, task)) = dependency
+            .strip_prefix('#')
+            .and_then(|reference| reference.split_once(':'))
+        else {
+            inputs.whole_project = true;
+            return;
+        };
+        let Some(projects) = self.options.module_projects.as_ref() else {
+            // Nothing is known about what the other project reads.
+            inputs.whole_project = true;
+            return;
+        };
+        let located = self.bind_project(from, project).and_then(|directory| {
+            projects
+                .get(&directory)
+                .map(|found| (directory.clone(), found))
+                .ok_or_else(|| {
+                    format!(
+                        "project '{project}' at `{}` is not among the projects of this module",
+                        directory.display()
+                    )
+                })
+        });
+        let (directory, found) = match located {
+            Ok(located) => located,
+            Err(problem) => {
+                inputs
+                    .problems
+                    .push(format!("dependency '{dependency}': {problem}"));
+                return;
+            }
+        };
+        let producer = Producer {
+            name: project,
+            directory: &directory,
+            project: found,
+        };
+        self.collect_producer_task(&producer, task, inputs);
+    }
+
+    /// Walk the task called `task` of another project: the one a dependency
+    /// names, or one of that project's own dependencies, which its tasks
+    /// name without a project.
+    fn collect_producer_task(
+        &self,
+        producer: &Producer<'_>,
+        task: &str,
+        inputs: &mut PipelineInputs,
+    ) {
+        let Producer { name, project, .. } = *producer;
+        let node = TaskIndex::build(&project.tasks).ok().and_then(|index| {
+            index
+                .resolve(task)
+                .ok()
+                .map(|entry| (entry.name.clone(), entry.node.clone()))
+        });
+        let Some((resolved, node)) = node else {
+            inputs.problems.push(format!(
+                "dependency '#{name}:{task}': project '{name}' has no task '{task}'"
+            ));
+            return;
+        };
+        // Project names are unique in a module: the name and the task say
+        // which task of which directory this is.
+        if !inputs.visited.insert(format!("#{name}:{resolved}")) {
+            return;
+        }
+        self.collect_inputs_from_node(
+            WalkedNode {
+                owner: &WalkOwner::External(*producer),
+                name: &resolved,
+                node: &node,
+            },
+            inputs,
+        );
+    }
+
+    fn collect_inputs_from_node(&self, walked: WalkedNode<'_>, inputs: &mut PipelineInputs) {
+        let WalkedNode { owner, name, node } = walked;
+        let project = match owner {
+            WalkOwner::Compiled => &self.project,
+            WalkOwner::External(producer) => producer.project,
+        };
+        inputs.problems.extend(
+            project
+                .diagnostics
+                .task(name)
+                .iter()
+                .map(|problem| owner.worded(problem)),
+        );
         for dep in node.depends_on() {
-            self.collect_task_inputs(dep.task_name(), inputs);
+            self.collect_dependency(owner, dep.task_name(), inputs);
         }
         match node {
             TaskNode::Task(task) => {
-                let mut declared = 0_usize;
-                for pattern in task.input_patterns() {
-                    declared += 1;
-                    match pattern {
-                        InputPattern::Project(path) => {
-                            inputs.patterns.insert(path.to_owned());
-                        }
-                        InputPattern::Anchored { anchor, path } => match self.bind(anchor, path) {
-                            Ok(directory) => {
-                                inputs.anchored.insert((directory, path.to_owned()));
-                            }
-                            Err(problem) => {
-                                inputs.problems.push(for_task(
-                                    name,
-                                    task.source.as_ref(),
-                                    &problem,
-                                ));
-                            }
-                        },
-                    }
-                }
-                // A task without inputs always runs.
-                if declared == 0 {
-                    inputs.whole_project = true;
-                }
+                self.collect_task_patterns(WalkedTask { owner, name, task }, inputs);
             }
             TaskNode::Group(group) => {
                 for (child, child_node) in &group.children {
-                    self.collect_inputs_from_node(&format!("{name}.{child}"), child_node, inputs);
+                    self.collect_inputs_from_node(
+                        WalkedNode {
+                            owner,
+                            name: &format!("{name}.{child}"),
+                            node: child_node,
+                        },
+                        inputs,
+                    );
                 }
             }
             TaskNode::Sequence(steps) => {
                 for (index, child_node) in steps.iter().enumerate() {
-                    self.collect_inputs_from_node(&format!("{name}[{index}]"), child_node, inputs);
+                    self.collect_inputs_from_node(
+                        WalkedNode {
+                            owner,
+                            name: &format!("{name}[{index}]"),
+                            node: child_node,
+                        },
+                        inputs,
+                    );
                 }
             }
         }
     }
 
-    /// The module-relative directory one path of a file reference starts
+    /// Follow one dependency of a node of `owner`: a task of `owner` by its
+    /// own name, a task of a project `owner` imports as `#project:task`,
+    /// whose name is bound among what `owner` imports.
+    fn collect_dependency(
+        &self,
+        owner: &WalkOwner<'_>,
+        dependency: &str,
+        inputs: &mut PipelineInputs,
+    ) {
+        match owner {
+            WalkOwner::Compiled => self.collect_task_inputs(dependency, inputs),
+            WalkOwner::External(producer) if dependency.starts_with('#') => {
+                self.collect_external_inputs(Some(producer.directory), dependency, inputs);
+            }
+            WalkOwner::External(producer) => {
+                self.collect_producer_task(producer, dependency, inputs);
+            }
+        }
+    }
+
+    /// The patterns one task of `owner` reads, each in the module-relative
+    /// frame of trigger paths.
+    fn collect_task_patterns(&self, walked: WalkedTask<'_>, inputs: &mut PipelineInputs) {
+        let WalkedTask { owner, name, task } = walked;
+        let mut declared = 0_usize;
+        for pattern in task.input_patterns() {
+            declared += 1;
+            match (pattern, owner) {
+                (InputPattern::Project(path), WalkOwner::Compiled) => {
+                    inputs.patterns.insert(path.to_owned());
+                }
+                (InputPattern::Project(path), WalkOwner::External(producer)) => {
+                    inputs
+                        .anchored
+                        .insert((forward_slashes(producer.directory), path.to_owned()));
+                }
+                (InputPattern::Anchored { anchor, path }, _) => {
+                    match self.bind(owner.directory(), anchor, path) {
+                        Ok(directory) => {
+                            inputs.anchored.insert((directory, path.to_owned()));
+                        }
+                        Err(problem) => {
+                            inputs.problems.push(owner.worded(&for_task(
+                                name,
+                                task.source.as_ref(),
+                                &problem,
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        // A task without inputs always runs. A task that reads other tasks'
+        // outputs is triggered through those tasks, its dependencies.
+        if declared == 0 && task.iter_task_output_names().next().is_none() {
+            match owner {
+                WalkOwner::Compiled => inputs.whole_project = true,
+                WalkOwner::External(producer) => {
+                    inputs
+                        .anchored
+                        .insert((forward_slashes(producer.directory), String::new()));
+                }
+            }
+        }
+    }
+
+    /// The module-relative directory one path of a file reference of the
+    /// project at `from` (`None` for the project being compiled) starts
     /// from, once the path is known to follow the rules every reference
     /// path follows.
-    fn bind(&self, anchor: &FilesAnchor, path: &str) -> Result<String, String> {
+    fn bind(
+        &self,
+        from: Option<&Path>,
+        anchor: &FilesAnchor,
+        path: &str,
+    ) -> Result<String, String> {
         if let Some(problem) = anchored_path_problem(path) {
             return Err(path_problem(anchor, path, problem));
         }
@@ -372,11 +524,69 @@ impl Compiler {
             // Bound among what the project imports, as everywhere else; no
             // working tree is read.
             FilesAnchor::Project(name) => self
-                .imported_projects()?
-                .bind(name)
-                .map(|directory| directory.to_string_lossy().replace('\\', "/")),
+                .bind_project(from, name)
+                .map(|directory| forward_slashes(&directory)),
         }
     }
+}
+
+/// The project that owns a node walked for trigger paths.
+enum WalkOwner<'owner> {
+    /// The project being compiled.
+    Compiled,
+    /// Another project, reached through a dependency on one of its tasks.
+    External(Producer<'owner>),
+}
+
+/// Another project whose tasks a pipeline reaches through a dependency.
+#[derive(Clone, Copy)]
+struct Producer<'producer> {
+    /// Its name.
+    name: &'producer str,
+    /// Its directory relative to the module root.
+    directory: &'producer Path,
+    project: &'producer cuenv_core::manifest::Project,
+}
+
+impl WalkOwner<'_> {
+    /// The project's directory relative to the module root; `None` for the
+    /// project being compiled.
+    fn directory(&self) -> Option<&Path> {
+        match self {
+            Self::Compiled => None,
+            Self::External(producer) => Some(producer.directory),
+        }
+    }
+
+    /// A problem of a node of this project, saying which project it is.
+    fn worded(&self, problem: &str) -> String {
+        match self {
+            Self::Compiled => problem.to_string(),
+            Self::External(producer) => format!("project '{}': {problem}", producer.name),
+        }
+    }
+}
+
+/// A node walked for trigger paths, and its project.
+#[derive(Clone, Copy)]
+struct WalkedNode<'walked> {
+    owner: &'walked WalkOwner<'walked>,
+    /// Its name within its project.
+    name: &'walked str,
+    node: &'walked TaskNode,
+}
+
+/// A task walked for trigger paths, and its project.
+#[derive(Clone, Copy)]
+struct WalkedTask<'walked> {
+    owner: &'walked WalkOwner<'walked>,
+    /// Its name within its project.
+    name: &'walked str,
+    task: &'walked cuenv_core::tasks::Task,
+}
+
+fn forward_slashes(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 /// Everything beneath the project's directory, cut where GitHub would read a
@@ -385,6 +595,26 @@ fn add_project_fallback_path(project_path: Option<&str>, paths: &mut HashSet<Str
     paths.extend(
         trigger_paths_for_input(project_path, "").unwrap_or_else(|| vec![directory_filter(&[])]),
     );
+}
+
+/// The path filters under which one input, read from `directory` (relative
+/// to the module root; `None` or empty for the root), can change.
+///
+/// `cuenv ci` selects a task with an absolute input or an invalid glob on
+/// any change, whichever directory the input is read from, and no narrower
+/// filter covers what such an input reads; nor does one cover an input that
+/// leaves the repository.
+fn input_filters(directory: Option<&str>, input: &str) -> Vec<String> {
+    let matches_anything = matches!(
+        cuenv_core::unmatchable_pattern(input),
+        Some(
+            cuenv_core::UnmatchablePattern::Absolute | cuenv_core::UnmatchablePattern::InvalidGlob
+        )
+    );
+    match trigger_paths_for_input(directory, input) {
+        Some(derived) if !matches_anything => derived,
+        _ => vec![directory_filter(&[])],
+    }
 }
 
 /// The path filters one input of a project contributes; `None` when the

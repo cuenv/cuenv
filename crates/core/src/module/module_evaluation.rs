@@ -48,6 +48,11 @@ pub struct ModuleEvaluationMetadata {
     pub references: Option<ReferenceMap>,
     pub sources: Option<SourceMap>,
     pub caller_sources: Option<SourceMap>,
+    /// Where values are declared, by field path, for an evaluation that
+    /// does not inject task sources: only what tells a project's own
+    /// stamps from a same-named project's (the instance's `name`, and the
+    /// project of each stamp) is read from it. `sources` serves when set.
+    pub declarations: Option<SourceMap>,
 }
 
 /// Raw CUE evaluation payload used to build a [`ModuleEvaluation`].
@@ -126,6 +131,27 @@ impl ModuleEvaluation {
         let project_set: std::collections::HashSet<&str> =
             project_paths.iter().map(String::as_str).collect();
 
+        // The directory each project name of this evaluation means, which
+        // a message about an input that leaves its project points at.
+        let named_paths: Vec<(PathBuf, String)> = raw_instances
+            .iter()
+            .filter(|(path, _)| project_set.contains(path.as_str()))
+            .filter_map(|(path, value)| {
+                let name = value.get("name")?.as_str()?;
+                Some((relative_instance_path(path), name.to_string()))
+            })
+            .collect();
+        let projects: std::collections::BTreeMap<String, PathBuf> =
+            super::declaring_directories(named_paths.iter().map(|(path, name)| {
+                super::NamedProject {
+                    path: path.as_path(),
+                    name,
+                }
+            }))
+            .into_iter()
+            .map(|(name, path)| (name.to_string(), path.to_path_buf()))
+            .collect();
+
         let instances = raw_instances
             .into_iter()
             .map(|(path, mut value)| {
@@ -140,7 +166,11 @@ impl ModuleEvaluation {
                 // A node another project stamped is never named by bare
                 // reference metadata: inspect the stamps before any name is
                 // assigned, while whole sequences still carry theirs.
-                let diagnostics = node_checks::check_identities(&mut value);
+                let declarations = node_checks::Declarations {
+                    instance: &path,
+                    at: metadata.sources.as_ref().or(metadata.declarations.as_ref()),
+                };
+                let diagnostics = node_checks::check_identities(&mut value, declarations);
 
                 // Enrich task references with _name using CUE reference metadata.
                 if let Some(ref refs) = metadata.references {
@@ -162,7 +192,16 @@ impl ModuleEvaluation {
                 // Remove what the identity checks marked, and inputs a
                 // lenient export lets through that would fail the whole
                 // project; record each against its node.
-                node_checks::check_inputs(&mut value, diagnostics);
+                let instance_path = relative_instance_path(&path);
+                node_checks::check_inputs(
+                    &mut value,
+                    diagnostics,
+                    node_checks::InstancePlace {
+                        path: &instance_path,
+                        projects: &projects,
+                        declarations,
+                    },
+                );
 
                 // Process task output references: replace ref objects with
                 // placeholder strings and collect auto-dependency pairs.
@@ -272,6 +311,15 @@ impl ModuleEvaluation {
 
         false
     }
+}
+
+/// An instance's path relative to the module root as a path, empty for the
+/// root itself.
+fn relative_instance_path(path: &str) -> PathBuf {
+    Path::new(path)
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect()
 }
 
 /// A single evaluated CUE instance (directory with env.cue)

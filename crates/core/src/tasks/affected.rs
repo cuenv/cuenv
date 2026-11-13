@@ -9,22 +9,24 @@ impl crate::AffectedBy for Task {
     ///
     /// # Behavior
     ///
-    /// - Tasks with NO file inputs are always considered affected (we can't
-    ///   determine what affects them). Paths of the project and paths of
-    ///   file references both count.
+    /// - Tasks with NO inputs are always considered affected (we can't
+    ///   determine what affects them). Paths of the project, paths of file
+    ///   references and the outputs of other tasks all count.
     /// - Tasks with inputs are affected if any input pattern matches changed
-    ///   files, each read from where it starts.
+    ///   files, each read from where it starts. The outputs of another task
+    ///   change with that task, which is one of this task's dependencies:
+    ///   they affect it through that dependency.
     fn is_affected_by(&self, changed_files: &[PathBuf], frame: InputFrame<'_>) -> bool {
         let patterns: Vec<InputPattern<'_>> = self.input_patterns().collect();
 
         // No inputs = always affected (we can't determine what affects it)
         if patterns.is_empty() {
-            return true;
+            return self.iter_task_output_names().next().is_none();
         }
 
-        patterns
-            .into_iter()
-            .any(|pattern| crate::match_input(changed_files, frame, pattern) != PatternMatch::None)
+        patterns.into_iter().any(|pattern| {
+            crate::match_input(changed_files, frame, pattern) == PatternMatch::Matched
+        })
     }
 
     fn input_patterns(&self) -> Vec<InputPattern<'_>> {

@@ -16,14 +16,18 @@ use tempfile::TempDir;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
-const APP_WITH_PARENT_INPUT: &str = r#"package cuenv
+/// `app` reads the articles of `content` through its import
+/// (`content.#Files & {paths: ["articles/**"]}`, spelled out: the fixtures
+/// have no schema).
+const APP_READING_ARTICLES: &str = r#"package cuenv
+import content "test.example/monorepo/content:cuenv"
 name: "app"
 let _tasks = tasks
 ci: pipelines: default: tasks: [_tasks.build]
 tasks: build: {
 	command: "sh"
 	args: ["-c", "printf ran > ran"]
-	inputs: ["src/**", "../content/articles/**"]
+	inputs: ["src/**", {cuenvFiles: "project", cuenvProject: content.name, paths: ["articles/**"]}]
 	hermetic: sandbox: "dir"
 }
 "#;
@@ -50,15 +54,18 @@ tasks: lint: {command: "true", inputs: ["**/*.md"]}
 /// otherwise: one article of `content`.
 const AN_ARTICLE_CHANGES: &[(&str, &str)] = &[("content/articles/one.md", "two\n")];
 
-/// `app` consumes the article `content` renders, at the path it maps it to.
+/// `app` consumes the article `content` renders, through `content`'s import
+/// (`content.tasks.articles.outputFiles`, spelled out: the fixtures have no
+/// schema), where `content` wrote it.
 const APP_CONSUMING_CONTENT: &str = r#"package cuenv
+import content "test.example/monorepo/content:cuenv"
 name: "app"
 let _tasks = tasks
 ci: pipelines: default: tasks: [_tasks.build]
 tasks: build: {
 	command: "sh"
-	args: ["-c", "cp vendor/one.md seen.md"]
-	inputs: ["src/**", {project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+	args: ["-c", "cp ../content/out/one.md seen.md"]
+	inputs: ["src/**", {cuenvOutputFilesRef: true, cuenvProject: content.name, cuenvTask: "articles"}]
 	outputs: ["seen.md"]
 }
 "#;
@@ -216,8 +223,8 @@ fn assert_success(output: &Output) {
 }
 
 #[test]
-fn an_input_outside_the_project_runs_its_task_when_only_that_file_changed() -> TestResult {
-    let repository = Monorepo::new(APP_WITH_PARENT_INPUT)?;
+fn an_input_of_another_project_runs_its_task_when_only_that_file_changed() -> TestResult {
+    let repository = Monorepo::new(APP_READING_ARTICLES)?;
 
     let output = repository.ci(&["--path", "app"])?;
 
@@ -225,30 +232,49 @@ fn an_input_outside_the_project_runs_its_task_when_only_that_file_changed() -> T
     assert!(repository.root().join("app/ran").exists());
     let printed = text(&output);
     assert!(!printed.contains("No affected tasks"), "{printed}");
+    assert!(!printed.contains("warning:"), "{printed}");
+    Ok(())
+}
+
+#[test]
+fn an_input_that_leaves_the_project_fails_the_run_with_its_rewrite() -> TestResult {
+    // An older pinned schema lets `..` through; it is never read.
+    let repository = Monorepo::new(
+        r#"package cuenv
+name: "app"
+let _tasks = tasks
+ci: pipelines: default: tasks: [_tasks.build]
+tasks: build: {
+	command: "sh"
+	args: ["-c", "printf ran > ran"]
+	inputs: ["src/**", "../content/articles/**"]
+}
+"#,
+    )?;
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    let printed = text(&output);
+    assert!(!output.status.success(), "{printed}");
+    assert!(!repository.root().join("app/ran").exists(), "{printed}");
     assert!(
-        printed.contains("`..` inputs cannot be matched against changes"),
+        printed.contains("`../content/articles/**` leaves the project directory"),
         "{printed}"
     );
-    // The warning gives the file reference to write instead.
     assert!(
-        printed.contains(
-            r#"import the project in content and write `content.#Files & {paths: ["articles/**"]}`"#
-        ),
+        printed.contains("import project 'content' from `content`"),
         "{printed}"
     );
-    assert_eq!(
-        printed
-            .matches("has input '../content/articles/**'")
-            .count(),
-        1,
-        "the warning is given once per task: {printed}"
+    assert!(
+        printed.contains(r#"<pkg>.#Files & {paths: ["articles/**"]}"#),
+        "{printed}"
     );
     Ok(())
 }
 
 #[test]
 fn a_run_without_a_path_skips_projects_without_the_pipeline() -> TestResult {
-    let repository = Monorepo::new(APP_WITH_PARENT_INPUT)?;
+    let repository = Monorepo::new(APP_READING_ARTICLES)?;
 
     let output = repository.ci(&[])?;
 
@@ -261,7 +287,7 @@ fn a_run_without_a_path_skips_projects_without_the_pipeline() -> TestResult {
 
 #[test]
 fn a_named_project_without_ci_is_still_an_error() -> TestResult {
-    let repository = Monorepo::new(APP_WITH_PARENT_INPUT)?;
+    let repository = Monorepo::new(APP_READING_ARTICLES)?;
 
     let output = repository.ci(&["--path", "docs"])?;
 
@@ -276,7 +302,7 @@ fn a_named_project_without_ci_is_still_an_error() -> TestResult {
 
 #[test]
 fn a_pipeline_no_project_defines_is_an_error_naming_those_that_exist() -> TestResult {
-    let repository = Monorepo::new(APP_WITH_PARENT_INPUT)?;
+    let repository = Monorepo::new(APP_READING_ARTICLES)?;
 
     for arguments in [
         vec!["--pipeline", "defualt"],
@@ -366,6 +392,7 @@ tasks: articles: {
 
 /// `app`, with a hook and a secret of its own.
 const APP_WITH_HOOK: &str = r#"package cuenv
+import content "test.example/monorepo/content:cuenv"
 name: "app"
 env: APP_SECRET: {resolver: "exec", command: "echo", args: ["app-only"]}
 hooks: onEnter: mark: {
@@ -377,8 +404,8 @@ let _tasks = tasks
 ci: pipelines: default: tasks: [_tasks.build]
 tasks: build: {
 	command: "sh"
-	args: ["-c", "cp vendor/one.md seen.md && printf '%s|%s|%s|%s' \"${APP_SECRET:-unset}\" \"${APP_HOOK:-unset}\" \"${CONTENT_VALUE:-unset}\" \"${CONTENT_HOOK:-unset}\" > env.txt"]
-	inputs: ["src/**", {project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+	args: ["-c", "cp ../content/out/one.md seen.md && printf '%s|%s|%s|%s' \"${APP_SECRET:-unset}\" \"${APP_HOOK:-unset}\" \"${CONTENT_VALUE:-unset}\" \"${CONTENT_HOOK:-unset}\" > env.txt"]
+	inputs: ["src/**", {cuenvOutputFilesRef: true, cuenvProject: content.name, cuenvTask: "articles"}]
 	outputs: ["seen.md", "env.txt"]
 }
 "#;
@@ -441,11 +468,12 @@ fn a_dependency_chain_across_three_projects_runs_in_order() -> TestResult {
             (
                 "content/env.cue",
                 r#"package cuenv
+import sources "test.example/monorepo/sources:cuenv"
 name: "content"
 tasks: articles: {
 	command: "sh"
-	args: ["-c", "mkdir -p out && cat articles/one.md in/raw.md > out/one.md"]
-	inputs: ["articles/**", {project: "sources", task: "pull", map: [{from: "raw.md", to: "in/raw.md"}]}]
+	args: ["-c", "mkdir -p out && cat articles/one.md ../sources/raw.md > out/one.md"]
+	inputs: ["articles/**", {cuenvOutputFilesRef: true, cuenvProject: sources.name, cuenvTask: "pull"}]
 	outputs: ["out/one.md"]
 }
 "#,
@@ -480,16 +508,22 @@ tasks: pull: {
     Ok(())
 }
 
-/// `app` consuming `content`, with the project spelled as given.
+/// `app` consuming the outputs of a task of the project named `project`,
+/// while importing `content`.
 fn app_consuming(project: &str) -> String {
-    APP_CONSUMING_CONTENT.replace("project: \"content\"", &format!("project: \"{project}\""))
+    APP_CONSUMING_CONTENT
+        .replace(
+            "cuenvProject: content.name",
+            &format!("cuenvProject: \"{project}\""),
+        )
+        .replace("name: \"app\"\n", "name: \"app\"\n_imports: content.name\n")
 }
 
 #[test]
-fn a_project_spelled_as_a_path_is_selected_and_run_like_one_spelled_by_name() -> TestResult {
-    // By name, from the project that depends on it, and from the root of
-    // the checkout. Selection and execution find the same project by each.
-    for spelling in ["content", "../content", "/content"] {
+fn a_dependency_on_another_project_is_selected_and_run_through_its_import() -> TestResult {
+    // Selection and execution bind the project through the import.
+    {
+        let spelling = "content";
         let app = app_consuming(spelling);
 
         // A file of `content` changed: `app` is selected, and `content`
@@ -530,7 +564,8 @@ fn a_dependency_in_a_module_nested_in_the_repository_is_staged_from_the_module()
     // The module is `<repository>/mono`; the checkout root is its parent.
     // A mapped input names files from the module root, and the repository
     // holds a file where the same path leads from its own root.
-    for spelling in ["content", "../content", "/mono/content"] {
+    {
+        let spelling = "content";
         let directory = tempfile::tempdir()?;
         let root = directory.path();
         let module = root.join("mono");
@@ -585,19 +620,43 @@ fn a_dependency_that_cannot_be_loaded_fails_the_run() -> TestResult {
 }
 
 #[test]
+fn a_project_that_is_not_imported_fails_the_run_though_the_module_has_it() -> TestResult {
+    // `docs` is a project of the module, but `app` does not import it: a
+    // stamp naming it binds nothing, and the run fails before any task.
+    let repository = Monorepo::new(
+        &APP_CONSUMING_CONTENT.replace(
+            "cuenvTask: \"articles\"}]",
+            "cuenvTask: \"articles\"}]\n\tdependsOn: [{cuenvRef: {kind: \"task\", project: \"docs\", name: \"lint\"}}]",
+        ),
+    )?;
+
+    let output = repository.ci(&["--path", "app"])?;
+
+    let printed = text(&output);
+    assert!(!output.status.success(), "{printed}");
+    assert!(
+        printed.contains("project 'docs' is not imported here"),
+        "{printed}"
+    );
+    assert!(!repository.root().join("app/seen.md").exists(), "{printed}");
+    Ok(())
+}
+
+#[test]
 fn a_project_name_carried_by_a_child_directory_still_means_the_project() -> TestResult {
     // `content/drafts` is in the same package and declares no name, so it
     // inherits `content`. The dependency must resolve to `content` itself on
     // every run, whatever order the module's directories are visited in.
     let repository = Monorepo::new(
         r#"package cuenv
+import content "test.example/monorepo/content:cuenv"
 name: "app"
 let _tasks = tasks
 ci: pipelines: default: tasks: [_tasks.build]
 tasks: build: {
 	command: "sh"
 	args: ["-c", "printf ran > ran"]
-	inputs: ["src/**", {project: "content", task: "articles", map: [{from: "out/one.md", to: "vendor/one.md"}]}]
+	inputs: ["src/**", {cuenvOutputFilesRef: true, cuenvProject: content.name, cuenvTask: "articles"}]
 }
 "#,
     )?;
@@ -627,7 +686,7 @@ tasks: build: {
 
 #[test]
 fn a_base_that_cannot_be_compared_is_an_error() -> TestResult {
-    let repository = Monorepo::new(APP_WITH_PARENT_INPUT)?;
+    let repository = Monorepo::new(APP_READING_ARTICLES)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_cuenv"))
         .current_dir(repository.root())
@@ -711,8 +770,11 @@ fn a_checkout_named_like_its_project_still_selects_the_project() -> TestResult {
 }
 
 #[test]
-fn an_input_that_only_matches_from_the_repository_root_still_runs_and_says_so() -> TestResult {
-    // `app` reads `shared/**`, and the only `shared/` is at the root.
+fn an_input_that_only_matches_from_the_repository_root_fails_the_run_with_its_rewrite() -> TestResult
+{
+    // `app` reads `shared/**`, and the only `shared/` is at the root. The
+    // root-relative reading is gone; skipping the task would be silent, so
+    // the run fails and says how to name the file.
     let repository = Monorepo::changing(
         &app_reading(r#"["src/**", "shared/**"]"#),
         &[("shared/x.txt", "1")],
@@ -721,9 +783,9 @@ fn an_input_that_only_matches_from_the_repository_root_still_runs_and_says_so() 
 
     let output = repository.ci(&["--path", "app"])?;
 
-    assert_success(&output);
-    assert!(repository.root().join("app/ran").exists());
     let printed = text(&output);
+    assert!(!output.status.success(), "{printed}");
+    assert!(!repository.root().join("app/ran").exists());
     assert!(
         printed.contains("has input 'shared/**', which selects nothing under app"),
         "{printed}"
@@ -753,7 +815,7 @@ tasks: lint: {
 "#;
 
 #[test]
-fn a_correct_project_is_not_warned_about_files_of_the_same_name_at_the_root() -> TestResult {
+fn a_file_of_the_same_name_at_the_root_selects_no_task_of_a_project() -> TestResult {
     let repository = Monorepo::changing(
         APP_WITH_TWO_PACKAGE_READERS_CUE,
         &[("app/package.json", "{}"), ("package.json", "{}")],
@@ -762,26 +824,14 @@ fn a_correct_project_is_not_warned_about_files_of_the_same_name_at_the_root() ->
 
     let output = repository.ci(&["--path", "app"])?;
 
-    // The root file still selects both tasks for now, and nothing is warned
-    // about: the configuration is correct. One note for the run says so and
-    // lists every task it selected.
+    // The root file is no input of `app`: nothing is selected, and nothing
+    // is warned about, since the configuration is correct.
     assert_success(&output);
-    assert!(repository.root().join("app/ran").exists());
+    assert!(!repository.root().join("app/ran").exists());
     let printed = text(&output);
+    assert!(printed.contains("No affected tasks"), "{printed}");
     assert!(!printed.contains("warning:"), "{printed}");
-    assert_eq!(printed.matches("note:").count(), 1, "{printed}");
-    for task in ["build", "lint"] {
-        assert_eq!(
-            printed
-                .matches(&format!(
-                    "task '{task}' of project app, input 'package.json': to read the root \
-                     file, add `schema.#ModuleFiles & {{paths: [\"package.json\"]}}`"
-                ))
-                .count(),
-            1,
-            "{printed}"
-        );
-    }
+    assert!(!printed.contains("note:"), "{printed}");
     Ok(())
 }
 

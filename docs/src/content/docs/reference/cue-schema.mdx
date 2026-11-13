@@ -367,14 +367,46 @@ You don't construct these manually — CUE generates them when you reference a t
 One input of a task or image: what its cache key and affected detection read.
 
 ```cue
-#Input: string | #ProjectReference | *#TaskOutput | #ProjectFiles | #ModuleFiles
+#Input: string | #TaskOutput | #TaskOutputFilesRef | #ProjectFiles | #ModuleFiles
 ```
 
-- a `string` is a path or glob relative to the task's own project;
-- `#TaskOutput` (`{task: "build"}`) and `#ProjectReference` read the outputs of a task;
+- a `string` is a path or glob relative to the task's own project. It cannot
+  leave the project: one with a `..` segment is an error keyed on the input
+  (`tasks.build._cuenvInputCheck."../content/**"`), which says to import the
+  project that holds the files;
+- `<task>.outputFiles` (`#TaskOutputFilesRef`) reads the outputs a task
+  declares, also through another project's import, and makes that task a
+  dependency; `#TaskOutput` (`{task: "build"}`) does the same for a task of
+  this project by name, with an optional `map`;
 - `#ProjectFiles` and `#ModuleFiles` are file references: files of another
   project, or of the module, chosen by the task that reads them. See
   [Files of another project, or of the module](/how-to/run-tasks/#files-of-another-project-or-of-the-module).
+
+A task or a group used as an input is a CUE error; cuenv adds a hint to write
+`<task>.outputFiles` (a group cannot be an input yet: list its tasks'
+`outputFiles`). The removed `{project, task, map}` form is no input either.
+
+### #TaskOutputFilesRef
+
+Every declared output of one task, as an input of another. The schema writes
+it on every `#Task` as `outputFiles`; read it, never write it by hand.
+
+```cue
+import content "github.com/acme/site/content:cuenv"
+
+inputs: [content.tasks.articles.outputFiles, tasks.docs.build.outputFiles]
+// the first exports as {cuenvOutputFilesRef: true, cuenvProject: "content", cuenvTask: "articles"}
+```
+
+| Field                 | Type     | Description                                  |
+| --------------------- | -------- | -------------------------------------------- |
+| `cuenvOutputFilesRef` | `true`   | Discriminator                                |
+| `cuenvProject`        | `string` | The project the task belongs to              |
+| `cuenvTask`           | `string` | The task's name within its project           |
+
+Reading it depends on the task, which must declare `outputs`. Its files are
+staged where the task writes them. Tasks only: a group has no `outputFiles`.
+See [Tasks of another project](/how-to/run-tasks/#tasks-of-another-project).
 
 ### #ProjectFiles
 
@@ -504,6 +536,8 @@ schema.#Project & {
 | `stdout`         | `#TaskOutputRef`                                  | Auto     | Reference to this task's stdout          |
 | `stderr`         | `#TaskOutputRef`                                  | Auto     | Reference to this task's stderr          |
 | `exitCode`       | `#TaskOutputRef`                                  | Auto     | Reference to this task's exit code       |
+| `outputFiles`    | `#TaskOutputFilesRef`                             | Auto     | This task's declared `outputs`, as another task's input (reserved) |
+| `cuenvRef`       | `{kind, project, name}`                           | Auto     | What the task is and which project it belongs to (reserved) |
 
 Exactly one of `command` or `script` must be set. `cuenv` rejects tasks that
 omit both or provide both.
@@ -752,36 +786,6 @@ ci: {
 :::note
 `annotations` is a field on `#Pipeline` (inside `ci.pipelines.<name>`), not on `#Task`. Captures are defined on the task; their resolved values are surfaced through the pipeline's annotation map.
 :::
-
-### #ProjectReference
-
-An input that consumes outputs another project's task builds. It also makes
-that task a dependency (`#project:task`). For files nobody builds, use a
-[file reference](#projectfiles) instead.
-
-```cue
-tasks: {
-    build: {
-        command: "build"
-        inputs: [{
-            project: "shared-lib"
-            task: "build"
-            map: [{
-                from: "dist/lib.js"
-                to: "vendor/lib.js"
-            }]
-        }]
-    }
-}
-```
-
-**Fields:**
-
-| Field     | Type            | Description                                       |
-| --------- | --------------- | ------------------------------------------------- |
-| `project` | `string`        | The other project's `name`, or a path to it       |
-| `task`    | `string`        | Task name in the other project                    |
-| `map`     | `[...#Mapping]` | Output mappings                                   |
 
 ## Services
 
@@ -2390,7 +2394,7 @@ the project's tasks rather than the pipeline's own field.
 
 **`continueOnError`:** When `false` (default), the first failing task in a pipeline's dependency graph aborts the rest of the run. When `true`, the orchestrator finishes every independent chain it can; tasks whose dependencies failed are reported as `Skipped` with a `DependencyFailed { dep }` reason rather than silently dropped. The pipeline still exits non-zero overall if any task failed — `continueOnError` controls scheduling, not success. Surfaces as `task.skipped` events for renderers (CLI spinner, TUI, JSON).
 
-When `derivePaths` is enabled, or left at its default for branch and pull request triggers, cuenv derives provider path filters from the path inputs and file references of every task the pipeline reaches, dependencies included. For GitHub Actions, nested project inputs are emitted as normalized repo-relative paths: `src/**` in `server/env.cue` becomes `server/src/**`, and `schema.#ModuleFiles & {paths: ["flake.nix"]}` there becomes `flake.nix`. Write a file outside the project as a file reference, not as `../flake.nix`: a `..` input is emitted at the path it resolves to, but `cuenv ci` cannot compare it with changes and runs its task on every change.
+When `derivePaths` is enabled, or left at its default for branch and pull request triggers, cuenv derives provider path filters from the path inputs and file references of every task the pipeline reaches, dependencies included. For GitHub Actions, nested project inputs are emitted as normalized repo-relative paths: `src/**` in `server/env.cue` becomes `server/src/**`, and `schema.#ModuleFiles & {paths: ["flake.nix"]}` there becomes `flake.nix`. A file outside the project is a file reference: a `..` input such as `../flake.nix` is an error. A dependency on a task of another project (through its import) adds what that task reads, bound through the importing project, or its whole directory when it declares no inputs.
 
 The derived filters are a superset of the changes that affect a task, so a workflow can start more often than it has work and never less. GitHub's filter syntax is not the glob dialect inputs are matched with (`*` stops at `/` there, and `?`, `+`, `[]` and a leading `!` have their own meaning), so cuenv does not translate globs. Every input becomes one of two shapes:
 

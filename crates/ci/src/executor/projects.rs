@@ -1,7 +1,8 @@
 //! The projects a CI run can reach, and what each runs with.
 //!
-//! A pipeline task may depend on a task of another project
-//! (`#project:task`), in or out of the directory `--path` names. That task
+//! A pipeline task may depend on a task of another project, reached through
+//! that project's import (`#project:task` once loaded), in or out of the
+//! directory `--path` names. That task
 //! runs in its own project: its directory, its configuration, the
 //! environment its own hooks and `env` provide. This module finds those
 //! projects for the [`TaskScope`](cuenv_task_exec::TaskScope) of a run, and
@@ -150,7 +151,7 @@ impl crate::affected::BindFiles for CiProjects {
         let directory = match anchor {
             cuenv_core::tasks::FilesAnchor::Module => self.module_root.clone(),
             cuenv_core::tasks::FilesAnchor::Project(name) => {
-                let bound = ProjectSource::files_anchor(
+                let bound = ProjectSource::imported_project(
                     self,
                     &self.checkout_root.join(project_root),
                     name,
@@ -195,12 +196,8 @@ impl crate::affected::BindFiles for CiProjects {
 }
 
 impl ProjectSource for CiProjects {
-    fn directory_of(&self, _origin: &Path, name: &str) -> Result<Option<PathBuf>> {
+    fn imported_project(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String> {
         // Every project a CI run knows lies in the one module it runs in.
-        Ok(self.by_name.get(name).cloned())
-    }
-
-    fn files_anchor(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String> {
         self.imports
             .bind(
                 crate::imports::FilesOwner {
@@ -211,13 +208,6 @@ impl ProjectSource for CiProjects {
                 name,
             )
             .map(|directory| self.module_root.join(directory))
-    }
-
-    fn name_of(&self, root: &Path) -> Option<String> {
-        self.by_name
-            .iter()
-            .find(|(_, directory)| directory.as_path() == root)
-            .map(|(name, _)| name.clone())
     }
 
     fn workspace_root(&self, _origin: &Path) -> PathBuf {

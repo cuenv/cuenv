@@ -79,7 +79,10 @@ fn test_service_entrypoint_script_variant() {
 #[test]
 fn test_expand_cross_project_references() {
     let task = Task {
-        inputs: vec![Input::Path("#myproj:build:dist/app.js".to_string())],
+        inputs: vec![Input::Task(TaskOutput {
+            task: "#myproj:build".to_string(),
+            map: None,
+        })],
         ..Default::default()
     };
 
@@ -93,18 +96,10 @@ fn test_expand_cross_project_references() {
     let task_def = cuenv.tasks.get("deploy").unwrap();
     let task = task_def.as_task().unwrap();
 
-    // Check inputs expansion
+    // A task output of another project is expanded once that project is
+    // loaded, so it is kept as written here.
     assert_eq!(task.inputs.len(), 1);
-    match &task.inputs[0] {
-        Input::Project(proj_ref) => {
-            assert_eq!(proj_ref.project, "myproj");
-            assert_eq!(proj_ref.task, "build");
-            assert_eq!(proj_ref.map.len(), 1);
-            assert_eq!(proj_ref.map[0].from, "dist/app.js");
-            assert_eq!(proj_ref.map[0].to, "dist/app.js");
-        }
-        _ => panic!("Expected ProjectReference"),
-    }
+    assert_eq!(task.inputs[0].task_output_name(), Some("#myproj:build"));
 
     // Check implicit dependency
     assert_eq!(task.depends_on.len(), 1);
@@ -357,8 +352,8 @@ fn test_task_matcher_with_command() {
 fn test_expand_multiple_cross_project_references() {
     let task = Task {
         inputs: vec![
-            Input::Path("#projA:build:dist/lib.js".to_string()),
-            Input::Path("#projB:compile:out/types.d.ts".to_string()),
+            external_output("#projA:build"),
+            external_output("#projB:compile"),
             Input::Path("src/**/*.ts".to_string()), // Local path
         ],
         ..Default::default()
@@ -395,13 +390,13 @@ fn test_expand_multiple_cross_project_references() {
 fn test_expand_cross_project_in_task_group() {
     let task1 = Task {
         command: "step1".to_string(),
-        inputs: vec![Input::Path("#projA:build:dist/lib.js".to_string())],
+        inputs: vec![external_output("#projA:build")],
         ..Default::default()
     };
 
     let task2 = Task {
         command: "step2".to_string(),
-        inputs: vec![Input::Path("#projB:compile:out/types.d.ts".to_string())],
+        inputs: vec![external_output("#projB:compile")],
         ..Default::default()
     };
 
@@ -448,13 +443,13 @@ fn test_expand_cross_project_in_task_group() {
 fn test_expand_cross_project_in_parallel_group() {
     let task1 = Task {
         command: "taskA".to_string(),
-        inputs: vec![Input::Path("#projA:build:lib.js".to_string())],
+        inputs: vec![external_output("#projA:build")],
         ..Default::default()
     };
 
     let task2 = Task {
         command: "taskB".to_string(),
-        inputs: vec![Input::Path("#projB:build:types.d.ts".to_string())],
+        inputs: vec![external_output("#projB:build")],
         ..Default::default()
     };
 
@@ -504,12 +499,21 @@ fn test_expand_cross_project_in_parallel_group() {
     }
 }
 
+/// A task-output input of a task of another project, as loading reads a
+/// task's `outputFiles` read through an import.
+fn external_output(task: &str) -> Input {
+    Input::Task(TaskOutput {
+        task: task.to_string(),
+        map: None,
+    })
+}
+
 #[test]
 fn test_no_duplicate_implicit_dependencies() {
     // Task already has the dependency explicitly
     let task = Task {
         depends_on: vec![TaskDependency::from_name("#myproj:build")],
-        inputs: vec![Input::Path("#myproj:build:dist/app.js".to_string())],
+        inputs: vec![external_output("#myproj:build")],
         ..Default::default()
     };
 

@@ -436,33 +436,22 @@ tasks: {
 		command: "sh"
 		args: ["-c", "printf deployed > deployed.txt"]
 		dependsOn: [content.tasks.build]
+		outputs: ["deployed.txt"]
 	}
 }
 "#;
 
 #[test]
-fn a_dependency_on_another_projects_task_is_a_diagnostic_not_a_binding() -> TestResult {
+fn a_dependency_on_another_projects_task_binds_to_that_task_never_a_local_one() -> TestResult {
     let repository = Repository::new(APP_DEPENDING_ON_CONTENT, &[])?;
 
     let output = repository.task("app", &["deploy"])?;
 
-    assert_failure(&output);
-    let printed = text(&output);
-    assert!(
-        printed.contains("dependsOn[0] is task 'build' of project 'content'"),
-        "{printed}"
-    );
-    assert!(
-        printed.contains("content.#Files & {paths: [...]}"),
-        "{printed}"
-    );
-    // The local `build` was not bound and did not run.
-    assert!(!repository.root().join("app/local.txt").exists());
-    assert!(!repository.root().join("app/deployed.txt").exists());
-
-    // A task that does not reach it is unaffected.
-    let output = repository.task("app", &["lint"])?;
     assert_success(&output);
+    // `content`'s build ran, in `content`; the local `build` was not bound.
+    assert!(repository.root().join("content/built.txt").exists());
+    assert!(!repository.root().join("app/local.txt").exists());
+    assert_eq!(repository.read("app/deployed.txt")?, "deployed");
     Ok(())
 }
 

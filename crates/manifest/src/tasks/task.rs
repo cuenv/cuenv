@@ -1,7 +1,6 @@
 //! A single executable [`Task`]: a command or a script.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use serde::Serialize;
 
@@ -9,9 +8,7 @@ use super::cache_policy::TaskCachePolicy;
 use super::capture_types::TaskCapture;
 use super::dependency::TaskDependency;
 use super::hermetic::{Hermetic, Sandbox};
-use super::inputs::{
-    Input, InputPattern, ProjectReference, SourceLocation, TaskDirectory, TaskOutput,
-};
+use super::inputs::{Input, InputPattern, SourceLocation, TaskDirectory, TaskOutput};
 use super::params::TaskParams;
 use super::retry::RetryConfig;
 use super::shell::{ScriptShell, Shell, ShellOptions};
@@ -157,14 +154,8 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub captures: HashMap<String, TaskCapture>,
 
-    /// If set, this task is a reference to another project's task
-    /// that should be resolved at runtime using TaskDiscovery.
-    /// Format: "#project-name:task-name"
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_ref: Option<String>,
-
-    /// If set, specifies the project root where this task should execute.
-    /// Used for TaskRef resolution to run tasks in their original project.
+    /// If set, specifies the project root where this task should execute:
+    /// a task of another project runs in that project's directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_root: Option<std::path::PathBuf>,
 
@@ -241,8 +232,6 @@ impl<'de> serde::Deserialize<'de> for Task {
             #[serde(default)]
             captures: HashMap<String, TaskCapture>,
             #[serde(default)]
-            task_ref: Option<String>,
-            #[serde(default)]
             project_root: Option<std::path::PathBuf>,
             #[serde(default, rename = "_source")]
             source: Option<SourceLocation>,
@@ -262,14 +251,13 @@ impl<'de> serde::Deserialize<'de> for Task {
             )));
         }
 
-        // Validate: either command, script, or task_ref must be present
+        // Validate: either command or script must be present
         let has_command = helper.command.as_ref().is_some_and(|c| !c.is_empty());
         let has_script = helper.script.is_some();
-        let has_task_ref = helper.task_ref.is_some();
 
-        if !has_command && !has_script && !has_task_ref {
+        if !has_command && !has_script {
             return Err(serde::de::Error::custom(
-                "Task must have either 'command', 'script', or 'task_ref' field",
+                "Task must have either 'command' or 'script' field",
             ));
         }
 
@@ -295,7 +283,6 @@ impl<'de> serde::Deserialize<'de> for Task {
             retry: helper.retry,
             continue_on_error: helper.continue_on_error,
             captures: helper.captures,
-            task_ref: helper.task_ref,
             project_root: helper.project_root,
             source: helper.source,
             caller_source: helper.caller_source,
@@ -328,7 +315,6 @@ impl Default for Task {
             retry: None,
             continue_on_error: false,
             captures: HashMap::new(),
-            task_ref: None,
             project_root: None,
             source: None,
             caller_source: None,
@@ -338,23 +324,6 @@ impl Default for Task {
 }
 
 impl Task {
-    /// Creates a new TaskRef placeholder task.
-    /// This task will be resolved at runtime using TaskDiscovery.
-    #[must_use]
-    pub fn from_task_ref(ref_str: &str) -> Self {
-        Self {
-            task_ref: Some(ref_str.to_string()),
-            description: Some(format!("Reference to {ref_str}")),
-            ..Default::default()
-        }
-    }
-
-    /// Returns true if this task is a TaskRef placeholder that needs resolution.
-    #[must_use]
-    pub fn is_task_ref(&self) -> bool {
-        self.task_ref.is_some()
-    }
-
     /// Returns an iterator over dependency task names.
     pub fn dependency_names(&self) -> impl Iterator<Item = &str> {
         self.depends_on.iter().map(TaskDependency::task_name)
@@ -411,11 +380,6 @@ impl Task {
         self.inputs.iter().flat_map(Input::patterns)
     }
 
-    /// Returns an iterator over project references.
-    pub fn iter_project_refs(&self) -> impl Iterator<Item = &ProjectReference> {
-        self.inputs.iter().filter_map(Input::as_project)
-    }
-
     /// Returns an iterator over same-project task output references.
     pub fn iter_task_outputs(&self) -> impl Iterator<Item = &TaskOutput> {
         self.inputs.iter().filter_map(Input::as_task_output)
@@ -424,40 +388,6 @@ impl Task {
     /// Returns producer task names for original and expanded task-output inputs.
     pub fn iter_task_output_names(&self) -> impl Iterator<Item = &str> {
         self.inputs.iter().filter_map(Input::task_output_name)
-    }
-
-    /// Collects path/glob inputs applying an optional prefix (for workspace roots).
-    #[must_use]
-    pub fn collect_path_inputs_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
-        self.inputs
-            .iter()
-            .filter_map(Input::as_path)
-            .map(|path| apply_prefix(prefix, path))
-            .collect()
-    }
-
-    /// Collects mapped destinations from project references, applying an optional prefix.
-    #[must_use]
-    pub fn collect_project_destinations_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
-        self.iter_project_refs()
-            .flat_map(|reference| reference.map.iter().map(|m| apply_prefix(prefix, &m.to)))
-            .collect()
-    }
-
-    /// Collects all input patterns (local + project destinations) with an optional prefix.
-    #[must_use]
-    pub fn collect_all_inputs_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
-        let mut inputs = self.collect_path_inputs_with_prefix(prefix);
-        inputs.extend(self.collect_project_destinations_with_prefix(prefix));
-        inputs
-    }
-}
-
-fn apply_prefix(prefix: Option<&Path>, value: &str) -> String {
-    if let Some(prefix) = prefix {
-        prefix.join(value).to_string_lossy().to_string()
-    } else {
-        value.to_string()
     }
 }
 

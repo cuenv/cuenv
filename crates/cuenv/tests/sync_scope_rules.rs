@@ -230,8 +230,10 @@ schema.#Project & {{
       command: "echo"
       args: ["{task}"]
       inputs: [
-        "../flake.nix",
-        "../infrastructure/waddle.cloud/gitops/waddle-server/**",
+        schema.#ModuleFiles & {{paths: [
+          "flake.nix",
+          "infrastructure/waddle.cloud/gitops/waddle-server/**",
+        ]}},
       ]
     }}
   }}
@@ -450,7 +452,7 @@ fn sync_nested_project_only_generates_nested_ci_in_repo_root() -> TestResult {
 }
 
 #[test]
-fn sync_nested_project_normalizes_parent_trigger_paths() -> TestResult {
+fn sync_nested_project_names_module_files_from_the_module_root() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
 

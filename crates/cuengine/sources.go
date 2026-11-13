@@ -222,7 +222,8 @@ func (r *fieldReader) importedInstances(root *build.Instance) []importedInstance
 	for _, imported := range root.Imports {
 		queue = append(queue, pending{inst: imported})
 	}
-	var records []importedInstance
+	// Never nil: an instance that imports nothing lists no records.
+	records := []importedInstance{}
 	for len(queue) > 0 {
 		next := queue[0]
 		queue = queue[1:]

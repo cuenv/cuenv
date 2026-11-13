@@ -185,7 +185,10 @@ all pipeline tasks and cannot be combined with `--all`.
 
 Detection is **inputs-driven**: cuenv compares the files matched by each task's
 `inputs` globs against the diff from the base ref. A task with **no `inputs`
-always runs** (cuenv cannot prove it is unaffected). A local run without
+always runs** (cuenv cannot prove it is unaffected). A task that reads other
+tasks' declared outputs (`outputFiles`) is affected through those tasks, which
+are its dependencies, so one whose only inputs they are does not run on every
+change. A local run without
 `--from` compares with `HEAD`, so it sees the changes not yet committed. Declare
 tight `inputs` on every task to get the most out of affected detection.
 
@@ -193,17 +196,19 @@ Detection **fails closed**: whatever cuenv cannot show to be unaffected runs, an
 a warning says why. That covers:
 
 - a task, or a dependency of it, that does not resolve;
-- a `#project:task` dependency that is malformed, names a project that is not in
-  the module, or names a task that project does not have;
+- a dependency on another project's task (`#project:task` in the task graph)
+  that names a project that is not in the module, or a task that project does
+  not have;
 - a dependency cycle between projects;
 - an input that is not a valid glob;
-- an input with a `..` segment, or an absolute input. Changed files are relative
-  to the repository, so such an input can never be matched and its task runs
-  whenever anything changed. The warning is given once per task, and for a `..`
-  input it gives the file reference to write instead: `content.#Files & {paths:
-  [...]}` when the path lies in another project, `schema.#ModuleFiles & {paths:
-  [...]}` otherwise. `..` inputs will be rejected once CUE-native cross-project
-  task references ship ([#611](https://github.com/cuenv/cuenv/issues/611)).
+- an absolute input. Changed files are relative to the repository, so such an
+  input can never be matched and its task runs whenever anything changed. The
+  warning is given once per task.
+
+An input with a `..` segment is no input: it fails the pipeline that reaches
+its task, saying what to write instead, `<pkg>.#Files & {paths: [...]}` when the
+path lies in another project and `schema.#ModuleFiles & {paths: [...]}`
+otherwise ([#611](https://github.com/cuenv/cuenv/issues/611)).
 
 A [file reference](/how-to/run-tasks/#files-of-another-project-or-of-the-module)
 is compared from its anchor: `content.#Files & {paths: ["articles/**"]}` selects
@@ -219,9 +224,11 @@ reaches, through dependencies on other projects too, and checks that each path
 matches at least one file. A reference's project is bound among the packages
 the project that writes it imports, as `cuenv task` binds it; one that is not
 imported, is imported from a child directory, or lies in another package or
-module fails the pipeline. It also raises the problems recorded against the
-nodes the pipeline reaches (another project's task in `dependsOn` or in the
-pipeline's `tasks`, a reference without `paths`). Any of them fails that
+module fails the pipeline. A dependency on another project's task is bound the
+same way, among the imports of the project that declares it. It also raises the
+problems recorded against the nodes the pipeline reaches (another project's
+task in the pipeline's `tasks`, a sequence of another project in `dependsOn`, a
+`..` input, a reference without `paths`). Any of them fails that
 pipeline, naming the project, the pipeline and the task; a problem in a node the
 pipeline does not reach never fails it. A run without `--path` plans every
 project first, so such a problem aborts the run.
@@ -235,20 +242,18 @@ anything else is a file, or a directory and everything beneath it. The empty
 input and `.` mean the project directory itself.
 
 Inputs are relative to their project, and changed files are placed in the
-project by the project's exact directory in the checkout. For now a changed
-file outside the project is still compared with the pattern as well, as it
-always has been:
+project by the project's exact directory in the checkout. A changed file outside
+the project is not compared with the pattern from the root of the repository
+any more:
 
 - If the pattern selects no file under its project (`shared/**` in `app`, where
-  the only `shared/` is at the repository root), the task still runs and cuenv
-  warns that this root-relative reading is going away, and how to read the file
-  on purpose: `schema.#ModuleFiles & {paths: ["shared/**"]}`.
+  the only `shared/` is at the repository root) and a root file it would have
+  matched from there changed, the run fails rather than skip the task silently,
+  and says how to read the file: `schema.#ModuleFiles & {paths: ["shared/**"]}`.
 - If the pattern does select files under its project and the root happens to
-  have files of the same name (`package.json`, `src/**`), the task still runs.
-  The configuration is correct, so this is never a warning: one note per run
-  lists every task a root file selected this way, with the input it matched,
-  says that this stops when the root-relative reading is removed, and gives the
-  `schema.#ModuleFiles` to add if a task does read that file.
+  have files of the same name (`package.json`, `src/**`), the root file is
+  simply no input of the project and selects nothing. Add a
+  `schema.#ModuleFiles` reference if a task does read that file.
 
 A change to the CUE a project is built from selects **every** task of the
 project's pipeline. A task's command, inputs and dependencies are computed from
@@ -265,7 +270,7 @@ CUE a project is built from is:
 
 This is coarse on purpose. Editing a root file that every project inherits, or
 `cue.mod/module.cue`, runs every task of every project, deployment tasks
-included. A project that another project names as `#project:task` counts too:
+included. A project whose task another project depends on is imported by it, so
 a change to the producer's CUE affects its consumers.
 
 A group or a sequence is selected as a whole: it is affected when any task
@@ -275,10 +280,12 @@ still sees a task of `app` that depends on a task of another project.
 
 ### Dependencies on another project
 
-A pipeline task may depend on a task of another project: a
-`{project, task, map}` input implies the dependency `#project:task`.
-`cuenv ci` runs that task before the task that needs it, whether or not the
-other project is under `--path`, and runs it **in its own project**:
+A pipeline task may depend on a task of another project, through that project's
+import: `dependsOn: [content.tasks.build]`, or reading
+`content.tasks.build.outputFiles`
+([Run Tasks](/how-to/run-tasks/#tasks-of-another-project)). `cuenv ci` runs
+that task before the task that needs it, whether or not the other project is
+under `--path`, and runs it **in its own project**:
 
 - in that project's directory, with that project's configuration;
 - with the environment that project's own hooks and `env` provide, selected by
@@ -291,20 +298,27 @@ other project is under `--path`, and runs it **in its own project**:
 
 A dependency that cannot be loaded (an unknown project, a missing task) fails the
 pipeline task that needs it, with the reason. It is never skipped and never run
-in the consuming project. [Run Tasks](/how-to/run-tasks/#inputs-from-another-project)
+in the consuming project. [Run Tasks](/how-to/run-tasks/#tasks-of-another-project)
 describes the same rules for `cuenv task`.
 
 `cuenv ci` runs tasks in the checkout, where a task's output is already where
-that task wrote it. An input that `map`s a file to another path needs the file
-staged there, so a task that declares one runs as `cuenv task` runs it: in an
-execution root holding its declared inputs, with each mapped file at its `to`
-path, and with its declared `outputs` copied back into the project. Such a task
-must declare what it reads and writes; nothing is staged into the checkout. A
-mapping on a task that opted out of the directory sandbox is an error.
+that task wrote it, which is where `outputFiles` reads it. An input that `map`s
+a file to another path (`{task: "x", map: [...]}`) needs the file staged there,
+so a task that declares one runs as `cuenv task` runs it: in an execution root
+holding its declared inputs, with each mapped file at its `to` path, and with
+its declared `outputs` copied back into the project. Such a task must declare
+what it reads and writes; nothing is staged into the checkout. A mapping on a
+task that opted out of the directory sandbox is an error.
 
-`cuenv sync ci` still rejects `#project:task` dependencies in generated
-workflows: run those pipelines with `cuenv ci`
-([#611](https://github.com/cuenv/cuenv/issues/611)).
+`cuenv sync ci` follows a dependency on another project's task too: its trigger
+paths include what the producer reads (its inputs and file references, or its
+whole directory when it declares no inputs), bound through the consumer's
+imports, transitively. A thin workflow runs `cuenv ci` in one job, which runs
+the dependency. A workflow that runs each task in a job of its own — an
+expanded or release pipeline, or one with a matrix task — cannot run a task of
+another project, so `cuenv sync ci` refuses to generate one whose tasks depend
+on one, naming the dependency; set `mode: "thin"` on such a pipeline.
+`cuenv ci --export` emits single-job steps and is not affected.
 
 A run without `--path` covers every project of the module and skips the ones
 that have no `ci` block or do not define the requested pipeline. If **no**

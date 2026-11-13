@@ -35,6 +35,7 @@ impl EvaluationMetadataBuilder {
             references: non_empty(self.references),
             sources: non_empty(self.sources),
             caller_sources: non_empty(self.caller_sources),
+            declarations: None,
         }
     }
 }
@@ -123,18 +124,149 @@ const REFERENCE_PATH_HINT: &str = "hint: paths are relative to the project (for 
     `schema.#ModuleFiles`, the module root): no `..`, `.`, `.git` or empty segment, no leading \
     `/`, no surrounding space; for files outside the project use `schema.#ModuleFiles`";
 
+/// What to do about a task used as an input.
+const TASK_AS_INPUT_HINT: &str = "hint: a task is not an input: write `<task>.outputFiles` \
+    (`content.tasks.build.outputFiles` for a task of another project) to read the files it \
+    declares in `outputs`";
+
+/// What to do about a group used as an input.
+const GROUP_AS_INPUT_HINT: &str = "hint: groups cannot be inputs yet; list the `outputFiles` \
+    of the group's tasks";
+
 /// Append what to do to a CUE error that says what is wrong with an input.
 ///
-/// The hint is keyed on the field path in the raw error, never on the
-/// wording of the message, which differs between CUE releases: a path of a
-/// file reference fails at `…inputs.<n>.paths.<m>: invalid value`, and the
-/// raw text of that check is a regular expression.
+/// The hints are keyed on the field path in the raw error, as the CUE
+/// evaluator cuenv runs prints it, never on the wording of a message that
+/// differs between CUE releases:
+///
+/// - a path of a file reference fails at `…inputs.<n>.paths.<m>: invalid
+///   value`, and the raw text of that check is a regular expression;
+/// - a task or group used as an input fails at `…inputs.<n>: conflicting
+///   values {…}` with the task's or group's value;
+/// - a string input that leaves the project fails at
+///   `…._cuenvInputCheck."<input>": …`, after which its path from the module
+///   root is given, where the error says which file the project is in.
 fn with_input_hints(message: String) -> String {
+    let mut hints: Vec<String> = Vec::new();
     if message.lines().any(rejects_a_reference_path) {
-        format!("{message}\n{REFERENCE_PATH_HINT}")
-    } else {
-        message
+        hints.push(REFERENCE_PATH_HINT.to_string());
     }
+    match input_node_kind(&message) {
+        Some(InputNode::Task) => hints.push(TASK_AS_INPUT_HINT.to_string()),
+        Some(InputNode::Group) => hints.push(GROUP_AS_INPUT_HINT.to_string()),
+        None => {}
+    }
+    hints.extend(leaving_inputs(&message));
+    if hints.is_empty() {
+        message
+    } else {
+        format!("{message}\n{}", hints.join("\n"))
+    }
+}
+
+/// What kind of node a CUE error says was used as an input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputNode {
+    Task,
+    Group,
+}
+
+/// The kind of node used as an input, when a line of the error is the
+/// schema rejecting one: `<…>.inputs.<n>: conflicting values {<value>} and
+/// …`, where the value is a task (it has a `command` or `script`) or a group
+/// (`type: "group"`).
+fn input_node_kind(message: &str) -> Option<InputNode> {
+    message.lines().find_map(|line| {
+        let (field, value) = line.split_once(": conflicting values {")?;
+        let field = field.split_whitespace().last()?;
+        let segments: Vec<&str> = field.split('.').collect();
+        let [.., "inputs", index] = segments.as_slice() else {
+            return None;
+        };
+        if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        if value.starts_with("type:\"group\"") || value.contains(",type:\"group\"") {
+            Some(InputNode::Group)
+        } else if value.starts_with("command:")
+            || value.starts_with("script:")
+            || value.contains(",command:")
+            || value.contains(",script:")
+        {
+            Some(InputNode::Task)
+        } else {
+            None
+        }
+    })
+}
+
+/// A hint for each string input the schema rejected for leaving its
+/// project, giving its path from the module root.
+///
+/// The project's directory is the directory of the first position of the
+/// error in a file of the consuming module: the schema's own files (its
+/// `schema/` directory in this repository, an absolute path in the module
+/// cache) and `cue.mod` are skipped.
+fn leaving_inputs(message: &str) -> Vec<String> {
+    let lines: Vec<&str> = message.lines().collect();
+    let mut hints = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let Some((_, rest)) = line.split_once("._cuenvInputCheck.\"") else {
+            continue;
+        };
+        let Some((input, _)) = rest.split_once("\":") else {
+            continue;
+        };
+        let directory = lines[index + 1..]
+            .iter()
+            .map(|position| position.trim())
+            .take_while(|position| position.starts_with("./") || position.starts_with('/'))
+            .filter_map(|position| position.strip_prefix("./"))
+            .filter(|position| {
+                !position.starts_with("schema/") && !position.starts_with("cue.mod/")
+            })
+            .find_map(|position| {
+                let file = position.split(':').next()?;
+                Some(
+                    Path::new(file)
+                        .parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_default(),
+                )
+            });
+        let Some(directory) = directory else {
+            continue;
+        };
+        let mut resolved = PathBuf::new();
+        let mut inside = true;
+        for component in directory.join(input).components() {
+            match component {
+                std::path::Component::Normal(part) => resolved.push(part),
+                std::path::Component::ParentDir => inside &= resolved.pop(),
+                std::path::Component::CurDir => {}
+                std::path::Component::RootDir | std::path::Component::Prefix(_) => inside = false,
+            }
+        }
+        let hint = if inside && !resolved.as_os_str().is_empty() {
+            format!(
+                "hint: `{input}` is `{}` from the module root: write \
+                 `schema.#ModuleFiles & {{paths: [\"{}\"]}}`, or import the project that holds \
+                 it and write `<pkg>.#Files & {{paths: [...]}}` with paths from that project's \
+                 directory",
+                resolved.to_string_lossy().replace('\\', "/"),
+                resolved.to_string_lossy().replace('\\', "/")
+            )
+        } else {
+            format!(
+                "hint: `{input}` leaves the CUE module, and nothing above the module root can be \
+                 named"
+            )
+        };
+        if !hints.contains(&hint) {
+            hints.push(hint);
+        }
+    }
+    hints
 }
 
 /// Whether a line of a CUE error is the schema rejecting one path of a file
@@ -281,6 +413,49 @@ mod tests {
         ] {
             assert_eq!(with_input_hints(raw.to_string()), raw, "{raw}");
         }
+    }
+
+    #[test]
+    fn a_task_or_a_group_used_as_an_input_gets_its_hint() {
+        // The raw lines of the evaluator cuenv runs, as it reports a task
+        // and a group used as an input.
+        let task = "tasks.build: 8 errors in empty disjunction:\n  \
+                    tasks.build.inputs.1: conflicting values {command:\"sh\",args:[\"-c\",\"x\"],\
+                    inputs:[\"articles/**\"],outputs:[\"dist/built.txt\"]} and string \
+                    (mismatched types struct and string):\n      ./app/env.cue:8:1";
+        let group = "tasks.build.inputs.1: conflicting values {type:\"group\",lint:\
+                     {command:\"true\",inputs:[\"articles/**\"]}} and string (mismatched types \
+                     struct and string):";
+
+        assert!(with_input_hints(task.to_string()).ends_with(TASK_AS_INPUT_HINT));
+        assert!(with_input_hints(group.to_string()).ends_with(GROUP_AS_INPUT_HINT));
+        // A struct that is no task is left alone.
+        let other = "tasks.build.inputs.1: conflicting values {paths:[\"a\"]} and string";
+        assert_eq!(with_input_hints(other.to_string()), other);
+    }
+
+    #[test]
+    fn an_input_that_leaves_the_project_gets_its_path_from_the_module_root() {
+        let raw = "tasks.build._cuenvInputCheck.\"../content/articles/**\": an input cannot \
+                   leave the project directory:\n    ./schema/tasks.cue:225:22\n    \
+                   ./app/env.cue:8:1\n    ./app/env.cue:16:21";
+
+        let hinted = with_input_hints(raw.to_string());
+
+        assert!(
+            hinted.ends_with(
+                "hint: `../content/articles/**` is `content/articles/**` from the module root: \
+                 write `schema.#ModuleFiles & {paths: [\"content/articles/**\"]}`, or import the \
+                 project that holds it and write `<pkg>.#Files & {paths: [...]}` with paths from \
+                 that project's directory"
+            ),
+            "{hinted}"
+        );
+        let outside = raw.replace("../content", "../../outside");
+        assert!(
+            with_input_hints(outside).contains("leaves the CUE module"),
+            "{hinted}"
+        );
     }
 
     #[test]

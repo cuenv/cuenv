@@ -170,6 +170,7 @@ impl Compiler {
         group: &TaskGroup,
         ir: &mut IntermediateRepresentation,
     ) -> Result<(), CompilerError> {
+        let first = ir.tasks.len();
         // Sort keys for deterministic output
         let mut sorted_keys: Vec<_> = group.children.keys().collect();
         sorted_keys.sort();
@@ -177,6 +178,39 @@ impl Compiler {
             let child_node = &group.children[name];
             let task_name = format!("{prefix}.{name}");
             self.compile_task_node(&task_name, child_node, ir)?;
+        }
+        // What a group depends on, every task beneath it depends on, as a
+        // run of the group orders them: a job of a child waits for the
+        // group's dependencies of this project, and carries those of
+        // another project, which a workflow of a job per task cannot run.
+        let local: Vec<String> = group
+            .depends_on
+            .iter()
+            .map(cuenv_core::tasks::TaskDependency::task_name)
+            .filter(|dependency| !is_external(dependency))
+            .flat_map(|dependency| self.expand_dependency_to_leaf_tasks(dependency, prefix))
+            .collect();
+        let external: Vec<&str> = group
+            .depends_on
+            .iter()
+            .map(cuenv_core::tasks::TaskDependency::task_name)
+            .filter(|dependency| is_external(dependency))
+            .collect();
+        for task in ir.tasks.iter_mut().skip(first) {
+            for dependency in &local {
+                if !task.depends_on.contains(dependency) {
+                    task.depends_on.push(dependency.clone());
+                }
+            }
+            for dependency in &external {
+                if !task
+                    .external_dependencies
+                    .iter()
+                    .any(|known| known == dependency)
+                {
+                    task.external_dependencies.push((*dependency).to_string());
+                }
+            }
         }
         Ok(())
     }
@@ -335,7 +369,15 @@ impl Compiler {
             depends_on: task
                 .depends_on
                 .iter()
+                .filter(|dependency| !is_external(dependency.task_name()))
                 .flat_map(|d| self.expand_dependency_to_leaf_tasks(d.task_name(), id))
+                .collect(),
+            external_dependencies: task
+                .depends_on
+                .iter()
+                .map(cuenv_core::tasks::TaskDependency::task_name)
+                .filter(|dependency| is_external(dependency))
+                .map(str::to_string)
                 .collect(),
             cache_policy,
             deployment,
@@ -397,4 +439,9 @@ impl Compiler {
 /// Name of the artifact that carries a task's outputs between CI jobs.
 fn artifact_name_for_task(task_id: &str) -> String {
     format!("{}-artifacts", task_id.replace('.', "-"))
+}
+
+/// Whether a dependency names a task of another project (`#project:task`).
+fn is_external(dependency: &str) -> bool {
+    dependency.starts_with('#')
 }

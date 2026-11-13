@@ -111,12 +111,17 @@ construction lives in `crates/task-exec/src/graph/build.rs`, task output-ref
 dependency edge materialization lives in
 `crates/task-exec/src/graph/output_refs.rs`, and task path resolution for
 dotted/bracketed CUE task nodes lives in `crates/manifest/src/tasks/resolver.rs`.
-A dependency on a task of another project (`#project:task`) is followed by the
-task scope in `crates/task-exec/src/scope.rs`, which `cuenv task`, `cuenv ci`
-and `cuenv up` all build their graphs from. It loads the other project when a
-selected task reaches it, qualifies every name inside it, and keeps its tasks
-out of what a run can select. Each command supplies where the projects come
-from (`ProjectSource`) and what each project's tasks run with: the executor
+A dependency on a task of another project, reached through that project's
+import and named `#project:task` when the project is loaded
+(`crates/core/src/module/node_checks.rs` reads the schema's `cuenvRef` and
+`outputFiles` stamps), is followed by the task scope in
+`crates/task-exec/src/scope.rs`, which `cuenv task`, `cuenv ci` and `cuenv up`
+all build their graphs from. It binds the project name among what the
+referring project imports, loads the project when a selected task reaches it,
+qualifies every name inside it, expands the `outputFiles` read from it into the
+files it declares, and keeps its tasks out of what a run can select. Each
+command supplies where the projects come from (`ProjectSource`) and what each
+project's tasks run with: the executor
 reads a qualified task's directory, CUE module and cache identity from
 `ExecutorConfig::external_projects`, and its environment from
 `TaskEnvironments`, so a task of another project never runs with the consuming
@@ -127,9 +132,10 @@ synthetic hooks, workspace setup, cross-project hooks, error/label/build-for-tas
 coverage, and scale/edge cases. CLI task-graph stress tests in
 `crates/cuenv/tests/stress_tests.rs` keep ignored large-graph scenarios on
 fallible graph mutation and ordering helpers instead of file-level unwrap/expect
-allowances. CLI cross-project materialization coverage in
-`crates/cuenv/tests/cross_project_deps.rs` keeps temporary repo/module setup and
-command execution on `Result` helpers for the same reason.
+allowances. CLI cross-project coverage in
+`crates/cuenv/tests/task_references.rs` and
+`crates/cuenv/tests/cross_project_execution.rs` keeps temporary repo/module
+setup and command execution on `Result` helpers for the same reason.
 Generic task DAG primitives live in `crates/task-graph/src/graph.rs`;
 affected-task and transitive-closure helpers live in
 `crates/task-graph/src/graph/analysis.rs`, while resolver-backed group expansion

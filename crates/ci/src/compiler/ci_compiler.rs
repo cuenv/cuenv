@@ -6,7 +6,9 @@ use cuenv_core::manifest::Project;
 
 use super::{CompilerError, CompilerOptions, FileAnchors};
 use cuenv_core::module::ImportedProjects;
-use std::sync::OnceLock;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Compiler for transforming cuenv tasks to IR
 pub struct Compiler {
@@ -19,6 +21,11 @@ pub struct Compiler {
     /// The packages the project imports, read the first time a file
     /// reference is bound (see [`CompilerOptions::file_anchors`]).
     pub(super) imports: OnceLock<Result<ImportedProjects, String>>,
+
+    /// The packages each other project a pipeline reaches imports, by its
+    /// directory relative to the module root, read the first time a
+    /// reference of it is bound.
+    pub(super) foreign_imports: Mutex<BTreeMap<PathBuf, Result<ImportedProjects, String>>>,
 }
 
 impl Compiler {
@@ -35,7 +42,35 @@ impl Compiler {
             project,
             options,
             imports: OnceLock::new(),
+            foreign_imports: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// The directory, relative to the module root, of the project called
+    /// `name`, as the project in `from` (relative to the module root; `None`
+    /// for the project being compiled) means it: among what that project
+    /// imports.
+    pub(super) fn bind_project(&self, from: Option<&Path>, name: &str) -> Result<PathBuf, String> {
+        let Some(from) = from else {
+            return self.imported_projects()?.bind(name);
+        };
+        let module_root = self.options.module_root.as_ref().ok_or_else(|| {
+            "this compilation does not know where the module lies, so it cannot read which \
+             projects another project imports"
+                .to_string()
+        })?;
+        let mut known = self
+            .foreign_imports
+            .lock()
+            .map_err(|_| "the imports of other projects are unavailable".to_string())?;
+        let imported = known.entry(from.to_path_buf()).or_insert_with(|| {
+            crate::imports::imported_projects(
+                module_root,
+                &module_root.join(from),
+                crate::imports::PROJECT_PACKAGE,
+            )
+        });
+        imported.as_ref().map_err(Clone::clone)?.bind(name)
     }
 
     /// The packages the project imports, where its file references bind.

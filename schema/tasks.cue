@@ -166,6 +166,11 @@ package schema
 	stderr: #TaskOutputRef & {cuenvProject: _cuenvProject, cuenvTask: _name, cuenvOutput: "stderr"}
 	exitCode: #TaskOutputRef & {cuenvProject: _cuenvProject, cuenvTask: _name, cuenvOutput: "exitCode"}
 
+	// Every file this task declares in `outputs`, as an input of another
+	// task: `inputs: [content.tasks.build.outputFiles]`. Reading them also
+	// makes the reader depend on this task. Reserved.
+	outputFiles: #TaskOutputFilesRef & {cuenvProject: _cuenvProject, cuenvTask: _name}
+
 	// Command-based execution
 	command?: string
 	args?: [...(string | #TaskOutputRef)]
@@ -209,6 +214,15 @@ package schema
 
 	// Input files/patterns for caching and hermetic execution
 	inputs?: [...#Input]
+
+	// A string input is a path of this project and cannot leave it. The
+	// error is keyed on the input as written and unified with it, so the
+	// user's own line is reported.
+	_cuenvInputCheck: {
+		if inputs != _|_ for v in inputs if (v & =~"(^|/)\\.\\.(/|$)") != _|_ {
+			(v & string): v & error(_cuenvLeavesProject)
+		}
+	}
 
 	// Output files/patterns for caching
 	outputs?: [...string]
@@ -322,12 +336,18 @@ package schema
 // =============================================================================
 
 // Accepted task inputs:
-// - string: File path, directory, or glob pattern
-// - #ProjectReference: Cross-project task outputs
-// - #TaskOutput: Same-project task outputs
+// - string: File path, directory, or glob pattern of this project
+// - #TaskOutput: The declared outputs of a task of this project, by name
+// - #TaskOutputFilesRef: The declared outputs of a task, by reference:
+//   `tasks.<name>.outputFiles`, or `<pkg>.tasks.<name>.outputFiles` through
+//   the import of another project
 // - #ProjectFiles: Files of another project, by import (`<pkg>.#Files`)
 // - #ModuleFiles: Files anywhere in the module, from the module root
-#Input: string | #ProjectReference | *#TaskOutput | #ProjectFiles | #ModuleFiles
+#Input: string | #TaskOutput | #TaskOutputFilesRef | #ProjectFiles | #ModuleFiles
+
+// What a string input with a `..` segment is told: it would leave the
+// project's directory, where no reader of inputs can follow it.
+_cuenvLeavesProject: "an input cannot leave the project directory: import the project that holds these files and use `<pkg>.#Files & {paths: [...]}` (or `<pkg>.tasks.<name>.outputFiles` for files a task builds); for files outside every project use `schema.#ModuleFiles & {paths: [...]}` with paths from the module root (see https://cuenv.dev/how-to/run-tasks/#files-of-another-project)"
 
 // One path of a file reference: relative to its anchor and inside it, and
 // never into the repository's metadata. Every reader of inputs sees the same
@@ -354,22 +374,26 @@ package schema
 	paths!: [#AnchoredPath, ...#AnchoredPath]
 }
 
-// Reference to another project's task within the same Git root
-#ProjectReference: {
-	project!: string
-	task!:    string
-	map!: [...#Mapping]
-}
-
 #Mapping: {
 	from!: string
 	to!:   string
 }
 
-// Reference to another task's outputs within the same project
+// Reference to another task's outputs within the same project, by name.
+// New configurations write `tasks.<name>.outputFiles` instead.
 #TaskOutput: {
 	task!: string
 	map?: [...#Mapping]
+}
+
+// The declared outputs of one task, as an input of another: every path in
+// that task's `outputs`. The schema writes it on every task as
+// `outputFiles`; it is not written by hand. Reading it adds a dependency on
+// the task.
+#TaskOutputFilesRef: {
+	cuenvOutputFilesRef: true
+	cuenvProject:        string
+	cuenvTask:           string
 }
 
 // =============================================================================

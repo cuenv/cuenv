@@ -112,6 +112,15 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: false,
         },
         ExampleExpectations {
+            // The producer; its consumer `task-references/app` depends on a
+            // task of another project, which a graph of one project cannot
+            // hold (`crates/cuenv/tests/task_references.rs` runs it).
+            name: "task-references/content",
+            min_task_count: 1, // build
+            has_hooks: false,
+            has_env: false,
+        },
+        ExampleExpectations {
             name: "contrib-rust-task",
             min_task_count: 1, // fmt
             has_hooks: false,

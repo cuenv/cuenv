@@ -476,7 +476,6 @@ async fn execute_service_task_dependencies(
         // Inputs are hashed below the workspace, as `cuenv task` hashes
         // them: a task may read what a task of another project wrote.
         sandbox_hasher_root: Some(projects::workspace_root(context.project_root)),
-        sandbox_project_roots: BTreeMap::new(),
         external_projects: scope
             .external_projects()
             .map(|(key, project)| {
@@ -816,13 +815,18 @@ mod tests {
     /// `app`: a task that consumes an output of `content` and records the
     /// variables it could see. Commands use shell builtins only: a task's
     /// `PATH` holds nothing else in the Nix build sandbox.
+    ///
+    /// It reads `content.tasks.articles.outputFiles` through the import of
+    /// `content`. The fixture has no schema, so the reference the schema
+    /// writes on every task is spelled here.
     const APP: &str = r#"package cuenv
+import content "test.example/up/content:cuenv"
 name: "app"
 env: APP_VALUE: "app-own"
 tasks: prepare: {
 	command: "sh"
-	args: ["-c", "IFS= read -r line < vendor/one.md && printf '%s\\n' \"$line\" > seen.md && printf '%s|%s' \"${APP_VALUE:-unset}\" \"${CONTENT_VALUE:-unset}\" > env.txt"]
-	inputs: [{project: "content", task: "articles", map: [{from: "rendered.md", to: "vendor/one.md"}]}]
+	args: ["-c", "IFS= read -r line < ../content/rendered.md && printf '%s\\n' \"$line\" > seen.md && printf '%s|%s' \"${APP_VALUE:-unset}\" \"${CONTENT_VALUE:-unset}\" > env.txt"]
+	inputs: [{cuenvOutputFilesRef: true, cuenvProject: content.name, cuenvTask: "articles"}]
 	outputs: ["seen.md", "env.txt"]
 }
 "#;

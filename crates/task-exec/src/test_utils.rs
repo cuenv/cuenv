@@ -4,7 +4,7 @@
 //! is invisible across crate boundaries); candidates for the shared
 //! `crates/test-support` crate planned in RFC-0006 phase 7a.
 
-use crate::{Input, ProjectReference, Task, TaskDependency};
+use crate::{Task, TaskDependency};
 
 /// Create a test task with dependencies and optional labels
 pub fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
@@ -13,28 +13,6 @@ pub fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
         depends_on: deps.into_iter().map(TaskDependency::from_name).collect(),
         description: Some(format!("Test task {}", name)),
         labels: labels.into_iter().map(String::from).collect(),
-        ..Default::default()
-    }
-}
-
-/// Create a task that references another project's task (TaskRef placeholder)
-pub fn create_task_ref(ref_str: &str, deps: Vec<&str>) -> Task {
-    let mut task = Task::from_task_ref(ref_str);
-    task.depends_on = deps.into_iter().map(TaskDependency::from_name).collect();
-    task
-}
-
-/// Create a task with project reference input
-pub fn create_task_with_project_ref(
-    name: &str,
-    deps: Vec<&str>,
-    reference: ProjectReference,
-) -> Task {
-    Task {
-        command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(TaskDependency::from_name).collect(),
-        description: Some(format!("Test task {}", name)),
-        inputs: vec![Input::Project(reference)],
         ..Default::default()
     }
 }

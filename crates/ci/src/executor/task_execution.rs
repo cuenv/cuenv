@@ -717,7 +717,6 @@ async fn compile_and_execute_ir(
 fn relocates_an_input(task: &Task) -> bool {
     task.inputs.iter().any(|input| match input {
         Input::Mapped(mapping) => mapping.relocates(),
-        Input::Project(reference) => !reference.map.is_empty(),
         // A file reference is read where it lies, in the checkout.
         Input::Path(_) | Input::Task(_) | Input::Files(_) => false,
     })
@@ -772,7 +771,6 @@ async fn execute_staged(staged: StagedTask<'_>) -> std::result::Result<TaskOutpu
         cue_module_root: execution.cue_module_root.clone(),
         cache: None,
         sandbox_hasher_root: Some(staging.workspace_root.to_path_buf()),
-        sandbox_project_roots: BTreeMap::new(),
         external_projects: staging
             .project_key
             .map(|key| (key.to_string(), execution))
@@ -979,6 +977,23 @@ mod tests {
         // the run may resolve: also those of a dependency's own project.
         let directory = tempfile::tempdir().expect("temporary directory");
         let root = directory.path().canonicalize().expect("canonical");
+        // `app` reaches `content` through an import, as a task of another
+        // project is only ever reached.
+        let write = |relative: &str, content: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("directory");
+            std::fs::write(path, content).expect("file");
+        };
+        write(
+            "cue.mod/module.cue",
+            "module: \"test.example/m\"\nlanguage: version: \"v0.14.1\"\n",
+        );
+        write("content/env.cue", "package cuenv\nname: \"content\"\n");
+        write("docs/env.cue", "package cuenv\nname: \"docs\"\n");
+        write(
+            "app/env.cue",
+            "package cuenv\nimport content \"test.example/m/content:cuenv\"\nname: \"app\"\n_content: content\n",
+        );
         let project = |name: &str, value: &str, tasks: serde_json::Value| {
             std::fs::create_dir_all(root.join(name)).expect("directory");
             let project: Project = serde_json::from_value(serde_json::json!({

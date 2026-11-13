@@ -17,6 +17,38 @@ instance say where `@embed` reads from, add `cue/provenance`, and stop the shari
 down from a comprehension, which panicked; see
 `2026-11-03-infrastructure-nested-output-references.md`.
 
+Since cuenv 0.75.0 the fork is pinned at
+[`806b303`](https://github.com/rawkode/cue/commit/806b30344b62), the head of
+its `share-imported-typed-refs` branch (`crates/cuengine/go.mod`). That commit
+extends typed-reference sharing to references into imported packages, so a
+chain of projects whose tasks depend on the tasks of the projects they import
+(`dependsOn: [content.tasks.articles]`, see
+`2026-11-12-cross-project-references.md`) evaluates in linear time, as a
+same-package chain already did. Measured on a chain of eight projects, each
+with two tasks depending on both tasks of the next project through its import:
+`cuenv task a --dry-run` in the first project, which loads and plans all eight,
+takes 1.2 seconds with a debug build, while stock CUE 0.17.1 does not finish
+`cue export` of that project within 120 seconds.
+`a_deep_chain_of_projects_evaluates_without_exploding`
+(`crates/cuenv/tests/task_references.rs`) generates that chain and fails on an
+exponential regression; it is never checked in as a fixture, since plain
+`cue export` of it is what explodes. `ci.schema-compat` exports a chain of
+three projects (`tests/schema-compat/testdata/modules/task-references`) under
+every supported CUE release.
+
+Plain `cue export` slows with what stands behind an imported task, not only
+with long chains. Take a project that depends on another project's task, where
+that task has one dependency of its own. Stock CUE v0.18.0-rc.1 exports it in
+about 3.4 seconds, and v0.17.1 did not finish within 280 seconds. The fork
+evaluates it at once.
+
+A lighter type for `dependsOn` entries, `{cuenvRef!: {kind!: ...}, ...} |
+[...]`, makes that project export in 0.05 seconds on every release, but loses
+the fork's sharing. The reference is then no longer constrained by the
+definition that constrains the task, so a same-package chain of depth 7 with
+fan-out 2 runs out of memory under the bridge, where it took 0.34 seconds.
+Stock CUE runs out of memory on that chain with either type.
+
 The schema keeps its types. `dependsOn` on `#Task`, `#TaskGroup`,
 `#ContainerImage` and `#Service`, `#Pipeline.tasks`, `#MatrixTask.task` and
 `#Watch.rebuild` are typed with `#TaskNode` unions. #515 had made `dependsOn`

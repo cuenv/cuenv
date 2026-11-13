@@ -12,14 +12,14 @@ struct Module {
     root: PathBuf,
     projects: BTreeMap<String, Project>,
     output_ref_deps: BTreeMap<String, Vec<OutputRefDep>>,
-    /// Whether the module's projects can be listed by name.
-    lists_projects: bool,
+    /// How often a project name was bound.
     lookups: Cell<usize>,
     evaluations: Cell<usize>,
-    /// How often a file reference's project was bound.
-    files_lookups: Cell<usize>,
-    /// Names a file reference cannot bind, and why.
+    /// Names that cannot bind, and why.
     unbindable: BTreeMap<String, String>,
+    /// Names that cannot bind where the project in a directory writes them
+    /// (it does not import them), by directory and name, and why.
+    not_imported: BTreeMap<(String, String), String>,
 }
 
 impl Module {
@@ -31,11 +31,10 @@ impl Module {
             root,
             projects: BTreeMap::new(),
             output_ref_deps: BTreeMap::new(),
-            lists_projects: true,
             lookups: Cell::new(0),
             evaluations: Cell::new(0),
-            files_lookups: Cell::new(0),
             unbindable: BTreeMap::new(),
+            not_imported: BTreeMap::new(),
         }
     }
 
@@ -73,24 +72,19 @@ impl Module {
 }
 
 impl ProjectSource for Module {
-    fn directory_of(&self, _origin: &Path, name: &str) -> Result<Option<PathBuf>> {
-        self.lookups.set(self.lookups.get() + 1);
-        if !self.lists_projects {
-            return Err(Error::configuration("a directory does not evaluate"));
-        }
-        Ok(self
-            .projects
-            .iter()
-            .find(|(_, project)| project.name == name)
-            .map(|(directory, _)| self.directory(directory)))
-    }
-
-    fn files_anchor(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String> {
+    fn imported_project(&self, origin: &Path, name: &str) -> std::result::Result<PathBuf, String> {
         // Every project imports every other here, so the name binds to the
-        // project's own directory, unless the origin "imports" it from a
-        // child directory that only inherits the name.
-        self.files_lookups.set(self.files_lookups.get() + 1);
+        // first directory that carries it, unless the origin "imports" it
+        // from a child directory that only inherits the name.
+        self.lookups.set(self.lookups.get() + 1);
         if let Some(problem) = self.unbindable.get(name) {
+            return Err(problem.clone());
+        }
+        let written_in = origin
+            .strip_prefix(&self.root)
+            .map(forward_slashes)
+            .unwrap_or_default();
+        if let Some(problem) = self.not_imported.get(&(written_in, name.to_string())) {
             return Err(problem.clone());
         }
         self.projects
@@ -100,25 +94,6 @@ impl ProjectSource for Module {
             })
             .map(|(directory, _)| self.directory(directory))
             .ok_or_else(|| format!("project '{name}' is not imported here"))
-    }
-
-    fn name_of(&self, root: &Path) -> Option<String> {
-        if !self.lists_projects {
-            return None;
-        }
-        let name = &self
-            .projects
-            .iter()
-            .find(|(directory, _)| self.directory(directory) == root)?
-            .1
-            .name;
-        // The name means the first directory that carries it.
-        let means = self
-            .projects
-            .iter()
-            .find(|(_, project)| &project.name == name)
-            .map(|(directory, _)| self.directory(directory))?;
-        (means == root).then(|| name.clone())
     }
 
     fn workspace_root(&self, _origin: &Path) -> PathBuf {
@@ -148,7 +123,9 @@ impl ProjectSource for Module {
     }
 }
 
-fn app_and_content(reference: &str) -> Module {
+/// `app`, whose `build` reads `content.tasks.articles.outputFiles` (as
+/// loading names it, `{task: "#content:articles"}`).
+fn app_and_content() -> Module {
     Module::new()
         .project(
             "app",
@@ -157,11 +134,7 @@ fn app_and_content(reference: &str) -> Module {
                 "tasks": {
                     "build": {
                         "command": "make",
-                        "inputs": ["src/**", {
-                            "project": reference,
-                            "task": "articles",
-                            "map": [{"from": "out/one.md", "to": "vendor/one.md"}],
-                        }],
+                        "inputs": ["src/**", {"task": "#content:articles"}],
                     },
                     "lint": {"command": "lint"},
                 },
@@ -229,7 +202,7 @@ fn a_qualified_name_is_read_as_project_and_task() {
 
 #[test]
 fn a_dependency_on_another_project_runs_first_and_cannot_be_selected() {
-    let module = app_and_content("content");
+    let module = app_and_content();
     let mut scope = module.scope("app");
 
     scope.reach(["build"], &module);
@@ -252,8 +225,8 @@ fn a_dependency_on_another_project_runs_first_and_cannot_be_selected() {
 }
 
 #[test]
-fn a_project_reference_becomes_module_relative_mapped_inputs() {
-    let module = app_and_content("content");
+fn output_files_of_another_project_are_staged_where_they_are_written() {
+    let module = app_and_content();
     let mut scope = module.scope("app");
 
     scope.reach(["build"], &module);
@@ -265,17 +238,72 @@ fn a_project_reference_becomes_module_relative_mapped_inputs() {
             Input::Path("src/**".to_string()),
             Input::Mapped(MappedInput {
                 source: "content/out/one.md".to_string(),
-                destination: "app/vendor/one.md".to_string(),
+                destination: "content/out/one.md".to_string(),
                 producer_task: Some("#content:articles".to_string()),
                 anchor: None,
             }),
         ]
     );
+    assert_eq!(dependencies(build), ["#content:articles"]);
+}
+
+#[test]
+fn a_map_on_the_outputs_of_another_project_fails_the_reader() {
+    let module = Module::new()
+        .project(
+            "app",
+            json!({
+                "name": "app",
+                "tasks": {"build": {"command": "make", "inputs": [
+                    {"task": "#content:articles", "map": [{"from": "out/one.md", "to": "vendor/one.md"}]},
+                ]}},
+            }),
+        )
+        .project(
+            "content",
+            json!({"name": "content", "tasks": {"articles": {"command": "render", "outputs": ["out/one.md"]}}}),
+        );
+    let mut scope = module.scope("app");
+
+    scope.reach(["build"], &module);
+
+    let error = scope.graph(["build"]).err().unwrap().to_string();
+    assert!(
+        error.contains("`map` applies to tasks of this project only"),
+        "{error}"
+    );
+}
+
+#[test]
+fn output_files_of_a_task_that_declares_no_outputs_fail_the_reader() {
+    let module = Module::new()
+        .project(
+            "app",
+            json!({
+                "name": "app",
+                "tasks": {"build": {"command": "make", "inputs": [{"task": "#content:articles"}]}},
+            }),
+        )
+        .project(
+            "content",
+            json!({"name": "content", "tasks": {"articles": {"command": "render"}}}),
+        );
+    let mut scope = module.scope("app");
+
+    scope.reach(["build"], &module);
+
+    let error = scope.graph(["build"]).err().unwrap().to_string();
+    assert!(
+        error.contains(
+            "reads the `outputFiles` of '#content:articles', which declares no `outputs`"
+        ),
+        "{error}"
+    );
 }
 
 #[test]
 fn a_task_of_another_project_belongs_to_that_project() {
-    let module = app_and_content("content");
+    let module = app_and_content();
     let mut scope = module.scope("app");
     scope.reach(["build"], &module);
 
@@ -299,9 +327,9 @@ fn a_task_of_another_project_belongs_to_that_project() {
 }
 
 #[test]
-fn however_a_project_is_spelled_its_tasks_are_one_node() {
-    // By name in one task, by path in another: one project, loaded once.
-    let module = app_and_content("../content").project(
+fn a_project_reached_from_two_projects_is_one_node() {
+    // Reached from `docs` and through `app`: one project, loaded once.
+    let module = app_and_content().project(
         "docs",
         json!({
             "name": "docs",
@@ -328,7 +356,7 @@ fn however_a_project_is_spelled_its_tasks_are_one_node() {
 
 #[test]
 fn nothing_is_loaded_for_a_task_that_reaches_no_other_project() {
-    let module = app_and_content("content");
+    let module = app_and_content();
     let mut scope = module.scope("app");
 
     scope.reach(["lint"], &module);
@@ -340,38 +368,69 @@ fn nothing_is_loaded_for_a_task_that_reaches_no_other_project() {
 
 #[test]
 fn a_project_that_cannot_be_loaded_fails_the_task_that_needs_it_and_says_why() {
-    let mut module = app_and_content("content");
-    module.lists_projects = false;
+    let mut module = app_and_content();
+    module.unbindable.insert(
+        "content".to_string(),
+        "project 'content' is not imported here".to_string(),
+    );
     let mut scope = module.scope("app");
 
     scope.reach(["build", "lint"], &module);
 
     assert!(scope.graph(["lint"]).is_ok());
     let error = scope.graph(["build"]).err().unwrap().to_string();
-    assert!(error.contains("#content:articles"), "{error}");
     assert!(
-        error.contains("Project 'content' could not be loaded"),
+        error.contains(
+            "task 'build': depends on '#content:articles', but project 'content' does not bind \
+             here: project 'content' is not imported here"
+        ),
         "{error}"
     );
-    assert!(error.contains("a directory does not evaluate"), "{error}");
+    assert_eq!(module.evaluations.get(), 0, "nothing else is looked for");
     // The input is left as it was written, never dropped.
-    assert!(
-        task(&scope, "build")
-            .inputs
-            .iter()
-            .any(|input| input.as_project().is_some())
+    assert_eq!(
+        task(&scope, "build").inputs[1].task_output_name(),
+        Some("#content:articles")
     );
 }
 
 #[test]
-fn a_path_that_leaves_the_workspace_is_refused() {
-    let module = app_and_content("../../outside");
+fn a_name_that_does_not_bind_where_it_is_written_fails_whatever_else_bound_it() {
+    // `app` imports `content` and `lib`; `lib` names `content` too, but does
+    // not import it. `content` is loaded for `app`, and never stands in for
+    // what `lib` wrote.
+    let mut module = app_and_content().project(
+        "lib",
+        json!({
+            "name": "lib",
+            "tasks": {"make": {"command": "make", "dependsOn": ["#content:articles"]}},
+        }),
+    );
+    if let Some(TaskNode::Task(build)) = module
+        .projects
+        .get_mut("app")
+        .and_then(|app| app.tasks.get_mut("build"))
+    {
+        build
+            .depends_on
+            .push(TaskDependency::from_name("#lib:make"));
+    }
+    module.not_imported.insert(
+        ("lib".to_string(), "content".to_string()),
+        "project 'content' is not imported here".to_string(),
+    );
     let mut scope = module.scope("app");
 
     scope.reach(["build"], &module);
 
     let error = scope.graph(["build"]).err().unwrap().to_string();
-    assert!(error.contains("could not be loaded"), "{error}");
+    assert!(
+        error.contains(
+            "task '#lib:make': depends on '#content:articles', but project 'content' does not \
+             bind here: project 'content' is not imported here"
+        ),
+        "{error}"
+    );
 }
 
 #[test]
@@ -476,7 +535,7 @@ fn names_inside_another_project_never_mean_a_task_of_this_one() {
 fn a_task_the_walk_never_reached_cannot_be_put_in_a_graph() {
     // Its dependencies are still as its project wrote them, and would be
     // read as tasks of the wrong project.
-    let module = app_and_content("content");
+    let module = app_and_content();
     let mut scope = module.scope("app");
     scope.reach(["build"], &module);
 
@@ -485,17 +544,13 @@ fn a_task_the_walk_never_reached_cannot_be_put_in_a_graph() {
     assert!(error.contains("outside the scope of this run"), "{error}");
 }
 
-/// `app` with a group and a sequence whose members consume `content`, each
-/// spelling the project as a path.
+/// `app` with a group and a sequence whose members read the `outputFiles`
+/// of a task of `content`.
 fn nested_consumers() -> Module {
     let consumer = || {
         json!({
             "command": "make",
-            "inputs": [{
-                "project": "../content",
-                "task": "articles",
-                "map": [{"from": "out/one.md", "to": "vendor/one.md"}],
-            }],
+            "inputs": [{"task": "#content:articles"}],
         })
     };
     Module::new()
@@ -511,7 +566,7 @@ fn nested_consumers() -> Module {
         )
         .project(
             "content",
-            json!({"name": "content", "tasks": {"articles": {"command": "render"}}}),
+            json!({"name": "content", "tasks": {"articles": {"command": "render", "outputs": ["out/one.md"]}}}),
         )
 }
 
@@ -519,7 +574,7 @@ fn mapped_from_content(task: &Task) -> bool {
     task.inputs
         == [Input::Mapped(MappedInput {
             source: "content/out/one.md".to_string(),
-            destination: "app/vendor/one.md".to_string(),
+            destination: "content/out/one.md".to_string(),
             producer_task: Some("#content:articles".to_string()),
             anchor: None,
         })]
@@ -572,7 +627,7 @@ fn every_copy_of_a_node_is_resolved_once_whichever_name_reaches_it_first() {
 
 #[test]
 fn a_dependency_chain_across_three_projects_is_followed() {
-    let module = app_and_content("content").project(
+    let module = app_and_content().project(
         "sources",
         json!({
             "name": "sources",
@@ -585,13 +640,9 @@ fn a_dependency_chain_across_three_projects_is_followed() {
         .get_mut("content")
         .and_then(|content| content.tasks.get_mut("articles"))
     {
-        articles.inputs = vec![Input::Project(ProjectReference {
-            project: "sources".to_string(),
-            task: "pull".to_string(),
-            map: vec![crate::Mapping {
-                from: "raw.json".to_string(),
-                to: "in/raw.json".to_string(),
-            }],
+        articles.inputs = vec![Input::Task(crate::TaskOutput {
+            task: "#sources:pull".to_string(),
+            map: None,
         })];
         articles
             .depends_on
@@ -605,12 +656,12 @@ fn a_dependency_chain_across_three_projects_is_followed() {
         order(&scope.graph(["build"]).unwrap()),
         ["#sources:pull", "#content:articles", "build"]
     );
-    // The middle project's mapping is placed below the middle project.
+    // The middle project reads the files of the last where they are built.
     assert_eq!(
         task(&scope, "#content:articles").inputs,
         vec![Input::Mapped(MappedInput {
             source: "sources/raw.json".to_string(),
-            destination: "content/in/raw.json".to_string(),
+            destination: "sources/raw.json".to_string(),
             producer_task: Some("#sources:pull".to_string()),
             anchor: None,
         })]
@@ -647,42 +698,6 @@ fn a_reference_back_to_the_runs_own_project_is_a_local_dependency() {
         order(&scope.graph(["build"]).unwrap()),
         ["schema", "#content:articles", "build"]
     );
-}
-
-#[test]
-fn a_project_reached_by_path_is_qualified_with_its_path_in_the_workspace() {
-    // `content/drafts` inherits the name `content`. Reached by path, it is
-    // never confused with the project that name means.
-    let module = Module::new()
-        .project(
-            "app",
-            json!({
-                "name": "app",
-                "tasks": {
-                    "build": {
-                        "command": "make",
-                        "dependsOn": ["#content:articles", "#../content/drafts:articles"],
-                    },
-                },
-            }),
-        )
-        .project(
-            "content",
-            json!({"name": "content", "tasks": {"articles": {"command": "render"}}}),
-        )
-        .project(
-            "content/drafts",
-            json!({"name": "content", "tasks": {"articles": {"command": "drafts"}}}),
-        );
-    let mut scope = module.scope("app");
-
-    scope.reach(["build"], &module);
-
-    let mut build = dependencies(task(&scope, "build"));
-    build.sort_unstable();
-    assert_eq!(build, ["#/content/drafts:articles", "#content:articles"]);
-    assert_eq!(task(&scope, "#content:articles").command, "render");
-    assert_eq!(task(&scope, "#/content/drafts:articles").command, "drafts");
 }
 
 /// Two members of one bun workspace, each with the contributor's steps
@@ -781,29 +796,20 @@ fn members_of_different_workspaces_each_install() {
 }
 
 #[test]
-fn a_module_below_its_workspace_and_a_project_beside_it_share_one_frame() {
-    // `tools` is not below the module root of `app`. Its files are still
-    // named from that root, so one frame places both sides of the mapping.
+fn output_files_of_a_project_outside_the_module_fail_the_reader() {
+    // `tools` is not below the module root of `app`: tasks of the same
+    // module only can be read through `outputFiles`.
     let module = Module::new()
         .project(
             "services/app",
             json!({
                 "name": "app",
-                "tasks": {
-                    "build": {
-                        "command": "make",
-                        "inputs": [{
-                            "project": "/tools",
-                            "task": "generate",
-                            "map": [{"from": "out", "to": "generated"}],
-                        }],
-                    },
-                },
+                "tasks": {"build": {"command": "make", "inputs": [{"task": "#tools:generate"}]}},
             }),
         )
         .project(
             "tools",
-            json!({"name": "tools", "tasks": {"generate": {"command": "generate"}}}),
+            json!({"name": "tools", "tasks": {"generate": {"command": "generate", "outputs": ["out"]}}}),
         );
     let app = &module.projects["services/app"];
     let mut scope = TaskScope::new(RootProject {
@@ -818,15 +824,8 @@ fn a_module_below_its_workspace_and_a_project_beside_it_share_one_frame() {
 
     scope.reach(["build"], &module);
 
-    assert_eq!(
-        task(&scope, "build").inputs,
-        vec![Input::Mapped(MappedInput {
-            source: "../tools/out".to_string(),
-            destination: "app/generated".to_string(),
-            producer_task: Some("#tools:generate".to_string()),
-            anchor: None,
-        })]
-    );
+    let error = scope.graph(["build"]).err().unwrap().to_string();
+    assert!(error.contains("outside this CUE module"), "{error}");
 }
 
 /// `app` reads `inputs` in its task `build`; `content` holds an article
@@ -868,9 +867,9 @@ fn a_file_reference_is_bound_to_its_anchor_and_loads_no_project() {
         "no project is loaded for its files"
     );
     assert_eq!(
-        (module.lookups.get(), module.files_lookups.get()),
-        (0, 1),
-        "the name is bound among the imports, never by listing the module"
+        module.lookups.get(),
+        1,
+        "the name is bound among the imports, once"
     );
     assert_eq!(
         task(&scope, "build").inputs,
@@ -971,30 +970,4 @@ fn a_problem_recorded_against_a_reached_node_fails_the_graph() {
         "{error}"
     );
     assert!(scope.graph(["lint"]).is_ok());
-}
-
-#[test]
-fn a_project_whose_name_is_not_known_is_qualified_with_its_path() {
-    // The module's names cannot be listed, and a path needs no listing: the
-    // project is still found, and named by where it lies in the workspace.
-    let mut module = app_and_content("../content");
-    module.lists_projects = false;
-    let mut scope = module.scope("app");
-
-    scope.reach(["build"], &module);
-
-    assert_eq!(module.lookups.get(), 0);
-    assert_eq!(
-        order(&scope.graph(["build"]).unwrap()),
-        ["#/content:articles", "build"]
-    );
-    assert_eq!(
-        task(&scope, "build").inputs.last(),
-        Some(&Input::Mapped(MappedInput {
-            source: "content/out/one.md".to_string(),
-            destination: "app/vendor/one.md".to_string(),
-            producer_task: Some("#/content:articles".to_string()),
-            anchor: None,
-        }))
-    );
 }

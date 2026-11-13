@@ -1,12 +1,14 @@
 //! Which directory a project name means to the project that imports it.
 //!
 //! A file reference (`content.#Files & {paths: [...]}`) carries the name of
-//! the project whose files it reads, stamped by that project's `#Files`. It
-//! can only have been written through an import of that project, so the
-//! name is looked up among the packages the consuming project imports,
-//! never among every project of the module: a hand-written reference to a
-//! project that is not imported does not bind, and a same-named project the
-//! consumer does not import is never bound in its place.
+//! the project whose files it reads, stamped by that project's `#Files`, and
+//! a task of another project (`content.tasks.build`, or its `outputFiles`)
+//! carries the name of the project it belongs to. Either can only have been
+//! written through an import of that project, so the name is looked up
+//! among the packages the referring project imports, never among every
+//! project of the module: a hand-written reference to a project that is not
+//! imported does not bind, and a same-named project the referring project
+//! does not import is never bound in its place.
 //!
 //! The name means its declaring directory: the shallowest directory, among
 //! the imported package's own and the directories above it holding files of
@@ -67,9 +69,9 @@ impl ImportedProjects {
             .collect();
         if carriers.is_empty() {
             return Err(format!(
-                "project '{name}' is not imported here: import the project that holds the files \
-                 by its own directory, `{name} \"{}/<directory of {name}>:{}\"`, and write \
-                 `{name}.#Files & {{paths: [...]}}`",
+                "project '{name}' is not imported here: import the project by its own \
+                 directory, `{name} \"{}/<directory of {name}>:{}\"`, and reach it through that \
+                 import (`{name}.tasks.<task>`, `{name}.#Files & {{paths: [...]}}`)",
                 import_prefix(&self.module),
                 self.package
             ));
@@ -100,7 +102,7 @@ impl ImportedProjects {
     fn declaring_directory(&self, name: &str, carrier: &ImportRecord) -> Result<PathBuf, String> {
         if carrier.module != self.module {
             return Err(format!(
-                "project '{name}' is imported from module `{}` (`{}`): file references name files \
+                "project '{name}' is imported from module `{}` (`{}`): references reach projects \
                  of the same CUE module only",
                 carrier.module, carrier.import_path
             ));

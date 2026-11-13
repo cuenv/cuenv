@@ -43,6 +43,23 @@ impl ProjectInfo {
     }
 }
 
+/// Whether a task of the project depends on a task of another project
+/// (`#project:task`).
+fn depends_on_another_project(project: &ProjectInfo) -> bool {
+    fn reaches(node: &cuenv_core::tasks::TaskNode) -> bool {
+        let own = node
+            .depends_on()
+            .iter()
+            .any(|dependency| dependency.task_name().starts_with('#'));
+        own || match node {
+            cuenv_core::tasks::TaskNode::Task(_) => false,
+            cuenv_core::tasks::TaskNode::Group(group) => group.children.values().any(reaches),
+            cuenv_core::tasks::TaskNode::Sequence(steps) => steps.iter().any(reaches),
+        }
+    }
+    project.config.tasks.values().any(reaches)
+}
+
 /// Options controlling CI sync behavior.
 #[derive(Clone, Copy, Debug)]
 pub struct CiSyncOptions<'options> {
@@ -152,16 +169,24 @@ pub async fn execute_sync_ci(
         (projects, module.root.clone(), target_path)
     };
 
-    let target_projects: Vec<_> = projects
-        .into_iter()
-        .filter(|project| {
-            // project_path is absolute path to project directory
-            project
-                .project_path
-                .canonicalize()
-                .is_ok_and(|path| path == target_path)
-        })
-        .collect();
+    let is_target = |project: &ProjectInfo| {
+        // project_path is absolute path to project directory
+        project
+            .project_path
+            .canonicalize()
+            .is_ok_and(|path| path == target_path)
+    };
+    let (target_projects, mut other_projects): (Vec<_>, Vec<_>) =
+        projects.into_iter().partition(is_target);
+    // A dependency on a task of another project is followed into that
+    // project, so every project of the module is read, once, when one does.
+    if target_projects.iter().any(depends_on_another_project) {
+        let module = executor.discover_all_modules(&target_path)?;
+        other_projects = ProjectInfo::collect_from_module(&module)?
+            .into_iter()
+            .filter(|project| !is_target(project))
+            .collect();
+    }
 
     if target_projects.is_empty() {
         // Fallback: when invoked at the module root and no specific project
@@ -221,6 +246,7 @@ pub async fn execute_sync_ci(
                     repo_root: &repo_root,
                     options: request.options,
                     projects: &target_projects,
+                    other_projects: &other_projects,
                     package: request.package,
                 };
                 super::github::execute_sync_github(github_request).await

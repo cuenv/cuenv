@@ -345,6 +345,14 @@ pub struct Task {
     /// For GitHub, may contain `{ "github_action": { "uses": "...", "with": {...} } }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_hints: Option<serde_json::Value>,
+
+    /// Tasks of other projects this task depends on (`#project:task`).
+    ///
+    /// They are not tasks of this IR: `cuenv task` and `cuenv ci` run them
+    /// in their own project, in the job or step that runs this task. A
+    /// workflow that runs this task alone (`--skip-dependencies`) cannot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_dependencies: Vec<String>,
 }
 
 impl Task {
@@ -402,6 +410,7 @@ impl Task {
             github_permissions: std::collections::BTreeMap::new(),
             github_execution: None,
             provider_hints: None,
+            external_dependencies: Vec::new(),
         }
     }
 
@@ -439,6 +448,7 @@ impl Task {
             github_permissions: std::collections::BTreeMap::new(),
             github_execution: None,
             provider_hints: None,
+            external_dependencies: Vec::new(),
         }
     }
 }

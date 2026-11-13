@@ -338,7 +338,6 @@ fn task_executor_config(spec: &TaskExecutorConfigSpec<'_, '_>) -> ExecutorConfig
         project_root: spec.context.project_root.clone(),
         cache: spec.runtime.cache.clone(),
         sandbox_hasher_root: Some(projects::workspace_root(&spec.context.project_root)),
-        sandbox_project_roots: BTreeMap::new(),
         external_projects: spec.runtime.external_projects.clone(),
     }
 }

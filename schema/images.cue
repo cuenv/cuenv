@@ -82,6 +82,14 @@ package schema
 	// Cache / inputs
 	inputs?: [...#Input]
 
+	// A string input is a path of this project and cannot leave it (see
+	// #Task).
+	_cuenvInputCheck: {
+		if inputs != _|_ for v in inputs if (v & =~"(^|/)\\.\\.(/|$)") != _|_ {
+			(v & string): v & error(_cuenvLeavesProject)
+		}
+	}
+
 	// Human-readable description
 	description?: string
 

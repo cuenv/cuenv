@@ -122,6 +122,31 @@ Every path must match at least one file, so renaming `openapi.yaml` in `api` is
 an error for `web` rather than a silently smaller input set. See
 [Files of another project, or of the module](/how-to/run-tasks/#files-of-another-project-or-of-the-module).
 
+## 6) Depend on a task of another service
+
+When a file is built by a task of another service, depend on that task through
+the same import, and read what it declares in `outputs` through its
+`outputFiles`:
+
+```cue
+// services/web/env.cue
+tasks: {
+  build: schema.#Task & {
+    command: "bun"
+    args: ["run", "build"]
+    dependsOn: [api.tasks.generate]
+    inputs: ["src/**", api.tasks.generate.outputFiles]
+  }
+}
+```
+
+`cuenv task build -p services/web` runs `api`'s `generate` first, in
+`services/api` with that service's own environment, then `web`'s `build`, which
+reads the generated files where `generate` wrote them. Reading `outputFiles`
+already adds the dependency, so `dependsOn` is only needed for ordering
+without files. See
+[Tasks of another project](/how-to/run-tasks/#tasks-of-another-project).
+
 ## Next steps
 
 - [Configure a project](/how-to/configure-a-project/)

@@ -84,6 +84,7 @@ fn test_task_minimal() {
         github_permissions: std::collections::BTreeMap::new(),
         github_execution: None,
         provider_hints: None,
+        external_dependencies: Vec::new(),
     };
 
     let json = serde_json::to_value(&task).unwrap();
@@ -121,6 +122,7 @@ fn test_task_with_deployment() {
         github_permissions: std::collections::BTreeMap::new(),
         github_execution: None,
         provider_hints: None,
+        external_dependencies: Vec::new(),
     };
 
     let json = serde_json::to_value(&task).unwrap();
@@ -167,6 +169,7 @@ fn test_task_with_matrix() {
         github_permissions: std::collections::BTreeMap::new(),
         github_execution: None,
         provider_hints: None,
+        external_dependencies: Vec::new(),
     };
 
     let json = serde_json::to_value(&task).unwrap();
@@ -269,6 +272,7 @@ fn test_full_ir_serialization() {
         github_permissions: std::collections::BTreeMap::new(),
         github_execution: None,
         provider_hints: None,
+        external_dependencies: Vec::new(),
     });
 
     let json = serde_json::to_string_pretty(&ir).unwrap();
@@ -334,6 +338,7 @@ fn make_test_task(id: &str) -> Task {
         github_permissions: std::collections::BTreeMap::new(),
         github_execution: None,
         provider_hints: None,
+        external_dependencies: Vec::new(),
     }
 }
 

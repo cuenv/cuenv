@@ -2,9 +2,11 @@
 
 use crate::ir::{CachePolicy, PurityMode};
 use cuenv_core::ci::Pipeline;
+use cuenv_core::manifest::Project;
 use cuenv_core::module::ImportedProjects;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Compiler configuration options
 #[derive(Clone, Default)]
@@ -64,6 +66,12 @@ pub struct CompilerOptions {
     /// them from the project's instance at `module_root` and
     /// `project_path`, when a module root is set.
     pub file_anchors: Option<FileAnchors>,
+
+    /// Every project of the module, by its directory relative to the module
+    /// root (empty for the root). A dependency on a task of another project
+    /// (`#project:task`) is followed into it to derive trigger paths; without
+    /// them, such a dependency makes every file of the project a trigger.
+    pub module_projects: Option<Arc<BTreeMap<PathBuf, Project>>>,
 }
 
 /// Where a compilation reads the packages its project imports.
@@ -96,6 +104,10 @@ impl std::fmt::Debug for CompilerOptions {
             .field("module_root", &self.module_root)
             .field("project_path", &self.project_path)
             .field("file_anchors", &self.file_anchors)
+            .field(
+                "module_projects",
+                &self.module_projects.as_ref().map(|projects| projects.len()),
+            )
             .finish()
     }
 }

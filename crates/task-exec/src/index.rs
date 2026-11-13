@@ -260,9 +260,9 @@ fn canonicalize_node(
     } = origin;
     match node {
         TaskNode::Task(task) => {
-            // Inline from canonicalize_task: Tasks resolved from TaskRef placeholders have
-            // their own dependency context. Avoid re-canonicalizing under placeholder namespace.
-            let canon_task = if task.project_root.is_some() && task.task_ref.is_none() {
+            // A task of another project carries its own dependency context, already
+            // spelled by the scope that loaded it: it is not canonicalized again.
+            let canon_task = if task.project_root.is_some() {
                 task.as_ref().clone()
             } else {
                 let mut clone = task.as_ref().clone();
