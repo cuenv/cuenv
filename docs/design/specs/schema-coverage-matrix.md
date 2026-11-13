@@ -51,9 +51,15 @@ closed definitions. From cuenv 0.75.0 the fork is pinned at
 reference into an imported package (`pkg.tasks.a`) when the field is final and
 reached from the package root by regular fields; a chain of eight projects that
 depend on imported tasks evaluates in about 7,000 unifications where four took
-3.4 million. `dependsOn` on `#Task`, `#TaskGroup`, `#ContainerImage`
-and `#Service`, `#Pipeline.tasks`, `#MatrixTask.task` and `#Watch.rebuild` are
-typed with `#TaskNode` unions; strings and output references fail evaluation
+3.4 million. The fork is now pinned at
+`badfad1109de70ce104a0637d9d853cf7ead536d`, whose `Value.Expr` evaluates a
+field's operands where its value settled, not in a disjunct that evaluation
+superseded: a matrix entry over a task reached through a `let`, or a task typed
+`schema.#TaskNode &`, with a dependency, ran out of memory while the bridge read
+its references (`crates/cuenv/tests/superseded_disjunct_evaluation.rs`).
+`dependsOn` on `#Task`, `#TaskGroup`, `#ContainerImage` and `#Service`,
+`#Pipeline.tasks`, `#MatrixTask.task` and `#Watch.rebuild` are typed with
+`#TaskNode` unions; strings and output references fail evaluation
 at the entry. Regression coverage in `schema_project_base_tests.rs` includes
 deep chains for each node kind, a dependency diamond, pipelines declared before
 their tasks, and the dependsOn, pipeline and rebuild rejections. Export still
