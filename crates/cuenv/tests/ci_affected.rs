@@ -229,6 +229,13 @@ fn an_input_outside_the_project_runs_its_task_when_only_that_file_changed() -> T
         printed.contains("`..` inputs cannot be matched against changes"),
         "{printed}"
     );
+    // The warning gives the file reference to write instead.
+    assert!(
+        printed.contains(
+            r#"import the project in content and write `content.#Files & {paths: ["articles/**"]}`"#
+        ),
+        "{printed}"
+    );
     assert_eq!(
         printed
             .matches("has input '../content/articles/**'")
@@ -721,6 +728,10 @@ fn an_input_that_only_matches_from_the_repository_root_still_runs_and_says_so() 
         printed.contains("has input 'shared/**', which selects nothing under app"),
         "{printed}"
     );
+    assert!(
+        printed.contains(r#"write `schema.#ModuleFiles & {paths: ["shared/**"]}`"#),
+        "{printed}"
+    );
     Ok(())
 }
 
@@ -734,11 +745,21 @@ fn a_correct_project_is_not_warned_about_files_of_the_same_name_at_the_root() ->
 
     let output = repository.ci(&["--path", "app"])?;
 
-    // The root file still selects the task for now, and nothing is said:
-    // the configuration is correct.
+    // The root file still selects the task for now, and nothing is warned
+    // about: the configuration is correct. One note says so.
     assert_success(&output);
     assert!(repository.root().join("app/ran").exists());
-    assert!(!text(&output).contains("warning:"), "{}", text(&output));
+    let printed = text(&output);
+    assert!(!printed.contains("warning:"), "{printed}");
+    assert_eq!(
+        printed.matches("note: task 'build'").count(),
+        1,
+        "{printed}"
+    );
+    assert!(
+        printed.contains(r#"add `schema.#ModuleFiles & {paths: ["package.json"]}`"#),
+        "{printed}"
+    );
     Ok(())
 }
 
