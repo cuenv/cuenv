@@ -771,7 +771,10 @@ mod tests {
             ".github/workflows/dns-infrastructure-plan.yml",
             "cue.mod/**",
             "infrastructure/dns/**",
-            "infrastructure/dns/env.cue",
+            // The directories the project's CUE is built from, so a file
+            // added to one of them starts the workflow too.
+            "infrastructure/dns/*.cue",
+            "shared/*.cue",
             "shared/shared.cue",
             // A lock-only change re-plans and applies an inline project too.
             "cuenv.lock",
