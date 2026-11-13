@@ -46,7 +46,12 @@ Evaluation note: cuenv 0.57.3 pins the CUE fork at
 and builds the bridge with Go 1.26. The fork shares typed references whose
 target was declared with a definition of the type when the type's other
 definitions cannot be unified with it, and shares forward references into
-closed definitions. `dependsOn` on `#Task`, `#TaskGroup`, `#ContainerImage`
+closed definitions. From cuenv 0.75.0 the fork is pinned at
+`806b30344b62501771703f0c8e3f0be45d8010df`, which also shares a typed
+reference into an imported package (`pkg.tasks.a`) when the field is final and
+reached from the package root by regular fields; a chain of eight projects that
+depend on imported tasks evaluates in about 7,000 unifications where four took
+3.4 million. `dependsOn` on `#Task`, `#TaskGroup`, `#ContainerImage`
 and `#Service`, `#Pipeline.tasks`, `#MatrixTask.task` and `#Watch.rebuild` are
 typed with `#TaskNode` unions; strings and output references fail evaluation
 at the entry. Regression coverage in `schema_project_base_tests.rs` includes
