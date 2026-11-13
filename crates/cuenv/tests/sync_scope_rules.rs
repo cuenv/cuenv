@@ -476,7 +476,9 @@ fn sync_nested_project_normalizes_parent_trigger_paths() -> TestResult {
         workflow.contains("infrastructure/waddle.cloud/gitops/waddle-server/**"),
         "{workflow}"
     );
-    assert!(workflow.contains("server/env.cue"), "{workflow}");
+    // The project's CUE sources are named by directory, so that adding a
+    // file to the project does not change the workflow.
+    assert!(workflow.contains("server/*.cue"), "{workflow}");
     assert!(!workflow.contains("server/../"), "{workflow}");
     assert!(!workflow.contains("../"), "{workflow}");
 
