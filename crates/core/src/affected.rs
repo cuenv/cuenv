@@ -12,12 +12,52 @@
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::path::{Path, PathBuf};
 
+/// Why an input pattern can never be compared with changed files, which are
+/// relative to the repository and lie inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnmatchablePattern {
+    /// The pattern has a `..` path segment, so it leaves the project directory.
+    ParentSegment,
+    /// The pattern is an absolute path.
+    Absolute,
+    /// The pattern has glob characters but is not a valid glob.
+    InvalidGlob,
+}
+
+/// Why `pattern` cannot be matched against changed files, if it cannot.
+///
+/// A task with such an input cannot be shown to be unaffected, so
+/// [`matches_pattern`] treats the pattern as matching whenever any file
+/// changed.
+#[must_use]
+pub fn unmatchable_pattern(pattern: &str) -> Option<UnmatchablePattern> {
+    if pattern.split('/').any(|segment| segment == "..") {
+        return Some(UnmatchablePattern::ParentSegment);
+    }
+    if Path::new(pattern).is_absolute() {
+        return Some(UnmatchablePattern::Absolute);
+    }
+    if is_glob(pattern) && Glob::new(pattern).is_err() {
+        return Some(UnmatchablePattern::InvalidGlob);
+    }
+    None
+}
+
+/// Whether a pattern is matched as a glob rather than as a path prefix.
+fn is_glob(pattern: &str) -> bool {
+    pattern.contains('*') || pattern.contains('?') || pattern.contains('[')
+}
+
 /// Check if any of the given files match a pattern.
 ///
 /// Supports two matching modes:
 /// - **Simple paths**: Patterns without wildcards (`*`, `?`, `[`) are treated as path prefixes.
 ///   For example, `"crates"` matches `"crates/foo/bar.rs"`.
 /// - **Glob patterns**: Patterns with wildcards use glob matching.
+///
+/// A pattern that cannot be compared with changed files at all (see
+/// [`unmatchable_pattern`]) matches whenever any file changed: reporting no
+/// match would claim the task is unaffected when nothing shows that.
 ///
 /// # Arguments
 ///
@@ -29,8 +69,17 @@ use std::path::{Path, PathBuf};
 ///
 /// `true` if any file matches the pattern
 pub fn matches_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) -> bool {
+    if let Some(reason) = unmatchable_pattern(pattern) {
+        tracing::trace!(
+            pattern,
+            ?reason,
+            "Pattern cannot be matched; failing closed"
+        );
+        return !files.is_empty();
+    }
+
     // If pattern doesn't contain glob characters, treat it as a path prefix
-    let is_simple_path = !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[');
+    let is_simple_path = !is_glob(pattern);
 
     for file in files {
         // Normalize the file path relative to project root
@@ -289,6 +338,53 @@ mod tests {
         assert!(matches_pattern(&files, root, "src"));
         assert!(matches_pattern(&files, root, "src/app.rs"));
         assert!(matches_pattern(&files, root, "src/**"));
+    }
+
+    #[test]
+    fn a_parent_segment_matches_whenever_any_file_changed() {
+        let root = Path::new("projects/app");
+        let unrelated = vec![PathBuf::from("docs/readme.md")];
+
+        assert!(matches_pattern(&unrelated, root, "../content/articles/**"));
+        assert!(matches_pattern(&unrelated, root, "src/../../shared"));
+        assert!(matches_pattern(&unrelated, root, ".."));
+        assert!(!matches_pattern(&[], root, "../content/articles/**"));
+    }
+
+    #[test]
+    fn dots_inside_a_segment_are_not_a_parent_segment() {
+        let root = Path::new(".");
+        let unrelated = vec![PathBuf::from("docs/readme.md")];
+
+        assert_eq!(unmatchable_pattern("foo..bar/**"), None);
+        assert_eq!(unmatchable_pattern(".../x"), None);
+        assert!(!matches_pattern(&unrelated, root, "foo..bar/**"));
+    }
+
+    #[test]
+    fn an_absolute_pattern_matches_whenever_any_file_changed() {
+        let root = Path::new("projects/app");
+        let unrelated = vec![PathBuf::from("docs/readme.md")];
+
+        assert_eq!(
+            unmatchable_pattern("/etc/hosts"),
+            Some(UnmatchablePattern::Absolute)
+        );
+        assert!(matches_pattern(&unrelated, root, "/etc/hosts"));
+        assert!(!matches_pattern(&[], root, "/etc/hosts"));
+    }
+
+    #[test]
+    fn an_invalid_glob_matches_whenever_any_file_changed() {
+        let root = Path::new(".");
+        let unrelated = vec![PathBuf::from("docs/readme.md")];
+
+        assert_eq!(
+            unmatchable_pattern("src/[unclosed"),
+            Some(UnmatchablePattern::InvalidGlob)
+        );
+        assert!(matches_pattern(&unrelated, root, "src/[unclosed"));
+        assert!(!matches_pattern(&[], root, "src/[unclosed"));
     }
 
     #[test]

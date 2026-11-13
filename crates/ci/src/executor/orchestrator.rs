@@ -108,9 +108,14 @@ pub async fn run_ci(request: RunCiRequest) -> Result<()> {
 }
 
 struct DiscoveredCiProjects {
+    /// The projects in scope: every project, or those under `--path`.
     projects: Vec<(PathBuf, Project)>,
+    /// Every project of the module by name, in or out of scope: a task in
+    /// scope may depend on a task of a project that `--path` leaves out.
     project_map: ProjectDependencyMap,
     project_configs: ProjectConfigMap,
+    /// The directory `--path` names, when it names one.
+    named_path: Option<PathBuf>,
 }
 
 type ProjectDependencyMap = HashMap<String, (PathBuf, Project)>;
@@ -126,24 +131,31 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
     }
     cuenv_events::emit_ci_projects_discovered!(project_count);
 
-    // Collect projects with their configs
+    // Collect projects with their configs, in a stable order: the module
+    // keeps instances in a hash map, and neither the order projects run in
+    // nor which directory a project name resolves to may depend on it.
     let mut projects: Vec<(PathBuf, Project)> = Vec::new();
     for instance in module.projects() {
         let config = instance.to_project()?;
         let project_path = module.root.join(&instance.path);
         projects.push((project_path, config));
     }
+    projects.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    // Dependencies are resolved against every project of the module, before
+    // `--path` narrows what runs.
+    let project_map = build_project_map(&projects);
 
     // Filter projects by path if specified (and not the default ".")
-    let projects: Vec<(PathBuf, Project)> = match path_filter {
-        Some(filter) if filter != "." => {
-            let filter_path = module.root.join(filter);
-            projects
-                .into_iter()
-                .filter(|(path, _)| path.starts_with(&filter_path))
-                .collect()
-        }
-        _ => projects,
+    let named_path = path_filter
+        .filter(|filter| *filter != ".")
+        .map(|filter| module.root.join(filter));
+    let projects: Vec<(PathBuf, Project)> = match &named_path {
+        Some(filter_path) => projects
+            .into_iter()
+            .filter(|(path, _)| path.starts_with(filter_path))
+            .collect(),
+        None => projects,
     };
 
     if projects.is_empty() {
@@ -154,33 +166,48 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
         return Ok(None);
     }
 
-    let (project_map, project_configs) = build_project_lookup(&projects);
+    let project_configs = build_project_configs(&projects);
 
     Ok(Some(DiscoveredCiProjects {
         projects,
         project_map,
         project_configs,
+        named_path,
     }))
 }
 
-fn build_project_lookup(
-    projects: &[(PathBuf, Project)],
-) -> (ProjectDependencyMap, ProjectConfigMap) {
-    let mut project_map = HashMap::new();
-    let mut project_configs = HashMap::new();
+/// Every named project by its name.
+///
+/// A directory below a project, in the same package, inherits the project's
+/// `name` and is part of that project, so one name can be carried by several
+/// directories. The name means the directory that declares it: the
+/// shallowest one. Project names are otherwise unique in a module.
+fn build_project_map(projects: &[(PathBuf, Project)]) -> ProjectDependencyMap {
+    let mut project_map: ProjectDependencyMap = HashMap::new();
     for (path, config) in projects {
         let name = config.name.trim();
-        if !name.is_empty() {
+        if name.is_empty() {
+            continue;
+        }
+        let declares_name = project_map
+            .get(name)
+            .is_none_or(|(known, _)| path.components().count() < known.components().count());
+        if declares_name {
             project_map.insert(name.to_string(), (path.clone(), config.clone()));
         }
+    }
+    project_map
+}
 
+fn build_project_configs(projects: &[(PathBuf, Project)]) -> ProjectConfigMap {
+    let mut project_configs = HashMap::new();
+    for (path, config) in projects {
         project_configs.insert(path.clone(), config.clone());
         if let Ok(canonical) = path.canonicalize() {
             project_configs.insert(canonical, config.clone());
         }
     }
-
-    (project_map, project_configs)
+    project_configs
 }
 
 struct CiProjectRunRequest<'request> {
@@ -216,10 +243,17 @@ async fn run_ci_projects(
     // Plan every project first, so secret providers can prepare for the
     // whole run before any task executes.
     let mut plans = Vec::new();
+    let mut pipeline_defined = false;
     for (project_path, config) in &discovered.projects {
-        if let Some(plan) = plan_project_pipeline(ProjectPipelinePlanRequest {
+        let scope = if discovered.named_path.as_deref() == Some(project_path.as_path()) {
+            ProjectScope::Named
+        } else {
+            ProjectScope::Discovered
+        };
+        match plan_project_pipeline(ProjectPipelinePlanRequest {
             project_path,
             config,
+            scope,
             task_selection,
             requested_pipeline: specific_pipeline,
             requested_environment: environment,
@@ -227,8 +261,20 @@ async fn run_ci_projects(
             changed_files,
             project_map: &discovered.project_map,
         })? {
-            plans.push((project_path, config, plan));
+            ProjectPlan::Run(plan) => {
+                pipeline_defined = true;
+                plans.push((project_path, config, plan));
+            }
+            ProjectPlan::NothingAffected => pipeline_defined = true,
+            ProjectPlan::NoSuchPipeline => {}
         }
+    }
+
+    if !pipeline_defined {
+        return Err(no_project_defines_pipeline(
+            specific_pipeline.unwrap_or(DEFAULT_PIPELINE),
+            &discovered.projects,
+        ));
     }
 
     if !dry_run.is_dry_run() {
@@ -299,10 +345,63 @@ async fn prepare_secret_providers(
     cuenv_core::environment::Environment::prepare_secret_providers(&env_vars).await
 }
 
+/// The pipeline `cuenv ci` runs when none is named.
+const DEFAULT_PIPELINE: &str = "default";
+
+/// How a project came to be in the scope of a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectScope {
+    /// `--path` names this project's directory, so the caller asked for it.
+    Named,
+    /// The project was discovered: by a run without `--path`, or beneath the
+    /// directory `--path` names.
+    Discovered,
+}
+
+/// What planning one project's pipeline came to.
+#[derive(Debug)]
+enum ProjectPlan {
+    /// The project has the pipeline and these tasks run.
+    Run(ProjectPipelinePlan),
+    /// The project has the pipeline and no task of it is affected.
+    NothingAffected,
+    /// A discovered project has no CI configuration, or not this pipeline.
+    NoSuchPipeline,
+}
+
+/// The error for a run in which no project in scope defines the pipeline.
+///
+/// A run without `--path` skips projects that do not define the requested
+/// pipeline, so a mistyped pipeline name would otherwise run nothing and
+/// succeed.
+fn no_project_defines_pipeline(
+    pipeline_name: &str,
+    projects: &[(PathBuf, Project)],
+) -> cuenv_core::Error {
+    let mut available: Vec<&str> = projects
+        .iter()
+        .filter_map(|(_, config)| config.ci.as_ref())
+        .flat_map(|ci| ci.pipelines.keys().map(String::as_str))
+        .collect();
+    available.sort_unstable();
+    available.dedup();
+    if available.is_empty() {
+        return cuenv_core::Error::configuration(format!(
+            "No project in scope defines pipeline '{pipeline_name}': none of them has a CI \
+             configuration"
+        ));
+    }
+    cuenv_core::Error::configuration(format!(
+        "No project in scope defines pipeline '{pipeline_name}'. Pipelines that exist: {}",
+        available.join(", ")
+    ))
+}
+
 #[derive(Clone, Copy)]
 struct ProjectPipelinePlanRequest<'request> {
     project_path: &'request Path,
     config: &'request Project,
+    scope: ProjectScope,
     task_selection: TaskSelection,
     requested_pipeline: Option<&'request str>,
     requested_environment: Option<&'request str>,
@@ -318,12 +417,11 @@ struct ProjectPipelinePlan {
     environment: Option<String>,
 }
 
-fn plan_project_pipeline(
-    request: ProjectPipelinePlanRequest<'_>,
-) -> Result<Option<ProjectPipelinePlan>> {
+fn plan_project_pipeline(request: ProjectPipelinePlanRequest<'_>) -> Result<ProjectPlan> {
     let ProjectPipelinePlanRequest {
         project_path,
         config,
+        scope,
         requested_pipeline,
         requested_environment,
         task_selection,
@@ -332,16 +430,35 @@ fn plan_project_pipeline(
         project_map,
     } = request;
 
-    let pipeline_name = requested_pipeline.unwrap_or("default").to_string();
+    // A project the caller named must have the pipeline. A discovered one
+    // may not: a module's projects need not all define every pipeline, and a
+    // run over the whole module (Buildkite's generated step, a root
+    // project's thin workflow) skips those that do not.
+    let pipeline_name = requested_pipeline.unwrap_or(DEFAULT_PIPELINE).to_string();
     let Some(ci) = &config.ci else {
+        if scope == ProjectScope::Discovered {
+            tracing::debug!(
+                project = %project_path.display(),
+                "Project has no CI configuration; skipping"
+            );
+            return Ok(ProjectPlan::NoSuchPipeline);
+        }
         return Err(cuenv_core::Error::configuration(format!(
             "Project {} has no CI configuration",
             project_path.display()
         )));
     };
 
-    let available_pipelines: Vec<&str> = ci.pipelines.keys().map(String::as_str).collect();
     let Some(pipeline) = ci.pipelines.get(&pipeline_name) else {
+        if scope == ProjectScope::Discovered {
+            tracing::debug!(
+                project = %project_path.display(),
+                pipeline = %pipeline_name,
+                "Project does not define the pipeline; skipping"
+            );
+            return Ok(ProjectPlan::NoSuchPipeline);
+        }
+        let available_pipelines: Vec<&str> = ci.pipelines.keys().map(String::as_str).collect();
         return Err(cuenv_core::Error::configuration(format!(
             "Pipeline '{}' not found in project {}. Available pipelines: {}",
             pipeline_name,
@@ -380,10 +497,10 @@ fn plan_project_pipeline(
 
     if tasks_to_run.is_empty() {
         cuenv_events::emit_ci_project_skipped!(project_path.display(), "No affected tasks");
-        return Ok(None);
+        return Ok(ProjectPlan::NothingAffected);
     }
 
-    Ok(Some(ProjectPipelinePlan {
+    Ok(ProjectPlan::Run(ProjectPipelinePlan {
         pipeline_name,
         tasks_to_run,
         environment,
@@ -561,10 +678,7 @@ mod tests {
         .unwrap()
     }
 
-    fn plan_selection(
-        config: &Project,
-        selection: TaskSelection,
-    ) -> Result<Option<ProjectPipelinePlan>> {
+    fn plan_selection(config: &Project, selection: TaskSelection) -> Result<ProjectPlan> {
         let context = crate::context::CIContext {
             provider: "github".into(),
             event: "merge_group".into(),
@@ -575,6 +689,7 @@ mod tests {
         let result = plan_project_pipeline(ProjectPipelinePlanRequest {
             project_path: Path::new("/workspace"),
             config,
+            scope: ProjectScope::Named,
             task_selection: selection,
             requested_pipeline: Some("verify"),
             requested_environment: None,
@@ -587,22 +702,109 @@ mod tests {
         result
     }
 
+    fn planned_tasks(plan: ProjectPlan) -> Vec<String> {
+        match plan {
+            ProjectPlan::Run(plan) => plan.tasks_to_run,
+            other => panic!("expected tasks to run, got {other:?}"),
+        }
+    }
+
+    fn plan_in_scope(config: &Project, scope: ProjectScope, pipeline: &str) -> Result<ProjectPlan> {
+        let context = crate::context::CIContext {
+            provider: "local".into(),
+            event: "manual".into(),
+            ref_name: "current".into(),
+            base_ref: None,
+            sha: "current".into(),
+        };
+        plan_project_pipeline(ProjectPipelinePlanRequest {
+            project_path: Path::new("/workspace"),
+            config,
+            scope,
+            task_selection: TaskSelection::Affected,
+            requested_pipeline: Some(pipeline),
+            requested_environment: None,
+            context: &context,
+            changed_files: &[PathBuf::from("changed.txt")],
+            project_map: &HashMap::new(),
+        })
+    }
+
+    #[test]
+    fn a_discovered_project_without_the_pipeline_is_skipped_and_a_named_one_is_an_error() {
+        let config = selection_project();
+        assert!(matches!(
+            plan_in_scope(&config, ProjectScope::Discovered, "release").unwrap(),
+            ProjectPlan::NoSuchPipeline
+        ));
+        assert!(
+            plan_in_scope(&config, ProjectScope::Named, "release")
+                .unwrap_err()
+                .to_string()
+                .contains("Pipeline 'release' not found")
+        );
+
+        let mut without_ci = selection_project();
+        without_ci.ci = None;
+        assert!(matches!(
+            plan_in_scope(&without_ci, ProjectScope::Discovered, "verify").unwrap(),
+            ProjectPlan::NoSuchPipeline
+        ));
+        assert!(
+            plan_in_scope(&without_ci, ProjectScope::Named, "verify")
+                .unwrap_err()
+                .to_string()
+                .contains("has no CI configuration")
+        );
+    }
+
+    #[test]
+    fn a_pipeline_no_project_defines_is_an_error_that_lists_those_that_exist() {
+        let projects = vec![(PathBuf::from("/workspace"), selection_project())];
+        let error = no_project_defines_pipeline("verfy", &projects).to_string();
+        assert!(error.contains("pipeline 'verfy'"), "{error}");
+        assert!(error.contains("Pipelines that exist: verify"), "{error}");
+
+        let mut without_ci = selection_project();
+        without_ci.ci = None;
+        let error =
+            no_project_defines_pipeline("verify", &[(PathBuf::from("/workspace"), without_ci)])
+                .to_string();
+        assert!(
+            error.contains("none of them has a CI configuration"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_project_name_means_the_shallowest_directory_that_carries_it() {
+        let mut content = selection_project();
+        content.name = "content".into();
+        let projects = vec![
+            (PathBuf::from("/repo/content/drafts/deep"), content.clone()),
+            (PathBuf::from("/repo/content"), content.clone()),
+            (PathBuf::from("/repo/content/drafts"), content),
+        ];
+        for rotation in 0..projects.len() {
+            let mut rotated = projects.clone();
+            rotated.rotate_left(rotation);
+            let map = build_project_map(&rotated);
+            assert_eq!(map["content"].0, PathBuf::from("/repo/content"));
+        }
+    }
+
     #[test]
     fn all_selection_runs_unchanged_and_no_input_tasks_without_changing_context() {
         let config = selection_project();
-        let plan = plan_selection(&config, TaskSelection::All)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan.tasks_to_run, ["unchanged", "changed", "always"]);
+        let plan = planned_tasks(plan_selection(&config, TaskSelection::All).unwrap());
+        assert_eq!(plan, ["unchanged", "changed", "always"]);
     }
 
     #[test]
     fn default_selection_keeps_affected_filtering() {
         let config = selection_project();
-        let plan = plan_selection(&config, TaskSelection::Affected)
-            .unwrap()
-            .unwrap();
-        assert_eq!(plan.tasks_to_run, ["changed", "always"]);
+        let plan = planned_tasks(plan_selection(&config, TaskSelection::Affected).unwrap());
+        assert_eq!(plan, ["changed", "always"]);
     }
 
     #[test]

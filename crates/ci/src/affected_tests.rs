@@ -352,7 +352,8 @@ fn test_compute_affected_tasks_empty_pipeline() {
 
 #[test]
 fn test_compute_affected_tasks_external_dep_not_found() {
-    // External dependency to non-existent project should be skipped
+    // An external dependency on a project that is not in the module cannot be
+    // shown to be unaffected, so the task is selected (fail closed).
     // Task has inputs so it won't be auto-affected
     let task = make_task(vec!["deploy/**"], vec!["#nonexistent:build"]);
     let project = make_project(vec![("deploy", task)]);
@@ -373,10 +374,7 @@ fn test_compute_affected_tasks_external_dep_not_found() {
         },
     );
 
-    // deploy shouldn't be affected because:
-    // 1. Its inputs don't match the changed files
-    // 2. Its external dep project doesn't exist
-    assert!(affected.is_empty());
+    assert_eq!(affected, vec!["deploy".to_string()]);
 }
 
 #[test]
@@ -452,7 +450,8 @@ fn test_compute_affected_tasks_external_nested_dep_affected() {
 
 #[test]
 fn test_compute_affected_tasks_malformed_external_dep() {
-    // Malformed external dependency (missing colon) should be skipped
+    // A malformed external dependency (missing colon) cannot be shown to be
+    // unaffected, so the task is selected (fail closed).
     // Task has inputs so it won't be auto-affected
     let task = make_task(vec!["deploy/**"], vec!["#badformat"]);
     let project = make_project(vec![("deploy", task)]);
@@ -473,10 +472,7 @@ fn test_compute_affected_tasks_malformed_external_dep() {
         },
     );
 
-    // deploy shouldn't be affected because:
-    // 1. Its inputs don't match the changed files
-    // 2. Its malformed external dep is skipped
-    assert!(affected.is_empty());
+    assert_eq!(affected, vec!["deploy".to_string()]);
 }
 
 // ==========================================================================
@@ -745,12 +741,14 @@ where
     S: std::hash::BuildHasher,
 {
     let mut index_cache = HashMap::new();
+    let mut visiting = std::collections::HashSet::new();
     super::check_external_dependency(
         dep,
         &mut ExternalDependencyContext {
             projects: inputs.projects,
             changed_files: inputs.changed_files,
             cache: inputs.cache,
+            visiting: &mut visiting,
             index_cache: &mut index_cache,
         },
     )
@@ -809,7 +807,8 @@ fn test_check_external_dependency_project_not_found() {
         },
     );
 
-    assert!(!result);
+    // Fail closed: an unknown project cannot be shown to be unaffected.
+    assert!(result);
 }
 
 #[test]
@@ -881,7 +880,8 @@ fn test_check_external_dependency_transitive_internal() {
 
 #[test]
 fn test_check_external_dependency_circular_prevention() {
-    // Task A depends on itself (circular) - should not infinite loop
+    // Task A depends on itself (circular): the check terminates, and a cycle
+    // counts as affected because nothing shows it is not.
     // Task has inputs so it won't be auto-affected
     let circular_task = make_task(vec!["taskA/**"], vec!["#proj:taskA"]);
     let mut project = Project::default();
@@ -895,8 +895,6 @@ fn test_check_external_dependency_circular_prevention() {
     let changed_files: Vec<PathBuf> = vec![]; // No changes matching taskA/**
     let mut cache = HashMap::new();
 
-    // Should return false without infinite loop
-    // (inputs don't match and circular dep doesn't cause issues)
     let result = check_external_dependency_for_test(
         "#proj:taskA",
         &mut ExternalTestInputs {
@@ -906,7 +904,7 @@ fn test_check_external_dependency_circular_prevention() {
         },
     );
 
-    assert!(!result);
+    assert!(result);
 }
 
 // ==========================================================================
@@ -1008,4 +1006,328 @@ fn test_compute_affected_tasks_non_pipeline_dep_no_match() {
         affected.is_empty(),
         "deploy should not be affected when no DAG inputs match"
     );
+}
+
+// ==========================================================================
+// Fail-closed selection (issue 611)
+// ==========================================================================
+
+/// A change in a module, as seen from the project `/repo/app`.
+struct Change<'change> {
+    project: &'change Project,
+    all_projects: &'change HashMap<String, (PathBuf, Project)>,
+    files: &'change [PathBuf],
+}
+
+fn affected_in(change: &Change<'_>, pipeline_tasks: &[&str]) -> Vec<String> {
+    let pipeline_tasks: Vec<String> = pipeline_tasks.iter().map(ToString::to_string).collect();
+    super::compute_affected_tasks(
+        ChangedInputs {
+            files: change.files,
+            project_root: Path::new("/repo/app"),
+        },
+        &pipeline_tasks,
+        &AffectedProjects {
+            project: change.project,
+            all_projects: change.all_projects,
+        },
+    )
+}
+
+fn content_project() -> HashMap<String, (PathBuf, Project)> {
+    let articles = make_task(vec!["articles/**"], vec![]);
+    let mut all_projects = HashMap::new();
+    all_projects.insert(
+        "content".to_string(),
+        (
+            PathBuf::from("/repo/content"),
+            make_project(vec![("articles", articles)]),
+        ),
+    );
+    all_projects
+}
+
+fn group_of(children: Vec<(&str, TaskNode)>) -> TaskNode {
+    TaskNode::Group(TaskGroup {
+        type_: "group".to_string(),
+        depends_on: vec![],
+        max_concurrency: None,
+        description: None,
+        children: children
+            .into_iter()
+            .map(|(name, node)| (name.to_string(), node))
+            .collect(),
+    })
+}
+
+#[test]
+fn a_group_child_with_an_external_dependency_selects_the_group() {
+    let child = make_task(vec!["src/**"], vec!["#content:articles"]);
+    let mut project = Project::default();
+    project.tasks.insert(
+        "check".to_string(),
+        group_of(vec![("site", TaskNode::Task(Box::new(child)))]),
+    );
+    let changed = vec![PathBuf::from("content/articles/one.md")];
+
+    assert_eq!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &content_project(),
+                files: &changed
+            },
+            &["check"]
+        ),
+        ["check"]
+    );
+    assert!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &content_project(),
+                files: &[PathBuf::from("content/other.md")]
+            },
+            &["check"]
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_sequence_step_with_an_external_dependency_selects_the_sequence() {
+    let first = make_task(vec!["src/**"], vec![]);
+    let second = make_task(vec!["src/**"], vec!["#content:articles"]);
+    let mut project = Project::default();
+    project.tasks.insert(
+        "release".to_string(),
+        TaskNode::Sequence(vec![
+            TaskNode::Task(Box::new(first)),
+            TaskNode::Task(Box::new(second)),
+        ]),
+    );
+    let changed = vec![PathBuf::from("content/articles/one.md")];
+
+    assert_eq!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &content_project(),
+                files: &changed
+            },
+            &["release"]
+        ),
+        ["release"]
+    );
+}
+
+#[test]
+fn a_group_dependency_of_a_group_child_is_followed() {
+    // build depends on a local group whose child reads the changed file.
+    let generator = make_task(vec!["schema/**"], vec![]);
+    let build = make_task(vec!["src/**"], vec!["generate"]);
+    let mut project = Project::default();
+    project.tasks.insert(
+        "generate".to_string(),
+        group_of(vec![("types", TaskNode::Task(Box::new(generator)))]),
+    );
+    project.tasks.insert(
+        "ci".to_string(),
+        group_of(vec![("build", TaskNode::Task(Box::new(build)))]),
+    );
+    let changed = vec![PathBuf::from("app/schema/user.cue")];
+
+    assert_eq!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["ci"]
+        ),
+        ["ci"]
+    );
+}
+
+#[test]
+fn an_external_producer_that_is_a_group_is_expanded_to_its_tasks() {
+    let consumer = make_task(vec!["src/**"], vec!["#content:build"]);
+    let project = make_project(vec![("build", consumer)]);
+    let inner = make_task(vec!["site/**"], vec!["articles"]);
+    let articles = make_task(vec!["articles/**"], vec![]);
+    let mut content = make_project(vec![("articles", articles)]);
+    content.tasks.insert(
+        "build".to_string(),
+        group_of(vec![("site", TaskNode::Task(Box::new(inner)))]),
+    );
+    let mut all_projects = HashMap::new();
+    all_projects.insert(
+        "content".to_string(),
+        (PathBuf::from("/repo/content"), content),
+    );
+    let changed = vec![PathBuf::from("content/articles/one.md")];
+
+    assert_eq!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &all_projects,
+                files: &changed
+            },
+            &["build"]
+        ),
+        ["build"]
+    );
+}
+
+#[test]
+fn a_task_the_external_project_does_not_have_counts_as_affected() {
+    let consumer = make_task(vec!["src/**"], vec!["#content:missing"]);
+    let project = make_project(vec![("build", consumer)]);
+    let changed = vec![PathBuf::from("docs/readme.md")];
+
+    assert_eq!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &content_project(),
+                files: &changed
+            },
+            &["build"]
+        ),
+        ["build"]
+    );
+}
+
+#[test]
+fn a_pipeline_task_that_does_not_resolve_is_selected() {
+    let build = make_task(vec!["src/**"], vec![]);
+    let project = make_project(vec![("build", build)]);
+    let changed = vec![PathBuf::from("docs/readme.md")];
+
+    assert_eq!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["build", "typo"]
+        ),
+        ["typo"]
+    );
+}
+
+#[test]
+fn a_parent_directory_input_selects_its_task_whenever_anything_changed() {
+    // Issue 611, case 2: the only changed file is outside the project.
+    let build = make_task(vec!["src/**", "../content/articles/**"], vec![]);
+    let project = make_project(vec![("build", build)]);
+    let changed = vec![PathBuf::from("content/articles/one.md")];
+
+    assert_eq!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["build"]
+        ),
+        ["build"]
+    );
+    assert!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &[]
+            },
+            &["build"]
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        super::matched_inputs_for_task(
+            "build",
+            &project,
+            ChangedInputs {
+                files: &changed,
+                project_root: Path::new("/repo/app"),
+            },
+        ),
+        ["../content/articles/**"]
+    );
+}
+
+#[test]
+fn a_group_child_with_a_parent_directory_input_selects_the_group() {
+    let child = make_task(vec!["../shared/**"], vec![]);
+    let mut project = Project::default();
+    project.tasks.insert(
+        "check".to_string(),
+        group_of(vec![("lint", TaskNode::Task(Box::new(child)))]),
+    );
+    let changed = vec![PathBuf::from("docs/readme.md")];
+
+    assert_eq!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["check"]
+        ),
+        ["check"]
+    );
+}
+
+#[test]
+fn an_absolute_input_selects_its_task_whenever_anything_changed() {
+    let build = make_task(vec!["/etc/hosts"], vec![]);
+    let project = make_project(vec![("build", build)]);
+    let changed = vec![PathBuf::from("docs/readme.md")];
+
+    assert_eq!(
+        affected_in(
+            &Change {
+                project: &project,
+                all_projects: &HashMap::new(),
+                files: &changed
+            },
+            &["build"]
+        ),
+        ["build"]
+    );
+}
+
+#[test]
+fn a_dependency_on_a_step_of_a_sequence_resolves_to_that_step() {
+    // `{task: "release[0]"}` as an input makes `deploy` depend on the first
+    // step of `release`, by the name `cuenv task` gives it.
+    let mut project = make_project(vec![(
+        "deploy",
+        make_task(vec!["deploy/**"], vec!["release[0]"]),
+    )]);
+    project.tasks.insert(
+        "release".to_string(),
+        TaskNode::Sequence(vec![TaskNode::Task(Box::new(make_task(
+            vec!["release/**"],
+            vec![],
+        )))]),
+    );
+    let all_projects = HashMap::new();
+
+    let affected = affected_in(
+        &Change {
+            project: &project,
+            all_projects: &all_projects,
+            files: &[PathBuf::from("docs/readme.md")],
+        },
+        &["deploy"],
+    );
+
+    assert!(affected.is_empty(), "{affected:?}");
 }
